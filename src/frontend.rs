@@ -68,7 +68,7 @@ enum Kind {
     #[regex("[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
     #[regex(r"[ \t\n\r\f]+", logos::skip)]
-    #[regex(r"//[^\n]*", logos::skip)]
+    #[regex(r"//[^\n]*", logos::skip, allow_greedy = true)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
