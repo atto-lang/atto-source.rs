@@ -1,0 +1,13 @@
+[package]
+name = "oreslang-source-rs"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+logos = "0.16.1"
+cranelift = { version = "0.136.3", features = ["module", "object", "native"] }
+
+[[bin]]
+name = "oresc"
+path = "src/main.rs"
