@@ -2,6 +2,9 @@
 //! Intended to be replaced by a full-fidelity Rowan CST + typed HIR.
 use logos::Logos;
 use std::fmt;
+pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+const MAX_TOKENS: usize = 4096;
+const MAX_EXPR_DEPTH: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program { pub functions: Vec<Function> }
@@ -49,11 +52,17 @@ enum Kind {
 #[derive(Clone, Debug)]
 struct Token { kind: Kind, text: String, start: usize }
 pub fn parse(source: &str) -> Result<Program, ParseError> {
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err(ParseError { offset: MAX_SOURCE_BYTES, message: "source exceeds byte budget".into() });
+    }
     let mut tokens = Vec::new();
     for (kind, range) in Kind::lexer(source).spanned() {
         let kind = kind.map_err(|_| ParseError {
             offset: range.start, message: "unsupported token".into()
         })?;
+        if tokens.len() >= MAX_TOKENS {
+            return Err(ParseError { offset: range.start, message: "token budget exceeded".into() });
+        }
         tokens.push(Token { kind, text: source[range.clone()].to_owned(), start: range.start });
     }
     let mut parser = Parser { tokens, cursor: 0, source_len: source.len() };
@@ -101,32 +110,42 @@ impl Parser {
         else { self.expect(Kind::RBrace)?; }
         Ok(Function { name, expression })
     }
-    fn expression(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.product()?;
+    fn expression(&mut self) -> Result<Expr, ParseError> { self.expression_at(0) }
+    fn expression_at(&mut self, depth: usize) -> Result<Expr, ParseError> {
+        self.check_depth(depth)?;
+        let mut lhs = self.product_at(depth + 1)?;
         loop {
             lhs = match self.peek() {
                 Some(Kind::Plus) => {
                     self.expect(Kind::Plus)?;
-                    Expr::Add(Box::new(lhs), Box::new(self.product()?))
+                    Expr::Add(Box::new(lhs), Box::new(self.product_at(depth + 1)?))
                 }
                 Some(Kind::Minus) => {
                     self.expect(Kind::Minus)?;
-                    Expr::Subtract(Box::new(lhs), Box::new(self.product()?))
+                    Expr::Subtract(Box::new(lhs), Box::new(self.product_at(depth + 1)?))
                 }
                 _ => break,
             };
         }
         Ok(lhs)
     }
-    fn product(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.primary()?;
+    fn product_at(&mut self, depth: usize) -> Result<Expr, ParseError> {
+        self.check_depth(depth)?;
+        let mut lhs = self.primary_at(depth + 1)?;
         while self.peek() == Some(Kind::Star) {
             self.expect(Kind::Star)?;
-            lhs = Expr::Multiply(Box::new(lhs), Box::new(self.primary()?));
+            lhs = Expr::Multiply(Box::new(lhs), Box::new(self.primary_at(depth + 1)?));
         }
         Ok(lhs)
     }
-    fn primary(&mut self) -> Result<Expr, ParseError> {
+    fn check_depth(&self, depth: usize) -> Result<(), ParseError> {
+        if depth > MAX_EXPR_DEPTH {
+            return Err(ParseError { offset: self.pos(), message: "expression nesting budget exceeded".into() });
+        }
+        Ok(())
+    }
+    fn primary_at(&mut self, depth: usize) -> Result<Expr, ParseError> {
+        self.check_depth(depth)?;
         match self.peek() {
             Some(Kind::Number) => {
                 let token = self.expect(Kind::Number)?;
@@ -137,11 +156,11 @@ impl Parser {
             }
             Some(Kind::Minus) => {
                 self.expect(Kind::Minus)?;
-                Ok(Expr::Subtract(Box::new(Expr::Integer(0)), Box::new(self.primary()?)))
+                Ok(Expr::Subtract(Box::new(Expr::Integer(0)), Box::new(self.primary_at(depth + 1)?)))
             }
             Some(Kind::LParen) => {
                 self.expect(Kind::LParen)?;
-                let expression = self.expression()?;
+                let expression = self.expression_at(depth + 1)?;
                 self.expect(Kind::RParen)?;
                 Ok(expression)
             }
@@ -167,6 +186,17 @@ mod tests {
     #[test]
     fn rejects_trailing() {
         assert!(parse("static fnc a() as return 2; end garbage").is_err());
+    }
+    #[test]
+    fn rejects_deep_parentheses_without_stack_exhaustion() {
+        let source = format!("static fnc f() as return {}1{}; end",
+            "(".repeat(MAX_EXPR_DEPTH + 5), ")".repeat(MAX_EXPR_DEPTH + 5));
+        assert!(parse(&source).is_err());
+    }
+    #[test]
+    fn rejects_excessive_tokens() {
+        let source = format!("static fnc f() as return 1{}; end", "+1".repeat(MAX_TOKENS));
+        assert!(parse(&source).is_err());
     }
     #[test]
     fn rejects_integer_out_of_range() {
