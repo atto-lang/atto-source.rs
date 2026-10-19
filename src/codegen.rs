@@ -29,6 +29,7 @@ pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
         let symbol = module
             .declare_function(&function.symbol, Linkage::Export, &ctx.func.signature)
             .map_err(|e| e.to_string())?;
+        let frontend_config = module.isa().frontend_config();
         let mut fbctx = FunctionBuilderContext::new();
         {
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
@@ -37,7 +38,7 @@ pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
             builder.seal_block(block);
             let result = compile_expr(&mut builder, &function.return_value);
             builder.ins().return_(&[result]);
-            builder.finalize();
+            builder.finalize(frontend_config);
         }
         module
             .define_function(symbol, &mut ctx)
