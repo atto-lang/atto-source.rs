@@ -1,5 +1,5 @@
 //! Cranelift object backend: no LLVM/GraalVM, runtime or JIT dependencies.
-use crate::{frontend::Expr, mir::Module};
+use crate::{frontend::Expr, mir::{self, Module}};
 use cranelift::{
     codegen::{ir::{types, AbiParam, Value}, settings},
     frontend::{FunctionBuilder, FunctionBuilderContext},
@@ -9,6 +9,14 @@ use cranelift::{
     prelude::InstBuilder,
 };
 pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
+    // This public entry point may be called without the normal MIR lowering path.
+    if program.functions.len() > 1024 {
+        return Err("module exceeds function budget".into());
+    }
+    for function in &program.functions {
+        mir::validate_expr(&function.return_value)?;
+    }
+
     let isa = native::builder().map_err(|e| e.to_string())?
         .finish(settings::Flags::new(settings::builder()))
         .map_err(|e| e.to_string())?;
