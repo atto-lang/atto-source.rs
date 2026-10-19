@@ -1,7 +1,7 @@
 //! Independent Rust Oreslang frontend, MIR and Cranelift backend.
+pub mod codegen;
 pub mod frontend;
 pub mod mir;
-pub mod codegen;
 
 /// Compile supported source text to the host machine's relocatable object bytes.
 pub fn compile(source: &str) -> Result<Vec<u8>, String> {
