@@ -2,9 +2,14 @@
 use crate::frontend::{Expr, Program};
 use std::collections::HashSet;
 const MAX_MIR_EXPR_DEPTH: usize = 128;
-fn validate_expr(root: &Expr) -> Result<(), String> {
+pub(crate) fn validate_expr(root: &Expr) -> Result<(), String> {
     let mut pending = vec![(root, 1usize)];
+    let mut nodes = 0usize;
     while let Some((expr, depth)) = pending.pop() {
+        nodes += 1;
+        if nodes > 4096 {
+            return Err("expression exceeds MIR node budget".into());
+        }
         if depth > MAX_MIR_EXPR_DEPTH {
             return Err("expression exceeds MIR/codegen stack budget".into());
         }
@@ -24,6 +29,9 @@ pub struct Module { pub functions: Vec<Function> }
 pub struct Function { pub symbol: String, pub return_value: Expr }
 
 pub fn lower(program: Program) -> Result<Module, String> {
+    if program.functions.len() > 1024 {
+        return Err("module exceeds function budget".into());
+    }
     let mut names = HashSet::new();
     let mut functions = Vec::new();
     for function in program.functions {
