@@ -4,33 +4,127 @@
 use crate::{frontend::Expr, mir::Module};
 use serde_json::{json, Value};
 
-fn append(expr: &Expr, events: &mut Vec<Value>) {
-    match expr {
-        Expr::Integer(_) => events.push(json!({"kind": "compute", "units": 1})),
-        Expr::Name(name) => events.push(json!({"kind": "read", "place": name})),
-        Expr::Negate(a) => {
-            append(a, events);
-            events.push(json!({"kind": "compute", "units": 1}));
+const MAX_FUNCTIONS: usize = 256;
+const MAX_NODES_PER_FUNCTION: usize = 4096;
+const MAX_OUTPUT_BYTES: usize = 1_048_576;
+
+fn valid_identifier(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 128
+        && s.as_bytes().iter().enumerate().all(|(i, b)| {
+            b.is_ascii_alphabetic() || *b == b'_' || (i > 0 && b.is_ascii_digit())
+        })
+}
+
+/// Independently validate public caller-supplied MIR before emitting a complete
+/// effect manifest. Merely being stored in a Module does NOT prove provenance.
+fn validate(module: &Module) -> Result<(), String> {
+    use std::collections::{HashMap, HashSet};
+    if module.functions.is_empty() || module.functions.len() > MAX_FUNCTIONS {
+        return Err("empty or oversized MIR module".into());
+    }
+    let mut signatures = HashMap::new();
+    for function in &module.functions {
+        if !valid_identifier(&function.symbol) || function.params.len() > 64
+            || function.locals.len() > MAX_NODES_PER_FUNCTION
+            || signatures.insert(function.symbol.as_str(), function.params.len()).is_some()
+        {
+            return Err(format!("invalid, duplicated, or oversized MIR function '{}'", function.symbol));
         }
-        Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
-            append(a, events);
-            append(b, events);
-            events.push(json!({"kind": "compute", "units": 1}));
-        }
-        Expr::Call { name, args } => {
-            for arg in args {
-                append(arg, events);
+    }
+    for function in &module.functions {
+        let mut scope = HashSet::new();
+        for param in &function.params {
+            if !valid_identifier(param) || !scope.insert(param.as_str()) {
+                return Err(format!("invalid or duplicate MIR parameter '{param}'"));
             }
-            // Until interprocedural summaries are verified, this call MUST
-            // fail closed in the CFG safety admission engine.
-            events.push(json!({"kind": "call", "target": name}));
+        }
+        let mut count = 0usize;
+        for (name, expr) in &function.locals {
+            validate_expr(expr, &scope, &signatures, &mut count)?;
+            if !valid_identifier(name) || !scope.insert(name.as_str()) {
+                return Err(format!("invalid or duplicate MIR local '{name}'"));
+            }
+        }
+        validate_expr(&function.return_value, &scope, &signatures, &mut count)?;
+    }
+    Ok(())
+}
+fn validate_expr(
+    root: &Expr, scope: &std::collections::HashSet<&str>,
+    signatures: &std::collections::HashMap<&str, usize>, count: &mut usize,
+) -> Result<(), String> {
+    let mut stack = vec![root];
+    while let Some(expr) = stack.pop() {
+        *count = count.checked_add(1).ok_or("MIR expression count overflow")?;
+        if *count > MAX_NODES_PER_FUNCTION {
+            return Err("MIR expression exceeds bounded node budget".into());
+        }
+        match expr {
+            Expr::Integer(_) => {}
+            Expr::Name(name) => {
+                if !scope.contains(name.as_str()) {
+                    return Err(format!("undeclared MIR scalar '{name}'"));
+                }
+            }
+            Expr::Negate(inner) => stack.push(inner),
+            Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
+                stack.push(a);
+                stack.push(b);
+            }
+            Expr::Call { name, args } => {
+                if signatures.get(name.as_str()) != Some(&args.len()) {
+                    return Err(format!("unresolved or wrong-arity MIR call '{name}'"));
+                }
+                stack.extend(args);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Explicit iterative postorder prevents exporter recursion exhaustion on
+/// syntactically deep (but otherwise bounded) expression trees.
+fn append(expr: &Expr, events: &mut Vec<Value>) {
+    let mut stack = vec![(expr, false)];
+    while let Some((node, emit)) = stack.pop() {
+        match node {
+            Expr::Integer(_) => events.push(json!({"kind": "compute", "units": 1})),
+            Expr::Name(name) => events.push(json!({"kind": "read", "place": name})),
+            Expr::Negate(a) => {
+                if emit {
+                    events.push(json!({"kind": "compute", "units": 1}));
+                } else {
+                    stack.push((node, true));
+                    stack.push((a, false));
+                }
+            }
+            Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
+                if emit {
+                    events.push(json!({"kind": "compute", "units": 1}));
+                } else {
+                    stack.push((node, true));
+                    stack.push((b, false));
+                    stack.push((a, false));
+                }
+            }
+            Expr::Call { name, args } => {
+                if emit {
+                    // MUST remain visible as a proof gap until independently
+                    // checked compositional call summaries exist.
+                    events.push(json!({"kind": "call", "target": name}));
+                } else {
+                    stack.push((node, true));
+                    for arg in args.iter().rev() { stack.push((arg, false)); }
+                }
+            }
         }
     }
 }
 
 /// The budget is provided by policy, not computed from CPU timing/WCET.
 /// Runtime actor/Task/memory effects cannot occur in the admitted scalar slice.
-pub fn export_cfg_v2(module: &Module, budget: Option<u64>) -> Value {
+pub fn export_cfg_v2(module: &Module, budget: Option<u64>) -> Result<Value, String> {
+    validate(module)?;
     let functions = module
         .functions
         .iter()
@@ -55,11 +149,15 @@ pub fn export_cfg_v2(module: &Module, budget: Option<u64>) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    json!({
+    let manifest = json!({
         "schema_version": 2,
         "effects_complete": true,
         "functions": functions
-    })
+    });
+    if serde_json::to_vec(&manifest).map_err(|e| e.to_string())?.len() > MAX_OUTPUT_BYTES {
+        return Err("CFG-v2 manifest exceeds analyzer input size budget".into());
+    }
+    Ok(manifest)
 }
 #[cfg(test)]
 mod tests {
@@ -67,7 +165,7 @@ mod tests {
     fn export(source: &str, budget: Option<u64>) -> Value {
         let ast = crate::frontend::parse(source).unwrap();
         let mir = crate::mir::lower(ast).unwrap();
-        export_cfg_v2(&mir, budget)
+        export_cfg_v2(&mir, budget).unwrap()
     }
     #[test]
     fn scalar_expression_has_one_cfg_return_block() {
@@ -109,6 +207,39 @@ mod tests {
         assert_eq!(e[1]["kind"], "read");
         assert_eq!(e[2]["kind"], "define");
         assert_eq!(e[3]["kind"], "read");
+    }
+    #[test]
+    fn forged_public_mir_cannot_launder_unknown_names() {
+        let ast = crate::frontend::parse("pub fnc f(): int { return 2; }").unwrap();
+        let mut module = crate::mir::lower(ast).unwrap();
+        module.functions[0].return_value = Expr::Name("ghost".into());
+        assert!(export_cfg_v2(&module, Some(10)).unwrap_err().contains("undeclared"));
+    }
+    #[test]
+    fn forged_public_mir_cannot_launder_undefined_calls() {
+        let ast = crate::frontend::parse("pub fnc f(): int { return 2; }").unwrap();
+        let mut module = crate::mir::lower(ast).unwrap();
+        module.functions[0].return_value = Expr::Call {
+            name: "external_without_summary".into(), args: vec![],
+        };
+        assert!(export_cfg_v2(&module, Some(10)).unwrap_err().contains("wrong-arity"));
+    }
+    #[test]
+    fn forged_duplicate_parameters_are_rejected() {
+        let ast = crate::frontend::parse("pub fnc f(int a): int { return a; }").unwrap();
+        let mut module = crate::mir::lower(ast).unwrap();
+        module.functions[0].params.push("a".into());
+        assert!(export_cfg_v2(&module, Some(10)).is_err());
+    }
+    #[test]
+    fn forged_module_cannot_bypass_work_budget_by_truncation() {
+        let ast = crate::frontend::parse("pub fnc f(): int { return 2; }").unwrap();
+        let mut module = crate::mir::lower(ast).unwrap();
+        for _ in 0..MAX_NODES_PER_FUNCTION {
+            let old = module.functions[0].return_value.clone();
+            module.functions[0].return_value = Expr::Negate(Box::new(old));
+        }
+        assert!(export_cfg_v2(&module, Some(10000)).is_err());
     }
     #[test]
     fn absent_budget_stays_absent_and_cannot_be_invented() {
