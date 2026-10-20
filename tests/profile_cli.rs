@@ -5,10 +5,8 @@ fn compiler() -> &'static str {
 }
 
 fn temp_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "oreslang-source-rs-{label}-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("oreslang-source-rs-{label}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create temp dir");
     dir
@@ -26,7 +24,10 @@ fn hard_rt_cli_fails_closed_without_wcet_evidence_and_publishes_nothing() {
     assert!(!result.status.success(), "--hard-rt unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("WCET/deadline evidence"), "{stderr}");
-    assert!(!output.exists(), "failed hard-RT admission published an object");
+    assert!(
+        !output.exists(),
+        "failed hard-RT admission published an object"
+    );
     let _ = fs::remove_dir_all(dir);
 }
 
@@ -92,7 +93,9 @@ fn release_cli_removes_unreachable_private_symbol() {
     assert!(nm.status.success(), "nm failed");
     let symbols = String::from_utf8_lossy(&nm.stdout);
     assert!(
-        symbols.lines().any(|line| line.split_whitespace().last() == Some("main")),
+        symbols
+            .lines()
+            .any(|line| line.split_whitespace().last() == Some("main")),
         "{symbols}"
     );
     assert!(

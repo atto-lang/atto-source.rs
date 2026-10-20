@@ -65,7 +65,10 @@ fn oversized_profile_input_fails_before_object_publication() {
         .arg(&output)
         .output()
         .expect("run oresc");
-    assert!(!result.status.success(), "oversized source unexpectedly succeeded");
+    assert!(
+        !result.status.success(),
+        "oversized source unexpectedly succeeded"
+    );
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("source too large"), "{stderr}");
     assert!(!output.exists(), "oversized source published an object");

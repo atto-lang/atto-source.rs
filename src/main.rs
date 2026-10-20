@@ -17,7 +17,9 @@ fn main() -> ExitCode {
         for arg in raw_args.iter().skip(1) {
             if let Some(selected) = BuildProfile::parse_flag(arg) {
                 if profile_seen {
-                    return Err("--release, --strict-aot and --hard-rt are mutually exclusive".into());
+                    return Err(
+                        "--release, --strict-aot and --hard-rt are mutually exclusive".into(),
+                    );
                 }
                 profile = selected;
                 profile_seen = true;

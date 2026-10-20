@@ -49,14 +49,18 @@ fn collect_calls(expr: &Expr, out: &mut Vec<String>) {
 }
 
 fn call_graph(module: &Module) -> HashMap<String, Vec<String>> {
-    module.functions.iter().map(|function| {
-        let mut calls = Vec::new();
-        for (_, expr) in &function.locals {
-            collect_calls(expr, &mut calls);
-        }
-        collect_calls(&function.return_value, &mut calls);
-        (function.symbol.clone(), calls)
-    }).collect()
+    module
+        .functions
+        .iter()
+        .map(|function| {
+            let mut calls = Vec::new();
+            for (_, expr) in &function.locals {
+                collect_calls(expr, &mut calls);
+            }
+            collect_calls(&function.return_value, &mut calls);
+            (function.symbol.clone(), calls)
+        })
+        .collect()
 }
 
 /// Remove private functions unreachable from the executable/public roots.
@@ -65,7 +69,9 @@ fn call_graph(module: &Module) -> HashMap<String, Vec<String>> {
 /// libraries. A function named main is always a root when present.
 pub fn tree_shake(mut module: Module) -> Result<Module, String> {
     let graph = call_graph(&module);
-    let mut pending: Vec<String> = module.functions.iter()
+    let mut pending: Vec<String> = module
+        .functions
+        .iter()
         .filter(|function| function.exported || function.symbol == "main")
         .map(|function| function.symbol.clone())
         .collect();
@@ -78,7 +84,8 @@ pub fn tree_shake(mut module: Module) -> Result<Module, String> {
         if !live.insert(symbol.clone()) {
             continue;
         }
-        let edges = graph.get(&symbol)
+        let edges = graph
+            .get(&symbol)
             .ok_or_else(|| format!("tree-shake root references missing function '{symbol}'"))?;
         for callee in edges {
             if !live.contains(callee) {
@@ -86,7 +93,9 @@ pub fn tree_shake(mut module: Module) -> Result<Module, String> {
             }
         }
     }
-    module.functions.retain(|function| live.contains(&function.symbol));
+    module
+        .functions
+        .retain(|function| live.contains(&function.symbol));
     Ok(module)
 }
 
@@ -119,7 +128,8 @@ pub fn validate_hard_rt_preconditions(module: &Module) -> Result<(), String> {
         if !visiting.insert(name.to_owned()) {
             return Err(format!("hard-rt rejects recursive call graph at '{name}'"));
         }
-        let calls = graph.get(name)
+        let calls = graph
+            .get(name)
             .ok_or_else(|| format!("hard-rt unresolved call target '{name}'"))?;
         let mut result = 1usize;
         for callee in calls {
@@ -178,7 +188,7 @@ mod tests {
     #[test]
     fn hard_rt_preflight_rejects_recursion() {
         let module = lowered(
-            "pub fnc main(): int { return recurse(); } fnc recurse(): int { return recurse(); }"
+            "pub fnc main(): int { return recurse(); } fnc recurse(): int { return recurse(); }",
         );
         let error = validate_hard_rt_preconditions(&module).unwrap_err();
         assert!(error.contains("recursive call graph"), "{error}");
