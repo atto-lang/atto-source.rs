@@ -27,6 +27,29 @@ impl std::error::Error for SemanticError {}
 fn failure(class: &'static str, message: impl Into<String>) -> SemanticError {
     SemanticError { class, message: message.into() }
 }
+/// Preflight the shape of checked or externally supplied MIR without recursion.
+pub(crate) fn validate_shape(expr: &Expr) -> Result<(), String> {
+    let mut pending = vec![(expr, 1usize)];
+    let mut visited = 0usize;
+    while let Some((node, depth)) = pending.pop() {
+        visited += 1;
+        if visited > 4096 || depth > 128 {
+            return Err("expression exceeds node/depth budget".into());
+        }
+        match node {
+            Expr::Integer(_) | Expr::Name(_) => {}
+            Expr::Negate(v) => pending.push((v, depth + 1)),
+            Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
+                pending.push((a, depth + 1));
+                pending.push((b, depth + 1));
+            }
+            Expr::Call { args, .. } => {
+                pending.extend(args.iter().map(|arg| (arg, depth + 1)));
+            }
+        }
+    }
+    Ok(())
+}
 fn validate_expr(
     expr: &Expr, variables: &HashSet<String>, signatures: &HashMap<String, usize>,
 ) -> Result<(), SemanticError> {
@@ -54,8 +77,19 @@ fn validate_expr(
     }
 }
 pub fn lower(program: Program) -> Result<Module, SemanticError> {
+    if program.functions.is_empty() || program.functions.len() > 1024 {
+        return Err(failure("resource_budget", "function count outside supported bound"));
+    }
     let mut signatures = HashMap::new();
     for function in &program.functions {
+        if function.params.len() > 256 || function.locals.len() > 1024 {
+            return Err(failure("resource_budget", "function parameters/locals exceed budget"));
+        }
+        validate_shape(&function.expression)
+            .map_err(|e| failure("resource_budget", e))?;
+        for local in &function.locals {
+            validate_shape(&local.value).map_err(|e| failure("resource_budget", e))?;
+        }
         if signatures.insert(function.name.clone(), function.params.len()).is_some() {
             return Err(failure("duplicate_declaration", format!("duplicate function '{}'", function.name)));
         }
@@ -92,6 +126,11 @@ mod tests {
     use super::*;
     fn check(source: &str) -> Result<Module, SemanticError> {
         lower(crate::frontend::parse(source).unwrap())
+    }
+    #[test]
+    fn rejects_left_deep_arithmetic_before_recursive_lowering() {
+        let src = format!("fnc f(): int {{ return 1{}; }}", "+1".repeat(200));
+        assert_eq!(check(&src).unwrap_err().class, "resource_budget");
     }
     #[test]
     fn duplicate_function_rejected() {
