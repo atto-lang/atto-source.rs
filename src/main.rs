@@ -1,5 +1,5 @@
 use oreslang_source_rs::{cfg, codegen, effects, frontend, mir};
-use std::{env, fs, process::ExitCode};
+use std::{env, fs, io::Read, process::ExitCode};
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args().collect();
@@ -14,7 +14,12 @@ fn main() -> ExitCode {
             [_, input, output] => ("object", input.as_str(), Some(output.as_str()), None),
             _ => return Err("usage: oresc --check <source.ores> | --effects <source.ores> | --cfg-ir <source.ores> [abstract-budget] | <source.ores> <out.o>".into()),
         };
-        let source = fs::read_to_string(input).map_err(|e| e.to_string())?;
+        let mut source = String::new();
+        fs::File::open(input)
+            .map_err(|e| e.to_string())?
+            .take(1_048_577)
+            .read_to_string(&mut source)
+            .map_err(|e| e.to_string())?;
         if source.len() > 1_048_576 {
             return Err("source too large".into());
         }
