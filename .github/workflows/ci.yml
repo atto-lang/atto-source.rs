@@ -41,6 +41,24 @@ jobs:
             fi
             grep -F "$expected" target/diagnostic.out
           done
+      - name: Verify shared v0 source-backed facts and fail-closed unsupported calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- --static-facts tests/fixtures/forward.ores > target/static-facts-v0.json
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          s=pathlib.Path("tests/fixtures/forward.ores").read_bytes()
+          d=json.loads(pathlib.Path("target/static-facts-v0.json").read_text())
+          assert d["version"]=="ores-static-facts/v0"
+          assert d["unit"]=="sha256:"+hashlib.sha256(s).hexdigest()
+          assert d["edges"] and all(e["kind"]=="call" and e["guard"]=="unproved" for e in d["edges"])
+          assert all(not p["loops"] for p in d["procedures"])
+          assert not (d["taint_sources"] or d["flows"] or d["sinks"] or d["permission_checks"])
+          PY
+          if cargo run --locked --bin oresc -- --static-facts tests/fixtures/unknown.ores >target/unverified.json; then
+            echo 'Unverified source emitted static facts'; exit 1
+          fi
       - name: Validate compiler emitted effect IR
         run: |
           cargo run --locked --bin oresc -- --effects tests/fixtures/forward.ores > target/effects.json
