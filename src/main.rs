@@ -4,7 +4,9 @@ use std::{env, fs, io::Read, path::Path, process::ExitCode};
 /// colliding with the native object, including existing symlinks.
 fn canonical_destination(path: &str) -> Result<std::path::PathBuf, String> {
     let candidate = Path::new(path);
-    if candidate.exists() {
+    // symlink_metadata observes dangling symlinks too; never let a broken
+    // output symlink evade identity checks by reporting exists() == false.
+    if fs::symlink_metadata(candidate).is_ok() {
         return fs::canonicalize(candidate).map_err(|e| e.to_string());
     }
     let parent = candidate.parent().filter(|p| !p.as_os_str().is_empty())
