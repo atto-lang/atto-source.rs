@@ -19,9 +19,13 @@ Current limitations: named, zero-argument static functions only; one return expr
 
 `oresc --emit-effect-ir source.ores out.json` parses, validates and lowers the exact
 same restricted scalar source subset as ordinary `oresc` compilation. It emits
-`schema_version=1` JSON with every function and an explicit empty guest effect
-list. Only integer literals and + / - / * are admitted; zero operations means
-no **modeled** guest alloc/copy/I/O/FFI/call/actor/await effect. The source
+`schema_version=1` JSON with every function and one explicit `compute`
+operation (`units: 1`) per scalar MIR literal/arithmetic expression node.
+Only integer literals and + / - / * are admitted; the resulting effect list
+contains no **modeled** guest alloc/copy/I/O/FFI/call/actor/await effect.
+`operations_upper_bound` represents abstract MIR-node work, not machine
+instructions, cycles, stack or WCET. The exporter rejects programs whose
+effect lists exceed the Rust analyzer's 100,000-operation budget. The source
 language's integer-overflow policy, side channels, physical instruction count,
 stack usage and WCET remain unverified.
 
@@ -30,3 +34,19 @@ backends must not claim the same effect closure without checked HIR/MIR lowering
 Production verification requires pinning the exact source tree, compiler version,
 ABI, target and module dependency graph, and comparing emitted IR with authenticated
 compiler traces. See the analyzer's `docs/VERIFICATION_OBLIGATIONS.md`.
+
+### Golden cross-repository contract
+
+`examples/answer.ores` must emit exactly
+`examples/scalar-effect-ir-v1.json`, including byte-for-byte JSON
+layout and SHA-256
+`8ee1adbf6faef704c1eb6d2b2075c3b2d723097037f646f9e6e518a69d005463`.
+The corresponding analyzer fixture is
+`oreslang-static-analysis.rs/examples/rust-scalar-expected.json`.
+Both repositories pin the same result independently without cross-repository
+checkout or secrets.
+
+**This is golden-fixture conformance, not authenticated provenance.**
+A JSON file can be forged; a future protected compiler build must bind the
+effect artifact to the exact source Git blob/tree, compiler image digest,
+target triple, verified dependency closure and target-specific proof evidence.
