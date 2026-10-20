@@ -5,6 +5,9 @@
 use crate::{frontend::Expr, mir::Module};
 use std::collections::{HashMap, HashSet};
 
+const HARD_RT_MAX_FUNCTIONS: usize = 256;
+const HARD_RT_MAX_CALL_DEPTH: usize = 64;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildProfile {
     Dev,
@@ -95,10 +98,10 @@ pub fn tree_shake(mut module: Module) -> Result<Module, String> {
 /// until that evidence generator exists, --hard-rt fails closed after these
 /// source/MIR checks.
 pub fn validate_hard_rt_preconditions(module: &Module) -> Result<(), String> {
-    const MAX_FUNCTIONS: usize = 256;
-    const MAX_CALL_DEPTH: usize = 64;
-    if module.functions.len() > MAX_FUNCTIONS {
-        return Err(format!("hard-rt function budget exceeded ({MAX_FUNCTIONS})"));
+    if module.functions.len() > HARD_RT_MAX_FUNCTIONS {
+        return Err(format!(
+            "hard-rt function budget exceeded ({HARD_RT_MAX_FUNCTIONS})"
+        ));
     }
     let graph = call_graph(module);
     let mut visiting = HashSet::new();
@@ -122,8 +125,10 @@ pub fn validate_hard_rt_preconditions(module: &Module) -> Result<(), String> {
         for callee in calls {
             let child = depth(callee, graph, visiting, memo)?;
             result = result.max(child.saturating_add(1));
-            if result > MAX_CALL_DEPTH {
-                return Err(format!("hard-rt call depth exceeds {MAX_CALL_DEPTH}"));
+            if result > HARD_RT_MAX_CALL_DEPTH {
+                return Err(format!(
+                    "hard-rt call depth exceeds {HARD_RT_MAX_CALL_DEPTH}"
+                ));
             }
         }
         visiting.remove(name);
