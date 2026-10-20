@@ -112,6 +112,15 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
     let mut depth = 0_u32;
     let mut open = 0_usize;
     while i < src.len() {
+        // A block-comment delimiter inside a // comment is ordinary text.
+        // Leave it untouched for Logos to discard, and preserve source offsets.
+        if depth == 0 && i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'/' {
+            i += 2;
+            while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
+                i += 1;
+            }
+            continue;
+        }
         if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
             if depth == 0 {
                 open = i;
@@ -415,6 +424,10 @@ mod tests {
         let ast =
             parse("fnc owned(int owned): int { const local: int = owned; return local; }").unwrap();
         assert_eq!(ast.functions[0].locals.len(), 1);
+    }
+    #[test]
+    fn block_delimiter_in_line_comment_is_not_open_comment() {
+        assert!(parse("// text /* not a block opener\npub fnc main(): int { return 42; }").is_ok());
     }
     #[test]
     fn ignores_double_slash_comment() {
