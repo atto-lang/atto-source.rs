@@ -15,13 +15,14 @@ fn main() -> ExitCode {
             _ => return Err("usage: oresc --check <source.ores> | --effects <source.ores> | --cfg-ir <source.ores> [abstract-budget] | <source.ores> <out.o>".into()),
         };
         let source = fs::read_to_string(input).map_err(|e| e.to_string())?;
+        if source.len() > 1_048_576 { return Err("source too large".into()); }
         let parsed = frontend::parse(&source).map_err(|e| e.to_string())?;
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
         match mode {
             "--check" => println!("OK: {} function(s)", checked.functions.len()),
             "cfg" => println!(
                 "{}",
-                serde_json::to_string_pretty(&cfg::export_cfg_v2(&checked, budget))
+                serde_json::to_string_pretty(&cfg::export_cfg_v2(&checked, budget)?))
                     .map_err(|e| e.to_string())?
             ),
             "--effects" => println!(
