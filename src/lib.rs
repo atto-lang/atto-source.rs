@@ -3,8 +3,8 @@ pub mod codegen;
 pub mod effects;
 pub mod frontend;
 pub mod mir;
-pub mod ref_layout;
 pub mod ref_codegen;
+pub mod ref_layout;
 
 /// Compile the admitted scalar subset into host relocatable object bytes.
 pub fn compile(source: &str) -> Result<Vec<u8>, String> {
@@ -17,7 +17,9 @@ mod tests {
     use super::*;
     #[test]
     fn compiles_real_native_object() {
-        let result = compile("pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }");
+        let result = compile(
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }",
+        );
         assert!(result.is_ok(), "{result:?}");
         let object = result.unwrap();
         #[cfg(target_os = "linux")]
