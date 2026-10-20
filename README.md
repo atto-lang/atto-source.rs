@@ -14,3 +14,19 @@ Quick start:
 Long-term choices: Rowan lossless CST, Salsa incremental query engine, owned Oreslang HIR/MIR, Cranelift native AOT/JIT. See docs/ARCHITECTURE.md.
 
 The prototype currently accepts both the braced and as/end spellings for a static function. Its grammar and integer-overflow semantics need reconciliation against the Java and LLVM Oreslang language specification before broad use.
+
+
+## Build profiles
+
+The compiler accepts `--release`, `--strict-aot`, and `--hard-rt` as mutually
+exclusive selectors, plus orthogonal `--freestanding`.
+
+The current scalar subset contains no runtime reflection, heap/GC, dynamic dispatch,
+dynamic code loading, blocking I/O, or loops. Release-or-stronger compilation performs
+a semantic call-graph reachability pass before Cranelift and removes unreachable private
+functions. Strict AOT uses the same closed world and emits only native object code.
+
+Hard-RT admission is intentionally fail-closed: the compiler now proves a bounded,
+acyclic call graph as a precondition, but rejects the final `--hard-rt` request until
+target-specific WCET/deadline evidence is implemented. It does not relabel “native AOT”
+as a hard-real-time proof.
