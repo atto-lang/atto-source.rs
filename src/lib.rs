@@ -1,4 +1,5 @@
 //! Independent Rust Oreslang frontend, validated MIR and Cranelift backend.
+pub mod cfg;
 pub mod codegen;
 pub mod effects;
 pub mod frontend;
