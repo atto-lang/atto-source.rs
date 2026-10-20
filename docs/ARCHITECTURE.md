@@ -75,3 +75,19 @@ python3 scripts/verify_scalar_effect_bridge.py --fixture-only
 Both commands are **verification procedures**, not evidence of success
 until they execute against the named Git commits. The CI runner for these
 private repos currently fails before starting job steps.
+
+## Same-MIR object + effect evidence (paired mode)
+
+```bash
+cargo run --locked --bin oresc -- --compile-with-effects \
+  examples/answer.ores target/paired-answer.o target/paired-answer-effects.json
+```
+
+Both artifact types are generated from **one** checked MIR instance.
+Effect admission completes before native object generation. The CLI rejects
+input/output and object/effect destination aliases. The two file writes are
+*not* atomic, and this does not authenticate the toolchain binary or dependencies.
+The strengthened `scripts/verify_scalar_effect_bridge.py` runs a real
+compiled C driver after the paired build, checks value `42`, checks the v1
+analyzer's conservative work bounds, and performs malformed/unknown/zero-cost
+negative controls. A passing analyzer `hard` profile remains **model-only**.
