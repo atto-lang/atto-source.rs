@@ -1,5 +1,5 @@
 use oreslang_source_rs::{codegen, effects, flow, frontend, mir};
-use std::{env, fs, process::ExitCode};
+use std::{env, fs, io::Read, process::ExitCode};
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args().collect();
@@ -12,7 +12,14 @@ fn main() -> ExitCode {
             [_, input, output] => ("object", input.as_str(), Some(output.as_str())),
             _ => return Err("usage: oresc --check <source.ores> | --effects <source.ores> | --flow <max-uninterrupted-units> <source.ores> | <source.ores> <out.o>".into()),
         };
-        let source = fs::read_to_string(input).map_err(|e| e.to_string())?;
+        // Keep the CLI bounded even when the file is much larger than the
+        // admitted parser subset; do not read an entire hostile source file.
+        let mut source = String::new();
+        fs::File::open(input)
+            .map_err(|e| e.to_string())?
+            .take((frontend::MAX_SOURCE_BYTES + 1) as u64)
+            .read_to_string(&mut source)
+            .map_err(|e| e.to_string())?;
         let parsed = frontend::parse(&source).map_err(|e| e.to_string())?;
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
         match mode {
