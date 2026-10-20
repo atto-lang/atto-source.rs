@@ -45,6 +45,10 @@ jobs:
         run: |
           cargo run --locked --bin oresc -- --effects tests/fixtures/forward.ores > target/effects.json
           python3 -c 'import json; d=json.load(open("target/effects.json")); assert d["schema_version"] == 1; assert any(x["kind"]=="call" and x["target"]=="times" for x in d["functions"][0]["operations"])'
+      - name: Validate compiler emitted layout IR
+        run: |
+          cargo run --locked --bin oresc -- --layout-ir tests/fixtures/forward.ores > target/layout.json
+          python3 -c 'import json; d=json.load(open("target/layout.json")); g=json.load(open("tests/fixtures/scalar-layout-ir-v1.json")); assert d == g; assert d["evidence_complete"] is True; assert d["regions"] == []'
       - name: Compile, link and execute native object
         run: |
           cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
