@@ -12,8 +12,18 @@ fn pure_scalar_hir_emits_analyzer_cfg_envelope() {
 }
 
 #[test]
-fn unresolved_calls_are_rejected_for_cfg_export() {
-    let parsed = frontend::parse("fnc f(): int { return g(); } fnc g(): int { return 1; }").unwrap();
+fn resolved_forward_scalar_calls_match_analyzer_golden() {
+    let source = include_str!("fixtures/flow-forward.ores");
+    let parsed = frontend::parse(source).unwrap();
     let module = mir::lower(parsed).unwrap();
-    assert!(flow::export_scalar_flow(&module, 5).is_err());
+    let actual = flow::export_scalar_flow(&module, 6).unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/flow-forward.json")).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn unknown_call_is_rejected_by_semantic_mir_pass() {
+    let parsed = frontend::parse("fnc f(): int { return missing(); }").unwrap();
+    assert!(mir::lower(parsed).is_err());
 }
