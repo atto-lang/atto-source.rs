@@ -7,9 +7,6 @@ license = "Apache-2.0"
 [dependencies]
 logos = "0.16.1"
 cranelift = { version = "0.136.3", features = ["module", "object", "native"] }
-
 [[bin]]
 name = "oresc"
 path = "src/main.rs"
-
-serde_json = "1.0"
