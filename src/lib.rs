@@ -2,6 +2,7 @@
 pub mod codegen;
 pub mod effects;
 pub mod frontend;
+pub mod layout;
 pub mod mir;
 
 /// Compile the admitted scalar subset into host relocatable object bytes.
