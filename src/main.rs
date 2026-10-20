@@ -16,7 +16,7 @@ fn main() -> ExitCode {
         match mode {
             "--check" => println!("OK: {} function(s)", checked.functions.len()),
             "--effects" => println!("{}", serde_json::to_string_pretty(
-                &effects::export_effect_ir(&checked)).map_err(|e| e.to_string())?),
+                &effects::export_effect_ir(&checked)?).map_err(|e| e.to_string())?),
             _ => {
                 let bytes = codegen::emit_object(&checked)?;
                 fs::write(output.ok_or("missing output path")?, bytes).map_err(|e| e.to_string())?;
