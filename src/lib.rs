@@ -1,26 +1,28 @@
-//! Independent Rust Oreslang frontend, MIR and Cranelift backend.
+//! Independent Rust Oreslang frontend, validated MIR and Cranelift backend.
 pub mod codegen;
+pub mod effects;
 pub mod frontend;
 pub mod mir;
 
-/// Compile supported source text to the host machine's relocatable object bytes.
+/// Compile the admitted scalar subset into host relocatable object bytes.
 pub fn compile(source: &str) -> Result<Vec<u8>, String> {
     let ast = frontend::parse(source).map_err(|e| e.to_string())?;
-    let module = mir::lower(ast)?;
+    let module = mir::lower(ast).map_err(|e| e.to_string())?;
     codegen::emit_object(&module)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn compiles_native_object() {
-        let bytes = compile("static fnc answer() -> int { return 40 + 2; }").unwrap();
-        assert!(!bytes.is_empty());
+    fn compiles_real_native_object() {
+        let result = compile("pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }");
+        assert!(result.is_ok(), "{result:?}");
+        let object = result.unwrap();
         #[cfg(target_os = "linux")]
-        assert!(bytes.starts_with(b"\x7fELF"));
+        assert!(object.starts_with(b"\x7fELF"));
     }
     #[test]
-    fn rejects_wrong_language_construct() {
+    fn rejects_unsupported_actor_syntax() {
         assert!(compile("define actor Foo as end").is_err());
     }
 }
