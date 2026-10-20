@@ -9,10 +9,12 @@ const MAX_NODES_PER_FUNCTION: usize = 4096;
 const MAX_OUTPUT_BYTES: usize = 1_048_576;
 
 fn valid_identifier(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 128
-        && s.as_bytes().iter().enumerate().all(|(i, b)| {
-            b.is_ascii_alphabetic() || *b == b'_' || (i > 0 && b.is_ascii_digit())
-        })
+    !s.is_empty()
+        && s.len() <= 128
+        && s.as_bytes()
+            .iter()
+            .enumerate()
+            .all(|(i, b)| b.is_ascii_alphabetic() || *b == b'_' || (i > 0 && b.is_ascii_digit()))
 }
 
 /// Independently validate public caller-supplied MIR before emitting a complete
@@ -24,11 +26,17 @@ fn validate(module: &Module) -> Result<(), String> {
     }
     let mut signatures = HashMap::new();
     for function in &module.functions {
-        if !valid_identifier(&function.symbol) || function.params.len() > 64
+        if !valid_identifier(&function.symbol)
+            || function.params.len() > 64
             || function.locals.len() > MAX_NODES_PER_FUNCTION
-            || signatures.insert(function.symbol.as_str(), function.params.len()).is_some()
+            || signatures
+                .insert(function.symbol.as_str(), function.params.len())
+                .is_some()
         {
-            return Err(format!("invalid, duplicated, or oversized MIR function '{}'", function.symbol));
+            return Err(format!(
+                "invalid, duplicated, or oversized MIR function '{}'",
+                function.symbol
+            ));
         }
     }
     for function in &module.functions {
@@ -50,12 +58,16 @@ fn validate(module: &Module) -> Result<(), String> {
     Ok(())
 }
 fn validate_expr(
-    root: &Expr, scope: &std::collections::HashSet<&str>,
-    signatures: &std::collections::HashMap<&str, usize>, count: &mut usize,
+    root: &Expr,
+    scope: &std::collections::HashSet<&str>,
+    signatures: &std::collections::HashMap<&str, usize>,
+    count: &mut usize,
 ) -> Result<(), String> {
     let mut stack = vec![root];
     while let Some(expr) = stack.pop() {
-        *count = count.checked_add(1).ok_or("MIR expression count overflow")?;
+        *count = count
+            .checked_add(1)
+            .ok_or("MIR expression count overflow")?;
         if *count > MAX_NODES_PER_FUNCTION {
             return Err("MIR expression exceeds bounded node budget".into());
         }
@@ -114,7 +126,9 @@ fn append(expr: &Expr, events: &mut Vec<Value>) {
                     events.push(json!({"kind": "call", "target": name}));
                 } else {
                     stack.push((node, true));
-                    for arg in args.iter().rev() { stack.push((arg, false)); }
+                    for arg in args.iter().rev() {
+                        stack.push((arg, false));
+                    }
                 }
             }
         }
@@ -154,7 +168,11 @@ pub fn export_cfg_v2(module: &Module, budget: Option<u64>) -> Result<Value, Stri
         "effects_complete": true,
         "functions": functions
     });
-    if serde_json::to_vec(&manifest).map_err(|e| e.to_string())?.len() > MAX_OUTPUT_BYTES {
+    if serde_json::to_vec(&manifest)
+        .map_err(|e| e.to_string())?
+        .len()
+        > MAX_OUTPUT_BYTES
+    {
         return Err("CFG-v2 manifest exceeds analyzer input size budget".into());
     }
     Ok(manifest)
@@ -213,16 +231,21 @@ mod tests {
         let ast = crate::frontend::parse("pub fnc f(): int { return 2; }").unwrap();
         let mut module = crate::mir::lower(ast).unwrap();
         module.functions[0].return_value = Expr::Name("ghost".into());
-        assert!(export_cfg_v2(&module, Some(10)).unwrap_err().contains("undeclared"));
+        assert!(export_cfg_v2(&module, Some(10))
+            .unwrap_err()
+            .contains("undeclared"));
     }
     #[test]
     fn forged_public_mir_cannot_launder_undefined_calls() {
         let ast = crate::frontend::parse("pub fnc f(): int { return 2; }").unwrap();
         let mut module = crate::mir::lower(ast).unwrap();
         module.functions[0].return_value = Expr::Call {
-            name: "external_without_summary".into(), args: vec![],
+            name: "external_without_summary".into(),
+            args: vec![],
         };
-        assert!(export_cfg_v2(&module, Some(10)).unwrap_err().contains("wrong-arity"));
+        assert!(export_cfg_v2(&module, Some(10))
+            .unwrap_err()
+            .contains("wrong-arity"));
     }
     #[test]
     fn forged_duplicate_parameters_are_rejected() {
