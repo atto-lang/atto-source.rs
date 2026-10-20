@@ -121,6 +121,45 @@ pub fn lower(program: Program) -> Result<Module, SemanticError> {
     }
     Ok(Module { functions })
 }
+/// Guard public MIR entry points; source validation alone does not protect
+/// callers that construct Module directly in tests, plugins or future compilers.
+pub fn validate_module(module: &Module) -> Result<(), String> {
+    if module.functions.is_empty() || module.functions.len() > 1024 {
+        return Err("MIR function budget exceeded".into());
+    }
+    let mut signatures = HashMap::new();
+    for function in &module.functions {
+        let symbol = function.symbol.as_bytes();
+        if symbol.is_empty() || symbol.len() > 256 ||
+                !(symbol[0].is_ascii_alphabetic() || symbol[0] == b'_') ||
+                !symbol.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_') {
+            return Err("invalid MIR function name".into());
+        }
+        if function.params.len() > 256 || function.locals.len() > 1024 ||
+                signatures.insert(function.symbol.clone(), function.params.len()).is_some() {
+            return Err("duplicate function or oversized MIR declaration".into());
+        }
+    }
+    for function in &module.functions {
+        let mut known = HashSet::new();
+        for param in &function.params {
+            if !known.insert(param.clone()) {
+                return Err("duplicate MIR parameter".into());
+            }
+        }
+        for (name, expression) in &function.locals {
+            validate_shape(expression)?;
+            validate_expr(expression, &known, &signatures).map_err(|e| e.to_string())?;
+            if !known.insert(name.clone()) {
+                return Err("duplicate MIR local".into());
+            }
+        }
+        validate_shape(&function.return_value)?;
+        validate_expr(&function.return_value, &known, &signatures)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
