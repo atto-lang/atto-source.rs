@@ -17,24 +17,35 @@ fn main() -> ExitCode {
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
         match mode {
             "--flow" => {
-                let budget = output.ok_or("missing abstract operation budget")?
-                    .parse::<u64>().map_err(|e| e.to_string())?;
+                let budget = output
+                    .ok_or("missing abstract operation budget")?
+                    .parse::<u64>()
+                    .map_err(|e| e.to_string())?;
                 let envelope = flow::export_scalar_flow(&checked, budget)?;
-                println!("{}", serde_json::to_string_pretty(&envelope)
-                    .map_err(|e| e.to_string())?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&envelope).map_err(|e| e.to_string())?
+                );
             }
             "--check" => println!("OK: {} function(s)", checked.functions.len()),
-            "--effects" => println!("{}", serde_json::to_string_pretty(
-                &effects::export_effect_ir(&checked)).map_err(|e| e.to_string())?),
+            "--effects" => println!(
+                "{}",
+                serde_json::to_string_pretty(&effects::export_effect_ir(&checked))
+                    .map_err(|e| e.to_string())?
+            ),
             _ => {
                 let bytes = codegen::emit_object(&checked)?;
-                fs::write(output.ok_or("missing output path")?, bytes).map_err(|e| e.to_string())?;
+                fs::write(output.ok_or("missing output path")?, bytes)
+                    .map_err(|e| e.to_string())?;
             }
         }
         Ok(())
     })();
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => { eprintln!("oresc: {error}"); ExitCode::from(1) }
+        Err(error) => {
+            eprintln!("oresc: {error}");
+            ExitCode::from(1)
+        }
     }
 }
