@@ -21,7 +21,9 @@ fn emit_expr(expr: &Expr, events: &mut Vec<Value>) -> Result<(), String> {
             events.push(json!({"kind":"compute","units":1}));
         }
         Expr::Call { name, .. } => {
-            return Err(format!("unsupported CFG interprocedural effect summary: {name}"));
+            return Err(format!(
+                "unsupported CFG interprocedural effect summary: {name}"
+            ));
         }
     }
     Ok(())
@@ -67,16 +69,29 @@ mod tests {
     fn tracks_local_ownership_and_reads() {
         let module = lower("fnc f(int x): int { const local: int = x+1; return local*2; }");
         let result = export_scalar_flow(&module, 6).unwrap();
-        let operations = result["functions"][0]["blocks"][0]["ops"].as_array().unwrap();
-        assert_eq!(operations[0], json!({"kind":"declare","place":"x","domain":"local"}));
-        assert!(operations.iter().any(|op| op == &json!({"kind":"read","place":"local"})));
-        assert_eq!(operations.iter().filter(|op| op["kind"] == "compute").count(), 6);
+        let operations = result["functions"][0]["blocks"][0]["ops"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            operations[0],
+            json!({"kind":"declare","place":"x","domain":"local"})
+        );
+        assert!(operations
+            .iter()
+            .any(|op| op == &json!({"kind":"read","place":"local"})));
+        assert_eq!(
+            operations
+                .iter()
+                .filter(|op| op["kind"] == "compute")
+                .count(),
+            6
+        );
         assert_eq!(result["effects_complete"], true);
     }
     #[test]
     fn refuses_calls_until_interprocedural_summaries_exist() {
         let module = lower(
-            "pub fnc main(): int { return add(40,2); } fnc add(int a,int b): int { return a+b; }"
+            "pub fnc main(): int { return add(40,2); } fnc add(int a,int b): int { return a+b; }",
         );
         assert!(export_scalar_flow(&module, 50).unwrap_err().contains("add"));
     }
@@ -84,7 +99,9 @@ mod tests {
     fn exported_cfg_has_explicit_return() {
         let module = lower("fnc f(): int { return 42; }");
         let result = export_scalar_flow(&module, 1).unwrap();
-        assert_eq!(result["functions"][0]["blocks"][0]["terminator"],
-            json!({"kind":"return"}));
+        assert_eq!(
+            result["functions"][0]["blocks"][0]["terminator"],
+            json!({"kind":"return"})
+        );
     }
 }
