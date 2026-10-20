@@ -4,6 +4,7 @@ pub mod effects;
 pub mod frontend;
 pub mod mir;
 pub mod ref_layout;
+pub mod ref_codegen;
 
 /// Compile the admitted scalar subset into host relocatable object bytes.
 pub fn compile(source: &str) -> Result<Vec<u8>, String> {
