@@ -178,10 +178,7 @@ mod tests {
 
     #[test]
     fn region_and_overflow() {
-        assert_eq!(
-            Region::new(3, 10, 3).unwrap_err(),
-            RefError::BadAlignment
-        );
+        assert_eq!(Region::new(3, 10, 3).unwrap_err(), RefError::BadAlignment);
         assert_eq!(
             Region::new(usize::MAX - 7, 16, 3).unwrap_err(),
             RefError::Overflow
