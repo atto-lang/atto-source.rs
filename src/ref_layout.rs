@@ -8,6 +8,75 @@ pub enum RefMode {
     Native,
 }
 
+/// Backend-neutral physical representation selected for ordinary managed Ref<T>
+/// values. Native ABI/FFI pointers are not described by this layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagedRefLayout {
+    mode: RefMode,
+    alignment_shift: u8,
+}
+
+impl ManagedRefLayout {
+    pub fn compressed32(alignment_shift: u8) -> Result<Self, RefError> {
+        if alignment_shift > 15 {
+            return Err(RefError::BadAlignment);
+        }
+        Ok(Self {
+            mode: RefMode::Compressed32,
+            alignment_shift,
+        })
+    }
+
+    pub const fn native() -> Self {
+        Self {
+            mode: RefMode::Native,
+            alignment_shift: 0,
+        }
+    }
+
+    pub const fn mode(self) -> RefMode {
+        self.mode
+    }
+
+    pub const fn mode_name(self) -> &'static str {
+        match self.mode {
+            RefMode::Compressed32 => "compressed32",
+            RefMode::Native => "native",
+        }
+    }
+
+    pub const fn alignment_shift(self) -> u8 {
+        self.alignment_shift
+    }
+
+    pub const fn storage_bits(self) -> u32 {
+        match self.mode {
+            RefMode::Compressed32 => 32,
+            RefMode::Native => usize::BITS,
+        }
+    }
+
+    /// Greatest aligned object-start byte offset representable by compressed32.
+    /// Native references are not constrained by this encoding and return None.
+    pub const fn max_object_start_offset_bytes(self) -> Option<u64> {
+        match self.mode {
+            RefMode::Compressed32 => {
+                Some(((u32::MAX as u64) - 1) << self.alignment_shift)
+            }
+            RefMode::Native => None,
+        }
+    }
+}
+
+impl Default for ManagedRefLayout {
+    fn default() -> Self {
+        Self {
+            mode: RefMode::Compressed32,
+            alignment_shift: 3,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutKind {
     Aos,
@@ -149,6 +218,27 @@ impl EntityHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_ref_layout_is_explicit_and_width_independent() {
+        let compressed = ManagedRefLayout::compressed32(3).unwrap();
+        assert_eq!(compressed.mode(), RefMode::Compressed32);
+        assert_eq!(compressed.storage_bits(), 32);
+        assert_eq!(compressed.alignment_shift(), 3);
+        assert_eq!(
+            compressed.max_object_start_offset_bytes(),
+            Some(((u32::MAX as u64) - 1) << 3)
+        );
+
+        let native = ManagedRefLayout::native();
+        assert_eq!(native.mode(), RefMode::Native);
+        assert_eq!(native.storage_bits(), usize::BITS);
+        assert_eq!(native.max_object_start_offset_bytes(), None);
+        assert_eq!(
+            ManagedRefLayout::compressed32(16),
+            Err(RefError::BadAlignment)
+        );
+    }
 
     #[test]
     fn null_and_first_object() {
