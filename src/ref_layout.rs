@@ -60,9 +60,7 @@ impl ManagedRefLayout {
     /// Native references are not constrained by this encoding and return None.
     pub const fn max_object_start_offset_bytes(self) -> Option<u64> {
         match self.mode {
-            RefMode::Compressed32 => {
-                Some(((u32::MAX as u64) - 1) << self.alignment_shift)
-            }
+            RefMode::Compressed32 => Some(((u32::MAX as u64) - 1) << self.alignment_shift),
             RefMode::Native => None,
         }
     }
