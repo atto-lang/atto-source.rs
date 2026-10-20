@@ -236,7 +236,7 @@ mod tests {
         let ast = crate::frontend::parse("pub fnc f(): int { return 2; }").unwrap();
         let mut module = crate::mir::lower(ast).unwrap();
         for _ in 0..MAX_NODES_PER_FUNCTION {
-            let old = module.functions[0].return_value.clone();
+            let old = std::mem::replace(&mut module.functions[0].return_value, Expr::Integer(0));
             module.functions[0].return_value = Expr::Negate(Box::new(old));
         }
         assert!(export_cfg_v2(&module, Some(10000)).is_err());
