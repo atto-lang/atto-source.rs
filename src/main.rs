@@ -19,6 +19,9 @@ fn main() -> ExitCode {
     })();
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => { eprintln!("oresc: {error}"); ExitCode::from(1) }
+        Err(error) => {
+            eprintln!("oresc: {error}");
+            ExitCode::from(1)
+        }
     }
 }

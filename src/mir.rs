@@ -24,9 +24,14 @@ pub(crate) fn validate_expr(root: &Expr) -> Result<(), String> {
     Ok(())
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Module { pub functions: Vec<Function> }
+pub struct Module {
+    pub functions: Vec<Function>,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Function { pub symbol: String, pub return_value: Expr }
+pub struct Function {
+    pub symbol: String,
+    pub return_value: Expr,
+}
 
 pub fn lower(program: Program) -> Result<Module, String> {
     if program.functions.len() > 1024 {
@@ -42,7 +47,10 @@ pub fn lower(program: Program) -> Result<Module, String> {
         if function.name == "main" {
             return Err("native main ABI not yet defined: export a named function".into());
         }
-        functions.push(Function { symbol: function.name, return_value: function.expression });
+        functions.push(Function {
+            symbol: function.name,
+            return_value: function.expression,
+        });
     }
     Ok(Module { functions })
 }
@@ -58,8 +66,9 @@ mod tests {
     #[test]
     fn duplicate_symbol_rejected() {
         let p = crate::frontend::parse(
-            "static fnc answer() as return 1; end static fnc answer() as return 2; end"
-        ).unwrap();
+            "static fnc answer() as return 1; end static fnc answer() as return 2; end",
+        )
+        .unwrap();
         assert!(lower(p).is_err());
     }
 }
