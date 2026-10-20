@@ -3,8 +3,52 @@ use crate::frontend::{Expr, Program};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutScope {
+    Core,
+    Stdlib,
+    Runtime,
+    Userland,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicalLayout {
+    Aos,
+    Soa,
+    Aosoa,
+    SparseSet,
+    Archetype,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutRegion {
+    pub name: String,
+    pub scope: LayoutScope,
+    pub layout: PhysicalLayout,
+    pub rows: Option<u64>,
+    pub field_bytes: Vec<u32>,
+    pub accessed_fields: Vec<u32>,
+    pub dense_iteration: bool,
+    pub sequential_rows: bool,
+    pub hot: bool,
+    pub relocation_verified: bool,
+    pub stable_address_required: bool,
+    pub whole_record_access: bool,
+    pub iteration_independent: bool,
+    pub sparse_membership: bool,
+    pub independent_component_passes: bool,
+    pub concurrent_mutable_sharing: bool,
+}
+
 #[derive(Clone, Debug)]
-pub struct Module { pub functions: Vec<Function> }
+pub struct Module {
+    pub functions: Vec<Function>,
+    /// True only when every layout-bearing MIR region is represented below.
+    /// The currently admitted scalar subset has no such regions, so lowering
+    /// can prove this with an empty list.
+    pub layout_evidence_complete: bool,
+    pub layout_regions: Vec<LayoutRegion>,
+}
 #[derive(Clone, Debug)]
 pub struct Function {
     pub symbol: String,
@@ -85,7 +129,11 @@ pub fn lower(program: Program) -> Result<Module, SemanticError> {
             return_value: function.expression,
         });
     }
-    Ok(Module { functions })
+    Ok(Module {
+        functions,
+        layout_evidence_complete: true,
+        layout_regions: Vec::new(),
+    })
 }
 #[cfg(test)]
 mod tests {
