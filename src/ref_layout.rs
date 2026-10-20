@@ -61,7 +61,7 @@ impl Region {
             return Err(RefError::BadAlignment);
         }
         let align = 1usize << shift;
-        if base % align != 0 {
+        if !base.is_multiple_of(align) {
             return Err(RefError::BadAlignment);
         }
         base.checked_add(byte_len).ok_or(RefError::Overflow)?;
@@ -74,7 +74,7 @@ impl Region {
 
     pub fn encode_offset(self, offset: usize) -> Result<CompressedRef, RefError> {
         let align = 1usize << self.shift;
-        if offset % align != 0 {
+        if !offset.is_multiple_of(align) {
             return Err(RefError::BadAlignment);
         }
         if offset >= self.byte_len {
