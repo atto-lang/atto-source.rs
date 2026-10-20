@@ -50,3 +50,9 @@ jobs:
           cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
           cc target/answer.o examples/driver.c -o target/answer
           ./target/answer
+      - name: Verify CFG-v2 exporter preserves scalar and unresolved calls
+        run: |
+          cargo run --locked --bin oresc -- --cfg-ir examples/answer.ores 10 > target/cfg-v2.json
+          cargo run --locked --bin oresc -- --cfg-ir tests/fixtures/forward.ores 10 > target/cfg-v2-call.json
+          python3 -c 'import json; x=json.load(open("target/cfg-v2.json")); assert x["schema_version"]==2 and x["functions"][0]["blocks"][0]["terminator"]["kind"]=="return"'
+          python3 -c 'import json; x=json.load(open("target/cfg-v2-call.json")); assert any(e["kind"]=="call" for e in x["functions"][0]["blocks"][0]["events"])'
