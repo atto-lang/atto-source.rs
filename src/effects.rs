@@ -42,7 +42,15 @@ pub fn export_effect_ir(module: &Module) -> Value {
             json!({"name": func.symbol, "operations": operations})
         })
         .collect();
-    json!({"schema_version": 1, "functions": functions})
+    json!({
+        "schema_version": 1,
+        "target": {
+            "managed_reference_mode": module.managed_refs.mode_name(),
+            "managed_reference_storage_bits": module.managed_refs.storage_bits(),
+            "managed_reference_alignment_shift": module.managed_refs.alignment_shift(),
+        },
+        "functions": functions
+    })
 }
 
 #[cfg(test)]
@@ -56,6 +64,8 @@ mod tests {
         .unwrap();
         let mir = crate::mir::lower(ast).unwrap();
         let ir = export_effect_ir(&mir);
+        assert_eq!(ir["target"]["managed_reference_mode"], "compressed32");
+        assert_eq!(ir["target"]["managed_reference_storage_bits"], 32);
         assert_eq!(ir["functions"][0]["operations"][2]["kind"], "call");
         assert_eq!(ir["functions"][0]["operations"][2]["target"], "add");
     }
