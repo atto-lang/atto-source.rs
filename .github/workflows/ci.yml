@@ -17,7 +17,7 @@ jobs:
       - name: Export closed-world scalar MIR effects
         run: |
           cargo run --locked --bin oresc -- --emit-effect-ir examples/answer.ores target/answer-effect-ir.json
-          python3 -c 'import json; p=json.load(open("target/answer-effect-ir.json")); assert p["schema_version"] == 1; assert [f["name"] for f in p["functions"]] == ["answer"]; assert all(f["operations"] == [] for f in p["functions"])'
+          python3 -c 'from pathlib import Path; import json, hashlib; actual=Path("target/answer-effect-ir.json").read_text(); expected=Path("examples/scalar-effect-ir-v1.json").read_text().strip(); assert actual == expected, "scalar compiler golden fixture mismatch"; assert hashlib.sha256(actual.encode()).hexdigest() == "8ee1adbf6faef704c1eb6d2b2075c3b2d723097037f646f9e6e518a69d005463"; p=json.loads(actual); assert [f["name"] for f in p["functions"]] == ["answer"]; assert len(p["functions"][0]["operations"]) == 3'
       - name: Compile, link and execute native object
         run: |
           cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
