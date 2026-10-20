@@ -14,6 +14,37 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --all-targets
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Canonical JVM/LLVM scalar fixture execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in add:42 precedence:40 forward:42 underscores:42 unary:42 owned-identifier:42 nested-comments:42; do
+            name="${pair%%:*}"
+            expected="${pair##*:}"
+            cargo run --locked --bin oresc -- "tests/fixtures/${name}.ores" "target/${name}.o"
+            cc "target/${name}.o" -o "target/${name}"
+            set +e
+            "target/${name}"
+            actual=$?
+            set -e
+            test "$actual" -eq "$expected" || { echo "$name: wanted $expected, got $actual"; exit 1; }
+          done
+      - name: Canonical semantic error classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in unknown:unknown_name arity:call_arity duplicate:duplicate_declaration overflow:integer_overflow comment:unterminated_comment; do
+            name="${pair%%:*}"
+            expected="${pair##*:}"
+            if cargo run --locked --bin oresc -- --check "tests/fixtures/${name}.ores" >target/diagnostic.out 2>&1; then
+              echo "Expected rejection for $name"; exit 1
+            fi
+            grep -F "$expected" target/diagnostic.out
+          done
+      - name: Validate compiler emitted effect IR
+        run: |
+          cargo run --locked --bin oresc -- --effects tests/fixtures/forward.ores > target/effects.json
+          python3 -c 'import json; d=json.load(open("target/effects.json")); assert d["schema_version"] == 1; assert any(x["kind"]=="call" and x["target"]=="times" for x in d["functions"][0]["operations"])'
       - name: Compile, link and execute native object
         run: |
           cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
