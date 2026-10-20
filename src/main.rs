@@ -22,7 +22,7 @@ fn main() -> ExitCode {
             "--check" => println!("OK: {} function(s)", checked.functions.len()),
             "cfg" => println!(
                 "{}",
-                serde_json::to_string_pretty(&cfg::export_cfg_v2(&checked, budget)?))
+                serde_json::to_string_pretty(&cfg::export_cfg_v2(&checked, budget)?)
                     .map_err(|e| e.to_string())?
             ),
             "--effects" => println!(
