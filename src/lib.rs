@@ -16,7 +16,9 @@ mod tests {
     use super::*;
     #[test]
     fn compiles_real_native_object() {
-        let result = compile("pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }");
+        let result = compile(
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }",
+        );
         assert!(result.is_ok(), "{result:?}");
         let object = result.unwrap();
         #[cfg(target_os = "linux")]
