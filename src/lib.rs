@@ -1,6 +1,7 @@
 //! Independent Rust Oreslang frontend, MIR and Cranelift backend.
 pub mod codegen;
 pub mod frontend;
+pub mod effect_ir;
 pub mod mir;
 
 /// Compile supported source text to the host machine's relocatable object bytes.
