@@ -28,7 +28,7 @@ fn failure(class: &'static str, message: impl Into<String>) -> SemanticError {
     SemanticError { class, message: message.into() }
 }
 /// Preflight the shape of checked or externally supplied MIR without recursion.
-pub(crate) fn validate_shape(expr: &Expr) -> Result<(), String> {
+pub(crate) fn validate_shape(expr: &Expr) -> Result<usize, String> {
     let mut pending = vec![(expr, 1usize)];
     let mut visited = 0usize;
     while let Some((node, depth)) = pending.pop() {
@@ -48,7 +48,7 @@ pub(crate) fn validate_shape(expr: &Expr) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    Ok(visited)
 }
 fn validate_expr(
     expr: &Expr, variables: &HashSet<String>, signatures: &HashMap<String, usize>,
@@ -81,14 +81,22 @@ pub fn lower(program: Program) -> Result<Module, SemanticError> {
         return Err(failure("resource_budget", "function count outside supported bound"));
     }
     let mut signatures = HashMap::new();
+    let mut total_nodes = 0usize;
     for function in &program.functions {
         if function.params.len() > 256 || function.locals.len() > 1024 {
             return Err(failure("resource_budget", "function parameters/locals exceed budget"));
         }
-        validate_shape(&function.expression)
-            .map_err(|e| failure("resource_budget", e))?;
+        total_nodes = total_nodes.saturating_add(validate_shape(&function.expression)
+            .map_err(|e| failure("resource_budget", e))?);
         for local in &function.locals {
-            validate_shape(&local.value).map_err(|e| failure("resource_budget", e))?;
+            total_nodes = total_nodes.saturating_add(validate_shape(&local.value)
+                .map_err(|e| failure("resource_budget", e))?);
+            if total_nodes > 65_536 {
+                return Err(failure("resource_budget", "module-wide MIR node budget exceeded"));
+            }
+        }
+        if total_nodes > 65_536 {
+            return Err(failure("resource_budget", "module-wide MIR node budget exceeded"));
         }
         if signatures.insert(function.name.clone(), function.params.len()).is_some() {
             return Err(failure("duplicate_declaration", format!("duplicate function '{}'", function.name)));
@@ -128,6 +136,7 @@ pub fn validate_module(module: &Module) -> Result<(), String> {
         return Err("MIR function budget exceeded".into());
     }
     let mut signatures = HashMap::new();
+    let mut total_nodes = 0usize;
     for function in &module.functions {
         let symbol = function.symbol.as_bytes();
         if symbol.is_empty() || symbol.len() > 256 ||
@@ -148,13 +157,15 @@ pub fn validate_module(module: &Module) -> Result<(), String> {
             }
         }
         for (name, expression) in &function.locals {
-            validate_shape(expression)?;
+            total_nodes = total_nodes.saturating_add(validate_shape(expression)?);
+            if total_nodes > 65_536 { return Err("module-wide MIR node budget exceeded".into()); }
             validate_expr(expression, &known, &signatures).map_err(|e| e.to_string())?;
             if !known.insert(name.clone()) {
                 return Err("duplicate MIR local".into());
             }
         }
-        validate_shape(&function.return_value)?;
+        total_nodes = total_nodes.saturating_add(validate_shape(&function.return_value)?);
+        if total_nodes > 65_536 { return Err("module-wide MIR node budget exceeded".into()); }
         validate_expr(&function.return_value, &known, &signatures)
             .map_err(|e| e.to_string())?;
     }
@@ -170,6 +181,15 @@ mod tests {
     fn rejects_left_deep_arithmetic_before_recursive_lowering() {
         let src = format!("fnc f(): int {{ return 1{}; }}", "+1".repeat(200));
         assert_eq!(check(&src).unwrap_err().class, "resource_budget");
+    }
+    #[test]
+    fn rejects_aggregate_mir_complexity_even_when_each_expression_is_tiny() {
+        let functions = (0..80).map(|i| Function {
+            symbol: format!("f{i}"), exported: false, params: vec![],
+            locals: (0..900).map(|j| (format!("n{j}"), Expr::Integer(1))).collect(),
+            return_value: Expr::Integer(1),
+        }).collect();
+        assert!(validate_module(&Module { functions }).is_err());
     }
     #[test]
     fn duplicate_function_rejected() {
