@@ -56,3 +56,10 @@ jobs:
           cargo run --locked --bin oresc -- --cfg-ir tests/fixtures/forward.ores 10 > target/cfg-v2-call.json
           python3 -c 'import json; x=json.load(open("target/cfg-v2.json")); assert x["schema_version"]==2 and x["functions"][0]["blocks"][0]["terminator"]["kind"]=="return"'
           python3 -c 'import json; x=json.load(open("target/cfg-v2-call.json")); assert any(e["kind"]=="call" for e in x["functions"][0]["blocks"][0]["events"])'
+      - name: Reject excessive source bytes before unbounded allocation
+        run: |
+          python3 -c 'from pathlib import Path; Path("target/oversized.ores").write_bytes(b"x" * 1048578)'
+          if cargo run --locked --bin oresc -- --cfg-ir target/oversized.ores 16 >target/oversized.out 2>target/oversized.err; then
+            echo "Oversized input unexpectedly accepted"; exit 1
+          fi
+          grep -Fq 'source too large' target/oversized.err
