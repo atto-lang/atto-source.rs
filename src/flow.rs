@@ -20,10 +20,14 @@ fn emit_expr(expr: &Expr, events: &mut Vec<Value>) -> Result<(), String> {
             emit_expr(b, events)?;
             events.push(json!({"kind":"compute","units":1}));
         }
-        Expr::Call { name, .. } => {
-            return Err(format!(
-                "unsupported CFG interprocedural effect summary: {name}"
-            ));
+        Expr::Call { name, args } => {
+            // MIR has already resolved the target and checked its scalar arity.
+            // The independent analyzer must still verify the transitive callee
+            // effects, bounded work and recursion before admission.
+            for arg in args {
+                emit_expr(arg, events)?;
+            }
+            events.push(json!({"kind":"call","target":name}));
         }
     }
     Ok(())
@@ -32,7 +36,8 @@ fn emit_expr(expr: &Expr, events: &mut Vec<Value>) -> Result<(), String> {
 /// Emit the analyzer's CFG-envelope v1, with a caller-specified budget in
 /// abstract operations (NOT real time, nanoseconds, scheduler ticks or WCET).
 ///
-/// This producer deliberately refuses calls and all expressions outside the
+/// This producer represents statically resolved scalar calls, but the verifier
+/// must prove each transitive callee before admission. It refuses expressions outside the
 /// currently statically checked scalar AST. It does not infer actor safety from
 /// Cranelift code or attest that future syntax is modeled.
 pub fn export_scalar_flow(module: &Module, max_uninterrupted_units: u64) -> Result<Value, String> {
@@ -89,11 +94,15 @@ mod tests {
         assert_eq!(result["effects_complete"], true);
     }
     #[test]
-    fn refuses_calls_until_interprocedural_summaries_exist() {
+    fn exports_checked_forward_scalar_calls_for_analyzer_to_verify() {
         let module = lower(
             "pub fnc main(): int { return add(40,2); } fnc add(int a,int b): int { return a+b; }",
         );
-        assert!(export_scalar_flow(&module, 50).unwrap_err().contains("add"));
+        let ir = export_scalar_flow(&module, 6).unwrap();
+        let ops = &ir["functions"][0]["blocks"][0]["ops"];
+        assert_eq!(ops[0], json!({"kind":"compute","units":1}));
+        assert_eq!(ops[1], json!({"kind":"compute","units":1}));
+        assert_eq!(ops[2], json!({"kind":"call","target":"add"}));
     }
     #[test]
     fn exported_cfg_has_explicit_return() {
