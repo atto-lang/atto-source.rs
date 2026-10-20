@@ -50,3 +50,28 @@ checkout or secrets.
 A JSON file can be forged; a future protected compiler build must bind the
 effect artifact to the exact source Git blob/tree, compiler image digest,
 target triple, verified dependency closure and target-specific proof evidence.
+
+### Reproduce the end-to-end two-repository check
+
+With both private repositories checked out locally and Cargo installed:
+
+```bash
+python3 scripts/verify_scalar_effect_bridge.py \
+  --analyzer-dir ../oreslang-static-analysis.rs
+```
+
+The script compiles the exact pinned `answer.ores`, produces v1 effect IR,
+runs the Rust analyzer with `hard` profile, checks modeled units and the
+explicit model-only assurance level, then runs mutation/negative controls
+for unresolved calls, missing cost fields and zero-cost compute operations.
+It does not fetch any repository or require a cross-repository GitHub token.
+
+To check pinned source/IR fixture SHA-256 without Cargo:
+
+```bash
+python3 scripts/verify_scalar_effect_bridge.py --fixture-only
+```
+
+Both commands are **verification procedures**, not evidence of success
+until they execute against the named Git commits. The CI runner for these
+private repos currently fails before starting job steps.
