@@ -17,7 +17,10 @@ jobs:
       - name: Export closed-world scalar MIR effects
         run: |
           python3 -c 'import hashlib; from pathlib import Path; src=Path("examples/answer.ores").read_bytes(); assert hashlib.sha256(src).hexdigest()=="e35a1c32239212a8ce3a496e8381c956bd4292b6db6bac97dfa4a6830e0b1133", "golden source drift"'
-          cargo run --locked --bin oresc -- --emit-effect-ir examples/answer.ores target/answer-effect-ir.json
+          cargo run --locked --bin oresc -- --compile-with-effects examples/answer.ores target/paired-answer.o target/answer-effect-ir.json
+          cc target/paired-answer.o examples/driver.c -o target/paired-answer
+          ./target/paired-answer
+          python3 scripts/verify_scalar_effect_bridge.py --fixture-only
           python3 -c 'from pathlib import Path; import json, hashlib; actual=Path("target/answer-effect-ir.json").read_text(); expected=Path("examples/scalar-effect-ir-v1.json").read_text().strip(); assert actual == expected, "scalar compiler golden fixture mismatch"; assert hashlib.sha256(actual.encode()).hexdigest() == "8ee1adbf6faef704c1eb6d2b2075c3b2d723097037f646f9e6e518a69d005463"; p=json.loads(actual); assert [f["name"] for f in p["functions"]] == ["answer"]; assert len(p["functions"][0]["operations"]) == 3'
       - name: Compile, link and execute native object
         run: |
