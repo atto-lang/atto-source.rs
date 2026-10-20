@@ -2,6 +2,9 @@
 //! No implicit support for actors, async, heap ownership, or polymorphic calls.
 use logos::Logos;
 use std::fmt;
+pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+const MAX_TOKENS: usize = 4096;
+const MAX_PRIMARY_NESTING: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
@@ -118,6 +121,12 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
     })
 }
 pub fn parse(source: &str) -> Result<Program, ParseError> {
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err(ParseError {
+            offset: MAX_SOURCE_BYTES, class: "resource_budget",
+            message: "source exceeds 1 MiB limit".into(),
+        });
+    }
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
     for (kind, range) in Kind::lexer(&prepared).spanned() {
@@ -126,13 +135,19 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             class: "syntax_error",
             message: "unsupported token".into(),
         })?;
+        if tokens.len() >= MAX_TOKENS {
+            return Err(ParseError {
+                offset: range.start, class: "resource_budget",
+                message: "lexer token budget exceeded".into(),
+            });
+        }
         tokens.push(Token {
             kind,
             text: prepared[range.clone()].to_owned(),
             start: range.start,
         });
     }
-    let mut parser = Parser { tokens, cursor: 0, source_len: source.len() };
+    let mut parser = Parser { tokens, cursor: 0, source_len: source.len(), nesting_depth: 0 };
     let mut functions = Vec::new();
     while parser.peek().is_some() { functions.push(parser.function()?); }
     if functions.is_empty() {
@@ -146,6 +161,7 @@ struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     source_len: usize,
+    nesting_depth: usize,
 }
 impl Parser {
     fn peek(&self) -> Option<Kind> { self.tokens.get(self.cursor).map(|t| t.kind) }
@@ -236,6 +252,20 @@ impl Parser {
         Ok(lhs)
     }
     fn primary(&mut self) -> Result<Expr, ParseError> {
+        // Nested unary, parenthesized and call expressions are recursive;
+        // refuse deeply nested input *before* consuming the Rust call stack.
+        if self.nesting_depth >= MAX_PRIMARY_NESTING {
+            return Err(ParseError {
+                offset: self.pos(), class: "resource_budget",
+                message: "expression nesting budget exceeded".into(),
+            });
+        }
+        self.nesting_depth += 1;
+        let result = self.primary_inner();
+        self.nesting_depth -= 1;
+        result
+    }
+    fn primary_inner(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
@@ -328,6 +358,22 @@ mod tests {
     fn const_locals() {
         let ast = parse("fnc owned(int owned): int { const local: int = owned; return local; }").unwrap();
         assert_eq!(ast.functions[0].locals.len(), 1);
+    }
+    #[test]
+    fn deeply_nested_unary_parentheses_and_calls_fail_closed() {
+        let source = format!("fnc f(): int {{ return {}1{}; }}",
+            "(".repeat(MAX_PRIMARY_NESTING + 4),
+            ")".repeat(MAX_PRIMARY_NESTING + 4));
+        assert_eq!(parse(&source).unwrap_err().class, "resource_budget");
+        let unary = format!("fnc f(): int {{ return {}1; }}",
+            "-".repeat(MAX_PRIMARY_NESTING + 4));
+        assert_eq!(parse(&unary).unwrap_err().class, "resource_budget");
+    }
+    #[test]
+    fn excessive_lexical_tokens_fail_closed() {
+        let source = format!("fnc f(): int {{ return 1{}; }}",
+            "+1".repeat(MAX_TOKENS));
+        assert_eq!(parse(&source).unwrap_err().class, "resource_budget");
     }
     #[test]
     fn ignores_double_slash_comment() {
