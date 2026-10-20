@@ -9,8 +9,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt,clippy
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --all-targets
       - run: cargo clippy --locked --all-targets -- -D warnings
@@ -50,9 +54,22 @@ jobs:
           cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
           cc target/answer.o examples/driver.c -o target/answer
           ./target/answer
+      - name: Verify CFG-v2 exporter preserves scalar and unresolved calls
+        run: |
+          cargo run --locked --bin oresc -- --cfg-ir examples/answer.ores 10 > target/cfg-v2.json
+          cargo run --locked --bin oresc -- --cfg-ir tests/fixtures/forward.ores 10 > target/cfg-v2-call.json
+          python3 -c 'import json; x=json.load(open("target/cfg-v2.json")); assert x["schema_version"]==2 and x["functions"][0]["blocks"][0]["terminator"]["kind"]=="return"'
+          python3 -c 'import json; x=json.load(open("target/cfg-v2-call.json")); assert any(e["kind"]=="call" for e in x["functions"][0]["blocks"][0]["events"])'
       - name: Verify safety MIR exporter and fail-closed call edges
         run: |
           cargo run --locked --bin oresc -- --safety-ir examples/answer.ores 16 > target/safety.json
           cargo run --locked --bin oresc -- --safety-ir tests/fixtures/forward.ores 16 > target/safety-calls.json
           python3 -c 'import json; p=json.load(open("target/safety.json")); assert p["effects_complete"] and p["functions"][0]["control_flow"] == "linear"; assert p["functions"][0]["max_uninterrupted_units"] == 16'
           python3 -c 'import json; p=json.load(open("target/safety-calls.json")); assert any(e["kind"]=="call" for e in p["functions"][0]["events"])'
+      - name: Reject excessive source bytes before unbounded allocation
+        run: |
+          python3 -c 'from pathlib import Path; Path("target/oversized.ores").write_bytes(b"x" * 1048578)'
+          if cargo run --locked --bin oresc -- --cfg-ir target/oversized.ores 16 >target/oversized.out 2>target/oversized.err; then
+            echo "Oversized input unexpectedly accepted"; exit 1
+          fi
+          grep -Fq 'source too large' target/oversized.err
