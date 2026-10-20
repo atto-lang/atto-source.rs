@@ -117,15 +117,50 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
         message: "comment preprocessing failed".into(),
     })
 }
+pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
+pub const MAX_TOKENS: usize = 2048;
+pub const MAX_PAREN_NESTING: usize = 64;
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err(ParseError {
+            offset: MAX_SOURCE_BYTES,
+            class: "resource_limit",
+            message: "Oreslang source exceeds 256 KiB prototype limit".into(),
+        });
+    }
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
+    let mut paren_depth = 0_usize;
     for (kind, range) in Kind::lexer(&prepared).spanned() {
         let kind = kind.map_err(|_| ParseError {
             offset: range.start,
             class: "syntax_error",
             message: "unsupported token".into(),
         })?;
+        if tokens.len() >= MAX_TOKENS {
+            return Err(ParseError {
+                offset: range.start,
+                class: "resource_limit",
+                message: "token count exceeds prototype limit".into(),
+            });
+        }
+        match kind {
+            Kind::LParen => {
+                paren_depth += 1;
+                if paren_depth > MAX_PAREN_NESTING {
+                    return Err(ParseError {
+                        offset: range.start,
+                        class: "resource_limit",
+                        message: "parenthesis depth exceeds prototype limit".into(),
+                    });
+                }
+            }
+            Kind::RParen => {
+                paren_depth = paren_depth.saturating_sub(1);
+            }
+            _ => {}
+        }
         tokens.push(Token {
             kind,
             text: prepared[range.clone()].to_owned(),
@@ -297,6 +332,27 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_excessive_parenthesis_nesting_before_recursive_descent() {
+        let expression = format!("{}1{}", "(".repeat(MAX_PAREN_NESTING + 1),
+            ")".repeat(MAX_PAREN_NESTING + 1));
+        let src = format!("fnc f(): int {{ return {expression}; }}");
+        assert_eq!(parse(&src).unwrap_err().class, "resource_limit");
+    }
+
+    #[test]
+    fn rejects_excessive_tokens_before_deep_ast_construction() {
+        let expression = "1+".repeat(MAX_TOKENS) + "1";
+        let src = format!("fnc f(): int {{ return {expression}; }}");
+        assert_eq!(parse(&src).unwrap_err().class, "resource_limit");
+    }
+
+    #[test]
+    fn rejects_oversized_source_before_preprocessing_comments() {
+        let src = " ".repeat(MAX_SOURCE_BYTES + 1);
+        assert_eq!(parse(&src).unwrap_err().class, "resource_limit");
+    }
+
     #[test]
     fn canonical_function_call_and_underscore() {
         let ast = parse("pub fnc main(): int { return add(4_0, 2); }\nfnc add(int a, int b): int { return a+b; }").unwrap();
