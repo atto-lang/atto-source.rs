@@ -5,14 +5,14 @@ fn main() -> ExitCode {
     let args: Vec<_> = env::args().collect();
     let result: Result<(), String> = (|| {
         let (mode, input, output, budget) = match args.as_slice() {
-            [_, flag, input] if flag == "--check" || flag == "--effects" =>
+            [_, flag, input] if flag == "--check" || flag == "--effects" || flag == "--static-facts" =>
                 (flag.as_str(), input.as_str(), None, None),
             [_, flag, input] if flag == "--cfg-ir" =>
                 ("cfg", input.as_str(), None, None),
             [_, flag, input, units] if flag == "--cfg-ir" =>
                 ("cfg", input.as_str(), None, Some(units.parse::<u64>().map_err(|_| "invalid abstract compute budget")?)),
             [_, input, output] => ("object", input.as_str(), Some(output.as_str()), None),
-            _ => return Err("usage: oresc --check <source.ores> | --effects <source.ores> | --cfg-ir <source.ores> [abstract-budget] | <source.ores> <out.o>".into()),
+            _ => return Err("usage: oresc --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | <source.ores> <out.o>".into()),
         };
         let mut source = String::new();
         fs::File::open(input)
@@ -35,6 +35,11 @@ fn main() -> ExitCode {
             "--effects" => println!(
                 "{}",
                 serde_json::to_string_pretty(&effects::export_effect_ir(&checked))
+                    .map_err(|e| e.to_string())?
+            ),
+            "--static-facts" => println!(
+                "{}",
+                serde_json::to_string(&oreslang_source_rs::static_facts::export(&checked, &source)?)
                     .map_err(|e| e.to_string())?
             ),
             _ => {
