@@ -13,6 +13,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --all-targets
+      - name: Export scalar CFG contract
+        run: |
+          cargo run --locked --bin oresc -- --flow 6 tests/fixtures/flow-scalar.ores > target/flow.json
+          python3 -c 'import json; a=json.load(open("target/flow.json")); b=json.load(open("tests/fixtures/flow-scalar.json")); assert a == b' 
       - run: cargo clippy --locked --all-targets -- -D warnings
       - name: Canonical JVM/LLVM scalar fixture execution
         shell: bash
