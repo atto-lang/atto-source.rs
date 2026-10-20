@@ -45,6 +45,10 @@ jobs:
         run: |
           cargo run --locked --bin oresc -- --effects tests/fixtures/forward.ores > target/effects.json
           python3 -c 'import json; d=json.load(open("target/effects.json")); assert d["schema_version"] == 1; assert any(x["kind"]=="call" and x["target"]=="times" for x in d["functions"][0]["operations"])'
+      - name: Compare emitter against shared analyzer v1 scalar golden
+        run: |
+          cargo run --locked --bin oresc -- --effects examples/answer.ores > target/answer-effects.json
+          python3 -c 'import json; actual=json.load(open("target/answer-effects.json")); expected=json.load(open("tests/fixtures/scalar-effect-ir-v1.json")); assert actual == expected, (actual, expected)'
       - name: Reject adversarial forged effect graphs and deep syntax
         run: |
           cargo test --locked invalid_external_module_cannot_forge_a_pure_call_graph
