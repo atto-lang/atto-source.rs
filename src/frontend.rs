@@ -38,35 +38,61 @@ pub struct ParseError {
 }
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} at byte {}: {}", self.class, self.offset, self.message)
+        write!(
+            f,
+            "{} at byte {}: {}",
+            self.class, self.offset, self.message
+        )
     }
 }
 impl std::error::Error for ParseError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Logos)]
 enum Kind {
-    #[token("pub")] Pub,
-    #[token("static")] Static,
-    #[token("fnc")] Fnc,
-    #[token("return")] Return,
-    #[token("const")] Const,
-    #[token("int")] Int,
-    #[token("as")] As,
-    #[token("end")] End,
-    #[token("->")] Arrow,
-    #[token("(")] LParen,
-    #[token(")")] RParen,
-    #[token("{")] LBrace,
-    #[token("}")] RBrace,
-    #[token(";")] Semicolon,
-    #[token(":")] Colon,
-    #[token("=")] Equals,
-    #[token(",")] Comma,
-    #[token("+")] Plus,
-    #[token("-")] Minus,
-    #[token("*")] Star,
-    #[regex(r"[0-9][0-9_]*")] Number,
-    #[regex(r"[A-Za-z_][A-Za-z0-9_]*")] Identifier,
+    #[token("pub")]
+    Pub,
+    #[token("static")]
+    Static,
+    #[token("fnc")]
+    Fnc,
+    #[token("return")]
+    Return,
+    #[token("const")]
+    Const,
+    #[token("int")]
+    Int,
+    #[token("as")]
+    As,
+    #[token("end")]
+    End,
+    #[token("->")]
+    Arrow,
+    #[token("(")]
+    LParen,
+    #[token(")")]
+    RParen,
+    #[token("{")]
+    LBrace,
+    #[token("}")]
+    RBrace,
+    #[token(";")]
+    Semicolon,
+    #[token(":")]
+    Colon,
+    #[token("=")]
+    Equals,
+    #[token(",")]
+    Comma,
+    #[token("+")]
+    Plus,
+    #[token("-")]
+    Minus,
+    #[token("*")]
+    Star,
+    #[regex(r"[0-9][0-9_]*")]
+    Number,
+    #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
+    Identifier,
     #[regex(r"[ \t\n\r\f]+", logos::skip)]
     #[regex(r"//[^\n]*", logos::skip, allow_greedy = true)]
     Whitespace,
@@ -87,7 +113,9 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
     let mut open = 0_usize;
     while i < src.len() {
         if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
-            if depth == 0 { open = i; }
+            if depth == 0 {
+                open = i;
+            }
             depth += 1;
             bytes[i] = b' ';
             bytes[i + 1] = b' ';
@@ -167,12 +195,20 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             start: range.start,
         });
     }
-    let mut parser = Parser { tokens, cursor: 0, source_len: source.len() };
+    let mut parser = Parser {
+        tokens,
+        cursor: 0,
+        source_len: source.len(),
+    };
     let mut functions = Vec::new();
-    while parser.peek().is_some() { functions.push(parser.function()?); }
+    while parser.peek().is_some() {
+        functions.push(parser.function()?);
+    }
     if functions.is_empty() {
         return Err(ParseError {
-            offset: 0, class: "syntax_error", message: "expected a function declaration".into()
+            offset: 0,
+            class: "syntax_error",
+            message: "expected a function declaration".into(),
         });
     }
     Ok(Program { functions })
@@ -183,12 +219,19 @@ struct Parser {
     source_len: usize,
 }
 impl Parser {
-    fn peek(&self) -> Option<Kind> { self.tokens.get(self.cursor).map(|t| t.kind) }
-    fn pos(&self) -> usize { self.tokens.get(self.cursor).map_or(self.source_len, |t| t.start) }
+    fn peek(&self) -> Option<Kind> {
+        self.tokens.get(self.cursor).map(|t| t.kind)
+    }
+    fn pos(&self) -> usize {
+        self.tokens
+            .get(self.cursor)
+            .map_or(self.source_len, |t| t.start)
+    }
     fn expect(&mut self, kind: Kind) -> Result<Token, ParseError> {
         if self.peek() != Some(kind) {
             return Err(ParseError {
-                offset: self.pos(), class: "syntax_error",
+                offset: self.pos(),
+                class: "syntax_error",
                 message: format!("expected {:?}, got {:?}", kind, self.peek()),
             });
         }
@@ -198,8 +241,12 @@ impl Parser {
     }
     fn function(&mut self) -> Result<Function, ParseError> {
         let exported = self.peek() == Some(Kind::Pub);
-        if exported { self.expect(Kind::Pub)?; }
-        if self.peek() == Some(Kind::Static) { self.expect(Kind::Static)?; }
+        if exported {
+            self.expect(Kind::Pub)?;
+        }
+        if self.peek() == Some(Kind::Static) {
+            self.expect(Kind::Static)?;
+        }
         self.expect(Kind::Fnc)?;
         let name = self.expect(Kind::Identifier)?.text;
         self.expect(Kind::LParen)?;
@@ -208,24 +255,36 @@ impl Parser {
             loop {
                 self.expect(Kind::Int)?;
                 params.push(self.expect(Kind::Identifier)?.text);
-                if self.peek() == Some(Kind::Comma) { self.expect(Kind::Comma)?; }
-                else { break; }
+                if self.peek() == Some(Kind::Comma) {
+                    self.expect(Kind::Comma)?;
+                } else {
+                    break;
+                }
             }
         }
         self.expect(Kind::RParen)?;
         let uses_end = match self.peek() {
             Some(Kind::Arrow) | Some(Kind::Colon) => {
-                if self.peek() == Some(Kind::Arrow) { self.expect(Kind::Arrow)?; }
-                else { self.expect(Kind::Colon)?; }
+                if self.peek() == Some(Kind::Arrow) {
+                    self.expect(Kind::Arrow)?;
+                } else {
+                    self.expect(Kind::Colon)?;
+                }
                 self.expect(Kind::Int)?;
                 self.expect(Kind::LBrace)?;
                 false
             }
-            Some(Kind::As) => { self.expect(Kind::As)?; true }
-            _ => return Err(ParseError {
-                offset: self.pos(), class: "syntax_error",
-                message: "expected ': int {', '-> int {' or 'as'".into(),
-            }),
+            Some(Kind::As) => {
+                self.expect(Kind::As)?;
+                true
+            }
+            _ => {
+                return Err(ParseError {
+                    offset: self.pos(),
+                    class: "syntax_error",
+                    message: "expected ': int {', '-> int {' or 'as'".into(),
+                })
+            }
         };
         let mut locals = Vec::new();
         while self.peek() == Some(Kind::Const) {
@@ -236,14 +295,26 @@ impl Parser {
             self.expect(Kind::Equals)?;
             let value = self.expression()?;
             self.expect(Kind::Semicolon)?;
-            locals.push(Local { name: local_name, value });
+            locals.push(Local {
+                name: local_name,
+                value,
+            });
         }
         self.expect(Kind::Return)?;
         let expression = self.expression()?;
         self.expect(Kind::Semicolon)?;
-        if uses_end { self.expect(Kind::End)?; }
-        else { self.expect(Kind::RBrace)?; }
-        Ok(Function { name, exported, params, locals, expression })
+        if uses_end {
+            self.expect(Kind::End)?;
+        } else {
+            self.expect(Kind::RBrace)?;
+        }
+        Ok(Function {
+            name,
+            exported,
+            params,
+            locals,
+            expression,
+        })
     }
     fn expression(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.product()?;
@@ -274,22 +345,32 @@ impl Parser {
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
-                let integer = t.text.replace('_', "").parse::<i64>().map_err(|_| ParseError {
-                    offset: t.start, class: "integer_overflow",
-                    message: "i64 integer literal overflow".into(),
-                })?;
+                let integer = t
+                    .text
+                    .replace('_', "")
+                    .parse::<i64>()
+                    .map_err(|_| ParseError {
+                        offset: t.start,
+                        class: "integer_overflow",
+                        message: "i64 integer literal overflow".into(),
+                    })?;
                 Ok(Expr::Integer(integer))
             }
             Some(Kind::Identifier) => {
                 let name = self.expect(Kind::Identifier)?.text;
-                if self.peek() != Some(Kind::LParen) { return Ok(Expr::Name(name)); }
+                if self.peek() != Some(Kind::LParen) {
+                    return Ok(Expr::Name(name));
+                }
                 self.expect(Kind::LParen)?;
                 let mut args = Vec::new();
                 if self.peek() != Some(Kind::RParen) {
                     loop {
                         args.push(self.expression()?);
-                        if self.peek() == Some(Kind::Comma) { self.expect(Kind::Comma)?; }
-                        else { break; }
+                        if self.peek() == Some(Kind::Comma) {
+                            self.expect(Kind::Comma)?;
+                        } else {
+                            break;
+                        }
                     }
                 }
                 self.expect(Kind::RParen)?;
@@ -310,7 +391,8 @@ impl Parser {
                 let expr = self.primary()?;
                 if let Expr::Integer(value) = expr {
                     return value.checked_neg().map(Expr::Integer).ok_or(ParseError {
-                        offset: minus.start, class: "integer_overflow",
+                        offset: minus.start,
+                        class: "integer_overflow",
                         message: "negated literal cannot fit in i64".into(),
                     });
                 }
@@ -323,7 +405,8 @@ impl Parser {
                 Ok(value)
             }
             _ => Err(ParseError {
-                offset: self.pos(), class: "syntax_error",
+                offset: self.pos(),
+                class: "syntax_error",
                 message: "expected integer, name, call, or parenthesized expression".into(),
             }),
         }
@@ -334,8 +417,11 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_excessive_parenthesis_nesting_before_recursive_descent() {
-        let expression = format!("{}1{}", "(".repeat(MAX_PAREN_NESTING + 1),
-            ")".repeat(MAX_PAREN_NESTING + 1));
+        let expression = format!(
+            "{}1{}",
+            "(".repeat(MAX_PAREN_NESTING + 1),
+            ")".repeat(MAX_PAREN_NESTING + 1)
+        );
         let src = format!("fnc f(): int {{ return {expression}; }}");
         assert_eq!(parse(&src).unwrap_err().class, "resource_limit");
     }
@@ -367,7 +453,10 @@ mod tests {
     }
     #[test]
     fn nested_comments_and_minimum() {
-        let ast = parse("/* outer /* inner */ end */ pub fnc main(): int { return -9223372036854775808; }").unwrap();
+        let ast = parse(
+            "/* outer /* inner */ end */ pub fnc main(): int { return -9223372036854775808; }",
+        )
+        .unwrap();
         assert_eq!(ast.functions[0].expression, Expr::Integer(i64::MIN));
     }
     #[test]
@@ -382,7 +471,8 @@ mod tests {
     }
     #[test]
     fn const_locals() {
-        let ast = parse("fnc owned(int owned): int { const local: int = owned; return local; }").unwrap();
+        let ast =
+            parse("fnc owned(int owned): int { const local: int = owned; return local; }").unwrap();
         assert_eq!(ast.functions[0].locals.len(), 1);
     }
     #[test]
