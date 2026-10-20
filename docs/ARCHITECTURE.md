@@ -1,16 +1,18 @@
-# Oreslang Rust Compiler Architecture
+# Rust compiler architecture and verification status
 
-* Tokenizer: Logos (implemented).
-* CST: Rowan 0.17 lossless, immutable green trees (selected, not yet integrated).
-* AST/HIR: own Oreslang semantic types, overloads, pattern matching, names, symbols and actor ownership (small expression AST implemented).
-* Incremental engine: Salsa 0.28 query architecture (selected, not yet integrated).
-* MIR: own backend-agnostic Oreslang IR (initial scalar form implemented). Future MIR must preserve allocations, ownership/borrows, actor arena, zero-copy sharing, critical regions, Task await/suspension, exception edges, scheduler contracts, effect sets, stack bounds and traceability to source.
-* Native backend: Cranelift 0.136 native object emission (implemented). No LLVM/GraalVM.
-* Static analyzer: emit versioned effect IR consumed by oreslang-static-analysis.rs (planned). Analysis should remain useful with every backend.
-* Diagnostics: stable diagnostic codes/spans; eventual Ariadne/SARIF/LSP (planned).
+| Layer | Technology | Status |
+|---|---|---|
+| Lexer | Logos | Working scalar subset |
+| Lossless syntax | Rowan | Selected, not yet integrated |
+| Incremental semantic graph | Salsa | Selected, not yet integrated |
+| AST and semantic validation | Oreslang-specific | Signed i64, direct calls, const bindings, arity/name checks |
+| HIR/MIR | Owned Oreslang abstraction | Scalar shell only (expressions still reuse AST nodes) |
+| Native backend | Cranelift | Host object emission; parameterized functions and forward calls |
+| Effect interchange | JSON schema v1 | Compute and static calls exported for Rust analyzer |
+| Conformance | Shared Java/LLVM fixtures | 7 native and 5 diagnostic fixture classes in CI |
 
-Cranelift IR is too low-level to act as the language-level MIR for ownership, concurrency and real-time effect proofs. Keep an independently specified MIR; validate it before lowering to backend instructions.
+IR **must** eventually record explicit moves/borrows, actor allocation domains, immutable share boundaries, control-flow blocks, Task scopes, cancel/suspend edges, error propagation, real-time effects, stack maps and timing annotations. Cranelift lowers already-checked MIR; it is not the high-level language/ownership model.
 
-Roadmap: (1) this compiling/linking executable test; (2) grammar corpus / Rowan recovery trees; (3) type checking / Salsa; (4) ownership/async/actor MIR with lifecycle and JIT/AOT ABI; (5) runtime and cross-compiler differential tests; (6) self-hosting via Oreslang compiler bootstrapping.
+The scalar exporter accurately covers only syntax admitted by today's Rust frontend; it is not a proof of runtime WCET. The separate Rust analyzer checks declared compute units and call graphs, not actual target CPU cycles. Generic integer operations currently follow emitted native i64 instruction behavior; do not claim overflow conformance beyond explicitly portable fixtures.
 
-Current limitations: named, zero-argument static functions only; one return expression; i64 operations; no userland calls, actors, async, heap or GC, debugger, linker, cross target or full standard library. Integer operations currently use Cranelift i64 arithmetic behavior; the source language's overflow policy must be finalized with conformance fixtures. A successful object emit is not a hard real-time guarantee.
+See \`tests/CONFORMANCE.md\` and \`docs/SELF_HOSTING_ROADMAP.md\`.
