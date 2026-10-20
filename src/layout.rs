@@ -235,6 +235,12 @@ mod tests {
         assert_eq!(ir["evidence_complete"], true);
         assert_eq!(ir["regions"].as_array().unwrap().len(), 0);
         assert!(ir["target"]["vector_bytes"].is_null());
+
+        let golden: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/scalar-layout-ir-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(ir, golden);
     }
 
     #[test]
