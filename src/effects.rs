@@ -88,6 +88,15 @@ pub fn export_effect_ir(module: &Module) -> Value {
 mod tests {
     use super::*;
     #[test]
+    fn checked_forward_effects_match_independent_analyzer_fixture() {
+        let source = include_str!("../tests/fixtures/forward.ores");
+        let expected: Value = serde_json::from_str(
+            include_str!("../tests/fixtures/forward.effects.json")).unwrap();
+        let checked = crate::mir::lower(crate::frontend::parse(source).unwrap()).unwrap();
+        let actual = export_effect_ir_checked(&checked).unwrap();
+        assert_eq!(actual, expected);
+    }
+    #[test]
     fn checked_scalar_effects_have_exact_work_count() {
         let ast = crate::frontend::parse("pub fnc main(): int { return 40+2; }").unwrap();
         let module = crate::mir::lower(ast).unwrap();
