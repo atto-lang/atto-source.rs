@@ -66,8 +66,36 @@ def main():
     require(sibling == golden, "cross-repo golden fixture drift")
     with tempfile.TemporaryDirectory() as scratch:
         effect_path = pathlib.Path(scratch) / "effects.json"
-        run_cargo(ROOT, ["--bin", "oresc", "--", "--emit-effect-ir",
-                         str(source), str(effect_path)], 0)
+        object_path = pathlib.Path(scratch) / "answer.o"
+        run_cargo(ROOT, ["--bin", "oresc", "--", "--compile-with-effects",
+                         str(source), str(object_path), str(effect_path)], 0)
+        require(object_path.exists() and object_path.stat().st_size > 0,
+                "paired build did not emit a native object")
+        # The same invocation that created the effect facts also produced
+        # this executable object; exercise its actual machine behavior.
+        executable = pathlib.Path(scratch) / "answer"
+        compiled = subprocess.run(
+            ["cc", str(object_path), str(ROOT / "examples/driver.c"),
+             "-o", str(executable)], capture_output=True, text=True,
+            check=False, timeout=40,
+        )
+        require(compiled.returncode == 0,
+                "native driver link failed: " + compiled.stderr)
+        executed = subprocess.run(
+            [str(executable)], capture_output=True, text=True,
+            check=False, timeout=20,
+        )
+        require(executed.returncode == 0
+                and executed.stdout.strip() == "Cranelift returned 42",
+                "native driver execution did not produce i64=42")
+        # No output artifact may alias the compiler input or its sibling.
+        original_source_hash = hashlib.sha256(source.read_bytes()).digest()
+        run_cargo(ROOT, ["--bin", "oresc", "--", "--compile-with-effects",
+                         str(source), str(source), str(effect_path)], 1)
+        run_cargo(ROOT, ["--bin", "oresc", "--", "--compile-with-effects",
+                         str(source), str(object_path), str(object_path)], 1)
+        require(hashlib.sha256(source.read_bytes()).digest() == original_source_hash,
+                "rejected output alias clobbered the source")
         actual = effect_path.read_text()
         require(actual == golden, "compiler output differs from golden IR")
 
@@ -104,7 +132,7 @@ def main():
         require(any(d["code"] == "ORES-SA005"
                     for d in json.loads(zero.stdout)["diagnostics"]),
                 "zero-cost compute was not rejected")
-    print("source -> MIR effect exporter -> analyzer + negatives: PASS (model-only)")
+    print("same-MIR object + effect IR -> executed machine i64=42 -> analyzer + negatives: PASS (model-only)")
     return 0
 
 
