@@ -1,5 +1,5 @@
 //! Cranelift native-object backend. Oreslang semantic admission precedes this pass.
-use crate::{frontend::Expr, mir::Module};
+use crate::{frontend::Expr, mir::{self, Module}};
 use cranelift::{
     codegen::{
         ir::{types, AbiParam, FuncRef, Value},
@@ -14,6 +14,7 @@ use cranelift::{
 use std::collections::HashMap;
 
 pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
+    mir::validate_module(program)?;
     let isa = native::builder()
         .map_err(|e| e.to_string())?
         .finish(settings::Flags::new(settings::builder()))
