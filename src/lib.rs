@@ -19,8 +19,7 @@ pub fn compile_with_ref_layout(
     managed_refs: ref_layout::ManagedRefLayout,
 ) -> Result<Vec<u8>, String> {
     let ast = frontend::parse(source).map_err(|e| e.to_string())?;
-    let module =
-        mir::lower_with_ref_layout(ast, managed_refs).map_err(|e| e.to_string())?;
+    let module = mir::lower_with_ref_layout(ast, managed_refs).map_err(|e| e.to_string())?;
     codegen::emit_object(&module)
 }
 #[cfg(test)]
