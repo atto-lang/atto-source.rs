@@ -19,19 +19,29 @@ fn main() -> ExitCode {
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
         match mode {
             "--check" => println!("OK: {} function(s)", checked.functions.len()),
-            "cfg" => println!("{}", serde_json::to_string_pretty(
-                &cfg::export_cfg_v2(&checked, budget)).map_err(|e| e.to_string())?),
-            "--effects" => println!("{}", serde_json::to_string_pretty(
-                &effects::export_effect_ir(&checked)).map_err(|e| e.to_string())?),
+            "cfg" => println!(
+                "{}",
+                serde_json::to_string_pretty(&cfg::export_cfg_v2(&checked, budget))
+                    .map_err(|e| e.to_string())?
+            ),
+            "--effects" => println!(
+                "{}",
+                serde_json::to_string_pretty(&effects::export_effect_ir(&checked))
+                    .map_err(|e| e.to_string())?
+            ),
             _ => {
                 let bytes = codegen::emit_object(&checked)?;
-                fs::write(output.ok_or("missing output path")?, bytes).map_err(|e| e.to_string())?;
+                fs::write(output.ok_or("missing output path")?, bytes)
+                    .map_err(|e| e.to_string())?;
             }
         }
         Ok(())
     })();
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => { eprintln!("oresc: {error}"); ExitCode::from(1) }
+        Err(error) => {
+            eprintln!("oresc: {error}");
+            ExitCode::from(1)
+        }
     }
 }
