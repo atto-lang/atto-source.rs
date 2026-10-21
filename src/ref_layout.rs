@@ -8,7 +8,7 @@ pub enum RefMode {
     Native,
 }
 
-/// Backend-neutral physical representation selected for ordinary managed Ref<T>
+/// Backend-neutral physical representation for the internal managed-reference capability
 /// values. Native ABI/FFI pointers are not described by this layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagedRefLayout {
