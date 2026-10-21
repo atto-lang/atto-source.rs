@@ -12,7 +12,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Compile while explicitly selecting the backend-neutral managed-reference layout.
-/// The current scalar source subset has no Ref<T> operations yet, but the choice is
+/// Oreslang source does not expose a Ref<T>/pointer operation surface; this choice is
 /// preserved in MIR for future actor/object lowering and static-analysis metadata.
 pub fn compile_with_ref_layout(
     source: &str,
