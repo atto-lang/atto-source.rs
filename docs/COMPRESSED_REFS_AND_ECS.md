@@ -21,7 +21,7 @@ ARM64 LP64 keeps 64-bit ABI pointers. Oreslang managed references are distinct a
 - Do not impose 8/16 byte alignment on every SoA element just because heap *objects* are aligned. Packed `u32` reference columns remain 4-byte dense.
 
 ## MIR and backend requirements
-Represent managed reference value type as logical `Ref<T, Domain>`, independently of physical width. MIR should carry region provenance, ownership, borrow lifetime, nullability, alignment, physical layout strategy, and allocation bounds. The final lowering selects compressed or native representation.
+Represent the managed-reference value as an **internal typed MIR capability**, independently of physical width. It must not be exposed as source `Ref<T, Domain>`, `Pointer<T>`, address-of, or dereference syntax. MIR carries region provenance, ownership, borrow lifetime, nullability, alignment, physical layout strategy, and allocation bounds; final lowering selects compressed or native representation.
 Emit explicit `ref.encode`, `ref.decode`, bounds/provenance validation and barriers if moving objects are introduced. Native LLVM, Java/GraalVM and Rust/Cranelift must agree on semantics, not necessarily on private heap bytes.
 Never assume LLVM pointer-address-space annotations alone implement compression; explicit integer storage and lowering are more portable.
 Preserve hard-RT bounds: region table lookups, traps, allocation/compaction, pinning and decoding must be accounted for in WCET/effect proofs; offer fixed-size/nonmoving allocation paths.
