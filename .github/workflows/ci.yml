@@ -46,23 +46,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo run --locked --bin oresc -- --static-facts tests/fixtures/forward.ores > target/static-facts-v0.json
-          python3 - <<'PY'
-          import hashlib,json,pathlib
-          s=pathlib.Path("tests/fixtures/forward.ores").read_bytes()
-          d=json.loads(pathlib.Path("target/static-facts-v0.json").read_text())
-          assert d["version"]=="ores-static-facts/v0"
-          assert d["unit"]=="sha256:"+hashlib.sha256(s).hexdigest()
-          assert d["edges"] and all(e["kind"]=="call" and e["guard"]=="unproved" for e in d["edges"])
-          assert all(not p["loops"] for p in d["procedures"])
-          assert not (d["taint_sources"] or d["flows"] or d["sinks"] or d["permission_checks"])
-          PY
+          cargo run --locked --bin ci_verify -- static-facts
           if cargo run --locked --bin oresc -- --static-facts tests/fixtures/unknown.ores >target/unverified.json; then
             echo 'Unverified source emitted static facts'; exit 1
           fi
       - name: Validate compiler emitted effect IR
         run: |
           cargo run --locked --bin oresc -- --effects tests/fixtures/forward.ores > target/effects.json
-          python3 -c 'import json; d=json.load(open("target/effects.json")); assert d["schema_version"] == 1; assert any(x["kind"]=="call" and x["target"]=="times" for x in d["functions"][0]["operations"])'
+          cargo run --locked --bin ci_verify -- effects
       - name: Compile, link and execute native object
         run: |
           cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
@@ -72,11 +63,11 @@ jobs:
         run: |
           cargo run --locked --bin oresc -- --cfg-ir examples/answer.ores 10 > target/cfg-v2.json
           cargo run --locked --bin oresc -- --cfg-ir tests/fixtures/forward.ores 10 > target/cfg-v2-call.json
-          python3 -c 'import json; x=json.load(open("target/cfg-v2.json")); assert x["schema_version"]==2 and x["functions"][0]["blocks"][0]["terminator"]["kind"]=="return"'
-          python3 -c 'import json; x=json.load(open("target/cfg-v2-call.json")); assert any(e["kind"]=="call" for e in x["functions"][0]["blocks"][0]["events"])'
+          cargo run --locked --bin ci_verify -- cfg
+          cargo run --locked --bin ci_verify -- cfg-call
       - name: Reject excessive source bytes before unbounded allocation
         run: |
-          python3 -c 'from pathlib import Path; Path("target/oversized.ores").write_bytes(b"x" * 1048578)'
+          cargo run --locked --bin ci_verify -- oversized
           if cargo run --locked --bin oresc -- --cfg-ir target/oversized.ores 16 >target/oversized.out 2>target/oversized.err; then
             echo "Oversized input unexpectedly accepted"; exit 1
           fi
