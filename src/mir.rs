@@ -1,11 +1,15 @@
 //! Validated scalar MIR. This is intentionally an Oreslang IR, not Cranelift IR.
-use crate::frontend::{Expr, Program};
+use crate::{
+    frontend::{Expr, Program},
+    ref_layout::ManagedRefLayout,
+};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 #[derive(Clone, Debug)]
 pub struct Module {
     pub functions: Vec<Function>,
+    pub managed_refs: ManagedRefLayout,
 }
 #[derive(Clone, Debug)]
 pub struct Function {
@@ -78,6 +82,13 @@ fn validate_expr(
     }
 }
 pub fn lower(program: Program) -> Result<Module, SemanticError> {
+    lower_with_ref_layout(program, ManagedRefLayout::default())
+}
+
+pub fn lower_with_ref_layout(
+    program: Program,
+    managed_refs: ManagedRefLayout,
+) -> Result<Module, SemanticError> {
     let mut signatures = HashMap::new();
     for function in &program.functions {
         if signatures
@@ -121,7 +132,10 @@ pub fn lower(program: Program) -> Result<Module, SemanticError> {
             return_value: function.expression,
         });
     }
-    Ok(Module { functions })
+    Ok(Module {
+        functions,
+        managed_refs,
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -129,6 +143,14 @@ mod tests {
     fn check(source: &str) -> Result<Module, SemanticError> {
         lower(crate::frontend::parse(source).unwrap())
     }
+    #[test]
+    fn managed_reference_layout_is_preserved_in_mir() {
+        let program = crate::frontend::parse("pub fnc main(): int { return 42; }").unwrap();
+        let module =
+            lower_with_ref_layout(program, ManagedRefLayout::native()).expect("valid scalar MIR");
+        assert_eq!(module.managed_refs, ManagedRefLayout::native());
+    }
+
     #[test]
     fn duplicate_function_rejected() {
         assert_eq!(

@@ -87,6 +87,16 @@ pub fn export_effect_ir(module: &Module) -> Value {
     json!({"schema_version": 1, "functions": functions})
 }
 
+/// Experimental target-layout metadata is separate from the stable effect-IR v1 contract.
+/// These physical encoding choices do not attest provenance, lifetime, or safety.
+pub fn export_target_layout_metadata(module: &Module) -> Value {
+    json!({
+        "managed_reference_mode": module.managed_refs.mode_name(),
+        "managed_reference_storage_bits": module.managed_refs.storage_bits(),
+        "managed_reference_alignment_shift": module.managed_refs.alignment_shift(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +127,7 @@ mod tests {
             expression = Expr::Negate(Box::new(expression));
         }
         let module = Module {
+            managed_refs: crate::ref_layout::ManagedRefLayout::default(),
             functions: vec![crate::mir::Function {
                 symbol: "x".into(),
                 exported: false,
@@ -135,6 +146,13 @@ mod tests {
         .unwrap();
         let mir = crate::mir::lower(ast).unwrap();
         let ir = export_effect_ir(&mir);
+        assert!(
+            ir.get("target").is_none(),
+            "effect IR v1 must retain its exact consumer contract"
+        );
+        let layout = export_target_layout_metadata(&mir);
+        assert_eq!(layout["managed_reference_mode"], "compressed32");
+        assert_eq!(layout["managed_reference_storage_bits"], 32);
         assert_eq!(ir["functions"][0]["operations"][2]["kind"], "call");
         assert_eq!(ir["functions"][0]["operations"][2]["target"], "add");
     }

@@ -5,12 +5,22 @@ pub mod effects;
 pub mod flow;
 pub mod frontend;
 pub mod mir;
+pub mod ref_codegen;
+pub mod ref_layout;
 pub mod static_facts;
 
 /// Compile the admitted scalar subset into host relocatable object bytes.
 pub fn compile(source: &str) -> Result<Vec<u8>, String> {
+    compile_with_ref_layout(source, ref_layout::ManagedRefLayout::default())
+}
+
+/// Select only the internal layout model; this does not authorize managed-heap dereferencing.
+pub fn compile_with_ref_layout(
+    source: &str,
+    managed_refs: ref_layout::ManagedRefLayout,
+) -> Result<Vec<u8>, String> {
     let ast = frontend::parse(source).map_err(|e| e.to_string())?;
-    let module = mir::lower(ast).map_err(|e| e.to_string())?;
+    let module = mir::lower_with_ref_layout(ast, managed_refs).map_err(|e| e.to_string())?;
     // Admission is part of ordinary compilation, not merely optional
     // diagnostics. Reject expressions too complex for the IR verifier.
     effects::export_effect_ir_checked(&module)?;
@@ -60,6 +70,15 @@ mod tests {
     fn paired_mode_rejects_unverified_actor_syntax() {
         assert!(compile_with_effect_ir("define actor Foo as end").is_err());
     }
+    #[test]
+    fn native_managed_ref_layout_compiles_same_scalar_semantics() {
+        assert!(compile_with_ref_layout(
+            "pub fnc main(): int { return 42; }",
+            ref_layout::ManagedRefLayout::native()
+        )
+        .is_ok());
+    }
+
     #[test]
     fn rejects_unsupported_actor_syntax() {
         assert!(compile("define actor Foo as end").is_err());
