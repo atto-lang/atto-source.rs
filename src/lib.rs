@@ -2,6 +2,7 @@
 pub mod cfg;
 pub mod codegen;
 pub mod effects;
+pub mod flow;
 pub mod frontend;
 pub mod mir;
 pub mod static_facts;

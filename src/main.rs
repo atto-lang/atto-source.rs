@@ -1,4 +1,4 @@
-use oreslang_source_rs::{cfg, codegen, effects, frontend, mir};
+use oreslang_source_rs::{cfg, codegen, effects, flow, frontend, mir};
 use std::{env, fs, io::Read, path::Path, process::ExitCode};
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
@@ -25,6 +25,8 @@ fn main() -> ExitCode {
     let args: Vec<_> = env::args().collect();
     let result: Result<(), String> = (|| {
         let (mode, input, output, effects_output, budget) = match args.as_slice() {
+            [_, flag, units, input] if flag == "--flow" => ("flow", input.as_str(), None, None,
+                Some(units.parse::<u64>().map_err(|_| "invalid abstract compute budget")?)),
             [_, flag, input] if flag == "--check" || flag == "--effects" || flag == "--static-facts" =>
                 (flag.as_str(), input.as_str(), None, None, None),
             [_, flag, input, object, effects] if flag == "--compile-with-effects" =>
@@ -34,7 +36,7 @@ fn main() -> ExitCode {
                 Some(units.parse::<u64>().map_err(|_| "invalid abstract compute budget")?)),
             [_, input, output] if !input.starts_with("--") =>
                 ("object", input.as_str(), Some(output.as_str()), None, None),
-            _ => return Err("usage: oresc --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
+            _ => return Err("usage: oresc --flow <max-uninterrupted-units> <source.ores> | --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
         };
         let source_id = fs::canonicalize(input).map_err(|e| e.to_string())?;
         let object_id = if let Some(path) = output {
@@ -75,6 +77,14 @@ fn main() -> ExitCode {
             let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
             match mode {
                 "--check" => println!("OK: {} function(s)", checked.functions.len()),
+                "flow" => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&flow::export_scalar_flow(
+                        &checked,
+                        budget.ok_or("missing abstract work budget")?
+                    )?)
+                    .map_err(|e| e.to_string())?
+                ),
                 "cfg" => println!(
                     "{}",
                     serde_json::to_string_pretty(&cfg::export_cfg_v2(&checked, budget)?)
