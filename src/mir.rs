@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 #[derive(Clone, Debug)]
-pub struct Module { pub functions: Vec<Function> }
+pub struct Module {
+    pub functions: Vec<Function>,
+}
 #[derive(Clone, Debug)]
 pub struct Function {
     pub symbol: String,
@@ -25,25 +27,47 @@ impl fmt::Display for SemanticError {
 }
 impl std::error::Error for SemanticError {}
 fn failure(class: &'static str, message: impl Into<String>) -> SemanticError {
-    SemanticError { class, message: message.into() }
+    SemanticError {
+        class,
+        message: message.into(),
+    }
 }
 fn validate_expr(
-    expr: &Expr, variables: &HashSet<String>, signatures: &HashMap<String, usize>,
+    expr: &Expr,
+    variables: &HashSet<String>,
+    signatures: &HashMap<String, usize>,
 ) -> Result<(), SemanticError> {
     match expr {
         Expr::Integer(_) => Ok(()),
         Expr::Name(name) => {
-            if variables.contains(name) { Ok(()) }
-            else { Err(failure("unknown_name", format!("undeclared scalar '{name}'"))) }
+            if variables.contains(name) {
+                Ok(())
+            } else {
+                Err(failure(
+                    "unknown_name",
+                    format!("undeclared scalar '{name}'"),
+                ))
+            }
         }
         Expr::Call { name, args } => {
             let Some(expected) = signatures.get(name) else {
-                return Err(failure("unknown_name", format!("unknown function '{name}'")));
+                return Err(failure(
+                    "unknown_name",
+                    format!("unknown function '{name}'"),
+                ));
             };
             if args.len() != *expected {
-                return Err(failure("call_arity", format!("{name}: expected {expected} parameters, received {}", args.len())));
+                return Err(failure(
+                    "call_arity",
+                    format!(
+                        "{name}: expected {expected} parameters, received {}",
+                        args.len()
+                    ),
+                ));
             }
-            for arg in args { validate_expr(arg, variables, signatures)?; }
+            for arg in args {
+                validate_expr(arg, variables, signatures)?;
+            }
             Ok(())
         }
         Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
@@ -56,8 +80,14 @@ fn validate_expr(
 pub fn lower(program: Program) -> Result<Module, SemanticError> {
     let mut signatures = HashMap::new();
     for function in &program.functions {
-        if signatures.insert(function.name.clone(), function.params.len()).is_some() {
-            return Err(failure("duplicate_declaration", format!("duplicate function '{}'", function.name)));
+        if signatures
+            .insert(function.name.clone(), function.params.len())
+            .is_some()
+        {
+            return Err(failure(
+                "duplicate_declaration",
+                format!("duplicate function '{}'", function.name),
+            ));
         }
     }
     let mut functions = Vec::with_capacity(program.functions.len());
@@ -65,14 +95,20 @@ pub fn lower(program: Program) -> Result<Module, SemanticError> {
         let mut vars = HashSet::new();
         for param in &function.params {
             if !vars.insert(param.clone()) {
-                return Err(failure("duplicate_declaration", format!("duplicate parameter '{param}'")));
+                return Err(failure(
+                    "duplicate_declaration",
+                    format!("duplicate parameter '{param}'"),
+                ));
             }
         }
         let mut locals = Vec::new();
         for local in function.locals {
             validate_expr(&local.value, &vars, &signatures)?;
             if !vars.insert(local.name.clone()) {
-                return Err(failure("duplicate_declaration", format!("duplicate local '{}'", local.name)));
+                return Err(failure(
+                    "duplicate_declaration",
+                    format!("duplicate local '{}'", local.name),
+                ));
             }
             locals.push((local.name, local.value));
         }
@@ -95,7 +131,12 @@ mod tests {
     }
     #[test]
     fn duplicate_function_rejected() {
-        assert_eq!(check("fnc f(): int { return 1; } fnc f(): int { return 2; }").unwrap_err().class, "duplicate_declaration");
+        assert_eq!(
+            check("fnc f(): int { return 1; } fnc f(): int { return 2; }")
+                .unwrap_err()
+                .class,
+            "duplicate_declaration"
+        );
     }
     #[test]
     fn forward_call_admitted() {
@@ -103,18 +144,40 @@ mod tests {
     }
     #[test]
     fn unknown_name_rejected() {
-        assert_eq!(check("pub fnc main(): int { return neverDeclared; }").unwrap_err().class, "unknown_name");
+        assert_eq!(
+            check("pub fnc main(): int { return neverDeclared; }")
+                .unwrap_err()
+                .class,
+            "unknown_name"
+        );
     }
     #[test]
     fn call_arity_rejected() {
-        assert_eq!(check("fnc add(int a,int b): int { return a+b; } pub fnc main(): int { return add(1); }").unwrap_err().class, "call_arity");
+        assert_eq!(
+            check(
+                "fnc add(int a,int b): int { return a+b; } pub fnc main(): int { return add(1); }"
+            )
+            .unwrap_err()
+            .class,
+            "call_arity"
+        );
     }
     #[test]
     fn shadowed_local_rejected() {
-        assert_eq!(check("fnc f(int a): int { const a: int = 3; return a; }").unwrap_err().class, "duplicate_declaration");
+        assert_eq!(
+            check("fnc f(int a): int { const a: int = 3; return a; }")
+                .unwrap_err()
+                .class,
+            "duplicate_declaration"
+        );
     }
     #[test]
     fn local_binding_order_enforced() {
-        assert_eq!(check("fnc f(): int { const a: int = b; return a; }").unwrap_err().class, "unknown_name");
+        assert_eq!(
+            check("fnc f(): int { const a: int = b; return a; }")
+                .unwrap_err()
+                .class,
+            "unknown_name"
+        );
     }
 }

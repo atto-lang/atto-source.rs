@@ -39,8 +39,10 @@ fn main() -> ExitCode {
             ),
             "--static-facts" => println!(
                 "{}",
-                serde_json::to_string(&oreslang_source_rs::static_facts::export(&checked, &source)?)
-                    .map_err(|e| e.to_string())?
+                serde_json::to_string(&oreslang_source_rs::static_facts::export(
+                    &checked, &source
+                )?)
+                .map_err(|e| e.to_string())?
             ),
             _ => {
                 let bytes = codegen::emit_object(&checked)?;

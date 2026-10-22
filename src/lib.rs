@@ -22,6 +22,7 @@ mod tests {
         );
         assert!(result.is_ok(), "{result:?}");
         let object = result.unwrap();
+        assert!(!object.is_empty());
         #[cfg(target_os = "linux")]
         assert!(object.starts_with(b"\x7fELF"));
     }
