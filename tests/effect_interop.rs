@@ -5,8 +5,7 @@ fn emits_contract_fixture_without_schema_drift() {
     let parsed = frontend::parse(src).expect("fixture syntax");
     let module = mir::lower(parsed).expect("fixture semantic checks");
     let emitted = effects::export_effect_ir(&module);
-    let expected: serde_json::Value = serde_json::from_str(
-        include_str!("fixtures/forward.effects.json")
-    ).unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/forward.effects.json")).unwrap();
     assert_eq!(emitted, expected, "shared effect IR v1 contract drift");
 }

@@ -51,8 +51,9 @@ mod tests {
     #[test]
     fn tracks_forward_calls() {
         let ast = crate::frontend::parse(
-            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }"
-        ).unwrap();
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }",
+        )
+        .unwrap();
         let mir = crate::mir::lower(ast).unwrap();
         let ir = export_effect_ir(&mir);
         assert_eq!(ir["functions"][0]["operations"][2]["kind"], "call");
