@@ -26,6 +26,48 @@ fn analyze_expr(expr: &Expr, out: &mut Vec<Value>) {
     }
 }
 
+/// Validate abstract resource budgets without recursing into attacker-shaped
+/// expressions. The analyzer itself admits at most 100,000 operation records.
+const MAX_EFFECT_OPERATIONS: usize = 100_000;
+const MAX_EFFECT_EXPR_DEPTH: usize = 64;
+const MAX_EFFECT_FUNCTIONS: usize = 4096;
+
+/// Checked export path required by CLI and paired compilation. The existing
+/// low-level exporter remains available for compatibility but MUST NOT be
+/// treated as a soundness/security boundary on its own.
+pub fn export_effect_ir_checked(module: &Module) -> Result<Value, String> {
+    if module.functions.is_empty() || module.functions.len() > MAX_EFFECT_FUNCTIONS {
+        return Err("effect IR function budget exceeded or module empty".into());
+    }
+    let mut count = 0usize;
+    for function in &module.functions {
+        let mut pending: Vec<(&Expr, usize)> = function
+            .locals
+            .iter()
+            .map(|(_, expression)| (expression, 1))
+            .collect();
+        pending.push((&function.return_value, 1));
+        while let Some((expr, depth)) = pending.pop() {
+            if depth > MAX_EFFECT_EXPR_DEPTH || count >= MAX_EFFECT_OPERATIONS {
+                return Err("effect IR expression depth/operation budget exceeded".into());
+            }
+            count += 1;
+            match expr {
+                Expr::Integer(_) | Expr::Name(_) => {}
+                Expr::Negate(v) => pending.push((v, depth + 1)),
+                Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
+                    pending.push((a, depth + 1));
+                    pending.push((b, depth + 1));
+                }
+                Expr::Call { args, .. } => {
+                    pending.extend(args.iter().map(|arg| (arg, depth + 1)));
+                }
+            }
+        }
+    }
+    Ok(export_effect_ir(module))
+}
+
 /// This is only complete for the admitted scalar subset: no allocation, FFI,
 /// unbounded waits, dynamic calls, or actor mutation operations exist in it.
 /// Abstract compute units are NOT CPU instructions, WCET or timing guarantees.
@@ -49,10 +91,48 @@ pub fn export_effect_ir(module: &Module) -> Value {
 mod tests {
     use super::*;
     #[test]
+    fn checked_forward_effects_match_independent_analyzer_fixture() {
+        let source = include_str!("../tests/fixtures/forward.ores");
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/forward.effects.json")).unwrap();
+        let checked = crate::mir::lower(crate::frontend::parse(source).unwrap()).unwrap();
+        let actual = export_effect_ir_checked(&checked).unwrap();
+        assert_eq!(actual, expected);
+    }
+    #[test]
+    fn checked_scalar_effects_have_exact_work_count() {
+        let ast = crate::frontend::parse("pub fnc main(): int { return 40+2; }").unwrap();
+        let module = crate::mir::lower(ast).unwrap();
+        let ir = export_effect_ir_checked(&module).unwrap();
+        let operations = ir["functions"][0]["operations"].as_array().unwrap();
+        assert_eq!(operations.len(), 3);
+        assert!(operations
+            .iter()
+            .all(|op| op["kind"] == "compute" && op["units"] == 1));
+    }
+    #[test]
+    fn checked_effects_reject_adversarial_ast_depth() {
+        let mut expression = Expr::Integer(1);
+        for _ in 0..70 {
+            expression = Expr::Negate(Box::new(expression));
+        }
+        let module = Module {
+            functions: vec![crate::mir::Function {
+                symbol: "x".into(),
+                exported: false,
+                params: vec![],
+                locals: vec![],
+                return_value: expression,
+            }],
+        };
+        assert!(export_effect_ir_checked(&module).is_err());
+    }
+    #[test]
     fn tracks_forward_calls() {
         let ast = crate::frontend::parse(
-            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }"
-        ).unwrap();
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }",
+        )
+        .unwrap();
         let mir = crate::mir::lower(ast).unwrap();
         let ir = export_effect_ir(&mir);
         assert_eq!(ir["functions"][0]["operations"][2]["kind"], "call");
