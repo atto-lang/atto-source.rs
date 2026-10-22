@@ -13,7 +13,8 @@ fn pure_scalar_hir_emits_analyzer_cfg_envelope() {
 
 #[test]
 fn unresolved_calls_are_rejected_for_cfg_export() {
-    let parsed = frontend::parse("fnc f(): int { return g(); } fnc g(): int { return 1; }").unwrap();
+    let parsed =
+        frontend::parse("fnc f(): int { return g(); } fnc g(): int { return 1; }").unwrap();
     let module = mir::lower(parsed).unwrap();
     assert!(flow::export_scalar_flow(&module, 5).is_err());
 }

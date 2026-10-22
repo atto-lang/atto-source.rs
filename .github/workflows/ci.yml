@@ -16,7 +16,7 @@ jobs:
       - name: Export scalar CFG contract
         run: |
           cargo run --locked --bin oresc -- --flow 6 tests/fixtures/flow-scalar.ores > target/flow.json
-          python3 -c 'import json; a=json.load(open("target/flow.json")); b=json.load(open("tests/fixtures/flow-scalar.json")); assert a == b' 
+          cargo run --locked --bin ci_verify -- scalar-flow
       - run: cargo clippy --locked --all-targets -- -D warnings
       - name: Canonical JVM/LLVM scalar fixture execution
         shell: bash
@@ -45,12 +45,46 @@ jobs:
             fi
             grep -F "$expected" target/diagnostic.out
           done
+      - name: Verify shared v0 source-backed facts and fail-closed unsupported calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- --static-facts tests/fixtures/forward.ores > target/static-facts-v0.json
+          cargo run --locked --bin ci_verify -- static-facts
+          if cargo run --locked --bin oresc -- --static-facts tests/fixtures/unknown.ores >target/unverified.json; then
+            echo 'Unverified source emitted static facts'; exit 1
+          fi
       - name: Validate compiler emitted effect IR
         run: |
           cargo run --locked --bin oresc -- --effects tests/fixtures/forward.ores > target/effects.json
-          python3 -c 'import json; d=json.load(open("target/effects.json")); assert d["schema_version"] == 1; assert any(x["kind"]=="call" and x["target"]=="times" for x in d["functions"][0]["operations"])'
+          cargo run --locked --bin ci_verify -- effects
       - name: Compile, link and execute native object
         run: |
           cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
           cc target/answer.o examples/driver.c -o target/answer
           ./target/answer
+      - name: Verify CFG-v2 exporter preserves scalar and unresolved calls
+        run: |
+          cargo run --locked --bin oresc -- --cfg-ir examples/answer.ores 10 > target/cfg-v2.json
+          cargo run --locked --bin oresc -- --cfg-ir tests/fixtures/forward.ores 10 > target/cfg-v2-call.json
+          cargo run --locked --bin ci_verify -- cfg
+          cargo run --locked --bin ci_verify -- cfg-call
+      - name: Reject excessive source bytes before unbounded allocation
+        run: |
+          cargo run --locked --bin ci_verify -- oversized
+          if cargo run --locked --bin oresc -- --cfg-ir target/oversized.ores 16 >target/oversized.out 2>target/oversized.err; then
+            echo "Oversized input unexpectedly accepted"; exit 1
+          fi
+          grep -Fq 'source too large' target/oversized.err
+      - name: Paired executable object and checked effect facts (one MIR)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- --compile-with-effects tests/fixtures/forward.ores target/paired-forward.o target/paired-forward.effects.json
+          cargo run --locked --bin ci_verify -- paired-effects
+          cc target/paired-forward.o -o target/paired-forward
+          set +e
+          target/paired-forward
+          actual=$?
+          set -e
+          test "$actual" -eq 42 || { echo "paired native executable must return 42, got $actual"; exit 1; }
