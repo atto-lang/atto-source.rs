@@ -1,5 +1,8 @@
 //! Cranelift native-object backend. Oreslang semantic admission precedes this pass.
-use crate::{frontend::Expr, mir::{self, Module}};
+use crate::{
+    frontend::Expr,
+    mir::{self, Module},
+};
 use cranelift::{
     codegen::{
         ir::{types, AbiParam, FuncRef, Value},

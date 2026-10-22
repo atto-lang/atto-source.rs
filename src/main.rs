@@ -13,7 +13,8 @@ fn main() -> ExitCode {
         let file = fs::File::open(input).map_err(|e| e.to_string())?;
         let mut source = String::new();
         file.take(frontend::MAX_SOURCE_BYTES as u64 + 1)
-            .read_to_string(&mut source).map_err(|e| e.to_string())?;
+            .read_to_string(&mut source)
+            .map_err(|e| e.to_string())?;
         if source.len() > frontend::MAX_SOURCE_BYTES {
             return Err("source exceeds 1 MiB budget".into());
         }
@@ -21,17 +22,24 @@ fn main() -> ExitCode {
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
         match mode {
             "--check" => println!("OK: {} function(s)", checked.functions.len()),
-            "--effects" => println!("{}", serde_json::to_string_pretty(
-                &effects::export_effect_ir(&checked)?).map_err(|e| e.to_string())?),
+            "--effects" => println!(
+                "{}",
+                serde_json::to_string_pretty(&effects::export_effect_ir(&checked)?)
+                    .map_err(|e| e.to_string())?
+            ),
             _ => {
                 let bytes = codegen::emit_object(&checked)?;
-                fs::write(output.ok_or("missing output path")?, bytes).map_err(|e| e.to_string())?;
+                fs::write(output.ok_or("missing output path")?, bytes)
+                    .map_err(|e| e.to_string())?;
             }
         }
         Ok(())
     })();
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => { eprintln!("oresc: {error}"); ExitCode::from(1) }
+        Err(error) => {
+            eprintln!("oresc: {error}");
+            ExitCode::from(1)
+        }
     }
 }

@@ -1,6 +1,9 @@
 //! Backend-neutral effect-IR v1 adapter for oreslang-static-analysis.rs.
 //! A complete semantic/MIR pass must cover every operation before export.
-use crate::{frontend::Expr, mir::{self, Module}};
+use crate::{
+    frontend::Expr,
+    mir::{self, Module},
+};
 use serde_json::{json, Value};
 
 fn analyze_expr(expr: &Expr, out: &mut Vec<Value>) {
@@ -51,20 +54,26 @@ mod tests {
     use super::*;
     #[test]
     fn invalid_external_module_cannot_forge_a_pure_call_graph() {
-        let invalid = mir::Module { functions: vec![
-            mir::Function {
-                symbol: "entry".into(), exported: true, params: vec![],
+        let invalid = mir::Module {
+            functions: vec![mir::Function {
+                symbol: "entry".into(),
+                exported: true,
+                params: vec![],
                 locals: vec![],
-                return_value: Expr::Call { name: "unknown".into(), args: vec![] }
-            }
-        ]};
+                return_value: Expr::Call {
+                    name: "unknown".into(),
+                    args: vec![],
+                },
+            }],
+        };
         assert!(export_effect_ir(&invalid).is_err());
     }
     #[test]
     fn tracks_forward_calls() {
         let ast = crate::frontend::parse(
-            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }"
-        ).unwrap();
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }",
+        )
+        .unwrap();
         let mir = crate::mir::lower(ast).unwrap();
         let ir = export_effect_ir(&mir).unwrap();
         assert_eq!(ir["functions"][0]["operations"][2]["kind"], "call");
