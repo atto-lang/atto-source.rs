@@ -9,14 +9,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          components: rustfmt,clippy
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --all-targets
+      - name: Export scalar CFG contract
+        run: |
+          cargo run --locked --bin oresc -- --flow 6 tests/fixtures/flow-scalar.ores > target/flow.json
+          cargo run --locked --bin ci_verify -- scalar-flow
       - run: cargo clippy --locked --all-targets -- -D warnings
       - name: Canonical JVM/LLVM scalar fixture execution
         shell: bash
@@ -45,10 +45,19 @@ jobs:
             fi
             grep -F "$expected" target/diagnostic.out
           done
+      - name: Verify shared v0 source-backed facts and fail-closed unsupported calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- --static-facts tests/fixtures/forward.ores > target/static-facts-v0.json
+          cargo run --locked --bin ci_verify -- static-facts
+          if cargo run --locked --bin oresc -- --static-facts tests/fixtures/unknown.ores >target/unverified.json; then
+            echo 'Unverified source emitted static facts'; exit 1
+          fi
       - name: Validate compiler emitted effect IR
         run: |
           cargo run --locked --bin oresc -- --effects tests/fixtures/forward.ores > target/effects.json
-          python3 -c 'import json; d=json.load(open("target/effects.json")); assert d["schema_version"] == 1; assert any(x["kind"]=="call" and x["target"]=="times" for x in d["functions"][0]["operations"])'
+          cargo run --locked --bin ci_verify -- effects
       - name: Compile, link and execute native object
         run: |
           cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
@@ -58,18 +67,29 @@ jobs:
         run: |
           cargo run --locked --bin oresc -- --cfg-ir examples/answer.ores 10 > target/cfg-v2.json
           cargo run --locked --bin oresc -- --cfg-ir tests/fixtures/forward.ores 10 > target/cfg-v2-call.json
-          python3 -c 'import json; x=json.load(open("target/cfg-v2.json")); assert x["schema_version"]==2 and x["functions"][0]["blocks"][0]["terminator"]["kind"]=="return"'
-          python3 -c 'import json; x=json.load(open("target/cfg-v2-call.json")); assert any(e["kind"]=="call" for e in x["functions"][0]["blocks"][0]["events"])'
-      - name: Verify safety MIR exporter and fail-closed call edges
-        run: |
-          cargo run --locked --bin oresc -- --safety-ir examples/answer.ores 16 > target/safety.json
-          cargo run --locked --bin oresc -- --safety-ir tests/fixtures/forward.ores 16 > target/safety-calls.json
-          python3 -c 'import json; p=json.load(open("target/safety.json")); assert p["effects_complete"] and p["functions"][0]["control_flow"] == "linear"; assert p["functions"][0]["max_uninterrupted_units"] == 16'
-          python3 -c 'import json; p=json.load(open("target/safety-calls.json")); assert any(e["kind"]=="call" for e in p["functions"][0]["events"])'
+          cargo run --locked --bin ci_verify -- cfg
+          cargo run --locked --bin ci_verify -- cfg-call
       - name: Reject excessive source bytes before unbounded allocation
         run: |
-          python3 -c 'from pathlib import Path; Path("target/oversized.ores").write_bytes(b"x" * 1048578)'
+          cargo run --locked --bin ci_verify -- oversized
           if cargo run --locked --bin oresc -- --cfg-ir target/oversized.ores 16 >target/oversized.out 2>target/oversized.err; then
             echo "Oversized input unexpectedly accepted"; exit 1
           fi
           grep -Fq 'source too large' target/oversized.err
+      - name: Paired executable object and checked effect facts (one MIR)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- --compile-with-effects tests/fixtures/forward.ores target/paired-forward.o target/paired-forward.effects.json
+          cargo run --locked --bin ci_verify -- paired-effects
+          cc target/paired-forward.o -o target/paired-forward
+          set +e
+          target/paired-forward
+          actual=$?
+          set -e
+          test "$actual" -eq 42 || { echo "paired native executable must return 42, got $actual"; exit 1; }
+      - name: Verify safety MIR exporter and fail-closed call edges
+        run: |
+          cargo run --locked --bin oresc -- --safety-ir examples/answer.ores 16 > target/safety.json
+          cargo run --locked --bin oresc -- --safety-ir tests/fixtures/forward.ores 16 > target/safety-calls.json
+          cargo run --locked --bin ci_verify -- safety

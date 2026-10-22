@@ -16,8 +16,11 @@ fn temp_dir(label: &str) -> std::path::PathBuf {
 fn hard_rt_cli_fails_closed_without_wcet_evidence_and_publishes_nothing() {
     let dir = temp_dir("hardrt");
     let output = dir.join("answer.o");
+    let source = dir.join("answer.ores");
+    fs::write(&source, "pub fnc main(): int { return 42; }").expect("write exported root");
     let result = Command::new(compiler())
-        .args(["--hard-rt", "examples/answer.ores"])
+        .arg("--hard-rt")
+        .arg(&source)
         .arg(&output)
         .output()
         .expect("run oresc");
