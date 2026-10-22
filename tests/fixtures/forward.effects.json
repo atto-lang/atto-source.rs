@@ -1,21 +1,7 @@
 {
   "schema_version": 1,
   "functions": [
-    {
-      "name": "main",
-      "operations": [
-        {"kind": "compute", "units": 1},
-        {"kind": "compute", "units": 1},
-        {"kind": "call", "target": "times"}
-      ]
-    },
-    {
-      "name": "times",
-      "operations": [
-        {"kind": "compute", "units": 1},
-        {"kind": "compute", "units": 1},
-        {"kind": "compute", "units": 1}
-      ]
-    }
+    {"name":"main","operations":[{"kind":"compute","units":1},{"kind":"compute","units":1},{"kind":"call","target":"times"}]},
+    {"name":"times","operations":[{"kind":"compute","units":1},{"kind":"compute","units":1},{"kind":"compute","units":1}]}
   ]
 }

@@ -41,8 +41,11 @@ pub fn export_effect_ir_checked(module: &Module) -> Result<Value, String> {
     }
     let mut count = 0usize;
     for function in &module.functions {
-        let mut pending: Vec<(&Expr, usize)> = function.locals.iter()
-            .map(|(_, expression)| (expression, 1)).collect();
+        let mut pending: Vec<(&Expr, usize)> = function
+            .locals
+            .iter()
+            .map(|(_, expression)| (expression, 1))
+            .collect();
         pending.push((&function.return_value, 1));
         while let Some((expr, depth)) = pending.pop() {
             if depth > MAX_EFFECT_EXPR_DEPTH || count >= MAX_EFFECT_OPERATIONS {
@@ -52,7 +55,7 @@ pub fn export_effect_ir_checked(module: &Module) -> Result<Value, String> {
             match expr {
                 Expr::Integer(_) | Expr::Name(_) => {}
                 Expr::Negate(v) => pending.push((v, depth + 1)),
-                Expr::Add(a,b) | Expr::Subtract(a,b) | Expr::Multiply(a,b) => {
+                Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
                     pending.push((a, depth + 1));
                     pending.push((b, depth + 1));
                 }
@@ -90,8 +93,8 @@ mod tests {
     #[test]
     fn checked_forward_effects_match_independent_analyzer_fixture() {
         let source = include_str!("../tests/fixtures/forward.ores");
-        let expected: Value = serde_json::from_str(
-            include_str!("../tests/fixtures/forward.effects.json")).unwrap();
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/forward.effects.json")).unwrap();
         let checked = crate::mir::lower(crate::frontend::parse(source).unwrap()).unwrap();
         let actual = export_effect_ir_checked(&checked).unwrap();
         assert_eq!(actual, expected);
@@ -103,8 +106,9 @@ mod tests {
         let ir = export_effect_ir_checked(&module).unwrap();
         let operations = ir["functions"][0]["operations"].as_array().unwrap();
         assert_eq!(operations.len(), 3);
-        assert!(operations.iter().all(|op|
-            op["kind"] == "compute" && op["units"] == 1));
+        assert!(operations
+            .iter()
+            .all(|op| op["kind"] == "compute" && op["units"] == 1));
     }
     #[test]
     fn checked_effects_reject_adversarial_ast_depth() {
@@ -112,17 +116,23 @@ mod tests {
         for _ in 0..70 {
             expression = Expr::Negate(Box::new(expression));
         }
-        let module = Module { functions: vec![crate::mir::Function {
-            symbol: "x".into(), exported: false, params: vec![],
-            locals: vec![], return_value: expression,
-        }] };
+        let module = Module {
+            functions: vec![crate::mir::Function {
+                symbol: "x".into(),
+                exported: false,
+                params: vec![],
+                locals: vec![],
+                return_value: expression,
+            }],
+        };
         assert!(export_effect_ir_checked(&module).is_err());
     }
     #[test]
     fn tracks_forward_calls() {
         let ast = crate::frontend::parse(
-            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }"
-        ).unwrap();
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }",
+        )
+        .unwrap();
         let mir = crate::mir::lower(ast).unwrap();
         let ir = export_effect_ir(&mir);
         assert_eq!(ir["functions"][0]["operations"][2]["kind"], "call");

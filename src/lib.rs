@@ -1,8 +1,10 @@
 //! Independent Rust Oreslang frontend, validated MIR and Cranelift backend.
+pub mod cfg;
 pub mod codegen;
 pub mod effects;
 pub mod frontend;
 pub mod mir;
+pub mod static_facts;
 
 /// Compile the admitted scalar subset into host relocatable object bytes.
 pub fn compile(source: &str) -> Result<Vec<u8>, String> {
@@ -28,20 +30,30 @@ mod tests {
     use super::*;
     #[test]
     fn compiles_real_native_object() {
-        let result = compile("pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }");
+        let result = compile(
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }",
+        );
         assert!(result.is_ok(), "{result:?}");
         let object = result.unwrap();
+        assert!(!object.is_empty());
         #[cfg(target_os = "linux")]
         assert!(object.starts_with(b"\x7fELF"));
     }
     #[test]
     fn paired_mode_uses_current_scalar_mir_and_call_graph() {
-        let input = "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }";
+        let input =
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }";
         let (object, effects) = compile_with_effect_ir(input).unwrap();
         assert!(!object.is_empty());
         assert_eq!(effects["functions"][0]["operations"][2]["kind"], "call");
         assert_eq!(effects["functions"][0]["operations"][2]["target"], "add");
-        assert_eq!(effects["functions"][1]["operations"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            effects["functions"][1]["operations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
     }
     #[test]
     fn paired_mode_rejects_unverified_actor_syntax() {
