@@ -1,8 +1,7 @@
 #[cfg(not(test))]
 use std::env;
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -57,17 +56,25 @@ fn python_artifact_reason(path: &Path) -> Option<&'static str> {
 
 fn is_documentation(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+        path.extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
         Some("md" | "mdx" | "rst" | "adoc")
     )
 }
 
 fn is_scanner_source(root: &Path, path: &Path) -> bool {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-        == "tools/check_no_python.rs"
+    // Both checked-in Rust policy gates contain forbidden strings as detector
+    // fixtures. Their source is data for this scan, rather than an invocation.
+    matches!(
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+            .as_str(),
+        "tools/check_no_python.rs" | "tools/no-python-check/src/main.rs"
+    )
 }
 
 fn should_scan_text(path: &Path) -> bool {
@@ -85,12 +92,46 @@ fn should_scan_text(path: &Path) -> bool {
         return true;
     }
     matches!(
-        path.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+        path.extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
         Some(
-            "sh" | "bash" | "zsh" | "fish" | "yml" | "yaml" | "toml" | "json" | "jsonc"
-                | "xml" | "gradle" | "kts" | "rs" | "java" | "kt" | "c" | "cc" | "cpp"
-                | "h" | "hpp" | "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "cs"
-                | "fs" | "fsx" | "ps1" | "cmd" | "bat" | "cmake" | "mk" | "go" | "swift"
+            "sh" | "bash"
+                | "zsh"
+                | "fish"
+                | "yml"
+                | "yaml"
+                | "toml"
+                | "json"
+                | "jsonc"
+                | "xml"
+                | "gradle"
+                | "kts"
+                | "rs"
+                | "java"
+                | "kt"
+                | "c"
+                | "cc"
+                | "cpp"
+                | "h"
+                | "hpp"
+                | "js"
+                | "mjs"
+                | "cjs"
+                | "ts"
+                | "tsx"
+                | "jsx"
+                | "cs"
+                | "fs"
+                | "fsx"
+                | "ps1"
+                | "cmd"
+                | "bat"
+                | "cmake"
+                | "mk"
+                | "go"
+                | "swift"
                 | "scala"
         )
     )
@@ -111,7 +152,11 @@ fn command_tokens(line: &str) -> Vec<String> {
 }
 
 fn executable_basename(token: &str) -> &str {
-    token.rsplit('/').next().unwrap_or(token).trim_end_matches(".exe")
+    token
+        .rsplit('/')
+        .next()
+        .unwrap_or(token)
+        .trim_end_matches(".exe")
 }
 
 fn is_python_exec_name(base: &str) -> bool {
@@ -375,6 +420,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn known_rust_policy_sources_are_exempt_from_literal_detection_only() {
+        let root = Path::new("repo");
+        assert!(is_scanner_source(
+            root,
+            &root.join("tools/check_no_python.rs")
+        ));
+        assert!(is_scanner_source(
+            root,
+            &root.join("tools/no-python-check/src/main.rs")
+        ));
+        assert!(!is_scanner_source(root, &root.join("tools/other.rs")));
+        assert!(python_invocation_reason("run: python3 -m unittest").is_some());
+    }
+
+    #[test]
     fn rejects_python_artifact_names() {
         for path in [
             "x.py",
@@ -423,10 +483,7 @@ mod tests {
 
     #[test]
     fn full_scan_finds_python_artifact() {
-        let root = std::env::temp_dir().join(format!(
-            "check-no-python-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("check-no-python-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("legacy.py"), "print('legacy')\n").unwrap();
