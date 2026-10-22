@@ -161,11 +161,16 @@ fn main() {
     match env::args().nth(1).as_deref() {
         Some("static-facts") => verify_static_facts(),
         Some("effects") => verify_effects(),
+        Some("paired-effects") => assert_eq!(
+            read_json("target/paired-forward.effects.json"),
+            read_json("tests/fixtures/forward.effects.json"),
+            "analyzer v1 golden drift"
+        ),
         Some("cfg") => verify_cfg("target/cfg-v2.json", false),
         Some("cfg-call") => verify_cfg("target/cfg-v2-call.json", true),
         Some("oversized") => fs::write("target/oversized.ores", vec![b'x'; 1_048_578])
             .unwrap_or_else(|e| fail(format!("write oversized fixture: {e}"))),
-        _ => fail("usage: ci_verify <static-facts|effects|cfg|cfg-call|oversized>"),
+        _ => fail("usage: ci_verify <static-facts|effects|paired-effects|cfg|cfg-call|oversized>"),
     }
 }
 
