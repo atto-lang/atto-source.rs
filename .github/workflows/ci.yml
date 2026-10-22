@@ -17,6 +17,8 @@ jobs:
         run: |
           cargo run --locked --bin oresc -- --flow 6 tests/fixtures/flow-scalar.ores > target/flow.json
           cargo run --locked --bin ci_verify -- scalar-flow
+          cargo run --locked --bin oresc -- --flow 6 tests/fixtures/flow-forward.ores > target/flow-forward.json
+          cargo run --locked --bin ci_verify -- forward-flow
       - run: cargo clippy --locked --all-targets -- -D warnings
       - name: Canonical JVM/LLVM scalar fixture execution
         shell: bash

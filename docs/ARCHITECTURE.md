@@ -18,3 +18,14 @@ Current limitations: named, zero-argument static functions only; one return expr
 ## Parser and compilation resource limits (2026-10-19)
 
 The independent Rust scalar prototype rejects source files larger than 256 KiB, more than 2,048 lexer tokens, and parenthesis nesting deeper than 64. The CLI reads a maximum of 256 KiB plus one byte before validation. These are deliberately conservative prototype limits to prevent unbounded recursive descent / MIR traversals, not final Oreslang language limits. Structured `resource_limit` parse failures are regression tested. The `--flow` exporter continues to reject calls until interprocedural effects are verified; it does not validate actor sends, borrow lifetimes or Task suspensions yet.
+
+## Pure scalar call effect contract (stacked milestone)
+
+The Rust frontend exports statically resolved scalar function calls in
+`--flow` instead of unconditionally rejecting all calls. The checked MIR
+already validates the direct target and argument arity; the standalone Rust
+analyzer must independently validate each complete transitive callee effect
+summary before any static admission. Arguments are evaluated first and
+appear as their own abstract compute events; each direct call emits a
+`call` event. No actor/Task/FFI/ownership syntax or compiler proof of hard
+real-time execution is implied by this change.
