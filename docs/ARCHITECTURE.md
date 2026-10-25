@@ -14,3 +14,7 @@ Cranelift IR is too low-level to act as the language-level MIR for ownership, co
 Roadmap: (1) this compiling/linking executable test; (2) grammar corpus / Rowan recovery trees; (3) type checking / Salsa; (4) ownership/async/actor MIR with lifecycle and JIT/AOT ABI; (5) runtime and cross-compiler differential tests; (6) self-hosting via Oreslang compiler bootstrapping.
 
 Current limitations: named, zero-argument static functions only; one return expression; i64 operations; no userland calls, actors, async, heap or GC, debugger, linker, cross target or full standard library. Integer operations currently use Cranelift i64 arithmetic behavior; the source language's overflow policy must be finalized with conformance fixtures. A successful object emit is not a hard real-time guarantee.
+
+## Parser and compilation resource limits (2026-10-19)
+
+The independent Rust scalar prototype rejects source files larger than 256 KiB, more than 2,048 lexer tokens, and parenthesis nesting deeper than 64. The CLI reads a maximum of 256 KiB plus one byte before validation. These are deliberately conservative prototype limits to prevent unbounded recursive descent / MIR traversals, not final Oreslang language limits. Structured `resource_limit` parse failures are regression tested. The `--flow` exporter continues to reject calls until interprocedural effects are verified; it does not validate actor sends, borrow lifetimes or Task suspensions yet.

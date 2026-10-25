@@ -34,4 +34,17 @@ Preserve hard-RT bounds: region table lookups, traps, allocation/compaction, pin
 - Benchmark resident bytes, cache misses, cycles, latency tails, and WCET for pointer-heavy actor graphs and dense SoA/AoSoA ECS. Do not assert performance gains without measurement.
 
 ## Status
-This PR introduces a reusable arithmetic reference/layout prototype only. It does NOT integrate compressed refs into the compiler's MIR, Cranelift code generation, Java runtime, or LLVM runtime.
+This PR introduces an arithmetic reference/layout prototype, managed-layout MIR
+metadata, and a standalone Cranelift codec object generator. It does not lower
+guest managed objects, implement actor heaps/borrowing, or integrate compressed
+references into Java or LLVM runtimes. The codec requires prior trusted bounds,
+alignment, domain and lifetime validation.
+
+## Current-main integration boundary
+
+The existing CLI modes, bounded source reader, output-alias protections and
+checked effect admission remain unchanged. Canonical effect-IR v1 and its
+independent analyzer golden fixture are preserved. Optional representation
+metadata is available through `export_effect_ir_with_layout_checked`, a separate
+`oreslang.managed-ref-effect-envelope.v1` containing the canonical `effect_ir`.
+It does not grant pointer, actor, allocation or borrowing authority.
