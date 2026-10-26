@@ -158,8 +158,12 @@ impl Region {
         let Some(slot) = NonZeroU32::new(value.raw()) else {
             return Ok(None);
         };
+        // checked_shl only validates the shift *count*; on a 32-bit
+        // target it may discard high value bits. Multiply by the proven
+        // power-of-two alignment so arithmetic overflow itself fails closed.
+        let scale = 1usize << self.shift;
         let offset = ((slot.get() - 1) as usize)
-            .checked_shl(self.shift as u32)
+            .checked_mul(scale)
             .ok_or(RefError::Overflow)?;
         if offset >= self.byte_len {
             return Err(RefError::OutOfRange);
@@ -286,6 +290,16 @@ mod tests {
         assert_eq!(a.decode_address(raw).unwrap(), Some(0x1050));
         assert_eq!(b.decode_address(raw).unwrap(), Some(0x3050));
         // This does NOT authorize copying raw references between actor domains.
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn compressed_decode_rejects_32_bit_shift_overflow() {
+        let r = Region::new(0, usize::MAX, 15).unwrap();
+        assert_eq!(
+            r.decode_offset(CompressedRef::from_raw(u32::MAX)),
+            Err(RefError::Overflow)
+        );
     }
 
     #[test]
