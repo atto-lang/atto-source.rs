@@ -1,0 +1,8 @@
+# Rust frontend/MIR/effects/codegen, conformance, tooling, and CI trust boundaries.
+/.github/workflows/ @ORESoftware
+/.github/CODEOWNERS @ORESoftware
+/src/ @ORESoftware
+/tests/ @ORESoftware
+/tools/ @ORESoftware
+/Cargo.toml @ORESoftware
+/Cargo.lock @ORESoftware
