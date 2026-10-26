@@ -6,3 +6,4 @@
 /tools/ @ORESoftware
 /Cargo.toml @ORESoftware
 /Cargo.lock @ORESoftware
+/.github/private-ci-approved-repositories.txt @ORESoftware\n/.github/workflows/private-ci-policy.yml @ORESoftware\n
