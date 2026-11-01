@@ -4,7 +4,12 @@
 #![cfg(target_os = "linux")]
 
 use oreslang_source_rs::compile;
-use std::{fs, path::PathBuf, process::Command, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs,
+    path::PathBuf,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 struct TemporaryBuild(PathBuf);
 
