@@ -51,7 +51,7 @@ fn inspect(
     if !digest(commit, 40) || !digest(tree, 40) || !digest(corpus, 64) {
         return Err("expected pins must be nonzero lowercase full digests".into());
     }
-    if text.len() as u64 > LIMIT || !text.is_ascii() || text.contains('\r') {
+    if text.len() as u64 > LIMIT || !text.is_ascii() || text.contains('\r') || !text.ends_with('\n') {
         return Err("receipt must be bounded canonical ASCII/LF TSV".into());
     }
     let expected = manifest(cases)?;
@@ -268,6 +268,44 @@ mod tests {
             format!("{valid}\n"),
         ] {
             assert!(check(&text, cases).is_err());
+        }
+    }
+
+    #[test]
+    fn canonical_receipts_must_end_with_line_feed() {
+        let valid = receipt(CASES);
+        assert!(check(&valid, CASES).is_ok());
+        assert!(check(valid.trim_end_matches('\n'), CASES).is_err());
+        assert!(check(&(valid.clone() + "\n"), CASES).is_err());
+        assert!(check(&valid.replace('\n', "\r\n"), CASES).is_err());
+    }
+
+    #[test]
+    fn run_job_step_and_test_counts_require_canonical_positive_u64() {
+        let cases = "sample\trust\texecution\n";
+        let valid = receipt(cases);
+        let fields: Vec<_> = valid.lines().nth(1).unwrap().split('\t').collect();
+        for index in 8..12 {
+            for invalid in ["0", "00", "01", "-1", "+1", "1.0", "18446744073709551616"] {
+                let mut row = fields.clone();
+                row[index] = invalid;
+                assert!(check(&format!("{HEADER}\n{}\n", row.join("\t")), cases).is_err(),
+                    "index={index} invalid={invalid}");
+            }
+        }
+    }
+
+    #[test]
+    fn artifact_digest_must_be_canonical_nonzero_sha256_text() {
+        let cases = "sample\trust\texecution\n";
+        let valid = receipt(cases);
+        let fields: Vec<_> = valid.lines().nth(1).unwrap().split('\t').collect();
+        for invalid in ["0".repeat(64), "A".repeat(64), "g".repeat(64),
+                        "4".repeat(63), "4".repeat(65)] {
+            let mut row = fields.clone();
+            row[13] = &invalid;
+            assert!(check(&format!("{HEADER}\n{}\n", row.join("\t")), cases).is_err(),
+                "accepted invalid digest {invalid}");
         }
     }
 }
