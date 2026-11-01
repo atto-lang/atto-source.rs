@@ -51,7 +51,8 @@ fn inspect(
     if !digest(commit, 40) || !digest(tree, 40) || !digest(corpus, 64) {
         return Err("expected pins must be nonzero lowercase full digests".into());
     }
-    if text.len() as u64 > LIMIT || !text.is_ascii() || text.contains('\r') || !text.ends_with('\n') {
+    if text.len() as u64 > LIMIT || !text.is_ascii() || text.contains('\r') || !text.ends_with('\n')
+    {
         return Err("receipt must be bounded canonical ASCII/LF TSV".into());
     }
     let expected = manifest(cases)?;
@@ -289,8 +290,10 @@ mod tests {
             for invalid in ["0", "00", "01", "-1", "+1", "1.0", "18446744073709551616"] {
                 let mut row = fields.clone();
                 row[index] = invalid;
-                assert!(check(&format!("{HEADER}\n{}\n", row.join("\t")), cases).is_err(),
-                    "index={index} invalid={invalid}");
+                assert!(
+                    check(&format!("{HEADER}\n{}\n", row.join("\t")), cases).is_err(),
+                    "index={index} invalid={invalid}"
+                );
             }
         }
     }
@@ -300,12 +303,19 @@ mod tests {
         let cases = "sample\trust\texecution\n";
         let valid = receipt(cases);
         let fields: Vec<_> = valid.lines().nth(1).unwrap().split('\t').collect();
-        for invalid in ["0".repeat(64), "A".repeat(64), "g".repeat(64),
-                        "4".repeat(63), "4".repeat(65)] {
+        for invalid in [
+            "0".repeat(64),
+            "A".repeat(64),
+            "g".repeat(64),
+            "4".repeat(63),
+            "4".repeat(65),
+        ] {
             let mut row = fields.clone();
             row[13] = &invalid;
-            assert!(check(&format!("{HEADER}\n{}\n", row.join("\t")), cases).is_err(),
-                "accepted invalid digest {invalid}");
+            assert!(
+                check(&format!("{HEADER}\n{}\n", row.join("\t")), cases).is_err(),
+                "accepted invalid digest {invalid}"
+            );
         }
     }
 }
