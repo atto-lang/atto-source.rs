@@ -37,19 +37,12 @@ fn is_execution_surface(path: &str) -> bool {
 
 fn forbidden_execution_line(line: &str) -> bool {
     let l = line.trim().to_ascii_lowercase();
-    if l.starts_with('#') {
+    // GitHub step labels describe the policy; they never launch a command.
+    if l.starts_with('#') || l.starts_with("name:") || l.starts_with("- name:") {
         return false;
     }
     [
         "actions/setup-python@",
-        "python -m ",
-        "python3 -m ",
-        "python -c ",
-        "python3 -c ",
-        "python ",
-        "python3 ",
-        "pypy ",
-        "pypy3 ",
         "pip install",
         "pip3 install",
         "uv run ",
@@ -59,6 +52,23 @@ fn forbidden_execution_line(line: &str) -> bool {
     ]
     .iter()
     .any(|needle| l.contains(needle))
+        || [
+            "python -m ", "python3 -m ", "python -c ", "python3 -c ",
+            "python ", "python3 ", "pypy ", "pypy3 ",
+        ]
+        .iter()
+        .any(|needle| {
+            // A token like "check-no-python" is NOT a Python invocation.
+            // Require an executable boundary, while retaining detection after
+            // shell separators, an absolute path, or a YAML run prefix.
+            l.match_indices(needle).any(|(at, _)| {
+                at == 0
+                    || matches!(
+                        l.as_bytes()[at - 1],
+                        b' ' | b'\\t' | b':' | b'/' | b'(' | b';' | b'&' | b'|' | b'='
+                    )
+            })
+        })
 }
 
 fn python_shebang(body: &str) -> bool {
@@ -170,6 +180,12 @@ mod tests {
         assert!(forbidden_execution_line("pip install -r requirements.txt"));
         assert!(forbidden_execution_line("uv run tool.py"));
         assert!(!forbidden_execution_line("- run: cargo test"));
+        assert!(!forbidden_execution_line("- name: Reject Python files and execution"));
+        assert!(!forbidden_execution_line("name: Prohibit Python"));
+        assert!(!forbidden_execution_line("/tmp/check-no-python ."));
+        assert!(!forbidden_execution_line("run: cargo run --manifest-path tools/no-python-check/Cargo.toml -- ."));
+        assert!(forbidden_execution_line("run: /tmp/check-no-python . && python3 tests/run.py"));
+        assert!(forbidden_execution_line("/usr/bin/python3 script.py"));
     }
 
     #[test]
