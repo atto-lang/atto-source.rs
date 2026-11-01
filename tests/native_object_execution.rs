@@ -118,3 +118,64 @@ fn true_native_guest_preserves_local_initializers() {
         42,
     );
 }
+
+#[test]
+fn native_guest_nested_forward_calls_preserve_arguments() {
+    run_guest(
+        "pub fnc main(): int { return twice(plus_one(20)); } fnc twice(int x): int { return x*2; } fnc plus_one(int x): int { return x+1; }",
+        42,
+    );
+}
+
+#[test]
+fn native_guest_call_from_const_initializer() {
+    run_guest(
+        "pub fnc main(): int { const x: int = add(20,22); return x; } fnc add(int a,int b): int { return a+b; }",
+        42,
+    );
+}
+
+#[test]
+fn native_guest_lexical_comments_do_not_change_return_value() {
+    run_guest(
+        "/* begin /* nested */ ignored */ pub fnc main(): int { // inline\n return 6 * 7; }",
+        42,
+    );
+}
+
+#[test]
+fn native_guest_exact_minimum_boundary_delta() {
+    run_guest(
+        "pub fnc main(): int { return (-9223372036854775808 + 9223372036854775807) + 43; }",
+        42,
+    );
+}
+
+#[test]
+fn native_guest_exact_high_precision_subtraction_with_underscores() {
+    run_guest(
+        "pub fnc main(): int { return 9_007_199_254_741_034 - 9_007_199_254_740_992; }",
+        42,
+    );
+}
+
+#[test]
+fn native_guest_nested_negative_signs_preserve_meaning() {
+    run_guest(
+        "pub fnc main(): int { return -(-((6*7))); }",
+        42,
+    );
+}
+
+#[test]
+fn native_guest_zero_exit_is_not_silently_changed() {
+    run_guest("pub fnc main(): int { return 42-42; }", 0);
+}
+
+#[test]
+fn native_guest_parameter_negation_compiles_to_signed_result() {
+    run_guest(
+        "pub fnc main(): int { return flip(-42); } fnc flip(int x): int { return -x; }",
+        42,
+    );
+}
