@@ -65,7 +65,7 @@ fn forbidden_execution_line(line: &str) -> bool {
                 at == 0
                     || matches!(
                         l.as_bytes()[at - 1],
-                        b' ' | b'\\t' | b':' | b'/' | b'(' | b';' | b'&' | b'|' | b'='
+                        b' ' | b'\t' | b':' | b'/' | b'(' | b';' | b'&' | b'|' | b'='
                     )
             })
         })
