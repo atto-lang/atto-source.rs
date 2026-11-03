@@ -1,0 +1,39 @@
+name: Private CI deny-by-default policy
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  private-ci-deny-default:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind policy validation to exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+      - name: Require private source export to remain disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=.github/private-ci-approved-repositories.txt
+          test -f "$file"
+          if grep -Ev '^[[:space:]]*(#.*)?$' "$file" | grep -q .; then
+            echo "PRIVATE_CI_EXPORT_REJECTED: active destination requires dedicated reviewed authorization machinery" >&2
+            exit 1
+          fi
+          echo "private CI export policy: disabled by default"
