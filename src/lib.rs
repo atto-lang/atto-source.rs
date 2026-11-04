@@ -5,6 +5,8 @@ pub mod effects;
 pub mod flow;
 pub mod frontend;
 pub mod mir;
+pub mod profile;
+pub mod safety;
 pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;

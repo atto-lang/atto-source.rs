@@ -161,6 +161,14 @@ fn main() {
     match env::args().nth(1).as_deref() {
         Some("static-facts") => verify_static_facts(),
         Some("effects") => verify_effects(),
+        Some("safety") => {
+            let scalar = read_json("target/safety.json");
+            assert_eq!(scalar["effects_complete"], true);
+            assert_eq!(scalar["functions"][0]["control_flow"], "linear");
+            assert_eq!(scalar["functions"][0]["max_uninterrupted_units"], 16);
+            let calls = read_json("target/safety-calls.json");
+            assert!(calls["functions"][0]["events"].as_array().unwrap().iter().any(|event| event["kind"] == "call"));
+        },
         Some("scalar-flow") => assert_eq!(read_json("target/flow.json"), read_json("tests/fixtures/flow-scalar.json")),
         Some("paired-effects") => assert_eq!(
             read_json("target/paired-forward.effects.json"),
@@ -171,7 +179,7 @@ fn main() {
         Some("cfg-call") => verify_cfg("target/cfg-v2-call.json", true),
         Some("oversized") => fs::write("target/oversized.ores", vec![b'x'; 1_048_578])
             .unwrap_or_else(|e| fail(format!("write oversized fixture: {e}"))),
-        _ => fail("usage: ci_verify <static-facts|effects|scalar-flow|paired-effects|cfg|cfg-call|oversized>"),
+        _ => fail("usage: ci_verify <static-facts|effects|safety|scalar-flow|paired-effects|cfg|cfg-call|oversized>"),
     }
 }
 

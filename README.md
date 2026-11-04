@@ -22,3 +22,18 @@ The prototype currently accepts both the braced and as/end spellings for a stati
 Implement tooling previously written in Python in **Rust** instead. Preserve behavior and test coverage while migrating; use `cargo fmt`, `cargo clippy`, and `cargo test` for Rust code. Existing Python must be inventoried and ported, not merely deleted if it implements required behavior. Changes introducing Python must be rejected in review and CI. References discussing the prohibition are allowed in documentation; they are not an authorization to execute Python.
 
 This rule applies across all repositories, including compiler backends, examples, benchmarks, workflows, and documentation. Language implementations written in Java, LLVM/other native languages, .NET, etc. remain in their existing implementation languages; **the Python-to-Rust mandate applies to Python tooling and Python implementations**.
+
+## Build profiles
+
+The compiler accepts `--release`, `--strict-aot`, and `--hard-rt` as mutually
+exclusive selectors, plus orthogonal `--freestanding`.
+
+The current scalar subset contains no runtime reflection, heap/GC, dynamic dispatch,
+dynamic code loading, blocking I/O, or loops. Release-or-stronger compilation performs
+a semantic call-graph reachability pass before Cranelift and removes unreachable private
+functions. Strict AOT uses the same closed world and emits only native object code.
+
+Hard-RT admission is intentionally fail-closed: the compiler now proves a bounded,
+acyclic call graph as a precondition, but rejects the final `--hard-rt` request until
+target-specific WCET/deadline evidence is implemented. It does not relabel “native AOT”
+as a hard-real-time proof.

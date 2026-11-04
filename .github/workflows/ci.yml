@@ -102,3 +102,8 @@ jobs:
           actual=$?
           set -e
           test "$actual" -eq 42 || { echo "paired native executable must return 42, got $actual"; exit 1; }
+      - name: Verify safety MIR exporter and fail-closed call edges
+        run: |
+          cargo run --locked --bin oresc -- --safety-ir examples/answer.ores 16 > target/safety.json
+          cargo run --locked --bin oresc -- --safety-ir tests/fixtures/forward.ores 16 > target/safety-calls.json
+          cargo run --locked --bin ci_verify -- safety

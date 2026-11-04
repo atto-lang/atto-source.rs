@@ -1,4 +1,8 @@
-use oreslang_source_rs::{cfg, codegen, effects, flow, frontend, mir};
+use oreslang_source_rs::{
+    cfg, codegen, effects, flow, frontend, mir,
+    profile::{self, BuildProfile},
+    safety,
+};
 use std::{env, fs, io::Read, path::Path, process::ExitCode};
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
@@ -22,9 +26,37 @@ fn canonical_destination(path: &str) -> Result<std::path::PathBuf, String> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<_> = env::args().collect();
+    let raw_args: Vec<String> = env::args().collect();
     let result: Result<(), String> = (|| {
+        let mut profile = BuildProfile::Dev;
+        let mut profile_seen = false;
+        let mut freestanding = false;
+        let mut args = Vec::with_capacity(raw_args.len());
+        args.push(raw_args[0].clone());
+
+        for arg in raw_args.iter().skip(1) {
+            if let Some(selected) = BuildProfile::parse_flag(arg) {
+                if profile_seen {
+                    return Err(
+                        "--release, --strict-aot and --hard-rt are mutually exclusive".into(),
+                    );
+                }
+                profile = selected;
+                profile_seen = true;
+            } else if arg == "--freestanding" {
+                if freestanding {
+                    return Err("duplicate --freestanding".into());
+                }
+                freestanding = true;
+            } else {
+                args.push(arg.clone());
+            }
+        }
+
         let (mode, input, output, effects_output, budget) = match args.as_slice() {
+            [_, flag, input] if flag == "--safety-ir" => ("safety", input.as_str(), None, None, None),
+            [_, flag, input, units] if flag == "--safety-ir" => ("safety", input.as_str(), None, None,
+                Some(units.parse::<u64>().map_err(|_| "invalid abstract compute budget")?)),
             [_, flag, units, input] if flag == "--flow" => ("flow", input.as_str(), None, None,
                 Some(units.parse::<u64>().map_err(|_| "invalid abstract compute budget")?)),
             [_, flag, input] if flag == "--check" || flag == "--effects" || flag == "--static-facts" =>
@@ -36,7 +68,7 @@ fn main() -> ExitCode {
                 Some(units.parse::<u64>().map_err(|_| "invalid abstract compute budget")?)),
             [_, input, output] if !input.starts_with("--") =>
                 ("object", input.as_str(), Some(output.as_str()), None, None),
-            _ => return Err("usage: oresc --flow <max-uninterrupted-units> <source.ores> | --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
+            _ => return Err("usage: oresc [--release|--strict-aot|--hard-rt] [--freestanding] --safety-ir <source.ores> [abstract-budget] | --flow <max-uninterrupted-units> <source.ores> | --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
         };
         let source_id = fs::canonicalize(input).map_err(|e| e.to_string())?;
         let object_id = if let Some(path) = output {
@@ -64,8 +96,13 @@ fn main() -> ExitCode {
         if source.len() > MAX_SOURCE_BYTES {
             return Err("source too large: exceeds 1 MiB admission budget".into());
         }
+        let parsed = frontend::parse(&source).map_err(|e| e.to_string())?;
+        let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
+        let _freestanding = freestanding;
+        let checked = profile::apply(checked, profile)?;
         if mode == "--compile-with-effects" {
-            let (object, facts) = oreslang_source_rs::compile_with_effect_ir(&source)?;
+            let object = codegen::emit_object(&checked)?;
+            let facts = effects::export_effect_ir_checked(&checked)?;
             let serialized = serde_json::to_vec(&facts).map_err(|e| e.to_string())?;
             // All compilation completes before writing either artifact. These
             // two file writes are not a transactional/atomic commit.
@@ -73,10 +110,13 @@ fn main() -> ExitCode {
             fs::write(effects_output.ok_or("missing effect output")?, serialized)
                 .map_err(|e| e.to_string())?;
         } else {
-            let parsed = frontend::parse(&source).map_err(|e| e.to_string())?;
-            let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
             match mode {
                 "--check" => println!("OK: {} function(s)", checked.functions.len()),
+                "safety" => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&safety::export_safety_ir(&checked, budget))
+                        .map_err(|e| e.to_string())?
+                ),
                 "flow" => println!(
                     "{}",
                     serde_json::to_string_pretty(&flow::export_scalar_flow(
