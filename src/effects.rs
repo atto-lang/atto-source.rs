@@ -84,7 +84,26 @@ pub fn export_effect_ir(module: &Module) -> Value {
             json!({"name": func.symbol, "operations": operations})
         })
         .collect();
-    json!({"schema_version": 1, "functions": functions})
+    json!({
+        "schema_version": 1,
+        "functions": functions
+    })
+}
+
+/// Optional layout metadata envelope; the nested canonical effect-IR v1
+/// remains byte/schema compatible with mainline analyzer golden fixtures.
+/// This describes internal representation only, not runtime/borrow authority.
+pub fn export_effect_ir_with_layout_checked(module: &Module) -> Result<Value, String> {
+    let effect_ir = export_effect_ir_checked(module)?;
+    Ok(json!({
+        "schema": "oreslang.managed-ref-effect-envelope.v1",
+        "target": {
+            "managed_reference_mode": module.managed_refs.mode_name(),
+            "managed_reference_storage_bits": module.managed_refs.storage_bits(),
+            "managed_reference_alignment_shift": module.managed_refs.alignment_shift(),
+        },
+        "effect_ir": effect_ir
+    }))
 }
 
 #[cfg(test)]
@@ -117,6 +136,7 @@ mod tests {
             expression = Expr::Negate(Box::new(expression));
         }
         let module = Module {
+            managed_refs: crate::ref_layout::ManagedRefLayout::default(),
             functions: vec![crate::mir::Function {
                 symbol: "x".into(),
                 exported: false,
@@ -138,4 +158,21 @@ mod tests {
         assert_eq!(ir["functions"][0]["operations"][2]["kind"], "call");
         assert_eq!(ir["functions"][0]["operations"][2]["target"], "add");
     }
+    #[test]
+    fn layout_envelope_preserves_canonical_effect_v1_fixture() {
+        let source = include_str!("../tests/fixtures/forward.ores");
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/forward.effects.json")).unwrap();
+        for layout in [crate::ref_layout::ManagedRefLayout::default(),
+                       crate::ref_layout::ManagedRefLayout::native()] {
+            let module = crate::mir::lower_with_ref_layout(
+                crate::frontend::parse(source).unwrap(), layout).unwrap();
+            let envelope = export_effect_ir_with_layout_checked(&module).unwrap();
+            assert_eq!(envelope["effect_ir"], expected);
+            assert_eq!(envelope["target"]["managed_reference_mode"], layout.mode_name());
+            assert_eq!(envelope["target"]["managed_reference_storage_bits"], layout.storage_bits());
+            assert_eq!(export_effect_ir_checked(&module).unwrap(), expected);
+        }
+    }
+
 }
