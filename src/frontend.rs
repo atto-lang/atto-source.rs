@@ -149,6 +149,39 @@ pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
 
+/// Execution-domain words reserved by every Oreslang backend (Java and LLVM
+/// reject them as identifiers too).
+pub const EXECUTION_DOMAIN_WORDS: [&str; 3] = ["cpu", "gpu", "quantum"];
+
+/// This compiler lowers no cpu/gpu/quantum region or CPU/GPU Task. Reject them
+/// with a dedicated diagnostic before parsing, never an incidental syntax
+/// error that a later grammar extension could turn into host execution.
+fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Identifier {
+            continue;
+        }
+        let opens_block = tokens.get(index + 1).map(|next| next.kind) == Some(Kind::LBrace);
+        let message = if EXECUTION_DOMAIN_WORDS.contains(&token.text.as_str()) {
+            format!(
+                "execution domain '{}' is reserved and not lowered by this backend; no implicit CPU fallback",
+                token.text
+            )
+        } else if opens_block && (token.text == "task" || token.text == "nb") {
+            "execution task requires scheduler-aware Future lowering; no implicit inline execution"
+                .into()
+        } else {
+            continue;
+        };
+        return Err(ParseError {
+            offset: token.start,
+            class: "execution_domain_unsupported",
+            message,
+        });
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -195,6 +228,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             start: range.start,
         });
     }
+    reject_execution_domains(&tokens)?;
     let mut parser = Parser {
         tokens,
         cursor: 0,
