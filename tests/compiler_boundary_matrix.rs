@@ -189,6 +189,7 @@ fn effect_budget_rejects_adversarial_mir_without_recursive_export() {
             locals: vec![],
             return_value: expr,
         }],
+        managed_refs: Default::default(),
     };
     let error = effects::export_effect_ir_checked(&module).unwrap_err();
     assert!(error.contains("depth") || error.contains("budget"), "{error}");
