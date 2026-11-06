@@ -35,6 +35,13 @@ git add file.txt
 expect_deny 'staged tracked mutation' "$head"
 git show HEAD:file.txt > file.txt
 expect_deny 'staged-only index mutation, clean worktree' "$head"; restore
+printf 'hidden change\n' > file.txt
+git update-index --assume-unchanged file.txt
+expect_deny 'assume-unchanged hides a modified tracked file' "$head"
+git update-index --no-assume-unchanged file.txt; restore
+git update-index --skip-worktree file.txt
+expect_deny 'skip-worktree index marker on clean file' "$head"
+git update-index --no-skip-worktree file.txt; restore
 printf 'extra\n' > extra.txt
 expect_deny 'untracked file' "$head"; restore
 mkdir ignored
