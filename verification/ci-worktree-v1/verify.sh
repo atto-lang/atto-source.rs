@@ -9,6 +9,15 @@ root=$(git -c core.fsmonitor=false rev-parse --show-toplevel) || fail 'Git check
 [[ "$(pwd -P)" == "$(cd "$root" && pwd -P)" ]] || fail 'must run from repository root'
 [[ "$(git -c core.fsmonitor=false rev-parse --verify HEAD)" == "$1" ]] || fail 'checkout HEAD differs from expected source commit'
 [[ "$(git -c core.fsmonitor=false rev-parse --verify 'HEAD^{tree}')" =~ ^[0-9a-f]{40}$ ]] || fail 'cannot identify source tree'
+# Refuse Git assume-unchanged and skip-worktree index bits: either can hide
+# modified tracked content from ordinary diff/status even at the correct HEAD.
+index_flags=$(mktemp) || fail 'cannot allocate index-flags receipt'
+trap 'rm -f -- "$index_flags"' EXIT
+git -c core.fsmonitor=false ls-files -v -z > "$index_flags" || fail 'cannot enumerate Git index flags'
+[[ -s "$index_flags" ]] || fail 'empty tracked Git index'
+while IFS= read -r -d '' indexed; do
+  [[ "${indexed:0:2}" == 'H ' ]] || fail 'nonordinary assume-unchanged or skip-worktree index flag'
+done < "$index_flags"
 # Both comparisons are essential: the index may be dirty even if the worktree
 # has been restored to HEAD, and a plain unstaged diff does not check that case.
 git -c core.fsmonitor=false diff --no-ext-diff --no-textconv --cached --quiet HEAD -- || fail 'staged/index changes detected'
