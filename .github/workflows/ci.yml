@@ -13,17 +13,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Verify exact source revision
+      - name: Verify exact source revision, clean index and physical checkout
         shell: bash
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
-          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          git diff --quiet --exit-code
-          test -z "$(git ls-files --others --exclude-standard)"
-          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          bash verification/ci-worktree-v1/verify.sh "$EXPECTED_HEAD"
+          bash verification/ci-worktree-v1/test.sh
+          bash verification/ci-worktree-v1/verify.sh "$EXPECTED_HEAD"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable snapshot 2026-10-25
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --all-targets
