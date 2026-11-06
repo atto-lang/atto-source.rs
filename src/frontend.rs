@@ -145,6 +145,29 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
         message: "comment preprocessing failed".into(),
     })
 }
+
+// Only a single underscore between decimal digits is admitted.
+// Without this check, tokens such as 1__0 and 1_ silently normalize to 10 and
+// 1, allowing malformed source to compile with a different spelling.
+fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
+    let bytes = token.text.as_bytes();
+    for index in 0..bytes.len() {
+        if bytes[index] == b'_'
+            && (index == 0
+                || index + 1 == bytes.len()
+                || !bytes[index - 1].is_ascii_digit()
+                || !bytes[index + 1].is_ascii_digit())
+        {
+            return Err(ParseError {
+                offset: token.start + index,
+                class: "syntax_error",
+                message: "invalid integer digit separator".into(),
+            });
+        }
+    }
+    Ok(token.text.replace('_', ""))
+}
+
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
@@ -379,9 +402,7 @@ impl Parser {
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
-                let integer = t
-                    .text
-                    .replace('_', "")
+                let integer = normalized_integer_digits(&t)?
                     .parse::<i64>()
                     .map_err(|_| ParseError {
                         offset: t.start,
@@ -416,7 +437,7 @@ impl Parser {
                 // magnitude is outside i64.
                 if self.peek() == Some(Kind::Number) {
                     let token = self.tokens[self.cursor].clone();
-                    let magnitude = token.text.replace('_', "");
+                    let magnitude = normalized_integer_digits(&token)?;
                     if magnitude == "9223372036854775808" {
                         self.expect(Kind::Number)?;
                         return Ok(Expr::Integer(i64::MIN));
