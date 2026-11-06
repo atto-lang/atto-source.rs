@@ -60,12 +60,13 @@ fn forbidden_execution_line(line: &str) -> bool {
 // the old trailing-ASCII-space check missed both, and a bare "python3" ran.
 fn python_command_word(line: &str) -> bool {
     let bytes = line.as_bytes();
-    for name in ["python", "pypy"] {
+    for name in ["pythonw", "python", "pypy", "py"] {
         for (at, _) in line.match_indices(name) {
             if at > 0
                 && !matches!(
                     bytes[at - 1],
-                    b' ' | b'\t' | b':' | b'/' | b'(' | b';' | b'&' | b'|' | b'='
+                    b' ' | b'\t' | b':' | b'/' | b'\\' | b'(' | b';'
+                        | b'&' | b'|' | b'=' | b'\'' | b'"' | b'\x60'
                 )
             {
                 continue;
@@ -84,10 +85,15 @@ fn python_command_word(line: &str) -> bool {
                     end += 1;
                 }
             }
+            // Include Windows .exe interpreter names without admitting .md paths.
+            if line[end..].starts_with(".exe") {
+                end += 4;
+            }
             if end == bytes.len()
                 || matches!(
                     bytes[end],
-                    b' ' | b'\t' | b';' | b'&' | b'|' | b'(' | b')' | b'<' | b'>' | b'$'
+                    b' ' | b'\t' | b';' | b'&' | b'|' | b'(' | b')'
+                        | b'<' | b'>' | b'$' | b'\'' | b'"' | b'\x60'
                 )
             {
                 return true;
@@ -237,6 +243,33 @@ mod tests {
             "/tmp/check-no-python3 .",
             "run: echo status=python3-result",
             "run: echo docs/python3.md",
+        ] {
+            assert!(!forbidden_execution_line(line), "false positive: {line}");
+        }
+    }
+
+    #[test]
+    fn rejects_quoted_and_windows_interpreter_invocations() {
+        for line in [
+            "run: bash -lc 'python3 -m pytest'",
+            "run: sh -c \"python3 -c 'print(1)'\"",
+            r#"run: & "C:\Python312\python.exe" -m pytest"#,
+            r#"run: & "C:\Python312\pythonw.exe" script.py"#,
+            "run: python3.12.exe -m pytest",
+            "run: pypy3.10.exe -m pytest",
+            "run: py -3 -m pytest",
+            "run: py.exe -3 -m pytest",
+            "run: \u{60}python3\u{60}",
+            "run: python3.exe",
+        ] {
+            assert!(forbidden_execution_line(line), "missed interpreter: {line}");
+        }
+        for line in [
+            "run: cargo test --bin check-no-python.exe",
+            "run: echo docs/python3.md",
+            "run: echo docs/pyproject.toml",
+            "run: echo 'no-python-control'",
+            "- name: Check py.exe launcher policy",
         ] {
             assert!(!forbidden_execution_line(line), "false positive: {line}");
         }
