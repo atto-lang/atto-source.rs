@@ -12,7 +12,11 @@ git config user.name 'CI fixture'
 git config user.email 'ci-fixture@example.invalid'
 printf 'base\n' > file.txt
 printf 'ignored/\n' > .gitignore
-git add file.txt .gitignore
+printf 'literal case source\n' > source.atto
+printf '#!/bin/sh\n' > task.sh
+ln -s source.atto link
+chmod 644 task.sh
+git add file.txt .gitignore source.atto task.sh link
 git commit -qm 'fixture base'
 head=$(git rev-parse HEAD)
 pass=0
@@ -42,6 +46,18 @@ git update-index --no-assume-unchanged file.txt; restore
 git update-index --skip-worktree file.txt
 expect_deny 'skip-worktree index marker on clean file' "$head"
 git update-index --no-skip-worktree file.txt; restore
+chmod 755 task.sh
+git config core.filemode false
+expect_deny 'filemode=false hides tracked executable-bit mutation' "$head"
+git config core.filemode true; chmod 644 task.sh; restore
+rm link; printf 'source.atto' > link
+git config core.symlinks false
+expect_deny 'symlinks=false hides plain file replacing tracked symlink' "$head"
+git config core.symlinks true; rm link; ln -s source.atto link; restore
+printf 'shadow path\n' > SOURCE.atto
+git config core.ignorecase true
+expect_deny 'ignorecase=true hides case-colliding source file' "$head"
+git config core.ignorecase false; restore
 printf 'extra\n' > extra.txt
 expect_deny 'untracked file' "$head"; restore
 mkdir ignored
