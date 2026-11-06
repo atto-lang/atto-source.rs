@@ -36,7 +36,15 @@ jobs:
           set -euo pipefail
           file=.github/private-ci-approved-repositories.txt
           test -f "$file"
-          if grep -Ev '^[[:space:]]*(#.*)?$' "$file" | grep -q .; then
+          test ! -L "$file"
+          test "$(stat -c %s -- "$file")" -le 65536
+          # One grep process avoids false acceptance from SIGPIPE under pipefail.
+          if grep -Evq '^[[:space:]]*(#.*)?
+            echo "PRIVATE_CI_EXPORT_REJECTED: active destination requires dedicated reviewed authorization machinery" >&2
+            exit 1
+          fi
+          echo "private CI export policy: disabled by default"
+ "$file"; then
             echo "PRIVATE_CI_EXPORT_REJECTED: active destination requires dedicated reviewed authorization machinery" >&2
             exit 1
           fi
