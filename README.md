@@ -68,6 +68,8 @@ pub fnc main(): int {
 
 ### Executable immutable-class example
 
+Class allocation requires the explicit `new` keyword. `Point()` is rejected with `E_NEW_REQUIRED`; only `new Point()` allocates. Ordinary `fnc` calls remain `f()`, without `new`.
+
 ```atto
 define class Point as
   int x: 40
@@ -86,7 +88,7 @@ The bounded class allocator uses the same guest `memory` export as literal outpu
 
 ## Guest contract `atto.browser.guest.v1`
 
-- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; code 2 is reserved and unreachable because integer division/remainder is not admitted; 3 = fixed class heap exhausted). `memory` is exported only when string literals are printed.
+- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; code 2 is reserved and unreachable because integer division/remainder is not admitted; 3 = fixed class heap exhausted). `memory` is exported when string literals are printed **or class instances are allocated**.
 - **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)` and `print_newline()`. There are no other capabilities.
 - **Determinism:** output is a pure function of the source. The native and wasm32 hosts emit byte-identical modules.
 
