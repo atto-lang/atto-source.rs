@@ -5,6 +5,8 @@
 //! subset are recognised and rejected with `E_UNSUPPORTED` rather than being
 //! mis-parsed or silently approximated.
 
+use std::collections::BTreeSet;
+
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
@@ -27,6 +29,7 @@ const RESERVED: &[&str] = &[
     "contract",
     "conforms",
     "class",
+    "enum",
     "struct",
     "interface",
     "trait",
@@ -369,17 +372,102 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> R<Program> {
         let mut funcs = Vec::new();
+        let mut type_names = BTreeSet::new();
         while *self.peek() != Tok::Eof {
-            if funcs.len() >= MAX_FUNCS {
+            if funcs.len() + type_names.len() >= MAX_FUNCS {
                 return Err(Diagnostic::new(
                     self.pos(),
                     "E_SOURCE_LIMIT",
-                    format!("more than {MAX_FUNCS} functions"),
+                    format!("more than {MAX_FUNCS} top-level declarations"),
                 ));
             }
-            funcs.push(self.parse_func()?);
+            if self.is_word("define")
+                || (self.is_word("pub") && self.word_at(1) == Some("define"))
+            {
+                let (name, pos) = self.parse_type_decl()?;
+                if !type_names.insert(name.clone()) || funcs.iter().any(|f: &Func| f.name == name) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate top-level name '{name}'")));
+                }
+            } else {
+                let func = self.parse_func()?;
+                if type_names.contains(&func.name) {
+                    return Err(Diagnostic::new(func.pos, "E_DUPLICATE", format!("top-level name '{}' is a type", func.name)));
+                }
+                funcs.push(func);
+            }
         }
         Ok(Program { funcs })
+    }
+
+    /// The browser can validate unreferenced top-level type declarations,
+    /// but does not have class allocation, actor isolation or nominal enum
+    /// values. Only inert declarations are admitted. Never erase members.
+    fn parse_type_decl(&mut self) -> R<(String, Pos)> {
+        self.eat_word("pub");
+        self.expect_word("define")?;
+        self.eat_word("pub");
+        let kind = if self.eat_word("class") {
+            "class"
+        } else if self.eat_word("actor") {
+            "actor"
+        } else if self.eat_word("enum") {
+            "enum"
+        } else {
+            return Err(unsupported(self.pos(), "this 'define' declaration kind"));
+        };
+        let (name, pos) = self.ident("a type name")?;
+        if *self.peek() == Tok::Lt {
+            return Err(unsupported(self.pos(), "generic type declarations"));
+        }
+        if matches!(self.word_at(0), Some("extends" | "implements" | "impl" | "conforms")) {
+            return Err(unsupported(self.pos(), "type inheritance and conformance"));
+        }
+        let braces = if self.eat_word("as") {
+            false
+        } else if self.eat(&Tok::LBrace) {
+            true
+        } else {
+            return Err(self.expected("'as' or '{'"));
+        };
+        let closing = if braces { Tok::RBrace } else { Tok::Ident("end".into()) };
+        if kind == "enum" {
+            let mut variants = BTreeSet::new();
+            while *self.peek() != closing {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected(if braces { "'}'" } else { "'end'" }));
+                }
+                if variants.len() >= MAX_FUNCS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many enum variants"));
+                }
+                let (variant, at) = self.ident("an enum variant")?;
+                if !variants.insert(variant.clone()) {
+                    return Err(Diagnostic::new(at, "E_DUPLICATE", format!("duplicate enum variant '{variant}'")));
+                }
+                if *self.peek() == closing {
+                    break;
+                }
+                if self.eat(&Tok::Comma) || self.eat(&Tok::Semi) {
+                    continue;
+                }
+                if matches!(self.peek(), Tok::Assign | Tok::LParen | Tok::LBrace) {
+                    return Err(unsupported(self.pos(), "enum payloads and explicit discriminants"));
+                }
+                if self.toks[self.i - 1].pos.line >= self.pos().line {
+                    return Err(self.expected("',' or a newline between enum variants"));
+                }
+            }
+            if variants.is_empty() {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "enum must declare at least one variant"));
+            }
+        } else if *self.peek() != closing {
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected(if braces { "'}'" } else { "'end'" }));
+            }
+            return Err(unsupported(self.pos(), "class and actor members/state"));
+        }
+        self.expect(closing, if braces { "'}'" } else { "'end'" })?;
+        self.eat(&Tok::Semi);
+        Ok((name, pos))
     }
 
     fn parse_func(&mut self) -> R<Func> {
