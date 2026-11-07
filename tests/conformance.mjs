@@ -258,6 +258,41 @@ for (const [name, def, code] of [
   });
 }
 
+// ---- source-compiled scalar actor receive guest ABI --------------------------
+check('actor/source-compiled-receive-guest-executes', () => {
+  assert.equal(typeof api.compile_actor, 'function', 'compiler must expose separate actor ABI entrypoint');
+  const src = 'define actor Worker as receive(int value): int { return value + 2; } end';
+  const bytes = encoder.encode(src);
+  new Uint8Array(api.memory.buffer, api.input_ptr(), bytes.length).set(bytes);
+  assert.equal(api.compile_actor(bytes.length), 0);
+  const guest = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+  assert.ok(WebAssembly.validate(guest));
+  const mod = new WebAssembly.Module(guest);
+  assert.deepEqual(WebAssembly.Module.imports(mod), []);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(x => x.name), ['receive']);
+  const actor = new WebAssembly.Instance(mod, {});
+  assert.equal(actor.exports.receive(40n), 42n);
+  assert.equal(actor.exports.receive(-1n), 1n);
+});
+for (const [label, src, want] of [
+  ['wrong-type', 'define actor A as receive(bool value): int { return 42; } end', 'E_UNSUPPORTED'],
+  ['multi-handlers', 'define actor A as receive(int x): int { return x; } receive(int y): int { return y; } end', 'E_DUPLICATE'],
+  ['no-handler', 'define actor A as end', 'E_ACTOR_ENTRY'],
+  ['unsupported-body', 'define actor A as int state: 0 end', 'E_UNSUPPORTED'],
+  ['stdio-import', 'define actor A as receive(int x): int { stdio.println(x); return x; } end', 'E_ACTOR_IMPORT'],
+]) {
+  check(`actor/${label}-fails-closed`, () => {
+    const bytes = encoder.encode(src);
+    new Uint8Array(api.memory.buffer, api.input_ptr(), bytes.length).set(bytes);
+    assert.equal(api.compile_actor(bytes.length), 1);
+    assert.equal(api.result_length(), 0);
+    const mem = new Uint8Array(api.memory.buffer);
+    let end = api.error_ptr();
+    while (mem[end]) end++;
+    assert.ok(decoder.decode(mem.subarray(api.error_ptr(), end)).startsWith(want + ':'), label);
+  });
+}
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);
