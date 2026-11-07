@@ -184,3 +184,32 @@ fn native_guest_parameter_negation_compiles_to_signed_result() {
         42,
     );
 }
+
+#[test]
+fn shared_llvm_oresllm_scalar_corpus_executes_as_rust_native_guests() {
+    // Every guest source is byte-identical to the shared LLVM v1 .ores file;
+    // the .atto extension is canonical for new AttoLang guest tests.
+    for (name, source) in [
+        ("oresllm-precedence", include_str!("fixtures/oresllm_scalar_v1/oresllm-precedence.atto")),
+        ("oresllm-scalar-gradient", include_str!("fixtures/oresllm_scalar_v1/oresllm-scalar-gradient.atto")),
+        ("oresllm-signed-product", include_str!("fixtures/oresllm_scalar_v1/oresllm-signed-product.atto")),
+        ("oresllm-grouped-negative", include_str!("fixtures/oresllm_scalar_v1/oresllm-grouped-negative.atto")),
+        ("oresllm-nested-precedence", include_str!("fixtures/oresllm_scalar_v1/oresllm-nested-precedence.atto")),
+        ("oresllm-max-minus-one", include_str!("fixtures/oresllm_scalar_v1/oresllm-max-minus-one.atto")),
+        ("oresllm-zero-product", include_str!("fixtures/oresllm_scalar_v1/oresllm-zero-product.atto")),
+        ("oresllm-nested-arithmetic", include_str!("fixtures/oresllm_scalar_v1/oresllm-nested-arithmetic.atto")),
+        ("oresllm-subtract-self", include_str!("fixtures/oresllm_scalar_v1/oresllm-subtract-self.atto")),
+        ("oresllm-zero-add", include_str!("fixtures/oresllm_scalar_v1/oresllm-zero-add.atto")),
+        ("oresllm-signed-subtract", include_str!("fixtures/oresllm_scalar_v1/oresllm-signed-subtract.atto")),
+        ("oresllm-left-associative", include_str!("fixtures/oresllm_scalar_v1/oresllm-left-associative.atto")),
+        ("oresllm-zero-times-max", include_str!("fixtures/oresllm_scalar_v1/oresllm-zero-times-max.atto")),
+        ("oresllm-over-2pow53", include_str!("fixtures/oresllm_scalar_v1/oresllm-over-2pow53.atto")),
+        ("oresllm-min-max-cancel", include_str!("fixtures/oresllm_scalar_v1/oresllm-min-max-cancel.atto")),
+        ("oresllm-near-square", include_str!("fixtures/oresllm_scalar_v1/oresllm-near-square.atto")),
+        ("oresllm-over53-cancel", include_str!("fixtures/oresllm_scalar_v1/oresllm-over53-cancel.atto")),
+    ] {
+        // Parse -> MIR -> Cranelift -> cc link -> native guest exit 42.
+        assert!(source.starts_with("pub fnc main"), "{name}");
+        run_guest(source, 42);
+    }
+}
