@@ -36,7 +36,7 @@ self.onmessage=async ({data})=>{
     try{value=instance.exports.main()}
     catch(e){
       const code=instance.exports.panic_code.value;
-      const kind=code===1?'integer overflow':code===2?'division by zero':'trap: '+e.message;
+      const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'object arena exhausted':'trap: '+e.message;
       self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
     }
     self.postMessage({ok:true,value:String(value),stdout});

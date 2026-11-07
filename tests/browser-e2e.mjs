@@ -81,6 +81,25 @@ try{
   console.log('PASS browser: val reassignment fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 8; }','main() -> 48'),/48/);
   console.log('PASS browser: different source produces independent Wasm guest result 48');
+  const counter=['define class Counter as',
+    ' let n: int = 0;',
+    ' constructor(value: int) { self.n = value; }',
+    ' increment() -> int { self.n = self.n + 1; return self.n; }',
+    'end'].join('\n')+'\n';
+  assert.match(await run(counter+'pub fnc main(): int { val c=new Counter(40); return c.increment()+1; }',
+    'main() -> 42'),/42/);
+  console.log('PASS browser: actual class constructor and instance method run in worker guest');
+  assert.match(await run(counter+
+    'pub fnc main(): int { val a=new Counter(1);val b=new Counter(10);return a.increment()+b.increment(); }',
+    'main() -> 13'),/13/);
+  console.log('PASS browser: two Wasm class allocations retain independent state');
+  assert.match(await run(counter+
+    'pub fnc main(): int { val a=new Counter(1);val b=a;return 0; }','E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  console.log('PASS browser: class-handle aliasing is rejected with zero executable guest');
+  const exhausted='define class C as let n:int=1; end\n'+
+    'pub fnc main(): int {for(let i=0;i<10000;i++) do val c=new C(); done return 0;}';
+  assert.match(await run(exhausted,'E_PANIC: object arena exhausted'),/object arena exhausted/);
+  console.log('PASS browser: fixed guest object arena traps safely with panic code 3');
   const fib='fnc fib(int n): int {\n  if n < 2 then\n    return n;\n  fi\n  return fib(n - 1) + fib(n - 2);\n}\npub fnc main(): int {\n  for (let i = 0; i < 5; i++) do\n    stdio.println(fib(i));\n  done\n  return fib(20);\n}';
   assert.match(await run(fib,'main() -> 6765'),/^0\n1\n1\n2\n3\nmain\(\) -> 6765$/);
   console.log('PASS browser: recursion, for loop and granted stdio imports');
