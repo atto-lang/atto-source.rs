@@ -9,6 +9,8 @@ pub enum Type {
     Void,
     /// Nominal enum type. This ID is compiler-owned, not a user-supplied tag.
     Enum(u16),
+    /// Nominal heap-allocated class reference (guest-private i32 offset).
+    Class(u16),
 }
 
 impl Type {
@@ -18,6 +20,7 @@ impl Type {
             Type::Bool => "bool",
             Type::Void => "void",
             Type::Enum(_) => "enum",
+            Type::Class(_) => "class",
         }
     }
 }
@@ -67,6 +70,16 @@ pub struct Declaration {
     /// Syntax-only enum variants; nominal enum values/operations are NOT
     /// lowered to browser Wasm until type checking is implemented.
     pub variants: Vec<String>,
+    /// Class fields with explicit scalar defaults; no methods/actors yet.
+    pub fields: Vec<ClassField>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClassField {
+    pub name: String,
+    pub ty: Type,
+    pub default: Expr,
+    pub pos: Pos,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +202,8 @@ pub enum ExprKind {
     Bool(bool),
     /// A nominal enum's named variant; resolved to an i32 tag by the checker.
     EnumVariant { enum_name: String, variant: String },
+    /// Field read; checked against the class's nominal schema.
+    Field(Box<Expr>, String),
     Str(String),
     Var(String),
     Unary(UnOp, Box<Expr>),
