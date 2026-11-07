@@ -764,24 +764,37 @@ impl FnCx<'_> {
                     ty,
                 }
             }
+            ExprKind::NewClass(name, args) => self.construct_class(name, args, pos)?,
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
         })
     }
 
+    /// Allocation is only authorized by an explicit syntax node from `new`.
+    /// This gate is separate from function call/arity lookup: class names are
+    /// *never* callable constructor aliases.
+    fn construct_class(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        let info = self.classes.get(name).ok_or_else(|| {
+            Diagnostic::new(pos, "E_NEW_TYPE",
+                format!("'new' requires a class name, but '{name}' is not a class"))
+        })?;
+        if !args.is_empty() {
+            return Err(Diagnostic::new(pos, "E_ARITY",
+                format!("class '{name}' currently has only a zero-argument default constructor")));
+        }
+        *self.heap_used = true;
+        Ok(TE {
+            e: TExpr::NewClass {
+                size: info.size,
+                fields: info.fields.iter().map(|f| (f.offset, f.value)).collect(),
+            },
+            ty: Type::Class(info.id),
+        })
+    }
+
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
-        if let Some(info) = self.classes.get(name) {
-            if !args.is_empty() {
-                return Err(Diagnostic::new(pos, "E_ARITY",
-                    format!("class '{name}' currently has only a zero-argument default constructor")));
-            }
-            *self.heap_used = true;
-            return Ok(TE {
-                e: TExpr::NewClass {
-                    size: info.size,
-                    fields: info.fields.iter().map(|f| (f.offset, f.value)).collect(),
-                },
-                ty: Type::Class(info.id),
-            });
+        if self.classes.contains_key(name) {
+            return Err(Diagnostic::new(pos, "E_NEW_REQUIRED",
+                format!("class '{name}' requires explicit 'new {name}(...)' construction")));
         }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
