@@ -49,6 +49,10 @@ assert.throws(()=>exhausted.main(),WebAssembly.RuntimeError,'fixed heap must fai
 assert.equal(exhausted.panic_code.value,3,'heap exhaustion must have distinct panic code');
 for (const [src,code] of [
  [cls+'pub fnc main(): int { val c=new Counter(1); val alias=c; return 0; }','E_UNSUPPORTED'],
+ [cls+'pub fnc main(): int { val c=new Counter(1); return Counter.increment(c); }','E_UNSUPPORTED'],
+ [cls+'pub fnc main(): int { val c=new Counter(1); Counter.constructor(c,3); return 0; }','E_UNSUPPORTED'],
+ [cls+'pub fnc main(): int { val a=new Counter(1); val b=new Counter(2); if a eq b then return 1; fi return 0; }','E_UNSUPPORTED'],
+ [cls+'pub fnc main(): int { const a=new Counter(1);return 0; }','E_UNSUPPORTED'],
  [cls+'pub fnc main(): int { val c=new Counter(1); return c.n; }','E_UNSUPPORTED'],
  [cls+'pub fnc main(): int { val c=new Counter(1); c.n=7; return 42; }','E_UNSUPPORTED'],
  [cls+'pub fnc main(): int { val c=new Counter(true); return 0; }','E_TYPE'],

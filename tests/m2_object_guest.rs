@@ -57,3 +57,11 @@ fn actor_runtime_remains_separate() {
  good(&format!("define actor Worker as static fnc answer(): int {{return 42;}} end\n{}",
    main("return Worker.answer();")));
 }
+
+#[test]
+fn rejects_static_shape_method_replay_and_raw_object_equality() {
+ bad(&format!("{COUNTER}{}",main("val a=new Counter(1);return Counter.increment(a);")),"E_UNSUPPORTED");
+ bad(&format!("{COUNTER}{}",main("val a=new Counter(1);Counter.constructor(a,2);return 0;")),"E_UNSUPPORTED");
+ bad(&format!("{COUNTER}{}",main("val a=new Counter(1);val b=new Counter(2);if a eq b then return 1;fi return 0;")),"E_UNSUPPORTED");
+ bad(&format!("{COUNTER}{}",main("const a=new Counter(1);return 0;")),"E_UNSUPPORTED");
+}
