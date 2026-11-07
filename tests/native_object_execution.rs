@@ -184,3 +184,26 @@ fn native_guest_parameter_negation_compiles_to_signed_result() {
         42,
     );
 }
+
+#[test]
+fn native_guest_executes_atto_immutable_default_binding_forms() {
+    for body in [
+        "int x = 7; int y = x * 6; return y;",
+        "const x = 7; const y = x * 6; return y;",
+        "const int x = 7; return x * 6;",
+        "const x: int = 7; return x * 6;",
+        "val x = 7; val y = x * 6; return y;",
+        "int x = 7; const y = x * 6; return y;",
+        "const x = add(20, 22); return x;",
+    ] {
+        let source = format!(
+            "pub fnc main(): int {{ {body} }} fnc add(int a,int b): int {{ return a+b; }}"
+        );
+        run_guest(&source, 42);
+    }
+}
+
+#[test]
+fn native_guest_executes_byte_identical_atto_shared_scalar_fixture() {
+    run_guest(include_str!("../contracts/atto-parity-v1/add.atto"), 42);
+}
