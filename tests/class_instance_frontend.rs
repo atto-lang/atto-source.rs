@@ -28,7 +28,8 @@ fn preserves_typed_field_layout_and_immutability_intent() {
     assert_eq!(d.fields[2].ty,Type::Int);
     assert!(d.fields[2].final_slot);
     assert!(d.fields[2].require_const);
-    reject(&s,"E_UNSUPPORTED");
+    let guest=compile(&s).expect("primitive class layout produces executable Wasm");
+    assert!(guest.starts_with(b"\0asm"));
 }
 #[test]
 fn records_constructor_expr_without_constructing_fictional_object() {
@@ -40,7 +41,7 @@ fn records_constructor_expr_without_constructing_fictional_object() {
         other=>panic!("wrong AST: {other:?}"),
     };
     assert!(matches!(&e.kind, ExprKind::New(name,args) if name=="Counter" && args.len()==2));
-    reject(&src,"E_UNSUPPORTED");
+    reject(&src,"E_ARITY");
 }
 #[test]
 fn rejects_incorrect_field_shapes_before_compiler_codegen() {
