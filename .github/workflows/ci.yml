@@ -33,3 +33,40 @@ jobs:
           sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
       - name: Execute source-dependent generated guest Wasm in Node VM
         run: node tests/wasm-browser.mjs
+
+      - name: Build immutable compiler artifact receipt
+        run: |
+          mkdir -p dist
+          cp target/wasm32-unknown-unknown/release/atto_compiler.wasm dist/atto_compiler.wasm
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          const bytes = fs.readFileSync('dist/atto_compiler.wasm');
+          const module = new WebAssembly.Module(bytes);
+          const imports = WebAssembly.Module.imports(module);
+          const exports = WebAssembly.Module.exports(module).map(x => x.name);
+          const required = ['memory','input_ptr','input_capacity','compile','result_ptr','result_length','error_ptr','error_line_number','error_column_number'];
+          if (imports.length || required.some(x => !exports.includes(x))) throw new Error('unexpected compiler ABI');
+          const git = (...args) => execFileSync('git', args, {encoding:'utf8'}).trim();
+          const receipt = {
+            schema:'atto.browser.compiler.artifact.v1',
+            source_head:git('rev-parse','HEAD'),
+            source_tree:git('rev-parse','HEAD^{tree}'),
+            target:'wasm32-unknown-unknown',
+            abi:'atto-playground-m0',
+            compiler_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),
+            compiler_bytes:bytes.length,
+            import_count:imports.length,
+            exports
+          };
+          fs.writeFileSync('dist/receipt.json',JSON.stringify(receipt,null,2)+'\n');
+          console.log(receipt);
+          JS
+      - name: Publish verified compiler plus provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: atto-compiler-wasm32-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
