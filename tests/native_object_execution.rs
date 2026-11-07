@@ -234,3 +234,53 @@ fn native_guest_executes_explicit_mutable_scalar_rebindings() {
         run_guest(&source, expected);
     }
 }
+
+fn run_full_width_scalar_guest(source: &str, expected: i64) {
+    let build = TemporaryBuild::new();
+    let object = build.0.join("scalar.o");
+    let driver = build.0.join("probe.c");
+    let executable = build.0.join("probe");
+    fs::write(&object, compile(source).expect("real Cranelift native scalar object"))
+        .expect("persist native object");
+    // Host-side C driver observes the full return value, unlike the
+    // lossy 8-bit POSIX process exit status in historical scalar tests.
+    let c_driver = r#"#include <stdio.h>
+#include <stdint.h>
+#include <inttypes.h>
+extern int64_t scalar_value(void);
+int main(void) {
+    printf("%" PRId64 "\n", scalar_value());
+    return 0;
+}
+"#;
+    fs::write(&driver, c_driver).expect("write full-width native ABI probe");
+    let link = Command::new("cc")
+        .args([object.as_os_str(), driver.as_os_str()])
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("native linker available");
+    assert!(link.status.success(), "native link failed: {}",
+        String::from_utf8_lossy(&link.stderr));
+    let guest = Command::new(&executable).output().expect("run native probe");
+    assert!(guest.status.success(), "guest invocation failed: {}",
+        String::from_utf8_lossy(&guest.stderr));
+    let observed = String::from_utf8(guest.stdout).expect("UTF-8 decimal result");
+    assert_eq!(observed.trim(), expected.to_string(),
+        "full-width signed i64 result drifted");
+}
+
+#[test]
+fn native_abi_preserves_full_signed_i64_after_mutable_rebind() {
+    for (source, expected) in [
+        ("pub fnc scalar_value(): int { let x = 9007199254740992; x += 1; return x; }",
+         9_007_199_254_740_993_i64),
+        ("pub fnc scalar_value(): int { mut x = -9223372036854775808; x += 1; return x; }",
+         i64::MIN + 1),
+        ("pub fnc scalar_value(): int { let x = 9007199254740993; let old = x; x -= 1; return old - x; }",
+         1),
+        ("pub fnc scalar_value(): int { mut x = -42; x = -x; return x; }", 42),
+    ] {
+        run_full_width_scalar_guest(source, expected);
+    }
+}
