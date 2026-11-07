@@ -65,7 +65,7 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 fn vt(t: Type) -> Option<u8> {
     match t {
         Type::Int => Some(I64),
-        Type::Bool | Type::Enum(_) | Type::Class(_) | Type::Actor(_) => Some(I32),
+        Type::Bool | Type::Enum(_) | Type::Class(_) | Type::Actor(_) | Type::SendResult => Some(I32),
         Type::Void => None,
     }
 }
@@ -229,6 +229,16 @@ impl Emit<'_> {
             TExpr::SpawnActor(id) => {
                 self.i32c(*id as i32);
                 self.call(self.l.import(Import::ActorSpawn));
+            }
+            TExpr::ActorSend(handle, value) => {
+                self.expr(handle);
+                self.expr(value);
+                self.call(self.l.import(Import::ActorSend));
+            }
+            TExpr::SendStatus(result, is_ok) => {
+                self.expr(result);
+                self.op(0x45); // i32.eqz: status 0 == admitted
+                if !is_ok { self.op(0x45); } // opposite status
             }
             TExpr::NewClass { size, fields } => {
                 // Every constructor call allocates fresh storage; all defaults
@@ -455,6 +465,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintStr => Sig(vec![I32, I32], vec![]),
             Import::PrintNewline => Sig(vec![], vec![]),
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
+            Import::ActorSend => Sig(vec![I32, I64], vec![I32]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
