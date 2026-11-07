@@ -17,7 +17,7 @@ The compiler does not define any syntax of its own:
 | Area | Admitted |
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
-| Top-level declarations | `define class Name as ... end` admits **immutable `int`/`bool` literal-default fields** and a zero-argument constructor that allocates a fresh bounded guest-private instance; typed field reads, nominal class parameters/returns. `define enum` admits fieldless nominal variants. Empty actor/struct/module/interface/trait/supervisor declarations remain syntax-only; no actor runtime. |
+| Top-level declarations | `define class Name as ... end` admits **immutable `int`/`bool` literal-default fields** and an explicit `new Name()` zero-argument constructor that allocates a fresh bounded guest-private instance; typed field reads, nominal class parameters/returns. `define enum` admits fieldless nominal variants. Empty actor/struct/module/interface/trait/supervisor declarations remain syntax-only; no actor runtime. |
 | Entry point | zero-argument `main` returning `int` or `void` |
 | Types | `int` (i64), `bool` / `boolean`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut` |
@@ -32,7 +32,7 @@ The following are rejected, with the code shown:
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
-- Class methods, mutable fields, custom constructors, nonliteral defaults, inheritance and actor/struct/module/interface/trait/supervisor members are **not** executable in the browser. Those constructs fail closed. Nominal class values cannot be implicitly converted to scalars and class equality is not yet admitted.
+- Bare `Point()` constructor calls give `E_NEW_REQUIRED` (no guest output). Class methods, mutable fields, custom constructors, nonliteral defaults, inheritance and actor/struct/module/interface/trait/supervisor members are **not** executable in the browser. Those constructs fail closed. Nominal class values cannot be implicitly converted to scalars and class equality is not yet admitted.
 - `define macro` and other unsupported `define` forms, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give fail-closed diagnostics.
 
 ### Known divergences from the Java reference
@@ -77,7 +77,7 @@ end
 
 fnc total(Point p): int { return p.x + p.y; }
 pub fnc main(): int {
-  val point = Point();  // fresh guest-heap allocation
+  val point = new Point();  // explicit fresh guest-heap allocation
   if point.valid then return total(point); else return 0; fi
 }
 ```
