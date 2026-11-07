@@ -62,7 +62,8 @@ fn vt(t: Type) -> Option<u8> {
     match t {
         Type::Int | Type::Enum(_) => Some(I64),
         Type::Bool => Some(I32),
-        Type::Void | Type::Class(_) => None,
+        Type::Class(_) => Some(I32),
+        Type::Void => None,
     }
 }
 
@@ -117,6 +118,8 @@ struct Emit<'a> {
     /// `Some(..)` when compiling a void `main` export: plain `return` must
     /// still produce the exported i64 status 0.
     void_main: bool,
+    /// Per-call i32 temporary for freshly allocated nonescaping object.
+    object_tmp: Option<u32>,
 }
 
 impl Emit<'_> {
@@ -158,6 +161,14 @@ impl Emit<'_> {
 
     fn stmt(&mut self, s: &TStmt) {
         match s {
+            TStmt::FieldSet{base,offset,value} => {
+                self.expr(base);
+                self.expr(value);
+                if value.ty==Type::Bool {self.op(0xAD);} // i64.extend_i32_u
+                self.op(0x37); // i64.store
+                uleb(&mut self.code,3); // alignment 8
+                uleb(&mut self.code,*offset as u64);
+            }
             TStmt::Set(slot, v) => {
                 self.expr(v);
                 self.op(0x21);
@@ -223,6 +234,48 @@ impl Emit<'_> {
             TExpr::Local(slot) => {
                 self.op(0x20);
                 uleb(&mut self.code, *slot as u64);
+            }
+            TExpr::FieldGet{base,offset} => {
+                self.expr(base);
+                self.op(0x29); // i64.load
+                uleb(&mut self.code,3);
+                uleb(&mut self.code,*offset as u64);
+                if v.ty==Type::Bool {self.op(0xA7);} // i32.wrap_i64
+            }
+            TExpr::New{size,tag,defaults,constructor} => {
+                let tmp=self.object_tmp.expect("object allocation reserves temporary local");
+                // Fixed 64 KiB per-guest arena, never grows or imports memory.
+                // A 0 handle is invalid; each object also carries its class tag.
+                self.op(0x23); uleb(&mut self.code,1); // global.get heap cursor
+                self.i32c(65536_i32-*size as i32);
+                self.op(0x4B); // i32.gt_u
+                self.op(0x04); self.op(0x40); // if
+                self.i32c(3);
+                self.op(0x24); uleb(&mut self.code,0); // panic_code=3
+                self.op(0x00); // trap before any out-of-bounds access
+                self.op(0x0B);
+                self.op(0x23); uleb(&mut self.code,1);
+                self.op(0x21); uleb(&mut self.code,tmp);
+                self.op(0x23); uleb(&mut self.code,1);
+                self.i32c(*size as i32);
+                self.op(0x6A); // i32.add
+                self.op(0x24); uleb(&mut self.code,1);
+                let mut write=|this:&mut Self,offset:u32,value:i64| {
+                    this.op(0x20); uleb(&mut this.code,tmp);
+                    this.i64c(value);
+                    this.op(0x37); uleb(&mut this.code,3);
+                    uleb(&mut this.code,offset as u64);
+                };
+                write(self,0,*tag);
+                for (i,default) in defaults.iter().enumerate() {
+                    write(self,8+(i as u32)*8,*default);
+                }
+                if let Some((func,args))=constructor {
+                    self.op(0x20); uleb(&mut self.code,tmp);
+                    for arg in args {self.expr(arg);}
+                    self.call(self.l.func(*func));
+                }
+                self.op(0x20); uleb(&mut self.code,tmp);
             }
             TExpr::Neg(a) => {
                 self.expr(a);
@@ -409,11 +462,16 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         let is_void_main = i as u32 == p.main && main_void;
         let results: Vec<u8> = if is_void_main { vec![I64] } else { vt(f.ret).into_iter().collect() };
         func_types.push(types.idx(Sig(params, results)));
+        let mut locals=f.locals.clone();
+        if p.uses_objects {locals.push(Type::Class(0));}
         let mut e = Emit {
             l: &layout,
-            code: locals_decl(&f.locals),
+            code: locals_decl(&locals),
             frames: Vec::new(),
             void_main: is_void_main,
+            object_tmp: if p.uses_objects {
+                Some((f.params.len()+f.locals.len()) as u32)
+            } else {None},
         };
         e.stmts(&f.body);
         if is_void_main {
@@ -448,14 +506,23 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 3, fsec);
 
-    let has_memory = !p.data.is_empty();
+    let has_memory = !p.data.is_empty() || p.uses_objects;
     if has_memory {
         // one fixed, non-growable page holding the string literals
         section(&mut out, 5, vec![1, 0x01, 1, 1]);
     }
 
-    // global 0: mut i32 panic_code = 0
-    section(&mut out, 6, vec![1, I32, 0x01, 0x41, 0, 0x0B]);
+    // global 0: mut i32 panic_code = 0; optional global 1: heap cursor.
+    let mut globals=vec![if p.uses_objects {2} else {1}, I32, 0x01, 0x41, 0, 0x0B];
+    if p.uses_objects {
+        // Strings occupy the low segment; skip the reserved zero handle and
+        // align heap objects to 8 bytes for i64 slots.
+        let heap_base=(p.data.len().max(8)+7)&!7;
+        globals.extend([I32,0x01,0x41]);
+        sleb(&mut globals,heap_base as i64);
+        globals.push(0x0B);
+    }
+    section(&mut out,6,globals);
 
     let mut exp = Vec::new();
     uleb(&mut exp, if has_memory { 3 } else { 2 });
@@ -480,7 +547,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 10, code_sec);
 
-    if has_memory {
+    if !p.data.is_empty() {
         let mut d = vec![1, 0x00, 0x41, 0x00, 0x0B];
         uleb(&mut d, p.data.len() as u64);
         d.extend_from_slice(&p.data);
