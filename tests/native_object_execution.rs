@@ -184,3 +184,126 @@ fn native_guest_parameter_negation_compiles_to_signed_result() {
         42,
     );
 }
+
+#[test]
+fn native_symbol_visibility_matches_pub_and_private_scalar_contract() {
+    let source = include_str!("fixtures/private-linkage.atto");
+    let build = TemporaryBuild::new();
+    let object = build.0.join("private-linkage.o");
+    let bytes = compile(source).expect("compile canonical AttoLang guest fixture");
+    assert!(bytes.starts_with(b"\x7fELF"), "native ELF object required");
+    fs::write(&object, bytes).expect("write native guest object");
+
+    // Check the object's actual external symbol table, not parser/MIR flags.
+    let symbols = Command::new("nm")
+        .args(["--extern-only", "--defined-only"])
+        .arg(&object)
+        .output()
+        .expect("Linux native linker tests require nm");
+    assert!(
+        symbols.status.success(),
+        "nm failed: {}",
+        String::from_utf8_lossy(&symbols.stderr)
+    );
+    let symbol_text = String::from_utf8_lossy(&symbols.stdout);
+    let global_names: Vec<&str> = symbol_text
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .collect();
+    assert!(global_names.contains(&"answer"), "{symbol_text}");
+    assert!(
+        !global_names.contains(&"bump"),
+        "private helper leaked into the native external ABI: {symbol_text}"
+    );
+
+    // A C translation unit can call the public function; its private callee
+    // must still resolve internally, yielding the actual guest result 42.
+    let public_driver = build.0.join("public.c");
+    let public_executable = build.0.join("public");
+    fs::write(
+        &public_driver,
+        "extern long answer(long); int main(void) { return (int)answer(41); }\n",
+    )
+    .expect("write public C ABI probe");
+    let public_link = Command::new("cc")
+        .arg(&public_driver)
+        .arg(&object)
+        .arg("-o")
+        .arg(&public_executable)
+        .output()
+        .expect("link public ABI probe");
+    assert!(
+        public_link.status.success(),
+        "public function did not link: {}",
+        String::from_utf8_lossy(&public_link.stderr)
+    );
+    let guest = Command::new(&public_executable)
+        .output()
+        .expect("execute linked public/native guest");
+    assert_eq!(guest.status.code(), Some(42), "{guest:?}");
+
+    // A foreign C translation unit cannot name the private helper.
+    let private_driver = build.0.join("private.c");
+    let private_executable = build.0.join("private");
+    fs::write(
+        &private_driver,
+        "extern long bump(long); int main(void) { return (int)bump(41); }\n",
+    )
+    .expect("write private ABI probe");
+    let private_link = Command::new("cc")
+        .arg(&private_driver)
+        .arg(&object)
+        .arg("-o")
+        .arg(&private_executable)
+        .output()
+        .expect("link negative private ABI probe");
+    assert!(
+        !private_link.status.success(),
+        "private helper was externally linkable: {}",
+        String::from_utf8_lossy(&private_link.stderr)
+    );
+    assert!(!private_executable.exists());
+}
+
+#[test]
+fn implicit_non_pub_main_remains_a_native_entry_point() {
+    // The release profile keeps "main" as an executable root even without
+    // pub. Preserve that existing entry point ABI while hiding other helpers.
+    run_guest(
+        "fnc main(): int { return helper(); } fnc helper(): int { return 42; }",
+        42,
+    );
+}
+
+#[test]
+fn native_guest_executes_atto_immutable_default_binding_forms() {
+    for body in [
+        "int x = 7; int y = x * 6; return y;",
+        "const x = 7; const y = x * 6; return y;",
+        "const int x = 7; return x * 6;",
+        "const x: int = 7; return x * 6;",
+        "val x = 7; val y = x * 6; return y;",
+        "int x = 7; const y = x * 6; return y;",
+        "const x = add(20, 22); return x;",
+    ] {
+        let source = format!(
+            "pub fnc main(): int {{ {body} }} fnc add(int a,int b): int {{ return a+b; }}"
+        );
+        run_guest(&source, 42);
+    }
+}
+
+#[test]
+fn native_guest_executes_byte_identical_atto_shared_scalar_fixture() {
+    run_guest(include_str!("../contracts/atto-parity-v1/add.atto"), 42);
+}
+
+#[test]
+fn native_guest_executes_canonical_define_fnc_entry() {
+    for source in [
+        "define pub fnc main(): int { return 42; }",
+        "pub define fnc main(): int { return 42; }",
+    ] {
+        run_guest(source, 42);
+    }
+}
