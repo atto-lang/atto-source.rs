@@ -25,11 +25,26 @@ jobs:
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git diff --quiet --exit-code
-          # Reject staged index mutations and ignored source shadow files.
           git diff --cached --quiet --exit-code HEAD --
           test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
           test -z "$(git ls-files --others --exclude-standard)"
           test -z "$(git ls-files --others --ignored --exclude-standard)"
+      - name: Exercise policy classifier with synthetic source-free input
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp)
+          trap 'rm -f "$tmp"' EXIT
+          printf '# comment only\n  \n  # another comment\n' > "$tmp"
+          if grep -Evq '^[[:space:]]*(#.*)?$' "$tmp"; then
+            echo "empty/comment-only policy was rejected" >&2
+            exit 1
+          fi
+          printf 'unauthorized-org/repo 123\n' >> "$tmp"
+          if ! grep -Evq '^[[:space:]]*(#.*)?$' "$tmp"; then
+            echo "active private-source destination was not rejected" >&2
+            exit 1
+          fi
       - name: Require private source export to remain disabled
         shell: bash
         run: |
@@ -38,13 +53,9 @@ jobs:
           test -f "$file"
           test ! -L "$file"
           test "$(stat -c %s -- "$file")" -le 65536
+          # Deny any active entry, not just destinations matching a known name.
           # One grep process avoids false acceptance from SIGPIPE under pipefail.
-          if grep -Evq '^[[:space:]]*(#.*)?
-            echo "PRIVATE_CI_EXPORT_REJECTED: active destination requires dedicated reviewed authorization machinery" >&2
-            exit 1
-          fi
-          echo "private CI export policy: disabled by default"
- "$file"; then
+          if grep -Evq '^[[:space:]]*(#.*)?$' "$file"; then
             echo "PRIVATE_CI_EXPORT_REJECTED: active destination requires dedicated reviewed authorization machinery" >&2
             exit 1
           fi
