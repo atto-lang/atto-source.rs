@@ -360,6 +360,26 @@ fn breaks(body: &[TStmt]) -> bool {
 }
 
 impl FnCx<'_> {
+    /// Outside code cannot inspect object fields until visibility and
+    /// ownership/borrow rules are enforced. Within a class method, 'self'
+    /// has a statically verified nominal receiver and fixed primitive slot.
+    fn field(&self, qualified:&str, pos:Pos) -> R<Option<(TE,ClassSlot)>> {
+        let Some((owner,field))=qualified.split_once('.') else {return Ok(None)};
+        let Some(local)=self.lookup(owner) else {return Ok(None)};
+        let Type::Class(id)=local.ty else {
+            return Err(type_err(pos,format!("'{owner}' is not a class instance")));
+        };
+        if owner!="self" {
+            return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                "external instance field access requires visibility and ownership checks"));
+        }
+        let layout=self.classes.get(&id).expect("resolved nominal class");
+        let field=layout.slots.iter().find(|slot|slot.name==field)
+            .ok_or_else(||Diagnostic::new(pos,"E_UNBOUND",
+                format!("unknown field '{qualified}'")))?;
+        Ok(Some((TE{e:TExpr::Local(local.slot),ty:local.ty},field.clone())))
+    }
+
     fn lookup(&self, name: &str) -> Option<&Local> {
         self.scopes.iter().rev().flat_map(|s| s.iter().rev()).find(|l| l.name == name)
     }
@@ -412,6 +432,10 @@ impl FnCx<'_> {
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
                 let v = self.value(init)?;
+                if matches!(v.ty,Type::Class(_)) && !matches!(init.kind,ExprKind::New(..)) {
+                    return Err(Diagnostic::new(init.pos,"E_UNSUPPORTED",
+                        "class references cannot be aliased; rt borrow/take/share are not lowered"));
+                }
                 if let Some(t) = ty {
                     if *t != v.ty {
                         return Err(type_err(
@@ -428,6 +452,18 @@ impl FnCx<'_> {
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
+                if let Some((base,field))=self.field(name,*pos)? {
+                    if !field.mutable {
+                        return Err(Diagnostic::new(*pos,"E_IMMUTABLE",
+                            format!("cannot reassign final class field '{name}'")));
+                    }
+                    let rhs=self.value(value)?;
+                    if rhs.ty!=field.ty {
+                        return Err(type_err(value.pos,format!(
+                            "field '{name}' expects {} but got {}",field.ty.name(),rhs.ty.name())));
+                    }
+                    return Ok(TStmt::FieldSet{base,offset:field.offset,value:rhs});
+                }
                 let (slot, ty, mutable) = match self.lookup(name) {
                     Some(l) => (l.slot, l.ty, l.mutable),
                     None => return Err(Diagnostic::new(*pos, "E_UNBOUND", format!("unknown name '{name}'"))),
@@ -440,6 +476,10 @@ impl FnCx<'_> {
                     ));
                 }
                 let v = self.value(value)?;
+                if matches!(v.ty,Type::Class(_)) {
+                    return Err(Diagnostic::new(value.pos,"E_UNSUPPORTED",
+                        "rebinding class handles requires rt take/borrow ownership tracking"));
+                }
                 if v.ty != ty {
                     return Err(type_err(
                         value.pos,
@@ -448,7 +488,13 @@ impl FnCx<'_> {
                 }
                 TStmt::Set(slot, v)
             }
-            Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::Expr(e) => {
+                if matches!(e.kind,ExprKind::New(..)) {
+                    return Err(Diagnostic::new(e.pos,"E_UNSUPPORTED",
+                        "a constructed object must be assigned to a local owner"));
+                }
+                TStmt::Expr(self.expr(e)?)
+            },
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {
@@ -591,6 +637,10 @@ impl FnCx<'_> {
                     e: TExpr::Local(l.slot),
                     ty: l.ty,
                 },
+                None if self.field(name,pos)?.is_some() => {
+                    let (base,field)=self.field(name,pos)?.expect("field checked above");
+                    TE {e:TExpr::FieldGet{base:Box::new(base),offset:field.offset},ty:field.ty}
+                },
                 None if self.enum_values.contains_key(name) => {
                     let (ordinal,ty) = self.enum_values[name];
                     TE { e:TExpr::I64(ordinal), ty }
@@ -728,9 +778,34 @@ impl FnCx<'_> {
                 }
             }
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
-            ExprKind::New(name, _args) => {
-                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                    format!("new {name}(...) needs class allocation, constructor and ownership lowering")))
+            ExprKind::New(name,args) => {
+                let (id,layout)=self.classes.iter().find(|(_,layout)|layout.name==*name)
+                    .ok_or_else(||Diagnostic::new(pos,"E_UNKNOWN_TYPE",
+                        format!("unknown class '{name}'")))?;
+                let id=*id;
+                let defaults=layout.slots.iter().map(|slot|slot.default).collect::<Vec<_>>();
+                let size=8+defaults.len() as u32*8;
+                let ctor_name=format!("{name}.constructor");
+                let mut constructor=None;
+                if let Some((idx,params,ret))=self.sigs.get(&(ctor_name.clone(),args.len()+1)).cloned() {
+                    if ret!=Type::Void || params.first()!=Some(&Type::Class(id)) {
+                        return Err(type_err(pos,"invalid constructor receiver/signature"));
+                    }
+                    let mut call_args=Vec::new();
+                    for (arg,want) in args.iter().zip(params.iter().skip(1)) {
+                        let v=self.value(arg)?;
+                        if v.ty!=*want || matches!(v.ty,Type::Class(_)) {
+                            return Err(type_err(arg.pos,"constructor argument type mismatch"));
+                        }
+                        call_args.push(v);
+                    }
+                    constructor=Some((idx,call_args));
+                } else if self.names.contains_key(&ctor_name) || !args.is_empty() {
+                    return Err(Diagnostic::new(pos,"E_ARITY",
+                        format!("new {name} has no matching constructor of arity {}",args.len())));
+                }
+                *self.has_objects=true;
+                TE {e:TExpr::New{size,tag:id as i64+1,defaults,constructor},ty:Type::Class(id)}
             }
         })
     }
