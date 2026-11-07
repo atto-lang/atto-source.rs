@@ -8,9 +8,12 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use std::collections::BTreeMap;
 
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
+pub const MAX_DECLS: usize = 256;
+pub const MAX_VARIANTS: usize = 256;
 pub const MAX_PARAMS: usize = 32;
 /// Bound on the height of any syntax tree the parser builds. Left-associative
 /// operator chains (`a + b + ...`) and `elif` arms are parsed iteratively but
@@ -27,6 +30,7 @@ const RESERVED: &[&str] = &[
     "contract",
     "conforms",
     "class",
+    "enum",
     "struct",
     "interface",
     "trait",
@@ -203,6 +207,7 @@ pub struct Parser {
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
+    enum_names: BTreeMap<String,u16>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -219,6 +224,7 @@ impl Parser {
             depth: 0,
             height: 0,
             cond: 0,
+            enum_names: BTreeMap::new(),
         }
     }
 
@@ -357,7 +363,7 @@ impl Parser {
                     format!("type '{n}' is not supported by the browser compiler yet"),
                 ))
             }
-            n => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
+            n => match self.enum_names.get(n) { Some(id) => Type::Enum(*id), None => return Err(Diagnostic::new(pos,"E_UNKNOWN_TYPE",format!("unknown type '{n}'"))) },
         };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
             return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
@@ -388,6 +394,7 @@ impl Parser {
         }
         let start = self.pos();
         self.eat_word("pub");
+        if self.eat_word("define") { self.eat_word("pub"); }
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
         }
@@ -1125,25 +1132,14 @@ impl Parser {
                     }
                 }
                 Tok::Dot => {
-                    let dot = self.pos();
-                    if let ExprKind::Var(base) = &e.kind {
-                        if base == "stdio" {
-                            if let Some(m @ ("print" | "println")) = self.word_at(1) {
-                                let qualified = format!("stdio.{m}");
-                                self.advance();
-                                self.advance();
-                                if *self.peek() != Tok::LParen {
-                                    return Err(self.expected("'('"));
-                                }
-                                e = Expr {
-                                    kind: ExprKind::Var(qualified),
-                                    pos,
-                                };
-                                continue;
-                            }
-                        }
-                    }
-                    return Err(unsupported(dot, "member access"));
+                    let at = self.pos();
+                    let base = match &e.kind {
+                        ExprKind::Var(n) if !n.contains('.') => n.clone(),
+                        _ => return Err(unsupported(at,"chained member access")),
+                    };
+                    self.advance();
+                    let (member, _) = self.ident("a static member name")?;
+                    e = Expr { kind:ExprKind::Var(format!("{base}.{member}")), pos };
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
                 Tok::Question => {
@@ -1154,7 +1150,7 @@ impl Parser {
             }
         }
         if let ExprKind::Var(n) = &e.kind {
-            if n.contains('.') {
+            if n.starts_with("stdio.") {
                 return Err(self.expected("'('"));
             }
         }
