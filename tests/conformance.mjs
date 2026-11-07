@@ -178,7 +178,7 @@ check('enum/forward-type-guest-execution', () => {
 
 check('enum/function-and-reassignment', () => {
   const src = [
-    'define enum Flag as Off On end',
+    'define enum Flag as Off, On end',
     'fnc flip(Flag f): Flag {',
     '  return f eq Flag.Off ? Flag.On : Flag.Off;',
     '}',
@@ -194,7 +194,7 @@ check('enum/function-and-reassignment', () => {
 });
 
 check('enum/nominality-and-fail-closed', () => {
-  const defs = 'define enum Flag as Off On end\ndefine enum Mode as Off On end\n';
+  const defs = 'define enum Flag as Off, On end\ndefine enum Mode as Off, On end\n';
   for (const [body, code] of [
     ['return Flag.Unknown;', 'E_UNKNOWN_VARIANT'],
     ['if Flag.On eq Mode.On then return 1; fi return 0;', 'E_TYPE'],
