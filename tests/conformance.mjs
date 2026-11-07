@@ -295,6 +295,49 @@ check('class/bounded-guest-heap', () => {
   assert.equal(guest.panic, 3, 'bounded class allocator signals explicit heap exhaustion');
 });
 
+// Exact bump-pointer boundary: with no string data the heap begins at byte
+// 16 in a 64-KiB non-growable page. An 8-byte object can be allocated
+// (65536 - 16) / 8 = 8190 times, never 8191, without wrapping or overlapping.
+check('class/heap-exact-capacity-and-per-instance-reset', () => {
+  const sourceFor = count => 'define class Unit as\n int value: 1\nend\n' +
+    'pub fnc main(): int {\n for (let i = 0; i < ' + count + '; i++) do\n' +
+    '  val item = new Unit();\n done\n return 42;\n}';
+  for (const [count,shouldTrap] of [[8190,false],[8191,true]]) {
+    const r = compile(sourceFor(count));
+    assert.ok(r.ok, r.message);
+    for (let instance = 0; instance < 2; instance++) {
+      // Each runGuest call instantiates a fresh Wasm module: the heap cursor
+      // and panic_code must never leak across otherwise identical instances.
+      const g = runGuest(r.wasm);
+      assert.equal(g.ok, !shouldTrap, 'unexpected heap boundary at ' + count);
+      if (shouldTrap) assert.equal(g.panic, 3, 'explicit bounded heap panic');
+      else assert.equal(g.value, 42n, 'last permitted allocation succeeds');
+    }
+  }
+});
+
+// Multiple constructor results must survive evaluation of later arguments:
+// the scratch allocator global must not replace an already pushed pointer.
+check('class/multiple-constructor-arguments-and-literal-data-safety', () => {
+  const src = [
+    'define class Unit as',
+    '  int value: 21',
+    'end',
+    'fnc sum(Unit a, Unit b): int { return a.value + b.value; }',
+    'pub fnc main(): int {',
+    '  stdio.println("class data intact");',
+    '  return sum(new Unit(), new Unit());',
+    '}',
+  ].join('\n');
+  const r = compile(src);
+  assert.ok(r.ok, r.message);
+  assert.deepEqual(compile(src).wasm, r.wasm, 'deterministic nested allocation');
+  const g = runGuest(r.wasm);
+  assert.ok(g.ok, g.error);
+  assert.equal(g.value, 42n, 'two distinct constructor args remain readable');
+  assert.equal(g.stdout, 'class data intact\n', 'heap must not clobber static string data');
+});
+
 check('class/field-access-and-ctor-negative-controls', () => {
   const prefix = 'define class P as\n int x: 7\n bool active: true\nend\n';
   for (const [body, code] of [
