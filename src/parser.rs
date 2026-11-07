@@ -14,6 +14,7 @@ pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_DECLARATIONS: usize = 1024;
 pub const MAX_ENUM_VARIANTS: usize = 256;
+pub const MAX_CLASS_FIELDS: usize = 64;
 pub const MAX_PARAMS: usize = 32;
 /// Bound on the height of any syntax tree the parser builds. Left-associative
 /// operator chains (`a + b + ...`) and `elif` arms are parsed iteratively but
@@ -201,6 +202,7 @@ pub struct Parser {
     toks: Vec<Token>,
     /// Closed-world enum names gathered from define headers before type parsing.
     enum_types: BTreeMap<String, u16>,
+    class_types: BTreeMap<String, u16>,
     i: usize,
     depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
@@ -222,7 +224,9 @@ impl Parser {
         // the enum, without evaluating arbitrary source or trusting a tag.
         // The actual declaration parser validates all headers and bodies.
         let mut enum_types = BTreeMap::new();
+        let mut class_types = BTreeMap::new();
         let mut next_id = 0u16;
+        let mut next_class_id = 0u16;
         for i in 0..toks.len() {
             if !matches!(toks[i].tok, Tok::Ident(ref w) if w == "define") {
                 continue;
@@ -238,11 +242,19 @@ impl Parser {
                         next_id = next_id.saturating_add(1);
                     }
                 }
+            } else if matches!(toks.get(j), Some(Token { tok: Tok::Ident(w), .. }) if w == "class") {
+                if let Some(Token { tok: Tok::Ident(name), .. }) = toks.get(j + 1) {
+                    if !class_types.contains_key(name) {
+                        class_types.insert(name.clone(), next_class_id);
+                        next_class_id = next_class_id.saturating_add(1);
+                    }
+                }
             }
         }
         Parser {
             toks,
             enum_types,
+            class_types,
             i: 0,
             depth: 0,
             height: 0,
@@ -364,7 +376,7 @@ impl Parser {
 
     fn is_type_word(&self, n: usize) -> bool {
         matches!(self.word_at(n), Some("int" | "bool" | "boolean" | "void"))
-            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w))
+            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w) || self.class_types.contains_key(w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -386,6 +398,7 @@ impl Parser {
                 ))
             }
             n if self.enum_types.contains_key(n) => Type::Enum(self.enum_types[n]),
+            n if self.class_types.contains_key(n) => Type::Class(self.class_types[n]),
             n => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
         };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
@@ -461,6 +474,7 @@ impl Parser {
         }
         self.expect_word("as")?;
         let mut variants = Vec::new();
+        let mut fields = Vec::new();
         if kind == DeclarationKind::Enum {
             while !self.is_word("end") {
                 if *self.peek() == Tok::Eof {
@@ -491,6 +505,44 @@ impl Parser {
                     ));
                 }
             }
+        } else if kind == DeclarationKind::Class {
+            // Explicit scalar default fields are the first executable class
+            // subset. Methods, inheritance, mutable fields, nested definitions
+            // and data-dependent defaults need separate typing/runtime gates.
+            while !self.is_word("end") {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected("'end'"));
+                }
+                if fields.len() >= MAX_CLASS_FIELDS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                        format!("more than {MAX_CLASS_FIELDS} class fields")));
+                }
+                if self.is_word("fnc") || self.is_word("routine")
+                    || self.is_word("let") || self.is_word("mut") || self.is_word("final")
+                    || *self.peek_at(1) == Tok::LParen
+                {
+                    return Err(unsupported(self.pos(), "class methods, mutable fields or constructors"));
+                }
+                let field_pos = self.pos();
+                let ty = self.parse_type()?;
+                if !matches!(ty, Type::Int | Type::Bool) {
+                    return Err(unsupported(field_pos, "non-scalar class field types"));
+                }
+                let (field_name, _) = self.ident("a class field")?;
+                if fields.iter().any(|f: &ClassField| f.name == field_name) {
+                    return Err(Diagnostic::new(field_pos, "E_DUPLICATE",
+                        format!("duplicate class field '{field_name}'")));
+                }
+                self.expect(Tok::Colon, "':' for a field initializer")?;
+                let default = self.parse_expr()?;
+                let last_line = self.toks[self.i.saturating_sub(1)].pos.line;
+                fields.push(ClassField { name: field_name, ty, default, pos: field_pos });
+                let separated = self.eat(&Tok::Semi) || self.eat(&Tok::Comma);
+                if !separated && !self.is_word("end") && self.pos().line <= last_line {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "class fields need a newline, ',' or ';' separator"));
+                }
+            }
         } else if !self.is_word("end") {
             if *self.peek() == Tok::Eof {
                 return Err(self.expected("'end'"));
@@ -501,7 +553,7 @@ impl Parser {
             ));
         }
         self.expect_word("end")?;
-        Ok(Declaration { kind, name, pos, variants })
+        Ok(Declaration { kind, name, pos, variants, fields })
     }
 
     fn parse_func(&mut self) -> R<Func> {
@@ -1275,7 +1327,10 @@ impl Parser {
                             continue;
                         }
                     }
-                    return Err(unsupported(dot, "member access"));
+                    self.advance();
+                    let (field, _) = self.ident("a class field")?;
+                    e = Expr { kind: ExprKind::Field(Box::new(e), field), pos };
+                    continue;
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
                 Tok::Question => {
