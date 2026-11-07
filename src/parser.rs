@@ -374,18 +374,127 @@ impl Parser {
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
-        let mut funcs = Vec::new();
-        while *self.peek() != Tok::Eof {
-            if funcs.len() >= MAX_FUNCS {
-                return Err(Diagnostic::new(
-                    self.pos(),
-                    "E_SOURCE_LIMIT",
-                    format!("more than {MAX_FUNCS} functions"),
-                ));
+        let mut funcs=Vec::new();
+        let mut decls=Vec::new();
+        while *self.peek()!=Tok::Eof {
+            if funcs.len()>=MAX_FUNCS {
+                return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT",
+                    format!("more than {MAX_FUNCS} functions")));
             }
-            funcs.push(self.parse_func()?);
+            // Both pub define class and define pub class are accepted.
+            let n=usize::from(matches!(self.word_at(0),Some("pub"|"private")));
+            let define=self.word_at(n)==Some("define");
+            let at=n+1+usize::from(define &&
+                matches!(self.word_at(n+1),Some("pub"|"private")));
+            let is_decl=define && matches!(self.word_at(at),
+                Some("class"|"actor"|"enum"|"struct"|"interface"|"trait"|"module"));
+            if is_decl { self.parse_decl(&mut funcs,&mut decls)?; }
+            else { funcs.push(self.parse_func()?); }
         }
-        Ok(Program { funcs })
+        Ok(Program{funcs,decls})
+    }
+
+    fn parse_decl(&mut self,funcs:&mut Vec<Func>,decls:&mut Vec<Declaration>) -> R<()> {
+        let start=self.pos();
+        if decls.len()>=MAX_DECLS {
+            return Err(Diagnostic::new(start,"E_SOURCE_LIMIT","too many top-level declarations"));
+        }
+        self.eat_word("pub");
+        self.eat_word("private");
+        self.expect_word("define")?;
+        self.eat_word("pub");
+        self.eat_word("private");
+        let kind=match self.word_at(0) {
+            Some("class")=>DeclKind::Class,
+            Some("actor")=>DeclKind::Actor,
+            Some("enum")=>DeclKind::Enum,
+            Some("struct")=>DeclKind::Struct,
+            Some("interface")=>DeclKind::Interface,
+            Some("trait")=>DeclKind::Trait,
+            Some("module")=>DeclKind::Module,
+            _=>return Err(self.expected("a type declaration kind")),
+        };
+        self.advance();
+        let (name,pos)=self.ident("a declaration name")?;
+        if decls.iter().any(|d|d.name==name) {
+            return Err(Diagnostic::new(pos,"E_DUPLICATE",
+                format!("duplicate top-level declaration '{name}'")));
+        }
+        if matches!(name.as_str(),"int"|"bool"|"void"|"stdio"|"And"|"Or"|"Xor") {
+            return Err(Diagnostic::new(pos,"E_RESERVED","a builtin cannot be redeclared"));
+        }
+        if *self.peek()==Tok::Lt {
+            return Err(unsupported(self.pos(),"generic type parameters"));
+        }
+        if matches!(self.word_at(0),Some("extends"|"implements"|"impl"|"conforms")) {
+            return Err(unsupported(self.pos(),"inheritance and interface conformance"));
+        }
+        let mut variants=Vec::new();
+        if kind==DeclKind::Enum {
+            self.expect_word("as")?;
+            if self.is_word("end") {
+                return Err(Diagnostic::new(self.pos(),"E_SYNTAX","enum requires variants"));
+            }
+            loop {
+                if variants.len()>=MAX_VARIANTS {
+                    return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT","too many enum variants"));
+                }
+                let (variant,vpos)=self.ident("an enum variant")?;
+                if variants.contains(&variant) {
+                    return Err(Diagnostic::new(vpos,"E_DUPLICATE",
+                        format!("duplicate enum variant '{name}.{variant}'")));
+                }
+                variants.push(variant);
+                if !self.eat(&Tok::Comma) {break;}
+                if self.is_word("end") {break;}
+            }
+            self.expect_word("end")?;
+            self.enum_names.insert(name.clone(),decls.len() as u16);
+        } else {
+            let braces=self.eat(&Tok::LBrace);
+            if !braces {self.expect_word("as")?;}
+            loop {
+                if (braces && self.eat(&Tok::RBrace)) ||
+                   (!braces && self.eat_word("end")) {break;}
+                if *self.peek()==Tok::Eof {
+                    return Err(self.expected(if braces {"'}'"} else {"'end'"}));
+                }
+                let static_method=matches!(kind,DeclKind::Class|DeclKind::Actor) &&
+                    (self.is_word("static") ||
+                    (matches!(self.word_at(0),Some("pub"|"private")) &&
+                     self.word_at(1)==Some("static")));
+                let module_fn=kind==DeclKind::Module &&
+                    (matches!(self.word_at(0),Some("fnc"|"routine")) ||
+                     (matches!(self.word_at(0),Some("pub"|"private")) &&
+                      matches!(self.word_at(1),Some("fnc"|"routine"))));
+                if static_method || module_fn {
+                    if funcs.len()>=MAX_FUNCS {
+                        return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT","too many functions"));
+                    }
+                    if static_method {
+                        self.eat_word("pub");
+                        self.eat_word("private");
+                        self.expect_word("static")?;
+                    }
+                    let mut f=self.parse_func()?;
+                    f.name=format!("{name}.{}",f.name);
+                    funcs.push(f);
+                } else {
+                    let subject=match kind {
+                        DeclKind::Actor=>"actor instance methods, state and scheduling",
+                        DeclKind::Class=>"class instance methods, fields and constructors",
+                        DeclKind::Module=>"nested modules and module bindings",
+                        DeclKind::Struct=>"struct fields and methods",
+                        DeclKind::Interface=>"interface contracts",
+                        DeclKind::Trait=>"trait methods",
+                        DeclKind::Enum=>unreachable!(),
+                    };
+                    return Err(unsupported(self.pos(),subject));
+                }
+            }
+        }
+        decls.push(Declaration{name,pos:start,kind,variants});
+        Ok(())
     }
 
     fn parse_func(&mut self) -> R<Func> {
