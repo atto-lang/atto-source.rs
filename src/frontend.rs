@@ -391,14 +391,15 @@ impl Parser {
             let is_bound = name.kind == Kind::Identifier
                 && (params.iter().any(|param| param == &name.text)
                     || locals.iter().any(|local| local.name == name.text));
+            let compound_rhs = self.tokens.get(self.cursor + 2).map(|token| token.kind);
             let is_assignment = op.kind == Kind::Equals
                 || (matches!(op.kind, Kind::Plus | Kind::Minus)
-                    && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == Kind::Equals));
+                    && compound_rhs == Some(Kind::Equals));
             if is_bound && is_assignment {
                 return Err(ParseError {
                     offset: name.start,
                     class: "immutable_binding",
-                    message: "immutable scalar binding cannot be reassigned; let/mut lowering is unsupported".into(),
+                    message: "immutable binding cannot be reassigned; let/mut unsupported".into(),
                 });
             }
         }
