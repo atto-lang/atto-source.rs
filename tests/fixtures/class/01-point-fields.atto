@@ -1,0 +1,11 @@
+// expect-exit: 42
+define class Point as
+  int x: 40
+  int y: 2
+  bool active: true
+end
+fnc sum(Point p): int { return p.x + p.y; }
+pub fnc main(): int {
+  val p: Point = Point();
+  if p.active then return sum(p); else return 0; fi
+}
