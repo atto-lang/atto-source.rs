@@ -1,0 +1,1 @@
+pub fnc main(): int { return id(true); } fnc id(int n): int { return n; }
