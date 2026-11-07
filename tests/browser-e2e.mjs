@@ -84,7 +84,7 @@ try{
     '  int y: 33',
     'end',
     'pub fnc main(): int {',
-    '  val p = Point();',
+    '  val p = new Point();',
     '  return p.x + p.y;',
     '}',
   ].join('\n');
