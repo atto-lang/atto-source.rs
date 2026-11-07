@@ -236,7 +236,7 @@ for (const f of await fixtures('class')) {
 check('class/bounded-guest-heap', () => {
   const src = 'define class Unit as\n int value: 1\nend\n' +
     'pub fnc main(): int {\n for (let i = 0; i < 10000; i++) do\n' +
-    '  val item = Unit();\n done\n return 0;\n}';
+    '  val item = new Unit();\n done\n return 0;\n}';
   const compiled = compile(src);
   assert.ok(compiled.ok, compiled.message);
   const guest = runGuest(compiled.wasm);
@@ -247,13 +247,18 @@ check('class/bounded-guest-heap', () => {
 check('class/field-access-and-ctor-negative-controls', () => {
   const prefix = 'define class P as\n int x: 7\n bool active: true\nend\n';
   for (const [body, code] of [
-    ['val p = P(); return p.missing;', 'E_UNKNOWN_FIELD'],
-    ['val p = P(1); return 0;', 'E_ARITY'],
-    ['val p: int = P(); return p;', 'E_TYPE'],
-    ['return P();', 'E_TYPE'],
-    ['if P() eq P() then return 1; fi return 0;', 'E_UNSUPPORTED'],
-    ['stdio.println(P()); return 0;', 'E_UNSUPPORTED'],
-    ['return P().x + P().active;', 'E_TYPE'],
+    ['val p = new P(); return p.missing;', 'E_UNKNOWN_FIELD'],
+    ['val p = new P(1); return 0;', 'E_ARITY'],
+    ['val p: int = new P(); return p;', 'E_TYPE'],
+    ['return new P();', 'E_TYPE'],
+    ['if new P() eq new P() then return 1; fi return 0;', 'E_UNSUPPORTED'],
+    ['stdio.println(new P()); return 0;', 'E_UNSUPPORTED'],
+    ['return new P().x + new P().active;', 'E_TYPE'],
+    ['val p = P(); return 0;', 'E_NEW_REQUIRED'],
+    ['return P().x;', 'E_NEW_REQUIRED'],
+    ['return new Unknown().x;', 'E_NEW_TYPE'],
+    ['return new P;', 'E_SYNTAX'],
+    ['return new P(1).x;', 'E_ARITY'],
     ['val P = 2; return P;', 'E_DUPLICATE'],
   ]) {
     const compiled = compile(prefix + 'pub fnc main(): int { ' + body + ' }');
@@ -261,6 +266,18 @@ check('class/field-access-and-ctor-negative-controls', () => {
     assert.equal(compiled.code, code, compiled.message);
     assert.equal('wasm' in compiled, false, 'rejected program must not emit bytes');
   }
+});
+
+check('class/new-required-and-postfix-positive', () => {
+  const src = 'define class P as\\n int x: 42\\nend\\n' +
+    'pub fnc main(): int { return (new P()).x; }';
+  const result = compile(src);
+  assert.equal(result.ok, true, result.message);
+  assert.equal(runGuest(result.wasm).value, 42n);
+  const rejected = compile(src.replace('new P()', 'P()'));
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'E_NEW_REQUIRED');
+  assert.equal('wasm' in rejected, false);
 });
 
 for (const f of await fixtures('enum')) {
