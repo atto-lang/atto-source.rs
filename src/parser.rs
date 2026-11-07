@@ -480,6 +480,12 @@ impl Parser {
                       matches!(self.word_at(1),Some("fnc"|"routine"))));
                 let class_field=kind==DeclKind::Class && matches!(self.word_at(0),
                     Some("final"|"val"|"let"|"const"|"int"|"bool"|"boolean"));
+                let prefix=usize::from(matches!(self.word_at(0),Some("pub"|"private")));
+                let member_word=self.word_at(prefix);
+                let instance_method=kind==DeclKind::Class &&
+                    (matches!(member_word,Some("constructor"|"fnc"|"method")) ||
+                     matches!(self.peek_at(prefix+1),Tok::LParen) &&
+                     member_word.is_some_and(|w|!is_reserved(w)));
                 if class_field {
                     if fields.len()>=MAX_CLASS_FIELDS {
                         return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT","too many class fields"));
@@ -502,6 +508,12 @@ impl Parser {
                     let mut f=self.parse_func()?;
                     f.name=format!("{name}.{}",f.name);
                     funcs.push(f);
+                } else if instance_method {
+                    if funcs.len()>=MAX_FUNCS {
+                        return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT","too many functions"));
+                    }
+                    let f=self.parse_instance_method(&name,decls.len() as u16)?;
+                    funcs.push(f);
                 } else {
                     let subject=match kind {
                         DeclKind::Actor=>"actor instance methods, state and scheduling",
@@ -518,6 +530,52 @@ impl Parser {
         }
         decls.push(Declaration{name,pos:start,kind,variants,fields});
         Ok(())
+    }
+
+
+    /// Desugars instance methods to a function with an implicit, nominal
+    /// receiver. Only the checker decides if this method can execute.
+    fn parse_instance_method(&mut self, class_name:&str, class_id:u16) -> R<Func> {
+        let start=self.pos();
+        self.eat_word("pub");
+        self.eat_word("private");
+        let ctor=self.is_word("constructor");
+        let name=if ctor {
+            self.advance();
+            "constructor".to_string()
+        } else {
+            self.eat_word("fnc");
+            self.eat_word("method");
+            self.ident("an instance method name")?.0
+        };
+        self.expect(Tok::LParen,"'('")?;
+        let mut params=vec![Param {
+            name:"self".to_string(),ty:Type::Class(class_id),
+            mutable:false,pos:start,
+        }];
+        while *self.peek()!=Tok::RParen {
+            if params.len()>MAX_PARAMS {
+                return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT",
+                    "too many instance method arguments"));
+            }
+            let p=self.parse_param()?;
+            if params.iter().any(|old|old.name==p.name) {
+                return Err(Diagnostic::new(p.pos,"E_DUPLICATE",
+                    format!("duplicate method parameter '{}'",p.name)));
+            }
+            params.push(p);
+            if !self.eat(&Tok::Comma) {break;}
+        }
+        self.expect(Tok::RParen,"')'")?;
+        let ret=if self.eat(&Tok::Colon)||self.eat(&Tok::Arrow) {
+            self.parse_type()?
+        } else {Type::Void};
+        if ctor && ret!=Type::Void {
+            return Err(Diagnostic::new(start,"E_TYPE",
+                "class constructors may not declare a non-void return type"));
+        }
+        let body=self.parse_block()?;
+        Ok(Func{name:format!("{class_name}.{name}"),pos:start,params,ret,body})
     }
 
     /// Stage-1 class slot parser: store layout intent in the AST.
@@ -1377,7 +1435,8 @@ impl Parser {
                     self.expect(Tok::RParen,"')' after constructor arguments")?;
                     ExprKind::New(name,args)
                 }
-                "spawn" | "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "self" => { self.advance(); ExprKind::Var("self".to_string()) }
+                "spawn" | "await" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
