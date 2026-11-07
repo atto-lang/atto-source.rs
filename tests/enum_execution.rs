@@ -26,7 +26,7 @@ fn enum_types_are_nominal_and_forward_declarations_resolve() {
 
 #[test]
 fn enums_reject_cross_type_mixups_and_invalid_values_without_wasm() {
-    const TYPES: &str = "define enum Status as Ready Failed end\ndefine enum Color as Red Green end\n";
+    const TYPES: &str = "define enum Status as Ready, Failed end\ndefine enum Color as Red, Green end\n";
     const CASES: &[(&str, &str)] = &[
         ("val x: Status = Color.Red; return 0;", "E_TYPE"),
         ("if Status.Ready eq Color.Red then return 1; fi return 0;", "E_TYPE"),
