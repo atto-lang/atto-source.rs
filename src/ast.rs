@@ -22,6 +22,48 @@ impl Type {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub funcs: Vec<Func>,
+    /// Top-level nominal declarations. The browser backend currently lowers
+    /// only free functions; unused data-only declarations need no guest code.
+    pub declarations: Vec<Declaration>,
+}
+
+/// This is declaration recognition, NOT an actor or object runtime. Any
+/// executable fields/methods are rejected by the parser until lowered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclarationKind {
+    Class,
+    Actor,
+    Struct,
+    Enum,
+    Module,
+    Interface,
+    Trait,
+    Supervisor,
+}
+
+impl DeclarationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Class => "class",
+            Self::Actor => "actor",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Module => "module",
+            Self::Interface => "interface",
+            Self::Trait => "trait",
+            Self::Supervisor => "supervisor",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Declaration {
+    pub kind: DeclarationKind,
+    pub name: String,
+    pub pos: Pos,
+    /// Syntax-only enum variants; nominal enum values/operations are NOT
+    /// lowered to browser Wasm until type checking is implemented.
+    pub variants: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
