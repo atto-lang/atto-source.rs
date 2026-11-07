@@ -830,7 +830,7 @@ impl FnCx<'_> {
     // 256-height budget, never overflow a 2 MiB host stack.
     fn method_call(&mut self, receiver: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
                 let object = self.value(receiver)?;
-                match (object.ty, name.as_str()) {
+                Ok(match (object.ty, name.as_str()) {
                     (Type::Actor(_), "send") => {
                         if self.in_actor_handler { return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
                             "actor-to-actor send from receive() requires capability checks")); }
@@ -863,7 +863,7 @@ impl FnCx<'_> {
                         "only is_ok/is_err/is_full/is_closed Result predicates are admitted")),
                     _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
                         "method calls on this receiver type are not admitted")),
-                }
+                })
     }
 
     /// Allocation is only authorized by an explicit syntax node from `new`.
