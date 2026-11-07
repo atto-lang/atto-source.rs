@@ -75,3 +75,24 @@ not an OS security sandbox.
 Do not transfer source/compiled artifacts or publish to Pages without separate
 independent source/disclosure approval and public Pages protections, as
 recorded in https://github.com/atto-lang/atto-lang.github.io/issues/5 .
+
+## ABI version boundary: browser integrated.v1 vs experimental scalar.v0
+
+The separate exploratory PR #19 exposes `compile_actor` and standalone,
+import-free actor guest bytecode with only `receive(i64)->i64`. This is **not**
+the integrated browser actor ABI in this branch, and its `compile_actor`
+entry point is **not** silently included in the public browser compiler.
+
+The browser IDE uses the integrated compiler contract: `main` plus
+`atto_actor_receive_<id>` handler exports, with controlled actor imports for
+source `spawn`, `send`, and terminal `get_done`. The standalone `receive`
+export is explicitly rejected with `E_ACTOR_ABI_MISMATCH` **before actor
+worker execution**, not aliased or guessed. The staged public host contract
+at `cf9fec5f6957fc5b1c53e204b2c39b5e84af5b35` contains a valid standalone-v0 Wasm negative fixture, plus
+successful integrated-v1 actual-worker tests. Do not combine these ABIs by
+copying PR #19's `compile_actor` into the integrated source/compiler without
+an independently reviewed versioned API and full cross-mode negative tests.
+
+This branch does not publish private compiler Wasm to GitHub Pages. Release
+requires source provenance, a reviewed exact compiler digest, independent
+review, and the Pages protections in atto-lang/atto-lang.github.io issue #5.
