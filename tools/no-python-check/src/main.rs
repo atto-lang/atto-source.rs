@@ -37,19 +37,12 @@ fn is_execution_surface(path: &str) -> bool {
 
 fn forbidden_execution_line(line: &str) -> bool {
     let l = line.trim().to_ascii_lowercase();
-    if l.starts_with('#') {
+    // GitHub step labels describe the policy; they never launch a command.
+    if l.starts_with('#') || l.starts_with("name:") || l.starts_with("- name:") {
         return false;
     }
     [
         "actions/setup-python@",
-        "python -m ",
-        "python3 -m ",
-        "python -c ",
-        "python3 -c ",
-        "python ",
-        "python3 ",
-        "pypy ",
-        "pypy3 ",
         "pip install",
         "pip3 install",
         "uv run ",
@@ -59,6 +52,55 @@ fn forbidden_execution_line(line: &str) -> bool {
     ]
     .iter()
     .any(|needle| l.contains(needle))
+        || python_command_word(&l)
+}
+
+// Reject executable interpreter command words, not descriptive substrings like
+// "check-no-python". Versioned binaries and shell tab separators are included;
+// the old trailing-ASCII-space check missed both, and a bare "python3" ran.
+fn python_command_word(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    for name in ["pythonw", "python", "pypy", "py"] {
+        for (at, _) in line.match_indices(name) {
+            if at > 0
+                && !matches!(
+                    bytes[at - 1],
+                    b' ' | b'\t' | b':' | b'/' | b'\\' | b'(' | b';'
+                        | b'&' | b'|' | b'=' | b'\'' | b'"' | b'\x60'
+                )
+            {
+                continue;
+            }
+            let mut end = at + name.len();
+            while end < bytes.len() && bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+            // python3.12/pypy3.10, but not a file name like python3.md.
+            while end + 1 < bytes.len()
+                && bytes[end] == b'.'
+                && bytes[end + 1].is_ascii_digit()
+            {
+                end += 1;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+            }
+            // Include Windows .exe interpreter names without admitting .md paths.
+            if line[end..].starts_with(".exe") {
+                end += 4;
+            }
+            if end == bytes.len()
+                || matches!(
+                    bytes[end],
+                    b' ' | b'\t' | b';' | b'&' | b'|' | b'(' | b')'
+                        | b'<' | b'>' | b'$' | b'\'' | b'"' | b'\x60'
+                )
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn python_shebang(body: &str) -> bool {
@@ -170,6 +212,67 @@ mod tests {
         assert!(forbidden_execution_line("pip install -r requirements.txt"));
         assert!(forbidden_execution_line("uv run tool.py"));
         assert!(!forbidden_execution_line("- run: cargo test"));
+        assert!(!forbidden_execution_line("- name: Reject Python files and execution"));
+        assert!(!forbidden_execution_line("name: Prohibit Python"));
+        assert!(!forbidden_execution_line("/tmp/check-no-python ."));
+        assert!(!forbidden_execution_line("run: cargo run --manifest-path tools/no-python-check/Cargo.toml -- ."));
+        assert!(forbidden_execution_line("run: /tmp/check-no-python . && python3 tests/run.py"));
+        assert!(forbidden_execution_line("/usr/bin/python3 script.py"));
+    }
+
+    #[test]
+    fn rejects_interpreter_command_boundary_evasions() {
+        // Earlier scanner recognized only literal "python3 " and could
+        // admit tab-separated, versioned, or bare interpreter commands.
+        for line in [
+            "- run: python3\t-m pytest",
+            "run: /usr/bin/python3.12 -I -m unittest",
+            "run: /usr/bin/pypy3.10 -m pytest",
+            "run: /usr/bin/env -S python3 -I",
+            "python3",
+            "python3\t-c 'print(1)'",
+            "run: python3$ARGS",
+            "run: exec python",
+            "run: python3.12",
+        ] {
+            assert!(forbidden_execution_line(line), "missed executable: {line}");
+        }
+        for line in [
+            "- run: cargo test --bin check-no-python3",
+            "- name: Use Python3 as test reference",
+            "/tmp/check-no-python3 .",
+            "run: echo status=python3-result",
+            "run: echo docs/python3.md",
+        ] {
+            assert!(!forbidden_execution_line(line), "false positive: {line}");
+        }
+    }
+
+    #[test]
+    fn rejects_quoted_and_windows_interpreter_invocations() {
+        for line in [
+            "run: bash -lc 'python3 -m pytest'",
+            "run: sh -c \"python3 -c 'print(1)'\"",
+            r#"run: & "C:\Python312\python.exe" -m pytest"#,
+            r#"run: & "C:\Python312\pythonw.exe" script.py"#,
+            "run: python3.12.exe -m pytest",
+            "run: pypy3.10.exe -m pytest",
+            "run: py -3 -m pytest",
+            "run: py.exe -3 -m pytest",
+            "run: \u{60}python3\u{60}",
+            "run: python3.exe",
+        ] {
+            assert!(forbidden_execution_line(line), "missed interpreter: {line}");
+        }
+        for line in [
+            "run: cargo test --bin check-no-python.exe",
+            "run: echo docs/python3.md",
+            "run: echo docs/pyproject.toml",
+            "run: echo 'no-python-control'",
+            "- name: Check py.exe launcher policy",
+        ] {
+            assert!(!forbidden_execution_line(line), "false positive: {line}");
+        }
     }
 
     #[test]
