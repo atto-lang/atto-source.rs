@@ -191,6 +191,82 @@ for (const op of ['%', '^', '^^']) {
   });
 }
 
+// The binary name subsection must enumerate exactly the actual function indices.
+// A stale checked_rem label previously shifted main's debug name after that
+// helper was removed, even though all guest execution tests remained green.
+check('wasm/name-section-matches-emitted-function-count', () => {
+  for (const source of [
+    'pub fnc main(): int { return 42; }',
+    'pub fnc main(): int { stdio.println(42); return 42; }',
+  ]) {
+    const built = compile(source);
+    assert.ok(built.ok, built.message);
+    const mod = new WebAssembly.Module(built.wasm);
+    const sections = WebAssembly.Module.customSections(mod, 'name');
+    assert.equal(sections.length, 1, 'exactly one function name section');
+    const bytes = new Uint8Array(sections[0]);
+    let pos = 0;
+    const leb = () => {
+      let result = 0, shift = 0;
+      for (let i = 0; i < 5; i++) {
+        assert.ok(pos < bytes.length, 'LEB128 fits inside name section');
+        const b = bytes[pos++];
+        result += (b & 127) * 2 ** shift;
+        if (!(b & 128)) return result;
+        shift += 7;
+      }
+      throw new Error('invalid name section LEB128');
+    };
+    assert.equal(bytes[pos++], 1, 'function names subsection');
+    const sectionLength = leb(), end = pos + sectionLength;
+    assert.ok(end <= bytes.length, 'subsection stays in bounds');
+    const count = leb(), names = [];
+    for (let i = 0; i < count; i++) {
+      const index = leb(), length = leb();
+      assert.ok(pos + length <= end, 'name stays in subsection');
+      names.push([index, decoder.decode(bytes.subarray(pos, pos + length))]);
+      pos += length;
+    }
+    assert.equal(pos, end, 'name subsection decoded exactly');
+    assert.equal(end, bytes.length, 'no unexpected second subsection');
+    assert.deepEqual(names.map(([index]) => index), Array.from({length: count}, (_, i) => i));
+    assert.equal(count, WebAssembly.Module.imports(mod).length + 4 + 1,
+      'imports + four checked helpers + main');
+    assert.deepEqual(names.slice(-5).map(([, name]) => name),
+      ['atto.checked_add','atto.checked_sub','atto.checked_mul','atto.checked_neg','main']);
+    assert.ok(!names.some(([, name]) => name === 'atto.checked_rem'),
+      'removed remainder helper must not appear in guest debug names');
+  }
+});
+
+// ---- generated programs: source-dependent artifacts --------------------------
+check('generated/200-programs', () => {
+  let seed = 12345;
+  const rand = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) {
+    const a = rand(1000), b = rand(1000) + 1, c = rand(50);
+    const src = `fnc f(int x, int y): int {\n  let acc = 0;\n  for (let i = 0; i < ${c}; i++) do\n    acc = acc + x + y;\n  done\n  return acc - y;\n}\npub fnc main(): int {\n  return f(${a}, ${b});\n}\n`;
+    const r = compile(src);
+    assert.ok(r.ok, r.message);
+    seen.add(createHash('sha256').update(r.wasm).digest('hex'));
+    assert.equal(runGuest(r.wasm).value, BigInt(c * (a + b) - b), src);
+  }
+  assert.ok(seen.size > 190, 'artifacts depend on source');
+});
+
+// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
+// three with a positioned diagnostic and no generated guest bytes.
+for (const op of ['%', '^', '^^']) {
+  check(`removed-operator/${op}`, () => {
+    const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'E_UNSUPPORTED');
+    assert.equal('wasm' in r, false);
+    assert.ok(r.line >= 1 && r.col >= 1);
+  });
+}
+
 // ---- top-level declaration-only browser subset --------------------------------
 for (const [name, declaration] of [
   ['class', 'define class Point as end'],

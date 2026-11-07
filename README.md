@@ -57,7 +57,7 @@ These are recorded in fixtures and checked by the differential run:
 
 ## Guest contract `atto.browser.guest.v1`
 
-- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = integer overflow, 2 = division by zero). `memory` is exported only when string literals are printed.
+- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; code 2 is reserved and unreachable because integer division/remainder is not admitted). `memory` is exported only when string literals are printed.
 - **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)` and `print_newline()`. There are no other capabilities.
 - **Determinism:** output is a pure function of the source. The native and wasm32 hosts emit byte-identical modules.
 
