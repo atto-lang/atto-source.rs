@@ -72,6 +72,9 @@ pub struct Declaration {
     pub variants: Vec<String>,
     /// Class fields with explicit scalar defaults; no methods/actors yet.
     pub fields: Vec<ClassField>,
+    /// Stateless scalar actor handler; never silently erased from main guests.
+    /// This is a compiler-only v0 receive entry, not actor-owned state.
+    pub actor_receive: Option<Func>,
 }
 
 #[derive(Clone, Debug)]
