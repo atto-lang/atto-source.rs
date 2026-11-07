@@ -820,7 +820,15 @@ impl FnCx<'_> {
                 self.imports.push(Import::ActorSpawn);
                 TE { e: TExpr::SpawnActor(*id), ty: Type::Actor(*id) }
             },
-            ExprKind::MethodCall(receiver, name, args) => {
+            ExprKind::MethodCall(receiver, name, args) => self.method_call(receiver, name, args, pos)?,
+            ExprKind::Call(name, args) => self.call(name, args, pos)?,
+        })
+    }
+
+    // Separate method checker keeps the recursive generic expression checker
+    // stack frame bounded: nested operator chains must fail at the parser's
+    // 256-height budget, never overflow a 2 MiB host stack.
+    fn method_call(&mut self, receiver: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
                 let object = self.value(receiver)?;
                 match (object.ty, name.as_str()) {
                     (Type::Actor(_), "send") => {
@@ -856,9 +864,6 @@ impl FnCx<'_> {
                     _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
                         "method calls on this receiver type are not admitted")),
                 }
-            }
-            ExprKind::Call(name, args) => self.call(name, args, pos)?,
-        })
     }
 
     /// Allocation is only authorized by an explicit syntax node from `new`.
