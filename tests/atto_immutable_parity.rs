@@ -160,3 +160,21 @@ fn canonical_define_fnc_spellings_keep_export_and_scalar_checks() {
         assert!(checked(source).is_err(), "{source}: unsupported kinds fail closed");
     }
 }
+
+#[test]
+fn typed_control_flow_and_actor_semantics_stay_fail_closed() {
+    // Do not mistake source admission or a host-only model for compiled
+    // Boolean control-flow, actor, or suspension execution.
+    for source in [
+        "pub fnc main(): int { if true then return 42; else return 0; fi }",
+        "pub fnc main(): int { guard true { return 0; } return 42; }",
+        "pub fnc main(): int { let x = 1; while x < 42 { x += 1; } return x; }",
+        "pub fnc main(): int { match 1 { 1 => return 42; } }",
+        "pub fnc main(): int { critical { return 42; } }",
+        "suspends fnc main(): int { return 42; }",
+        "define actor Worker as end",
+    ] {
+        assert!(checked(source).is_err(), "{source}: unsupported guest operation");
+        assert!(compile(source).is_err(), "{source}: no partial native object");
+    }
+}
