@@ -34,7 +34,19 @@ self.onmessage=async ({data})=>{
       actor_spawn:id=>{
         if(!Number.isInteger(id)||id<0||actors.length>=4)throw new Error('E_ACTOR_LIMIT');
         const worker=new Worker('/actor-worker.mjs',{type:'module'});
-        actors.push({worker,id});
+        const actor={worker,id};
+        // Install the ready listener *before* init: the child may announce
+        // readiness before the parent guest's main() returns.
+        actor.ready=new Promise((resolve,reject)=>{
+          worker.onmessage=({data:msg})=>{
+            if(msg?.kind==='ready')resolve();
+            else reject(new Error(msg?.message||'E_ACTOR_PROTOCOL'));
+          };
+          worker.onerror=()=>reject(new Error('E_ACTOR_WORKER'));
+        });
+        // A spawn whose host never sends must not create an unhandled rejection.
+        actor.ready.catch(()=>{});
+        actors.push(actor);
         worker.postMessage({kind:'init',actorId:id,wasm:out});
         return actors.length;
       },
@@ -59,15 +71,16 @@ self.onmessage=async ({data})=>{
           if(BigInt.asIntN(64,big)!==big)throw new Error('E_MESSAGE_RANGE');
           const actor=actors[req.handle-1];
           if(!actor)throw new Error('E_ACTOR_HANDLE');
+          await actor.ready;
           const result=await new Promise((resolve,reject)=>{
             const timer=setTimeout(()=>reject(new Error('E_ACTOR_TIMEOUT')),2000);
             actor.worker.onmessage=({data:msg})=>{
-              if(msg.kind==='ready'){actor.worker.postMessage({kind:'message',value:big});return}
               clearTimeout(timer);
-              if(msg.kind==='reply'&&typeof msg.value==='bigint')resolve(msg.value);
-              else reject(new Error(msg.message||'E_ACTOR_PROTOCOL'));
+              if(msg?.kind==='reply'&&typeof msg.value==='bigint')resolve(msg.value);
+              else reject(new Error(msg?.message||'E_ACTOR_PROTOCOL'));
             };
             actor.worker.onerror=()=>{clearTimeout(timer);reject(new Error('E_ACTOR_WORKER'))};
+            actor.worker.postMessage({kind:'message',value:big});
           });
           stdout+='actor['+req.handle+'] receive('+req.value+') -> '+String(result)+'\n';
         }

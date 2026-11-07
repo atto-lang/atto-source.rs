@@ -120,10 +120,24 @@ try{
   await evaluate("window.__attoActorMessages=undefined");
   console.log('PASS browser: guest spawn creates real nested Web Worker with separate Wasm instance and typed i64 reply');
   assert.ok(requests.some(x=>x.path==='/actor-worker.mjs'),'actor worker was actually loaded');
+  // Re-use a single actor's mailbox sequentially; never rely on another
+  // 'ready' signal after the first typed response.
+  await evaluate("window.__attoActorMessages=[{handle:1,value:'41'},{handle:1,value:'42'}]");
+  assert.match(await run(actorExample,'actor[1] receive(42) -> 43'),/actor\[1\] receive\(41\) -> 42\nactor\[1\] receive\(42\) -> 43/);
+  console.log('PASS browser: sequential mailbox messages retain ordering');
+  // Two spawns get different worker handles and independent Wasm instances.
+  const twoActors=actorExample.replace('  return 0;', '  val other: Worker = spawn Worker();\n  return 0;');
+  await evaluate("window.__attoActorMessages=[{handle:1,value:'41'},{handle:2,value:'42'}]");
+  assert.match(await run(twoActors,'actor[2] receive(42) -> 43'),/actor\[1\] receive\(41\) -> 42\nactor\[2\] receive\(42\) -> 43/);
+  console.log('PASS browser: two real actor workers have independent handles and execution instances');
   await evaluate("window.__attoActorMessages=[{handle:1,value:'9223372036854775808'}]");
   assert.match(await run(actorExample,'E_MESSAGE_RANGE'),/E_MESSAGE_RANGE/);
   await evaluate("window.__attoActorMessages=undefined");
   console.log('PASS browser: out-of-range message is rejected before worker invocation');
+  await evaluate("window.__attoActorMessages=[{handle:1,value:{untrustedPointer:123}}]");
+  assert.match(await run(actorExample,'E_MESSAGE_TYPE'),/E_MESSAGE_TYPE/);
+  await evaluate("window.__attoActorMessages=undefined");
+  console.log('PASS browser: object and pointer-shaped messages fail closed');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
