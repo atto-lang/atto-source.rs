@@ -560,7 +560,7 @@ impl FnCx<'_> {
                 let a = self.value(l)?;
                 let b = self.value(r)?;
                 let ty = match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Rem => {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul => {
                         if a.ty != Type::Int || b.ty != Type::Int {
                             return Err(type_err(
                                 pos,

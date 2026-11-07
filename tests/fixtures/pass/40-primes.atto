@@ -1,11 +1,15 @@
-// count primes below 100
+// count primes below 100 with subtraction-based divisibility
 // expect-exit: 25
 fnc is_prime(int n): bool {
   if n < 2 then
     return false;
   fi
   for (let d = 2; d * d <= n; d++) do
-    if n % d eq 0 then
+    let t = n;
+    while t >= d do
+      t = t - d;
+    done
+    if t eq 0 then
       return false;
     fi
   done

@@ -16,6 +16,8 @@ What the run checked:
 
 - **46 positive fixtures.** Java exit status equals `main() & 255` from the browser guest, and Java stdout equals guest stdout byte for byte.
 - **42 negative fixtures.** Java rejects every fixture marked `// java: rejects`. It accepts each fixture marked `// java: accepts`, which is either a feature the browser compiler has not lowered yet or a recorded divergence.
+- **Removed operators.** `%`, `^`, and `^^` are rejected with `E_UNSUPPORTED` by the browser compiler; the former `%` fixture programs were rewritten without the removed operator. Java legacy syntax does not override the current AttoLang decision.
+- **Eager conditions.** `,` and `|` evaluate both sides in source order; the positive fixture asserts both observable `boom()` calls.
 - **Panic fixtures.** These are excluded from the Java comparison: Java wraps on overflow, while spec 17 and the LLVM backend trap.
 
 During development, the differential corrected two compiler rules to match `Parser.java`:

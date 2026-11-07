@@ -141,16 +141,15 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
-    Rem,
     Eq,
     Ne,
     Lt,
     Le,
     Gt,
     Ge,
-    /// `,` inside an if/while condition: short-circuit AND
+    /// `,` inside an if/while condition: eager, left-to-right AND
     And,
-    /// `|` inside an if/while condition: short-circuit OR
+    /// `|` inside an if/while condition: eager, left-to-right OR
     Or,
 }
 
@@ -161,7 +160,6 @@ impl BinOp {
             BinOp::Sub => "-",
             BinOp::Mul => "*",
             BinOp::Div => "/",
-            BinOp::Rem => "%",
             BinOp::Eq => "eq",
             BinOp::Ne => "neq",
             BinOp::Lt => "<",
