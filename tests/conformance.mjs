@@ -12,6 +12,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { ActorLifecycle } from './browser/actor-lifecycle.mjs';
 
 const here = new URL('.', import.meta.url).pathname;
 const compilerPath = process.argv[2] || join(here, '../target/wasm32-unknown-unknown/release/atto_compiler.wasm');
@@ -661,6 +662,60 @@ check('actor/send-fails-closed-on-non-scalar-transfer',()=>{
     assert.equal(response.ok,false,statement);
     assert.equal('wasm' in response,false,'invalid send must never create guest code');
   }
+});
+
+
+check('actor/lifecycle-normal-drain-and-idempotent-completion',()=>{
+  const actor=new ActorLifecycle(1,0,2);
+  assert.equal(actor.send(41n),0);
+  assert.equal(actor.send(42n),0);
+  assert.equal(actor.send(43n),1,'bounded mailbox refuses third message');
+  assert.equal(actor.close(),true);
+  assert.equal(actor.close(),false,'close is idempotent');
+  assert.equal(actor.send(43n),2,'closed mailbox rejects even after full');
+  actor.ready();
+  actor.draining();
+  assert.throws(()=>actor.complete('FINISHED'),/E_ACTOR_NOT_DRAINED/);
+  assert.equal(actor.dequeue(),41n);
+  actor.acknowledged();
+  assert.equal(actor.dequeue(),42n);
+  actor.acknowledged();
+  assert.equal(actor.dequeue(),null);
+  assert.equal(actor.complete('CLOSED','E_ACTOR_SHUTDOWN_ACK'),true);
+  assert.equal(actor.complete('FAILED','late panic'),false);
+  assert.equal(actor.complete('TERMINATED','double stop'),false);
+  assert.equal(actor.completionCount,1);
+  assert.deepEqual([actor.completion.state,actor.completion.admitted,
+    actor.completion.delivered,actor.completion.dropped],['CLOSED',2,2,0]);
+  assert.equal(actor.send(99n),2);
+});
+check('actor/lifecycle-failure-drops-and-seals-once',()=>{
+  const actor=new ActorLifecycle(3,2,2);
+  actor.ready();actor.draining();
+  assert.equal(actor.send(1n),0);
+  assert.equal(actor.send(2n),0);
+  assert.equal(actor.dequeue(),1n);
+  assert.equal(actor.complete('FAILED','E_ACTOR_PANIC_1'),true);
+  assert.equal(actor.complete('CLOSED','late shutdown'),false);
+  assert.equal(actor.completionCount,1);
+  assert.equal(actor.completion.dropped,2,'in-flight and queued messages are counted');
+  assert.equal(actor.completion.delivered,0,'admission is not execution');
+  assert.equal(actor.send(3n),2,'failed actor cannot reopen admission');
+  assert.throws(()=>actor.acknowledged(),/E_ACTOR_STATE/);
+});
+check('actor/lifecycle-typed-admission-and-invalid-transitions',()=>{
+  const actor=new ActorLifecycle(1,0);
+  assert.throws(()=>actor.send({pointer:1}),/E_MESSAGE_TYPE/);
+  assert.throws(()=>actor.send(9223372036854775808n),/E_MESSAGE_TYPE/);
+  assert.throws(()=>actor.draining(),/E_ACTOR_STATE/);
+  assert.throws(()=>actor.dequeue(),/E_ACTOR_STATE/);
+  assert.throws(()=>actor.complete('UNKNOWN'),/E_ACTOR_STATE/);
+  actor.ready();
+  assert.throws(()=>actor.ready(),/E_ACTOR_STATE/);
+  actor.draining();
+  assert.equal(actor.complete('FINISHED','E_ACTOR_SHUTDOWN_ACK'),true);
+  assert.equal(actor.complete('FINISHED'),false);
+  assert.equal(actor.completionCount,1);
 });
 
 // ---- limits and robustness ---------------------------------------------------

@@ -11,6 +11,7 @@ const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-worker.mjs',[new URL('./browser/actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-lifecycle.mjs',[new URL('./browser/actor-lifecycle.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -157,6 +158,11 @@ try{
   ].join('\n');
   assert.match(await run(senderProgram,'main() -> 42'),/actor\[1\] receive\(41\) -> 42\nactor\[1\] receive\(42\) -> 43\nmain\(\) -> 42/);
   console.log('PASS browser: language send Result admits only two FIFO messages, rejects full third');
+  const finished=await evaluate('window.__attoLastResult.actorCompletions');
+  assert.equal(finished.length,1,'one terminal event for one actor');
+  assert.deepEqual(finished.map(x=>[x.handle,x.state,x.admitted,x.delivered,x.dropped]),
+    [[1,'FINISHED',2,2,0]]);
+  console.log('PASS browser: FINISHED occurs only after two admitted handlers and shutdown ACK');
   const closeProgram=senderProgram.replace(
     '  val second = w.send(42);\n  val full = w.send(43);',
     '  val closed = w.close();\n  val second = w.send(42);\n  val full = w.send(43);'
@@ -164,6 +170,11 @@ try{
     'first.is_ok() , closed , second.is_closed() , full.is_closed()');
   assert.match(await run(closeProgram,'main() -> 42'),/actor\[1\] receive\(41\) -> 42\nmain\(\) -> 42/);
   console.log('PASS browser: close blocks further admission but drains already admitted message');
+  const closed=await evaluate('window.__attoLastResult.actorCompletions');
+  assert.equal(closed.length,1,'close completed exactly once');
+  assert.deepEqual(closed.map(x=>[x.state,x.admitted,x.delivered,x.dropped]),
+    [['CLOSED',1,1,0]]);
+  console.log('PASS browser: CLOSED is terminal after prior admission drains and worker acknowledges');
   const separateQueues=senderProgram.replace('  val second = w.send(42);',
     '  val other = spawn Worker();\n  val other_ok = other.send(50);\n  val second = w.send(42);'
   ).replace('first.is_ok() , second.is_ok() , full.is_full()',
@@ -172,6 +183,59 @@ try{
   assert.match(twoResult,/actor\[1\] receive\(41\) -> 42/);
   assert.match(twoResult,/actor\[2\] receive\(50\) -> 51/);
   console.log('PASS browser: each actor has independent bounded mailbox capacity');
+  const independent=await evaluate('window.__attoLastResult.actorCompletions');
+  assert.deepEqual(independent.map(x=>[x.handle,x.state,x.admitted,x.delivered,x.dropped]),
+    [[1,'FINISHED',2,2,0],[2,'FINISHED',1,1,0]]);
+  console.log('PASS browser: both actor workers independently acknowledge completion exactly once');
+
+  // A spawned actor without messages is shut down by the finite run scope.
+  await evaluate('window.__attoActorMessages=undefined');
+  assert.match(await run(actorExample,'main() -> 0'),/main\(\) -> 0/);
+  const idle=await evaluate('window.__attoLastResult.actorCompletions');
+  assert.deepEqual(idle.map(x=>[x.state,x.admitted,x.delivered]),
+    [['FINISHED',0,0]]);
+  console.log('PASS browser: idle actor receives shutdown ACK and one FINISHED completion');
+
+  // The guest receive overflows at runtime after successful mailbox admission.
+  // Failure must not be conflated with an Err(Full) or an ordinary shutdown.
+  const panicActor=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg + 9223372036854775807; }',
+    'end',
+    'pub fnc main(): int {',
+    '  val w = spawn Worker();',
+    '  val admitted = w.send(1);',
+    '  if admitted.is_ok() then return 0; else return 9; fi',
+    '}',
+  ].join('\n');
+  assert.match(await run(panicActor,'E_ACTOR_PANIC_1'),/E_ACTOR_PANIC_1/);
+  const failed=await evaluate('window.__attoLastResult.actorCompletions');
+  assert.equal(failed.length,1,'failure completion delivered once');
+  assert.equal(failed[0].state,'FAILED');
+  assert.equal(failed[0].reason,'E_ACTOR_PANIC_1');
+  assert.deepEqual([failed[0].admitted,failed[0].delivered,failed[0].dropped],[1,0,1]);
+  console.log('PASS browser: handler panic marks FAILED with one completion and drops in-flight work');
+
+  // Forced host termination is explicitly NOT a child-acknowledged FINISHED.
+  await evaluate('window.__attoActorForceTerminate=1');
+  assert.match(await run(actorExample,'E_ACTOR_FORCED'),/E_ACTOR_FORCED/);
+  const terminated=await evaluate('window.__attoLastResult.actorCompletions');
+  assert.equal(terminated.length,1,'forced actor completion delivered once');
+  assert.equal(terminated[0].state,'TERMINATED');
+  assert.equal(terminated[0].reason,'E_ACTOR_FORCED');
+  await evaluate('window.__attoActorForceTerminate=undefined');
+  console.log('PASS browser: forcibly terminated worker is marked TERMINATED, never completed');
+
+  // A main() panic after spawning invalidates the host run, not a worker ACK.
+  const panicMain=actorExample.replace('  return 0;',
+    '  return 9223372036854775807 + 1;');
+  assert.match(await run(panicMain,'E_PANIC: integer overflow'),/E_PANIC: integer overflow/);
+  const aborted=await evaluate('window.__attoLastResult.actorCompletions');
+  assert.equal(aborted.length,1);
+  assert.equal(aborted[0].state,'TERMINATED');
+  assert.equal(aborted[0].reason,'E_GUEST_MAIN_PANIC');
+  console.log('PASS browser: guest panic cleans up child and records termination once');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

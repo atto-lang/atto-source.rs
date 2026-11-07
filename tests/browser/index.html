@@ -9,11 +9,13 @@ let last=0;
 button.addEventListener('click',()=>{
   const id=++last;
   const worker=new Worker('/worker.mjs',{type:'module'});
+  window.__attoLastResult=null;
   button.disabled=true;out.textContent='Compiling';
   const timer=setTimeout(()=>{worker.terminate();if(id===last){out.textContent='E_TIMEOUT';button.disabled=false}},5000);
-  worker.onmessage=event=>{clearTimeout(timer);worker.terminate();if(id!==last)return;out.textContent=event.data.ok?event.data.stdout+'main() -> '+event.data.value:event.data.error;button.disabled=false};
+  worker.onmessage=event=>{clearTimeout(timer);worker.terminate();if(id!==last)return;window.__attoLastResult=event.data;out.textContent=event.data.ok?event.data.stdout+'main() -> '+event.data.value:event.data.error;button.disabled=false};
   worker.onerror=()=>{clearTimeout(timer);worker.terminate();if(id===last){out.textContent='E_WORKER';button.disabled=false}};
-  worker.postMessage({source:editor.value,actorMessages:window.__attoActorMessages});
+  worker.postMessage({source:editor.value,actorMessages:window.__attoActorMessages,
+    actorForceTerminate:window.__attoActorForceTerminate});
 });
 window.__attoReady=true;
 </script>

@@ -222,3 +222,32 @@ inside `receive` until capability and supervision checks exist. These
 imports are *not* granted by the public playground or previously shipped
 compiler. Compilation rejects all non-int send payloads and unsupported
 generic Result types with no guest code.
+
+## Private browser-worker lifecycle proof (host only)
+
+The actor lifecycle test host, not the language compiler, owns an explicit
+per-actor state machine: `STARTING -> READY -> DRAINING -> FINISHED/CLOSED`,
+with exceptional terminal states `FAILED` and `TERMINATED`. The actor
+must acknowledge a `shutdown` request after processing all prior work
+before the host records `FINISHED` or `CLOSED`. A forced worker termination,
+unexpected failure, timeout, or guest-main panic is never mislabelled as
+a normal completion.
+
+The private harness returns `actorCompletions` (one terminal record per
+actor, `handle`, `actorId`, `state`, `reason`, `admitted`,
+`delivered`, `externalDelivered`, `dropped`), using an idempotent
+terminal transition. This is a **host evidence envelope**, not an AttoLang
+`get_done()` future, promise, acknowledgement of each message, or
+canonical supervisor priority CONTROL channel. No guest `await` is
+introduced. The existing finite guest-run scope implicitly shuts down
+open actors after draining; explicit `close()` prevents further sends,
+preserves already admitted messages, and yields `CLOSED` only after the
+child's actual shutdown acknowledgement.
+
+Pure lifecycle state-machine conformance and real Chromium child-worker
+tests cover normal drain, idle actor termination, explicit close, worker
+panic, host-forced termination, guest-main panic, invalid transfers,
+resource cleanup and exactly-once terminal evidence. **No claim is made
+for a real concurrent-producer scheduler, OS-enforced tenant isolation,
+actor arena reclamation, separate guaranteed guest stacks, backend parity,
+or language-level completion/supervision yet.**

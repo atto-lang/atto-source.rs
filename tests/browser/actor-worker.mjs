@@ -1,7 +1,10 @@
-// Private actor execution domain: each actor owns a separate Web Worker and
-// a separate WebAssembly.Instance. Host may send only signed i64 payloads.
-let receiver=null, guest=null;
+// A private actor execution domain has one Web Worker and one independent
+// WebAssembly.Instance. Shutdown ACK is sent only after earlier messages
+// have completed. Errors are reported as host evidence, not as canonical
+// priority supervisor CONTROL messages or language-level get_done().
+let receiver=null,guest=null,actorId=null,processed=0,terminal=false;
 self.onmessage=({data})=>{
+  if(terminal)return;
   try{
     if(data?.kind==='init'){
       if(receiver)throw new Error('E_ACTOR_DUP_INIT');
@@ -24,21 +27,33 @@ self.onmessage=({data})=>{
       guest=new WebAssembly.Instance(module,{atto});
       receiver=guest.exports['atto_actor_receive_'+data.actorId];
       if(typeof receiver!=='function')throw new Error('E_ACTOR_RECEIVE_EXPORT');
+      actorId=data.actorId;
       self.postMessage({kind:'ready'});
       return;
     }
     if(data?.kind==='message'){
       if(!receiver)throw new Error('E_ACTOR_NOT_READY');
-      if(typeof data.value!=='bigint'||BigInt.asIntN(64,data.value)!==data.value)throw new Error('E_MESSAGE_TYPE');
+      if(typeof data.value!=='bigint'||BigInt.asIntN(64,data.value)!==data.value)
+        throw new Error('E_MESSAGE_TYPE');
       const result=receiver(data.value);
       if(typeof result!=='bigint')throw new Error('E_ACTOR_RESULT');
+      processed++;
       self.postMessage({kind:'reply',value:result});
+      return;
+    }
+    if(data?.kind==='shutdown'){
+      if(!receiver)throw new Error('E_ACTOR_NOT_READY');
+      terminal=true;
+      self.postMessage({kind:'done',actorId,processed});
+      self.close();
       return;
     }
     throw new Error('E_ACTOR_PROTOCOL');
   }catch(error){
-    const panic=guest?.exports?.panic_code?.value||0;
-    self.postMessage({kind:'error',message:panic?'E_ACTOR_PANIC_'+panic:String(error.message)});
+    terminal=true;
+    const code=guest?.exports?.panic_code?.value||0;
+    const message=code?'E_ACTOR_PANIC_'+code:String(error.message);
+    self.postMessage({kind:'error',actorId,message,panicCode:code});
     self.close();
   }
 };
