@@ -13,7 +13,7 @@
 //! randomness, so identical input yields byte-identical modules on every host.
 
 use crate::ast::{BinOp, Type};
-use crate::check::{Builtin, Import, TExpr, TProgram, TStmt, TE};
+use crate::check::{Builtin, Import, NewObject, TExpr, TProgram, TStmt, TE};
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
@@ -227,22 +227,9 @@ impl Emit<'_> {
         self.close();
     }
 
-    fn expr(&mut self, v: &TE) {
-        match &v.e {
-            TExpr::I64(n) => self.i64c(*n),
-            TExpr::Bool(b) => self.i32c(*b as i32),
-            TExpr::Local(slot) => {
-                self.op(0x20);
-                uleb(&mut self.code, *slot as u64);
-            }
-            TExpr::FieldGet{base,offset} => {
-                self.expr(base);
-                self.op(0x29); // i64.load
-                uleb(&mut self.code,3);
-                uleb(&mut self.code,*offset as u64);
-                if v.ty==Type::Bool {self.op(0xA7);} // i32.wrap_i64
-            }
-            TExpr::New(obj) => {
+    /// Separate object emitter keeps the recursive scalar expression frame
+    /// small even when 250-link arithmetic chains are encountered.
+    fn emit_new(&mut self,obj:&NewObject) {
                 let (size,tag,defaults,constructor)=
                     (&obj.size,&obj.tag,&obj.defaults,&obj.constructor);
                 let tmp=self.object_tmp.expect("object allocation reserves temporary local");
@@ -262,7 +249,7 @@ impl Emit<'_> {
                 self.i32c(*size as i32);
                 self.op(0x6A); // i32.add
                 self.op(0x24); uleb(&mut self.code,1);
-                let mut write=|this:&mut Self,offset:u32,value:i64| {
+                let write=|this:&mut Self,offset:u32,value:i64| {
                     this.op(0x20); uleb(&mut this.code,tmp as u64);
                     this.i64c(value);
                     this.op(0x37); uleb(&mut this.code,3);
@@ -278,7 +265,24 @@ impl Emit<'_> {
                     self.call(self.l.func(*func));
                 }
                 self.op(0x20); uleb(&mut self.code,tmp as u64);
+    }
+
+    fn expr(&mut self, v: &TE) {
+        match &v.e {
+            TExpr::I64(n) => self.i64c(*n),
+            TExpr::Bool(b) => self.i32c(*b as i32),
+            TExpr::Local(slot) => {
+                self.op(0x20);
+                uleb(&mut self.code, *slot as u64);
             }
+            TExpr::FieldGet{base,offset} => {
+                self.expr(base);
+                self.op(0x29); // i64.load
+                uleb(&mut self.code,3);
+                uleb(&mut self.code,*offset as u64);
+                if v.ty==Type::Bool {self.op(0xA7);} // i32.wrap_i64
+            }
+            TExpr::New(obj) => self.emit_new(obj),
             TExpr::Neg(a) => {
                 self.expr(a);
                 self.call(self.l.helper(H_NEG));

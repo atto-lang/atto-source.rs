@@ -787,7 +787,13 @@ impl FnCx<'_> {
                 }
             }
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
-            ExprKind::New(name,args) => {
+            ExprKind::New(name,args) => self.new_class(name,args,pos)?,
+
+        })
+    }
+
+    /// Heap object admission stays out of the hot recursive typecheck frame.
+    fn new_class(&mut self,name:&str,args:&[Expr],pos:Pos) -> R<TE> {
                 let (id,layout)=self.classes.iter().find(|(_,layout)|layout.name==*name)
                     .ok_or_else(||Diagnostic::new(pos,"E_UNKNOWN_TYPE",
                         format!("unknown class '{name}'")))?;
@@ -814,9 +820,7 @@ impl FnCx<'_> {
                         format!("new {name} has no matching constructor of arity {}",args.len())));
                 }
                 *self.has_objects=true;
-                TE {e:TExpr::New(Box::new(NewObject{size,tag:id as i64+1,defaults,constructor})),ty:Type::Class(id)}
-            }
-        })
+                Ok(TE {e:TExpr::New(Box::new(NewObject{size,tag:id as i64+1,defaults,constructor})),ty:Type::Class(id)})
     }
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
