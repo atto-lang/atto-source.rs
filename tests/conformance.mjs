@@ -556,6 +556,32 @@ for (const op of ['%', '^', '^^']) {
   });
 }
 
+// Actor receive and its internal synthetic main both consume function slots.
+// Test the exact 1024-function boundary through the WASM compiler ABI.
+check('actor/function-budget-includes-receive-and-synthetic-main', () => {
+  const helper = count => Array.from({length:count},(_,i)=>
+    'fnc helper_' + i + '(): int { return 0; }').join('\n') + '\n';
+  const actor = 'define actor Worker as receive(int value): int { return value + 1; } end';
+  const attempt = source => {
+    const bytes = encoder.encode(source);
+    assert.ok(bytes.length <= api.input_capacity(), 'quota test fits source input');
+    new Uint8Array(api.memory.buffer,api.input_ptr(),bytes.length).set(bytes);
+    return api.compile_actor(bytes.length);
+  };
+  assert.equal(attempt(helper(1023)+actor),1,'1025 total functions must fail');
+  assert.equal(api.result_length(),0,'over-budget actor must not expose Wasm');
+  const mem = new Uint8Array(api.memory.buffer);
+  let end=api.error_ptr();
+  while(end<mem.length&&mem[end]&&end-api.error_ptr()<512)end++;
+  assert.match(decoder.decode(mem.subarray(api.error_ptr(),end)),/^E_SOURCE_LIMIT:/);
+  assert.equal(attempt(helper(1022)+actor),0,'1024 total functions must fit');
+  const guest = new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  const mod=new WebAssembly.Module(guest);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(e=>e.name),['receive']);
+  assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(41n),42n);
+});
+
 // ---- source-compiled scalar actor receive guest ABI --------------------------
 check('actor/source-compiled-receive-guest-executes', () => {
   assert.equal(typeof api.compile_actor, 'function', 'compiler must expose separate actor ABI entrypoint');
