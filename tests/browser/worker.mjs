@@ -38,11 +38,13 @@ self.onmessage=async ({data})=>{
         // Install the ready listener *before* init: the child may announce
         // readiness before the parent guest's main() returns.
         actor.ready=new Promise((resolve,reject)=>{
+          const timer=setTimeout(()=>reject(new Error('E_ACTOR_READY_TIMEOUT')),2000);
           worker.onmessage=({data:msg})=>{
+            clearTimeout(timer);
             if(msg?.kind==='ready')resolve();
             else reject(new Error(msg?.message||'E_ACTOR_PROTOCOL'));
           };
-          worker.onerror=()=>reject(new Error('E_ACTOR_WORKER'));
+          worker.onerror=()=>{clearTimeout(timer);reject(new Error('E_ACTOR_WORKER'))};
         });
         // A spawn whose host never sends must not create an unhandled rejection.
         actor.ready.catch(()=>{});
