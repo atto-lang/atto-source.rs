@@ -51,6 +51,11 @@ pub enum TExpr {
     I64(i64),
     Bool(bool),
     Local(u32),
+    /// Bounded linear-memory object, with a class tag and constant defaults.
+    New { size: u32, tag: i64, defaults: Vec<i64>,
+          constructor: Option<(u32, Vec<TE>)> },
+    /// Instance receiver's primitive field at a statically checked offset.
+    FieldGet { base: Box<TE>, offset: u32 },
     Neg(Box<TE>),
     Not(Box<TE>),
     /// operand type is the type of `l`
@@ -80,6 +85,7 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    FieldSet { base: TE, offset: u32, value: TE },
     Expr(TE),
     Return(Option<TE>),
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
@@ -111,7 +117,23 @@ pub struct TProgram {
     pub main: u32,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
+    /// A fixed-size per-guest linear-memory arena is used only when needed.
+    pub uses_objects: bool,
 }
+#[derive(Clone, Debug)]
+struct ClassSlot {
+    name: String,
+    ty: Type,
+    default: i64,
+    mutable: bool,
+    offset: u32,
+}
+#[derive(Clone, Debug)]
+struct ClassLayout {
+    name: String,
+    slots: Vec<ClassSlot>,
+}
+
 
 struct Local {
     name: String,
@@ -131,6 +153,8 @@ struct FnCx<'a> {
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
     enum_values: &'a BTreeMap<String, (i64, Type)>,
+    classes: &'a BTreeMap<u16, ClassLayout>,
+    has_objects: &'a mut bool,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -139,15 +163,50 @@ fn type_err(pos: Pos, msg: impl Into<String>) -> Diagnostic {
     Diagnostic::new(pos, "E_TYPE", msg)
 }
 
-pub fn check(p: &Program) -> R<TProgram> {
-    // Do not erase instance layout or create a fake object/actor runtime.
-    // These AST declarations are admitted for compiler diagnostics, but the
-    // executable guest path is gated until ownership-aware allocation exists.
-    for decl in &p.decls {
-        if !decl.fields.is_empty() {
-            return Err(Diagnostic::new(decl.fields[0].pos, "E_UNSUPPORTED",
-                format!("class '{}' instance field layout/allocation is not implemented yet", decl.name)));
+/// No expressions, calls, allocations or side effects run in a field default.
+fn constant_default(expr: &Expr) -> R<(Type,i64)> {
+    match &expr.kind {
+        ExprKind::Bool(b) => Ok((Type::Bool,i64::from(*b))),
+        ExprKind::Int(Some(v)) => Ok((Type::Int,*v as i64)),
+        ExprKind::Unary(UnOp::Neg,inner) if matches!(inner.kind,ExprKind::Int(None)) =>
+            Ok((Type::Int,i64::MIN)),
+        ExprKind::Unary(UnOp::Neg,inner) => {
+            let (ty,v)=constant_default(inner)?;
+            if ty!=Type::Int {return Err(type_err(expr.pos,"negation needs int"));}
+            Ok((ty,v.checked_neg().ok_or_else(||
+                Diagnostic::new(expr.pos,"E_INTEGER_RANGE","negative field constant overflows"))?))
         }
+        ExprKind::Unary(UnOp::Plus,inner) => constant_default(inner),
+        _ => Err(Diagnostic::new(expr.pos,"E_UNSUPPORTED",
+            "class field initializers must be primitive compile-time constants in M2.2")),
+    }
+}
+
+pub fn check(p: &Program) -> R<TProgram> {
+    // M2.2 is a *closed* subset: primitive inline fields, constant defaults,
+    // class-owned handles and direct instance dispatch. No foreign refs,
+    // shared ownership, actor instances, inheritance, dynamic heap growth,
+    // object escape or arbitrary native pointers.
+    let mut classes=BTreeMap::new();
+    for (id,decl) in p.decls.iter().enumerate() {
+        if decl.kind!=DeclKind::Class { continue; }
+        let mut slots=Vec::new();
+        for (i,field) in decl.fields.iter().enumerate() {
+            if !matches!(field.ty,Type::Int|Type::Bool) {
+                return Err(Diagnostic::new(field.pos,"E_UNSUPPORTED",
+                    "object fields are limited to inline int/bool values in M2.2"));
+            }
+            let (actual,default)=constant_default(&field.initializer)?;
+            if actual!=field.ty {
+                return Err(type_err(field.pos,
+                    format!("class field '{}' initializer has wrong type",field.name)));
+            }
+            slots.push(ClassSlot {
+                name:field.name.clone(),ty:field.ty,default,
+                mutable:!field.final_slot,offset:8+(i as u32)*8,
+            });
+        }
+        classes.insert(id as u16,ClassLayout{name:decl.name.clone(),slots});
     }
     let mut enum_values: BTreeMap<String,(i64,Type)> = BTreeMap::new();
     for (id, decl) in p.decls.iter().enumerate() {
@@ -159,10 +218,17 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        if f.ret != Type::Void && matches!(f.ret, Type::Class(_)) ||
-            f.params.iter().any(|p| matches!(p.ty, Type::Class(_))) {
+        // Only the compiler-generated first 'self' parameter can carry a
+        // class handle through the call ABI. User-level aliases/escapes need
+        // rt take/share/borrow enforcement and are not silently accepted.
+        let valid_receiver=matches!(f.params.first(),
+            Some(Param{name,ty:Type::Class(_),..}) if name=="self") &&
+            f.name.contains('.');
+        if matches!(f.ret,Type::Class(_)) ||
+            f.params.iter().enumerate().any(|(index,p)|
+                matches!(p.ty,Type::Class(_)) && !(index==0 && valid_receiver)) {
             return Err(Diagnostic::new(f.pos,"E_UNSUPPORTED",
-                format!("class-valued function '{}' requires object ownership/lifetime lowering",f.name)));
+                format!("class-valued callable '{}' cannot transfer object handles",f.name)));
         }
         if p.decls.iter().any(|d| d.name == f.name) {
             return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
@@ -218,6 +284,7 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut imports = Vec::new();
     let mut data = Vec::new();
     let mut funcs = Vec::new();
+    let mut has_objects=false;
     for f in &p.funcs {
         let mut cx = FnCx {
             sigs: &sigs,
@@ -230,6 +297,8 @@ pub fn check(p: &Program) -> R<TProgram> {
             imports: &mut imports,
             data: &mut data,
             enum_values: &enum_values,
+            classes: &classes,
+            has_objects: &mut has_objects,
         };
         for (i, prm) in f.params.iter().enumerate() {
             cx.scopes[0].push(Local {
@@ -263,6 +332,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
+        uses_objects: has_objects,
     })
 }
 
