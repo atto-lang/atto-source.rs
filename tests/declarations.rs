@@ -21,6 +21,15 @@ fn inert_declarations_compile_to_guest_wasm() {
 }
 
 #[test]
+fn executable_static_class_methods_compile_to_distinct_real_wasm() {
+    let with_class = "define class Calculator as\n  static fnc add(int a, int b): int { return a + b; }\nend\npub fnc main(): int { return Calculator.add(20, 22); }";
+    let without_class = "pub fnc main(): int { return 42; }";
+    let wasm = compile(with_class).expect("static method compiled");
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+    assert_ne!(wasm, compile(without_class).expect("standalone main"));
+}
+
+#[test]
 fn member_semantics_and_collisions_reject_before_codegen() {
     for (d, expected) in [
         ("define class P as\nint x: 0\nend", "E_UNSUPPORTED"),
@@ -31,6 +40,9 @@ fn member_semantics_and_collisions_reject_before_codegen() {
         ("define enum E as end", "E_SYNTAX"),
         ("define actor A as", "E_EOF"),
         ("define module M as end", "E_UNSUPPORTED"),
+        ("define class P as fnc get(): int { return 1; } end", "E_UNSUPPORTED"),
+        ("define class P as static fnc get(): int { return 1; } static fnc get(): int { return 2; } end", "E_DUPLICATE"),
+        ("define class P as static fnc get(): int { return 1; } end\nfnc P(): int { return 1; }", "E_DUPLICATE"),
     ] {
         let input = if d == "define actor A as" { d.to_string() } else { source(d) };
         let err = compile(&input).expect_err(d);
