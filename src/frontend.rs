@@ -51,6 +51,8 @@ impl std::error::Error for ParseError {}
 enum Kind {
     #[token("pub")]
     Pub,
+    #[token("define")]
+    Define,
     #[token("static")]
     Static,
     #[token("fnc")]
@@ -59,6 +61,8 @@ enum Kind {
     Return,
     #[token("const")]
     Const,
+    #[token("val")]
+    Val,
     #[token("int")]
     Int,
     #[token("as")]
@@ -94,7 +98,7 @@ enum Kind {
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
     #[regex(r"[ \t\n\r\f]+", logos::skip)]
-    #[regex(r"//[^\n]*", logos::skip, allow_greedy = true)]
+    #[regex(r"//[^\r\n]*", logos::skip, allow_greedy = true)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -112,6 +116,17 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
     let mut depth = 0_u32;
     let mut open = 0_usize;
     while i < src.len() {
+        // A // comment is opaque to the block-comment scanner. Preserve its
+        // bytes and original offsets for Logos, which skips it separately.
+        // Otherwise a stray /* inside a line comment could swallow source
+        // or manufacture an unterminated_comment diagnostic.
+        if depth == 0 && i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'/' {
+            i += 2;
+            while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
+                i += 1;
+            }
+            continue;
+        }
         if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
             if depth == 0 {
                 open = i;
@@ -297,9 +312,18 @@ impl Parser {
         Ok(token)
     }
     fn function(&mut self) -> Result<Function, ParseError> {
+        // Canonical AttoLang permits both "define pub fnc" and
+        // "pub define fnc"; the declaration still must be a scalar fnc.
+        let leading_define = self.peek() == Some(Kind::Define);
+        if leading_define {
+            self.expect(Kind::Define)?;
+        }
         let exported = self.peek() == Some(Kind::Pub);
         if exported {
             self.expect(Kind::Pub)?;
+        }
+        if !leading_define && self.peek() == Some(Kind::Define) {
+            self.expect(Kind::Define)?;
         }
         if self.peek() == Some(Kind::Static) {
             self.expect(Kind::Static)?;
@@ -344,11 +368,34 @@ impl Parser {
             }
         };
         let mut locals = Vec::new();
-        while self.peek() == Some(Kind::Const) {
-            self.expect(Kind::Const)?;
-            let local_name = self.expect(Kind::Identifier)?.text;
-            self.expect(Kind::Colon)?;
-            self.expect(Kind::Int)?;
+        // AttoLang scalar bindings are immutable by default. All admitted
+        // spellings lower to the same checked local-init MIR, never an
+        // implicit mutable slot or an unchecked host fallback.
+        while matches!(self.peek(), Some(Kind::Const | Kind::Val | Kind::Int)) {
+            let local_name = match self.peek() {
+                Some(Kind::Int) => {
+                    self.expect(Kind::Int)?;
+                    self.expect(Kind::Identifier)?.text
+                }
+                Some(Kind::Val) => {
+                    self.expect(Kind::Val)?;
+                    self.expect(Kind::Identifier)?.text
+                }
+                Some(Kind::Const) => {
+                    self.expect(Kind::Const)?;
+                    let prefix_type = self.peek() == Some(Kind::Int);
+                    if prefix_type {
+                        self.expect(Kind::Int)?;
+                    }
+                    let name = self.expect(Kind::Identifier)?.text;
+                    if !prefix_type && self.peek() == Some(Kind::Colon) {
+                        self.expect(Kind::Colon)?;
+                        self.expect(Kind::Int)?;
+                    }
+                    name
+                }
+                _ => unreachable!("local declaration admitted by loop guard"),
+            };
             self.expect(Kind::Equals)?;
             let value = self.expression()?;
             self.expect(Kind::Semicolon)?;
@@ -356,6 +403,27 @@ impl Parser {
                 name: local_name,
                 value,
             });
+        }
+        // A source-level immutable binding must never silently turn into a
+        // write; the Rust scalar compiler does not yet lower let/mut.
+        if let (Some(name), Some(op)) = (
+            self.tokens.get(self.cursor),
+            self.tokens.get(self.cursor + 1),
+        ) {
+            let is_bound = name.kind == Kind::Identifier
+                && (params.iter().any(|param| param == &name.text)
+                    || locals.iter().any(|local| local.name == name.text));
+            let compound_rhs = self.tokens.get(self.cursor + 2).map(|token| token.kind);
+            let is_assignment = op.kind == Kind::Equals
+                || (matches!(op.kind, Kind::Plus | Kind::Minus)
+                    && compound_rhs == Some(Kind::Equals));
+            if is_bound && is_assignment {
+                return Err(ParseError {
+                    offset: name.start,
+                    class: "immutable_binding",
+                    message: "immutable binding cannot be reassigned; let/mut unsupported".into(),
+                });
+            }
         }
         self.expect(Kind::Return)?;
         let expression = self.expression()?;
@@ -533,5 +601,36 @@ mod tests {
     #[test]
     fn ignores_double_slash_comment() {
         assert!(parse("// first\npub fnc main(): int { return 40+2; }").is_ok());
+    }
+
+    #[test]
+    fn line_comment_block_opener_does_not_swallow_source() {
+        let source = "// /* ignored until newline\npub fnc main(): int { return 42; }";
+        let parsed = parse(source).expect("block opener inside // must be inert");
+        assert_eq!(parsed.functions.len(), 1);
+        assert_eq!(parsed.functions[0].expression, Expr::Integer(42));
+    }
+
+    #[test]
+    fn line_comment_does_not_hide_real_unterminated_block() {
+        let source = "// /* inert\n/* real unterminated block";
+        let error = parse(source).expect_err("real unclosed block must still fail");
+        assert_eq!(error.class, "unterminated_comment");
+        assert_eq!(error.offset, source.find("\n/*").unwrap() + 1);
+    }
+
+    #[test]
+    fn block_comment_does_not_turn_nested_line_markers_into_line_comments() {
+        let source = "/* // /* nested */ outer */ pub fnc main(): int { return 42; }";
+        let parsed = parse(source).expect("nested blocks remain valid");
+        assert_eq!(parsed.functions.len(), 1);
+        assert_eq!(parsed.functions[0].expression, Expr::Integer(42));
+    }
+
+    #[test]
+    fn carriage_return_line_comment_is_opaque_to_block_scanner() {
+        let source = "// /* not a block opener\rpub fnc main(): int { return 42; }";
+        let parsed = parse(source).expect("CR terminates a line comment");
+        assert_eq!(parsed.functions[0].expression, Expr::Integer(42));
     }
 }
