@@ -17,6 +17,7 @@ The compiler does not define any syntax of its own:
 | Area | Admitted |
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
+| Inert top-level declaration syntax | `define [pub] class/actor/struct/module/interface/trait/supervisor Name as end`; `define [pub] enum Name as Variant ... end` with distinct variants on separate lines or delimited by `,`/`;`. Names are recorded and duplicate checked, but **not available as runtime types or values**. |
 | Entry point | zero-argument `main` returning `int` or `void` |
 | Types | `int` (i64), `bool` / `boolean`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut` |
@@ -31,7 +32,8 @@ The following are rejected, with the code shown:
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
-- Classes, actors, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give `E_UNSUPPORTED`.
+- Members of classes, actors, structs, modules, interfaces, traits and supervisors, as well as actor spawning and class/enum use, are **not** executable in the browser. Nonempty non-enum bodies give `E_UNSUPPORTED`; nominal types and values remain unavailable to the scalar type checker.
+- `define macro` and other unsupported `define` forms, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give fail-closed diagnostics.
 
 ### Known divergences from the Java reference
 
@@ -39,6 +41,13 @@ These are recorded in fixtures and checked by the differential run:
 
 - Binding the result of a void call. Java accepts it. Here it is `E_TYPE`, because a void call has no value.
 - Integer overflow. Java wraps silently. Here it panics, following spec 17 and the LLVM backend.
+
+
+### Top-level `define` staging boundary
+
+This branch supports **declaration recognition**, not full language implementation. The compiler parses and retains unused empty nominal definitions, records enum variant names, catches duplicate names and malformed separators, and permits independent scalar `main()` execution. It **never** emits a class object layout, actor mailbox/scheduler, enum value, nominal method, import/module side effect, or supervisor runtime. Members or runtime uses remain compile errors and produce **no** Wasm artifact. Tree shaking unreferenced declarations is safe only because this restricted subset cannot instantiate or reference them.
+
+The compiler Wasm shipped at the public `/play/` URL is separately hash-pinned: this source-only PR does not update that artifact or deploy any syntax changes. Promotion requires exact-head Rust+wasm32 guest tests, independently reviewed compiler bytes and provenance receipts, source/playground mirror parity, and the site's protected publication gate.
 
 ## Guest contract `atto.browser.guest.v1`
 
