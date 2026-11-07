@@ -1,5 +1,5 @@
 //! Compiler-backed enum regression: actual typed IR and binary WebAssembly.
-use atto_compiler::{ast::{ExprKind, Type}, lexer, parser::Parser};
+use atto_compiler::{ast::Type, lexer, parser::Parser};
 
 const SOURCE: &str = r#"
 fnc accepted(Status status): bool { return status eq Status.Ready; }
@@ -43,7 +43,7 @@ fn enums_reject_cross_type_mixups_and_invalid_values_without_wasm() {
     for (body, expected) in CASES {
         let source = format!("{TYPES}pub fnc main(): int {{ {body} }}");
         let err = atto_compiler::compile(&source).expect_err(body);
-        assert_eq!(err.code, expected, "{body}: {err}");
+        assert_eq!(err.code, *expected, "{body}: {err}");
         assert!(err.pos.line > 0 && err.pos.col > 0);
     }
 }
