@@ -33,7 +33,7 @@ The following are rejected, with the code shown:
 - Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
 - Nonempty classes and actors, runtime enum values, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give `E_UNSUPPORTED`.
 
-### Top-level `define` (incremental class execution)
+### Top-level `define` (incremental class and actor execution)
 
 The browser subset accepts `define class Point as end`,
 `define actor Worker as end`, and `define enum Color as Red, Green end`,
@@ -46,7 +46,16 @@ A class can now contain **scalar static functions** such as
 Calls to `Math.add(20, 22)` are checked and compiled as real internal Wasm
 functions. There is no receiver, inheritance, allocation, or dynamic dispatch.
 
-This is **not** class instance/actor/enum runtime support. Class fields,
+The separate `compile_actor` API additionally compiles a single
+`define actor Worker as receive(int value): int { return value + 1; } end`
+into import-free Wasm exporting only `receive(i64)->i64` for execution in a
+dedicated Web Worker. It rejects incorrect signatures, multiple handlers,
+imports/stdio, missing receive, or actor source with a `main` entry point.
+Ordinary `compile` still rejects actor handlers; there is no silent erasure.
+Each worker owns its Wasm instance; the compiler does not yet generate actor
+state access, spawn, mailboxes, supervisors, or ownership enforcement.
+
+This is **not** full class instance/actor/enum runtime support. Class fields,
 constructors and instance methods, actor state/mailboxes/spawn, enum values,
 payloads/discriminants, inheritance and nominal typing are rejected.
 The browser still requires a zero-argument scalar `main` and cannot run a
