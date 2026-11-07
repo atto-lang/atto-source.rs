@@ -214,6 +214,55 @@ check('enum/nominality-and-fail-closed', () => {
 
 // Dedicated nominal-enum corpus is intentionally separate from the Java
 // differential corpus: Java enum parity is not yet established.
+// Fixed-size immutable-class subset. Actual native Rust and wasm32 compilers
+// must produce identical guest code with a bounded, guest-private heap.
+for (const f of await fixtures('class')) {
+  check('class-fixture/' + f.name, () => {
+    const r = compile(f.source);
+    assert.ok(r.ok, r.message);
+    assert.ok(WebAssembly.validate(r.wasm), 'generated guest is valid core Wasm');
+    assert.deepEqual(compile(f.source).wasm, r.wasm, 'deterministic class layout');
+    const g = runGuest(r.wasm);
+    assert.ok(g.ok, g.error);
+    assert.equal(g.value, BigInt(header(f.source, 'expect-exit')[0]));
+    assert.equal(g.stdout, '');
+    if (attoc) {
+      assert.deepEqual(nativeBytes(f.path), r.wasm, 'native vs wasm32 class byte parity');
+      nativeChecked++;
+    }
+  });
+}
+
+check('class/bounded-guest-heap', () => {
+  const src = 'define class Unit as\n int value: 1\nend\n' +
+    'pub fnc main(): int {\n for (let i = 0; i < 10000; i++) do\n' +
+    '  val item = Unit();\n done\n return 0;\n}';
+  const compiled = compile(src);
+  assert.ok(compiled.ok, compiled.message);
+  const guest = runGuest(compiled.wasm);
+  assert.equal(guest.ok, false, 'allocation beyond 64 KiB must trap');
+  assert.equal(guest.panic, 3, 'bounded class allocator signals explicit heap exhaustion');
+});
+
+check('class/field-access-and-ctor-negative-controls', () => {
+  const prefix = 'define class P as\n int x: 7\n bool active: true\nend\n';
+  for (const [body, code] of [
+    ['val p = P(); return p.missing;', 'E_UNKNOWN_FIELD'],
+    ['val p = P(1); return 0;', 'E_ARITY'],
+    ['val p: int = P(); return p;', 'E_TYPE'],
+    ['return P();', 'E_TYPE'],
+    ['if P() eq P() then return 1; fi return 0;', 'E_UNSUPPORTED'],
+    ['stdio.println(P()); return 0;', 'E_UNSUPPORTED'],
+    ['return P().x + P().active;', 'E_TYPE'],
+    ['val P = 2; return P;', 'E_DUPLICATE'],
+  ]) {
+    const compiled = compile(prefix + 'pub fnc main(): int { ' + body + ' }');
+    assert.equal(compiled.ok, false, body);
+    assert.equal(compiled.code, code, compiled.message);
+    assert.equal('wasm' in compiled, false, 'rejected program must not emit bytes');
+  }
+});
+
 for (const f of await fixtures('enum')) {
   check('enum-fixture/' + f.name, () => {
     const r = compile(f.source);
