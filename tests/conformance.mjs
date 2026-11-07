@@ -212,6 +212,24 @@ check('enum/nominality-and-fail-closed', () => {
   }
 });
 
+// Dedicated nominal-enum corpus is intentionally separate from the Java
+// differential corpus: Java enum parity is not yet established.
+for (const f of await fixtures('enum')) {
+  check('enum-fixture/' + f.name, () => {
+    const r = compile(f.source);
+    assert.ok(r.ok, r.message);
+    assert.deepEqual(compile(f.source).wasm, r.wasm, 'deterministic guest bytes');
+    const g = runGuest(r.wasm);
+    assert.ok(g.ok, g.error);
+    assert.equal(g.value, BigInt(header(f.source, 'expect-exit')[0]));
+    assert.equal(g.stdout, '');
+    if (attoc) {
+      assert.deepEqual(nativeBytes(f.path), r.wasm, 'native and wasm32 enum byte parity');
+      nativeChecked++;
+    }
+  });
+}
+
 for (const f of await fixtures('pass')) {
   check(`pass/${f.name}`, () => {
     const r = compile(f.source);
