@@ -37,3 +37,30 @@ Hard-RT admission is intentionally fail-closed: the compiler now proves a bounde
 acyclic call graph as a precondition, but rejects the final `--hard-rt` request until
 target-specific WCET/deadline evidence is implemented. It does not relabel “native AOT”
 as a hard-real-time proof.
+
+## AttoLang scalar binding and declaration parity (draft, pending guest evidence)
+
+The native Rust/Cranelift frontend accepts the canonical scalar `fnc`
+declarations `define pub fnc`, `pub define fnc`, and legacy `fnc`.
+The narrow sequential scalar body supports immutable-by-default
+`int x = 7;`, `const x = 7;`, `const int x = 7;`, `const x: int = 7;`,
+and `val x = 7;`. Explicit `let` and `mut` scalar declarations may be
+reassigned with `=`, `+=`, and `-=`. Primitive rebinding lowers into
+fresh, capture-avoiding SSA-style scalar definitions: no mutable borrow or
+shared referent is inferred. Immutable bindings and parameters remain write
+protected, and initializers execute in declaration order.
+
+**Not implemented:** Boolean typing, `if/else`, `guard`, loops, `match`,
+refinement types, arbitrary mutable objects, `rt` ownership operations,
+actors, actor-local heaps/stacks, `critical`, `suspends`, async or channels.
+Unsupported forms must fail compilation. The Cranelift backend's arithmetic
+still needs independently verified overflow/trap parity with the Java/LLVM
+contract; native object generation alone is not checked arithmetic proof.
+
+Rust conformance tests include the exact canonical
+`contracts/atto-parity-v1/add.atto` Git blob shared with Java/LLVM/Wasm,
+negative binding tests, and Linux native-object link/execution checks. The
+new native C ABI probe checks full signed 64-bit return values, not just
+the lossy POSIX exit code. These are **declared test targets** until an
+exact-PR-head CI run executes nonzero steps. Draft work must not be promoted
+on source-only review or runner admission failures.

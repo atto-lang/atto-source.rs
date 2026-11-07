@@ -1,7 +1,7 @@
 //! Scalar immutable-binding parity admission. These tests exercise the real
 //! Rust parser, MIR validation, effect exporter and Cranelift object emitter.
 //! Cross-backend Java/LLVM native execution remains a separate evidence gate.
-use oreslang_source_rs::{compile, compile_with_effect_ir, frontend, mir};
+use oreslang_source_rs::{compile, compile_with_effect_ir, frontend};
 
 fn source(binding: &str) -> String {
     format!("pub fnc main(): int {{ {binding} return x + 2; }}")
@@ -53,8 +53,9 @@ fn duplicate_bindings_across_spellings_are_denied() {
         "const x: int = 1; int x = 2;",
     ] {
         let src = format!("pub fnc main(): int {{ {declarations} return x; }}");
-        let ast = frontend::parse(&src).unwrap();
-        assert_eq!(mir::lower(ast).unwrap_err().class, "duplicate_declaration");
+        // The explicit-mutable SSA frontend now rejects duplicates before MIR.
+        let error = frontend::parse(&src).unwrap_err();
+        assert_eq!(error.class, "duplicate_declaration");
         assert!(compile(&src).unwrap_err().starts_with("duplicate_declaration"));
     }
 }
@@ -72,13 +73,14 @@ fn immutable_initializers_cannot_read_undefined_or_future_locals() {
 }
 
 #[test]
-fn invalid_or_mutable_declarations_fail_closed() {
+fn invalid_or_unimplemented_declarations_fail_closed() {
     for bindings in [
         "int x; return 1;",
         "const x; return 1;",
         "val x = ; return 1;",
-        "let x = 42; return x;",
-        "mut int x = 42; return x;",
+        "let x; return 1;",
+        "mut int x = ; return 1;",
+        "let x = 7; x *= 2; return x;",
         "const val x = 42; return x;",
         "const x: bool = true; return 1;",
     ] {
