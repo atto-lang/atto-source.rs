@@ -47,8 +47,8 @@ fn fail_closed_duplicate_truncated_and_unsupported() {
     rejects(&format!("define class C as\n static fnc f(): int {{ return 1; }}\n static fnc f(): int {{ return 2; }}\nend\n{}",
         main("return C.f();")),"E_DUPLICATE");
     rejects("define class C as\n","E_EOF");
-    rejects(&format!("define class C as\n fnc get(): int {{ return 42; }}\nend\n{}",main("return 0;")),"E_UNSUPPORTED");
-    rejects(&format!("define class C as end\n{}",main("val c = new C(); return 0;")),"E_UNSUPPORTED");
+    rejects(&format!("define class C as\n fnc get(): int {{ return self.missing; }}\nend\n{}",main("return 0;")),"E_UNBOUND");
+    rejects(&format!("define class C as end\n{}",main("val c = new C(); val alias = c; return 0;")),"E_UNSUPPORTED");
     rejects(&format!("define enum Color as end\n{}",main("return 0;")),"E_SYNTAX");
     rejects("define enum Color as Red end\n","E_ENTRY");
     rejects(&format!("define class Foo as end\n{}",main("return Foo.bar.baz();")),"E_UNSUPPORTED");
