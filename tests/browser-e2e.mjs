@@ -91,6 +91,42 @@ try{
   ].join('\n');
   assert.match(await run(classExample,'main() -> 73'),/73/);
   console.log('PASS browser: native Rust-compiled Wasm compiler generates and runs a class allocation guest');
+  // User-reported /play/ repro. This runs in real Chromium using the actual
+  // Rust->Wasm compiler and then the compiler-produced guest Wasm, not an
+  // editor parser approximation or JavaScript fallback.
+  const userPointExample = [
+    'define class Point as',
+    '  int x: 40',
+    '  int y: 2',
+    '  bool active: true',
+    'end',
+    '',
+    'pub fnc main(): int {',
+    '  val p = new Point();',
+    '  if p.active then',
+    '    return p.x + p.y;',
+    '  else',
+    '    return 0;',
+    '  fi',
+    '}',
+  ].join('\n');
+  assert.match(await run(userPointExample, 'main() -> 42'), /^main\(\) -> 42$/);
+  console.log('PASS browser: exact user Point/new constructor, bool field and two int fields return 42');
+  assert.match(await run(userPointExample.replace('new Point()', 'Point()'), 'E_NEW_REQUIRED'), /E_NEW_REQUIRED/);
+  console.log('PASS browser: exact user Point without new rejects and worker enforces zero Wasm artifact');
+  assert.match(await run(userPointExample.replace('p.x + p.y', 'p.missing'), 'E_UNKNOWN_FIELD'), /E_UNKNOWN_FIELD/);
+  console.log('PASS browser: invalid class field rejects with E_UNKNOWN_FIELD and zero Wasm artifact');
+  const enumExample = [
+    'define enum Status as Pending, Ready end',
+    'pub fnc main(): int {',
+    '  val s: Status = Status.Ready;',
+    '  if s eq Status.Ready then return 42; else return 0; fi',
+    '}',
+  ].join('\n');
+  assert.match(await run(enumExample, 'main() -> 42'), /^main\(\) -> 42$/);
+  console.log('PASS browser: nominal enum variant compiles and executes to 42');
+  assert.match(await run(userPointExample, 'main() -> 42'), /^main\(\) -> 42$/);
+  console.log('PASS browser: real compiler recovers after two rejected class programs');
   assert.match(await run(classExample.replace('new Point()', 'Point()'),'E_NEW_REQUIRED'), /E_NEW_REQUIRED/);
   console.log('PASS browser: bare class calls are diagnosed without guest execution');
   assert.match(await run(classExample,'main() -> 73'),/73/);
