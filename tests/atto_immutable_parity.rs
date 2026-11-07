@@ -69,16 +69,69 @@ fn binding_initializers_remain_closed_world_and_ordered() {
 }
 
 #[test]
-fn unsupported_mutable_spellings_stay_rejected() {
+fn explicit_mutable_scalar_bindings_lower_to_unique_ordered_mir_versions() {
     for body in [
-        "let int x = 7; return x;",
-        "mut int x = 7; return x;",
-        "int x = 7; x = 8; return x;",
-        "val x = 7; val y = x + 1; y = 9; return y;",
+        "let int x = 7; x = x + 1; return x;",
+        "let x = 7; x += 1; return x;",
+        "let x: int = 7; x -= 1; return x;",
+        "mut int x = 7; x = x * 6; return x;",
+        "mut x = 7; x += 1; x -= 2; return x;",
+        "let x = 7; x += 1; const y = x; return y;",
     ] {
         let source = format!("pub fnc main(): int {{ {body} }}");
-        assert!(compile(&source).is_err(), "{body}: no unimplemented mutable lowering");
+        let ast = frontend::parse(&source).expect("valid explicit mutable scalar syntax");
+        let checked = mir::lower(ast).expect("SSA-style mutable lowering must typecheck");
+        let unique = checked.functions[0].locals.iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), checked.functions[0].locals.len(),
+            "{body}: internal SSA version names must be distinct");
+        assert!(compile(&source).is_ok(), "{body}: native code emission");
     }
+}
+
+#[test]
+fn mutable_scalar_reassignment_preserves_prior_reads_without_capture() {
+    let source = "pub fnc main(): int { let x = 7; let a = x; x += 1; let b = x; x = 42; return a + b + x; }";
+    let checked = mir::lower(frontend::parse(source).unwrap()).unwrap();
+    let locals = &checked.functions[0].locals;
+    assert_eq!(locals[0].0, "x");
+    assert_eq!(locals[1].0, "a");
+    assert_ne!(locals[2].0, "x");
+    assert_ne!(locals[4].0, locals[2].0);
+    assert!(matches!(&locals[1].1, frontend::Expr::Name(name) if name == "x"));
+    assert!(matches!(&locals[3].1, frontend::Expr::Name(name) if name == &locals[2].0));
+    assert!(compile(source).is_ok());
+}
+
+#[test]
+fn mutable_scalar_violations_fail_closed() {
+    for (body, class) in [
+        ("let x = x + 1; return x;", "unknown_name"),
+        ("let x = 7; let x = 8; return x;", "duplicate_declaration"),
+        ("let x = 7; const x = 8; return x;", "duplicate_declaration"),
+        ("let x = 7; missing = x; return x;", "unknown_name"),
+        ("let x = 7; const y = x; y = 1; return y;", "immutable_binding"),
+        ("let x = 7; x *= 2; return x;", "syntax_error"),
+        ("return x;", "unknown_name"),
+    ] {
+        let source = format!("pub fnc main(): int {{ {body} }}");
+        let error = checked(&source).unwrap_err();
+        assert!(error.starts_with(class), "{body}: {error}");
+        assert!(compile(&source).is_err(), "{body}: no native artifact");
+    }
+    let arg_write = "pub fnc f(int x): int { x = 2; return x; }";
+    assert!(checked(arg_write).unwrap_err().starts_with("immutable_binding"));
+}
+
+#[test]
+fn generated_ssa_names_cannot_capture_source_identifiers() {
+    let source = "pub fnc main(): int { let x = 1; const __atto_scalar_rebind_0 = 3; x = 42; return x + __atto_scalar_rebind_0; }";
+    let parsed = frontend::parse(source).unwrap();
+    assert_ne!(parsed.functions[0].locals[2].name, "__atto_scalar_rebind_0");
+    let typed = mir::lower(parsed).unwrap();
+    assert_ne!(typed.functions[0].locals[2].0, typed.functions[0].locals[1].0);
+    assert!(compile(source).is_ok());
 }
 
 #[test]
