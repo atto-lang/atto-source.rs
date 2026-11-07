@@ -114,6 +114,16 @@ fn emit_object_with_arithmetic_mode(
     }
     module.finish().emit().map_err(|e| e.to_string())
 }
+// Map the already type-checked scalar AST onto Cranelift storage types.
+// All function/local/parameter boundaries still require signed i64.
+fn expression_value_type(expr: &Expr) -> cranelift::codegen::ir::Type {
+    match expr {
+        Expr::Bool(_) | Expr::Equals(_, _) => types::I8,
+        Expr::Conditional { when_true, .. } => expression_value_type(when_true),
+        _ => types::I64,
+    }
+}
+
 fn compile_expr(
     builder: &mut FunctionBuilder<'_>,
     expr: &Expr,
@@ -134,11 +144,17 @@ fn compile_expr(
             let yes_block = builder.create_block();
             let no_block = builder.create_block();
             let join_block = builder.create_block();
+            let result_type = expression_value_type(when_true);
+            // Declare the SSA join parameter when the block is pristine,
+            // before adding any predecessor jumps.
+            let joined = builder.append_block_param(join_block, result_type);
             builder.ins().brif(test, yes_block, &[], no_block, &[]);
 
             builder.switch_to_block(yes_block);
             let yes = compile_expr(builder, when_true, vars, calls, checked_i64)?;
-            let result_type = builder.func.dfg.value_type(yes);
+            if builder.func.dfg.value_type(yes) != result_type {
+                return Err("MIR true-arm type diverged at codegen".into());
+            }
             builder.ins().jump(join_block, &[yes.into()]);
 
             builder.switch_to_block(no_block);
@@ -148,7 +164,6 @@ fn compile_expr(
             }
             builder.ins().jump(join_block, &[no.into()]);
 
-            let joined = builder.append_block_param(join_block, result_type);
             builder.switch_to_block(join_block);
             Ok(joined)
         }
