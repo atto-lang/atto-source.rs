@@ -1,13 +1,24 @@
 // Dedicated browser worker compiling real Atto actor source to real guest Wasm.
 // This is an executable scalar receive() prototype, not the full actor runtime.
 let actor = null;
+let initializing = false;
+let terminal = false;
+let nextMessageId = 1;
 function error(reason) {
+  if (terminal) return;
+  terminal = true;
   self.postMessage({ kind: 'fault', message: String(reason).slice(0, 512) });
   self.close();
 }
 self.onmessage = async ({ data }) => {
+  if (terminal) return;
   if (!actor) {
-    if (data?.kind !== 'init' || typeof data.source !== 'string') return error('invalid init');
+    // A second init or a message arriving while fetch/compile is pending
+    // must never start another compiler instance or overwrite this actor.
+    if (initializing || data?.kind !== 'init' || typeof data.source !== 'string') {
+      return error('E_ACTOR_PROTOCOL: expected exactly one init');
+    }
+    initializing = true;
     try {
       const response = await fetch('/atto_compiler.wasm');
       if (!response.ok) throw new Error('compiler asset unavailable');
@@ -38,9 +49,12 @@ self.onmessage = async ({ data }) => {
     } catch (e) { error('E_ACTOR_INIT: ' + e.message); }
     return;
   }
-  if (data?.kind !== 'message' || typeof data.value !== 'bigint' || !Number.isSafeInteger(data.id)) {
-    return error('E_ACTOR_PROTOCOL');
+  if (data?.kind !== 'message' || typeof data.value !== 'bigint' ||
+      !Number.isSafeInteger(data.id) || data.id !== nextMessageId) {
+    return error('E_ACTOR_PROTOCOL: skipped/replayed actor sequence');
   }
+  // Validate the sequence *before* touching the guest instance.
+  nextMessageId++;
   try {
     const value = actor.exports.receive(data.value);
     if (typeof value !== 'bigint') throw new Error('incorrect receive result');
