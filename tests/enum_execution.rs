@@ -53,7 +53,7 @@ fn enum_variant_constructor_and_member_surface_is_fail_closed() {
     let cases = [
         "define enum E as A end\npub fnc main(): int { val x = E.A(3); return 0; }",
         "define enum E as A end\npub fnc main(): int { val x = E.A.name; return 0; }",
-        "define class C as\n int x: 0\nend\npub fnc main(): int { return 0; }",
+        "define class C as\n fnc unsupported(): int { return 0; }\nend\npub fnc main(): int { return 0; }",
         "define actor A as\n receive(int x) -> void :: return; end\nend\npub fnc main(): int { return 0; }",
     ];
     for source in cases {
