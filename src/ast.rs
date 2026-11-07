@@ -7,6 +7,7 @@ pub enum Type {
     Int,
     Bool,
     Void,
+    Enum(u16), // nominal per-declaration enum identity
 }
 
 impl Type {
@@ -15,6 +16,7 @@ impl Type {
             Type::Int => "int",
             Type::Bool => "bool",
             Type::Void => "void",
+            Type::Enum(_) => "enum",
         }
     }
 }
@@ -22,6 +24,18 @@ impl Type {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub funcs: Vec<Func>,
+    pub decls: Vec<Declaration>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclKind { Class, Actor, Enum, Struct, Interface, Trait, Module }
+
+#[derive(Clone, Debug)]
+pub struct Declaration {
+    pub name: String,
+    pub pos: Pos,
+    pub kind: DeclKind,
+    pub variants: Vec<String>,
 }
 
 #[derive(Clone, Debug)]

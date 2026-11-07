@@ -130,6 +130,7 @@ struct FnCx<'a> {
     loops: u32,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
+    enum_values: &'a BTreeMap<String, (i64, Type)>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -139,9 +140,20 @@ fn type_err(pos: Pos, msg: impl Into<String>) -> Diagnostic {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    let mut enum_values: BTreeMap<String,(i64,Type)> = BTreeMap::new();
+    for (id, decl) in p.decls.iter().enumerate() {
+        for (index, variant) in decl.variants.iter().enumerate() {
+            enum_values.insert(format!("{}.{}",decl.name,variant),
+                (index as i64, Type::Enum(id as u16)));
+        }
+    }
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
+        if p.decls.iter().any(|d| d.name == f.name) {
+            return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
+                format!("function '{}' conflicts with a top-level type declaration",f.name)));
+        }
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio") {
             return Err(Diagnostic::new(
                 f.pos,
@@ -203,6 +215,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             loops: 0,
             imports: &mut imports,
             data: &mut data,
+            enum_values: &enum_values,
         };
         for (i, prm) in f.params.iter().enumerate() {
             cx.scopes[0].push(Local {
@@ -494,6 +507,10 @@ impl FnCx<'_> {
                     e: TExpr::Local(l.slot),
                     ty: l.ty,
                 },
+                None if self.enum_values.contains_key(name) => {
+                    let (ordinal,ty) = self.enum_values[name];
+                    TE { e:TExpr::I64(ordinal), ty }
+                }
                 None if self.names.contains_key(name) => {
                     return Err(Diagnostic::new(
                         pos,

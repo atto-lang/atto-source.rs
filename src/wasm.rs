@@ -59,7 +59,7 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 
 fn vt(t: Type) -> Option<u8> {
     match t {
-        Type::Int => Some(I64),
+        Type::Int | Type::Enum(_) => Some(I64),
         Type::Bool => Some(I32),
         Type::Void => None,
     }
@@ -236,7 +236,7 @@ impl Emit<'_> {
                 // execute in source order even when the left decides truth.
                 self.expr(a);
                 self.expr(b);
-                let int = a.ty == Type::Int;
+                let int = a.ty != Type::Bool;
                 match op {
                     BinOp::Add => self.call(self.l.helper(H_ADD)),
                     BinOp::Sub => self.call(self.l.helper(H_SUB)),
