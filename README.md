@@ -21,11 +21,13 @@ The compiler does not define any syntax of its own:
 | Types | `int` (i64), `bool` / `boolean`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut` |
 | Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }` |
-| Expressions | `+ - * %`, unary `- + !`, `< <= > >=`, `eq neq == != !eq`, ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
+| Expressions | `+ - *`, unary `- + !`, `< <= > >=`, `eq neq == != !eq`, ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
 | Output | `stdio.print(x)` / `stdio.println(x)` for `int`, `bool` and string literals |
 
 The following are rejected, with the code shown:
 
+- Removed `%`, `^` and `^^` give `E_UNSUPPORTED` with no artifact emitted.
+- Condition `,` / `|` evaluate **both** boolean operands left-to-right (eager), including observable side effects.
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
