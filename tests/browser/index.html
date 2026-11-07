@@ -15,5 +15,6 @@ button.addEventListener('click',()=>{
   worker.onerror=()=>{clearTimeout(timer);worker.terminate();if(id===last){out.textContent='E_WORKER';button.disabled=false}};
   worker.postMessage({source:editor.value});
 });
+window.__attoReady=true;
 </script>
 </html>

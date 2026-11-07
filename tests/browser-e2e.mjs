@@ -64,12 +64,15 @@ try{
   const navigation=await command('Page.navigate',{url:'http://127.0.0.1:'+server.address().port+'/index.html'});
   assert.ok(!navigation.errorText,navigation.errorText||'navigation');
   await until(async()=>evaluate("!!document.querySelector('#source')"),'editor load');
+  await until(async()=>evaluate('window.__attoReady===true'),'module script ready');
   const run=async(src,expected)=>{
     await evaluate("(()=>{let e=document.querySelector('#source');e.value="+JSON.stringify(src)+";document.querySelector('#run').click()})()");
+    let lastOutput='not yet available';
     const state=await until(async()=>{
       const value=await evaluate("document.querySelector('#result').textContent");
+      lastOutput=value;
       return value?.includes(expected)?value:null;
-    },expected);
+    },expected+' (last browser output: '+lastOutput+')');
     return state;
   };
   assert.match(await run('fnc main() -> int { return 6 * 7; }','main() -> 42'),/42/);
