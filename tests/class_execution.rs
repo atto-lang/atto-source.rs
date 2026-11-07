@@ -12,7 +12,7 @@ fnc total(Point point): int {
   return point.x + point.y;
 }
 pub fnc main(): int {
-  val point: Point = Point();
+  val point: Point = new Point();
   if point.active then return total(point); else return 0; fi
 }
 "#;
@@ -36,14 +36,20 @@ fn nominal_class_fields_have_a_real_typed_layout() {
 fn illegal_class_programs_fail_before_emitting_wasm() {
     const CLASS: &str = "define class P as\n int x: 41\n bool live: true\nend\n";
     const CASES: &[(&str, &str)] = &[
-        ("val p = P(); return p.missing;", "E_UNKNOWN_FIELD"),
-        ("val p = P(1); return 0;", "E_ARITY"),
-        ("val p = P(); return p;", "E_TYPE"),
-        ("val p: int = P(); return p;", "E_TYPE"),
-        ("val p = P(); if p eq P() then return 1; fi return 0;", "E_UNSUPPORTED"),
-        ("val p = P(); return p.x + p.live;", "E_TYPE"),
+        ("val p = new P(); return p.missing;", "E_UNKNOWN_FIELD"),
+        ("val p = new P(1); return 0;", "E_ARITY"),
+        ("val p = new P(); return p;", "E_TYPE"),
+        ("val p: int = new P(); return p;", "E_TYPE"),
+        ("val p = new P(); if p eq new P() then return 1; fi return 0;", "E_UNSUPPORTED"),
+        ("val p = new P(); return p.x + p.live;", "E_TYPE"),
+        ("val p = P(); return 0;", "E_NEW_REQUIRED"),
+        ("return P().x;", "E_NEW_REQUIRED"),
+        ("val p = P(5); return 0;", "E_NEW_REQUIRED"),
+        ("val p = new P(1); return 0;", "E_ARITY"),
+        ("val p = new Unknown(); return 0;", "E_NEW_TYPE"),
+        ("return new P;", "E_SYNTAX"),
         ("val P = 3; return P;", "E_DUPLICATE"),
-        ("stdio.println(P()); return 0;", "E_UNSUPPORTED"),
+        ("stdio.println(new P()); return 0;", "E_UNSUPPORTED"),
         ("return P;", "E_TYPE"),
     ];
     for (body, code) in CASES {
@@ -72,5 +78,11 @@ fn class_layout_and_semantics_reject_unsafe_fields() {
         assert_eq!(d.code, code, "{prefix}: {d}");
     }
     assert_eq!(atto_compiler::compile("define class P as\n int x: 1\n").unwrap_err().code, "E_EOF");
+    let rejects_enum = "define enum Status as Ready end\npub fnc main(): int { val x = new Status(); return 0; }";
+    assert_eq!(atto_compiler::compile(rejects_enum).unwrap_err().code, "E_NEW_TYPE");
+    let functions_still_callable = "fnc f(): int { return 42; }\npub fnc main(): int { return f(); }";
+    assert!(atto_compiler::compile(functions_still_callable).is_ok());
+    let direct_field = "define class P as\n int x: 42\nend\npub fnc main(): int { return (new P()).x; }";
+    assert!(atto_compiler::compile(direct_field).is_ok(), "new allocation supports postfix field reads");
     assert!(atto_compiler::compile(POINT).is_ok(), "compiler remains usable after errors");
 }
