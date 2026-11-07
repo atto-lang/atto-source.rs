@@ -702,6 +702,9 @@ impl FnCx<'_> {
                 });
             }
             let v = self.value(&args[0])?;
+            if !matches!(v.ty, Type::Int | Type::Bool) {
+                return Err(type_err(pos,"stdio.print/println only accepts int and bool values; enum formatting is not lowered"));
+            }
             self.imports
                 .push(if v.ty == Type::Int { Import::PrintI64 } else { Import::PrintBool });
             return Ok(TE {
