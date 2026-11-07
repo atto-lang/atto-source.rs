@@ -170,14 +170,26 @@ check('generated/200-programs', () => {
   const seen = new Set();
   for (let i = 0; i < 200; i++) {
     const a = rand(1000), b = rand(1000) + 1, c = rand(50);
-    const src = `fnc f(int x, int y): int {\n  let acc = 0;\n  for (let i = 0; i < ${c}; i++) do\n    acc = acc + x % y;\n  done\n  return acc - y;\n}\npub fnc main(): int {\n  return f(${a}, ${b});\n}\n`;
+    const src = `fnc f(int x, int y): int {\n  let acc = 0;\n  for (let i = 0; i < ${c}; i++) do\n    acc = acc + x + y;\n  done\n  return acc - y;\n}\npub fnc main(): int {\n  return f(${a}, ${b});\n}\n`;
     const r = compile(src);
     assert.ok(r.ok, r.message);
     seen.add(createHash('sha256').update(r.wasm).digest('hex'));
-    assert.equal(runGuest(r.wasm).value, BigInt(c * (a % b) - b), src);
+    assert.equal(runGuest(r.wasm).value, BigInt(c * (a + b) - b), src);
   }
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
+
+// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
+// three with a positioned diagnostic and no generated guest bytes.
+for (const op of ['%', '^', '^^']) {
+  check(`removed-operator/${op}`, () => {
+    const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'E_UNSUPPORTED');
+    assert.equal('wasm' in r, false);
+    assert.ok(r.line >= 1 && r.col >= 1);
+  });
+}
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
