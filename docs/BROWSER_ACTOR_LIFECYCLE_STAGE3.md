@@ -96,3 +96,14 @@ an independently reviewed versioned API and full cross-mode negative tests.
 This branch does not publish private compiler Wasm to GitHub Pages. Release
 requires source provenance, a reviewed exact compiler digest, independent
 review, and the Pages protections in atto-lang/atto-lang.github.io issue #5.
+
+## Browser worker protocol v1 sequence fence — exact candidate pin
+
+The source-compiler-to-public-IDE test now pins the reviewed public host
+`823b6b10400597e2a9e52221d7c20872f1cf16de` (PR #21), where actor workers enforce protocol version 1,
+monotonically increasing per-actor message sequence numbers, actor-ID matching
+on readiness/reply/terminal ACK, and fail-closed cancellation during the
+readiness continuation and reply callbacks. The public host itself has real
+Chromium replay rejection and Node fault-injection receipts. The candidate
+compiler must be tested against this exact frontend snapshot without copying
+any private source/binary into a public branch or triggering Pages deployment.
