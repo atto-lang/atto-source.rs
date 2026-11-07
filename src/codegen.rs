@@ -2,7 +2,7 @@
 use crate::{frontend::Expr, mir::Module};
 use cranelift::{
     codegen::{
-        ir::{types, AbiParam, FuncRef, Value},
+        ir::{types, AbiParam, FuncRef, TrapCode, Value},
         settings,
     },
     frontend::{FunctionBuilder, FunctionBuilderContext},
@@ -13,7 +13,21 @@ use cranelift::{
 };
 use std::collections::HashMap;
 
+// The baseline scalar compiler retains wrapping arithmetic until effect IR
+// can encode conditional integer-overflow failure edges.
 pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
+    emit_object_with_arithmetic_mode(program, false)
+}
+
+/// Opt-in native signed i64 overflow checks; no typed guest Error contract.
+pub fn emit_object_checked_i64(program: &Module) -> Result<Vec<u8>, String> {
+    emit_object_with_arithmetic_mode(program, true)
+}
+
+fn emit_object_with_arithmetic_mode(
+    program: &Module,
+    checked_i64: bool,
+) -> Result<Vec<u8>, String> {
     let isa = native::builder()
         .map_err(|e| e.to_string())?
         .finish(settings::Flags::new(settings::builder()))
@@ -71,10 +85,16 @@ pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
                 values.insert(name.clone(), value);
             }
             for (name, expression) in &function.locals {
-                let value = compile_expr(&mut builder, expression, &values, &calls)?;
+                let value = compile_expr(&mut builder, expression, &values, &calls, checked_i64)?;
                 values.insert(name.clone(), value);
             }
-            let result = compile_expr(&mut builder, &function.return_value, &values, &calls)?;
+            let result = compile_expr(
+                &mut builder,
+                &function.return_value,
+                &values,
+                &calls,
+                checked_i64,
+            )?;
             builder.ins().return_(&[result]);
             builder.finalize(frontend_config);
         }
@@ -90,6 +110,7 @@ fn compile_expr(
     expr: &Expr,
     vars: &HashMap<String, Value>,
     calls: &HashMap<String, FuncRef>,
+    checked_i64: bool,
 ) -> Result<Value, String> {
     match expr {
         Expr::Integer(value) => Ok(builder.ins().iconst(types::I64, *value)),
@@ -103,29 +124,54 @@ fn compile_expr(
                 .ok_or_else(|| format!("unvalidated function call: {name}"))?;
             let mut operands = Vec::with_capacity(args.len());
             for arg in args {
-                operands.push(compile_expr(builder, arg, vars, calls)?);
+                operands.push(compile_expr(builder, arg, vars, calls, checked_i64)?);
             }
             let instruction = builder.ins().call(callee, &operands);
             Ok(builder.inst_results(instruction)[0])
         }
         Expr::Add(a, b) => {
-            let lhs = compile_expr(builder, a, vars, calls)?;
-            let rhs = compile_expr(builder, b, vars, calls)?;
-            Ok(builder.ins().iadd(lhs, rhs))
+            let lhs = compile_expr(builder, a, vars, calls, checked_i64)?;
+            let rhs = compile_expr(builder, b, vars, calls, checked_i64)?;
+            if checked_i64 {
+                let (value, overflow) = builder.ins().sadd_overflow(lhs, rhs);
+                builder.ins().trapnz(overflow, TrapCode::INTEGER_OVERFLOW);
+                Ok(value)
+            } else {
+                Ok(builder.ins().iadd(lhs, rhs))
+            }
         }
         Expr::Subtract(a, b) => {
-            let lhs = compile_expr(builder, a, vars, calls)?;
-            let rhs = compile_expr(builder, b, vars, calls)?;
-            Ok(builder.ins().isub(lhs, rhs))
+            let lhs = compile_expr(builder, a, vars, calls, checked_i64)?;
+            let rhs = compile_expr(builder, b, vars, calls, checked_i64)?;
+            if checked_i64 {
+                let (value, overflow) = builder.ins().ssub_overflow(lhs, rhs);
+                builder.ins().trapnz(overflow, TrapCode::INTEGER_OVERFLOW);
+                Ok(value)
+            } else {
+                Ok(builder.ins().isub(lhs, rhs))
+            }
         }
         Expr::Multiply(a, b) => {
-            let lhs = compile_expr(builder, a, vars, calls)?;
-            let rhs = compile_expr(builder, b, vars, calls)?;
-            Ok(builder.ins().imul(lhs, rhs))
+            let lhs = compile_expr(builder, a, vars, calls, checked_i64)?;
+            let rhs = compile_expr(builder, b, vars, calls, checked_i64)?;
+            if checked_i64 {
+                let (value, overflow) = builder.ins().smul_overflow(lhs, rhs);
+                builder.ins().trapnz(overflow, TrapCode::INTEGER_OVERFLOW);
+                Ok(value)
+            } else {
+                Ok(builder.ins().imul(lhs, rhs))
+            }
         }
         Expr::Negate(a) => {
-            let value = compile_expr(builder, a, vars, calls)?;
-            Ok(builder.ins().ineg(value))
+            let value = compile_expr(builder, a, vars, calls, checked_i64)?;
+            if checked_i64 {
+                let zero = builder.ins().iconst(types::I64, 0);
+                let (result, overflow) = builder.ins().ssub_overflow(zero, value);
+                builder.ins().trapnz(overflow, TrapCode::INTEGER_OVERFLOW);
+                Ok(result)
+            } else {
+                Ok(builder.ins().ineg(value))
+            }
         }
     }
 }
