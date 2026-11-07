@@ -17,7 +17,7 @@ The compiler does not define any syntax of its own:
 | Area | Admitted |
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
-| Inert top-level declaration syntax | `define [pub] class/actor/struct/module/interface/trait/supervisor Name as end`; `define [pub] enum Name as Variant ... end` with distinct variants on separate lines or delimited by `,`/`;`. Names are recorded and duplicate checked, but **not available as runtime types or values**. |
+| Top-level declarations | Empty `define [pub] class/actor/struct/module/interface/trait/supervisor Name as end` remains **syntax-only**. `define [pub] enum Name as Variant ... end` is **executable** for fieldless variants, with nominal type checking, value bindings, function parameters/returns and equality/inequality. Same-line variants require `,` or `;`; no variant payloads, methods, `match`, casts or enum printing. |
 | Entry point | zero-argument `main` returning `int` or `void` |
 | Types | `int` (i64), `bool` / `boolean`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut` |
@@ -45,9 +45,26 @@ These are recorded in fixtures and checked by the differential run:
 
 ### Top-level `define` staging boundary
 
-This branch supports **declaration recognition**, not full language implementation. The compiler parses and retains unused empty nominal definitions, records enum variant names, catches duplicate names and malformed separators, and permits independent scalar `main()` execution. It **never** emits a class object layout, actor mailbox/scheduler, enum value, nominal method, import/module side effect, or supervisor runtime. Members or runtime uses remain compile errors and produce **no** Wasm artifact. Tree shaking unreferenced declarations is safe only because this restricted subset cannot instantiate or reference them.
+This branch implements **nominal, fieldless enum values**, not the full declaration system. The compiler resolves types and variants (including forward type references), enforces enum identity at assignments, calls, returns, ternaries and equality, then emits actual `i32` guest values in Rust-native and WebAssembly-hosted compilation. It still **never** emits a class object layout, actor mailbox/scheduler, nominal method, module side effect, or supervisor runtime. Nonempty class/actor/module bodies, enum payloads, actor spawning, and other unsupported constructs fail closed with **no** Wasm artifact.
 
 The compiler Wasm shipped at the public `/play/` URL is separately hash-pinned: this source-only PR does not update that artifact or deploy any syntax changes. Promotion requires exact-head Rust+wasm32 guest tests, independently reviewed compiler bytes and provenance receipts, source/playground mirror parity, and the site's protected publication gate.
+
+### Executable nominal enum example
+
+```atto
+define enum Status as
+  Pending
+  Ready
+end
+
+fnc ready(Status status): bool { return status eq Status.Ready; }
+pub fnc main(): int {
+  val current: Status = Status.Ready;
+  if ready(current) then return 42; else return 0; fi
+}
+```
+
+`Status.Ready` is not implicitly converted to `int`, `bool`, or another enum. The in-browser Rust compiler and native CLI share this implementation; the existing **public** playground Wasm artifact is unchanged until the protected release process completes.
 
 ## Guest contract `atto.browser.guest.v1`
 
