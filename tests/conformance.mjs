@@ -130,7 +130,7 @@ check('define/rejection-and-no-artifact', () => {
   const main = 'pub fnc main(): int { return 0; }';
   for (const [prefix, code] of [
     ['define class P as\n fnc method(): int { return 0; }\nend\n', 'E_UNSUPPORTED'],
-    ['define actor A as\n receive(int msg) -> void :: return; end\nend\n', 'E_UNSUPPORTED'],
+    ['define actor A as\n receive(int msg): void { return; }\nend\n', 'E_UNSUPPORTED'],
     ['define enum E as X X end\n', 'E_SYNTAX'],
     ['define enum E as\n X\n X\nend\n', 'E_DUPLICATE'],
     ['define module Mod as\n fnc f(): int { return 2; }\nend\n', 'E_UNSUPPORTED'],
@@ -553,6 +553,123 @@ for (const op of ['%', '^', '^^']) {
     assert.equal(r.code, 'E_UNSUPPORTED');
     assert.equal('wasm' in r, false);
     assert.ok(r.line >= 1 && r.col >= 1);
+  });
+}
+
+// ---- source-compiled scalar actor receive guest ABI --------------------------
+check('actor/source-compiled-receive-guest-executes', () => {
+  assert.equal(typeof api.compile_actor, 'function', 'compiler must expose separate actor ABI entrypoint');
+  const src = 'define actor Worker as receive(int value): int { return value + 2; } end';
+  const bytes = encoder.encode(src);
+  new Uint8Array(api.memory.buffer, api.input_ptr(), bytes.length).set(bytes);
+  assert.equal(api.compile_actor(bytes.length), 0);
+  const guest = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+  assert.ok(WebAssembly.validate(guest));
+  const mod = new WebAssembly.Module(guest);
+  assert.deepEqual(WebAssembly.Module.imports(mod), []);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(x => x.name), ['receive']);
+  const actor = new WebAssembly.Instance(mod, {});
+  assert.equal(actor.exports.receive(40n), 42n);
+  assert.equal(actor.exports.receive(-1n), 1n);
+});
+// A scalar actor has the SAME canonical eager condition semantics as ordinary
+// AttoLang functions: even an apparently decisive LHS must evaluate the RHS.
+// With the boundary input, the RHS checked addition traps instead of being
+// incorrectly suppressed by short-circuit lowering.
+for (const [label, condition, safeResult] of [
+  ['false-comma', 'false, value + 1 eq 0', 9n],
+  ['true-pipe', 'true | value + 1 eq 0', 7n],
+]) {
+  check('actor/eager-' + label + '-executes-checked-rhs', () => {
+    const src = 'define actor Worker as\n' +
+      '  receive(int value): int {\n' +
+      '    if ' + condition + ' then\n' +
+      '      return 7;\n' +
+      '    fi\n' +
+      '    return 9;\n' +
+      '  }\n' +
+      'end';
+    const input = encoder.encode(src);
+    new Uint8Array(api.memory.buffer, api.input_ptr(), input.length).set(input);
+    assert.equal(api.compile_actor(input.length), 0, label + ' must compile');
+    const guest = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+    assert.ok(WebAssembly.validate(guest));
+    const mod = new WebAssembly.Module(guest);
+    assert.deepEqual(WebAssembly.Module.imports(mod), []);
+    assert.deepEqual(WebAssembly.Module.exports(mod).map(x => x.name), ['receive']);
+    const actor = new WebAssembly.Instance(mod, {});
+    assert.equal(actor.exports.receive(0n), safeResult);
+    assert.throws(() => actor.exports.receive(9223372036854775807n),
+      WebAssembly.RuntimeError, 'eager RHS checked arithmetic must not be skipped');
+  });
+}
+
+// Rejected syntax must produce NO actor artifact even following a successful
+// compile_actor call; subsequent valid source must still compile normally.
+for (const op of ['%', '^', '^^']) {
+  check('actor/removed-operator-' + op + '-does-not-leak-previous-guest', () => {
+    const emit = source => {
+      const input = encoder.encode(source);
+      new Uint8Array(api.memory.buffer, api.input_ptr(), input.length).set(input);
+      return api.compile_actor(input.length);
+    };
+    const valid = 'define actor Worker as receive(int value): int { return value + 1; } end';
+    assert.equal(emit(valid), 0);
+    assert.ok(api.result_length() > 0);
+    assert.equal(emit('define actor Worker as receive(int value): int { return value ' + op + ' 2; } end'), 1);
+    assert.equal(api.result_length(), 0, 'rejected actor must not expose last good guest');
+    const memory = new Uint8Array(api.memory.buffer);
+    let offset = api.error_ptr(), limit = offset + 512;
+    while (offset < memory.length && offset < limit && memory[offset]) offset++;
+    const diagnostic = decoder.decode(memory.subarray(api.error_ptr(), offset));
+    assert.ok(diagnostic.startsWith('E_UNSUPPORTED:'), diagnostic);
+    assert.equal(emit(valid), 0, 'compiler must recover after rejected actor');
+    const wasm = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+    const actor = new WebAssembly.Instance(new WebAssembly.Module(wasm), {});
+    assert.equal(actor.exports.receive(41n), 42n);
+  });
+}
+
+// Actor guest arithmetic must inherit the same checked-i64 semantics as
+// ordinary compiler guests. A trap is terminal to the containing Web Worker;
+// it may never silently wrap and return a misleading Result/ack.
+for (const [label, expression, safeInput, safeOutput, overflowInput] of [
+  ['add', 'value + 1', 9223372036854775806n, 9223372036854775807n, 9223372036854775807n],
+  ['sub', 'value - 1', -9223372036854775807n, -9223372036854775808n, -9223372036854775808n],
+  ['mul', 'value * 2', 4611686018427387903n, 9223372036854775806n, 4611686018427387904n],
+]) {
+  check('actor/checked-i64-' + label + '-traps-on-overflow', () => {
+    const src = 'define actor Worker as receive(int value): int { return ' + expression + '; } end';
+    const input = encoder.encode(src);
+    new Uint8Array(api.memory.buffer, api.input_ptr(), input.length).set(input);
+    assert.equal(api.compile_actor(input.length), 0, 'actor compilation must succeed');
+    const bytes = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+    assert.ok(WebAssembly.validate(bytes));
+    const mod = new WebAssembly.Module(bytes);
+    assert.deepEqual(WebAssembly.Module.imports(mod), [], 'actor must remain host-import-free');
+    assert.deepEqual(WebAssembly.Module.exports(mod).map(x => x.name), ['receive']);
+    const actor = new WebAssembly.Instance(mod, {});
+    assert.equal(actor.exports.receive(safeInput), safeOutput);
+    assert.throws(() => actor.exports.receive(overflowInput), WebAssembly.RuntimeError,
+      'checked actor arithmetic must trap rather than wrap');
+  });
+}
+for (const [label, src, want] of [
+  ['wrong-type', 'define actor A as receive(bool value): int { return 42; } end', 'E_UNSUPPORTED'],
+  ['multi-handlers', 'define actor A as receive(int x): int { return x; } receive(int y): int { return y; } end', 'E_DUPLICATE'],
+  ['no-handler', 'define actor A as end', 'E_ACTOR_ENTRY'],
+  ['unsupported-body', 'define actor A as int state: 0 end', 'E_UNSUPPORTED'],
+  ['stdio-import', 'define actor A as receive(int x): int { stdio.println(x); return x; } end', 'E_ACTOR_IMPORT'],
+]) {
+  check(`actor/${label}-fails-closed`, () => {
+    const bytes = encoder.encode(src);
+    new Uint8Array(api.memory.buffer, api.input_ptr(), bytes.length).set(bytes);
+    assert.equal(api.compile_actor(bytes.length), 1);
+    assert.equal(api.result_length(), 0);
+    const mem = new Uint8Array(api.memory.buffer);
+    let end = api.error_ptr();
+    while (mem[end]) end++;
+    assert.ok(decoder.decode(mem.subarray(api.error_ptr(), end)).startsWith(want + ':'), label);
   });
 }
 
