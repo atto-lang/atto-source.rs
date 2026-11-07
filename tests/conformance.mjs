@@ -725,7 +725,7 @@ check('actor/lifecycle-async-get_done-remains-fail-closed',()=>{
     'end',
   ].join('\n')+'\n';
   for(const statement of [
-    'val w = spawn Worker(); val done = w.get_done();',
+    'val w = spawn Worker(); val completion = w.get_done();',
     'val w = spawn Worker(); await w.get_done();',
   ]){
     const r=compile(prelude+'pub fnc main(): int { '+statement+' return 0; }');
