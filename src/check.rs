@@ -811,6 +811,35 @@ impl FnCx<'_> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if let Some((owner,method))=name.split_once('.') {
+            if let Some(local)=self.lookup(owner) {
+                let (slot,ty)=(local.slot,local.ty);
+                let Type::Class(id)=ty else {
+                    return Err(type_err(pos,format!("'{owner}' is not a class instance")));
+                };
+                if method=="constructor" {
+                    return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                        "constructors are only callable through new Class(...)"));
+                }
+                let layout=self.classes.get(&id).expect("nominal class");
+                let resolved=format!("{}.{}",layout.name,method);
+                let (idx,params,ret)=self.sigs.get(&(resolved.clone(),args.len()+1))
+                    .cloned().ok_or_else(||Diagnostic::new(pos,"E_UNBOUND",
+                        format!("no instance method '{resolved}' accepts {} arguments",args.len())))?;
+                if params.first()!=Some(&ty) {
+                    return Err(type_err(pos,"instance method receiver type mismatch"));
+                }
+                let mut actual=vec![TE{e:TExpr::Local(slot),ty}];
+                for (arg,want) in args.iter().zip(params.iter().skip(1)) {
+                    let value=self.value(arg)?;
+                    if value.ty!=*want || matches!(value.ty,Type::Class(_)) {
+                        return Err(type_err(arg.pos,format!("method '{resolved}' argument type mismatch")));
+                    }
+                    actual.push(value);
+                }
+                return Ok(TE{e:TExpr::Call(idx,actual),ty:ret});
+            }
+        }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
             "Or" => Some(Builtin::Or),
