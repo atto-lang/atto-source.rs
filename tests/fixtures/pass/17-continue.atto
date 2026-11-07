@@ -1,0 +1,14 @@
+// sum of odd numbers 1..9
+// expect-exit: 25
+pub fnc main(): int {
+  let i = 0;
+  let s = 0;
+  while i < 10 do
+    i = i + 1;
+    if i % 2 eq 0 then
+      continue;
+    fi
+    s = s + i;
+  done
+  return s;
+}

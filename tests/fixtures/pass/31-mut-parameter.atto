@@ -1,0 +1,10 @@
+// grammar.ebnf param: type_ref [ "mut" ] IDENT
+// expect-exit: 5
+fnc inc(int mut a): int {
+  a = a + 1;
+  return a;
+}
+
+pub fnc main(): int {
+  return inc(4);
+}

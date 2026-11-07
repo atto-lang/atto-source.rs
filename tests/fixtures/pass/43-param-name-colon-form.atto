@@ -1,0 +1,9 @@
+// grammar.ebnf param compatibility form: IDENT ":" type_ref
+// expect-exit: 9
+fnc sq(n: int): int {
+  return n * n;
+}
+
+pub fnc main(): int {
+  return sq(3);
+}

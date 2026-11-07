@@ -1,0 +1,29 @@
+// Collatz steps for 27, halving by repeated subtraction
+// expect-exit: 111
+fnc half(int n): int {
+  let h = 0;
+  let r = n;
+  while r >= 2 do
+    r = r - 2;
+    h = h + 1;
+  done
+  return h;
+}
+
+fnc steps(int n): int {
+  let x = n;
+  let count = 0;
+  while x neq 1 do
+    if x % 2 eq 0 then
+      x = half(x);
+    else
+      x = 3 * x + 1;
+    fi
+    count = count + 1;
+  done
+  return count;
+}
+
+pub fnc main(): int {
+  return steps(27);
+}

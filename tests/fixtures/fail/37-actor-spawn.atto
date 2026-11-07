@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+pub fnc main(): int {
+  val w = spawn Worker();
+  return 0;
+}

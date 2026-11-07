@@ -1,0 +1,5 @@
+// expect-error: E_TOPLEVEL
+// java: rejects
+pub fnc main(): int {
+  return 42;
+} malicious

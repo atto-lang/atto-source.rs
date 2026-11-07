@@ -1,0 +1,6 @@
+// Java accepts statements after return
+// expect-exit: 1
+pub fnc main(): int {
+  return 1;
+  val x = 2;
+}

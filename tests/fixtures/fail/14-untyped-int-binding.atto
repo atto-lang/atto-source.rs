@@ -1,0 +1,7 @@
+// not a grammar.ebnf binding_decl: bindings start with val, const or let
+// expect-error: E_SYNTAX
+// java: rejects
+pub fnc main(): int {
+  int x = 7;
+  return x;
+}

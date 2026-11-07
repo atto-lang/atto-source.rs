@@ -1,0 +1,11 @@
+// expect-panic: 1
+fnc pow2(int n): int {
+  let r = 1;
+  for (let i = 0; i < n; i++) do
+    r = r * 2;
+  done
+  return r;
+}
+pub fnc main(): int {
+  return pow2(63);
+}

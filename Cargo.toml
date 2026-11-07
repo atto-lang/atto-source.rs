@@ -1,9 +1,9 @@
 [package]
 name = "atto-compiler-browser"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
-description = "Experimental Atto scalar typed-IR compiler targeting browser WebAssembly"
+description = "AttoLang subset compiler targeting browser WebAssembly, itself built for wasm32"
 
 [lib]
 name = "atto_compiler"
@@ -15,3 +15,7 @@ lto = true
 panic = "abort"
 codegen-units = 1
 strip = true
+
+[[bin]]
+name = "attoc"
+path = "src/bin/attoc.rs"

@@ -1,0 +1,9 @@
+// truncating remainder: -7 % 3 is -1
+// expect-exit: 9
+pub fnc main(): int {
+  val a = 7 % 3;
+  val b = -7 % 3;
+  val c = 7 % -3;
+  val d = 100 % 7;
+  return a + b + c + d + 6;
+}

@@ -1,0 +1,7 @@
+// spec 16: a standalone null value is a compile-time error
+// expect-error: E_NULL
+// java: rejects
+pub fnc main(): int {
+  val x = null;
+  return 0;
+}

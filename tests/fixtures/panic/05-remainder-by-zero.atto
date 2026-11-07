@@ -1,0 +1,8 @@
+// spec 17 PROPOSED: division by zero is a language-level failure, never a host exception
+// expect-panic: 2
+fnc zero(): int {
+  return 0;
+}
+pub fnc main(): int {
+  return 5 % zero();
+}

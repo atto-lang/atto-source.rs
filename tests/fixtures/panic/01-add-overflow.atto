@@ -1,0 +1,6 @@
+// spec 17 TARGET (decided): integer overflow panics, never wraps (Java wraps today; LLVM traps)
+// expect-panic: 1
+pub fnc main(): int {
+  val x: int = 9223372036854775807;
+  return x + 1;
+}

@@ -1,0 +1,23 @@
+// count primes below 100
+// expect-exit: 25
+fnc is_prime(int n): bool {
+  if n < 2 then
+    return false;
+  fi
+  for (let d = 2; d * d <= n; d++) do
+    if n % d eq 0 then
+      return false;
+    fi
+  done
+  return true;
+}
+
+pub fnc main(): int {
+  let count = 0;
+  for (let n = 0; n < 100; n++) do
+    if is_prime(n) then
+      count = count + 1;
+    fi
+  done
+  return count;
+}

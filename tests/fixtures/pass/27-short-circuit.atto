@@ -1,0 +1,18 @@
+// ',' and '|' short-circuit: boom() must not print
+// expect-exit: 9
+// expect-stdout: done
+fnc boom(): bool {
+  stdio.println("boom");
+  return true;
+}
+
+pub fnc main(): int {
+  if false, boom() then
+    return 1;
+  fi
+  if true | boom() then
+    stdio.println("done");
+    return 9;
+  fi
+  return 0;
+}

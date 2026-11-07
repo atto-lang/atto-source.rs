@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+  return 1 + true;
+}

@@ -1,0 +1,11 @@
+// expect-exit: 55
+fnc fib(int n): int {
+  if n < 2 then
+    return n;
+  fi
+  return fib(n - 1) + fib(n - 2);
+}
+
+pub fnc main(): int {
+  return fib(10);
+}
