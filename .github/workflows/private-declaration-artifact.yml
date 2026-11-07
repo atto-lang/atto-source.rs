@@ -40,6 +40,8 @@ jobs:
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
           node tests/browser-e2e.mjs
+      # Every source commit owns an immutable artifact branch. Never force-overwrite
+      # an older tested compiler or race another exact-head CI run.
       - name: Write verified binary to private artifact branch
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -68,4 +70,4 @@ jobs:
           git add -f ci-artifacts/browser/atto_compiler.wasm ci-artifacts/browser/compiler.receipt.json
           git commit -m "build(private): declaration compiler from exact source HEAD"
           AUTH="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/ci-artifacts/browser-defines-20261107
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin "HEAD:refs/heads/ci-artifacts/browser-defines-$GITHUB_SHA"
