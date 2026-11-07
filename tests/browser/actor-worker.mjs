@@ -20,13 +20,18 @@ self.onmessage = async ({ data }) => {
     }
     initializing = true;
     try {
+      // Fail fast before downloading/instantiating the compiler. UTF-8 is
+      // bounded separately from the JS string's UTF-16 length.
+      if (data.source.length > 65536) throw new Error('E_SOURCE_LIMIT');
+      const source = new TextEncoder().encode(data.source);
+      if (source.byteLength > 65536) throw new Error('E_SOURCE_LIMIT');
       const response = await fetch('/atto_compiler.wasm');
       if (!response.ok) throw new Error('compiler asset unavailable');
       const bytes = await response.arrayBuffer();
+      if (terminal) return; // second init closed this worker during async fetch
       if (!WebAssembly.validate(bytes)) throw new Error('invalid compiler Wasm');
       const compiler = new WebAssembly.Instance(new WebAssembly.Module(bytes), {}).exports;
       if (typeof compiler.compile_actor !== 'function') throw new Error('missing actor compiler ABI');
-      const source = new TextEncoder().encode(data.source);
       if (source.byteLength > compiler.input_capacity()) throw new Error('actor source too large');
       new Uint8Array(compiler.memory.buffer, compiler.input_ptr(), source.length).set(source);
       if (compiler.compile_actor(source.length) !== 0) {
@@ -44,7 +49,9 @@ self.onmessage = async ({ data }) => {
       if (exports.length !== 1 || exports[0].name !== 'receive' || exports[0].kind !== 'function') {
         throw new Error('invalid actor export surface');
       }
-      actor = new WebAssembly.Instance(module, {});
+      const instance = new WebAssembly.Instance(module, {});
+      if (terminal) return;
+      actor = instance;
       self.postMessage({ kind: 'ready' });
     } catch (e) { error('E_ACTOR_INIT: ' + e.message); }
     return;
