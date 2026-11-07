@@ -59,6 +59,8 @@ enum Kind {
     Return,
     #[token("const")]
     Const,
+    #[token("val")]
+    Val,
     #[token("int")]
     Int,
     #[token("as")]
@@ -112,7 +114,13 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
     let mut depth = 0_u32;
     let mut open = 0_usize;
     while i < src.len() {
-        if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
+        // A block opener inside a // line comment is not a block comment.
+        // Leave the line untouched for Logos to skip; preserve source offsets.
+        if depth == 0 && i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'/' {
+            while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
+                i += 1;
+            }
+        } else if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
             if depth == 0 {
                 open = i;
             }
@@ -344,11 +352,26 @@ impl Parser {
             }
         };
         let mut locals = Vec::new();
-        while self.peek() == Some(Kind::Const) {
-            self.expect(Kind::Const)?;
-            let local_name = self.expect(Kind::Identifier)?.text;
-            self.expect(Kind::Colon)?;
-            self.expect(Kind::Int)?;
+        // Canonical scalar locals are immutable by default. All admitted
+        // spellings lower to the same typed local; this does not admit mut/let
+        // rebinding or infer any non-integer type.
+        while matches!(self.peek(), Some(Kind::Const | Kind::Val | Kind::Int)) {
+            if self.peek() == Some(Kind::Const) {
+                self.expect(Kind::Const)?;
+            } else if self.peek() == Some(Kind::Val) {
+                self.expect(Kind::Val)?;
+            }
+            let local_name = if self.peek() == Some(Kind::Int) {
+                self.expect(Kind::Int)?;
+                self.expect(Kind::Identifier)?.text
+            } else {
+                let name = self.expect(Kind::Identifier)?.text;
+                if self.peek() == Some(Kind::Colon) {
+                    self.expect(Kind::Colon)?;
+                    self.expect(Kind::Int)?;
+                }
+                name
+            };
             self.expect(Kind::Equals)?;
             let value = self.expression()?;
             self.expect(Kind::Semicolon)?;
