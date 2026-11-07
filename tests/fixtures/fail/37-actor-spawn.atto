@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_SPAWN_TYPE
 // java: rejects
 pub fnc main(): int {
   val w = spawn Worker();
