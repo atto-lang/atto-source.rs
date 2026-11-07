@@ -86,6 +86,28 @@ pub fnc main(): int {
 
 The bounded class allocator uses the same guest `memory` export as literal output. It introduces **no new imports**, but adds a reserved panic code `3` for class heap exhaustion; consumers must display the updated diagnostic when promoting compiler artifacts. This narrow class implementation is a compiler-backed feature slice, not proof of canonical class lifetime/reclamation or actor-heap parity.
 
+## Experimental source-compiled scalar actors (stacked review)
+
+The separate `compile_actor` entry point in this stacked PR accepts one
+`define actor Worker as receive(int value): int { return value + 1; } end`
+and emits an import-free actor guest with exactly one
+`receive(i64)->i64` export, compatible with the experimental
+`atto.browser.actor.scalar.v0` Web Worker contract.
+
+Regular `compile` rejects source containing an actor receive handler; it
+must not erase it or run it as a normal `main` guest. This prototype rejects
+source-level `main`, multiple actor declarations, class/enum declarations
+in the actor module, non-scalar receive signatures, stdio/host imports and
+memory allocation. It is not full actor state, actor heaps/stacks, ownership,
+message-type semantics, source-level `spawn`, supervision, ActorGroup or
+tenant isolation. The ordinary compiler still supports the parent PR's
+nominal class and enum facilities.
+
+Both the source-owned compiler conformance suite and a real Chromium worker
+test must pass at the exact review head. This test-only Wasm build is not an
+authorization to copy private compiler code or binaries to the playground,
+which retains its independent public-disclosure release gates.
+
 ## Guest contract `atto.browser.guest.v1`
 
 - **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; code 2 is reserved and unreachable because integer division/remainder is not admitted; 3 = fixed class heap exhausted). `memory` is exported when string literals are printed **or class instances are allocated**.
