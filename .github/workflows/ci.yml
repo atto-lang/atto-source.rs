@@ -55,7 +55,7 @@ jobs:
           const module = new WebAssembly.Module(bytes);
           const imports = WebAssembly.Module.imports(module);
           const exports = WebAssembly.Module.exports(module).map(x => x.name);
-          const required = ['memory','abi_version','input_ptr','input_capacity','compile','result_ptr','result_length','error_ptr','error_line_number','error_column_number'];
+          const required = ['memory','abi_version','input_ptr','input_capacity','compile','compile_actor','result_ptr','result_length','error_ptr','error_line_number','error_column_number'];
           if (imports.length || required.some(x => !exports.includes(x))) throw new Error('unexpected compiler ABI');
           const git = (...args) => execFileSync('git', args, {encoding:'utf8'}).trim();
           const receipt = {
@@ -65,6 +65,7 @@ jobs:
             target:'wasm32-unknown-unknown',
             abi:'atto-playground-v2',
             guest_abi:'atto.browser.guest.v1',
+            actor_abi:'atto.browser.actor.scalar.v0',
             compiler_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),
             compiler_bytes:bytes.length,
             import_count:imports.length,
