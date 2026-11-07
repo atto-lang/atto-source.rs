@@ -7,7 +7,9 @@
 //! * export `memory` only when string literals are printed
 //! * imports, only those used, from module `atto`:
 //!   `print_i64(i64)`, `print_bool(i32)`, `print_str(i32 offset, i32 len)`,
-//!   `print_newline()`
+//!   `print_newline()`, or `actor_spawn(i32)->i32` for checked actor spawn.
+//! * actor-specific exports (if present): `atto_actor_receive_<id>(i64)->i64`;
+//!   hosts MUST instantiate those on a separate Worker with per-actor Wasm state.
 //!
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.

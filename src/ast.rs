@@ -31,13 +31,14 @@ impl Type {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub funcs: Vec<Func>,
-    /// Top-level nominal declarations. The browser backend currently lowers
-    /// only free functions; unused data-only declarations need no guest code.
+    /// Top-level nominal declarations: immutable class fields, enum tags and
+    /// the private browser-only stateless actor receive handler subset.
     pub declarations: Vec<Declaration>,
 }
 
-/// This is declaration recognition, NOT an actor or object runtime. Any
-/// executable fields/methods are rejected by the parser until lowered.
+/// Nominal declarations are independently type-gated. The only executable
+/// actor member is a stateless receive(int)->int body dispatched by a Web
+/// Worker host; state, general methods and full actor semantics are rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeclarationKind {
     Class,
@@ -70,8 +71,7 @@ pub struct Declaration {
     pub kind: DeclarationKind,
     pub name: String,
     pub pos: Pos,
-    /// Syntax-only enum variants; nominal enum values/operations are NOT
-    /// lowered to browser Wasm until type checking is implemented.
+    /// Checked nominal enum variant names; lowered as distinct typed tags.
     pub variants: Vec<String>,
     /// Class fields with explicit scalar defaults; no methods/actors yet.
     pub fields: Vec<ClassField>,

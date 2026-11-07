@@ -456,10 +456,10 @@ impl Parser {
         Ok(Program { funcs, declarations })
     }
 
-    /// Admit inert top-level nominal declarations without pretending that the
-    /// browser's scalar guest ABI has a class heap, actor scheduler or enum
-    /// value representation. A nonempty class/actor/etc body fails closed.
-    /// Enum variant *names* are checked but remain unavailable as values.
+    /// Admit the bounded nominal declaration subset. Classes have literal
+    /// scalar fields, enums have nominal values, and actors may have exactly
+    /// one stateless receive(int)->int method. All other actor state, members
+    /// and unsupported forms fail closed instead of fabricating execution.
     fn parse_definition(&mut self) -> R<Declaration> {
         self.expect_word("define")?;
         self.eat_word("pub");

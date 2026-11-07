@@ -20,7 +20,7 @@ self.onmessage=async ({data})=>{
     const out=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
-    // atto.browser.guest.v1: only these output capabilities may be imported
+    // atto.browser.guest.v1: output imports and the gated actor_spawn capability.
     const allowed=new Set(['print_i64','print_bool','print_str','print_newline','actor_spawn']);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);

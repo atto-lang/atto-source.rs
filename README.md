@@ -17,7 +17,7 @@ The compiler does not define any syntax of its own:
 | Area | Admitted |
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
-| Top-level declarations | `define class Name as ... end` admits **immutable `int`/`bool` literal-default fields** and an explicit `new Name()` zero-argument constructor that allocates a fresh bounded guest-private instance; typed field reads, nominal class parameters/returns. `define enum` admits fieldless nominal variants. Empty actor/struct/module/interface/trait/supervisor declarations remain syntax-only; no actor runtime. |
+| Top-level declarations | `define class Name as ... end` admits **immutable `int`/`bool` literal-default fields** and an explicit `new Name()` zero-argument constructor that allocates a fresh bounded guest-private instance; typed field reads, nominal class parameters/returns. `define enum` admits fieldless nominal variants. One stateless actor `receive(int)->int` handler and typed `spawn Worker()` are admitted only by the actor-aware private browser host; empty actors and struct/module/interface/trait/supervisor bodies remain inert. No language-level `send()->Result`, supervisor or actor heap semantics are claimed. |
 | Entry point | zero-argument `main` returning `int` or `void` |
 | Types | `int` (i64), `bool` / `boolean`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut` |
@@ -32,7 +32,7 @@ The following are rejected, with the code shown:
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
-- Bare `Point()` constructor calls give `E_NEW_REQUIRED` (no guest output). Class methods, mutable fields, custom constructors, nonliteral defaults, inheritance and actor/struct/module/interface/trait/supervisor members are **not** executable in the browser. Those constructs fail closed. Nominal class values cannot be implicitly converted to scalars and class equality is not yet admitted.
+- Bare `Point()` constructor calls give `E_NEW_REQUIRED` (no guest output). Class methods, mutable fields, custom constructors, nonliteral defaults, inheritance and general actor state/methods or struct/module/interface/trait/supervisor members are **not** executable in the browser; only the separately documented stateless actor `receive(int)->int` slice is admitted. Those constructs fail closed. Nominal class values cannot be implicitly converted to scalars and class equality is not yet admitted.
 - `define macro` and other unsupported `define` forms, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give fail-closed diagnostics.
 
 ### Known divergences from the Java reference
@@ -88,8 +88,8 @@ The bounded class allocator uses the same guest `memory` export as literal outpu
 
 ## Guest contract `atto.browser.guest.v1`
 
-- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; code 2 is reserved and unreachable because integer division/remainder is not admitted; 3 = fixed class heap exhausted). `memory` is exported when string literals are printed **or class instances are allocated**.
-- **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)` and `print_newline()`. There are no other capabilities.
+- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; code 2 reserved/unreachable; 3 = fixed class heap exhausted). `memory` is exported when string literals are printed **or class instances are allocated**. Stage-1 actor handlers are additionally exported as `atto_actor_receive_<nominal-id>(i64)->i64`, for a separate browser worker guest instance.
+- **Imports:** only those used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)`, `print_newline()`, and for a checked executable actor spawn only, `actor_spawn(i32 actor_type)->i32 actor_handle`. The `actor_spawn` capability is implemented **only in the private browser test host**, not in the published playground. No other host capabilities are admitted.
 - **Determinism:** output is a pure function of the source. The native and wasm32 hosts emit byte-identical modules.
 
 ## Compiler ABI v2 (wasm32 build)
