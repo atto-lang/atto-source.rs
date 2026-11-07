@@ -228,6 +228,36 @@ for (const [name, declaration, code] of [
   });
 }
 
+// ---- executable no-receiver class static methods --------------------------------
+for (const [name, declaration, want] of [
+  ['simple', 'define class Calculator as static fnc add(int a, int b): int { return a + b; } end', 42],
+  ['two-methods', 'define class C as static fnc mul(int a, int b): int { return a * b; } static fnc plus(int a, int b): int { return a + b; } end', 42],
+  ['brace', 'pub define class Calc { pub static fnc answer(): int { return 42; } }', 42],
+]) {
+  check(`class-static/${name}-guest-executes`, () => {
+    const invocation = name === 'simple' ? 'Calculator.add(19, 23)'
+      : name === 'two-methods' ? 'C.plus(C.mul(3, 13), 3)' : 'Calc.answer()';
+    const r = compile(declaration + '\n' + `pub fnc main(): int { return ${invocation}; }`);
+    assert.equal(r.ok, true, r.message);
+    assert.equal(runGuest(r.wasm).value, BigInt(want));
+  });
+}
+for (const [name, def, code] of [
+  ['instance-method', 'define class C as fnc value(): int { return 42; } end', 'E_UNSUPPORTED'],
+  ['constructor', 'define class C as constructor() {} end', 'E_UNSUPPORTED'],
+  ['field', 'define class C as int answer: 42 end', 'E_UNSUPPORTED'],
+  ['duplicate-static', 'define class C as static fnc f(): int { return 1; } static fnc f(): int { return 2; } end', 'E_DUPLICATE'],
+  ['call-unknown', 'define class C as end\npub fnc main(): int { return C.f(); }', 'E_UNBOUND'],
+]) {
+  check(`class-static/${name}-rejects-no-wasm`, () => {
+    const src = def.includes('fnc main()') ? def : def + '\n' + 'pub fnc main(): int { return 0; }';
+    const r = compile(src);
+    assert.equal(r.ok, false);
+    assert.equal(r.code, code, r.message);
+    assert.equal('wasm' in r, false);
+  });
+}
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);
