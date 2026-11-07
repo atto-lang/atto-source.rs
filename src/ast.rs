@@ -7,6 +7,8 @@ pub enum Type {
     Int,
     Bool,
     Void,
+    /// Nominal enum type. This ID is compiler-owned, not a user-supplied tag.
+    Enum(u16),
 }
 
 impl Type {
@@ -15,6 +17,7 @@ impl Type {
             Type::Int => "int",
             Type::Bool => "bool",
             Type::Void => "void",
+            Type::Enum(_) => "enum",
         }
     }
 }
@@ -184,6 +187,8 @@ pub enum ExprKind {
     /// Integer literal. `None` is 2^63, only legal as the operand of unary minus.
     Int(Option<u64>),
     Bool(bool),
+    /// A nominal enum's named variant; resolved to an i32 tag by the checker.
+    EnumVariant { enum_name: String, variant: String },
     Str(String),
     Var(String),
     Unary(UnOp, Box<Expr>),
