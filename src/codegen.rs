@@ -35,9 +35,10 @@ pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
         }
         signature.returns.push(AbiParam::new(types::I64));
         // Preserve source-level visibility in the native ABI: private helpers
-        // remain callable inside the object, but cannot be linked from C or
-        // another object. This is distinct from release tree shaking.
-        let linkage = if function.exported {
+        // remain callable internally, but cannot be linked from another object.
+        // Keep the existing implicit executable entry-point ABI for "main",
+        // which is also a root in the release tree-shaker.
+        let linkage = if function.exported || function.symbol == "main" {
             Linkage::Export
         } else {
             Linkage::Local
