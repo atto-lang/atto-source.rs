@@ -36,51 +36,107 @@ fn failure(class: &'static str, message: impl Into<String>) -> SemanticError {
         message: message.into(),
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScalarType {
+    Int,
+    Bool,
+}
+
+fn require_int(value: ScalarType, context: &str) -> Result<(), SemanticError> {
+    if value == ScalarType::Int {
+        Ok(())
+    } else {
+        Err(failure("operand_not_int", format!("{context} requires int")))
+    }
+}
+
+/// Check both branch types even though only one executes at runtime.
 fn validate_expr(
     expr: &Expr,
     variables: &HashSet<String>,
     signatures: &HashMap<String, usize>,
-) -> Result<(), SemanticError> {
+) -> Result<ScalarType, SemanticError> {
     match expr {
-        Expr::Integer(_) => Ok(()),
+        Expr::Integer(_) => Ok(ScalarType::Int),
+        Expr::Bool(_) => Ok(ScalarType::Bool),
         Expr::Name(name) => {
             if variables.contains(name) {
-                Ok(())
+                Ok(ScalarType::Int)
             } else {
-                Err(failure(
-                    "unknown_name",
-                    format!("undeclared scalar '{name}'"),
-                ))
+                Err(failure("unknown_name", format!("undeclared scalar '{name}'")))
             }
         }
         Expr::Call { name, args } => {
             let Some(expected) = signatures.get(name) else {
-                return Err(failure(
-                    "unknown_name",
-                    format!("unknown function '{name}'"),
-                ));
+                return Err(failure("unknown_name", format!("unknown function '{name}'")));
             };
             if args.len() != *expected {
-                return Err(failure(
-                    "call_arity",
-                    format!(
-                        "{name}: expected {expected} parameters, received {}",
-                        args.len()
-                    ),
-                ));
+                return Err(failure("call_arity", format!(
+                    "{name}: expected {expected} parameters, received {}", args.len()
+                )));
             }
             for arg in args {
-                validate_expr(arg, variables, signatures)?;
+                if validate_expr(arg, variables, signatures)? != ScalarType::Int {
+                    return Err(failure("argument_not_int", format!("{name} requires int arguments")));
+                }
             }
-            Ok(())
+            Ok(ScalarType::Int)
         }
         Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
-            validate_expr(a, variables, signatures)?;
-            validate_expr(b, variables, signatures)
+            require_int(validate_expr(a, variables, signatures)?, "arithmetic")?;
+            require_int(validate_expr(b, variables, signatures)?, "arithmetic")?;
+            Ok(ScalarType::Int)
         }
-        Expr::Negate(expr) => validate_expr(expr, variables, signatures),
+        Expr::Negate(value) => {
+            require_int(validate_expr(value, variables, signatures)?, "negation")?;
+            Ok(ScalarType::Int)
+        }
+        Expr::Equals(a, b) => {
+            let left = validate_expr(a, variables, signatures)?;
+            let right = validate_expr(b, variables, signatures)?;
+            if left != right {
+                return Err(failure("operand_type_mismatch", "equality operands must have matching types"));
+            }
+            Ok(ScalarType::Bool)
+        }
+        Expr::Conditional { condition, when_true, when_false } => {
+            if validate_expr(condition, variables, signatures)? != ScalarType::Bool {
+                return Err(failure("condition_not_bool", "ternary condition must be bool"));
+            }
+            let yes = validate_expr(when_true, variables, signatures)?;
+            let no = validate_expr(when_false, variables, signatures)?;
+            if yes != no {
+                return Err(failure("branch_type_mismatch", "ternary branches must have matching types"));
+            }
+            Ok(yes)
+        }
     }
 }
+
+/// Legacy linear analysis schemas do not represent typed Boolean or CFG branches.
+pub fn uses_typed_conditionals(module: &Module) -> bool {
+    for function in &module.functions {
+        let roots = function.locals.iter().map(|(_, expr)| expr)
+            .chain(std::iter::once(&function.return_value));
+        for root in roots {
+            let mut stack = vec![root];
+            while let Some(expr) = stack.pop() {
+                match expr {
+                    Expr::Bool(_) | Expr::Equals(_, _) | Expr::Conditional { .. } => return true,
+                    Expr::Integer(_) | Expr::Name(_) => {}
+                    Expr::Negate(a) => stack.push(a),
+                    Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
+                        stack.push(a);
+                        stack.push(b);
+                    }
+                    Expr::Call { args, .. } => stack.extend(args),
+                }
+            }
+        }
+    }
+    false
+}
+
 pub fn lower(program: Program) -> Result<Module, SemanticError> {
     lower_with_ref_layout(program, ManagedRefLayout::default())
 }
@@ -114,7 +170,9 @@ pub fn lower_with_ref_layout(
         }
         let mut locals = Vec::new();
         for local in function.locals {
-            validate_expr(&local.value, &vars, &signatures)?;
+            if validate_expr(&local.value, &vars, &signatures)? != ScalarType::Int {
+                return Err(failure("local_type_mismatch", "local declaration requires int"));
+            }
             if !vars.insert(local.name.clone()) {
                 return Err(failure(
                     "duplicate_declaration",
@@ -123,7 +181,9 @@ pub fn lower_with_ref_layout(
             }
             locals.push((local.name, local.value));
         }
-        validate_expr(&function.expression, &vars, &signatures)?;
+        if validate_expr(&function.expression, &vars, &signatures)? != ScalarType::Int {
+            return Err(failure("return_type_mismatch", "scalar function requires int return"));
+        }
         functions.push(Function {
             symbol: function.name,
             exported: function.exported,

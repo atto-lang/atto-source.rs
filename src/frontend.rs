@@ -23,6 +23,13 @@ pub struct Local {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     Integer(i64),
+    Bool(bool),
+    Equals(Box<Expr>, Box<Expr>),
+    Conditional {
+        condition: Box<Expr>,
+        when_true: Box<Expr>,
+        when_false: Box<Expr>,
+    },
     Name(String),
     Call { name: String, args: Vec<Expr> },
     Add(Box<Expr>, Box<Expr>),
@@ -57,6 +64,10 @@ enum Kind {
     Fnc,
     #[token("return")]
     Return,
+    #[token("true")]
+    True,
+    #[token("false")]
+    False,
     #[token("const")]
     Const,
     #[token("val")]
@@ -81,8 +92,12 @@ enum Kind {
     Semicolon,
     #[token(":")]
     Colon,
+    #[token("==")]
+    EqualEqual,
     #[token("=")]
     Equals,
+    #[token("?")]
+    Question,
     #[token(",")]
     Comma,
     #[token("+")]
@@ -179,6 +194,7 @@ fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
+pub const MAX_EXPRESSION_DEPTH: usize = 96;
 
 /// Execution-domain words reserved by every Oreslang backend (Java and LLVM
 /// reject them as identifiers too).
@@ -264,6 +280,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         tokens,
         cursor: 0,
         source_len: source.len(),
+        expression_depth: 0,
     };
     let mut functions = Vec::new();
     while parser.peek().is_some() {
@@ -282,6 +299,7 @@ struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     source_len: usize,
+    expression_depth: usize,
 }
 impl Parser {
     fn peek(&self) -> Option<Kind> {
@@ -397,6 +415,42 @@ impl Parser {
         })
     }
     fn expression(&mut self) -> Result<Expr, ParseError> {
+        if self.expression_depth >= MAX_EXPRESSION_DEPTH {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "resource_limit",
+                message: "nested expression depth exceeds prototype limit".into(),
+            });
+        }
+        self.expression_depth += 1;
+        let result = self.conditional();
+        self.expression_depth -= 1;
+        result
+    }
+    fn conditional(&mut self) -> Result<Expr, ParseError> {
+        let condition = self.equality()?;
+        if self.peek() != Some(Kind::Question) {
+            return Ok(condition);
+        }
+        self.expect(Kind::Question)?;
+        let when_true = self.expression()?;
+        self.expect(Kind::Colon)?;
+        let when_false = self.expression()?;
+        Ok(Expr::Conditional {
+            condition: Box::new(condition),
+            when_true: Box::new(when_true),
+            when_false: Box::new(when_false),
+        })
+    }
+    fn equality(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.sum()?;
+        while self.peek() == Some(Kind::EqualEqual) {
+            self.expect(Kind::EqualEqual)?;
+            lhs = Expr::Equals(Box::new(lhs), Box::new(self.sum()?));
+        }
+        Ok(lhs)
+    }
+    fn sum(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.product()?;
         loop {
             lhs = match self.peek() {
@@ -423,6 +477,14 @@ impl Parser {
     }
     fn primary(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
+            Some(Kind::True) => {
+                self.expect(Kind::True)?;
+                Ok(Expr::Bool(true))
+            }
+            Some(Kind::False) => {
+                self.expect(Kind::False)?;
+                Ok(Expr::Bool(false))
+            }
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
                 let integer = normalized_integer_digits(&t)?
