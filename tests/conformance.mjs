@@ -269,7 +269,7 @@ check('class/field-access-and-ctor-negative-controls', () => {
 });
 
 check('class/new-required-and-postfix-positive', () => {
-  const src = 'define class P as\\n int x: 42\\nend\\n' +
+  const src = 'define class P as\n int x: 42\nend\n' +
     'pub fnc main(): int { return (new P()).x; }';
   const result = compile(src);
   assert.equal(result.ok, true, result.message);
