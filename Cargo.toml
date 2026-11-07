@@ -1,0 +1,17 @@
+[package]
+name = "atto-compiler-browser"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Experimental Atto scalar typed-IR compiler targeting browser WebAssembly"
+
+[lib]
+name = "atto_compiler"
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true

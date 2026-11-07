@@ -1,30 +1,18 @@
-# atto-source.rs
+# AttoLang portable browser compiler (experimental M1 candidate)
 
-Rust-based compiler and runtime development for AttoLang.
+This repository contains a Rust scalar compiler capable of native execution and compiling itself for browser WebAssembly. Its strict AttoLang subset uses a typed i32 stack IR and a bounded direct core-Wasm generator. The implementation is **not** the full canonical AttoLang compiler or language parity.
 
-## Scope
+### Build
 
-This repository is the AttoLang ecosystem home for:
+```sh
+rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+cargo test --locked
+cargo build --locked --release --target wasm32-unknown-unknown
+node tests/wasm-browser.mjs
+```
 
-- Rust compiler/runtime experiments, shared-language contract integration, and portability evaluation.
-- Compatibility with the [canonical language specification](https://github.com/atto-lang/atto-spec) where applicable.
-- Evidence-based tests, benchmark results, and cross-backend conformance reporting.
+The compiled `atto_compiler.wasm` exposes the existing playground ABI. The guest it produces exports `main:()->i32`, with zero imports, no memory, no start section. Only one compiler worker owns an instance, and the caller copies results before compiling again.
 
-## Architecture and compatibility
+The strict subset supports signed i32 literals, `fnc main()->int`, arithmetic + - * /, parentheses, integer bindings immutable by default and explicit `let`/`mut` rebinding. Max source 4096 UTF-8 bytes, 64 locals, 128 nesting depth, bounded code and module bytes. Unsupported constructs reject rather than silently fallback. The subset's i32 wrapping and division trap behaviors are experimental, not canonical AttoLang overflow policy.
 
-AttoLang is designed around actors, explicit ownership, and portable concurrency semantics. Backend-specific optimizations must not silently change the shared language contract. Runtime capabilities, target restrictions, and unsupported features should be documented explicitly.
-
-## Building and testing
-
-Consult the checked-in source tree and CI workflows for verified commands and supported targets. Add target-specific build instructions and exact-head execution results as they become available; do not treat a passing host-unit test as proof of guest-language conformance.
-
-## Project status
-
-This README describes the repository's intended responsibilities. Feature support and release readiness must be established from implementation, tests, and CI evidence rather than this description alone.
-
-## Related repositories
-
-- [AttoLang organization](https://github.com/atto-lang)
-- [Language specification](https://github.com/atto-lang/atto-spec)
-- [Platform conformance](https://github.com/atto-lang/atto-platform-conformance)
-- [Commercial infrastructure](https://github.com/atto-co)
+Do not publish this compiler in the marketing playground until a version-pinned, exact-head hosted build, browser ABI, negative rejections, source-dependent guest execution, and independent review all pass. The original C M0 playground remains a separate verified artifact.
