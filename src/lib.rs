@@ -30,6 +30,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     }
     let toks = lexer::lex(source)?;
     let program = parser::Parser::new(toks).parse_program()?;
+    if !program.actor_handlers.is_empty() {
+        return Err(Diagnostic::new(
+            Pos { line: 1, col: 1 },
+            "E_UNSUPPORTED",
+            "actor receive declarations require the separate scalar actor compiler ABI",
+        ));
+    }
     let typed = check::check(&program)?;
     let bytes = wasm::emit(&typed);
     if bytes.len() > wasm::MAX_OUTPUT {
@@ -38,6 +45,44 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             "E_OUTPUT_LIMIT",
             "generated module exceeds 1 MiB",
         ));
+    }
+    Ok(bytes)
+}
+
+/// Compile a single scalar actor `receive(int)->int` handler into the
+/// import-free browser worker contract `atto.browser.actor.scalar.v0`.
+/// This is a stateless handler prototype: not spawn, ownership or supervision.
+pub fn compile_actor(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    use ast::{Expr, ExprKind, Func, Stmt, Type};
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT", "actor source exceeds 64 KiB"));
+    }
+    let tokens = lexer::lex(source)?;
+    let mut program = parser::Parser::new(tokens).parse_program()?;
+    if program.actor_handlers.len() != 1 {
+        return Err(Diagnostic::new(
+            Pos { line: 1, col: 1 }, "E_ACTOR_ENTRY", "exactly one scalar actor receive handler is required",
+        ));
+    }
+    let handler = program.actor_handlers[0].clone();
+    if program.funcs.iter().any(|f| f.name == "main") {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ACTOR_ENTRY", "actor module cannot define main"));
+    }
+    let pos = Pos { line: 1, col: 1 };
+    // Only for reusing the already validated, checked scalar IR pipeline.
+    // Not exported to the actor worker and not present in user source.
+    program.funcs.push(Func {
+        name: "main".into(), pos, params: Vec::new(), ret: Type::Int,
+        body: vec![Stmt::Return(Some(Expr { kind: ExprKind::Int(Some(0)), pos }), pos)],
+    });
+    let typed = check::check(&program)?;
+    if !typed.imports.is_empty() || !typed.data.is_empty() {
+        return Err(Diagnostic::new(pos, "E_ACTOR_IMPORT", "actor guest cannot use host imports or linear memory"));
+    }
+    let index = typed.funcs.iter().position(|f| f.name == handler).expect("checked handler retained");
+    let bytes = wasm::emit_actor(&typed, index as u32);
+    if bytes.len() > wasm::MAX_OUTPUT {
+        return Err(Diagnostic::new(pos, "E_OUTPUT_LIMIT", "actor module exceeds 1 MiB"));
     }
     Ok(bytes)
 }
@@ -99,6 +144,15 @@ mod abi {
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_with(length, false)
+    }
+    /// ABI v2-compatible additional export, returns the same result/error
+    /// buffer but compiles a distinct import-free actor guest contract.
+    #[no_mangle]
+    pub extern "C" fn compile_actor(length: i32) -> i32 {
+        compile_with(length, true)
+    }
+    fn compile_with(length: i32, actor: bool) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -137,7 +191,7 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            match if actor { super::compile_actor(source) } else { super::compile(source) } {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0
