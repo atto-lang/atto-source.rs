@@ -8,12 +8,14 @@ self.onmessage=({data})=>{
       if(!Number.isInteger(data.actorId)||data.actorId<0||data.actorId>1024)throw new Error('E_ACTOR_ID');
       if(!(data.wasm instanceof Uint8Array)||!WebAssembly.validate(data.wasm))throw new Error('E_ACTOR_WASM');
       const module=new WebAssembly.Module(data.wasm);
-      const allow=new Set(['actor_spawn','print_i64','print_bool','print_str','print_newline']);
+      const allow=new Set(['actor_spawn','actor_send','actor_close','print_i64','print_bool','print_str','print_newline']);
       for(const imp of WebAssembly.Module.imports(module)){
         if(imp.module!=='atto'||!allow.has(imp.name))throw new Error('E_ACTOR_IMPORT');
       }
       const atto={
         actor_spawn:()=>{throw new Error('E_ACTOR_NESTED_SPAWN')},
+        actor_send:()=>{throw new Error('E_ACTOR_CAPABILITY')},
+        actor_close:()=>{throw new Error('E_ACTOR_CAPABILITY')},
         print_i64:()=>{throw new Error('E_ACTOR_STDIO')},
         print_bool:()=>{throw new Error('E_ACTOR_STDIO')},
         print_str:()=>{throw new Error('E_ACTOR_STDIO')},

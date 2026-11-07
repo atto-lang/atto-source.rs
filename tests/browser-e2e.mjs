@@ -138,6 +138,40 @@ try{
   assert.match(await run(actorExample,'E_MESSAGE_TYPE'),/E_MESSAGE_TYPE/);
   await evaluate("window.__attoActorMessages=undefined");
   console.log('PASS browser: object and pointer-shaped messages fail closed');
+
+  const senderProgram=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg + 1; }',
+    'end',
+    'pub fnc main(): int {',
+    '  val w: Worker = spawn Worker();',
+    '  val first: Result<void, SendError> = w.send(41);',
+    '  val second = w.send(42);',
+    '  val full = w.send(43);',
+    '  if first.is_ok() , second.is_ok() , full.is_full() then',
+    '    return 42;',
+    '  else',
+    '    return 0;',
+    '  fi',
+    '}',
+  ].join('\n');
+  assert.match(await run(senderProgram,'main() -> 42'),/actor\[1\] receive\(41\) -> 42\nactor\[1\] receive\(42\) -> 43\nmain\(\) -> 42/);
+  console.log('PASS browser: language send Result admits only two FIFO messages, rejects full third');
+  const closeProgram=senderProgram.replace(
+    '  val second = w.send(42);\n  val full = w.send(43);',
+    '  val closed = w.close();\n  val second = w.send(42);\n  val full = w.send(43);'
+  ).replace('first.is_ok() , second.is_ok() , full.is_full()',
+    'first.is_ok() , closed , second.is_closed() , full.is_closed()');
+  assert.match(await run(closeProgram,'main() -> 42'),/actor\[1\] receive\(41\) -> 42\nmain\(\) -> 42/);
+  console.log('PASS browser: close blocks further admission but drains already admitted message');
+  const separateQueues=senderProgram.replace('  val second = w.send(42);',
+    '  val other = spawn Worker();\n  val other_ok = other.send(50);\n  val second = w.send(42);'
+  ).replace('first.is_ok() , second.is_ok() , full.is_full()',
+    'first.is_ok() , second.is_ok() , other_ok.is_ok() , full.is_full()');
+  const twoResult=await run(separateQueues,'main() -> 42');
+  assert.match(twoResult,/actor\[1\] receive\(41\) -> 42/);
+  assert.match(twoResult,/actor\[2\] receive\(50\) -> 51/);
+  console.log('PASS browser: each actor has independent bounded mailbox capacity');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

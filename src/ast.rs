@@ -13,6 +13,8 @@ pub enum Type {
     Class(u16),
     /// Nominal browser actor handle; never a transferable object pointer.
     Actor(u16),
+    /// Restricted Result<void, SendError> for ackless actor mailbox admission.
+    SendResult,
 }
 
 impl Type {
@@ -24,6 +26,7 @@ impl Type {
             Type::Enum(_) => "enum",
             Type::Class(_) => "class",
             Type::Actor(_) => "actor",
+            Type::SendResult => "Result<void,SendError>",
         }
     }
 }
@@ -219,6 +222,8 @@ pub enum ExprKind {
     NewClass(String, Vec<Expr>),
     /// Actor spawn is host-mediated; no local pseudo-actor execution.
     SpawnActor(String, Vec<Expr>),
+    /// Only statically checked actor / admission-result methods are admitted.
+    MethodCall(Box<Expr>, String, Vec<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
     Call(String, Vec<Expr>),
 }

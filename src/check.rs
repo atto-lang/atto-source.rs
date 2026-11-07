@@ -74,10 +74,12 @@ pub enum Import {
     PrintStr,
     PrintNewline,
     ActorSpawn,
+    ActorSend,
+    ActorClose,
 }
 
 impl Import {
-    pub const ALL: [Import; 5] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn];
+    pub const ALL: [Import; 7] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend, Import::ActorClose];
     pub fn name(self) -> &'static str {
         match self {
             Import::PrintI64 => "print_i64",
@@ -85,6 +87,8 @@ impl Import {
             Import::PrintStr => "print_str",
             Import::PrintNewline => "print_newline",
             Import::ActorSpawn => "actor_spawn",
+            Import::ActorSend => "actor_send",
+            Import::ActorClose => "actor_close",
         }
     }
 }
@@ -96,6 +100,12 @@ pub enum TExpr {
     /// Compact, checked variant index of a distinct nominal enum type.
     EnumTag(u32),
     SpawnActor(u16),
+    /// A send returns a typed Result<void, SendError> represented as an
+    /// internal i32 status (0=Ok, 1=Full, 2=Closed).
+    ActorSend(Box<TE>, Box<TE>),
+    ActorClose(Box<TE>),
+    /// Statically checked predicate on a SendResult status.
+    SendResultCheck(Box<TE>, u32),
     /// Allocate an independently owned guest instance with immutable defaults.
     NewClass { size: u32, fields: Vec<(u32, FieldValue)> },
     /// Load a scalar class field at a checked, compiler-derived byte offset.
@@ -810,6 +820,43 @@ impl FnCx<'_> {
                 self.imports.push(Import::ActorSpawn);
                 TE { e: TExpr::SpawnActor(*id), ty: Type::Actor(*id) }
             },
+            ExprKind::MethodCall(receiver, name, args) => {
+                let object = self.value(receiver)?;
+                match (object.ty, name.as_str()) {
+                    (Type::Actor(_), "send") => {
+                        if self.in_actor_handler { return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                            "actor-to-actor send from receive() requires capability checks")); }
+                        if args.len()!=1 { return Err(Diagnostic::new(pos,"E_ARITY",
+                            "actor.send expects exactly one int message")); }
+                        let message = self.value(&args[0])?;
+                        if message.ty != Type::Int { return Err(type_err(args[0].pos,
+                            "actor.send requires a Sendable int; no pointers, handles or references")); }
+                        self.imports.push(Import::ActorSend);
+                        TE { e:TExpr::ActorSend(Box::new(object),Box::new(message)),ty:Type::SendResult }
+                    }
+                    (Type::Actor(_), "close") => {
+                        if self.in_actor_handler { return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                            "actor.close from receive() is not admitted")); }
+                        if !args.is_empty() { return Err(Diagnostic::new(pos,"E_ARITY",
+                            "actor.close expects no arguments")); }
+                        self.imports.push(Import::ActorClose);
+                        TE { e:TExpr::ActorClose(Box::new(object)),ty:Type::Bool }
+                    }
+                    (Type::SendResult, "is_ok" | "is_err" | "is_full" | "is_closed") => {
+                        if !args.is_empty() { return Err(Diagnostic::new(pos,"E_ARITY",
+                            "Result predicate expects no arguments")); }
+                        let code = match name.as_str() { "is_ok"=>0, "is_full"=>1, "is_closed"=>2,
+                            _=>3 /* nonzero admission error */ };
+                        TE { e:TExpr::SendResultCheck(Box::new(object),code),ty:Type::Bool }
+                    }
+                    (Type::Actor(_), _) => return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                        "only actor.send(int) and actor.close() are admitted")),
+                    (Type::SendResult, _) => return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                        "only is_ok/is_err/is_full/is_closed Result predicates are admitted")),
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                        "method calls on this receiver type are not admitted")),
+                }
+            }
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
         })
     }

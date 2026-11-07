@@ -598,6 +598,71 @@ check('actor/fail-closed-ownership-and-handler',()=>{
   }
 });
 
+
+check('actor/send-result-and-closed-admission-guest',()=>{
+  const source=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg + 1; }',
+    'end',
+    'pub fnc main(): int {',
+    '  val w = spawn Worker();',
+    '  val a: Result<void, SendError> = w.send(41);',
+    '  val b = w.send(42);',
+    '  val full = w.send(43);',
+    '  val closed = w.close();',
+    '  val after = w.send(44);',
+    '  if a.is_ok() , b.is_ok() , full.is_full() , closed , after.is_closed() , after.is_err() then',
+    '    return 42;',
+    '  else',
+    '    return 0;',
+    '  fi',
+    '}',
+  ].join('\n');
+  const result=compile(source);
+  assert.ok(result.ok,result.message);
+  const module=new WebAssembly.Module(result.wasm);
+  const imports=WebAssembly.Module.imports(module).map(i=>i.name);
+  assert.ok(imports.includes('actor_spawn'));
+  assert.ok(imports.includes('actor_send'));
+  assert.ok(imports.includes('actor_close'));
+  const seen=[];let closed=false;
+  const atto={
+    actor_spawn:id=>{assert.equal(id,0);return 1},
+    actor_send:(handle,value)=>{
+      assert.equal(handle,1);assert.equal(typeof value,'bigint');
+      if(closed)return 2;
+      if(seen.length===2)return 1;
+      seen.push(value);return 0;
+    },
+    actor_close:handle=>{assert.equal(handle,1);closed=true;return 1},
+  };
+  const instance=new WebAssembly.Instance(module,{atto});
+  assert.equal(instance.exports.main(),42n);
+  assert.deepEqual(seen,[41n,42n]);
+});
+check('actor/send-fails-closed-on-non-scalar-transfer',()=>{
+  const prefix=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg; }',
+    'end',
+    'define class Point as',
+    '  int x: 1',
+    'end',
+  ].join('\n')+'\n';
+  for(const statement of [
+    'val w = spawn Worker(); val obj = new Point(); val result = w.send(obj);',
+    'val w = spawn Worker(); val other = spawn Worker(); val result = w.send(other);',
+    'val w = spawn Worker(); val result = w.send(true);',
+    'val w = spawn Worker(); val result = w.send();',
+    'val w = spawn Worker(); val result = w.send(1,2);',
+    'val w = spawn Worker(); val result: Result<int, SendError> = w.send(1);',
+  ]){
+    const response=compile(prefix+'pub fnc main(): int { '+statement+' return 0; }');
+    assert.equal(response.ok,false,statement);
+    assert.equal('wasm' in response,false,'invalid send must never create guest code');
+  }
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);

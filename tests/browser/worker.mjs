@@ -21,7 +21,7 @@ self.onmessage=async ({data})=>{
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
     // atto.browser.guest.v1: output imports and the gated actor_spawn capability.
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','actor_spawn']);
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','actor_spawn','actor_send','actor_close']);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
@@ -34,7 +34,7 @@ self.onmessage=async ({data})=>{
       actor_spawn:id=>{
         if(!Number.isInteger(id)||id<0||actors.length>=4)throw new Error('E_ACTOR_LIMIT');
         const worker=new Worker('/actor-worker.mjs',{type:'module'});
-        const actor={worker,id};
+        const actor={worker,id,queue:[],closed:false};
         // Install the ready listener *before* init: the child may announce
         // readiness before the parent guest's main() returns.
         actor.ready=new Promise((resolve,reject)=>{
@@ -52,6 +52,25 @@ self.onmessage=async ({data})=>{
         worker.postMessage({kind:'init',actorId:id,wasm:out});
         return actors.length;
       },
+      // Linearizable admission while guest main() executes synchronously:
+      // queued + in-flight <=2, FIFO, no await or fake completion.
+      actor_send:(handle,message)=>{
+        const actor=actors[handle-1];
+        if(!actor||!Number.isInteger(handle))throw new Error('E_ACTOR_HANDLE');
+        if(typeof message!=='bigint'||BigInt.asIntN(64,message)!==message)
+          throw new Error('E_MESSAGE_TYPE');
+        if(actor.closed)return 2; // Err(Closed)
+        if(actor.queue.length>=2)return 1; // Err(Full)
+        actor.queue.push(message);
+        return 0; // Ok(()) means only accepted, NOT handled
+      },
+      actor_close:handle=>{
+        const actor=actors[handle-1];
+        if(!actor||!Number.isInteger(handle))throw new Error('E_ACTOR_HANDLE');
+        if(actor.closed)return 0;
+        actor.closed=true;
+        return 1;
+      },
     };
     instance=new WebAssembly.Instance(guest,{atto});
     let value;
@@ -63,6 +82,26 @@ self.onmessage=async ({data})=>{
       self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
     }
     try{
+      // Process admitted mailbox messages in FIFO order after the synchronous
+      // guest returns, before the host may claim run completion.
+      const deliver=async(actor,big,handle)=>{
+        await actor.ready;
+        const result=await new Promise((resolve,reject)=>{
+          const timer=setTimeout(()=>reject(new Error('E_ACTOR_TIMEOUT')),2000);
+          actor.worker.onmessage=({data:msg})=>{
+            clearTimeout(timer);
+            if(msg?.kind==='reply'&&typeof msg.value==='bigint')resolve(msg.value);
+            else reject(new Error(msg?.message||'E_ACTOR_PROTOCOL'));
+          };
+          actor.worker.onerror=()=>{clearTimeout(timer);reject(new Error('E_ACTOR_WORKER'))};
+          actor.worker.postMessage({kind:'message',value:big});
+        });
+        stdout+='actor['+handle+'] receive('+String(big)+') -> '+String(result)+'\n';
+      };
+      for(let i=0;i<actors.length;i++){
+        for(const message of actors[i].queue)await deliver(actors[i],message,i+1);
+        actors[i].queue.length=0;
+      }
       if(data.actorMessages!==undefined){
         if(!Array.isArray(data.actorMessages)||data.actorMessages.length>4)throw new Error('E_ACTOR_LIMIT');
         for(const req of data.actorMessages){
@@ -73,18 +112,8 @@ self.onmessage=async ({data})=>{
           if(BigInt.asIntN(64,big)!==big)throw new Error('E_MESSAGE_RANGE');
           const actor=actors[req.handle-1];
           if(!actor)throw new Error('E_ACTOR_HANDLE');
-          await actor.ready;
-          const result=await new Promise((resolve,reject)=>{
-            const timer=setTimeout(()=>reject(new Error('E_ACTOR_TIMEOUT')),2000);
-            actor.worker.onmessage=({data:msg})=>{
-              clearTimeout(timer);
-              if(msg?.kind==='reply'&&typeof msg.value==='bigint')resolve(msg.value);
-              else reject(new Error(msg?.message||'E_ACTOR_PROTOCOL'));
-            };
-            actor.worker.onerror=()=>{clearTimeout(timer);reject(new Error('E_ACTOR_WORKER'))};
-            actor.worker.postMessage({kind:'message',value:big});
-          });
-          stdout+='actor['+req.handle+'] receive('+req.value+') -> '+String(result)+'\n';
+          if(actor.closed)throw new Error('E_ACTOR_CLOSED');
+          await deliver(actor,big,req.handle);
         }
       }
     }finally{for(const actor of actors)actor.worker.terminate()}

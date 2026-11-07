@@ -196,3 +196,29 @@ The test host's actor import is **not** part of the current published
 playground's grant list. No release of actor-capable compiler bytes or
 public site changes is authorized without the source, playground and
 Pages release gates.
+
+## Actor mailbox admission: restricted Result<void, SendError> (private only)
+
+On the actor-runtime development branch, `worker.send(int)` returns a
+**typed admission result**, currently only `Result<void, SendError>`.
+`Ok(())` means the bounded host mailbox accepted the message *synchronously*
+during guest execution. `Err(Full)` means capacity 2 was reached;
+`Err(Closed)` means the mailbox is closed. Neither `Ok` nor `close()`
+confirms handler completion. `worker.close()` returns `bool` (true only
+on the first close) and stops further sends while preserving admitted FIFO
+messages for delivery.
+
+The limited `Result<void, SendError>` supports `is_ok()`, `is_err()`,
+`is_full()` and `is_closed()`. It is not the general generic `Result`
+runtime and does not yet support `match`, `?`, `map_err`, or transport
+of class pointers, handles or borrowed values. The current browser actor
+test host runs admitted queues after the synchronous guest `main()` returns,
+in separate worker/guest instances; it does not establish canonical
+production scheduler fairness or `get_done()` semantics.
+
+The new guest imports `atto.actor_send(i32,i64)->i32` (status 0=Ok,
+1=Full, 2=Closed) and `atto.actor_close(i32)->i32` (bool), both prohibited
+inside `receive` until capability and supervision checks exist. These
+imports are *not* granted by the public playground or previously shipped
+compiler. Compilation rejects all non-int send payloads and unsupported
+generic Result types with no guest code.
