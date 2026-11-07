@@ -1,0 +1,15 @@
+// expect-exit: 42
+fnc accepted(Status state): bool { return state eq Status.Ready; }
+pub fnc main(): int {
+  val status: Status = Status.Ready;
+  if accepted(status) then
+    return 42;
+  else
+    return 0;
+  fi
+}
+define enum Status as
+  Pending
+  Ready
+  Failed
+end
