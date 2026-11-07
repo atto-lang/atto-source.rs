@@ -527,7 +527,6 @@ impl Parser {
         if *self.peek() == Tok::At {
             return Err(unsupported(self.pos(), "annotations"));
         }
-        let start = self.pos();
         self.eat_word("pub");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
@@ -600,7 +599,6 @@ impl Parser {
             Type::Void
         };
         let body = self.parse_block()?;
-        let _ = start;
         Ok(Func {
             name,
             pos,
