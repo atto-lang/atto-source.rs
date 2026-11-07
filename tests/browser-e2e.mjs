@@ -10,6 +10,7 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-worker.mjs',[new URL('./browser/actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -88,6 +89,42 @@ try{
   console.log('PASS browser: checked int overflow panics with output preserved');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: error recovery restores valid execution');
+  // Compile a real AttoLang actor handler inside a dedicated Web Worker,
+  // then execute its compiler-produced guest Wasm on multiple messages.
+  const actor=await evaluate(`(async()=>{
+    const worker=new Worker('/actor-worker.mjs',{type:'module'});
+    const request=packet=>new Promise((resolve,reject)=>{
+      const timeout=setTimeout(()=>reject(new Error('actor worker deadline')),5000);
+      worker.onmessage=e=>{clearTimeout(timeout);resolve(e.data)};
+      worker.onerror=e=>{clearTimeout(timeout);reject(new Error('actor worker failed'))};
+      worker.postMessage(packet);
+    });
+    try {
+      const ready=await request({kind:'init',source:'define actor Worker as receive(int value): int { return value + 2; } end'});
+      if(ready.kind!=='ready')throw new Error(JSON.stringify(ready));
+      const first=await request({kind:'message',id:1,value:40n});
+      const second=await request({kind:'message',id:2,value:-1n});
+      return {a:first.value?.toString(),b:second.value?.toString(),status:first.kind+'/'+second.kind};
+    } finally { worker.terminate(); }
+  })()`);
+  assert.deepEqual(actor,{a:'42',b:'1',status:'result/result'});
+  console.log('PASS browser: real Atto actor source -> compiler Wasm -> actor guest Wasm -> dedicated Web Worker receive');
+
+  const rejectedActor=await evaluate(`(async()=>{
+    const worker=new Worker('/actor-worker.mjs',{type:'module'});
+    try {
+      return await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('rejection deadline')),5000);
+        worker.onmessage=e=>{clearTimeout(timer);resolve(e.data)};
+        worker.onerror=()=>{clearTimeout(timer);reject(new Error('worker failed'))};
+        worker.postMessage({kind:'init',source:'define actor Bad as receive(bool value): int { return 1; } end'});
+      });
+    } finally { worker.terminate(); }
+  })()`);
+  assert.equal(rejectedActor.kind,'fault');
+  assert.match(rejectedActor.message,/E_UNSUPPORTED/);
+  console.log('PASS browser: wrong actor receive signature fails closed before guest creation');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
