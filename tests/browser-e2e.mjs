@@ -157,6 +157,30 @@ try{
   assert.match(await run(sourceTwoSends,'actor[1] receive(42) -> 43'),
     /^actor\[1\] receive\(41\) -> 42\nactor\[1\] receive\(42\) -> 43\nmain\(\) -> 42$/);
   console.log('PASS browser: source sends preserve per-actor FIFO across real Worker messages');
+
+  // Admission is bounded at 32 pending messages, before any asynchronous
+  // receive completes. The 33rd send must produce Result::Err while all
+  // admitted messages are delivered in deterministic per-actor order.
+  const fullSource=[
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): int {',
+    '  val worker = spawn Worker();',
+    '  let rejected = 0;',
+    '  for (let i = 0; i < 33; i++) do',
+    '    val attempt = worker.send(i);',
+    '    if attempt.is_err() then rejected = rejected + 1; fi',
+    '  done',
+    '  return rejected;',
+    '}',
+  ].join('\n');
+  const fullOutput=await run(fullSource,'main() -> 1');
+  assert.equal((fullOutput.match(/receive\(/g)||[]).length,32,
+    'exactly 32 messages admitted and executed');
+  assert.ok(!fullOutput.includes('receive(32)'), '33rd message must not execute');
+  assert.match(fullOutput,/actor\[1\] receive\(31\) -> 32\nmain\(\) -> 1$/);
+  console.log('PASS browser: real 32-slot admission backpressure and 33rd Result::Err');
+
+
   assert.match(await run(sourceSend.replace('worker.send(41)','worker.get_done()'), 'E_UNSUPPORTED'),
     /E_UNSUPPORTED/);
   console.log('PASS browser: get_done fails closed until asynchronous task completion semantics exist');
