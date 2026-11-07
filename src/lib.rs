@@ -141,8 +141,8 @@ impl<'a> Parser<'a>{
     }
     fn assignment(&mut self)->Result<(),Diagnostic>{
         let t=self.pop();
-        let id=self.local(t.text).ok_or(self.bad("E_UNBOUND: variable not declared"))?;
-        if !self.locals[id].mutable{return Err(self.bad("E_IMMUTABLE: rebinding requires let or mut"))}
+        let id=self.local(t.text).ok_or(err(t.line,t.col,"E_UNBOUND: variable not declared"))?;
+        if !self.locals[id].mutable{return Err(err(t.line,t.col,"E_IMMUTABLE: rebinding requires let or mut"))}
         self.need(K::Eq,"E_ASSIGN: expected '='")?;
         self.expr(0,0)?;
         self.need(K::Semi,"E_SEMICOLON: expected ';'")?;
@@ -158,6 +158,7 @@ impl<'a> Parser<'a>{
         self.need(K::Int,"E_PROGRAM: expected int return type")?;
         self.need(K::Begin,"E_PROGRAM: expected '{'")?;
         while !self.is(K::Return){
+            if self.is(K::End) || self.is(K::Eof){return Err(self.bad("E_RETURN: main must end with return expression"))}
             match self.now().k{
                 K::Int|K::Const|K::Let|K::Mut=>self.declaration()?,
                 K::Ident=>self.assignment()?,
@@ -166,8 +167,9 @@ impl<'a> Parser<'a>{
         }
         self.pop();self.expr(0,0)?;
         self.need(K::Semi,"E_SEMICOLON: expected ';'")?;
-        self.need(K::End,"E_PROGRAM: expected '}'")?;
-        self.need(K::Eof,"E_PROGRAM: trailing tokens rejected")?;
+        if !self.is(K::End) && !self.is(K::Eof){return Err(self.bad("E_RETURN: return must be the final statement"))}
+        self.need(K::End,"E_ENTRY: expected '}'")?;
+        self.need(K::Eof,"E_TRAILING: trailing tokens after main")?;
         Ok(TypedModule{locals:self.locals.len() as u32,ops:self.ops})
     }
 }
