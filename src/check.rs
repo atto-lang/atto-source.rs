@@ -953,7 +953,7 @@ impl FnCx<'_> {
             }
             (Type::Actor(_), "get_done") =>
                 Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                    "get_done() requires async completion/task semantics; mailbox admission is not handler completion")),
+                    "get_done() must be terminally awaited in void main(); general task values are not supported")),
             (Type::SendResult, "is_ok" | "is_err") => {
                 if !args.is_empty() {
                     return Err(Diagnostic::new(pos, "E_ARITY",

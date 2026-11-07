@@ -184,7 +184,7 @@ try{
 
   assert.match(await run(sourceSend.replace('worker.send(41)','worker.get_done()'), 'E_UNSUPPORTED'),
     /E_UNSUPPORTED/);
-  console.log('PASS browser: get_done fails closed until asynchronous task completion semantics exist');
+  console.log('PASS browser: unawaited get_done task values remain unsupported');
 
   // True async source scope join: main() has no continuation after await,
   // and the parent Worker cannot report success before the child acknowledges
