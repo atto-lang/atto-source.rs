@@ -350,6 +350,30 @@ check('actor/source-compiled-receive-guest-executes', () => {
   assert.equal(actor.exports.receive(40n), 42n);
   assert.equal(actor.exports.receive(-1n), 1n);
 });
+// Actor guest arithmetic must inherit the same checked-i64 semantics as
+// ordinary compiler guests. A trap is terminal to the containing Web Worker;
+// it may never silently wrap and return a misleading Result/ack.
+for (const [label, expression, safeInput, safeOutput, overflowInput] of [
+  ['add', 'value + 1', 9223372036854775806n, 9223372036854775807n, 9223372036854775807n],
+  ['sub', 'value - 1', -9223372036854775807n, -9223372036854775808n, -9223372036854775808n],
+  ['mul', 'value * 2', 4611686018427387903n, 9223372036854775806n, 4611686018427387904n],
+]) {
+  check('actor/checked-i64-' + label + '-traps-on-overflow', () => {
+    const src = 'define actor Worker as receive(int value): int { return ' + expression + '; } end';
+    const input = encoder.encode(src);
+    new Uint8Array(api.memory.buffer, api.input_ptr(), input.length).set(input);
+    assert.equal(api.compile_actor(input.length), 0, 'actor compilation must succeed');
+    const bytes = new Uint8Array(api.memory.buffer, api.result_ptr(), api.result_length()).slice();
+    assert.ok(WebAssembly.validate(bytes));
+    const mod = new WebAssembly.Module(bytes);
+    assert.deepEqual(WebAssembly.Module.imports(mod), [], 'actor must remain host-import-free');
+    assert.deepEqual(WebAssembly.Module.exports(mod).map(x => x.name), ['receive']);
+    const actor = new WebAssembly.Instance(mod, {});
+    assert.equal(actor.exports.receive(safeInput), safeOutput);
+    assert.throws(() => actor.exports.receive(overflowInput), WebAssembly.RuntimeError,
+      'checked actor arithmetic must trap rather than wrap');
+  });
+}
 for (const [label, src, want] of [
   ['wrong-type', 'define actor A as receive(bool value): int { return 42; } end', 'E_UNSUPPORTED'],
   ['multi-handlers', 'define actor A as receive(int x): int { return x; } receive(int y): int { return y; } end', 'E_DUPLICATE'],
