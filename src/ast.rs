@@ -8,6 +8,7 @@ pub enum Type {
     Bool,
     Void,
     Enum(u16), // nominal per-declaration enum identity
+    Class(u16), // nominal per-declaration class identity; no object ABI yet
 }
 
 impl Type {
@@ -17,6 +18,7 @@ impl Type {
             Type::Bool => "bool",
             Type::Void => "void",
             Type::Enum(_) => "enum",
+            Type::Class(_) => "class",
         }
     }
 }
@@ -36,7 +38,21 @@ pub struct Declaration {
     pub pos: Pos,
     pub kind: DeclKind,
     pub variants: Vec<String>,
+    /// Class instance slot declarations, retained for M2 layout/type checking.
+    /// No field is emitted until actor- and object-lifetime rules are implemented.
+    pub fields: Vec<ClassField>,
 }
+
+#[derive(Clone, Debug)]
+pub struct ClassField {
+    pub name: String,
+    pub pos: Pos,
+    pub ty: Type,
+    pub initializer: Expr,
+    pub final_slot: bool,
+    pub require_const: bool,
+}
+
 
 #[derive(Clone, Debug)]
 pub struct Func {
@@ -163,6 +179,8 @@ pub enum ExprKind {
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
     Call(String, Vec<Expr>),
+    /// Parsed constructor call, not lowered until class arenas/ownership exist.
+    New(String, Vec<Expr>),
 }
 
 #[derive(Clone, Debug)]

@@ -140,6 +140,15 @@ fn type_err(pos: Pos, msg: impl Into<String>) -> Diagnostic {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // Do not erase instance layout or create a fake object/actor runtime.
+    // These AST declarations are admitted for compiler diagnostics, but the
+    // executable guest path is gated until ownership-aware allocation exists.
+    for decl in &p.decls {
+        if !decl.fields.is_empty() {
+            return Err(Diagnostic::new(decl.fields[0].pos, "E_UNSUPPORTED",
+                format!("class '{}' instance field layout/allocation is not implemented yet", decl.name)));
+        }
+    }
     let mut enum_values: BTreeMap<String,(i64,Type)> = BTreeMap::new();
     for (id, decl) in p.decls.iter().enumerate() {
         for (index, variant) in decl.variants.iter().enumerate() {
@@ -150,6 +159,11 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
+        if f.ret != Type::Void && matches!(f.ret, Type::Class(_)) ||
+            f.params.iter().any(|p| matches!(p.ty, Type::Class(_))) {
+            return Err(Diagnostic::new(f.pos,"E_UNSUPPORTED",
+                format!("class-valued function '{}' requires object ownership/lifetime lowering",f.name)));
+        }
         if p.decls.iter().any(|d| d.name == f.name) {
             return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
                 format!("function '{}' conflicts with a top-level type declaration",f.name)));
@@ -644,6 +658,10 @@ impl FnCx<'_> {
                 }
             }
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
+            ExprKind::New(name, _args) => {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    format!("new {name}(...) needs class allocation, constructor and ownership lowering")))
+            }
         })
     }
 

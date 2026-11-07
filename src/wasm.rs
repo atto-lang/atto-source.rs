@@ -62,7 +62,7 @@ fn vt(t: Type) -> Option<u8> {
     match t {
         Type::Int | Type::Enum(_) => Some(I64),
         Type::Bool => Some(I32),
-        Type::Void => None,
+        Type::Void | Type::Class(_) => None,
     }
 }
 
