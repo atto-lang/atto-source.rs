@@ -107,3 +107,15 @@ readiness continuation and reply callbacks. The public host itself has real
 Chromium replay rejection and Node fault-injection receipts. The candidate
 compiler must be tested against this exact frontend snapshot without copying
 any private source/binary into a public branch or triggering Pages deployment.
+
+## Exact four-actor stress-tested browser host
+
+The private-source Chromium integration suite now pins public source-only
+playground host commit `133bb2d1479f7fec5aa0615ff85fcd0f07ebb4cb`, which passed 59 Node tests
+(including 120 deterministic lifecycle fault trials and 40 simultaneous
+four-child cancellations) and 30 real Chromium E2E scenarios. Executable
+source-free Wasm fixture verifies 4 x 32 admitted FIFO actor messages,
+4 rejected 33rd sends, separate actor-local mutable state, a rejected 5th
+spawn, and a one-shot parent runner. These are host and bounded runtime
+receipts; this private compiler candidate remains unpublished and requires
+independent approval before any public release.
