@@ -3,7 +3,7 @@
 //! Guest contract `atto.browser.guest.v1`:
 //! * export `main: () -> i64` (a void `main` returns 0)
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
-//!   1 = integer overflow, 2 = division by zero
+//!   1 = integer overflow; code 2 is reserved (division/remainder unsupported)
 //! * export `memory` only when string literals are printed
 //! * imports, only those used, from module `atto`:
 //!   `print_i64(i64)`, `print_bool(i32)`, `print_str(i32 offset, i32 len)`,
@@ -17,6 +17,7 @@ use crate::check::{Builtin, Import, TExpr, TProgram, TStmt, TE};
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
+/// Reserved ABI value; current admitted expressions cannot generate this panic.
 pub const PANIC_DIV_ZERO: i32 = 2;
 
 const I32: u8 = 0x7F;
@@ -84,8 +85,7 @@ const H_ADD: u32 = 0;
 const H_SUB: u32 = 1;
 const H_MUL: u32 = 2;
 const H_NEG: u32 = 3;
-const H_REM: u32 = 4;
-const HELPERS: u32 = 5;
+const HELPERS: u32 = 4;
 
 struct Layout {
     imports: Vec<Import>,
@@ -232,40 +232,25 @@ impl Emit<'_> {
                 self.expr(a);
                 self.op(0x45);
             }
-            TExpr::Bin(op, a, b) => match op {
-                BinOp::And => {
-                    self.expr(a);
-                    self.open(0x04, I32, Frame::Other);
-                    self.expr(b);
-                    self.op(0x05);
-                    self.i32c(0);
-                    self.close();
-                }
-                BinOp::Or => {
-                    self.expr(a);
-                    self.open(0x04, I32, Frame::Other);
-                    self.i32c(1);
-                    self.op(0x05);
-                    self.expr(b);
-                    self.close();
-                }
-                _ => {
-                    self.expr(a);
-                    self.expr(b);
-                    let int = a.ty == Type::Int;
-                    match op {
-                        BinOp::Add => self.call(self.l.helper(H_ADD)),
-                        BinOp::Sub => self.call(self.l.helper(H_SUB)),
-                        BinOp::Mul => self.call(self.l.helper(H_MUL)),
-                        BinOp::Rem => self.call(self.l.helper(H_REM)),
-                        BinOp::Lt => self.op(0x53),
-                        BinOp::Le => self.op(0x57),
-                        BinOp::Gt => self.op(0x55),
-                        BinOp::Ge => self.op(0x59),
-                        BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
-                        BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-                        BinOp::Div | BinOp::And | BinOp::Or => unreachable!("rejected or handled above"),
-                    }
+            TExpr::Bin(op, a, b) => {
+                // Canonical AttoLang conditions are eager: both operands
+                // execute in source order even when the left decides truth.
+                self.expr(a);
+                self.expr(b);
+                let int = a.ty == Type::Int;
+                match op {
+                    BinOp::Add => self.call(self.l.helper(H_ADD)),
+                    BinOp::Sub => self.call(self.l.helper(H_SUB)),
+                    BinOp::Mul => self.call(self.l.helper(H_MUL)),
+                    BinOp::And => self.op(0x71), // i32.and
+                    BinOp::Or => self.op(0x72),  // i32.or
+                    BinOp::Lt => self.op(0x53),
+                    BinOp::Le => self.op(0x57),
+                    BinOp::Gt => self.op(0x55),
+                    BinOp::Ge => self.op(0x59),
+                    BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
+                    BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
+                    BinOp::Div => unreachable!("division not admitted by checker"),
                 }
             },
             TExpr::Ternary(c, a, b) => {
@@ -368,13 +353,6 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     c.extend_from_slice(&[0x0B, 0x42, 0, 0x20, 0, 0x7D, 0x0B]);
     v.push((Sig(vec![I64], vec![I64]), no_locals.clone(), c));
 
-    // rem: b == 0 panics; b == -1 yields 0 (avoids MIN % -1 host differences)
-    let mut c = vec![0x20, 1, 0x50, 0x04, 0x40];
-    panic(&mut c, PANIC_DIV_ZERO);
-    c.extend_from_slice(&[
-        0x0B, 0x20, 1, 0x42, 0x7F, 0x51, 0x04, 0x40, 0x42, 0, 0x0F, 0x0B, 0x20, 0, 0x20, 1, 0x81, 0x0B,
-    ]);
-    v.push((bin, no_locals, c));
     v
 }
 
@@ -521,7 +499,6 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
                 "atto.checked_sub",
                 "atto.checked_mul",
                 "atto.checked_neg",
-                "atto.checked_rem",
             ]
             .map(String::from),
         )

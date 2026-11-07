@@ -14,8 +14,9 @@ fnc steps(int n): int {
   let x = n;
   let count = 0;
   while x neq 1 do
-    if x % 2 eq 0 then
-      x = half(x);
+    val h = half(x);
+    if h + h eq x then
+      x = h;
     else
       x = 3 * x + 1;
     fi

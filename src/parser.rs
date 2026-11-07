@@ -1039,7 +1039,6 @@ impl Parser {
             let op = match self.peek() {
                 Tok::Star => BinOp::Mul,
                 Tok::Slash => BinOp::Div,
-                Tok::Percent => BinOp::Rem,
                 _ => break,
             };
             self.advance();
@@ -1277,7 +1276,6 @@ fn describe(t: &Tok) -> String {
                 Tok::MinusMinus => "--",
                 Tok::Star => "*",
                 Tok::Slash => "/",
-                Tok::Percent => "%",
                 Tok::Bang => "!",
                 Tok::Question => "?",
                 Tok::Pipe => "|",
