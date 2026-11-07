@@ -107,3 +107,60 @@ fn release_cli_removes_unreachable_private_symbol() {
     );
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn strict_aot_retains_private_internal_calls_without_exporting_helper() {
+    let dir = temp_dir("strict-aot-visibility");
+    let source = dir.join("visibility.atto");
+    let object = dir.join("visibility.o");
+    let driver = dir.join("driver.c");
+    let executable = dir.join("guest");
+    fs::write(&source, include_str!("fixtures/private-linkage.atto")).unwrap();
+    let compiler_run = Command::new(compiler())
+        .arg("--strict-aot")
+        .arg(&source)
+        .arg(&object)
+        .output()
+        .expect("run strict AOT compiler");
+    assert!(
+        compiler_run.status.success(),
+        "strict AOT rejected visibility fixture: {}",
+        String::from_utf8_lossy(&compiler_run.stderr)
+    );
+    let nm = Command::new("nm")
+        .args(["--extern-only", "--defined-only"])
+        .arg(&object)
+        .output()
+        .expect("run nm on strict AOT object");
+    assert!(nm.status.success(), "nm failed");
+    let symbols = String::from_utf8_lossy(&nm.stdout);
+    let names: Vec<&str> = symbols
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .collect();
+    assert!(names.contains(&"answer"), "{symbols}");
+    assert!(!names.contains(&"bump"), "{symbols}");
+    fs::write(
+        &driver,
+        "extern long answer(long); int main(void) { return (int)answer(41); }\n",
+    )
+    .unwrap();
+    let link = Command::new("cc")
+        .arg(&driver)
+        .arg(&object)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("link strict-AOT native guest");
+    assert!(
+        link.status.success(),
+        "strict AOT native link failed: {}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run = Command::new(&executable)
+        .status()
+        .expect("execute strict AOT native guest");
+    assert_eq!(run.code(), Some(42));
+    let _ = fs::remove_dir_all(dir);
+}
