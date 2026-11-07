@@ -11,6 +11,18 @@ pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;
 
+/// Compile the current scalar grammar with opt-in signed i64 overflow traps.
+/// No safety/effect certificate is emitted: those IR schemas cannot yet
+/// express the new conditional integer-overflow failure edges.
+pub fn compile_checked_i64(source: &str) -> Result<Vec<u8>, String> {
+    let ast = frontend::parse(source).map_err(|e| e.to_string())?;
+    let module = mir::lower(ast).map_err(|e| e.to_string())?;
+    // Reuse the bounded traversal guard only; its v1 facts do not model
+    // checked overflow edges and must not be published as a certificate.
+    let _ = effects::export_effect_ir_checked(&module)?;
+    codegen::emit_object_checked_i64(&module)
+}
+
 /// Compile the admitted scalar subset using the default managed-reference layout.
 pub fn compile(source: &str) -> Result<Vec<u8>, String> {
     compile_with_ref_layout(source, ref_layout::ManagedRefLayout::default())

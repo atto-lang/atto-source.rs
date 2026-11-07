@@ -31,6 +31,7 @@ fn main() -> ExitCode {
         let mut profile = BuildProfile::Dev;
         let mut profile_seen = false;
         let mut freestanding = false;
+        let mut checked_i64 = false;
         let mut args = Vec::with_capacity(raw_args.len());
         args.push(raw_args[0].clone());
 
@@ -48,6 +49,11 @@ fn main() -> ExitCode {
                     return Err("duplicate --freestanding".into());
                 }
                 freestanding = true;
+            } else if arg == "--checked-i64" {
+                if checked_i64 {
+                    return Err("duplicate --checked-i64".into());
+                }
+                checked_i64 = true;
             } else {
                 args.push(arg.clone());
             }
@@ -68,8 +74,13 @@ fn main() -> ExitCode {
                 Some(units.parse::<u64>().map_err(|_| "invalid abstract compute budget")?)),
             [_, input, output] if !input.starts_with("--") =>
                 ("object", input.as_str(), Some(output.as_str()), None, None),
-            _ => return Err("usage: oresc [--release|--strict-aot|--hard-rt] [--freestanding] --safety-ir <source.ores> [abstract-budget] | --flow <max-uninterrupted-units> <source.ores> | --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
+            _ => return Err("usage: oresc [--release|--strict-aot|--hard-rt] [--freestanding] [--checked-i64] --safety-ir <source.ores> [abstract-budget] | --flow <max-uninterrupted-units> <source.ores> | --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
         };
+        // Current analysis exporters model only linear scalar computations.
+        // Refuse to issue falsely complete facts for checked overflow traps.
+        if checked_i64 && mode != "object" {
+            return Err("--checked-i64 cannot be combined with safety/effect/CFG/fact export: conditional overflow traps are not yet modeled".into());
+        }
         let source_id = fs::canonicalize(input).map_err(|e| e.to_string())?;
         let object_id = if let Some(path) = output {
             let out = canonical_destination(path)?;
@@ -143,8 +154,15 @@ fn main() -> ExitCode {
                         .map_err(|e| e.to_string())?
                 ),
                 _ => {
-                    effects::export_effect_ir_checked(&checked)?;
-                    let bytes = codegen::emit_object(&checked)?;
+                    let bytes = if checked_i64 {
+                        // Structural recursion/resource budget gate, not a
+                        // checked-arithmetic effect or exception certificate.
+                        let _ = effects::export_effect_ir_checked(&checked)?;
+                        codegen::emit_object_checked_i64(&checked)?
+                    } else {
+                        effects::export_effect_ir_checked(&checked)?;
+                        codegen::emit_object(&checked)?
+                    };
                     fs::write(output.ok_or("missing output path")?, bytes)
                         .map_err(|e| e.to_string())?;
                 }
