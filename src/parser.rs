@@ -11,6 +11,8 @@ use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
+pub const MAX_DECLARATIONS: usize = 1024;
+pub const MAX_ENUM_VARIANTS: usize = 256;
 pub const MAX_PARAMS: usize = 32;
 /// Bound on the height of any syntax tree the parser builds. Left-associative
 /// operator chains (`a + b + ...`) and `elif` arms are parsed iteratively but
@@ -369,17 +371,102 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> R<Program> {
         let mut funcs = Vec::new();
+        let mut declarations: Vec<Declaration> = Vec::new();
         while *self.peek() != Tok::Eof {
-            if funcs.len() >= MAX_FUNCS {
-                return Err(Diagnostic::new(
-                    self.pos(),
-                    "E_SOURCE_LIMIT",
-                    format!("more than {MAX_FUNCS} functions"),
-                ));
+            if self.is_word("define") {
+                if declarations.len() >= MAX_DECLARATIONS {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        format!("more than {MAX_DECLARATIONS} top-level declarations"),
+                    ));
+                }
+                let declaration = self.parse_definition()?;
+                if declarations.iter().any(|d| d.name == declaration.name) {
+                    return Err(Diagnostic::new(
+                        declaration.pos,
+                        "E_DUPLICATE",
+                        format!("duplicate top-level declaration '{}'", declaration.name),
+                    ));
+                }
+                declarations.push(declaration);
+            } else {
+                if funcs.len() >= MAX_FUNCS {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        format!("more than {MAX_FUNCS} functions"),
+                    ));
+                }
+                funcs.push(self.parse_func()?);
             }
-            funcs.push(self.parse_func()?);
         }
-        Ok(Program { funcs })
+        Ok(Program { funcs, declarations })
+    }
+
+    /// Admit inert top-level nominal declarations without pretending that the
+    /// browser's scalar guest ABI has a class heap, actor scheduler or enum
+    /// value representation. A nonempty class/actor/etc body fails closed.
+    /// Enum variant *names* are checked but remain unavailable as values.
+    fn parse_definition(&mut self) -> R<Declaration> {
+        self.expect_word("define")?;
+        self.eat_word("pub");
+        let kind = match self.word_at(0) {
+            Some("class") => DeclarationKind::Class,
+            Some("actor") => DeclarationKind::Actor,
+            Some("struct") => DeclarationKind::Struct,
+            Some("enum") => DeclarationKind::Enum,
+            Some("module") => DeclarationKind::Module,
+            Some("interface") => DeclarationKind::Interface,
+            Some("trait") => DeclarationKind::Trait,
+            Some("supervisor") => DeclarationKind::Supervisor,
+            _ => return Err(unsupported(self.pos(), "this 'define' declaration kind")),
+        };
+        self.advance();
+        let (name, pos) = self.ident("a declaration name")?;
+        if *self.peek() == Tok::Lt {
+            return Err(unsupported(self.pos(), "generic declarations"));
+        }
+        self.expect_word("as")?;
+        let mut variants = Vec::new();
+        if kind == DeclarationKind::Enum {
+            while !self.is_word("end") {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected("'end'"));
+                }
+                if variants.len() >= MAX_ENUM_VARIANTS {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        format!("more than {MAX_ENUM_VARIANTS} enum variants"),
+                    ));
+                }
+                let (variant, variant_pos) = self.ident("an enum variant")?;
+                if variants.contains(&variant) {
+                    return Err(Diagnostic::new(
+                        variant_pos,
+                        "E_DUPLICATE",
+                        format!("duplicate enum variant '{variant}'"),
+                    ));
+                }
+                variants.push(variant);
+                let separated = self.eat(&Tok::Comma) || self.eat(&Tok::Semi);
+                if !separated && !self.is_word("end") && self.pos().line <= variant_pos.line {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SYNTAX",
+                        "enum variants must be separated by a newline, ',' or ';'",
+                    ));
+                }
+            }
+        } else if !self.is_word("end") {
+            return Err(unsupported(
+                self.pos(),
+                &format!("members of '{}' declarations", kind.as_str()),
+            ));
+        }
+        self.expect_word("end")?;
+        Ok(Declaration { kind, name, pos, variants })
     }
 
     fn parse_func(&mut self) -> R<Func> {
