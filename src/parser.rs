@@ -559,7 +559,12 @@ impl Parser {
             }
         } else if kind == DeclarationKind::Actor {
             if !self.is_word("end") {
-                let f = self.parse_func_with_actor(true)?;
+                let f = self.parse_func_with_actor(true).map_err(|d| {
+                    if d.code == "E_SYNTAX" {
+                        return unsupported(d.pos, "actor handler syntax outside receive(int) -> int { ... }");
+                    }
+                    d
+                })?;
                 if f.name != "receive" || f.params.len() != 1 || f.params[0].ty != Type::Int
                     || f.ret != Type::Int || f.params[0].mutable {
                     return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
