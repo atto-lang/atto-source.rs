@@ -355,6 +355,18 @@ pub fn check(p: &Program) -> R<TProgram> {
             body,
         });
     }
+
+    // The stage-1 actor worker grants no stdio or nested-spawn capabilities.
+    // Direct calls are rejected during lowering; this closed-world call-graph
+    // walk also rejects helper functions that *transitively* reach those effects.
+    // A bounded recursion guard permits pure mutually recursive helpers.
+    for (_, idx) in &actor_handlers {
+        let mut visiting = vec![false; funcs.len()];
+        if actor_func_requires_host(*idx as usize, &funcs, &mut visiting) {
+            return Err(Diagnostic::new(all_funcs[*idx as usize].pos, "E_UNSUPPORTED",
+                "actor receive() transitively requires host capabilities not granted to the worker"));
+        }
+    }
     imports.sort();
     imports.dedup();
     Ok(TProgram {
@@ -365,6 +377,58 @@ pub fn check(p: &Program) -> R<TProgram> {
         heap_used,
         actor_handlers,
     })
+}
+
+
+// Host-effect reachability, scoped to actor receive() entrypoints. This is
+// deliberately conservative: even a branch that is never taken cannot grant
+// an implicit host capability to a separately instantiated actor worker.
+fn actor_func_requires_host(index: usize, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
+    if visiting[index] { return false; }
+    visiting[index] = true;
+    let found = funcs[index].body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting));
+    visiting[index] = false;
+    found
+}
+
+fn actor_stmt_requires_host(stmt: &TStmt, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
+    match stmt {
+        TStmt::Set(_, expr) | TStmt::Expr(expr) | TStmt::Return(Some(expr)) =>
+            actor_expr_requires_host(expr, funcs, visiting),
+        TStmt::If(arms, other) =>
+            arms.iter().any(|(cond, body)|
+                actor_expr_requires_host(cond, funcs, visiting) ||
+                body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting))) ||
+            other.as_ref().is_some_and(|body|
+                body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting))),
+        TStmt::Loop { cond, body, update } =>
+            cond.as_ref().is_some_and(|expr| actor_expr_requires_host(expr, funcs, visiting)) ||
+            body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting)) ||
+            update.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting)),
+        TStmt::Block(body) =>
+            body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting)),
+        TStmt::Return(None) | TStmt::Break | TStmt::Continue => false,
+    }
+}
+
+fn actor_expr_requires_host(expr: &TE, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
+    match &expr.e {
+        TExpr::Print { .. } | TExpr::PrintStr { .. } | TExpr::SpawnActor(_) => true,
+        TExpr::Field(inner, _) | TExpr::Neg(inner) | TExpr::Not(inner) =>
+            actor_expr_requires_host(inner, funcs, visiting),
+        TExpr::Bin(_, lhs, rhs) | TExpr::Builtin(_, lhs, rhs) =>
+            actor_expr_requires_host(lhs, funcs, visiting) ||
+            actor_expr_requires_host(rhs, funcs, visiting),
+        TExpr::Ternary(cond, yes, no) =>
+            actor_expr_requires_host(cond, funcs, visiting) ||
+            actor_expr_requires_host(yes, funcs, visiting) ||
+            actor_expr_requires_host(no, funcs, visiting),
+        TExpr::Call(index, args) =>
+            args.iter().any(|arg| actor_expr_requires_host(arg, funcs, visiting)) ||
+            actor_func_requires_host(*index as usize, funcs, visiting),
+        TExpr::I64(_) | TExpr::Bool(_) | TExpr::EnumTag(_) |
+        TExpr::NewClass { .. } | TExpr::Local(_) => false,
+    }
 }
 
 /// Definite-return analysis matching the Java reference: an `if` returns

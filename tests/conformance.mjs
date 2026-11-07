@@ -598,6 +598,41 @@ check('actor/fail-closed-ownership-and-handler',()=>{
   }
 });
 
+
+// Actor receive() may call pure helpers, but an apparently pure handler may
+// not smuggle stdio or recursively spawn another actor through a helper chain.
+// Reject before emitting *any* executable guest bytes.
+check('actor/transitive-host-capability-gate', () => {
+  const actor = [
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return bridge(msg); }',
+    'end',
+    'pub fnc main(): int { val w = spawn Worker(); return 0; }',
+  ].join('\n');
+  const unsafeCases = [
+    'fnc bridge(int msg): int { stdio.println(msg); return msg; }\n',
+    'fnc bridge(int msg): int { return leak(msg); }\n' +
+      'fnc leak(int msg): int { stdio.println(msg); return msg; }\n',
+    'fnc bridge(int msg): int { val other = spawn Worker(); return msg; }\n',
+    'fnc bridge(int msg): int { return recurse(msg); }\n' +
+      'fnc recurse(int msg): int { if msg eq 0 then stdio.println(msg); fi return bridge(msg - 1); }\n',
+  ];
+  for (const extra of unsafeCases) {
+    const result = compile(extra + actor);
+    assert.equal(result.ok, false, 'actor helper reachable host effect must fail closed');
+    assert.equal(result.code, 'E_UNSUPPORTED', result.message);
+    assert.equal('wasm' in result, false, 'forbidden capability must not emit guest bytes');
+    assert.ok(result.line > 0 && result.col > 0, 'error must be located');
+  }
+  const pure = compile('fnc bridge(int msg): int { return msg + 1; }\n' + actor);
+  assert.ok(pure.ok, pure.message);
+  const mod = new WebAssembly.Module(pure.wasm);
+  const inst = new WebAssembly.Instance(mod, {atto:{actor_spawn: () => 1}});
+  assert.equal(inst.exports.main(), 0n);
+  assert.equal(inst.exports.atto_actor_receive_0(41n), 42n,
+    'pure helper remains callable inside actual compiled actor guest');
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);
