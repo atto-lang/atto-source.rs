@@ -33,7 +33,7 @@ fn executable_static_class_methods_compile_to_distinct_real_wasm() {
 fn member_semantics_and_collisions_reject_before_codegen() {
     for (d, expected) in [
         ("define class P as\nint x: 0\nend", "E_UNSUPPORTED"),
-        ("define actor A as\nreceive(m) {}\nend", "E_UNSUPPORTED"),
+        ("define actor A as\nreceive(m) {}\nend", "E_UNKNOWN_TYPE"),
         ("define enum E as Red = 1 end", "E_UNSUPPORTED"),
         ("define enum E as Red, Red end", "E_DUPLICATE"),
         ("define class P as end\ndefine actor P as end", "E_DUPLICATE"),
