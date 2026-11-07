@@ -75,9 +75,10 @@ fn declaration_admission_never_enables_runtime_features() {
     // A recognized but unused actor declaration cannot authorize spawn.
     let src = "define actor Worker as end\npub fnc main(): int { val x = spawn Worker(); return 0; }";
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
-    // A nominal enum type/variant is not falsely represented as plain i64.
+    // Fieldless enum signatures now have a real nominal i32 representation;
+    // they are never implicitly rewritten as plain i64.
     let src = "define enum Status as Ready end\nfnc show(Status status): int { return 0; }\npub fnc main(): int { return 42; }";
-    assert!(atto_compiler::compile(src).is_err());
+    assert!(atto_compiler::compile(src).is_ok());
 }
 
 #[test]
