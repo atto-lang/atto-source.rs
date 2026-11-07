@@ -8,3 +8,32 @@ Implemented Rust fixture subset:
 - **Pending:** general borrow/ownership violation, try/finally, defer, actors, Task continuations, async, non-scalar types, runtime ABI parity, overflow arithmetic semantics beyond the portable no-overflow subset.
 
 The \`tests/conformance.rs\` tests require compilation of all positive inputs, and exact classification of negative inputs. The GitHub workflow executes the positive cases through a real host linker and program, checking exit codes. No JSON-contract checker alone is treated as native execution evidence.
+
+## Rust native i64 parity extension (November 2026)
+
+`tests/source_i64_parity.rs` covers the seven expressions in the Java/LLVM
+`contracts/v1/source-i64/portable-i64.v1.json` (shared Git blob
+`bbc319c19ecd007109d33592e210091eb267e5a2`), plus two extra exactness
+cases around 2^53. Each case compiles real Oreslang source to a Cranelift
+object, links with a C oracle, *executes* the native guest, and compares the
+full signed `int64_t` result. The C driver avoids the 8-bit exit-code
+truncation of earlier scalar tests.
+
+`tests/fixtures/proxy-packed-receipt.ores` is byte-identical to the existing
+Java/LLVM shared guest fixture (Git blob
+`13925491ac224bc5108097e73927968120eb182d`). The Linux integration
+test compiles, links and executes the complete packed ticket/receipt program
+and requires exit 42; this exercises exact `i64` arithmetic above 2^53.
+
+The lexical regression tests ensure block delimiters inside `//` comments
+do not alter source admission or the emitted effect contract; `//` ends at
+LF or CR. A real unterminated block comment still fails with its exact source
+offset.
+
+**Evidence boundary:** these tests are executable acceptance gates, not proof
+that a particular GitHub exact-head run has passed. Rust's checks do not
+certify execution on Java/LLVM, source-level actor tickets, general ABI
+parity, checked arithmetic overflow, division, or broader language/runtime
+parity. The Java/LLVM portable-i64 contract is explicitly marked
+`reference-only-not-compiled-execution`; backend execution receipts must
+be independently verified before changing that status.
