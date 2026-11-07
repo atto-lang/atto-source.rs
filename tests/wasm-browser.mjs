@@ -63,7 +63,7 @@ for(const [source,expected] of [
   ['fnc main() -> int { return 2 ** 8; }','E_EXPRESSION'],
   ['fnc main() -> int { return 4 % 3; }','E_TOKEN'],
   ['fnc main() -> int { print(42); return 0; }','E_UNBOUND'],
-  ['fnc main() -> int { return 0; }\\u0000'.replace('\\u0000','\\0'),'E_NUL'],
+  ['fnc main() -> int { return 0; }'+String.fromCharCode(0),'E_NUL'],
   ['fnc main() -> int { return 1; } fnc other() -> int { return 2; }','E_TRAILING'],
   ['fnc main() -> int { let x=1; return x; x=2; }','E_RETURN'],
   ['fnc main() -> int { }','E_RETURN'],
@@ -71,7 +71,7 @@ for(const [source,expected] of [
   const result=compile(source);assert.equal(result.ok,false,source);
   assert.ok(result.error.includes(expected),source+' -> '+result.error);
 }
-const pos=compile('fnc main() -> int {\\n  int x=1;\\n  x=2;\\n  return x;\\n}');
+const pos=compile(['fnc main() -> int {','  int x=1;','  x=2;','  return x;','}'].join(String.fromCharCode(10)));
 assert.equal(pos.ok,false);
 assert.equal(pos.line,3);
 assert.equal(pos.column,3);
