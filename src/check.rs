@@ -830,7 +830,7 @@ impl FnCx<'_> {
     // 256-height budget, never overflow a 2 MiB host stack.
     fn method_call(&mut self, receiver: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
                 let object = self.value(receiver)?;
-                Ok(match (object.ty, name.as_str()) {
+                Ok(match (object.ty, name) {
                     (Type::Actor(_), "send") => {
                         if self.in_actor_handler { return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
                             "actor-to-actor send from receive() requires capability checks")); }
@@ -853,7 +853,7 @@ impl FnCx<'_> {
                     (Type::SendResult, "is_ok" | "is_err" | "is_full" | "is_closed") => {
                         if !args.is_empty() { return Err(Diagnostic::new(pos,"E_ARITY",
                             "Result predicate expects no arguments")); }
-                        let code = match name.as_str() { "is_ok"=>0, "is_full"=>1, "is_closed"=>2,
+                        let code = match name { "is_ok"=>0, "is_full"=>1, "is_closed"=>2,
                             _=>3 /* nonzero admission error */ };
                         TE { e:TExpr::SendResultCheck(Box::new(object),code),ty:Type::Bool }
                     }
