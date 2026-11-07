@@ -585,7 +585,7 @@ check('actor/fail-closed-ownership-and-handler',()=>{
     ['define actor Worker as end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
     ['define class Point as int x: 2 end\npub fnc main(): int { val w = spawn Point(); return 0; }','E_SPAWN_TYPE'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(1); return 0; }','E_ARITY'],
-    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); w.send(new Point()); return 0; }','E_UNSUPPORTED'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); w.send(new Point()); return 0; }','E_NEW_TYPE'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { rt take w; return 0; }','E_UNSUPPORTED'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); return w; }','E_TYPE'],
     ['define actor Worker as receive(msg: int) -> int { stdio.println(msg); return msg; } end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
@@ -676,7 +676,7 @@ check('actor/send-and-completion-negative-controls', () => {
     ['val result = w.send(41); return result;', 'E_TYPE'],
     ['val result = w.send(41); return result.is_ok(1);', 'E_ARITY'],
     ['val result = w.send(41); return result.unknown();', 'E_UNSUPPORTED'],
-    ['val done = w.get_done(); return 0;', 'E_UNSUPPORTED'],
+    ['val task = w.get_done(); return 0;', 'E_UNSUPPORTED'],
     ['val result: Result<int, SendError> = w.send(41); return 0;', 'E_SYNTAX'],
   ]) {
     const r = compile(main(body));
