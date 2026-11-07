@@ -1261,6 +1261,33 @@ impl Parser {
         })
     }
 
+    /// Shared argument parser for ordinary calls and explicit class allocation.
+    /// Both forms receive identical limits and disallow positional/named mixing
+    /// until the named argument checker is implemented.
+    fn parse_call_args(&mut self) -> R<Vec<Expr>> {
+        self.expect(Tok::LParen, "'(' to begin call arguments")?;
+        let mut args = Vec::new();
+        if *self.peek() != Tok::RParen {
+            loop {
+                if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+                    return Err(unsupported(self.pos(), "named arguments"));
+                }
+                if *self.peek() == Tok::Dot {
+                    return Err(unsupported(self.pos(), "spread arguments"));
+                }
+                args.push(self.parse_expr()?);
+                if args.len() > MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
+                }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Tok::RParen, "')' to close the call")?;
+        Ok(args)
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
         let pos = self.pos();
         let mut e = self.parse_primary()?;
@@ -1271,26 +1298,7 @@ impl Parser {
                         ExprKind::Var(n) => n.clone(),
                         _ => return Err(unsupported(self.pos(), "calling a computed value")),
                     };
-                    self.advance();
-                    let mut args = Vec::new();
-                    if *self.peek() != Tok::RParen {
-                        loop {
-                            if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                                return Err(unsupported(self.pos(), "named arguments"));
-                            }
-                            if *self.peek() == Tok::Dot {
-                                return Err(unsupported(self.pos(), "spread arguments"));
-                            }
-                            args.push(self.parse_expr()?);
-                            if args.len() > MAX_PARAMS {
-                                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
-                            }
-                            if !self.eat(&Tok::Comma) {
-                                break;
-                            }
-                        }
-                    }
-                    self.expect(Tok::RParen, "')' to close the call")?;
+                    let args = self.parse_call_args()?;
                     e = Expr {
                         kind: ExprKind::Call(name, args),
                         pos,
@@ -1380,7 +1388,16 @@ impl Parser {
                     ExprKind::Bool(false)
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
-                "new" | "spawn" | "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "new" => {
+                    self.advance();
+                    let (class_name, _) = self.ident("a class name after 'new'")?;
+                    if *self.peek() == Tok::Lt {
+                        return Err(unsupported(self.pos(), "generic constructors"));
+                    }
+                    let args = self.parse_call_args()?;
+                    ExprKind::NewClass(class_name, args)
+                }
+                "spawn" | "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
