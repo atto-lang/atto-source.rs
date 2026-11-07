@@ -1,6 +1,7 @@
 //! A deliberately bounded Oreslang parser for the shared v1 scalar conformance surface.
 //! No implicit support for actors, async, heap ownership, or polymorphic calls.
 use logos::Logos;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +64,10 @@ enum Kind {
     Const,
     #[token("val")]
     Val,
+    #[token("let")]
+    Let,
+    #[token("mut")]
+    Mut,
     #[token("int")]
     Int,
     #[token("as")]
@@ -274,6 +279,30 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
     }
     Ok(Program { functions })
 }
+/// Source bindings are lowered to immutable SSA-style scalar versions.
+/// The compiler-generated names never appear in the source token stream,
+/// preventing accidental capture by user-written identifiers.
+fn rewrite_scalar_reads(expr: &mut Expr, current: &HashMap<String, (bool, String)>) {
+    match expr {
+        Expr::Name(name) => {
+            if let Some((_, version)) = current.get(name) {
+                *name = version.clone();
+            }
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                rewrite_scalar_reads(arg, current);
+            }
+        }
+        Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
+            rewrite_scalar_reads(a, current);
+            rewrite_scalar_reads(b, current);
+        }
+        Expr::Negate(value) => rewrite_scalar_reads(value, current),
+        Expr::Integer(_) => {}
+    }
+}
+
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
@@ -357,10 +386,95 @@ impl Parser {
             }
         };
         let mut locals = Vec::new();
-        // AttoLang scalar bindings are immutable by default. All admitted
-        // spellings lower to the same checked local-init MIR, never an
-        // implicit mutable slot or an unchecked host fallback.
-        while matches!(self.peek(), Some(Kind::Const | Kind::Val | Kind::Int)) {
+        let mut current: HashMap<String, (bool, String)> = params
+            .iter()
+            .map(|name| (name.clone(), (false, name.clone())))
+            .collect();
+        let mut reserved_names: HashSet<String> = self.tokens
+            .iter()
+            .filter(|token| token.kind == Kind::Identifier)
+            .map(|token| token.text.clone())
+            .collect();
+        let mut next_version = 0_usize;
+        // The accepted subset has sequential scalar declarations/updates,
+        // followed by a single return. Each update becomes a fresh SSA-style
+        // MIR local; immutable default variables and parameters cannot be written.
+        loop {
+            let is_decl = matches!(
+                self.peek(),
+                Some(Kind::Const | Kind::Val | Kind::Int | Kind::Let | Kind::Mut)
+            );
+            let is_update = self.peek() == Some(Kind::Identifier)
+                && matches!(
+                    self.tokens.get(self.cursor + 1).map(|t| t.kind),
+                    Some(Kind::Equals | Kind::Plus | Kind::Minus)
+                );
+            if !is_decl && !is_update {
+                break;
+            }
+            if is_update {
+                let lhs = self.expect(Kind::Identifier)?;
+                let op = self.peek();
+                let (can_write, old_version) = current
+                    .get(&lhs.text)
+                    .cloned()
+                    .unwrap_or((false, lhs.text.clone()));
+                if !current.contains_key(&lhs.text) {
+                    return Err(ParseError {
+                        offset: lhs.start,
+                        class: "unknown_name",
+                        message: format!("assignment to undeclared scalar '{}'", lhs.text),
+                    });
+                }
+                if !can_write {
+                    return Err(ParseError {
+                        offset: lhs.start,
+                        class: "immutable_binding",
+                        message: "immutable scalar binding cannot be reassigned".into(),
+                    });
+                }
+                let compound = match op {
+                    Some(Kind::Plus) => {
+                        self.expect(Kind::Plus)?;
+                        true
+                    }
+                    Some(Kind::Minus) => {
+                        self.expect(Kind::Minus)?;
+                        true
+                    }
+                    _ => false,
+                };
+                self.expect(Kind::Equals)?;
+                let mut value = self.expression()?;
+                rewrite_scalar_reads(&mut value, &current);
+                if compound {
+                    value = match op {
+                        Some(Kind::Plus) => Expr::Add(
+                            Box::new(Expr::Name(old_version)),
+                            Box::new(value),
+                        ),
+                        _ => Expr::Subtract(
+                            Box::new(Expr::Name(old_version)),
+                            Box::new(value),
+                        ),
+                    };
+                }
+                self.expect(Kind::Semicolon)?;
+                let version = loop {
+                    let candidate = format!("__atto_scalar_rebind_{next_version}");
+                    next_version += 1;
+                    if reserved_names.insert(candidate.clone()) {
+                        break candidate;
+                    }
+                };
+                locals.push(Local {
+                    name: version.clone(),
+                    value,
+                });
+                current.insert(lhs.text, (true, version));
+                continue;
+            }
+            let mutable = matches!(self.peek(), Some(Kind::Let | Kind::Mut));
             let local_name = match self.peek() {
                 Some(Kind::Int) => {
                     self.expect(Kind::Int)?;
@@ -383,39 +497,44 @@ impl Parser {
                     }
                     name
                 }
-                _ => unreachable!("local declaration admitted by loop guard"),
+                Some(Kind::Let | Kind::Mut) => {
+                    if self.peek() == Some(Kind::Let) {
+                        self.expect(Kind::Let)?;
+                    } else {
+                        self.expect(Kind::Mut)?;
+                    }
+                    if self.peek() == Some(Kind::Int) {
+                        self.expect(Kind::Int)?;
+                    }
+                    let name = self.expect(Kind::Identifier)?.text;
+                    if self.peek() == Some(Kind::Colon) {
+                        self.expect(Kind::Colon)?;
+                        self.expect(Kind::Int)?;
+                    }
+                    name
+                }
+                _ => unreachable!("declaration guarded by scalar keyword"),
             };
-            self.expect(Kind::Equals)?;
-            let value = self.expression()?;
-            self.expect(Kind::Semicolon)?;
-            locals.push(Local {
-                name: local_name,
-                value,
-            });
-        }
-        // A source-level immutable binding must never silently turn into a
-        // write; the Rust scalar compiler does not yet lower let/mut.
-        if let (Some(name), Some(op)) = (
-            self.tokens.get(self.cursor),
-            self.tokens.get(self.cursor + 1),
-        ) {
-            let is_bound = name.kind == Kind::Identifier
-                && (params.iter().any(|param| param == &name.text)
-                    || locals.iter().any(|local| local.name == name.text));
-            let compound_rhs = self.tokens.get(self.cursor + 2).map(|token| token.kind);
-            let is_assignment = op.kind == Kind::Equals
-                || (matches!(op.kind, Kind::Plus | Kind::Minus)
-                    && compound_rhs == Some(Kind::Equals));
-            if is_bound && is_assignment {
+            if current.contains_key(&local_name) {
                 return Err(ParseError {
-                    offset: name.start,
-                    class: "immutable_binding",
-                    message: "immutable binding cannot be reassigned; let/mut unsupported".into(),
+                    offset: self.pos(),
+                    class: "duplicate_declaration",
+                    message: format!("duplicate scalar binding '{local_name}'"),
                 });
             }
+            self.expect(Kind::Equals)?;
+            let mut value = self.expression()?;
+            rewrite_scalar_reads(&mut value, &current);
+            self.expect(Kind::Semicolon)?;
+            locals.push(Local {
+                name: local_name.clone(),
+                value,
+            });
+            current.insert(local_name.clone(), (mutable, local_name));
         }
         self.expect(Kind::Return)?;
-        let expression = self.expression()?;
+        let mut expression = self.expression()?;
+        rewrite_scalar_reads(&mut expression, &current);
         self.expect(Kind::Semicolon)?;
         if uses_end {
             self.expect(Kind::End)?;
