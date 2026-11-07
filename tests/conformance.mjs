@@ -588,6 +588,8 @@ check('actor/fail-closed-ownership-and-handler',()=>{
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); w.send(new Point()); return 0; }','E_UNSUPPORTED'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { rt take w; return 0; }','E_UNSUPPORTED'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); return w; }','E_TYPE'],
+    ['define actor Worker as receive(msg: int) -> int { stdio.println(msg); return msg; } end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
+    ['define actor Worker as receive(msg: int) -> int { val nested = spawn Worker(); return msg; } end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
   ]){
     const r=compile(src);
     assert.equal(r.ok,false,src);

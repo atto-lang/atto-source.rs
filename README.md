@@ -153,3 +153,46 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+
+## Private browser actor stage-1 proposal (PR #18)
+
+A **restricted stateless actor** may be declared with a single
+`receive(msg: int) -> int { ... }` body (optional `fnc` prefix), then
+spawned as `val actor: Worker = spawn Worker();`. Its result is a nominal
+actor handle, never an integer, pointer or class reference. A standalone
+browser host must supply `atto.actor_spawn(i32)->i32` and implement an
+actor worker for that declared handler. The guest exports
+`atto_actor_receive_<nominal-id>(i64)->i64` for the actor worker to
+invoke with its own guest Wasm instance, per-worker memory and JS
+execution stack. The real-browser test harness uses explicit host
+message injection to deliver canonical signed i64 values, as
+language-level `actor.send(msg) -> Result` is **not admitted yet**.
+
+For example, source compilation is allowed (with the actor-aware host):
+
+```atto
+define actor Worker as
+  receive(msg: int) -> int { return msg + 1; }
+end
+pub fnc main(): int {
+  val worker: Worker = spawn Worker();
+  return 0;
+}
+```
+
+This is **not** a complete actor runtime. The following remain fail-closed:
+actor state, multiple handler arms, constructors, actor-side stdio or
+nested spawning, member calls such as `actor.send(...)`, and
+`rt take`/borrowing/ownership transfers. The browser host rejects
+objects, class pointers, noncanonical or out-of-range messages.
+The stage-1 harness bounds actors per guest run (four) and its ready
+and request handshakes (two seconds each), serializes replies and
+terminates workers. It does **not** implement canonical language
+`Result`/completion, supervisor CONTROL, actor arena lifetime,
+independent guaranteed guest stacks, or cross-tenant enforced security.
+
+The test host's actor import is **not** part of the current published
+playground's grant list. No release of actor-capable compiler bytes or
+public site changes is authorized without the source, playground and
+Pages release gates.

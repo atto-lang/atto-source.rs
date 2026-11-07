@@ -1,5 +1,6 @@
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 self.onmessage=async ({data})=>{
+  const actors=[];
   try{
     const bytes=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
     if(!WebAssembly.validate(bytes))throw new Error('invalid compiler wasm');
@@ -25,7 +26,6 @@ self.onmessage=async ({data})=>{
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
     let stdout='',instance;
-    const actors=[];
     const atto={
       print_i64:v=>{stdout+=String(v)},
       print_bool:v=>{stdout+=v?'true':'false'},
@@ -89,5 +89,5 @@ self.onmessage=async ({data})=>{
       }
     }finally{for(const actor of actors)actor.worker.terminate()}
     self.postMessage({ok:true,value:String(value),stdout});
-  }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
+  }catch(e){for(const actor of actors)actor.worker.terminate();self.postMessage({ok:false,error:'E_HOST: '+e.message})}
 };

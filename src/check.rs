@@ -179,6 +179,7 @@ struct FnCx<'a> {
     enums: &'a BTreeMap<String, (u16, Vec<String>)>,
     classes: &'a BTreeMap<String, ClassLayout>,
     actors: &'a BTreeMap<String, (u16, bool)>,
+    in_actor_handler: bool,
     heap_used: &'a mut bool,
     ret: Type,
     scopes: Vec<Vec<Local>>,
@@ -315,6 +316,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             enums: &enums,
             classes: &classes,
             actors: &actors,
+            in_actor_handler: f.name.starts_with("__atto_actor_receive_"),
             heap_used: &mut heap_used,
             ret: f.ret,
             scopes: vec![Vec::new()],
@@ -797,6 +799,8 @@ impl FnCx<'_> {
             }
             ExprKind::NewClass(name, args) => self.construct_class(name, args, pos)?,
             ExprKind::SpawnActor(name, args) => {
+                if self.in_actor_handler { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "nested actor spawn from receive() is not admitted without a supervisor")); }
                 let (id, runnable) = self.actors.get(name).ok_or_else(|| Diagnostic::new(pos,
                     "E_SPAWN_TYPE", format!("'{name}' is not a declared actor")))?;
                 if !args.is_empty() { return Err(Diagnostic::new(pos, "E_ARITY",
@@ -863,6 +867,8 @@ impl FnCx<'_> {
             }
         }
         if name == "stdio.print" || name == "stdio.println" {
+            if self.in_actor_handler { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "receive() cannot use direct stdio; actor output requires explicit capabilities")); }
             let newline = name == "stdio.println";
             if args.len() != 1 {
                 return Err(Diagnostic::new(
