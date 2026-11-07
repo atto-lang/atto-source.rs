@@ -1,7 +1,9 @@
 // expect-error: E_UNSUPPORTED
 // java: accepts
+// Browser M2.2 only permits literal primitive defaults, not evaluated defaults.
 define class P as
-  int x: 0
+  int x: 0;
+  int y: 1 + 2;
 end
 pub fnc main(): int {
   return 0;

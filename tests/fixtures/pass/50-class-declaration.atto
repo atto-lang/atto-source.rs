@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Java accepts class declarations; runnable M2.2 guest tests cover allocation.
+define class P as
+  int x: 40;
+end
+pub fnc main(): int {
+  return 42;
+}
