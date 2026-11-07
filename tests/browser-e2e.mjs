@@ -77,6 +77,19 @@ try{
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
+
+  const classExample = [
+    'define class Point as',
+    '  int x: 40',
+    '  int y: 33',
+    'end',
+    'pub fnc main(): int {',
+    '  val p = Point();',
+    '  return p.x + p.y;',
+    '}',
+  ].join('\n');
+  assert.match(await run(classExample,'main() -> 73'),/73/);
+  console.log('PASS browser: native Rust-compiled Wasm compiler generates and runs a class allocation guest');
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
   console.log('PASS browser: val reassignment fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 8; }','main() -> 48'),/48/);
