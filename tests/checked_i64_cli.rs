@@ -41,7 +41,13 @@ fn checked_arithmetic_refuses_incomplete_safety_and_effect_exports() {
         "pub fnc main(): int { return 9223372036854775807+1; }",
     )
     .expect("create source");
-    for flag in ["--effects", "--safety-ir", "--static-facts", "--cfg-ir"] {
+    for flag in [
+        "--effects",
+        "--safety-ir",
+        "--static-facts",
+        "--cfg-ir",
+        "--check",
+    ] {
         let result = Command::new(compiler())
             .arg("--checked-i64")
             .arg(flag)

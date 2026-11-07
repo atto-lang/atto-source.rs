@@ -19,8 +19,9 @@ The ordinary compiler remains unchanged (legacy wrapping native arithmetic).
 Checked mode is deliberately **object-only**: the existing effect IR v1,
 scalar-flow v1, safety-IR v1, CFG v2 and static facts v0 exporters do not
 encode conditional trap edges. Combining `--checked-i64` with those export
-modes fails closed; no falsely complete certificate is emitted. This also
-means no claims about fully verified ownership, actor exception semantics,
+modes (including `--check`) fails closed; no falsely complete certificate is
+emitted. Both the library and CLI reuse the v1 bounded traversal check only
+for resource admission, and discard its unqualified facts. This also means no claims about fully verified ownership, actor exception semantics,
 WCET, hard-RT or complete backend parity.
 
 The Linux x86-64 Rust integration test compiles each `.atto` guest through

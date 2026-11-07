@@ -78,7 +78,7 @@ fn main() -> ExitCode {
         };
         // Current analysis exporters model only linear scalar computations.
         // Refuse to issue falsely complete facts for checked overflow traps.
-        if checked_i64 && mode != "object" && mode != "--check" {
+        if checked_i64 && mode != "object" {
             return Err("--checked-i64 cannot be combined with safety/effect/CFG/fact export: conditional overflow traps are not yet modeled".into());
         }
         let source_id = fs::canonicalize(input).map_err(|e| e.to_string())?;
@@ -155,6 +155,9 @@ fn main() -> ExitCode {
                 ),
                 _ => {
                     let bytes = if checked_i64 {
+                        // Structural recursion/resource budget gate, not a
+                        // checked-arithmetic effect or exception certificate.
+                        let _ = effects::export_effect_ir_checked(&checked)?;
                         codegen::emit_object_checked_i64(&checked)?
                     } else {
                         effects::export_effect_ir_checked(&checked)?;
