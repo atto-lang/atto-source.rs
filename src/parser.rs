@@ -14,6 +14,7 @@ pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_DECLS: usize = 256;
 pub const MAX_VARIANTS: usize = 256;
+pub const MAX_CLASS_FIELDS: usize = 256;
 pub const MAX_PARAMS: usize = 32;
 /// Bound on the height of any syntax tree the parser builds. Left-associative
 /// operator chains (`a + b + ...`) and `elif` arms are parsed iteratively but
@@ -208,6 +209,7 @@ pub struct Parser {
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
     enum_names: BTreeMap<String,u16>,
+    class_names: BTreeMap<String,u16>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -225,6 +227,7 @@ impl Parser {
             height: 0,
             cond: 0,
             enum_names: BTreeMap::new(),
+            class_names: BTreeMap::new(),
         }
     }
 
@@ -363,7 +366,11 @@ impl Parser {
                     format!("type '{n}' is not supported by the browser compiler yet"),
                 ))
             }
-            n => match self.enum_names.get(n) { Some(id) => Type::Enum(*id), None => return Err(Diagnostic::new(pos,"E_UNKNOWN_TYPE",format!("unknown type '{n}'"))) },
+            n => match (self.enum_names.get(n),self.class_names.get(n)) {
+                (Some(id),_) => Type::Enum(*id),
+                (_,Some(id)) => Type::Class(*id),
+                _ => return Err(Diagnostic::new(pos,"E_UNKNOWN_TYPE",format!("unknown type '{n}'"))),
+            },
         };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
             return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
@@ -430,6 +437,10 @@ impl Parser {
             return Err(unsupported(self.pos(),"inheritance and interface conformance"));
         }
         let mut variants=Vec::new();
+        let mut fields=Vec::new();
+        if kind==DeclKind::Class {
+            self.class_names.insert(name.clone(),decls.len() as u16);
+        }
         if kind==DeclKind::Enum {
             self.expect_word("as")?;
             if self.is_word("end") {
@@ -467,7 +478,19 @@ impl Parser {
                     (matches!(self.word_at(0),Some("fnc"|"routine")) ||
                      (matches!(self.word_at(0),Some("pub"|"private")) &&
                       matches!(self.word_at(1),Some("fnc"|"routine"))));
-                if static_method || module_fn {
+                let class_field=kind==DeclKind::Class && matches!(self.word_at(0),
+                    Some("final"|"val"|"let"|"const"|"int"|"bool"|"boolean"));
+                if class_field {
+                    if fields.len()>=MAX_CLASS_FIELDS {
+                        return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT","too many class fields"));
+                    }
+                    let field=self.parse_class_field()?;
+                    if fields.iter().any(|f: &ClassField| f.name==field.name) {
+                        return Err(Diagnostic::new(field.pos,"E_DUPLICATE",
+                            format!("duplicate class field '{}.{}'",name,field.name)));
+                    }
+                    fields.push(field);
+                } else if static_method || module_fn {
                     if funcs.len()>=MAX_FUNCS {
                         return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT","too many functions"));
                     }
@@ -493,8 +516,45 @@ impl Parser {
                 }
             }
         }
-        decls.push(Declaration{name,pos:start,kind,variants});
+        decls.push(Declaration{name,pos:start,kind,variants,fields});
         Ok(())
+    }
+
+    /// Stage-1 class slot parser: store layout intent in the AST.
+    /// The checker rejects executable guests with instance fields until
+    /// arena allocation, borrow discipline and constructor lowering exist.
+    fn parse_class_field(&mut self) -> R<ClassField> {
+        let pos=self.pos();
+        let mut final_slot=self.eat_word("final");
+        let mut require_const=false;
+        if self.is_word("const") && self.is_type_word(1) {
+            self.advance();
+            require_const=true;
+            final_slot=true;
+        }
+        let (name,ty)=if self.is_word("let") || self.is_word("val") ||
+            (self.is_word("const") && !self.is_type_word(1)) {
+            let modifier=self.word_at(0).unwrap().to_owned();
+            self.advance();
+            if modifier!="let" {final_slot=true;}
+            if modifier=="const" {require_const=true;}
+            let (name,_)=self.ident("a class field name")?;
+            self.expect(Tok::Colon,"':' after field name")?;
+            (name,self.parse_type()?)
+        } else {
+            let ty=self.parse_type()?;
+            let (name,_)=self.ident("a class field name")?;
+            (name,ty)
+        };
+        if !(self.eat(&Tok::Colon) || self.eat(&Tok::Assign)) {
+            return Err(self.expected("':' or '=' before field initializer"));
+        }
+        let initializer=self.parse_expr()?;
+        self.terminator()?;
+        if ty==Type::Void {
+            return Err(Diagnostic::new(pos,"E_TYPE","class fields cannot have type void"));
+        }
+        Ok(ClassField{name,pos,ty,initializer,final_slot,require_const})
     }
 
     fn parse_func(&mut self) -> R<Func> {
@@ -1297,7 +1357,27 @@ impl Parser {
                     ExprKind::Bool(false)
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
-                "new" | "spawn" | "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "new" => {
+                    self.advance();
+                    let (name, _) = self.ident("a class constructor type")?;
+                    if !self.class_names.contains_key(&name) {
+                        return Err(Diagnostic::new(pos,"E_UNKNOWN_TYPE",
+                            format!("new {name} requires a previously declared class")));
+                    }
+                    self.expect(Tok::LParen,"'(' after constructor type")?;
+                    let mut args=Vec::new();
+                    while *self.peek()!=Tok::RParen {
+                        if args.len()>=MAX_PARAMS {
+                            return Err(Diagnostic::new(self.pos(),"E_SOURCE_LIMIT",
+                                "too many constructor arguments"));
+                        }
+                        args.push(self.parse_expr()?);
+                        if !self.eat(&Tok::Comma) {break;}
+                    }
+                    self.expect(Tok::RParen,"')' after constructor arguments")?;
+                    ExprKind::New(name,args)
+                }
+                "spawn" | "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
