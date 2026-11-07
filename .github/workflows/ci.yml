@@ -45,6 +45,23 @@ jobs:
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
           node tests/browser-e2e.mjs
+      # Checkout the independently staged public host source at its exact
+      # reviewed head. This is read-only and creates no public release.
+      - name: Checkout public playground source for actor-enabled candidate rehearsal
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: atto-lang/atto-lang.github.io
+          ref: 7a8c3f04b84e84c9499e282ba4e20253d467debb
+          path: public-site-checkout
+          persist-credentials: false
+      - name: Rehearse class, enum, and two live actors in actual public IDE with private candidate
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          test "$(git -C public-site-checkout rev-parse HEAD)" = '7a8c3f04b84e84c9499e282ba4e20253d467debb'
+          node tests/public-playground-candidate-e2e.mjs
+          test ! -e public/atto_compiler.wasm
+
       - name: Build immutable compiler artifact receipt
         run: |
           mkdir -p dist
