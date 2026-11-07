@@ -1,4 +1,6 @@
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
+// Actor task completion is provided by the explicit child shutdown protocol.
+import { ActorSession, ACTOR_ADMISSION } from './actor-lifecycle.mjs';
 self.onmessage=async ({data})=>{
   const actors=[];
   try{
@@ -21,11 +23,12 @@ self.onmessage=async ({data})=>{
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
     // atto.browser.guest.v1: output imports and the gated actor_spawn capability.
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','actor_spawn','actor_send']);
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','actor_spawn','actor_send','actor_join']);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
     let stdout='',instance;
+    const awaited_handles=new Set();
     const atto={
       print_i64:v=>{stdout+=String(v)},
       print_bool:v=>{stdout+=v?'true':'false'},
@@ -33,35 +36,23 @@ self.onmessage=async ({data})=>{
       print_newline:()=>{stdout+='\n'},
       actor_spawn:id=>{
         if(!Number.isInteger(id)||id<0||actors.length>=4)throw new Error('E_ACTOR_LIMIT');
-        const worker=new Worker('/actor-worker.mjs',{type:'module'});
-        const actor={worker,id,queued:[],closed:false};
-        // Install the ready listener *before* init: the child may announce
-        // readiness before the parent guest's main() returns.
-        actor.ready=new Promise((resolve,reject)=>{
-          const timer=setTimeout(()=>reject(new Error('E_ACTOR_READY_TIMEOUT')),2000);
-          worker.onmessage=({data:msg})=>{
-            clearTimeout(timer);
-            if(msg?.kind==='ready')resolve();
-            else reject(new Error(msg?.message||'E_ACTOR_PROTOCOL'));
-          };
-          worker.onerror=()=>{clearTimeout(timer);reject(new Error('E_ACTOR_WORKER'))};
-        });
-        // A spawn whose host never sends must not create an unhandled rejection.
-        actor.ready.catch(()=>{});
+        const child=new Worker('/actor-worker.mjs',{type:'module'});
+        const actor=new ActorSession(child,id,out);
         actors.push(actor);
-        worker.postMessage({kind:'init',actorId:id,wasm:out});
         return actors.length;
       },
-      // Synchronous mailbox admission. 0=Ok, 1=Closed, 2=Full, 3=BadHandle.
-      // Execution is deliberately deferred; admitted does NOT mean completed.
       actor_send:(handle,value)=>{
-        if(!Number.isInteger(handle)||handle<1||handle>actors.length)return 3;
-        const actor=actors[handle-1];
-        if(actor.closed)return 1;
-        if(typeof value!=='bigint'||BigInt.asIntN(64,value)!==value)return 3;
-        if(actor.queued.length>=32)return 2;
-        actor.queued.push(value);
-        return 0;
+        if(!Number.isInteger(handle)||handle<1||handle>actors.length)return ACTOR_ADMISSION.INVALID;
+        return actors[handle-1].admit(value);
+      },
+      // Guest call only records the terminal join. main() is synchronous and
+      // must not execute source instructions after this instruction. The host
+      // asynchronously drains the actor and resolves only on its child 'done'.
+      actor_join:handle=>{
+        if(!Number.isInteger(handle)||handle<1||handle>actors.length)
+          throw new Error('E_ACTOR_HANDLE');
+        if(awaited_handles.has(handle))throw new Error('E_ACTOR_DUP_JOIN');
+        awaited_handles.add(handle);
       },
     };
     instance=new WebAssembly.Instance(guest,{atto});
@@ -70,33 +61,13 @@ self.onmessage=async ({data})=>{
     catch(e){
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':'trap: '+e.message;
-      for(const actor of actors)actor.worker.terminate();
+      for(const actor of actors)actor.cancel();
       self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
     }
     try{
-      const deliver=async(actor,big,handle)=>{
-        await actor.ready;
-        const result=await new Promise((resolve,reject)=>{
-          const timer=setTimeout(()=>reject(new Error('E_ACTOR_TIMEOUT')),2000);
-          actor.worker.onmessage=({data:msg})=>{
-            clearTimeout(timer);
-            if(msg?.kind==='reply'&&typeof msg.value==='bigint')resolve(msg.value);
-            else reject(new Error(msg?.message||'E_ACTOR_PROTOCOL'));
-          };
-          actor.worker.onerror=()=>{clearTimeout(timer);reject(new Error('E_ACTOR_WORKER'))};
-          actor.worker.postMessage({kind:'message',value:big});
-        });
-        stdout+='actor['+handle+'] receive('+String(big)+') -> '+String(result)+'\n';
-      };
-      // Draining is a separate host execution phase, after the synchronous
-      // guest has returned an admission Result. Preserve each actor's FIFO.
-      for(let i=0;i<actors.length;i++){
-        const actor=actors[i];
-        for(const message of actor.queued)await deliver(actor,message,i+1);
-        actor.queued=[];
-      }
       if(data.actorMessages!==undefined){
-        if(!Array.isArray(data.actorMessages)||data.actorMessages.length>4)throw new Error('E_ACTOR_LIMIT');
+        if(!Array.isArray(data.actorMessages)||data.actorMessages.length>4)
+          throw new Error('E_ACTOR_LIMIT');
         for(const req of data.actorMessages){
           if(!req||!Number.isInteger(req.handle)||typeof req.value!=='string'||! /^-?(0|[1-9][0-9]*)$/.test(req.value)){
             throw new Error('E_MESSAGE_TYPE: only canonical signed i64 payloads are admitted');
@@ -105,10 +76,29 @@ self.onmessage=async ({data})=>{
           if(BigInt.asIntN(64,big)!==big)throw new Error('E_MESSAGE_RANGE');
           const actor=actors[req.handle-1];
           if(!actor)throw new Error('E_ACTOR_HANDLE');
-          await deliver(actor,big,req.handle);
+          if(actor.admit(big)!==ACTOR_ADMISSION.OK)throw new Error('E_ACTOR_MAILBOX_FULL');
         }
       }
-    }finally{for(const actor of actors)actor.worker.terminate()}
+      // The structured scope always drains and explicitly closes each child.
+      // This is a real asynchronous task: worker messages and shutdown must be
+      // acknowledged before a successful browser result is posted.
+      for(let i=0;i<actors.length;i++){
+        const actor=actors[i];
+        const outcome=await actor.drain_and_close((message,reply)=>{
+          stdout+='actor['+(i+1)+'] receive('+String(message)+') -> '+String(reply)+'\n';
+        });
+        if(outcome.kind!=='completed'||outcome.processed===undefined)
+          throw new Error('E_ACTOR_DONE_PROTOCOL');
+      }
+      for(const handle of awaited_handles){
+        const outcome=await actors[handle-1].get_done();
+        if(outcome.kind!=='completed')throw new Error('E_ACTOR_DONE_PROTOCOL');
+      }
+    }finally{
+      // Cancel only unfinished actors. A success cannot be manufactured by
+      // worker.terminate() or by merely draining an admission queue.
+      for(const actor of actors)if(!actor.is_terminal())actor.cancel();
+    }
     self.postMessage({ok:true,value:String(value),stdout});
-  }catch(e){for(const actor of actors)actor.worker.terminate();self.postMessage({ok:false,error:'E_HOST: '+e.message})}
+  }catch(e){for(const actor of actors)if(!actor.is_terminal())actor.cancel();self.postMessage({ok:false,error:'E_HOST: '+e.message})}
 };

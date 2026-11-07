@@ -804,6 +804,12 @@ impl Parser {
                 "E_SYNTAX",
                 "a local binding starts with 'val', 'const' or 'let' (for example 'val x: int = 1;')",
             )),
+            Some("await") => {
+                self.advance();
+                let expr = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::AwaitDone(expr, pos))
+            }
             Some("return") => {
                 self.advance();
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)

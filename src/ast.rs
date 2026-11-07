@@ -133,6 +133,9 @@ pub enum Stmt {
         pos: Pos,
     },
     Expr(Expr),
+    /// Terminal-only structured actor join: main(void) ends its guest phase,
+    /// then the browser host suspends asynchronously for an explicit child done.
+    AwaitDone(Expr, Pos),
     Return(Option<Expr>, Pos),
     If {
         arms: Vec<(Expr, Vec<Stmt>)>,

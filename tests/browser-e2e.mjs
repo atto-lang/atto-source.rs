@@ -10,6 +10,7 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-lifecycle.mjs',[new URL('./browser/actor-lifecycle.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-worker.mjs',[new URL('./browser/actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
@@ -184,6 +185,33 @@ try{
   assert.match(await run(sourceSend.replace('worker.send(41)','worker.get_done()'), 'E_UNSUPPORTED'),
     /E_UNSUPPORTED/);
   console.log('PASS browser: get_done fails closed until asynchronous task completion semantics exist');
+
+  // True async source scope join: main() has no continuation after await,
+  // and the parent Worker cannot report success before the child acknowledges
+  // all accepted messages and explicit terminal shutdown.
+  const sourceAwait=[
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): void {',
+    '  val actor = spawn Worker();',
+    '  val accepted = actor.send(41);',
+    '  await actor.get_done();',
+    '}',
+  ].join('\n');
+  assert.equal(await run(sourceAwait,'main() -> 0'),
+    'actor[1] receive(41) -> 42\nmain() -> 0');
+  console.log('PASS browser: terminal source await joins acknowledged actor shutdown asynchronously');
+  assert.ok(requests.some(x=>x.path==='/actor-lifecycle.mjs'),
+    'real lifecycle module fetched by browser Worker');
+  const panicAwait=sourceAwait.replace('msg + 1','msg + 9223372036854775807');
+  const panicResult=await run(panicAwait,'E_ACTOR_PANIC_1');
+  assert.match(panicResult,/^E_HOST: E_ACTOR_PANIC_1$/);
+  assert.ok(!panicResult.includes('main() -> 0'),
+    'panicked actor must not produce successful completed task');
+  console.log('PASS browser: actor panic rejects terminal join, never invents completion');
+  const illegalAwait=sourceAwait.replace('  await actor.get_done();',
+    '  await actor.get_done(); stdio.println(99);');
+  assert.match(await run(illegalAwait,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  console.log('PASS browser: suspension with arbitrary continuation fails closed');
 
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));

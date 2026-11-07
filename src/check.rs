@@ -75,10 +75,11 @@ pub enum Import {
     PrintNewline,
     ActorSpawn,
     ActorSend,
+    ActorJoin,
 }
 
 impl Import {
-    pub const ALL: [Import; 6] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend];
+    pub const ALL: [Import; 7] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend, Import::ActorJoin];
     pub fn name(self) -> &'static str {
         match self {
             Import::PrintI64 => "print_i64",
@@ -87,6 +88,7 @@ impl Import {
             Import::PrintNewline => "print_newline",
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
+            Import::ActorJoin => "actor_join",
         }
     }
 }
@@ -137,6 +139,9 @@ pub struct TE {
 pub enum TStmt {
     Set(u32, TE),
     Expr(TE),
+    /// Source 'await actor.get_done()' is admitted only as the last statement
+    /// of a void main(). Host joins after guest main returns, never blocking Wasm.
+    AwaitActor(TE),
     Return(Option<TE>),
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
     /// `while`, `loop` and C-style `for`: `cond` absent means unconditional;
@@ -345,7 +350,17 @@ pub fn check(p: &Program) -> R<TProgram> {
             });
         }
         cx.scopes.push(Vec::new());
-        let body = cx.stmts(&f.body)?;
+        let body = if let Some(Stmt::AwaitDone(awaited, pos)) = f.body.last() {
+            if f.name != "main" || f.ret != Type::Void {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "await actor.get_done() is supported only as the final statement of void main()"));
+            }
+            let mut lowered = cx.stmts(&f.body[..f.body.len() - 1])?;
+            lowered.push(cx.lower_terminal_actor_join(awaited, *pos)?);
+            lowered
+        } else {
+            cx.stmts(&f.body)?
+        };
         if f.ret != Type::Void && !returns(&body) {
             return Err(Diagnostic::new(
                 f.pos,
@@ -399,6 +414,7 @@ fn actor_func_requires_host(index: usize, funcs: &[TFunc], visiting: &mut [bool]
 
 fn actor_stmt_requires_host(stmt: &TStmt, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
     match stmt {
+        TStmt::AwaitActor(_) => true,
         TStmt::Set(_, expr) | TStmt::Expr(expr) | TStmt::Return(Some(expr)) =>
             actor_expr_requires_host(expr, funcs, visiting),
         TStmt::If(arms, other) =>
@@ -555,6 +571,9 @@ impl FnCx<'_> {
                 TStmt::Set(slot, v)
             }
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::AwaitDone(_, pos) => return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                "await actor.get_done() is only admitted as the final direct statement of void main()")),
+
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {
@@ -656,6 +675,28 @@ impl FnCx<'_> {
             }
             Stmt::Block(b) => TStmt::Block(self.scoped(b)?),
         })
+    }
+
+    /// Narrow terminal await: this does not pretend to resume arbitrary Wasm
+    /// stacks. No source instructions can follow this join, and the browser
+    /// host awaits the child 'done' protocol asynchronously after main exits.
+    fn lower_terminal_actor_join(&mut self, expr: &Expr, pos: Pos) -> R<TStmt> {
+        match &expr.kind {
+            ExprKind::MethodCall(receiver, method, args) if method == "get_done" => {
+                if !args.is_empty() {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        "get_done() takes no arguments"));
+                }
+                let actor = self.value(receiver)?;
+                if !matches!(actor.ty, Type::Actor(_)) {
+                    return Err(type_err(pos, "get_done() requires a typed actor handle"));
+                }
+                self.imports.push(Import::ActorJoin);
+                Ok(TStmt::AwaitActor(actor))
+            }
+            _ => Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "only terminal 'await actor.get_done()' is admitted; arbitrary suspension requires async frames")),
+        }
     }
 
     /// An expression used as a value (not void).
