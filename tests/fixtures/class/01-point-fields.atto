@@ -6,6 +6,6 @@ define class Point as
 end
 fnc sum(Point p): int { return p.x + p.y; }
 pub fnc main(): int {
-  val p: Point = Point();
+  val p: Point = new Point();
   if p.active then return sum(p); else return 0; fi
 }
