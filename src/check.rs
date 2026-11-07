@@ -19,6 +19,47 @@ use crate::diag::{Diagnostic, Pos};
 pub const MAX_LOCALS: usize = 1024;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
 
+/// Fixed-width, immutable scalar class field default. A single class instance
+/// occupies at most 512 guest-heap bytes with 8-byte aligned fields.
+#[derive(Clone, Copy, Debug)]
+pub enum FieldValue {
+    Int(i64),
+    Bool(bool),
+}
+
+#[derive(Clone, Debug)]
+struct ClassFieldInfo {
+    name: String,
+    ty: Type,
+    offset: u32,
+    value: FieldValue,
+}
+
+#[derive(Clone, Debug)]
+struct ClassLayout {
+    id: u16,
+    size: u32,
+    fields: Vec<ClassFieldInfo>,
+}
+
+fn class_default(e: &Expr) -> R<FieldValue> {
+    match &e.kind {
+        ExprKind::Int(Some(v)) => Ok(FieldValue::Int(*v as i64)),
+        ExprKind::Int(None) => Err(Diagnostic::new(e.pos, "E_INTEGER_RANGE",
+            "field initializer is outside signed i64 range")),
+        ExprKind::Bool(v) => Ok(FieldValue::Bool(*v)),
+        ExprKind::Unary(UnOp::Neg, inner) => match &inner.kind {
+            ExprKind::Int(None) => Ok(FieldValue::Int(i64::MIN)),
+            ExprKind::Int(Some(v)) => Ok(FieldValue::Int(-(*v as i64))),
+            _ => Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+                "class fields currently require scalar literal defaults")),
+        },
+        _ => Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+            "class fields currently require scalar literal defaults")),
+    }
+}
+
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
     And,
@@ -52,6 +93,10 @@ pub enum TExpr {
     Bool(bool),
     /// Compact, checked variant index of a distinct nominal enum type.
     EnumTag(u32),
+    /// Allocate an independently owned guest instance with immutable defaults.
+    NewClass { size: u32, fields: Vec<(u32, FieldValue)> },
+    /// Load a scalar class field at a checked, compiler-derived byte offset.
+    Field(Box<TE>, u32),
     Local(u32),
     Neg(Box<TE>),
     Not(Box<TE>),
@@ -113,6 +158,7 @@ pub struct TProgram {
     pub main: u32,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
+    pub heap_used: bool,
 }
 
 struct Local {
@@ -126,6 +172,8 @@ struct FnCx<'a> {
     sigs: &'a BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
     names: &'a BTreeMap<String, Vec<usize>>,
     enums: &'a BTreeMap<String, (u16, Vec<String>)>,
+    classes: &'a BTreeMap<String, ClassLayout>,
+    heap_used: &'a mut bool,
     ret: Type,
     scopes: Vec<Vec<Local>>,
     locals: Vec<Type>,
@@ -151,6 +199,29 @@ pub fn check(p: &Program) -> R<TProgram> {
             enums.insert(declaration.name.clone(), (enum_id, declaration.variants.clone()));
             enum_id += 1;
         }
+    }
+    let mut classes: BTreeMap<String, ClassLayout> = BTreeMap::new();
+    let mut class_id = 0u16;
+    for declaration in &p.declarations {
+        if declaration.kind != DeclarationKind::Class { continue; }
+        let mut fields = Vec::new();
+        for (i, field) in declaration.fields.iter().enumerate() {
+            let value = class_default(&field.default)?;
+            let valid_type = matches!((field.ty, value),
+                (Type::Int, FieldValue::Int(_)) | (Type::Bool, FieldValue::Bool(_)));
+            if !valid_type {
+                return Err(type_err(field.pos,
+                    format!("class field '{}' requires a literal of type {}",
+                        field.name, field.ty.name())));
+            }
+            fields.push(ClassFieldInfo {
+                name: field.name.clone(), ty: field.ty,
+                offset: (i as u32) * 8, value,
+            });
+        }
+        let size = (fields.len().max(1) as u32) * 8;
+        classes.insert(declaration.name.clone(), ClassLayout { id: class_id, size, fields });
+        class_id += 1;
     }
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -209,11 +280,14 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut imports = Vec::new();
     let mut data = Vec::new();
     let mut funcs = Vec::new();
+    let mut heap_used = false;
     for f in &p.funcs {
         let mut cx = FnCx {
             sigs: &sigs,
             names: &names,
             enums: &enums,
+            classes: &classes,
+            heap_used: &mut heap_used,
             ret: f.ret,
             scopes: vec![Vec::new()],
             locals: Vec::new(),
@@ -223,7 +297,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             data: &mut data,
         };
         for (i, prm) in f.params.iter().enumerate() {
-            if cx.enums.contains_key(&prm.name) {
+            if cx.enums.contains_key(&prm.name) || cx.classes.contains_key(&prm.name) {
                 return Err(Diagnostic::new(prm.pos, "E_DUPLICATE",
                     format!("parameter '{}' shadows a nominal enum type", prm.name)));
             }
@@ -258,6 +332,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
+        heap_used,
     })
 }
 
@@ -290,9 +365,9 @@ impl FnCx<'_> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
-        if self.enums.contains_key(name) {
+        if self.enums.contains_key(name) || self.classes.contains_key(name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE",
-                format!("binding '{name}' shadows a nominal enum type")));
+                format!("binding '{name}' shadows a nominal type")));
         }
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
@@ -508,6 +583,22 @@ impl FnCx<'_> {
                 e: TExpr::Bool(*b),
                 ty: Type::Bool,
             },
+            ExprKind::Field(object, field_name) => {
+                let object = self.value(object)?;
+                let id = match object.ty {
+                    Type::Class(id) => id,
+                    _ => return Err(type_err(pos, "field access requires a class reference")),
+                };
+                let layout = self.classes.values().find(|c| c.id == id)
+                    .expect("a checked class reference has a nominal layout");
+                let field = layout.fields.iter().find(|f| &f.name == field_name)
+                    .ok_or_else(|| Diagnostic::new(pos, "E_UNKNOWN_FIELD",
+                        format!("class has no field '{field_name}'")))?;
+                TE {
+                    e: TExpr::Field(Box::new(object), field.offset),
+                    ty: field.ty,
+                }
+            }
             ExprKind::EnumVariant { enum_name, variant } => {
                 if self.lookup(enum_name).is_some() {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
@@ -541,8 +632,8 @@ impl FnCx<'_> {
                         "functions as values are not supported by the browser compiler yet",
                     ))
                 }
-                None if self.enums.contains_key(name) => {
-                    return Err(type_err(pos, format!("'{name}' is an enum type, not a value")));
+                None if self.enums.contains_key(name) || self.classes.contains_key(name) => {
+                    return Err(type_err(pos, format!("'{name}' is a nominal type, not a value")));
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
@@ -624,6 +715,10 @@ impl FnCx<'_> {
                         Type::Bool
                     }
                     BinOp::Eq | BinOp::Ne => {
+                        if matches!(a.ty, Type::Class(_)) || matches!(b.ty, Type::Class(_)) {
+                            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                                "class identity equality is not admitted by the browser compiler"));
+                        }
                         if a.ty != b.ty {
                             return Err(type_err(
                                 pos,
@@ -674,6 +769,20 @@ impl FnCx<'_> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if let Some(info) = self.classes.get(name) {
+            if !args.is_empty() {
+                return Err(Diagnostic::new(pos, "E_ARITY",
+                    format!("class '{name}' currently has only a zero-argument default constructor")));
+            }
+            *self.heap_used = true;
+            return Ok(TE {
+                e: TExpr::NewClass {
+                    size: info.size,
+                    fields: info.fields.iter().map(|f| (f.offset, f.value)).collect(),
+                },
+                ty: Type::Class(info.id),
+            });
+        }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
             "Or" => Some(Builtin::Or),
