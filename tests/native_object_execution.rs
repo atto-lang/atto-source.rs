@@ -217,3 +217,20 @@ fn native_guest_executes_canonical_define_fnc_entry() {
         run_guest(source, 42);
     }
 }
+
+#[test]
+fn native_guest_executes_explicit_mutable_scalar_rebindings() {
+    for (body, expected) in [
+        ("let int x = 7; x = x * 6; return x;", 42),
+        ("mut int x = 7; x += 35; return x;", 42),
+        ("let x: int = 43; x -= 1; return x;", 42),
+        ("let x = 2; x = x * 2; x = x * 10; x += 2; return x;", 42),
+        ("let x = 7; let y = x; x = 35; return x + y;", 42),
+        ("let x = 7; const y = x; x += 35; return y + x - 7;", 42),
+        ("let x = 1; const __atto_scalar_rebind_0 = 3; x = 39; return x + __atto_scalar_rebind_0;", 42),
+        ("mut x = 45; x -= 3; return x;", 42),
+    ] {
+        let source = format!("pub fnc main(): int {{ {body} }}");
+        run_guest(&source, expected);
+    }
+}
