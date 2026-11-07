@@ -6,6 +6,9 @@ use serde_json::{json, Value};
 
 fn emit_expr(expr: &Expr, events: &mut Vec<Value>) -> Result<(), String> {
     match expr {
+        Expr::Bool(_) | Expr::Equals(_, _) | Expr::Conditional { .. } => {
+            return Err("scalar-flow linear envelope cannot model conditional branches".into());
+        }
         Expr::Integer(_) => events.push(json!({"kind":"compute","units":1})),
         Expr::Name(name) => {
             events.push(json!({"kind":"read","place":name}));

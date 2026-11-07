@@ -111,6 +111,17 @@ fn main() -> ExitCode {
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
         let _freestanding = freestanding;
         let checked = profile::apply(checked, profile)?;
+        // Parser/type checking can admit ternaries, but legacy analysis modes
+        // have no branch-sensitive CFG or effect semantics. Do not certify them.
+        if mir::uses_typed_conditionals(&checked)
+            && mode != "object"
+            && mode != "--check"
+        {
+            return Err(
+                "typed conditional branch effects are not modeled; refusing analyzer export"
+                    .into(),
+            );
+        }
         if mode == "--compile-with-effects" {
             let object = codegen::emit_object(&checked)?;
             let facts = effects::export_effect_ir_checked(&checked)?;
@@ -154,13 +165,15 @@ fn main() -> ExitCode {
                         .map_err(|e| e.to_string())?
                 ),
                 _ => {
+                    // Structural recursion/resource budget gate, not a
+                    // branch-sensitive effect or exception certificate.
+                    effects::check_tree_budget(&checked)?;
                     let bytes = if checked_i64 {
-                        // Structural recursion/resource budget gate, not a
-                        // checked-arithmetic effect or exception certificate.
-                        let _ = effects::export_effect_ir_checked(&checked)?;
                         codegen::emit_object_checked_i64(&checked)?
                     } else {
-                        effects::export_effect_ir_checked(&checked)?;
+                        if !mir::uses_typed_conditionals(&checked) {
+                            effects::export_effect_ir_checked(&checked)?;
+                        }
                         codegen::emit_object(&checked)?
                     };
                     fs::write(output.ok_or("missing output path")?, bytes)

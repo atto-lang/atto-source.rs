@@ -20,6 +20,9 @@ fn valid_identifier(s: &str) -> bool {
 /// Independently validate public caller-supplied MIR before emitting a complete
 /// effect manifest. Merely being stored in a Module does NOT prove provenance.
 fn validate(module: &Module) -> Result<(), String> {
+    if crate::mir::uses_typed_conditionals(module) {
+        return Err("CFG-v2 linear exporter cannot model typed conditional edges".into());
+    }
     use std::collections::{HashMap, HashSet};
     if module.functions.is_empty() || module.functions.len() > MAX_FUNCTIONS {
         return Err("empty or oversized MIR module".into());
@@ -73,6 +76,9 @@ fn validate_expr(
         }
         match expr {
             Expr::Integer(_) => {}
+            Expr::Bool(_) | Expr::Equals(_, _) | Expr::Conditional { .. } => {
+                return Err("typed conditional requires CFG branch lowering".into());
+            }
             Expr::Name(name) => {
                 if !scope.contains(name.as_str()) {
                     return Err(format!("undeclared MIR scalar '{name}'"));
@@ -100,6 +106,9 @@ fn append(expr: &Expr, events: &mut Vec<Value>) {
     let mut stack = vec![(expr, false)];
     while let Some((node, emit)) = stack.pop() {
         match node {
+            Expr::Bool(_) | Expr::Equals(_, _) | Expr::Conditional { .. } => {
+                unreachable!("CFG-v2 admission must reject typed conditional nodes")
+            }
             Expr::Integer(_) => events.push(json!({"kind": "compute", "units": 1})),
             Expr::Name(name) => events.push(json!({"kind": "read", "place": name})),
             Expr::Negate(a) => {

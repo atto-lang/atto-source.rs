@@ -5,6 +5,9 @@ use serde_json::{json, Value};
 
 fn emit_expr(expr: &Expr, events: &mut Vec<Value>) {
     match expr {
+        Expr::Bool(_) | Expr::Equals(_, _) | Expr::Conditional { .. } => {
+            unreachable!("legacy safety IR cannot encode typed conditional branches")
+        }
         Expr::Integer(_) => events.push(json!({"kind":"compute","units":1})),
         Expr::Name(name) => events.push(json!({"kind":"read","place":name})),
         Expr::Negate(value) => {
@@ -29,6 +32,14 @@ fn emit_expr(expr: &Expr, events: &mut Vec<Value>) {
 /// Source-language semantic checking must succeed before invoking this exporter.
 /// A limit is a policy input, not a compiler-inferred WCET value.
 pub fn export_safety_ir(module: &Module, max_uninterrupted_units: Option<u64>) -> Value {
+    if crate::mir::uses_typed_conditionals(module) {
+        return json!({
+            "schema_version": 1,
+            "effects_complete": false,
+            "functions": [],
+            "unsupported": "typed conditional CFG edges are not modeled"
+        });
+    }
     let functions: Vec<_> = module
         .functions
         .iter()

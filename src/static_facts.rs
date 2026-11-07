@@ -112,6 +112,9 @@ pub fn export(module: &Module, source: &str) -> Result<Value, String> {
             }
             match expr {
                 Expr::Integer(_) | Expr::Name(_) => {}
+                Expr::Bool(_) | Expr::Equals(_, _) | Expr::Conditional { .. } => {
+                    return Err("static-facts v0 has no typed conditional control flow".into());
+                }
                 Expr::Negate(e) => stack.push((e, depth + 1)),
                 Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
                     stack.push((a, depth + 1));
