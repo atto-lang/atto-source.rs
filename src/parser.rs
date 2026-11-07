@@ -447,7 +447,15 @@ impl Parser {
             }
             if kind == DeclKind::Enum {
                 let symbol = self.eat(&Tok::Hash);
-                let (member, member_pos) = self.ident("an enum variant")?;
+                // #symbol may use a normal keyword name, such as #done;
+                // a bare enum case must still be an ordinary identifier.
+                let (member, member_pos) = if symbol {
+                    let member_pos = self.pos();
+                    match self.peek().clone() {
+                        Tok::Ident(name) => { self.advance(); (name, member_pos) }
+                        _ => return Err(self.expected("a #symbol name")),
+                    }
+                } else { self.ident("an enum variant")? };
                 if variants.iter().any(|v: &EnumVariant| v.name == member) {
                     return Err(Diagnostic::new(member_pos, "E_DUPLICATE", format!("duplicate enum variant '{member}'")));
                 }
