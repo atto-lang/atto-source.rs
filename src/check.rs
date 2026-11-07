@@ -441,6 +441,10 @@ impl FnCx<'_> {
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
                 let v = self.value(init)?;
+                if *kind==BindKind::Const && matches!(v.ty,Type::Class(_)) {
+                    return Err(Diagnostic::new(init.pos,"E_UNSUPPORTED",
+                        "const class instance bindings require compile-time object construction"));
+                }
                 if matches!(v.ty,Type::Class(_)) && !matches!(init.kind,ExprKind::New(..)) {
                     return Err(Diagnostic::new(init.pos,"E_UNSUPPORTED",
                         "class references cannot be aliased; rt borrow/take/share are not lowered"));
@@ -741,6 +745,10 @@ impl FnCx<'_> {
                         Type::Bool
                     }
                     BinOp::Eq | BinOp::Ne => {
+                        if matches!(a.ty,Type::Class(_)) || matches!(b.ty,Type::Class(_)) {
+                            return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                                "class object identity/equality awaits ownership and comparison semantics"));
+                        }
                         if a.ty != b.ty {
                             return Err(type_err(
                                 pos,
@@ -852,6 +860,15 @@ impl FnCx<'_> {
                 }
                 return Ok(TE{e:TExpr::Call(idx,actual),ty:ret});
             }
+        }
+        // A direct Type.method(object) call cannot bypass the hidden 'self'
+        // ownership boundary or replay a constructor. Only obj.method()
+        // may dispatch to an instance function.
+        if self.sigs.get(&(name.to_owned(),args.len()))
+            .is_some_and(|(_,params,_)|
+                matches!(params.first(),Some(Type::Class(_)))) {
+            return Err(Diagnostic::new(pos,"E_UNSUPPORTED",
+                "instance methods require an owner-bound receiver, not a static call"));
         }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
