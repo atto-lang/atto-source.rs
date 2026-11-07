@@ -57,3 +57,9 @@ entry-point convention and release tree-shaker root.
 tests, not Java/LLVM execution receipts. Until this PR's exact-head CI runs
 and the actual linker tests pass, record them as **NOT_EXECUTED**. Actor
 ownership, isolation, capability and runtime parity remain **NOT_CERTIFIED**.
+
+## Immutable scalar source parity and compiler fixtures
+
+`tests/immutable_binding_parity.rs` from Rust PR #27 covers canonical immutable spellings, duplicate/forward/unknown names, malformed literals, lexer adversarial cases, and paired effect-IR equivalence. `tests/fixtures/immutable-bindings.atto` compiles to a real native executable in CI (expected exit 42). This integration retains Rust PR #28's additional `define fnc` parser support and type-safe negative diagnostics.
+
+**Gate:** This branch combines Rust PRs #27–#31. Their separate source-only evidence does not certify this combined tree. All Cargo format/test/Clippy, native full-i64, ELF visibility and exact-source steps must run on this exact integration head. Failed runs with `steps=null` are runner-admission failures, not failed tests. Java/LLVM guest parity requires independent exact-head receipts.

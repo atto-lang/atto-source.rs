@@ -379,7 +379,12 @@ impl Parser {
                 }
                 Some(Kind::Val) => {
                     self.expect(Kind::Val)?;
-                    self.expect(Kind::Identifier)?.text
+                    let name = self.expect(Kind::Identifier)?.text;
+                    if self.peek() == Some(Kind::Colon) {
+                        self.expect(Kind::Colon)?;
+                        self.expect(Kind::Int)?;
+                    }
+                    name
                 }
                 Some(Kind::Const) => {
                     self.expect(Kind::Const)?;

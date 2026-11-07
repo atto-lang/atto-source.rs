@@ -45,6 +45,17 @@ jobs:
             set -e
             test "$actual" -eq "$expected" || { echo "$name: wanted $expected, got $actual"; exit 1; }
           done
+      - name: Canonical .atto immutable-binding native execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- tests/fixtures/immutable-bindings.atto target/immutable-bindings.o
+          cc target/immutable-bindings.o -o target/immutable-bindings
+          set +e
+          target/immutable-bindings
+          actual=$?
+          set -e
+          test "$actual" -eq 42 || { echo "immutable-bindings: wanted 42, got $actual"; exit 1; }
       - name: Canonical semantic error classification
         shell: bash
         run: |

@@ -19,3 +19,9 @@ Required independent exact-head gates:
 5. Obtain independent PR review and enforce required main protection before merging. A workflow with zero executed steps is missing evidence, not a passing test.
 
 No claim of checked-overflow, actors, per-actor heaps/stacks, ownership, async/select or hard-RT parity. Overflow/division are out of scope of the shared portable-i64 contract.
+
+## Follow-up reconciliation: PR #32's missing immutable binding surface
+
+Identified the parallel draft [#32](https://github.com/ores-truffle-oreslang/oreslang-source.rs/pull/32) at exact head `8a8e118e69e8c5958c4ad5ec6b084d2564c2dc29`. Its additional `val name: int` parser branch is now included without losing the #29 line-comment scanner, #28 immutable diagnostics, or #25 physical exact-source gate. Reused its existing `tests/immutable_binding_parity.rs`, `tests/fixtures/immutable-bindings.atto`, and `docs/RS_IMMUTABLE_BINDING_PARITY.md` Git blob IDs unchanged. Also included its native `.atto` CI compile+link+execute step and conformance documentation.
+
+This incremental merge is **source review evidence only**; tests remain NOT_EXECUTED and no private source export or CI runner authorization is implied. PR #32 should not be independently merged ahead of the reconciled branch.
