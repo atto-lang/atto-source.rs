@@ -100,6 +100,56 @@ function check(label, fn) {
 }
 const digests = [];
 
+// This is a browser compiler/guest check, not Java reference parity:
+// nominal definitions are admitted only while unreachable, with no guest
+// actor scheduler, heap objects, or enum representation.
+check('define/inert-declarations-guest-exec', () => {
+  const source = [
+    'define class Point as end',
+    'define actor Worker as end',
+    'define struct Pair as end',
+    'define enum Status as',
+    '  Pending',
+    '  Ready',
+    '  Failed',
+    'end',
+    'define pub module tools as end',
+    'pub fnc main(): int { return 42; }',
+  ].join('\n');
+  const compiled = compile(source);
+  assert.ok(compiled.ok, compiled.message);
+  const guest = runGuest(compiled.wasm);
+  assert.deepEqual([guest.ok, guest.value, guest.stdout], [true, 42n, '']);
+  const plain = compile('pub fnc main(): int { return 42; }');
+  assert.ok(plain.ok);
+  assert.deepEqual(compiled.wasm, plain.wasm,
+    'unreferenced declaration metadata must not change the executable Wasm');
+});
+
+check('define/rejection-and-no-artifact', () => {
+  const main = 'pub fnc main(): int { return 0; }';
+  for (const [prefix, code] of [
+    ['define class P as\n int x: 0\nend\n', 'E_UNSUPPORTED'],
+    ['define actor A as\n receive(int msg) -> void :: return; end\nend\n', 'E_UNSUPPORTED'],
+    ['define enum E as X X end\n', 'E_SYNTAX'],
+    ['define enum E as\n X\n X\nend\n', 'E_DUPLICATE'],
+    ['define module Mod as\n fnc f(): int { return 2; }\nend\n', 'E_UNSUPPORTED'],
+    ['define enum E as X end\ndefine class E as end\n', 'E_DUPLICATE'],
+    ['define macro M as end\n', 'E_UNSUPPORTED'],
+    ['define class C<T> as end\n', 'E_UNSUPPORTED'],
+    ['define actor A as end\n', 'E_ENTRY'], // executable still needs main
+  ]) {
+    const result = compile(prefix + (code === 'E_ENTRY' ? '' : main));
+    assert.equal(result.ok, false, prefix);
+    assert.equal(result.code, code, result.message);
+    assert.ok(result.line > 0 && result.col > 0, result.message);
+    assert.equal('wasm' in result, false, prefix);
+  }
+  const spawn = compile('define actor A as end\npub fnc main(): int { val a = spawn A(); return 0; }');
+  assert.equal(spawn.code, 'E_UNSUPPORTED');
+  assert.equal('wasm' in spawn, false);
+});
+
 for (const f of await fixtures('pass')) {
   check(`pass/${f.name}`, () => {
     const r = compile(f.source);
