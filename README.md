@@ -33,17 +33,22 @@ The following are rejected, with the code shown:
 - Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
 - Nonempty classes and actors, runtime enum values, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give `E_UNSUPPORTED`.
 
-### Top-level `define` (declaration-only phase)
+### Top-level `define` (incremental class execution)
 
-The browser subset accepts **inert, unreferenced** `define class Point as end`,
+The browser subset accepts `define class Point as end`,
 `define actor Worker as end`, and `define enum Color as Red, Green end`,
 plus brace bodies and `pub define` / `define pub` visibility. It verifies
-type-name and variant uniqueness. Their declarations are erased only because
-they have no executable members and no guest-visible type values.
+type-name and variant uniqueness. Inert actor/enum declarations are erased
+only because they have no executable members and no guest-visible values.
 
-This is **not** class/actor/enum runtime support. Class fields/constructors/
-methods, actor state/mailboxes/spawn, enum values/payloads/discriminants,
-inheritance, and nominal typing are rejected (not silently ignored).
+A class can now contain **scalar static functions** such as
+`define class Math as static fnc add(int a, int b): int { return a + b; } end`.
+Calls to `Math.add(20, 22)` are checked and compiled as real internal Wasm
+functions. There is no receiver, inheritance, allocation, or dynamic dispatch.
+
+This is **not** class instance/actor/enum runtime support. Class fields,
+constructors and instance methods, actor state/mailboxes/spawn, enum values,
+payloads/discriminants, inheritance and nominal typing are rejected.
 The browser still requires a zero-argument scalar `main` and cannot run a
 general class/actor program. The enum variant spelling is provisional pending
 a canonical shared-grammar decision and is not a cross-backend parity claim.
