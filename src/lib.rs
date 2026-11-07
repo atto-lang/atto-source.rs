@@ -72,6 +72,13 @@ pub fn compile_actor(source: &str) -> Result<Vec<u8>, Diagnostic> {
         return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ACTOR_ENTRY",
             "actor module cannot define main"));
     }
+    // The handler plus internal synthetic main also occupy function slots.
+    // Enforce the same 1024-function budget as ordinary compilation BEFORE
+    // inserting either. Otherwise 1024 user helpers become 1026 functions.
+    if program.funcs.len().saturating_add(2) > parser::MAX_FUNCS {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            "actor module exceeds 1024 total functions including receive"));
+    }
     let handler = program.declarations[0].actor_receive.take().expect("checked handler");
     let handler_name = handler.name.clone();
     let pos = Pos { line: 1, col: 1 };
