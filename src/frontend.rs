@@ -112,6 +112,17 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
     let mut depth = 0_u32;
     let mut open = 0_usize;
     while i < src.len() {
+        // A // comment is opaque to the block-comment scanner. Preserve its
+        // bytes and original offsets for Logos, which skips it separately.
+        // Otherwise a stray /* inside a line comment could swallow source
+        // or manufacture an unterminated_comment diagnostic.
+        if depth == 0 && i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'/' {
+            i += 2;
+            while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
+                i += 1;
+            }
+            continue;
+        }
         if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
             if depth == 0 {
                 open = i;
@@ -533,5 +544,29 @@ mod tests {
     #[test]
     fn ignores_double_slash_comment() {
         assert!(parse("// first\npub fnc main(): int { return 40+2; }").is_ok());
+    }
+
+    #[test]
+    fn line_comment_block_opener_does_not_swallow_source() {
+        let source = "// /* ignored until newline\npub fnc main(): int { return 42; }";
+        let parsed = parse(source).expect("block opener inside // must be inert");
+        assert_eq!(parsed.functions.len(), 1);
+        assert_eq!(parsed.functions[0].expression, Expr::Integer(42));
+    }
+
+    #[test]
+    fn line_comment_does_not_hide_real_unterminated_block() {
+        let source = "// /* inert\n/* real unterminated block";
+        let error = parse(source).expect_err("real unclosed block must still fail");
+        assert_eq!(error.class, "unterminated_comment");
+        assert_eq!(error.offset, source.find("\n/*").unwrap() + 1);
+    }
+
+    #[test]
+    fn block_comment_does_not_turn_nested_line_markers_into_line_comments() {
+        let source = "/* // /* nested */ outer */ pub fnc main(): int { return 42; }";
+        let parsed = parse(source).expect("nested blocks remain valid");
+        assert_eq!(parsed.functions.len(), 1);
+        assert_eq!(parsed.functions[0].expression, Expr::Integer(42));
     }
 }
