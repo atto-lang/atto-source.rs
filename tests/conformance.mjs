@@ -220,7 +220,7 @@ for (const [name, declaration, code] of [
   ['nested', 'pub fnc main(): int { define class X as end\nreturn 42; }', 'E_UNSUPPORTED'],
 ]) {
   check(`define/${name}-rejects-no-artifact`, () => {
-    const src = declaration.includes('fnc main()') ? declaration : declaration + '\npub fnc main(): int { return 42; }';
+    const src = declaration === 'define actor Worker as' || declaration.includes('fnc main()') ? declaration : declaration + '\n' + 'pub fnc main(): int { return 42; }';
     const r = compile(src);
     assert.equal(r.ok, false, name);
     assert.equal(r.code, code, r.message);
