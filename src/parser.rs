@@ -517,7 +517,8 @@ impl Parser {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
                         format!("more than {MAX_CLASS_FIELDS} class fields")));
                 }
-                if self.is_word("fnc") || self.is_word("routine")
+                if self.is_word("fnc") || self.is_word("routine") || self.is_word("pub")
+                    || self.is_word("define") || self.is_word("constructor")
                     || self.is_word("let") || self.is_word("mut") || self.is_word("final")
                     || *self.peek_at(1) == Tok::LParen
                 {
