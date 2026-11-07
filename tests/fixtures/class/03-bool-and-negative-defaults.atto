@@ -1,0 +1,10 @@
+// expect-exit: 39
+define class State as
+  bool ready: true
+  int base: -3
+  int delta: 42
+end
+pub fnc main(): int {
+  val state = State();
+  if state.ready then return state.base + state.delta; else return 0; fi
+}
