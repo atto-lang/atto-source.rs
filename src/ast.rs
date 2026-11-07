@@ -209,6 +209,9 @@ pub enum ExprKind {
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Class allocation requires an explicit `new ClassName(args)`.
+    /// Ordinary function calls must never silently construct objects.
+    NewClass(String, Vec<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
     Call(String, Vec<Expr>),
 }
