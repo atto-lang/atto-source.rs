@@ -30,6 +30,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     }
     let toks = lexer::lex(source)?;
     let program = parser::Parser::new(toks).parse_program()?;
+    // Receiving actor methods cannot silently disappear from a normal main()
+    // Wasm program. They require the distinct import-free actor guest ABI.
+    if program.declarations.iter().any(|d| d.actor_receive.is_some()) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_UNSUPPORTED",
+            "actor receive declarations require compile_actor"));
+    }
     let typed = check::check(&program)?;
     let bytes = wasm::emit(&typed);
     if bytes.len() > wasm::MAX_OUTPUT {
@@ -38,6 +44,54 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             "E_OUTPUT_LIMIT",
             "generated module exceeds 1 MiB",
         ));
+    }
+    Ok(bytes)
+}
+
+/// Compile one import-free scalar actor receive(i64)->i64 on top of the
+/// consolidated nominal class/enum compiler. Class allocation, object state,
+/// stdio and other host capabilities are forbidden by this versioned ABI.
+pub fn compile_actor(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    use ast::{DeclarationKind, Expr, ExprKind, Func, Stmt, Type};
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            "actor source exceeds 64 KiB"));
+    }
+    let tokens = lexer::lex(source)?;
+    let mut program = parser::Parser::new(tokens).parse_program()?;
+    // V0 intentionally contains one and only one actor declaration.
+    // The class/enum feature set in the parent compiler must not leak into
+    // an actor guest with no linear memory or host imports.
+    if program.declarations.len() != 1 ||
+       program.declarations[0].kind != DeclarationKind::Actor ||
+       program.declarations[0].actor_receive.is_none() {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ACTOR_ENTRY",
+            "exactly one stateless scalar actor receive handler is required"));
+    }
+    if program.funcs.iter().any(|f| f.name == "main") {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_ACTOR_ENTRY",
+            "actor module cannot define main"));
+    }
+    let handler = program.declarations[0].actor_receive.take().expect("checked handler");
+    let handler_name = handler.name.clone();
+    let pos = Pos { line: 1, col: 1 };
+    program.funcs.push(handler);
+    // Reuse the established checked scalar IR pipeline. The synthetic main
+    // is internal only and is never an exported actor guest function.
+    program.funcs.push(Func {
+        name: "main".into(), pos, params: Vec::new(), ret: Type::Int,
+        body: vec![Stmt::Return(Some(Expr { kind: ExprKind::Int(Some(0)), pos }), pos)],
+    });
+    let typed = check::check(&program)?;
+    if !typed.imports.is_empty() || !typed.data.is_empty() || typed.heap_used {
+        return Err(Diagnostic::new(pos, "E_ACTOR_IMPORT",
+            "scalar actor guests cannot import host APIs or allocate linear memory"));
+    }
+    let index = typed.funcs.iter().position(|f| f.name == handler_name)
+        .expect("checked actor handler retained");
+    let bytes = wasm::emit_actor(&typed, index as u32);
+    if bytes.len() > wasm::MAX_OUTPUT {
+        return Err(Diagnostic::new(pos, "E_OUTPUT_LIMIT", "actor module exceeds 1 MiB"));
     }
     Ok(bytes)
 }
@@ -99,6 +153,13 @@ mod abi {
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_with(length, false)
+    }
+    #[no_mangle]
+    pub extern "C" fn compile_actor(length: i32) -> i32 {
+        compile_with(length, true)
+    }
+    fn compile_with(length: i32, actor: bool) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -137,7 +198,7 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            match if actor { super::compile_actor(source) } else { super::compile(source) } {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0
