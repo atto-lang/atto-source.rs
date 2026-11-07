@@ -150,6 +150,68 @@ check('define/rejection-and-no-artifact', () => {
   assert.equal('wasm' in spawn, false);
 });
 
+// Same source and compiler image runs on the native Rust host and wasm32.
+// These tests execute the generated guest module, not just check parser AST.
+check('enum/forward-type-guest-execution', () => {
+  const src = [
+    'fnc is_ready(Status value): bool { return value eq Status.Ready; }',
+    'pub fnc main(): int {',
+    '  val status: Status = Status.Ready;',
+    '  if is_ready(status) then',
+    '    return 42;',
+    '  else',
+    '    return 0;',
+    '  fi',
+    '}',
+    'define enum Status as',
+    '  Pending',
+    '  Ready',
+    '  Failed',
+    'end',
+  ].join('\n');
+  const compiled = compile(src);
+  assert.ok(compiled.ok, compiled.message);
+  const result = runGuest(compiled.wasm);
+  assert.deepEqual([result.ok, result.value, result.stdout], [true, 42n, '']);
+  assert.deepEqual(compiled.wasm, compile(src).wasm, 'byte-identical deterministic compilation');
+});
+
+check('enum/function-and-reassignment', () => {
+  const src = [
+    'define enum Flag as Off On end',
+    'fnc flip(Flag f): Flag {',
+    '  return f eq Flag.Off ? Flag.On : Flag.Off;',
+    '}',
+    'pub fnc main(): int {',
+    '  let f: Flag = Flag.Off;',
+    '  f = flip(f);',
+    '  if f eq Flag.On then return 48; else return 0; fi',
+    '}',
+  ].join('\n');
+  const compiled = compile(src);
+  assert.ok(compiled.ok, compiled.message);
+  assert.equal(runGuest(compiled.wasm).value, 48n);
+});
+
+check('enum/nominality-and-fail-closed', () => {
+  const defs = 'define enum Flag as Off On end\ndefine enum Mode as Off On end\n';
+  for (const [body, code] of [
+    ['return Flag.Unknown;', 'E_UNKNOWN_VARIANT'],
+    ['if Flag.On eq Mode.On then return 1; fi return 0;', 'E_TYPE'],
+    ['if Flag.On eq 1 then return 1; fi return 0;', 'E_TYPE'],
+    ['val n: int = Flag.Off; return n;', 'E_TYPE'],
+    ['return Flag.On + 1;', 'E_TYPE'],
+    ['val Flag = 1; return Flag;', 'E_DUPLICATE'],
+    ['stdio.println(Flag.On); return 0;', 'E_UNSUPPORTED'],
+    ['return Flag;', 'E_TYPE'],
+  ]) {
+    const r = compile(defs + 'pub fnc main(): int { ' + body + ' }');
+    assert.equal(r.ok, false, body);
+    assert.equal(r.code, code, r.message);
+    assert.equal('wasm' in r, false, 'failed compile must not return a guest module');
+  }
+});
+
 for (const f of await fixtures('pass')) {
   check(`pass/${f.name}`, () => {
     const r = compile(f.source);
