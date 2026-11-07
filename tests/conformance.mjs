@@ -585,7 +585,7 @@ check('actor/fail-closed-ownership-and-handler',()=>{
     ['define actor Worker as end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
     ['define class Point as int x: 2 end\npub fnc main(): int { val w = spawn Point(); return 0; }','E_SPAWN_TYPE'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(1); return 0; }','E_ARITY'],
-    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); w.send(new Point()); return 0; }','E_UNSUPPORTED'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\ndefine class Point as int x: 1 end\npub fnc main(): int { val w = spawn Worker(); w.send(new Point()); return 0; }','E_TYPE'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { rt take w; return 0; }','E_UNSUPPORTED'],
     ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); return w; }','E_TYPE'],
     ['define actor Worker as receive(msg: int) -> int { stdio.println(msg); return msg; } end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
