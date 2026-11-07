@@ -374,6 +374,16 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    emit_inner(p, None)
+}
+
+/// Same typed scalar code generation but a different, zero-import actor guest
+/// export surface. The ordinary main guest ABI remains byte-identical.
+pub fn emit_actor(p: &TProgram, receive: u32) -> Vec<u8> {
+    emit_inner(p, Some(receive))
+}
+
+fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
     let layout = Layout {
         imports: p.imports.clone(),
     };
@@ -457,17 +467,24 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     section(&mut out, 6, vec![1, I32, 0x01, 0x41, 0, 0x0B]);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, if has_memory { 3 } else { 2 });
-    name(&mut exp, "main");
-    exp.push(0x00);
-    uleb(&mut exp, layout.func(p.main) as u64);
-    name(&mut exp, "panic_code");
-    exp.push(0x03);
-    uleb(&mut exp, 0);
-    if has_memory {
-        name(&mut exp, "memory");
-        exp.push(0x02);
+    if let Some(receive) = actor_receive {
+        uleb(&mut exp, 1);
+        name(&mut exp, "receive");
+        exp.push(0x00);
+        uleb(&mut exp, layout.func(receive) as u64);
+    } else {
+        uleb(&mut exp, if has_memory { 3 } else { 2 });
+        name(&mut exp, "main");
+        exp.push(0x00);
+        uleb(&mut exp, layout.func(p.main) as u64);
+        name(&mut exp, "panic_code");
+        exp.push(0x03);
         uleb(&mut exp, 0);
+        if has_memory {
+            name(&mut exp, "memory");
+            exp.push(0x02);
+            uleb(&mut exp, 0);
+        }
     }
     section(&mut out, 7, exp);
 
