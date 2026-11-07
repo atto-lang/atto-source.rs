@@ -1,6 +1,7 @@
 name: Portable Atto frontend and browser Wasm conformance
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -38,6 +39,10 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
 
+      - name: Real Chromium browser and worker E2E
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          node tests/browser-e2e.mjs
       - name: Build immutable compiler artifact receipt
         run: |
           mkdir -p dist
@@ -71,7 +76,7 @@ jobs:
       - name: Publish verified compiler plus provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: atto-compiler-wasm32-${{ github.sha }}
+          name: atto-compiler-wasm32-${{ github.event.pull_request.head.sha || github.sha }}
           path: dist/
           if-no-files-found: error
           retention-days: 14
