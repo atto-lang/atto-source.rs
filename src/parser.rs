@@ -384,10 +384,14 @@ impl Parser {
             if self.is_word("define")
                 || (self.is_word("pub") && self.word_at(1) == Some("define"))
             {
-                let (name, pos) = self.parse_type_decl()?;
+                let (name, pos, methods) = self.parse_type_decl()?;
                 if !type_names.insert(name.clone()) || funcs.iter().any(|f: &Func| f.name == name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate top-level name '{name}'")));
                 }
+                if funcs.len() + type_names.len() + methods.len() > MAX_FUNCS {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many class methods"));
+                }
+                funcs.extend(methods);
             } else {
                 let func = self.parse_func()?;
                 if type_names.contains(&func.name) {
@@ -399,10 +403,10 @@ impl Parser {
         Ok(Program { funcs })
     }
 
-    /// The browser can validate unreferenced top-level type declarations,
-    /// but does not have class allocation, actor isolation or nominal enum
-    /// values. Only inert declarations are admitted. Never erase members.
-    fn parse_type_decl(&mut self) -> R<(String, Pos)> {
+    /// Classes admit executable scalar static methods, lowered into ordinary
+    /// typed Wasm functions with namespace-qualified names. No class instance,
+    /// actor runtime or nominal enum value is created by this limited stage.
+    fn parse_type_decl(&mut self) -> R<(String, Pos, Vec<Func>)> {
         self.eat_word("pub");
         self.expect_word("define")?;
         self.eat_word("pub");
@@ -430,7 +434,27 @@ impl Parser {
             return Err(self.expected("'as' or '{'"));
         };
         let closing = if braces { Tok::RBrace } else { Tok::Ident("end".into()) };
-        if kind == "enum" {
+        let mut methods = Vec::new();
+        if kind == "class" {
+            while *self.peek() != closing {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected(if braces { "'}'" } else { "'end'" }));
+                }
+                // A class static method has no receiver and lowers through
+                // the existing checked scalar function ABI. All other class
+                // members are rejected rather than erased.
+                self.eat_word("pub");
+                if !self.eat_word("static") {
+                    return Err(unsupported(self.pos(), "class instance fields, constructors and methods"));
+                }
+                let mut method = self.parse_func()?;
+                method.name = format!("{name}.{}", method.name);
+                methods.push(method);
+                if methods.len() >= MAX_FUNCS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many class methods"));
+                }
+            }
+        } else if kind == "enum" {
             let mut variants = BTreeSet::new();
             while *self.peek() != closing {
                 if *self.peek() == Tok::Eof {
@@ -467,7 +491,7 @@ impl Parser {
         }
         self.expect(closing, if braces { "'}'" } else { "'end'" })?;
         self.eat(&Tok::Semi);
-        Ok((name, pos))
+        Ok((name, pos, methods))
     }
 
     fn parse_func(&mut self) -> R<Func> {
@@ -1228,6 +1252,19 @@ impl Parser {
                                     pos,
                                 };
                                 continue;
+                            }
+                        }
+                    }
+                    if let ExprKind::Var(base) = &e.kind {
+                        if !base.contains('.') {
+                            if let Some(method) = self.word_at(1) {
+                                if !is_reserved(method) && *self.peek_at(2) == Tok::LParen {
+                                    let qualified = format!("{base}.{method}");
+                                    self.advance();
+                                    self.advance();
+                                    e = Expr { kind: ExprKind::Var(qualified), pos };
+                                    continue;
+                                }
                             }
                         }
                     }
