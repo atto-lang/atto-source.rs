@@ -36,6 +36,8 @@ jobs:
           sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
       - name: Execute top-level define compiler Wasm and guest negative controls
         run: node tests/top-level-define-wasm.mjs
+      - name: Execute real M2 guest classes, constructors and bounded-memory controls
+        run: node tests/m2-object-wasm.mjs
 
       - name: Conformance - wasm32 compiler, guest execution, native-vs-wasm byte parity
         env:
