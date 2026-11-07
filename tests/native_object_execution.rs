@@ -207,3 +207,13 @@ fn native_guest_executes_atto_immutable_default_binding_forms() {
 fn native_guest_executes_byte_identical_atto_shared_scalar_fixture() {
     run_guest(include_str!("../contracts/atto-parity-v1/add.atto"), 42);
 }
+
+#[test]
+fn native_guest_executes_canonical_define_fnc_entry() {
+    for source in [
+        "define pub fnc main(): int { return 42; }",
+        "pub define fnc main(): int { return 42; }",
+    ] {
+        run_guest(source, 42);
+    }
+}
