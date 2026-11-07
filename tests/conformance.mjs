@@ -163,6 +163,54 @@ for (const f of await fixtures('panic')) {
   });
 }
 
+// The binary name subsection must enumerate exactly the actual function indices.
+// A stale checked_rem label previously shifted main's debug name after that
+// helper was removed, even though all guest execution tests remained green.
+check('wasm/name-section-matches-emitted-function-count', () => {
+  for (const source of [
+    'pub fnc main(): int { return 42; }',
+    'pub fnc main(): int { stdio.println(42); return 42; }',
+  ]) {
+    const built = compile(source);
+    assert.ok(built.ok, built.message);
+    const mod = new WebAssembly.Module(built.wasm);
+    const sections = WebAssembly.Module.customSections(mod, 'name');
+    assert.equal(sections.length, 1, 'exactly one function name section');
+    const bytes = new Uint8Array(sections[0]);
+    let pos = 0;
+    const leb = () => {
+      let result = 0, shift = 0;
+      for (let i = 0; i < 5; i++) {
+        assert.ok(pos < bytes.length, 'LEB128 fits inside name section');
+        const b = bytes[pos++];
+        result += (b & 127) * 2 ** shift;
+        if (!(b & 128)) return result;
+        shift += 7;
+      }
+      throw new Error('invalid name section LEB128');
+    };
+    assert.equal(bytes[pos++], 1, 'function names subsection');
+    const sectionLength = leb(), end = pos + sectionLength;
+    assert.ok(end <= bytes.length, 'subsection stays in bounds');
+    const count = leb(), names = [];
+    for (let i = 0; i < count; i++) {
+      const index = leb(), length = leb();
+      assert.ok(pos + length <= end, 'name stays in subsection');
+      names.push([index, decoder.decode(bytes.subarray(pos, pos + length))]);
+      pos += length;
+    }
+    assert.equal(pos, end, 'name subsection decoded exactly');
+    assert.equal(end, bytes.length, 'no unexpected second subsection');
+    assert.deepEqual(names.map(([index]) => index), Array.from({length: count}, (_, i) => i));
+    assert.equal(count, WebAssembly.Module.imports(mod).length + 4 + 1,
+      'imports + four checked helpers + main');
+    assert.deepEqual(names.slice(-5).map(([, name]) => name),
+      ['atto.checked_add','atto.checked_sub','atto.checked_mul','atto.checked_neg','main']);
+    assert.ok(!names.some(([, name]) => name === 'atto.checked_rem'),
+      'removed remainder helper must not appear in guest debug names');
+  }
+});
+
 // ---- generated programs: source-dependent artifacts --------------------------
 check('generated/200-programs', () => {
   let seed = 12345;

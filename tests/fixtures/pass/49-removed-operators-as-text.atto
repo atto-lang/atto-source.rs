@@ -1,0 +1,7 @@
+// The text %, ^ and ^^ is legal inside comments and strings.
+// expect-exit: 9
+// expect-stdout: % ^ ^^
+pub fnc main(): int {
+  stdio.println("% ^ ^^");
+  return 9;
+}
