@@ -123,10 +123,6 @@ mod native_i64 {
     fn shared_java_llvm_proxy_receipt_runs_in_rust_native_guest() {
         // Exact file content matches Java/LLVM canonical fixture blob
         // 13925491ac224bc5108097e73927968120eb182d.
-        execute_native(
-            include_str!("fixtures/proxy-packed-receipt.ores"),
-            None,
-            42,
-        );
+        execute_native(include_str!("fixtures/proxy-packed-receipt.ores"), None, 42);
     }
 }
