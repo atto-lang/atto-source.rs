@@ -460,6 +460,9 @@ impl Parser {
                 }
             }
         } else if !self.is_word("end") {
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected("'end'"));
+            }
             return Err(unsupported(
                 self.pos(),
                 &format!("members of '{}' declarations", kind.as_str()),
