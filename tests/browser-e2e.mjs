@@ -90,6 +90,10 @@ try{
   ].join('\n');
   assert.match(await run(classExample,'main() -> 73'),/73/);
   console.log('PASS browser: native Rust-compiled Wasm compiler generates and runs a class allocation guest');
+  assert.match(await run(classExample.replace('new Point()', 'Point()'),'E_NEW_REQUIRED'), /E_NEW_REQUIRED/);
+  console.log('PASS browser: bare class calls are diagnosed without guest execution');
+  assert.match(await run(classExample,'main() -> 73'),/73/);
+  console.log('PASS browser: explicit new recovers after rejected bare class invocation');
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
   console.log('PASS browser: val reassignment fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 8; }','main() -> 48'),/48/);
