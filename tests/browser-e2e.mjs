@@ -108,8 +108,8 @@ try{
     '    return 0;',
     '  fi',
     '}',
-  ].join('\\n');
-  assert.match(await run(userPointExample, 'main() -> 42'), /^main\\(\\) -> 42$/);
+  ].join('\n');
+  assert.match(await run(userPointExample, 'main() -> 42'), /^main\(\) -> 42$/);
   console.log('PASS browser: exact user Point/new constructor, bool field and two int fields return 42');
   assert.match(await run(userPointExample.replace('new Point()', 'Point()'), 'E_NEW_REQUIRED'), /E_NEW_REQUIRED/);
   console.log('PASS browser: exact user Point without new rejects and worker enforces zero Wasm artifact');
@@ -121,10 +121,10 @@ try{
     '  val s: Status = Status.Ready;',
     '  if s eq Status.Ready then return 42; else return 0; fi',
     '}',
-  ].join('\\n');
-  assert.match(await run(enumExample, 'main() -> 42'), /^main\\(\\) -> 42$/);
+  ].join('\n');
+  assert.match(await run(enumExample, 'main() -> 42'), /^main\(\) -> 42$/);
   console.log('PASS browser: nominal enum variant compiles and executes to 42');
-  assert.match(await run(userPointExample, 'main() -> 42'), /^main\\(\\) -> 42$/);
+  assert.match(await run(userPointExample, 'main() -> 42'), /^main\(\) -> 42$/);
   console.log('PASS browser: real compiler recovers after two rejected class programs');
   assert.match(await run(classExample.replace('new Point()', 'Point()'),'E_NEW_REQUIRED'), /E_NEW_REQUIRED/);
   console.log('PASS browser: bare class calls are diagnosed without guest execution');
