@@ -18,7 +18,7 @@ function compile(source) {
     const raw=new Uint8Array(api.memory.buffer);
     let start=api.error_ptr(),end=start;
     while(end<raw.length && raw[end] && end-start<255)end++;
-    return {ok:false,error:decode.decode(raw.subarray(start,end))};
+    return {ok:false,error:decode.decode(raw.subarray(start,end)),line:api.error_line_number(),column:api.error_column_number()};
   }
   const bytes=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
   assert.ok(WebAssembly.validate(bytes));
@@ -50,6 +50,31 @@ for(const [source,error] of [
 ]){
   const result=compile(source);assert.ok(!result.ok);assert.ok(result.error.includes(error),result.error);
 }
+// Mirror the existing working playground M0 negative admission contract.
+for(const [source,expected] of [
+  ['fnc main() -> int { int x=5; x=6; return x; }','E_IMMUTABLE'],
+  ['fnc main() -> int { return foo; }','E_UNBOUND'],
+  ['fnc main() -> int { return 2 + ; }','E_EXPRESSION'],
+  ['fnc main() -> int { return 42 }','E_SEMICOLON'],
+  ['fnc main() -> int { return 42;','E_ENTRY'],
+  ['fnc main() -> int { int x=1; int x=2; return x; }','E_DUPLICATE'],
+  ['fnc main() -> int { return 42; } malicious','E_TRAILING'],
+  ['fnc main() -> int { return 2147483648; }','E_INTEGER_RANGE'],
+  ['fnc main() -> int { return 2 ** 8; }','E_EXPRESSION'],
+  ['fnc main() -> int { return 4 % 3; }','E_TOKEN'],
+  ['fnc main() -> int { print(42); return 0; }','E_UNBOUND'],
+  ['fnc main() -> int { return 0; }\\u0000'.replace('\\u0000','\\0'),'E_NUL'],
+  ['fnc main() -> int { return 1; } fnc other() -> int { return 2; }','E_TRAILING'],
+  ['fnc main() -> int { let x=1; return x; x=2; }','E_RETURN'],
+  ['fnc main() -> int { }','E_RETURN'],
+]){
+  const result=compile(source);assert.equal(result.ok,false,source);
+  assert.ok(result.error.includes(expected),source+' -> '+result.error);
+}
+const pos=compile('fnc main() -> int {\\n  int x=1;\\n  x=2;\\n  return x;\\n}');
+assert.equal(pos.ok,false);
+assert.equal(pos.line,3);
+assert.equal(pos.column,3);
 const trap=compile('fnc main() -> int { return 42/(3-3); }');
 assert.ok(trap.ok);
 assert.throws(()=>new WebAssembly.Instance(new WebAssembly.Module(trap.bytes),{}).exports.main(),WebAssembly.RuntimeError);
