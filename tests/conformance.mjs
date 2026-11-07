@@ -191,6 +191,43 @@ for (const op of ['%', '^', '^^']) {
   });
 }
 
+// ---- top-level declaration-only browser subset --------------------------------
+for (const [name, declaration] of [
+  ['class', 'define class Point as end'],
+  ['actor', 'define actor Worker as end'],
+  ['public-actor', 'define pub actor Worker as end'],
+  ['brace', 'pub define class Point {}'],
+  ['enum', 'define enum Status as Ready, Running, Done end'],
+  ['multiline-enum', 'define enum Status as\nReady\nRunning\nend'],
+  ['combined', 'define class Point as end\ndefine actor Worker as end\ndefine enum S as Ready, Done end'],
+]) {
+  check(`define/${name}-executes-scalar-guest`, () => {
+    const r = compile(declaration + '\npub fnc main(): int { return 42; }');
+    assert.equal(r.ok, true, r.message);
+    assert.equal(runGuest(r.wasm).value, 42n);
+  });
+}
+for (const [name, declaration, code] of [
+  ['field', 'define class Point as\nint x: 0\nend', 'E_UNSUPPORTED'],
+  ['actor-method', 'define actor Worker as\nreceive(m) {}\nend', 'E_UNSUPPORTED'],
+  ['type-duplicate', 'define class X as end\ndefine actor X as end', 'E_DUPLICATE'],
+  ['func-collision', 'define class main as end', 'E_DUPLICATE'],
+  ['variant-duplicate', 'define enum S as Ready, Ready end', 'E_DUPLICATE'],
+  ['payload', 'define enum S as Ready = 1 end', 'E_UNSUPPORTED'],
+  ['unclosed', 'define actor Worker as', 'E_EOF'],
+  ['unknown-define', 'define module M as end', 'E_UNSUPPORTED'],
+  ['runtime-enum', 'define enum S as Ready end\npub fnc main(): int { return S.Ready; }', 'E_UNSUPPORTED'],
+  ['nested', 'pub fnc main(): int { define class X as end\nreturn 42; }', 'E_UNSUPPORTED'],
+]) {
+  check(`define/${name}-rejects-no-artifact`, () => {
+    const src = declaration.includes('fnc main()') ? declaration : declaration + '\npub fnc main(): int { return 42; }';
+    const r = compile(src);
+    assert.equal(r.ok, false, name);
+    assert.equal(r.code, code, r.message);
+    assert.equal('wasm' in r, false);
+  });
+}
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);
