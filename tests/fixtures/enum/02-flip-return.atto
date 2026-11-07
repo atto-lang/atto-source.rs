@@ -1,0 +1,13 @@
+// expect-exit: 48
+define enum Flag as
+  Off
+  On
+end
+fnc flip(Flag flag): Flag {
+  return flag eq Flag.Off ? Flag.On : Flag.Off;
+}
+pub fnc main(): int {
+  let current: Flag = Flag.Off;
+  current = flip(current);
+  if current neq Flag.Off then return 48; else return 0; fi
+}
