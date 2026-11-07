@@ -52,8 +52,7 @@ pub enum TExpr {
     Bool(bool),
     Local(u32),
     /// Bounded linear-memory object, with a class tag and constant defaults.
-    New { size: u32, tag: i64, defaults: Vec<i64>,
-          constructor: Option<(u32, Vec<TE>)> },
+    New(Box<NewObject>),
     /// Instance receiver's primitive field at a statically checked offset.
     FieldGet { base: Box<TE>, offset: u32 },
     Neg(Box<TE>),
@@ -76,6 +75,16 @@ pub enum TExpr {
     },
 }
 
+/// Heap-backed to keep recursive typed expressions compact. Each embedded
+/// Vec is only materialized for actual object constructors, not scalars.
+#[derive(Clone, Debug)]
+pub struct NewObject {
+    pub size: u32,
+    pub tag: i64,
+    pub defaults: Vec<i64>,
+    pub constructor: Option<(u32, Vec<TE>)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct TE {
     pub e: TExpr,
@@ -85,7 +94,7 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
-    FieldSet { base: TE, offset: u32, value: TE },
+    FieldSet { base: Box<TE>, offset: u32, value: Box<TE> },
     Expr(TE),
     Return(Option<TE>),
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
@@ -462,7 +471,7 @@ impl FnCx<'_> {
                         return Err(type_err(value.pos,format!(
                             "field '{name}' expects {} but got {}",field.ty.name(),rhs.ty.name())));
                     }
-                    return Ok(TStmt::FieldSet{base,offset:field.offset,value:rhs});
+                    return Ok(TStmt::FieldSet{base:Box::new(base),offset:field.offset,value:Box::new(rhs)});
                 }
                 let (slot, ty, mutable) = match self.lookup(name) {
                     Some(l) => (l.slot, l.ty, l.mutable),
@@ -805,7 +814,7 @@ impl FnCx<'_> {
                         format!("new {name} has no matching constructor of arity {}",args.len())));
                 }
                 *self.has_objects=true;
-                TE {e:TExpr::New{size,tag:id as i64+1,defaults,constructor},ty:Type::Class(id)}
+                TE {e:TExpr::New(Box::new(NewObject{size,tag:id as i64+1,defaults,constructor})),ty:Type::Class(id)}
             }
         })
     }

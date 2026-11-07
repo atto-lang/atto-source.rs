@@ -242,7 +242,9 @@ impl Emit<'_> {
                 uleb(&mut self.code,*offset as u64);
                 if v.ty==Type::Bool {self.op(0xA7);} // i32.wrap_i64
             }
-            TExpr::New{size,tag,defaults,constructor} => {
+            TExpr::New(obj) => {
+                let (size,tag,defaults,constructor)=
+                    (&obj.size,&obj.tag,&obj.defaults,&obj.constructor);
                 let tmp=self.object_tmp.expect("object allocation reserves temporary local");
                 // Fixed 64 KiB per-guest arena, never grows or imports memory.
                 // A 0 handle is invalid; each object also carries its class tag.
