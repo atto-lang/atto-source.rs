@@ -25,14 +25,26 @@ jobs:
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git diff --quiet --exit-code
+          # Reject staged index mutations and ignored source shadow files.
+          git diff --cached --quiet --exit-code HEAD --
+          test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
           test -z "$(git ls-files --others --exclude-standard)"
+          test -z "$(git ls-files --others --ignored --exclude-standard)"
       - name: Require private source export to remain disabled
         shell: bash
         run: |
           set -euo pipefail
           file=.github/private-ci-approved-repositories.txt
           test -f "$file"
-          if grep -Ev '^[[:space:]]*(#.*)?$' "$file" | grep -q .; then
+          test ! -L "$file"
+          test "$(stat -c %s -- "$file")" -le 65536
+          # One grep process avoids false acceptance from SIGPIPE under pipefail.
+          if grep -Evq '^[[:space:]]*(#.*)?
+            echo "PRIVATE_CI_EXPORT_REJECTED: active destination requires dedicated reviewed authorization machinery" >&2
+            exit 1
+          fi
+          echo "private CI export policy: disabled by default"
+ "$file"; then
             echo "PRIVATE_CI_EXPORT_REJECTED: active destination requires dedicated reviewed authorization machinery" >&2
             exit 1
           fi
