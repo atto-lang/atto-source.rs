@@ -184,6 +184,88 @@ check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);
   assert.equal(r.code, 'E_NESTING');
 });
+// Left-associative chains and elif arms are parsed iteratively but walked
+// recursively later; they share the 256-level tree-height budget.
+const M = b => `pub fnc main(): int {\n${b}\n}`;
+const chains = {
+  add: n => M(`  return ${Array(n).fill('1').join(' + ')};`),
+  mul: n => M(`  return ${Array(n).fill('1').join(' * ')};`),
+  cmp: n => M(`  val b = ${Array(n).fill('1').join(' - ')} < 0;\n  return 0;`),
+  eq: n => M(`  val b = ${Array(n).fill('true').join(' == ')};\n  return 0;`),
+  and: n => M(`  val t = true;\n  if ${Array(n).fill('t').join(', ')} then\n    return 1;\n  fi\n  return 0;`),
+  or: n => M(`  val t = false;\n  if ${Array(n).fill('t').join(' | ')} then\n    return 1;\n  fi\n  return 0;`),
+  elif: n => M(`  val x = ${n - 1};\n  if x eq 0 then return 0;\n${Array.from({ length: n - 1 }, (_, i) => `  elif x eq ${i + 1} then return ${i + 1};\n`).join('')}  fi\n  return -1;`),
+};
+for (const [name, make] of Object.entries(chains)) {
+  check(`limits/chain-${name}-within-budget`, () => {
+    const r = compile(make(250));
+    assert.equal(r.ok, true, r.message);
+    runGuest(r.wasm);
+  });
+  check(`limits/chain-${name}-over-budget-fails-closed`, () => {
+    assert.equal(compile(make(300)).code, 'E_NESTING');
+  });
+}
+check('limits/elif-chain-selects-the-right-arm', () => {
+  assert.equal(runGuest(compile(chains.elif(250)).wasm).value, 249n);
+});
+check('robustness/adversarial-shapes-never-trap-compiler', () => {
+  const huge = n => Array(n).fill('1');
+  for (const src of [
+    M(`  return ${huge(15000).join('+')};`),
+    M(`  ${huge(15000).join('+')};\n  return 0;`),
+    M(`  return ${'-'.repeat(30000)}1;`),
+    M(`  return ${'- '.repeat(20000)}1;`),
+    M(`  val b = ${'!'.repeat(30000)}true;\n  return 0;`),
+    M(`  ${'block { '.repeat(5000)}${'} '.repeat(5000)}\n  return 0;`),
+    M(`  ${'loop { '.repeat(5000)}`),
+    M(`  return ${'f('.repeat(10000)}`),
+    M(`  val t = true;\n  return ${'t ? 1 : '.repeat(5000)}0;`),
+    M(`  if ${'('.repeat(10000)}`),
+    M(Array.from({ length: 3000 }, (_, i) => `  val a${i} = ${i};`).join('\n')),
+  ]) {
+    const r = compile(src);
+    if (r.ok) WebAssembly.validate(r.wasm);
+  }
+  assert.equal(runGuest(compile(M('  return 42;')).wasm).value, 42n, 'compiler still usable');
+});
+// Token-level mutation of every positive fixture. Mutants may loop forever, so
+// accepted mutants are validated and instantiated but not executed.
+{
+  const pass = await fixtures('pass');
+  const tokenize = s => s.match(/\s+|[A-Za-z_][A-Za-z0-9_]*|\d+|"(?:[^"\\\n]|\\.)*"|\S/g) ?? [];
+  let seed = 12345;
+  const rnd = n => (seed = (seed * 48271) % 2147483647) % n;
+  let mutants = 0, accepted = 0;
+  check('robustness/fixture-mutants-never-trap-compiler', () => {
+    for (const f of pass) {
+      const toks = tokenize(f.source);
+      for (let k = 0; k < (Number(process.env.ATTO_FUZZ) || 60); k++) {
+        const t = toks.slice();
+        for (let edits = 1 + rnd(3); edits > 0; edits--) {
+          const i = rnd(t.length), j = rnd(t.length);
+          switch (rnd(4)) {
+            case 0: t.splice(i, 1); break;
+            case 1: t.splice(i, 0, t[j]); break;
+            case 2: [t[i], t[j]] = [t[j], t[i]]; break;
+            default: t[i] = ['(', ')', '{', '}', ';', ',', '|', 'fi', 'done', 'else', 'return', '-', '0', 'true', '"'][rnd(15)];
+          }
+        }
+        mutants++;
+        const r = compile(t.join(''));
+        if (r.ok) {
+          accepted++;
+          assert.ok(WebAssembly.validate(r.wasm), 'accepted mutant produced invalid wasm');
+        } else {
+          assert.match(r.code, /^E_[A-Z_]+$/);
+          assert.ok(r.line >= 1 && r.col >= 1, `diagnostic has a position: ${r.message}`);
+        }
+      }
+    }
+    assert.ok(mutants > 2000);
+  });
+  console.log(`mutation fuzz: ${mutants} mutants, ${accepted} accepted`);
+}
 check('limits/source-capacity', () => {
   const r = compile(`pub fnc main(): int { return 0; }${' '.repeat(api.input_capacity())}`);
   assert.equal(r.code, 'E_SOURCE_LIMIT');

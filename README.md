@@ -55,6 +55,27 @@ The compiler has no imports and memory capped at 64 MiB. It exports:
 - `error_ptr()`, a NUL-terminated `E_CODE: message`
 - `error_line_number()` and `error_column_number()`
 
+## Resource limits
+
+Every limit fails closed with a diagnostic; none of them can trap the compiler.
+
+| Limit | Value | Code |
+|---|---|---|
+| Source size | 64 KiB of UTF-8 | `E_SOURCE_LIMIT` |
+| Tokens | 32,768 | `E_SOURCE_LIMIT` |
+| Recursive nesting (parens, blocks, unary operators, ternaries, calls) | 128 levels | `E_NESTING` |
+| Syntax-tree height, counting each link of an operator chain and each `elif` arm | 256 | `E_NESTING` |
+| Functions / parameters / locals per function | 1,024 / 32 / 1,024 | `E_SOURCE_LIMIT` |
+| One string literal / all string data | 4 KiB / 32 KiB | `E_SOURCE_LIMIT` |
+| Generated module | 1 MiB | `E_OUTPUT_LIMIT` |
+
+The tree-height budget exists because `a + b + c + ...` is parsed in a loop
+but produces a left-leaning tree that the checker and emitter walk
+recursively; without it a 30 KB source exhausted the stack. At 256 levels the
+worst case needs about 1.7 MiB of stack in a debug build and about 220 KiB in
+a release build (measured with `examples/stackprobe.rs`), so `compile()` is
+safe on a default 2 MiB thread.
+
 ## Build and test
 
 ```sh
@@ -78,7 +99,9 @@ The fixture corpus is in `tests/fixtures/`:
 - It compiles every fixture with the wasm32 compiler and executes every guest.
 - It compiles 200 generated programs.
 - It feeds the compiler 2,000 random inputs.
-- It checks the nesting and source limits.
+- It checks the nesting, tree-height and source limits, at and just over each budget.
+- It feeds the compiler adversarial shapes (15,000-link chains, 30,000 unary operators, unclosed nesting) and requires a diagnostic, never a trap.
+- It mutates every positive fixture at the token level (60 mutants each; set `ATTO_FUZZ=<n>` for more) and requires every accepted mutant to be valid Wasm and every rejection to carry a code and position.
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.

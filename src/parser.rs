@@ -12,6 +12,11 @@ use crate::lexer::{Tok, Token};
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
+/// Bound on the height of any syntax tree the parser builds. Left-associative
+/// operator chains (`a + b + ...`) and `elif` arms are parsed iteratively but
+/// produce trees that the checker, emitter and `Drop` walk recursively, so
+/// each chain link counts against this budget as well as each nested level.
+pub const MAX_TREE_HEIGHT: u32 = 256;
 
 /// Words reserved by the reference lexer (spec chapter 16 keyword table).
 const RESERVED: &[&str] = &[
@@ -193,6 +198,8 @@ pub struct Parser {
     toks: Vec<Token>,
     i: usize,
     depth: u32,
+    /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
+    height: u32,
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
@@ -210,6 +217,7 @@ impl Parser {
             toks,
             i: 0,
             depth: 0,
+            height: 0,
             cond: 0,
         }
     }
@@ -287,10 +295,23 @@ impl Parser {
                 format!("nesting deeper than {MAX_DEPTH} levels"),
             ));
         }
-        Ok(())
+        self.grow(1)
     }
     fn leave(&mut self) {
         self.depth -= 1;
+        self.height -= 1;
+    }
+    /// Account for `n` more levels of tree height (one chain link or arm).
+    fn grow(&mut self, n: u32) -> R<()> {
+        self.height += n;
+        if self.height > MAX_TREE_HEIGHT {
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_NESTING",
+                format!("expression or elif chain deeper than {MAX_TREE_HEIGHT} levels"),
+            ));
+        }
+        Ok(())
     }
 
     fn ident(&mut self, what: &str) -> R<(String, Pos)> {
@@ -702,6 +723,7 @@ impl Parser {
                         true
                     })
                 {
+                    self.grow(1)?;
                     let c = self.parse_cond_head()?;
                     arms.push((c, self.parse_block()?));
                 } else if self.eat_word("else") {
@@ -727,6 +749,7 @@ impl Parser {
                         true
                     });
                 if is_elif {
+                    self.grow(1)?;
                     let c = self.parse_cond_head()?;
                     self.eat(&Tok::Semi);
                     if !(self.eat_word("then") || self.eat_word("do")) {
@@ -753,6 +776,8 @@ impl Parser {
                 ),
             ));
         }
+        // each elif arm nests one level deeper in the lowered if/else chain
+        self.height -= arms.len() as u32 - 1;
         Ok(Stmt::If { arms, otherwise, pos })
     }
 
@@ -850,16 +875,20 @@ impl Parser {
     fn parse_cond(&mut self) -> R<Expr> {
         self.cond += 1;
         let r = (|| {
+            let mut links = 0;
             let mut left = self.parse_cond_and()?;
             while *self.peek() == Tok::Pipe {
                 let pos = self.pos();
                 self.advance();
+                self.grow(1)?;
+                links += 1;
                 let right = self.parse_cond_and()?;
                 left = Expr {
                     kind: ExprKind::Binary(BinOp::Or, Box::new(left), Box::new(right)),
                     pos,
                 };
             }
+            self.height -= links;
             Ok(left)
         })();
         self.cond -= 1;
@@ -867,16 +896,20 @@ impl Parser {
     }
 
     fn parse_cond_and(&mut self) -> R<Expr> {
+        let mut links = 0;
         let mut left = self.parse_equality()?;
         while *self.peek() == Tok::Comma {
             let pos = self.pos();
             self.advance();
+            self.grow(1)?;
+            links += 1;
             let right = self.parse_equality()?;
             left = Expr {
                 kind: ExprKind::Binary(BinOp::And, Box::new(left), Box::new(right)),
                 pos,
             };
         }
+        self.height -= links;
         Ok(left)
     }
 
@@ -920,6 +953,7 @@ impl Parser {
     }
 
     fn parse_equality(&mut self) -> R<Expr> {
+        let mut links = 0;
         let mut left = self.parse_comparison()?;
         loop {
             let pos = self.pos();
@@ -936,16 +970,20 @@ impl Parser {
                 _ => break,
             };
             self.advance();
+            self.grow(1)?;
+            links += 1;
             let right = self.parse_comparison()?;
             left = Expr {
                 kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
                 pos,
             };
         }
+        self.height -= links;
         Ok(left)
     }
 
     fn parse_comparison(&mut self) -> R<Expr> {
+        let mut links = 0;
         let mut left = self.parse_additive()?;
         loop {
             let pos = self.pos();
@@ -958,16 +996,20 @@ impl Parser {
                 _ => break,
             };
             self.advance();
+            self.grow(1)?;
+            links += 1;
             let right = self.parse_additive()?;
             left = Expr {
                 kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
                 pos,
             };
         }
+        self.height -= links;
         Ok(left)
     }
 
     fn parse_additive(&mut self) -> R<Expr> {
+        let mut links = 0;
         let mut left = self.parse_multiplicative()?;
         loop {
             let pos = self.pos();
@@ -977,16 +1019,20 @@ impl Parser {
                 _ => break,
             };
             self.advance();
+            self.grow(1)?;
+            links += 1;
             let right = self.parse_multiplicative()?;
             left = Expr {
                 kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
                 pos,
             };
         }
+        self.height -= links;
         Ok(left)
     }
 
     fn parse_multiplicative(&mut self) -> R<Expr> {
+        let mut links = 0;
         let mut left = self.parse_unary()?;
         loop {
             let pos = self.pos();
@@ -997,12 +1043,15 @@ impl Parser {
                 _ => break,
             };
             self.advance();
+            self.grow(1)?;
+            links += 1;
             let right = self.parse_unary()?;
             left = Expr {
                 kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
                 pos,
             };
         }
+        self.height -= links;
         Ok(left)
     }
 

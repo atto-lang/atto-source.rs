@@ -56,3 +56,21 @@ fn source_limit_is_enforced() {
     let big = format!("pub fnc main(): int {{ return 0; }}{}", " ".repeat(atto_compiler::SOURCE_CAP));
     assert_eq!(atto_compiler::compile(&big).unwrap_err().code, "E_SOURCE_LIMIT");
 }
+
+#[test]
+fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
+    let chain = |n: usize, op: &str| format!("pub fnc main(): int {{ return {}; }}", vec!["1"; n].join(op));
+    assert!(atto_compiler::compile(&chain(250, " + ")).is_ok());
+    for op in [" + ", " * ", " - ", " == ", " < "] {
+        assert_eq!(atto_compiler::compile(&chain(3_000, op)).unwrap_err().code, "E_NESTING", "{op}");
+    }
+    let elif = |n: usize| {
+        let arms = (1..n)
+            .map(|i| format!("elif x eq {i} then return {i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("pub fnc main(): int {{\nval x = 1;\nif x eq 0 then return 0;\n{arms}\nfi\nreturn 0;\n}}")
+    };
+    assert!(atto_compiler::compile(&elif(250)).is_ok());
+    assert_eq!(atto_compiler::compile(&elif(300)).unwrap_err().code, "E_NESTING");
+}
