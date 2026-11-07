@@ -59,6 +59,8 @@ enum Kind {
     Return,
     #[token("const")]
     Const,
+    #[token("val")]
+    Val,
     #[token("int")]
     Int,
     #[token("as")]
@@ -344,11 +346,34 @@ impl Parser {
             }
         };
         let mut locals = Vec::new();
-        while self.peek() == Some(Kind::Const) {
-            self.expect(Kind::Const)?;
-            let local_name = self.expect(Kind::Identifier)?.text;
-            self.expect(Kind::Colon)?;
-            self.expect(Kind::Int)?;
+        // AttoLang scalar bindings are immutable by default. All admitted
+        // spellings lower to the same checked local-init MIR, never an
+        // implicit mutable slot or an unchecked host fallback.
+        while matches!(self.peek(), Some(Kind::Const | Kind::Val | Kind::Int)) {
+            let local_name = match self.peek() {
+                Some(Kind::Int) => {
+                    self.expect(Kind::Int)?;
+                    self.expect(Kind::Identifier)?.text
+                }
+                Some(Kind::Val) => {
+                    self.expect(Kind::Val)?;
+                    self.expect(Kind::Identifier)?.text
+                }
+                Some(Kind::Const) => {
+                    self.expect(Kind::Const)?;
+                    let prefix_type = self.peek() == Some(Kind::Int);
+                    if prefix_type {
+                        self.expect(Kind::Int)?;
+                    }
+                    let name = self.expect(Kind::Identifier)?.text;
+                    if !prefix_type && self.peek() == Some(Kind::Colon) {
+                        self.expect(Kind::Colon)?;
+                        self.expect(Kind::Int)?;
+                    }
+                    name
+                }
+                _ => unreachable!("local declaration admitted by loop guard"),
+            };
             self.expect(Kind::Equals)?;
             let value = self.expression()?;
             self.expect(Kind::Semicolon)?;
@@ -356,6 +381,26 @@ impl Parser {
                 name: local_name,
                 value,
             });
+        }
+        // A source-level immutable binding must never silently turn into a
+        // write; the Rust scalar compiler does not yet lower let/mut.
+        if let (Some(name), Some(op)) = (
+            self.tokens.get(self.cursor),
+            self.tokens.get(self.cursor + 1),
+        ) {
+            let is_bound = name.kind == Kind::Identifier
+                && (params.iter().any(|param| param == &name.text)
+                    || locals.iter().any(|local| local.name == name.text));
+            let is_assignment = op.kind == Kind::Equals
+                || (matches!(op.kind, Kind::Plus | Kind::Minus)
+                    && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == Kind::Equals));
+            if is_bound && is_assignment {
+                return Err(ParseError {
+                    offset: name.start,
+                    class: "immutable_binding",
+                    message: "immutable scalar binding cannot be reassigned; let/mut lowering is unsupported".into(),
+                });
+            }
         }
         self.expect(Kind::Return)?;
         let expression = self.expression()?;
