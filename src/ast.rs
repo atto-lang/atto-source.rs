@@ -22,6 +22,8 @@ impl Type {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub funcs: Vec<Func>,
+    /// Qualified names of actor handlers. Never silently erase from main guests.
+    pub actor_handlers: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
