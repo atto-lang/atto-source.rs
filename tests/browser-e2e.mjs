@@ -192,9 +192,9 @@ try{
   const sourceAwait=[
     'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
     'pub fnc main(): void {',
-    '  val actor = spawn Worker();',
-    '  val accepted = actor.send(41);',
-    '  await actor.get_done();',
+    '  val worker = spawn Worker();',
+    '  val accepted = worker.send(41);',
+    '  await worker.get_done();',
     '}',
   ].join('\n');
   assert.equal(await run(sourceAwait,'main() -> 0'),
@@ -208,8 +208,8 @@ try{
   assert.ok(!panicResult.includes('main() -> 0'),
     'panicked actor must not produce successful completed task');
   console.log('PASS browser: actor panic rejects terminal join, never invents completion');
-  const illegalAwait=sourceAwait.replace('  await actor.get_done();',
-    '  await actor.get_done(); stdio.println(99);');
+  const illegalAwait=sourceAwait.replace('  await worker.get_done();',
+    '  await worker.get_done(); stdio.println(99);');
   assert.match(await run(illegalAwait,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
   console.log('PASS browser: suspension with arbitrary continuation fails closed');
 
