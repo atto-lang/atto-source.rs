@@ -186,6 +186,24 @@ try{
   assert.deepEqual(actorProtocol,{doubleInit:true,replayed:true,skipped:true});
   console.log('PASS browser: actor double-init, replay and skipped IDs are rejected before guest execution');
 
+  const compilerFetchesBeforeOversize=requests.filter(x=>x.path==='/atto_compiler.wasm').length;
+  const oversizedActor=await evaluate(`(async()=>{
+    const worker=new Worker('/actor-worker.mjs',{type:'module'});
+    try {
+      return await new Promise((resolve,reject)=>{
+        const deadline=setTimeout(()=>reject(new Error('oversize actor deadline')),5000);
+        worker.onmessage=e=>{clearTimeout(deadline);resolve(e.data)};
+        worker.onerror=()=>{clearTimeout(deadline);reject(new Error('oversize worker failed'))};
+        worker.postMessage({kind:'init',source:'x'.repeat(65537)});
+      });
+    } finally { worker.terminate(); }
+  })()`);
+  assert.equal(oversizedActor.kind,'fault');
+  assert.match(oversizedActor.message,/E_SOURCE_LIMIT/);
+  assert.equal(requests.filter(x=>x.path==='/atto_compiler.wasm').length,
+    compilerFetchesBeforeOversize,'oversized source must fail before compiler fetch');
+  console.log('PASS browser: oversized actor source denied before fetching or compiling Wasm');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
