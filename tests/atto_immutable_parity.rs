@@ -92,7 +92,10 @@ fn explicit_mutable_scalar_bindings_lower_to_unique_ordered_mir_versions() {
 
 #[test]
 fn mutable_scalar_reassignment_preserves_prior_reads_without_capture() {
-    let source = "pub fnc main(): int { let x = 7; let a = x; x += 1; let b = x; x = 42; return a + b + x; }";
+    let source = concat!(
+        "pub fnc main(): int { let x = 7; let a = x; x += 1; ",
+        "let b = x; x = 42; return a + b + x; }"
+    );
     let checked = mir::lower(frontend::parse(source).unwrap()).unwrap();
     let locals = &checked.functions[0].locals;
     assert_eq!(locals[0].0, "x");
@@ -126,7 +129,10 @@ fn mutable_scalar_violations_fail_closed() {
 
 #[test]
 fn generated_ssa_names_cannot_capture_source_identifiers() {
-    let source = "pub fnc main(): int { let x = 1; const __atto_scalar_rebind_0 = 3; x = 42; return x + __atto_scalar_rebind_0; }";
+    let source = concat!(
+        "pub fnc main(): int { let x = 1; const __atto_scalar_rebind_0 = 3; ",
+        "x = 42; return x + __atto_scalar_rebind_0; }"
+    );
     let parsed = frontend::parse(source).unwrap();
     assert_ne!(parsed.functions[0].locals[2].name, "__atto_scalar_rebind_0");
     let typed = mir::lower(parsed).unwrap();
