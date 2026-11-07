@@ -77,7 +77,10 @@ fn validate_expr(
             }
             for arg in args {
                 if validate_expr(arg, variables, signatures)? != ScalarType::Int {
-                    return Err(failure("argument_not_int", format!("{name} requires int arguments")));
+                    return Err(failure(
+                        "argument_not_int",
+                        format!("{name} requires int arguments"),
+                    ));
                 }
             }
             Ok(ScalarType::Int)
@@ -95,7 +98,10 @@ fn validate_expr(
             let left = validate_expr(a, variables, signatures)?;
             let right = validate_expr(b, variables, signatures)?;
             if left != right {
-                return Err(failure("operand_type_mismatch", "equality operands must have matching types"));
+                return Err(failure(
+                    "operand_type_mismatch",
+                    "equality operands must have matching types",
+                ));
             }
             Ok(ScalarType::Bool)
         }
@@ -106,7 +112,10 @@ fn validate_expr(
             let yes = validate_expr(when_true, variables, signatures)?;
             let no = validate_expr(when_false, variables, signatures)?;
             if yes != no {
-                return Err(failure("branch_type_mismatch", "ternary branches must have matching types"));
+                return Err(failure(
+                    "branch_type_mismatch",
+                    "ternary branches must have matching types",
+                ));
             }
             Ok(yes)
         }

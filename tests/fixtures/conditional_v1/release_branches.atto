@@ -1,0 +1,3 @@
+pub fnc main(): int { return true ? chosen() : other(); }
+fnc chosen(): int { return 42; }
+fnc other(): int { return 7; }

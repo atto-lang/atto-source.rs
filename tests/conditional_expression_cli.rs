@@ -1,5 +1,10 @@
 //! Compiler CLI modes must not launder unverified conditional CFG facts.
-use std::{fs, path::PathBuf, process::Command, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs,
+    path::PathBuf,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 struct Temp(PathBuf);
 
@@ -77,7 +82,7 @@ fn release_native_retains_callees_in_unselected_ternary_branches() {
     let binary = dir.0.join("release");
     fs::write(
         &guest,
-        "pub fnc main(): int { return true ? chosen() : other(); }\nfnc chosen(): int { return 42; }\nfnc other(): int { return 7; }",
+        include_str!("fixtures/conditional_v1/release_branches.atto"),
     )
     .expect("write guest");
     let compiled = Command::new(cli())

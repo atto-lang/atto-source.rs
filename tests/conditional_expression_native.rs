@@ -21,7 +21,9 @@ fn assert_reject(source: &str, class: &str) {
 #[cfg(target_os = "linux")]
 fn run_guest(source: &str, checked_arithmetic: bool) -> std::process::ExitStatus {
     use std::{
-        fs, path::PathBuf, process::Command,
+        fs,
+        path::PathBuf,
+        process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
     struct Temp(PathBuf);
@@ -76,8 +78,14 @@ fn shared_contract_vectors_match_guest_fixtures_and_diagnostics() {
         ("literal_true", include_str!("fixtures/conditional_v1/literal_true.atto")),
         ("literal_false", include_str!("fixtures/conditional_v1/literal_false.atto")),
         ("right_associative", include_str!("fixtures/conditional_v1/right_associative.atto")),
-        ("arithmetic_condition_precedence", include_str!("fixtures/conditional_v1/arithmetic_condition_precedence.atto")),
-        ("reject_integer_truthiness", include_str!("fixtures/conditional_v1/reject_integer_truthiness.atto")),
+        (
+            "arithmetic_condition_precedence",
+            include_str!("fixtures/conditional_v1/arithmetic_condition_precedence.atto"),
+        ),
+        (
+            "reject_integer_truthiness",
+            include_str!("fixtures/conditional_v1/reject_integer_truthiness.atto"),
+        ),
     ];
     let vectors = contract["portable_scalar_vectors"].as_array().unwrap();
     assert_eq!(fixtures.len(), vectors.len());
@@ -105,7 +113,10 @@ fn checks_both_branches_and_rejects_wrong_scalar_types() {
     for (fixture, class) in [
         (include_str!("fixtures/conditional_v1/unselected_missing_name.atto"), "unknown_name"),
         (include_str!("fixtures/conditional_v1/branch_type_mismatch.atto"), "branch_type_mismatch"),
-        (include_str!("fixtures/conditional_v1/equality_type_mismatch.atto"), "operand_type_mismatch"),
+        (
+            include_str!("fixtures/conditional_v1/equality_type_mismatch.atto"),
+            "operand_type_mismatch",
+        ),
         (include_str!("fixtures/conditional_v1/arithmetic_on_bool.atto"), "operand_not_int"),
         (include_str!("fixtures/conditional_v1/bool_return.atto"), "return_type_mismatch"),
         (include_str!("fixtures/conditional_v1/bool_local.atto"), "local_type_mismatch"),
