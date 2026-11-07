@@ -598,6 +598,38 @@ check('actor/source-compiled-receive-guest-executes', () => {
   assert.equal(actor.exports.receive(40n), 42n);
   assert.equal(actor.exports.receive(-1n), 1n);
 });
+// Validate the actual emitted Wasm *section surface*, not only its public
+// exports: a private memory, table, start or data section would violate the
+// browser actor v0 contract even if WebAssembly.Module.exports() hid it.
+check('actor/guest-v0-has-no-hidden-capability-sections', () => {
+  const input=encoder.encode('define actor A as receive(int x): int { return x + 1; } end');
+  new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+  assert.equal(api.compile_actor(input.length),0);
+  const bytes=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  assert.ok(WebAssembly.validate(bytes));
+  const mod=new WebAssembly.Module(bytes);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(e=>e.name),['receive']);
+  const forbidden=new Set([2,4,5,8,9,11,12,13]); // imports/table/memory/start/element/data/tag
+  const ids=[]; let at=8;
+  while(at<bytes.length){
+    const id=bytes[at++]; let size=0,done=false;
+    for(let i=0;i<5;i++){
+      assert.ok(at<bytes.length,'Wasm section header must be in bounds');
+      const b=bytes[at++];
+      size+=(b&127)*2**(7*i);
+      if(!(b&128)){done=true;break}
+    }
+    assert.ok(done&&Number.isSafeInteger(size),'bounded LEB128 section size');
+    assert.ok(at+size<=bytes.length,'section body must be in bounds');
+    ids.push(id); at+=size;
+  }
+  assert.equal(at,bytes.length);
+  assert.deepEqual(ids.filter(id=>forbidden.has(id)),[],
+    'no hidden actor memory/table/start/import/data sections');
+  assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(41n),42n);
+});
+
 // A scalar actor has the SAME canonical eager condition semantics as ordinary
 // AttoLang functions: even an apparently decisive LHS must evaluate the RHS.
 // With the boundary input, the RHS checked addition traps instead of being
