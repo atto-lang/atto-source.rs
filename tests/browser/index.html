@@ -15,7 +15,8 @@ button.addEventListener('click',()=>{
   worker.onmessage=event=>{clearTimeout(timer);worker.terminate();if(id!==last)return;window.__attoLastResult=event.data;out.textContent=event.data.ok?event.data.stdout+'main() -> '+event.data.value:event.data.error;button.disabled=false};
   worker.onerror=()=>{clearTimeout(timer);worker.terminate();if(id===last){out.textContent='E_WORKER';button.disabled=false}};
   worker.postMessage({source:editor.value,actorMessages:window.__attoActorMessages,
-    actorForceTerminate:window.__attoActorForceTerminate});
+    actorForceTerminate:window.__attoActorForceTerminate,
+    actorFailureStage:window.__attoActorFailureStage});
 });
 window.__attoReady=true;
 </script>

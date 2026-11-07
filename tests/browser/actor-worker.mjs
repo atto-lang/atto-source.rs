@@ -3,11 +3,14 @@
 // have completed. Errors are reported as host evidence, not as canonical
 // priority supervisor CONTROL messages or language-level get_done().
 let receiver=null,guest=null,actorId=null,processed=0,terminal=false;
+let testFailShutdown=false;
 self.onmessage=({data})=>{
   if(terminal)return;
   try{
     if(data?.kind==='init'){
       if(receiver)throw new Error('E_ACTOR_DUP_INIT');
+      if(data.testFailInit===true)throw new Error('E_ACTOR_TEST_INIT_FAILURE');
+      testFailShutdown=data.testFailShutdown===true;
       if(!Number.isInteger(data.actorId)||data.actorId<0||data.actorId>1024)throw new Error('E_ACTOR_ID');
       if(!(data.wasm instanceof Uint8Array)||!WebAssembly.validate(data.wasm))throw new Error('E_ACTOR_WASM');
       const module=new WebAssembly.Module(data.wasm);
@@ -43,6 +46,7 @@ self.onmessage=({data})=>{
     }
     if(data?.kind==='shutdown'){
       if(!receiver)throw new Error('E_ACTOR_NOT_READY');
+      if(testFailShutdown)throw new Error('E_ACTOR_TEST_SHUTDOWN_FAILURE');
       terminal=true;
       self.postMessage({kind:'done',actorId,processed});
       self.close();

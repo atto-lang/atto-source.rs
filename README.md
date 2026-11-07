@@ -246,8 +246,8 @@ child's actual shutdown acknowledgement.
 
 Pure lifecycle state-machine conformance and real Chromium child-worker
 tests cover normal drain, idle actor termination, explicit close, worker
-panic, host-forced termination, guest-main panic, invalid transfers,
-resource cleanup and exactly-once terminal evidence. **No claim is made
+panic, host-forced termination, guest-main panic, initialization failure, failed shutdown ACK, invalid
+transfers, resource cleanup and exactly-once terminal evidence. **No claim is made
 for a real concurrent-producer scheduler, OS-enforced tenant isolation,
 actor arena reclamation, separate guaranteed guest stacks, backend parity,
 or language-level completion/supervision yet.**

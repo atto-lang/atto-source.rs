@@ -236,6 +236,28 @@ try{
   assert.equal(aborted[0].reason,'E_GUEST_MAIN_PANIC');
   console.log('PASS browser: guest panic cleans up child and records termination once');
 
+
+  // The exact error cause must survive a failure before the ready handshake.
+  await evaluate("window.__attoActorFailureStage='init'");
+  assert.match(await run(actorExample,'E_ACTOR_TEST_INIT_FAILURE'),/E_ACTOR_TEST_INIT_FAILURE/);
+  const initFailure=await evaluate('window.__attoLastResult.actorCompletions');
+  assert.equal(initFailure.length,1);
+  assert.equal(initFailure[0].state,'FAILED');
+  assert.equal(initFailure[0].reason,'E_ACTOR_TEST_INIT_FAILURE');
+  await evaluate('window.__attoActorFailureStage=undefined');
+  console.log('PASS browser: failed child initialization is FAILED, not a normal completion');
+
+  // Even after a successful empty drain, a child that rejects shutdown
+  // cannot be reported as FINISHED without an acknowledgement.
+  await evaluate("window.__attoActorFailureStage='shutdown'");
+  assert.match(await run(actorExample,'E_ACTOR_TEST_SHUTDOWN_FAILURE'),/E_ACTOR_TEST_SHUTDOWN_FAILURE/);
+  const shutdownFailure=await evaluate('window.__attoLastResult.actorCompletions');
+  assert.equal(shutdownFailure.length,1);
+  assert.equal(shutdownFailure[0].state,'FAILED');
+  assert.equal(shutdownFailure[0].reason,'E_ACTOR_TEST_SHUTDOWN_FAILURE');
+  await evaluate('window.__attoActorFailureStage=undefined');
+  console.log('PASS browser: rejected shutdown cannot yield FINISHED without child ACK');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

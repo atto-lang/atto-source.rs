@@ -22,6 +22,14 @@ self.onmessage=async ({data})=>{
     }
   }
   const resultEnvelope=(more)=>({...more,actorCompletions:[...actorCompletions]});
+  const failureStatus=(error)=>
+    /TIMEOUT|E_ACTOR_WORKER|E_ACTOR_CLONE|E_ACTOR_POST/.test(error.message)
+      ?'TERMINATED':'FAILED';
+  const failedActor=(actor,error)=>stop(actor,failureStatus(error),error.message);
+  async function ensureReady(actor){
+    try{await actor.ready}
+    catch(error){failedActor(actor,error);throw error}
+  }
 
   // Install each one-shot reply listener BEFORE posting the request.
   // Deadlines bound both unresponsive and unexpectedly exited workers.
@@ -50,7 +58,7 @@ self.onmessage=async ({data})=>{
 
   async function deliver(actor,message,fromMailbox) {
     try{
-      await actor.ready;
+      await ensureReady(actor);
       actor.life.draining();
       const reply=await request(actor,{kind:'message',value:message},'reply','E_ACTOR_TIMEOUT');
       if(typeof reply.value!=='bigint'||BigInt.asIntN(64,reply.value)!==reply.value)
@@ -59,8 +67,7 @@ self.onmessage=async ({data})=>{
       else actor.life.acknowledgedExternal();
       stdout+='actor['+actor.life.handle+'] receive('+String(message)+') -> '+String(reply.value)+'\n';
     }catch(e){
-      const status=/TIMEOUT|E_ACTOR_WORKER|E_ACTOR_CLONE|E_ACTOR_POST/.test(e.message)?'TERMINATED':'FAILED';
-      stop(actor,status,e.message);
+      failedActor(actor,e);
       throw e;
     }
   }
@@ -101,7 +108,9 @@ self.onmessage=async ({data})=>{
         const actor={worker,life:new ActorLifecycle(handle,id,2),ready:null};
         // The ready handshake is created before init, even if the child
         // responds while the main Wasm function is still running.
-        actor.ready=request(actor,{kind:'init',actorId:id,wasm:out},'ready','E_ACTOR_READY_TIMEOUT')
+        actor.ready=request(actor,{kind:'init',actorId:id,wasm:out,
+        testFailInit:data.actorFailureStage==='init',
+        testFailShutdown:data.actorFailureStage==='shutdown'},'ready','E_ACTOR_READY_TIMEOUT')
           .then(()=>actor.life.ready());
         actor.ready.catch(()=>{}); // no unhandled rejection for an unused spawn
         actors.push(actor);
@@ -142,7 +151,7 @@ self.onmessage=async ({data})=>{
     // The private guest main is synchronous. Therefore this is a bounded
     // admission queue, not evidence of arbitrary concurrent producer safety.
     for(const actor of actors) {
-      await actor.ready;
+      await ensureReady(actor);
       actor.life.draining();
       while(true){
         const message=actor.life.dequeue();
@@ -171,10 +180,14 @@ self.onmessage=async ({data})=>{
     // A child acknowledges shutdown only after all prior messages and then
     // closes itself; FINISHED/CLOSED is not recorded merely on host terminate.
     for(const actor of actors){
-      await actor.ready;
-      const done=await request(actor,{kind:'shutdown'},'done','E_ACTOR_SHUTDOWN_TIMEOUT');
-      if(done.processed!==actor.life.delivered+actor.life.externalDelivered)
-        throw new Error('E_ACTOR_COMPLETION_COUNT');
+      await ensureReady(actor);
+      let done;
+      try{
+        done=await request(actor,{kind:'shutdown'},'done','E_ACTOR_SHUTDOWN_TIMEOUT');
+        if(done.actorId!==actor.life.actorId
+          ||done.processed!==actor.life.delivered+actor.life.externalDelivered)
+          throw new Error('E_ACTOR_COMPLETION_COUNT');
+      }catch(error){failedActor(actor,error);throw error}
       finalize(actor,actor.life.admissionClosed?'CLOSED':'FINISHED','E_ACTOR_SHUTDOWN_ACK');
       actor.worker.terminate(); // idempotent final resource cleanup
     }
