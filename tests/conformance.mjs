@@ -649,7 +649,7 @@ check('actor/source-send-result-and-typed-admission', () => {
   assert.ok(compiled.ok, compiled.message);
   const mod = new WebAssembly.Module(compiled.wasm);
   assert.deepEqual(WebAssembly.Module.imports(mod).map(x => x.name),
-    ['actor_send', 'actor_spawn'], 'only host admission and actor spawn are imported');
+    ['actor_spawn', 'actor_send'], 'only host admission and actor spawn are imported');
   let received = null;
   const instance = new WebAssembly.Instance(mod, {atto:{
     actor_spawn: () => 1,
