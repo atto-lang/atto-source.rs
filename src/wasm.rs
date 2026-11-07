@@ -3,7 +3,7 @@
 //! Guest contract `atto.browser.guest.v1`:
 //! * export `main: () -> i64` (a void `main` returns 0)
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
-//!   1 = integer overflow, 2 = division by zero
+//!   1 = integer overflow; code 2 is reserved (division/remainder unsupported)
 //! * export `memory` only when string literals are printed
 //! * imports, only those used, from module `atto`:
 //!   `print_i64(i64)`, `print_bool(i32)`, `print_str(i32 offset, i32 len)`,
@@ -17,6 +17,7 @@ use crate::check::{Builtin, Import, TExpr, TProgram, TStmt, TE};
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
+/// Reserved ABI value; current admitted expressions cannot generate this panic.
 pub const PANIC_DIV_ZERO: i32 = 2;
 
 const I32: u8 = 0x7F;
@@ -515,7 +516,6 @@ fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
                 "atto.checked_sub",
                 "atto.checked_mul",
                 "atto.checked_neg",
-                "atto.checked_rem",
             ]
             .map(String::from),
         )
