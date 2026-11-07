@@ -142,6 +142,50 @@ try{
   assert.match(rejectedActor.message,/E_UNSUPPORTED/);
   console.log('PASS browser: wrong actor receive signature fails closed before guest creation');
 
+  // Probe the actual source-owned worker, not a simulated worker. Neither a
+  // second init during async compilation nor skipped/replayed message IDs
+  // may be accepted as guest execution.
+  const actorProtocol=await evaluate(`(async()=>{
+    const source='define actor Worker as receive(int value): int { return value + 2; } end';
+    async function probe(mode) {
+      const w=new Worker('/actor-worker.mjs',{type:'module'});
+      const next=()=>new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('actor protocol deadline: '+mode)),5000);
+        w.onmessage=e=>{clearTimeout(timer);resolve(e.data)};
+        w.onerror=()=>{clearTimeout(timer);reject(new Error('actor protocol worker error'))};
+      });
+      try {
+        if(mode==='double-init') {
+          const first=next();
+          w.postMessage({kind:'init',source});
+          w.postMessage({kind:'init',source});
+          const reply=await first;
+          return reply.kind==='fault' && /E_ACTOR_PROTOCOL/.test(reply.message);
+        }
+        let pending=next();
+        w.postMessage({kind:'init',source});
+        const ready=await pending;
+        if(ready.kind!=='ready') throw new Error('expected actor ready');
+        if(mode==='replay') {
+          pending=next();
+          w.postMessage({kind:'message',id:1,value:40n});
+          const valid=await pending;
+          if(valid.kind!=='result'||valid.value!==42n)throw new Error('initial receive failed');
+          pending=next();
+          w.postMessage({kind:'message',id:1,value:41n});
+        } else {
+          pending=next();
+          w.postMessage({kind:'message',id:2,value:41n});
+        }
+        const invalid=await pending;
+        return invalid.kind==='fault' && /E_ACTOR_PROTOCOL/.test(invalid.message);
+      } finally { w.terminate(); }
+    }
+    return {doubleInit:await probe('double-init'),replayed:await probe('replay'),skipped:await probe('skip')};
+  })()`);
+  assert.deepEqual(actorProtocol,{doubleInit:true,replayed:true,skipped:true});
+  console.log('PASS browser: actor double-init, replay and skipped IDs are rejected before guest execution');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
