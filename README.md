@@ -107,3 +107,44 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+
+## Source-free actual guest execution receipt (experimental)
+
+The repository's own CI already builds the real Rust compiler for WebAssembly,
+compiles the positive and panic fixtures using that Wasm compiler, and
+**executes their generated Wasm guests**. To make the evidence inspectable
+without exporting source, the CI additionally:
+
+- resolves its own numeric GitHub Actions **job ID** through the authenticated,
+  fixed-repository GitHub API and generates a fresh attempt-specific nonce;
+- requires every fixture to have passed before producing a receipt with the
+  exact source HEAD/tree, run and attempt, job ID, SHA-256 of compiler Wasm,
+  each source fixture and each emitted guest binary, plus observed output hashes;
+- executes a concrete Wasm guest which prints `42` and returns `42`;
+- starts a **separate Node process** that loads the exact compiler Wasm again,
+  recompiles and re-executes that guest, and compares all witness digests/results;
+- uploads only three files in a private GitHub Actions artifact named
+  `atto-guest-evidence-<head>`: `guest-receipt.json`,
+  `fixture-set.json` (case names and digests, no source), and
+  `guest-stdout.bin` (the literal `42\n` witness).
+  
+The v1 guest receipt is shaped for the canonical Rust verifier in
+`atto-compilers-parity-testing`: `run_id`, `run_attempt`,
+`job_id`, `source_sha`, `tree_sha`, `case_sha256`,
+`backend=wasm`, `feature=browser.compiler.guest.v1` and guest
+execution counts.
+
+**Evidence distinction:** this is a *source-owned executed guest test* with
+a source-free **self-reported claim**. The second process proves that the test
+runner really can execute the witness with the compiler bytes it built, but
+does not independently attest the identity or integrity of the runner.
+The artifact must be downloaded and hashed by an independent, authenticated
+read-only verifier, with signed provenance and durable replay enforcement.
+Therefore **NOT_CERTIFIED** is mandatory until those additional gates pass.
+It is **not** five-backend parity; Java, LLVM, Forge, and .NET remain unproven by
+this browser compiler CI alone.
+
+CI fails closed if run/job identity resolution, witness execution, exact
+checkout, or artifact upload fails. It does not mirror any private source
+outside this repository.
