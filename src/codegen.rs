@@ -34,10 +34,16 @@ pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
             signature.params.push(AbiParam::new(types::I64));
         }
         signature.returns.push(AbiParam::new(types::I64));
-        // v1 emits all symbols for simple C integration. Oreslang private/public
-        // linker visibility needs a separate ABI conformance gate.
+        // Preserve source-level visibility in the native ABI: private helpers
+        // remain callable inside the object, but cannot be linked from C or
+        // another object. This is distinct from release tree shaking.
+        let linkage = if function.exported {
+            Linkage::Export
+        } else {
+            Linkage::Local
+        };
         let id = module
-            .declare_function(&function.symbol, Linkage::Export, &signature)
+            .declare_function(&function.symbol, linkage, &signature)
             .map_err(|e| e.to_string())?;
         ids.insert(function.symbol.clone(), id);
     }
