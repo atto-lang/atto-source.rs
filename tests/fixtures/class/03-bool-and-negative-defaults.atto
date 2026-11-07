@@ -5,6 +5,6 @@ define class State as
   int delta: 42
 end
 pub fnc main(): int {
-  val state = State();
+  val state = new State();
   if state.ready then return state.base + state.delta; else return 0; fi
 }
