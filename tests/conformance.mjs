@@ -268,6 +268,33 @@ check('class/field-access-and-ctor-negative-controls', () => {
   }
 });
 
+check('class/exact-new-point-example-with-implicit-newlines', () => {
+  const src = [
+    'define class Point as',
+    '  int x: 40',
+    '  int y: 2',
+    '  bool active: true',
+    'end',
+    '',
+    'pub fnc main(): int {',
+    '  val p = new Point()',
+    '  if p.active then',
+    '    return p.x + p.y',
+    '  else',
+    '    return 0',
+    '  fi',
+    '}',
+  ].join('\n');
+  const built = compile(src);
+  assert.equal(built.ok, true, built.message);
+  assert.ok(WebAssembly.validate(built.wasm));
+  assert.equal(runGuest(built.wasm).value, 42n);
+  const invalid = compile(src.replace('new Point()', 'Point()'));
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, 'E_NEW_REQUIRED');
+  assert.equal('wasm' in invalid, false);
+});
+
 check('class/new-required-and-postfix-positive', () => {
   const src = 'define class P as\n int x: 42\nend\n' +
     'pub fnc main(): int { return (new P()).x; }';
