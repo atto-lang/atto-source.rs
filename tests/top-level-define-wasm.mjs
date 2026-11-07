@@ -36,7 +36,7 @@ const invalids=[
  ['define actor Worker as receive(x:int) { return 0; } end\npub fnc main(): int { return 0; }','E_UNSUPPORTED'],
  ['define enum A as Red, Red end\npub fnc main(): int { return 0; }','E_DUPLICATE'],
  ['define enum A as Red end\npub fnc main(): int { return A.Red + 1; }','E_TYPE'],
- ['define class X as\n fnc instance(): int {return 1;}\nend\npub fnc main(): int {return 0;}','E_UNSUPPORTED'],
+ ['define class X as\n fnc instance(): int {return self.missing;}\nend\npub fnc main(): int {return 0;}','E_UNBOUND'],
 ];
 for (const [source,code] of invalids) {
  const a=compile(source);
