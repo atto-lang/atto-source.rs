@@ -1,0 +1,71 @@
+name: Private declaration compiler artifact
+on:
+  push:
+    branches: [feat/top-level-define-declarations-browser-20261107]
+    paths: ['src/**','Cargo.*','tests/**','.github/workflows/private-declaration-artifact.yml']
+permissions:
+  contents: write
+jobs:
+  build:
+    if: github.repository == 'atto-lang/atto-source.rs'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Verify exact head/tree
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+      - name: Install Rust and Wasm
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.85.1
+      - name: Native tests
+        run: cargo test --locked
+      - name: Native and Wasm compiler builds
+        run: |
+          cargo build --locked --release --bin attoc
+          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+      - name: Native and Wasm conformance including top-level declarations
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node tests/conformance.mjs
+          node tests/declarations.mjs
+      - name: Chromium browser and worker E2E
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          node tests/browser-e2e.mjs
+      - name: Write verified binary to private artifact branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p ci-artifacts/browser
+          cp target/wasm32-unknown-unknown/release/atto_compiler.wasm ci-artifacts/browser/atto_compiler.wasm
+          SOURCE_HEAD="$(git rev-parse HEAD)" SOURCE_TREE="$(git rev-parse HEAD^{tree})" node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          const bytes=fs.readFileSync('ci-artifacts/browser/atto_compiler.wasm');
+          const mod=new WebAssembly.Module(bytes);
+          if(WebAssembly.Module.imports(mod).length!==0)throw Error('host imports forbidden');
+          const {exports:api}=new WebAssembly.Instance(mod,{});
+          if(api.abi_version()!==2)throw Error('ABI mismatch');
+          const receipt={schema:'atto.browser.compiler.candidate.v1',source_repository:'atto-lang/atto-source.rs',
+            source_head:process.env.SOURCE_HEAD,source_tree:process.env.SOURCE_TREE,
+            compiler_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),
+            compiler_bytes:bytes.length,compiler_abi:2,target:'wasm32-unknown-unknown',
+            toolchain:'rustc 1.85.1',guest_abi:'atto.browser.guest.v1',imports:0};
+          fs.writeFileSync('ci-artifacts/browser/compiler.receipt.json',JSON.stringify(receipt,null,2)+'\n');
+          console.log(receipt);
+          JS
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -f ci-artifacts/browser/atto_compiler.wasm ci-artifacts/browser/compiler.receipt.json
+          git commit -m "build(private): declaration compiler from exact source HEAD"
+          AUTH="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/ci-artifacts/browser-defines-20261107
