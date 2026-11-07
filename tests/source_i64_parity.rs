@@ -1,6 +1,6 @@
 //! Executed Rust/Cranelift parity checks against the Java + LLVM portable-i64
 //! source contract. This is bounded scalar evidence, not checked-overflow parity.
-use oreslang_source_rs::{compile, compile_with_effect_ir, frontend};
+use oreslang_source_rs::{compile_with_effect_ir, frontend};
 
 #[test]
 fn line_comment_block_markers_do_not_change_mir_or_effects() {
@@ -19,7 +19,7 @@ fn line_comment_block_markers_do_not_change_mir_or_effects() {
 
 #[cfg(target_os = "linux")]
 mod native_i64 {
-    use super::compile;
+    use oreslang_source_rs::compile;
     use std::{
         fs,
         path::PathBuf,
