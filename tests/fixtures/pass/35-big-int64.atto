@@ -1,0 +1,13 @@
+// int is a signed 64-bit integer (spec 17)
+// expect-exit: 0
+// expect-stdout: 9223372036854775807
+// expect-stdout: -9223372036854775808
+// expect-stdout: 4000000000
+pub fnc main(): int {
+  val max: int = 9223372036854775807;
+  val min: int = -9223372036854775808;
+  stdio.println(max);
+  stdio.println(min);
+  stdio.println(2000000000 * 2);
+  return 0;
+}

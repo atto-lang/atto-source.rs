@@ -1,0 +1,8 @@
+// spec 16: ++ and -- exist only in a for update clause
+// expect-error: E_UNSUPPORTED
+// java: rejects
+pub fnc main(): int {
+  let i = 0;
+  i++;
+  return i;
+}

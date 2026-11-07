@@ -1,0 +1,9 @@
+// `while true` is not treated as divergent (Java reference)
+// expect-error: E_RETURN
+// java: rejects
+fnc f(): int {
+  while true do
+    return 3;
+  done
+}
+pub fnc main(): int { return f(); }

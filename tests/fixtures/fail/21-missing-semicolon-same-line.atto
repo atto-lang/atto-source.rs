@@ -1,0 +1,5 @@
+// expect-error: E_SEMICOLON
+// java: rejects
+pub fnc main(): int {
+  val x = 1 return x;
+}

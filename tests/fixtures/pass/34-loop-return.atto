@@ -1,0 +1,15 @@
+// an unconditional loop without break never falls through
+// expect-exit: 3
+fnc first_over(int limit): int {
+  let i = 0;
+  loop {
+    i = i + 1;
+    if i * i > limit then
+      return i;
+    fi
+  }
+}
+
+pub fnc main(): int {
+  return first_over(5);
+}

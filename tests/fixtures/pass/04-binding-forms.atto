@@ -1,0 +1,12 @@
+// grammar.ebnf binding_decl: IDENT ":" type_ref | [type_ref] IDENT
+// expect-exit: 52
+pub fnc main(): int {
+  val a: int = 10;
+  val int b = 11;
+  val c = 12;
+  const d: int = 4;
+  const int e = 3;
+  let f: int = 1;
+  let g = 11;
+  return a + b + c + d + e + f + g;
+}

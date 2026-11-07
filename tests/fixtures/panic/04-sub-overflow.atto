@@ -1,0 +1,5 @@
+// expect-panic: 1
+pub fnc main(): int {
+  val min: int = -9223372036854775808;
+  return min - 1;
+}

@@ -1,0 +1,7 @@
+// Strings run on Java but are not lowered by the browser compiler yet
+// expect-error: E_UNSUPPORTED_TYPE
+// java: accepts
+pub fnc main(): int {
+  val s = "x";
+  return 1;
+}

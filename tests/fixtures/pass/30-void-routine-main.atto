@@ -1,0 +1,7 @@
+// spec 16: pub routine main(): void
+// expect-exit: 0
+// expect-stdout: 3
+pub routine main(): void {
+  stdio.println(3);
+  return;
+}

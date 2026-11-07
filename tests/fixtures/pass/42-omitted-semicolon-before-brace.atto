@@ -1,0 +1,5 @@
+// spec 16: ';' may be omitted before '}'
+// expect-exit: 42
+pub fnc main(): int {
+  return 42
+}

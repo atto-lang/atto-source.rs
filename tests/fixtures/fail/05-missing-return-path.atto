@@ -1,0 +1,8 @@
+// expect-error: E_RETURN
+// java: rejects
+fnc f(int a): int {
+  if a > 1 then
+    return 1;
+  fi
+}
+pub fnc main(): int { return f(0); }

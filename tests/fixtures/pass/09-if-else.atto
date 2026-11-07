@@ -1,0 +1,12 @@
+// expect-exit: 20
+fnc pick(int n): int {
+  if n < 10 then
+    return 10;
+  else
+    return 20;
+  fi
+}
+
+pub fnc main(): int {
+  return pick(15);
+}

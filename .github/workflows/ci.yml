@@ -1,0 +1,82 @@
+name: Portable Atto frontend and browser Wasm conformance
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-compiler:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Bind checkout to exact head/tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+      - name: Install pinned Rust toolchain and Wasm target
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.85.1
+          rustc --version
+      - name: Test native compiler core over the fixture corpus
+        run: cargo test --locked --verbose
+      - name: Build native attoc host
+        run: cargo build --locked --release --bin attoc
+      - name: Build actual Wasm compiler
+        run: |
+          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+          sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
+      - name: Conformance - wasm32 compiler, guest execution, native-vs-wasm byte parity
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/conformance.mjs
+
+      - name: Real Chromium browser and worker E2E
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          node tests/browser-e2e.mjs
+      - name: Build immutable compiler artifact receipt
+        run: |
+          mkdir -p dist
+          cp target/wasm32-unknown-unknown/release/atto_compiler.wasm dist/atto_compiler.wasm
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          const bytes = fs.readFileSync('dist/atto_compiler.wasm');
+          const module = new WebAssembly.Module(bytes);
+          const imports = WebAssembly.Module.imports(module);
+          const exports = WebAssembly.Module.exports(module).map(x => x.name);
+          const required = ['memory','abi_version','input_ptr','input_capacity','compile','result_ptr','result_length','error_ptr','error_line_number','error_column_number'];
+          if (imports.length || required.some(x => !exports.includes(x))) throw new Error('unexpected compiler ABI');
+          const git = (...args) => execFileSync('git', args, {encoding:'utf8'}).trim();
+          const receipt = {
+            schema:'atto.browser.compiler.artifact.v1',
+            source_head:git('rev-parse','HEAD'),
+            source_tree:git('rev-parse','HEAD^{tree}'),
+            target:'wasm32-unknown-unknown',
+            abi:'atto-playground-v2',
+            guest_abi:'atto.browser.guest.v1',
+            compiler_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),
+            compiler_bytes:bytes.length,
+            import_count:imports.length,
+            exports
+          };
+          fs.writeFileSync('dist/receipt.json',JSON.stringify(receipt,null,2)+'\n');
+          console.log(receipt);
+          JS
+      - name: Publish verified compiler plus provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: atto-compiler-wasm32-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

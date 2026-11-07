@@ -1,0 +1,9 @@
+// grammar.ebnf if_stmt block form, still closed by fi
+// expect-exit: 4
+pub fnc main(): int {
+  if 1 < 2 {
+    return 4;
+  } else {
+    return 5;
+  } fi
+}
