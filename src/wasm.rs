@@ -61,7 +61,7 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 fn vt(t: Type) -> Option<u8> {
     match t {
         Type::Int => Some(I64),
-        Type::Bool => Some(I32),
+        Type::Bool | Type::Enum(_) => Some(I32),
         Type::Void => None,
     }
 }
@@ -220,6 +220,7 @@ impl Emit<'_> {
         match &v.e {
             TExpr::I64(n) => self.i64c(*n),
             TExpr::Bool(b) => self.i32c(*b as i32),
+            TExpr::EnumTag(tag) => self.i32c(*tag as i32),
             TExpr::Local(slot) => {
                 self.op(0x20);
                 uleb(&mut self.code, *slot as u64);
