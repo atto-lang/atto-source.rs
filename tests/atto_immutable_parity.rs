@@ -80,3 +80,24 @@ fn unsupported_mutable_spellings_stay_rejected() {
         assert!(compile(&source).is_err(), "{body}: no unimplemented mutable lowering");
     }
 }
+
+#[test]
+fn canonical_define_fnc_spellings_keep_export_and_scalar_checks() {
+    for (source, exported) in [
+        ("define pub fnc main(): int { return 42; }", true),
+        ("pub define fnc main(): int { return 42; }", true),
+        ("define fnc helper(): int { return 42; }", false),
+    ] {
+        let parsed = frontend::parse(source).expect("canonical fnc form");
+        assert_eq!(parsed.functions[0].exported, exported);
+        assert!(compile(source).is_ok(), "canonical definition should compile");
+    }
+    for source in [
+        "define actor Worker as end",
+        "define class Point as end",
+        "define enum Status as end",
+        "define define fnc main(): int { return 42; }",
+    ] {
+        assert!(checked(source).is_err(), "{source}: unsupported kinds fail closed");
+    }
+}
