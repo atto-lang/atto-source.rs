@@ -633,6 +633,59 @@ check('actor/transitive-host-capability-gate', () => {
     'pure helper remains callable inside actual compiled actor guest');
 });
 
+
+// Source-level actor send is an admission-only Result<void,SendError>.
+// Result status cannot be silently converted to bool/int or completion.
+check('actor/source-send-result-and-typed-admission', () => {
+  const source = [
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): int {',
+    '  val w: Worker = spawn Worker();',
+    '  val admitted: Result<void, SendError> = w.send(41);',
+    '  if admitted.is_ok() then return 42; else return 0; fi',
+    '}',
+  ].join('\n');
+  const compiled = compile(source);
+  assert.ok(compiled.ok, compiled.message);
+  const mod = new WebAssembly.Module(compiled.wasm);
+  assert.deepEqual(WebAssembly.Module.imports(mod).map(x => x.name),
+    ['actor_send', 'actor_spawn'], 'only host admission and actor spawn are imported');
+  let received = null;
+  const instance = new WebAssembly.Instance(mod, {atto:{
+    actor_spawn: () => 1,
+    actor_send: (handle, message) => { received = [handle, message]; return 0; },
+  }});
+  assert.equal(instance.exports.main(), 42n, 'Ok admission is observable as Result');
+  assert.deepEqual(received, [1, 41n], 'send transports scalar signed i64');
+  const rejected = compile(source.replace('admitted.is_ok()', 'admitted.is_err()'));
+  assert.ok(rejected.ok, rejected.message);
+  const full = new WebAssembly.Instance(new WebAssembly.Module(rejected.wasm), {atto:{
+    actor_spawn: () => 1,
+    actor_send: () => 2, // bounded mailbox full, not handler failure
+  }});
+  assert.equal(full.exports.main(), 42n, 'mailbox-full is Result::Err, not a panic');
+});
+
+check('actor/send-and-completion-negative-controls', () => {
+  const head = 'define actor Worker as receive(msg: int) -> int { return msg; } end\n';
+  const main = body => head + 'pub fnc main(): int { val w = spawn Worker(); ' + body + ' }';
+  for(const [body, code] of [
+    ['w.send(new Worker()); return 0;', 'E_NEW_TYPE'],
+    ['w.send(w); return 0;', 'E_UNSUPPORTED'],
+    ['w.send(41, 42); return 0;', 'E_ARITY'],
+    ['val result = w.send(41); return result;', 'E_TYPE'],
+    ['val result = w.send(41); return result.is_ok(1);', 'E_ARITY'],
+    ['val result = w.send(41); return result.unknown();', 'E_UNSUPPORTED'],
+    ['val done = w.get_done(); return 0;', 'E_UNSUPPORTED'],
+    ['val result: Result<int, SendError> = w.send(41); return 0;', 'E_SYNTAX'],
+  ]) {
+    const r = compile(main(body));
+    assert.equal(r.ok, false, body);
+    assert.equal(r.code, code, r.message);
+    assert.equal('wasm' in r, false, 'invalid actor send must never emit guest bytes');
+  }
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);

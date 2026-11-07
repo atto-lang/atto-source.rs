@@ -138,6 +138,29 @@ try{
   assert.match(await run(actorExample,'E_MESSAGE_TYPE'),/E_MESSAGE_TYPE/);
   await evaluate("window.__attoActorMessages=undefined");
   console.log('PASS browser: object and pointer-shaped messages fail closed');
+  // Source-level send() compiles to a checked Result-valued mailbox admission.
+  // Responses are delivered later by the host from the real dedicated actor.
+  const sourceSend=[
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): int {',
+    '  val worker = spawn Worker();',
+    '  val accepted: Result<void, SendError> = worker.send(41);',
+    '  if accepted.is_ok() then return 42; else return 0; fi',
+    '}',
+  ].join('\n');
+  assert.match(await run(sourceSend,'actor[1] receive(41) -> 42'),
+    /^actor\[1\] receive\(41\) -> 42\nmain\(\) -> 42$/);
+  console.log('PASS browser: source send Result admits real scalar message and returns before completion');
+  const sourceTwoSends=sourceSend.replace(
+    '  if accepted.is_ok() then return 42; else return 0; fi',
+    '  val second = worker.send(42); if accepted.is_ok() , second.is_ok() then return 42; else return 0; fi');
+  assert.match(await run(sourceTwoSends,'actor[1] receive(42) -> 43'),
+    /^actor\[1\] receive\(41\) -> 42\nactor\[1\] receive\(42\) -> 43\nmain\(\) -> 42$/);
+  console.log('PASS browser: source sends preserve per-actor FIFO across real Worker messages');
+  assert.match(await run(sourceSend.replace('worker.send(41)','worker.get_done()'), 'E_UNSUPPORTED'),
+    /E_UNSUPPORTED/);
+  console.log('PASS browser: get_done fails closed until asynchronous task completion semantics exist');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
