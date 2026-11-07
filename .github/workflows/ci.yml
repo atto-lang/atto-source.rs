@@ -34,6 +34,10 @@ jobs:
       - name: Execute source-dependent generated guest Wasm in Node VM
         run: node tests/wasm-browser.mjs
 
+      - name: Real Chromium browser and worker E2E
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          node tests/browser-e2e.mjs
       - name: Build immutable compiler artifact receipt
         run: |
           mkdir -p dist
