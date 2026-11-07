@@ -31,7 +31,22 @@ The following are rejected, with the code shown:
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
-- Classes, actors, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give `E_UNSUPPORTED`.
+- Nonempty classes and actors, runtime enum values, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give `E_UNSUPPORTED`.
+
+### Top-level `define` (declaration-only phase)
+
+The browser subset accepts **inert, unreferenced** `define class Point as end`,
+`define actor Worker as end`, and `define enum Color as Red, Green end`,
+plus brace bodies and `pub define` / `define pub` visibility. It verifies
+type-name and variant uniqueness. Their declarations are erased only because
+they have no executable members and no guest-visible type values.
+
+This is **not** class/actor/enum runtime support. Class fields/constructors/
+methods, actor state/mailboxes/spawn, enum values/payloads/discriminants,
+inheritance, and nominal typing are rejected (not silently ignored).
+The browser still requires a zero-argument scalar `main` and cannot run a
+general class/actor program. The enum variant spelling is provisional pending
+a canonical shared-grammar decision and is not a cross-backend parity claim.
 
 ### Known divergences from the Java reference
 
