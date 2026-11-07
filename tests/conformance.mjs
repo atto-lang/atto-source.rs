@@ -718,6 +718,24 @@ check('actor/lifecycle-typed-admission-and-invalid-transitions',()=>{
   assert.equal(actor.completionCount,1);
 });
 
+check('actor/lifecycle-async-get_done-remains-fail-closed',()=>{
+  const prelude=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg; }',
+    'end',
+  ].join('\n')+'\n';
+  for(const statement of [
+    'val w = spawn Worker(); val done = w.get_done();',
+    'val w = spawn Worker(); await w.get_done();',
+  ]){
+    const r=compile(prelude+'pub fnc main(): int { '+statement+' return 0; }');
+    assert.equal(r.ok,false,statement);
+    assert.equal(r.code,'E_UNSUPPORTED',r.message);
+    assert.equal('wasm' in r,false,
+      'get_done must not pretend to be a blocking synchronous guest operation');
+  }
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);
