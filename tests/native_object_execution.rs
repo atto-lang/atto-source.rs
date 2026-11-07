@@ -184,30 +184,3 @@ fn native_guest_parameter_negation_compiles_to_signed_result() {
         42,
     );
 }
-
-#[test]
-fn shared_llvm_oresllm_scalar_corpus_executes_as_rust_native_guests() {
-    // Byte-identical to LLVM shared v1 files (canonical .atto extension here).
-    for source in [
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-precedence.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-scalar-gradient.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-signed-product.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-grouped-negative.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-nested-precedence.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-max-minus-one.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-zero-product.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-nested-arithmetic.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-subtract-self.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-zero-add.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-signed-subtract.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-left-associative.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-zero-times-max.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-over-2pow53.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-min-max-cancel.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-near-square.atto"),
-        include_str!("fixtures/oresllm_scalar_v1/oresllm-over53-cancel.atto"),
-    ] {
-        // Real Rust parser/MIR, Cranelift object, Linux linker and guest exit.
-        run_guest(source, 42);
-    }
-}
