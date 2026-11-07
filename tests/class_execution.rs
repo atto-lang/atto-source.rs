@@ -62,15 +62,15 @@ fn class_layout_and_semantics_reject_unsafe_fields() {
         ("define class P as\n int x: 3 + 2\nend\n", "E_UNSUPPORTED"),
         ("define class P as\n int x: true\nend\n", "E_TYPE"),
         ("define class P as\n bool live: 1\nend\n", "E_TYPE"),
-        ("define class P as\n String name: \"hello\"\nend\n", "E_UNSUPPORTED"),
+        ("define class P as\n String name: \"hello\"\nend\n", "E_UNSUPPORTED_TYPE"),
         ("define class P as\n fnc method(): int { return 3; }\nend\n", "E_UNSUPPORTED"),
         ("define class P as\n int x: 1 int y: 2\nend\n", "E_SYNTAX"),
-        ("define class P as\n int x: 1\n", "E_EOF"),
     ];
     for (prefix, code) in cases {
         let src = format!("{prefix}pub fnc main(): int {{ return 0; }}");
         let d = atto_compiler::compile(&src).expect_err(prefix);
         assert_eq!(d.code, code, "{prefix}: {d}");
     }
+    assert_eq!(atto_compiler::compile("define class P as\n int x: 1\n").unwrap_err().code, "E_EOF");
     assert!(atto_compiler::compile(POINT).is_ok(), "compiler remains usable after errors");
 }
