@@ -255,13 +255,13 @@ impl Emit<'_> {
                 self.op(0x00); // trap before any out-of-bounds access
                 self.op(0x0B);
                 self.op(0x23); uleb(&mut self.code,1);
-                self.op(0x21); uleb(&mut self.code,tmp);
+                self.op(0x21); uleb(&mut self.code,tmp as u64);
                 self.op(0x23); uleb(&mut self.code,1);
                 self.i32c(*size as i32);
                 self.op(0x6A); // i32.add
                 self.op(0x24); uleb(&mut self.code,1);
                 let mut write=|this:&mut Self,offset:u32,value:i64| {
-                    this.op(0x20); uleb(&mut this.code,tmp);
+                    this.op(0x20); uleb(&mut this.code,tmp as u64);
                     this.i64c(value);
                     this.op(0x37); uleb(&mut this.code,3);
                     uleb(&mut this.code,offset as u64);
@@ -271,11 +271,11 @@ impl Emit<'_> {
                     write(self,8+(i as u32)*8,*default);
                 }
                 if let Some((func,args))=constructor {
-                    self.op(0x20); uleb(&mut self.code,tmp);
+                    self.op(0x20); uleb(&mut self.code,tmp as u64);
                     for arg in args {self.expr(arg);}
                     self.call(self.l.func(*func));
                 }
-                self.op(0x20); uleb(&mut self.code,tmp);
+                self.op(0x20); uleb(&mut self.code,tmp as u64);
             }
             TExpr::Neg(a) => {
                 self.expr(a);
