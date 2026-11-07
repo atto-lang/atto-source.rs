@@ -556,6 +556,46 @@ for (const op of ['%', '^', '^^']) {
   });
 }
 
+// Browser-actor stage 1: the compiled guest really exports one checked receive
+// handler. The host must create a separate worker/instance; this test only
+// verifies the Wasm entrypoint and fail-closed compiler contracts.
+check('actor/spawn-import-and-receive-guest',()=>{
+  const source=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg + 1; }',
+    'end',
+    'pub fnc main(): int {',
+    '  val worker: Worker = spawn Worker();',
+    '  return 0;',
+    '}',
+  ].join('\n');
+  const r=compile(source);
+  assert.ok(r.ok,r.message);
+  const module=new WebAssembly.Module(r.wasm);
+  assert.ok(WebAssembly.Module.imports(module).some(i=>i.module==='atto'&&i.name==='actor_spawn'));
+  assert.ok(WebAssembly.Module.exports(module).some(i=>i.name==='atto_actor_receive_0'));
+  let spawned=-1;
+  const instance=new WebAssembly.Instance(module,{atto:{actor_spawn:id=>(spawned=id,1)}});
+  assert.equal(instance.exports.main(),0n);
+  assert.equal(spawned,0);
+  assert.equal(instance.exports.atto_actor_receive_0(41n),42n);
+});
+check('actor/fail-closed-ownership-and-handler',()=>{
+  for(const [src,expected] of [
+    ['define actor Worker as end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
+    ['define class Point as int x: 2 end\npub fnc main(): int { val w = spawn Point(); return 0; }','E_SPAWN_TYPE'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(1); return 0; }','E_ARITY'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); w.send(new Point()); return 0; }','E_UNSUPPORTED'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { rt take w; return 0; }','E_UNSUPPORTED'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); return w; }','E_TYPE'],
+  ]){
+    const r=compile(src);
+    assert.equal(r.ok,false,src);
+    assert.equal(r.code,expected,r.message);
+    assert.equal('wasm' in r,false,'failed actor program must never emit guest bytes');
+  }
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);

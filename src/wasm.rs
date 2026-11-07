@@ -63,7 +63,7 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 fn vt(t: Type) -> Option<u8> {
     match t {
         Type::Int => Some(I64),
-        Type::Bool | Type::Enum(_) | Type::Class(_) => Some(I32),
+        Type::Bool | Type::Enum(_) | Type::Class(_) | Type::Actor(_) => Some(I32),
         Type::Void => None,
     }
 }
@@ -224,6 +224,10 @@ impl Emit<'_> {
             TExpr::I64(n) => self.i64c(*n),
             TExpr::Bool(b) => self.i32c(*b as i32),
             TExpr::EnumTag(tag) => self.i32c(*tag as i32),
+            TExpr::SpawnActor(id) => {
+                self.i32c(*id as i32);
+                self.call(self.l.import(Import::ActorSpawn));
+            }
             TExpr::NewClass { size, fields } => {
                 // Every constructor call allocates fresh storage; all defaults
                 // are checked literals, so the private scratch global cannot
@@ -448,6 +452,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintBool => Sig(vec![I32], vec![]),
             Import::PrintStr => Sig(vec![I32, I32], vec![]),
             Import::PrintNewline => Sig(vec![], vec![]),
+            Import::ActorSpawn => Sig(vec![I32], vec![I32]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -523,7 +528,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     section(&mut out, 6, globals);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, if has_memory { 3 } else { 2 });
+    uleb(&mut exp, (if has_memory { 3 } else { 2 }) + p.actor_handlers.len() as u64);
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -534,6 +539,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         name(&mut exp, "memory");
         exp.push(0x02);
         uleb(&mut exp, 0);
+    }
+    for (id, function_index) in &p.actor_handlers {
+        name(&mut exp, &format!("atto_actor_receive_{id}"));
+        exp.push(0x00);
+        uleb(&mut exp, layout.func(*function_index) as u64);
     }
     section(&mut out, 7, exp);
 

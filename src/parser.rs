@@ -203,6 +203,7 @@ pub struct Parser {
     /// Closed-world enum names gathered from define headers before type parsing.
     enum_types: BTreeMap<String, u16>,
     class_types: BTreeMap<String, u16>,
+    actor_types: BTreeMap<String, u16>,
     i: usize,
     depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
@@ -225,8 +226,10 @@ impl Parser {
         // The actual declaration parser validates all headers and bodies.
         let mut enum_types = BTreeMap::new();
         let mut class_types = BTreeMap::new();
+        let mut actor_types = BTreeMap::new();
         let mut next_id = 0u16;
         let mut next_class_id = 0u16;
+        let mut next_actor_id = 0u16;
         for i in 0..toks.len() {
             if !matches!(toks[i].tok, Tok::Ident(ref w) if w == "define") {
                 continue;
@@ -249,12 +252,20 @@ impl Parser {
                         next_class_id = next_class_id.saturating_add(1);
                     }
                 }
+            } else if matches!(toks.get(j), Some(Token { tok: Tok::Ident(w), .. }) if w == "actor") {
+                if let Some(Token { tok: Tok::Ident(name), .. }) = toks.get(j + 1) {
+                    if !actor_types.contains_key(name) {
+                        actor_types.insert(name.clone(), next_actor_id);
+                        next_actor_id = next_actor_id.saturating_add(1);
+                    }
+                }
             }
         }
         Parser {
             toks,
             enum_types,
             class_types,
+            actor_types,
             i: 0,
             depth: 0,
             height: 0,
@@ -376,7 +387,7 @@ impl Parser {
 
     fn is_type_word(&self, n: usize) -> bool {
         matches!(self.word_at(n), Some("int" | "bool" | "boolean" | "void"))
-            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w) || self.class_types.contains_key(w))
+            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w) || self.class_types.contains_key(w) || self.actor_types.contains_key(w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -399,6 +410,7 @@ impl Parser {
             }
             n if self.enum_types.contains_key(n) => Type::Enum(self.enum_types[n]),
             n if self.class_types.contains_key(n) => Type::Class(self.class_types[n]),
+            n if self.actor_types.contains_key(n) => Type::Actor(self.actor_types[n]),
             n => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
         };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
@@ -475,6 +487,7 @@ impl Parser {
         self.expect_word("as")?;
         let mut variants = Vec::new();
         let mut fields = Vec::new();
+        let mut handler = None;
         if kind == DeclarationKind::Enum {
             while !self.is_word("end") {
                 if *self.peek() == Tok::Eof {
@@ -544,6 +557,19 @@ impl Parser {
                         "class fields need a newline, ',' or ';' separator"));
                 }
             }
+        } else if kind == DeclarationKind::Actor {
+            if !self.is_word("end") {
+                let f = self.parse_func_with_actor(true)?;
+                if f.name != "receive" || f.params.len() != 1 || f.params[0].ty != Type::Int
+                    || f.ret != Type::Int || f.params[0].mutable {
+                    return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                        "stage-1 actor requires exactly receive(msg: int) -> int { ... }"));
+                }
+                handler = Some(f);
+                if !self.is_word("end") {
+                    return Err(unsupported(self.pos(), "additional actor members or state"));
+                }
+            }
         } else if !self.is_word("end") {
             if *self.peek() == Tok::Eof {
                 return Err(self.expected("'end'"));
@@ -554,10 +580,14 @@ impl Parser {
             ));
         }
         self.expect_word("end")?;
-        Ok(Declaration { kind, name, pos, variants, fields })
+        Ok(Declaration { kind, name, pos, variants, fields, handler })
     }
 
     fn parse_func(&mut self) -> R<Func> {
+        self.parse_func_with_actor(false)
+    }
+
+    fn parse_func_with_actor(&mut self, actor_method: bool) -> R<Func> {
         if *self.peek() == Tok::At {
             return Err(unsupported(self.pos(), "annotations"));
         }
@@ -580,7 +610,7 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        if !(self.eat_word("fnc") || self.eat_word("routine")) {
+        if !(self.eat_word("fnc") || self.eat_word("routine") || (actor_method && self.is_word("receive"))) {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
                     return Err(unsupported(self.pos(), &format!("top-level '{w}'")));
@@ -797,6 +827,11 @@ impl Parser {
             }
             Some("do") if matches!(self.word_at(1), Some("match" | "switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
+            }
+            Some("spawn") => {
+                let e = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(e))
             }
             Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
@@ -1388,6 +1423,14 @@ impl Parser {
                     ExprKind::Bool(false)
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
+                "spawn" => {
+                    self.advance();
+                    let (actor_name, _) = self.ident("an actor name after 'spawn'")?;
+                    if *self.peek() == Tok::Lt {
+                        return Err(unsupported(self.pos(), "generic actor constructors"));
+                    }
+                    ExprKind::SpawnActor(actor_name, self.parse_call_args()?)
+                }
                 "new" => {
                     self.advance();
                     let (class_name, _) = self.ident("a class name after 'new'")?;
@@ -1397,7 +1440,7 @@ impl Parser {
                     let args = self.parse_call_args()?;
                     ExprKind::NewClass(class_name, args)
                 }
-                "spawn" | "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {

@@ -10,6 +10,7 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-worker.mjs',[new URL('./browser/actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -105,6 +106,24 @@ try{
   console.log('PASS browser: checked int overflow panics with output preserved');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: error recovery restores valid execution');
+  const actorExample=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg + 1; }',
+    'end',
+    'pub fnc main(): int {',
+    '  val worker: Worker = spawn Worker();',
+    '  return 0;',
+    '}',
+  ].join('\n');
+  await evaluate("window.__attoActorMessages=[{handle:1,value:'41'}]");
+  assert.match(await run(actorExample,'actor[1] receive(41) -> 42'),/actor\[1\] receive\(41\) -> 42/);
+  await evaluate("window.__attoActorMessages=undefined");
+  console.log('PASS browser: guest spawn creates real nested Web Worker with separate Wasm instance and typed i64 reply');
+  assert.ok(requests.some(x=>x.path==='/actor-worker.mjs'),'actor worker was actually loaded');
+  await evaluate("window.__attoActorMessages=[{handle:1,value:'9223372036854775808'}]");
+  assert.match(await run(actorExample,'E_MESSAGE_RANGE'),/E_MESSAGE_RANGE/);
+  await evaluate("window.__attoActorMessages=undefined");
+  console.log('PASS browser: out-of-range message is rejected before worker invocation');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

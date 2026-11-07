@@ -73,16 +73,18 @@ pub enum Import {
     PrintBool,
     PrintStr,
     PrintNewline,
+    ActorSpawn,
 }
 
 impl Import {
-    pub const ALL: [Import; 4] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline];
+    pub const ALL: [Import; 5] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn];
     pub fn name(self) -> &'static str {
         match self {
             Import::PrintI64 => "print_i64",
             Import::PrintBool => "print_bool",
             Import::PrintStr => "print_str",
             Import::PrintNewline => "print_newline",
+            Import::ActorSpawn => "actor_spawn",
         }
     }
 }
@@ -93,6 +95,7 @@ pub enum TExpr {
     Bool(bool),
     /// Compact, checked variant index of a distinct nominal enum type.
     EnumTag(u32),
+    SpawnActor(u16),
     /// Allocate an independently owned guest instance with immutable defaults.
     NewClass { size: u32, fields: Vec<(u32, FieldValue)> },
     /// Load a scalar class field at a checked, compiler-derived byte offset.
@@ -159,6 +162,8 @@ pub struct TProgram {
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
     pub heap_used: bool,
+    /// Explicit checked actor handler exports (nominal actor id, function index).
+    pub actor_handlers: Vec<(u16, u32)>,
 }
 
 struct Local {
@@ -173,6 +178,7 @@ struct FnCx<'a> {
     names: &'a BTreeMap<String, Vec<usize>>,
     enums: &'a BTreeMap<String, (u16, Vec<String>)>,
     classes: &'a BTreeMap<String, ClassLayout>,
+    actors: &'a BTreeMap<String, (u16, bool)>,
     heap_used: &'a mut bool,
     ret: Type,
     scopes: Vec<Vec<Local>>,
@@ -223,9 +229,31 @@ pub fn check(p: &Program) -> R<TProgram> {
         classes.insert(declaration.name.clone(), ClassLayout { id: class_id, size, fields });
         class_id += 1;
     }
+    // Actor handler bodies are compiled as hidden free functions, exported for
+    // execution only in a distinct browser Worker with its own Wasm instance.
+    let mut all_funcs = p.funcs.clone();
+    let mut actors = BTreeMap::new();
+    let mut actor_handlers = Vec::new();
+    let mut actor_id = 0u16;
+    for d in &p.declarations {
+        if d.kind != DeclarationKind::Actor { continue; }
+        if let Some(handler) = &d.handler {
+            let mut h = handler.clone();
+            h.name = format!("__atto_actor_receive_{actor_id}");
+            actor_handlers.push((actor_id, all_funcs.len() as u32));
+            all_funcs.push(h);
+        }
+        actors.insert(d.name.clone(), (actor_id, d.handler.is_some()));
+        actor_id += 1;
+    }
+    for f in &p.funcs {
+        if f.name.starts_with("__atto_actor_") {
+            return Err(Diagnostic::new(f.pos, "E_RESERVED", "compiler-internal actor function name"));
+        }
+    }
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (i, f) in p.funcs.iter().enumerate() {
+    for (i, f) in all_funcs.iter().enumerate() {
         if p.declarations.iter().any(|d| d.name == f.name) {
             return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
                 format!("function '{}' conflicts with a nominal declaration", f.name)));
@@ -264,8 +292,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             *i
         }
         None => {
-            let pos = p
-                .funcs
+            let pos = all_funcs
                 .iter()
                 .find(|f| f.name == "main")
                 .map(|f| f.pos)
@@ -281,12 +308,13 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut data = Vec::new();
     let mut funcs = Vec::new();
     let mut heap_used = false;
-    for f in &p.funcs {
+    for f in &all_funcs {
         let mut cx = FnCx {
             sigs: &sigs,
             names: &names,
             enums: &enums,
             classes: &classes,
+            actors: &actors,
             heap_used: &mut heap_used,
             ret: f.ret,
             scopes: vec![Vec::new()],
@@ -333,6 +361,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         imports,
         data,
         heap_used,
+        actor_handlers,
     })
 }
 
@@ -587,6 +616,8 @@ impl FnCx<'_> {
                 let object = self.value(object)?;
                 let id = match object.ty {
                     Type::Class(id) => id,
+                    Type::Actor(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "actor methods including send() -> Result are not lowered yet")),
                     _ => return Err(type_err(pos, "field access requires a class reference")),
                 };
                 let layout = self.classes.values().find(|c| c.id == id)
@@ -715,7 +746,7 @@ impl FnCx<'_> {
                         Type::Bool
                     }
                     BinOp::Eq | BinOp::Ne => {
-                        if matches!(a.ty, Type::Class(_)) || matches!(b.ty, Type::Class(_)) {
+                        if matches!(a.ty, Type::Class(_) | Type::Actor(_)) || matches!(b.ty, Type::Class(_) | Type::Actor(_)) {
                             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                                 "class identity equality is not admitted by the browser compiler"));
                         }
@@ -765,6 +796,16 @@ impl FnCx<'_> {
                 }
             }
             ExprKind::NewClass(name, args) => self.construct_class(name, args, pos)?,
+            ExprKind::SpawnActor(name, args) => {
+                let (id, runnable) = self.actors.get(name).ok_or_else(|| Diagnostic::new(pos,
+                    "E_SPAWN_TYPE", format!("'{name}' is not a declared actor")))?;
+                if !args.is_empty() { return Err(Diagnostic::new(pos, "E_ARITY",
+                    "stage-1 actors have no constructor arguments")); }
+                if !runnable { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "actor must declare a stateless receive(int) -> int handler before spawn")); }
+                self.imports.push(Import::ActorSpawn);
+                TE { e: TExpr::SpawnActor(*id), ty: Type::Actor(*id) }
+            },
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
         })
     }

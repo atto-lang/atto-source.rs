@@ -11,6 +11,8 @@ pub enum Type {
     Enum(u16),
     /// Nominal heap-allocated class reference (guest-private i32 offset).
     Class(u16),
+    /// Nominal browser actor handle; never a transferable object pointer.
+    Actor(u16),
 }
 
 impl Type {
@@ -21,6 +23,7 @@ impl Type {
             Type::Void => "void",
             Type::Enum(_) => "enum",
             Type::Class(_) => "class",
+            Type::Actor(_) => "actor",
         }
     }
 }
@@ -72,6 +75,8 @@ pub struct Declaration {
     pub variants: Vec<String>,
     /// Class fields with explicit scalar defaults; no methods/actors yet.
     pub fields: Vec<ClassField>,
+    /// Stage-1 stateless receive(int) -> int handler.
+    pub handler: Option<Func>,
 }
 
 #[derive(Clone, Debug)]
@@ -212,6 +217,8 @@ pub enum ExprKind {
     /// Class allocation requires an explicit `new ClassName(args)`.
     /// Ordinary function calls must never silently construct objects.
     NewClass(String, Vec<Expr>),
+    /// Actor spawn is host-mediated; no local pseudo-actor execution.
+    SpawnActor(String, Vec<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
     Call(String, Vec<Expr>),
 }
