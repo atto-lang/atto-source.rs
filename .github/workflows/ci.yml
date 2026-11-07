@@ -39,6 +39,9 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
 
+      - name: Execute top-level define declarations in real Wasm compiler and guest
+        run: node tests/declarations.mjs
+
       - name: Real Chromium browser and worker E2E
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
