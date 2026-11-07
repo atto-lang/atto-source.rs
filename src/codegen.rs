@@ -2,7 +2,7 @@
 use crate::{frontend::Expr, mir::Module};
 use cranelift::{
     codegen::{
-        ir::{types, AbiParam, FuncRef, TrapCode, Value},
+        ir::{condcodes::IntCC, types, AbiParam, FuncRef, TrapCode, Value},
         settings,
     },
     frontend::{FunctionBuilder, FunctionBuilderContext},
@@ -103,6 +103,8 @@ fn emit_object_with_arithmetic_mode(
                 checked_i64,
             )?;
             builder.ins().return_(&[result]);
+            // Ternary creates SSA CFG diamonds; seal after all edges exist.
+            builder.seal_all_blocks();
             builder.finalize(frontend_config);
         }
         module
@@ -121,6 +123,35 @@ fn compile_expr(
 ) -> Result<Value, String> {
     match expr {
         Expr::Integer(value) => Ok(builder.ins().iconst(types::I64, *value)),
+        Expr::Bool(value) => Ok(builder.ins().iconst(types::I8, i64::from(*value))),
+        Expr::Equals(a, b) => {
+            let lhs = compile_expr(builder, a, vars, calls, checked_i64)?;
+            let rhs = compile_expr(builder, b, vars, calls, checked_i64)?;
+            Ok(builder.ins().icmp(IntCC::Equal, lhs, rhs))
+        }
+        Expr::Conditional { condition, when_true, when_false } => {
+            let test = compile_expr(builder, condition, vars, calls, checked_i64)?;
+            let yes_block = builder.create_block();
+            let no_block = builder.create_block();
+            let join_block = builder.create_block();
+            builder.ins().brif(test, yes_block, &[], no_block, &[]);
+
+            builder.switch_to_block(yes_block);
+            let yes = compile_expr(builder, when_true, vars, calls, checked_i64)?;
+            let result_type = builder.func.dfg.value_type(yes);
+            builder.ins().jump(join_block, &[yes.into()]);
+
+            builder.switch_to_block(no_block);
+            let no = compile_expr(builder, when_false, vars, calls, checked_i64)?;
+            if builder.func.dfg.value_type(no) != result_type {
+                return Err("MIR conditional branch types diverged at codegen".into());
+            }
+            builder.ins().jump(join_block, &[no.into()]);
+
+            let joined = builder.append_block_param(join_block, result_type);
+            builder.switch_to_block(join_block);
+            Ok(joined)
+        }
         Expr::Name(name) => vars
             .get(name)
             .copied()

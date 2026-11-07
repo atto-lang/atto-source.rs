@@ -19,7 +19,8 @@ pub fn compile_checked_i64(source: &str) -> Result<Vec<u8>, String> {
     let module = mir::lower(ast).map_err(|e| e.to_string())?;
     // Reuse the bounded traversal guard only; its v1 facts do not model
     // checked overflow edges and must not be published as a certificate.
-    let _ = effects::export_effect_ir_checked(&module)?;
+    // Reuse bounded MIR admission, but never emit incomplete CFG facts.
+    effects::check_tree_budget(&module)?;
     codegen::emit_object_checked_i64(&module)
 }
 
@@ -38,7 +39,10 @@ pub fn compile_with_ref_layout(
     let ast = frontend::parse(source).map_err(|e| e.to_string())?;
     let module = mir::lower_with_ref_layout(ast, managed_refs).map_err(|e| e.to_string())?;
     // Preserve mainline admission before ordinary code generation.
-    effects::export_effect_ir_checked(&module)?;
+    effects::check_tree_budget(&module)?;
+    if !mir::uses_typed_conditionals(&module) {
+        effects::export_effect_ir_checked(&module)?;
+    }
     codegen::emit_object(&module)
 }
 /// Generate the object and its conservative effect-IR model from precisely

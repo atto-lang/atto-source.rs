@@ -5,6 +5,9 @@ use serde_json::{json, Value};
 
 fn analyze_expr(expr: &Expr, out: &mut Vec<Value>) {
     match expr {
+        Expr::Bool(_) | Expr::Equals(_, _) | Expr::Conditional { .. } => {
+            unreachable!("legacy effect IR cannot encode typed conditionals")
+        }
         Expr::Integer(_) | Expr::Name(_) => {
             out.push(json!({"kind":"compute", "units": 1}));
         }
@@ -35,7 +38,7 @@ const MAX_EFFECT_FUNCTIONS: usize = 4096;
 /// Checked export path required by CLI and paired compilation. The existing
 /// low-level exporter remains available for compatibility but MUST NOT be
 /// treated as a soundness/security boundary on its own.
-pub fn export_effect_ir_checked(module: &Module) -> Result<Value, String> {
+pub fn check_tree_budget(module: &Module) -> Result<(), String> {
     if module.functions.is_empty() || module.functions.len() > MAX_EFFECT_FUNCTIONS {
         return Err("effect IR function budget exceeded or module empty".into());
     }
@@ -53,7 +56,16 @@ pub fn export_effect_ir_checked(module: &Module) -> Result<Value, String> {
             }
             count += 1;
             match expr {
-                Expr::Integer(_) | Expr::Name(_) => {}
+                Expr::Integer(_) | Expr::Name(_) | Expr::Bool(_) => {}
+                Expr::Equals(a, b) => {
+                    pending.push((a, depth + 1));
+                    pending.push((b, depth + 1));
+                }
+                Expr::Conditional { condition, when_true, when_false } => {
+                    pending.push((condition, depth + 1));
+                    pending.push((when_true, depth + 1));
+                    pending.push((when_false, depth + 1));
+                }
                 Expr::Negate(v) => pending.push((v, depth + 1)),
                 Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
                     pending.push((a, depth + 1));
@@ -65,6 +77,14 @@ pub fn export_effect_ir_checked(module: &Module) -> Result<Value, String> {
             }
         }
     }
+    Ok(())
+}
+
+pub fn export_effect_ir_checked(module: &Module) -> Result<Value, String> {
+    check_tree_budget(module)?;
+    if crate::mir::uses_typed_conditionals(module) {
+        return Err("effect IR v1 cannot encode conditional branches; NOT_CERTIFIED".into());
+    }
     Ok(export_effect_ir(module))
 }
 
@@ -72,6 +92,14 @@ pub fn export_effect_ir_checked(module: &Module) -> Result<Value, String> {
 /// unbounded waits, dynamic calls, or actor mutation operations exist in it.
 /// Abstract compute units are NOT CPU instructions, WCET or timing guarantees.
 pub fn export_effect_ir(module: &Module) -> Value {
+    if crate::mir::uses_typed_conditionals(module) {
+        return json!({
+            "schema_version": 1,
+            "effects_complete": false,
+            "functions": [],
+            "unsupported": "conditional CFG edges and branch effects not modeled"
+        });
+    }
     let functions: Vec<_> = module
         .functions
         .iter()

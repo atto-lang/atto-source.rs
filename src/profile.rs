@@ -33,7 +33,16 @@ impl BuildProfile {
 
 fn collect_calls(expr: &Expr, out: &mut Vec<String>) {
     match expr {
-        Expr::Integer(_) | Expr::Name(_) => {}
+        Expr::Integer(_) | Expr::Name(_) | Expr::Bool(_) => {}
+        Expr::Equals(a, b) => {
+            collect_calls(a, out);
+            collect_calls(b, out);
+        }
+        Expr::Conditional { condition, when_true, when_false } => {
+            collect_calls(condition, out);
+            collect_calls(when_true, out);
+            collect_calls(when_false, out);
+        }
         Expr::Negate(value) => collect_calls(value, out),
         Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
             collect_calls(a, out);
