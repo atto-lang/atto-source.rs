@@ -47,6 +47,7 @@ pub enum Tok {
     PipeGt,
     Amp,
     At,
+    Hash,
     Eof,
 }
 
@@ -270,18 +271,12 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('|', _) => (Tok::Pipe, 1),
             ('&', _) => (Tok::Amp, 1),
             ('@', _) => (Tok::At, 1),
+            ('#', _) => (Tok::Hash, 1),
             ('`', _) => {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED",
                     "template strings are not supported by the browser compiler yet",
-                ))
-            }
-            ('#', _) => {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED",
-                    "Symbols are not supported by the browser compiler yet",
                 ))
             }
             _ => return Err(Diagnostic::new(pos, "E_TOKEN", "unexpected character")),

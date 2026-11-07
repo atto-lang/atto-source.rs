@@ -27,6 +27,8 @@ const RESERVED: &[&str] = &[
     "contract",
     "conforms",
     "class",
+    "enum",
+    "final",
     "struct",
     "interface",
     "trait",
@@ -143,6 +145,7 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "writech",
     "rt",
     "class",
+    "enum",
     "struct",
     "module",
     "namespace",
@@ -369,17 +372,146 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> R<Program> {
         let mut funcs = Vec::new();
+        let mut decls = Vec::new();
         while *self.peek() != Tok::Eof {
-            if funcs.len() >= MAX_FUNCS {
-                return Err(Diagnostic::new(
-                    self.pos(),
-                    "E_SOURCE_LIMIT",
-                    format!("more than {MAX_FUNCS} functions"),
-                ));
+            let is_define = self.is_word("define") ||
+                (self.is_word("pub") && self.word_at(1) == Some("define"));
+            if is_define {
+                let saved = self.i;
+                self.eat_word("pub");
+                self.expect_word("define")?;
+                self.eat_word("pub");
+                if matches!(self.word_at(0), Some("fnc" | "routine")) {
+                    self.i = saved;
+                    funcs.push(self.parse_func()?);
+                } else {
+                    if decls.len() >= MAX_FUNCS {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many type declarations"));
+                    }
+                    decls.push(self.parse_decl()?);
+                }
+            } else {
+                funcs.push(self.parse_func()?);
             }
-            funcs.push(self.parse_func()?);
+            if funcs.len() > MAX_FUNCS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many functions"));
+            }
         }
-        Ok(Program { funcs })
+        // Type-only compilation produces inert main() -> 0 and retains all
+        // actual definitions in the versioned guest custom section.
+        if funcs.is_empty() && !decls.is_empty() {
+            let pos = Pos { line: 1, col: 1 };
+            funcs.push(Func {
+                name: "main".into(), pos, params: vec![], ret: Type::Int,
+                body: vec![Stmt::Return(Some(Expr {kind: ExprKind::Int(Some(0)), pos}), pos)],
+            });
+        }
+        Ok(Program { funcs, decls })
+    }
+
+    fn parse_decl(&mut self) -> R<TypeDecl> {
+        let kind_pos = self.pos();
+        let kind = match self.word_at(0) {
+            Some("class") => DeclKind::Class,
+            Some("actor") => DeclKind::Actor,
+            Some("enum") => DeclKind::Enum,
+            Some("struct") => DeclKind::Struct,
+            Some("interface") => DeclKind::Interface,
+            Some("trait") => DeclKind::Trait,
+            Some(word) => return Err(unsupported(kind_pos, &format!("top-level define {word}"))),
+            None => return Err(self.expected("a declaration kind after 'define'")),
+        };
+        self.advance();
+        let (name, pos) = self.ident("a type declaration name")?;
+        if *self.peek() == Tok::Lt {
+            return Err(unsupported(self.pos(), "generic type declarations"));
+        }
+        if matches!(self.word_at(0), Some("extends" | "implements" | "impl" | "conforms")) {
+            return Err(unsupported(self.pos(), "inheritance and trait conformance"));
+        }
+        let brace = if self.eat_word("as") { false }
+            else if self.eat(&Tok::LBrace) { true }
+            else { return Err(self.expected("'as' or '{'")); };
+        self.enter()?;
+        let mut fields = Vec::new();
+        let mut variants = Vec::new();
+        while !(if brace { *self.peek() == Tok::RBrace } else { self.is_word("end") }) {
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected(if brace { "'}'" } else { "'end'" }));
+            }
+            if matches!(self.word_at(0), Some("define" | "class" | "actor" | "enum" | "struct" | "interface" | "trait")) {
+                return Err(unsupported(self.pos(), "nested type declarations"));
+            }
+            if fields.len() + variants.len() >= MAX_FUNCS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many declaration members"));
+            }
+            if kind == DeclKind::Enum {
+                let symbol = self.eat(&Tok::Hash);
+                let (member, member_pos) = self.ident("an enum variant")?;
+                if variants.iter().any(|v: &EnumVariant| v.name == member) {
+                    return Err(Diagnostic::new(member_pos, "E_DUPLICATE", format!("duplicate enum variant '{member}'")));
+                }
+                variants.push(EnumVariant {name: member, symbol, pos: member_pos});
+                if self.eat(&Tok::Comma) || self.eat(&Tok::Semi) { continue; }
+                let at_end = if brace { *self.peek() == Tok::RBrace } else { self.is_word("end") };
+                if !at_end && self.toks[self.i - 1].pos.line == self.pos().line {
+                    return Err(self.expected("',' or a newline between enum variants"));
+                }
+            } else {
+                if matches!(kind, DeclKind::Interface | DeclKind::Trait) {
+                    return Err(unsupported(self.pos(), "interface and trait members"));
+                }
+                let field = self.parse_decl_field()?;
+                if fields.iter().any(|v: &DeclField| v.name == field.name) {
+                    return Err(Diagnostic::new(field.pos, "E_DUPLICATE", format!("duplicate field '{}'",field.name)));
+                }
+                fields.push(field);
+            }
+        }
+        if brace { self.expect(Tok::RBrace, "'}'")?; }
+        else { self.expect_word("end")?; }
+        self.leave();
+        Ok(TypeDecl { kind, name, pos, fields, variants })
+    }
+
+    fn parse_decl_field(&mut self) -> R<DeclField> {
+        let pos = self.pos();
+        self.eat_word("pub");
+        let final_slot = self.eat_word("final") || self.eat_word("const");
+        self.eat_word("mut");
+        self.eat_word("val") || self.eat_word("let");
+        let (ty, name) = if self.is_type_word(0) {
+            let ty = self.parse_type()?;
+            let (name, _) = self.ident("a field name")?;
+            (ty, name)
+        } else if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+            let (name, _) = self.ident("a field name")?;
+            self.expect(Tok::Colon, "':'")?;
+            let ty = self.parse_type()?;
+            (ty, name)
+        } else {
+            return Err(unsupported(pos, "methods, constructors and non-scalar fields"));
+        };
+        if ty == Type::Void { return Err(Diagnostic::new(pos,"E_TYPE","void is not a field type")); }
+        let initial = if self.eat(&Tok::Colon) || self.eat(&Tok::Assign) {
+            let expr = self.parse_expr()?;
+            let lit = match expr.kind {
+                ExprKind::Bool(v) => DeclValue::Bool(v),
+                ExprKind::Int(Some(v)) if v <= i64::MAX as u64 => DeclValue::Int(v as i64),
+                ExprKind::Unary(UnOp::Neg, rhs) => match rhs.kind {
+                    ExprKind::Int(Some(v)) if v <= i64::MAX as u64 => DeclValue::Int(-(v as i64)),
+                    ExprKind::Int(None) => DeclValue::Int(i64::MIN),
+                    _ => return Err(unsupported(expr.pos, "non-constant field initializers")),
+                },
+                _ => return Err(unsupported(expr.pos, "non-constant field initializers")),
+            };
+            if !matches!((&ty, &lit), (Type::Int, DeclValue::Int(_)) | (Type::Bool, DeclValue::Bool(_))) {
+                return Err(Diagnostic::new(pos, "E_TYPE", "field initializer does not match declared type"));
+            }
+            Some(lit)
+        } else { None };
+        self.terminator()?;
+        Ok(DeclField {name, ty, final_slot, initial, pos})
     }
 
     fn parse_func(&mut self) -> R<Func> {
@@ -387,6 +519,8 @@ impl Parser {
             return Err(unsupported(self.pos(), "annotations"));
         }
         let start = self.pos();
+        self.eat_word("pub");
+        self.eat_word("define");
         self.eat_word("pub");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
@@ -1211,6 +1345,7 @@ impl Parser {
                     ExprKind::Var(s)
                 }
             },
+            Tok::Hash => return Err(unsupported(pos, "Symbol expressions")),
             Tok::Pipe => return Err(unsupported(pos, "lambdas")),
             Tok::LBracket => return Err(unsupported(pos, "sequence literals")),
             Tok::LBrace => return Err(unsupported(pos, "record literals")),
@@ -1284,6 +1419,7 @@ fn describe(t: &Tok) -> String {
                 Tok::PipeGt => "|>",
                 Tok::Amp => "&",
                 Tok::At => "@",
+                Tok::Hash => "#",
                 _ => "?",
             };
             format!("'{s}'")

@@ -105,3 +105,18 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+## Top-level define declarations (declaration-only support)
+
+The browser compiler now parses and checks top-level define class, define actor, define enum,
+define struct, define interface, define trait, and define fnc. Both pub define and define pub
+are accepted. Classes/actors/structs support scalar int/bool fields with optional literal
+initializers; enums accept nominal cases and #symbol cases. Duplicate type names, duplicate
+fields/cases, invalid initializers and unclosed bodies are diagnosed before code generation.
+
+The compiler preserves actual declarations in the versioned guest Wasm custom section
+atto.declarations.v1, rather than silently stripping them. Files containing only declarations
+produce an inert guest main() returning zero. This does NOT implement class instantiation,
+inheritance, methods, actor scheduling, sealed state, enum operations or isolation. new,
+spawn and unsupported member bodies still fail closed with E_UNSUPPORTED and no guest.
+The compiler ABI v2 and all existing scalar-execution semantics remain unchanged.

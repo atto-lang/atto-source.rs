@@ -1,7 +1,7 @@
 // expect-error: E_UNSUPPORTED
 // java: accepts
 define class P as
-  int x: 0
+  get_x(): int { return 1; }
 end
 pub fnc main(): int {
   return 0;

@@ -111,6 +111,7 @@ pub struct TProgram {
     pub main: u32,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
+    pub decls: Vec<TypeDecl>,
 }
 
 struct Local {
@@ -139,9 +140,22 @@ fn type_err(pos: Pos, msg: impl Into<String>) -> Diagnostic {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    let mut declared = BTreeMap::new();
+    for d in &p.decls {
+        if let Some(previous) = declared.insert(d.name.clone(), d.kind) {
+            return Err(Diagnostic::new(d.pos, "E_DUPLICATE",
+                format!("type '{}' already declared as {}", d.name, previous.name())));
+        }
+        if matches!(d.name.as_str(), "main" | "stdio" | "And" | "Or" | "Xor") {
+            return Err(Diagnostic::new(d.pos, "E_DUPLICATE", "declaration conflicts with reserved runtime name"));
+        }
+    }
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
+        if declared.contains_key(&f.name) {
+            return Err(Diagnostic::new(f.pos, "E_DUPLICATE", format!("function conflicts with type {}", f.name)));
+        }
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio") {
             return Err(Diagnostic::new(
                 f.pos,
@@ -236,6 +250,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
+        decls: p.decls.clone(),
     })
 }
 

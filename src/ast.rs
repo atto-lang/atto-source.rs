@@ -22,7 +22,42 @@ impl Type {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub funcs: Vec<Func>,
+    pub decls: Vec<TypeDecl>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclKind { Class, Actor, Enum, Struct, Interface, Trait }
+impl DeclKind {
+    pub fn name(self) -> &'static str {
+        match self { Self::Class=>"class", Self::Actor=>"actor", Self::Enum=>"enum",
+            Self::Struct=>"struct", Self::Interface=>"interface", Self::Trait=>"trait" }
+    }
+    pub fn tag(self) -> u8 {
+        match self { Self::Class=>1, Self::Actor=>2, Self::Enum=>3,
+            Self::Struct=>4, Self::Interface=>5, Self::Trait=>6 }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeDecl {
+    pub kind: DeclKind,
+    pub name: String,
+    pub pos: Pos,
+    pub fields: Vec<DeclField>,
+    pub variants: Vec<EnumVariant>,
+}
+#[derive(Clone, Debug)]
+pub struct EnumVariant { pub name: String, pub symbol: bool, pub pos: Pos }
+#[derive(Clone, Debug)]
+pub struct DeclField {
+    pub name: String,
+    pub ty: Type,
+    pub final_slot: bool,
+    pub initial: Option<DeclValue>,
+    pub pos: Pos,
+}
+#[derive(Clone, Debug)]
+pub enum DeclValue { Int(i64), Bool(bool) }
 
 #[derive(Clone, Debug)]
 pub struct Func {

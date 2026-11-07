@@ -12,7 +12,7 @@
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
-use crate::ast::{BinOp, Type};
+use crate::ast::{BinOp, Type, TypeDecl, DeclValue};
 use crate::check::{Builtin, Import, TExpr, TProgram, TStmt, TE};
 
 pub const MAX_OUTPUT: usize = 1 << 20;
@@ -396,6 +396,35 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
     out
 }
 
+
+fn declaration_metadata(decls: &[TypeDecl]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    name(&mut payload, "atto.declarations.v1");
+    uleb(&mut payload, 1); // schema version
+    uleb(&mut payload, decls.len() as u64);
+    for d in decls {
+        payload.push(d.kind.tag());
+        name(&mut payload, &d.name);
+        uleb(&mut payload, (d.fields.len() + d.variants.len()) as u64);
+        for f in &d.fields {
+            payload.push(1);
+            name(&mut payload, &f.name);
+            payload.push(match f.ty { Type::Int=>1, Type::Bool=>2, Type::Void=>0 });
+            payload.push(u8::from(f.final_slot));
+            match &f.initial {
+                None => payload.push(0),
+                Some(DeclValue::Int(v)) => { payload.push(1); payload.extend_from_slice(&v.to_le_bytes()); }
+                Some(DeclValue::Bool(v)) => { payload.push(2); payload.push(u8::from(*v)); }
+            }
+        }
+        for v in &d.variants {
+            payload.push(if v.symbol {3} else {2});
+            name(&mut payload, &v.name);
+        }
+    }
+    payload
+}
+
 pub fn emit(p: &TProgram) -> Vec<u8> {
     let layout = Layout {
         imports: p.imports.clone(),
@@ -538,5 +567,6 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     uleb(&mut names, sub.len() as u64);
     names.extend(sub);
     section(&mut out, 0, names);
+    if !p.decls.is_empty() { section(&mut out, 0, declaration_metadata(&p.decls)); }
     out
 }
