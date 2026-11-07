@@ -54,7 +54,7 @@ fn enum_variant_constructor_and_member_surface_is_fail_closed() {
         ("define enum E as A end\npub fnc main(): int { val x = E.A(3); return 0; }", "E_UNSUPPORTED"),
         ("define enum E as A end\npub fnc main(): int { val x = E.A.name; return 0; }", "E_TYPE"),
         ("define class C as\n fnc unsupported(): int { return 0; }\nend\npub fnc main(): int { return 0; }", "E_UNSUPPORTED"),
-        ("define actor A as\n receive(int x) -> void :: return; end\nend\npub fnc main(): int { return 0; }", "E_UNSUPPORTED"),
+        ("define actor A as\n receive(int x) -> void { return; }\nend\npub fnc main(): int { return 0; }", "E_UNSUPPORTED"),
     ];
     for (source, code) in cases {
         assert_eq!(atto_compiler::compile(source).unwrap_err().code, code, "{source}");
