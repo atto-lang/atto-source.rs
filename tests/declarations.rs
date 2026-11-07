@@ -32,7 +32,8 @@ fn member_semantics_and_collisions_reject_before_codegen() {
         ("define actor A as", "E_EOF"),
         ("define module M as end", "E_UNSUPPORTED"),
     ] {
-        let err = compile(&source(d)).expect_err(d);
+        let input = if d == "define actor A as" { d.to_string() } else { source(d) };
+        let err = compile(&input).expect_err(d);
         assert_eq!(err.code, expected, "{d}: {err}");
     }
 }
