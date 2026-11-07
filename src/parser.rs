@@ -8,6 +8,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use std::collections::BTreeMap;
 
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
@@ -198,6 +199,8 @@ pub fn is_reserved(name: &str) -> bool {
 
 pub struct Parser {
     toks: Vec<Token>,
+    /// Closed-world enum names gathered from define headers before type parsing.
+    enum_types: BTreeMap<String, u16>,
     i: usize,
     depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
@@ -215,8 +218,31 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
+        // Header pre-scan permits named enum types in functions declared before
+        // the enum, without evaluating arbitrary source or trusting a tag.
+        // The actual declaration parser validates all headers and bodies.
+        let mut enum_types = BTreeMap::new();
+        let mut next_id = 0u16;
+        for i in 0..toks.len() {
+            if !matches!(toks[i].tok, Tok::Ident(ref w) if w == "define") {
+                continue;
+            }
+            let mut j = i + 1;
+            if matches!(toks.get(j), Some(Token { tok: Tok::Ident(w), .. }) if w == "pub") {
+                j += 1;
+            }
+            if matches!(toks.get(j), Some(Token { tok: Tok::Ident(w), .. }) if w == "enum") {
+                if let Some(Token { tok: Tok::Ident(name), .. }) = toks.get(j + 1) {
+                    if !enum_types.contains_key(name) {
+                        enum_types.insert(name.clone(), next_id);
+                        next_id = next_id.saturating_add(1);
+                    }
+                }
+            }
+        }
         Parser {
             toks,
+            enum_types,
             i: 0,
             depth: 0,
             height: 0,
@@ -338,7 +364,7 @@ impl Parser {
 
     fn is_type_word(&self, n: usize) -> bool {
         matches!(self.word_at(n), Some("int" | "bool" | "boolean" | "void"))
-            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -359,6 +385,7 @@ impl Parser {
                     format!("type '{n}' is not supported by the browser compiler yet"),
                 ))
             }
+            n if self.enum_types.contains_key(n) => Type::Enum(self.enum_types[n]),
             n => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
         };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
@@ -424,6 +451,11 @@ impl Parser {
         };
         self.advance();
         let (name, pos) = self.ident("a declaration name")?;
+        if matches!(name.as_str(), "int" | "bool" | "boolean" | "void")
+            || UNSUPPORTED_TYPES.contains(&name.as_str())
+        {
+            return Err(Diagnostic::new(pos, "E_RESERVED", format!("'{name}' is a builtin type")));
+        }
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic declarations"));
         }
@@ -1231,6 +1263,16 @@ impl Parser {
                                 };
                                 continue;
                             }
+                        }
+                        if self.enum_types.contains_key(base) {
+                            let enum_name = base.clone();
+                            self.advance();
+                            let (variant, _) = self.ident("an enum variant")?;
+                            e = Expr {
+                                kind: ExprKind::EnumVariant { enum_name, variant },
+                                pos,
+                            };
+                            continue;
                         }
                     }
                     return Err(unsupported(dot, "member access"));
