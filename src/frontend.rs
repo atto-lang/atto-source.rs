@@ -51,6 +51,8 @@ impl std::error::Error for ParseError {}
 enum Kind {
     #[token("pub")]
     Pub,
+    #[token("define")]
+    Define,
     #[token("static")]
     Static,
     #[token("fnc")]
@@ -299,9 +301,18 @@ impl Parser {
         Ok(token)
     }
     fn function(&mut self) -> Result<Function, ParseError> {
+        // Canonical AttoLang permits both "define pub fnc" and
+        // "pub define fnc"; the declaration still must be a scalar fnc.
+        let leading_define = self.peek() == Some(Kind::Define);
+        if leading_define {
+            self.expect(Kind::Define)?;
+        }
         let exported = self.peek() == Some(Kind::Pub);
         if exported {
             self.expect(Kind::Pub)?;
+        }
+        if !leading_define && self.peek() == Some(Kind::Define) {
+            self.expect(Kind::Define)?;
         }
         if self.peek() == Some(Kind::Static) {
             self.expect(Kind::Static)?;
