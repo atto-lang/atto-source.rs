@@ -150,6 +150,57 @@ check('define/rejection-and-no-artifact', () => {
   assert.equal('wasm' in spawn, false);
 });
 
+
+// Regression bridge from the earlier declaration/semantics stack:
+// do not let unrelated valid class, enum and actor declarations mask removed
+// operators or suppress eager right-hand-side guest effects.
+const combinedDecls = [
+  'define class Counter as',
+  '  int start: 2',
+  'end',
+  'define enum Status as Ready, Done end',
+  'define actor Worker as end',
+].join('\n') + '\n';
+for (const op of ['%', '^', '^^']) {
+  check('combined-declarations/removed-operator-' + op, () => {
+    const result = compile(combinedDecls +
+      'pub fnc main(): int { val c = new Counter(); return c.start ' + op + ' 2; }');
+    assert.equal(result.ok, false, 'removed operator accepted in declaration-bearing source');
+    assert.equal(result.code, 'E_UNSUPPORTED', result.message);
+    assert.equal('wasm' in result, false, 'invalid source must produce no Wasm guest');
+    assert.ok(result.line > 0 && result.col > 0, 'diagnostic position must be valid');
+  });
+}
+for (const [name, condition] of [
+  ['and-false', 'false, crash()'],
+  ['or-true', 'true | crash()'],
+]) {
+  check('combined-declarations/eager-' + name + '-traps', () => {
+    const source = combinedDecls + [
+      'fnc crash(): bool {',
+      '  stdio.println("rhs");',
+      '  val max_value = 9223372036854775807;',
+      '  return max_value + 1 eq 0;',
+      '}',
+      'pub fnc main(): int {',
+      '  val counter = new Counter();',
+      '  val status: Status = Status.Ready;',
+      '  if ' + condition + ' then',
+      '    return counter.start;',
+      '  fi',
+      '  return 42;',
+      '}',
+    ].join('\n');
+    const result = compile(source);
+    assert.ok(result.ok, result.message);
+    assert.deepEqual(compile(source).wasm, result.wasm, 'compilation must be deterministic');
+    const guest = runGuest(result.wasm);
+    assert.equal(guest.ok, false, 'eager RHS must trap rather than short-circuit');
+    assert.equal(guest.panic, 1, 'checked-overflow panic code must survive');
+    assert.equal(guest.stdout, 'rhs\n', 'RHS side effect must occur before trap');
+  });
+}
+
 // Same source and compiler image runs on the native Rust host and wasm32.
 // These tests execute the generated guest module, not just check parser AST.
 check('enum/forward-type-guest-execution', () => {
