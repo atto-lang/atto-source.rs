@@ -1,5 +1,5 @@
 // expect-exit: 48
-fnc fresh(): Score { return Score(); }
+fnc fresh(): Score { return new Score(); }
 pub fnc main(): int {
   val a = fresh();
   val b = fresh();
