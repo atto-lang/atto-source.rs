@@ -372,6 +372,7 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> R<Program> {
         let mut funcs = Vec::new();
+        let mut actor_handlers = Vec::new();
         let mut type_names = BTreeSet::new();
         while *self.peek() != Tok::Eof {
             if funcs.len() + type_names.len() >= MAX_FUNCS {
@@ -384,7 +385,7 @@ impl Parser {
             if self.is_word("define")
                 || (self.is_word("pub") && self.word_at(1) == Some("define"))
             {
-                let (name, pos, methods) = self.parse_type_decl()?;
+                let (name, pos, methods, handlers) = self.parse_type_decl()?;
                 if !type_names.insert(name.clone()) || funcs.iter().any(|f: &Func| f.name == name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate top-level name '{name}'")));
                 }
@@ -392,6 +393,7 @@ impl Parser {
                     return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many class methods"));
                 }
                 funcs.extend(methods);
+                actor_handlers.extend(handlers);
             } else {
                 let func = self.parse_func()?;
                 if type_names.contains(&func.name) {
@@ -400,13 +402,13 @@ impl Parser {
                 funcs.push(func);
             }
         }
-        Ok(Program { funcs })
+        Ok(Program { funcs, actor_handlers })
     }
 
     /// Classes admit executable scalar static methods, lowered into ordinary
     /// typed Wasm functions with namespace-qualified names. No class instance,
     /// actor runtime or nominal enum value is created by this limited stage.
-    fn parse_type_decl(&mut self) -> R<(String, Pos, Vec<Func>)> {
+    fn parse_type_decl(&mut self) -> R<(String, Pos, Vec<Func>, Vec<String>)> {
         self.eat_word("pub");
         self.expect_word("define")?;
         self.eat_word("pub");
@@ -435,6 +437,7 @@ impl Parser {
         };
         let closing = if braces { Tok::RBrace } else { Tok::Ident("end".into()) };
         let mut methods = Vec::new();
+        let mut handlers = Vec::new();
         if kind == "class" {
             while *self.peek() != closing {
                 if *self.peek() == Tok::Eof {
@@ -453,6 +456,32 @@ impl Parser {
                 if methods.len() >= MAX_FUNCS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many class methods"));
                 }
+            }
+        } else if kind == "actor" {
+            while *self.peek() != closing {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected(if braces { "'}'" } else { "'end'" }));
+                }
+                // Only a stateless scalar receive handler is admitted. Its
+                // typed code is preserved for compile_actor() and rejected by
+                // the ordinary main() guest path below.
+                self.eat_word("pub");
+                self.eat_word("fnc");
+                let (method_name, at) = self.ident("an actor method name")?;
+                if method_name != "receive" {
+                    return Err(unsupported(at, "actor methods other than receive"));
+                }
+                let mut handler = self.parse_func_tail(method_name, at)?;
+                if handler.params.len() != 1 || handler.params[0].ty != Type::Int ||
+                    handler.ret != Type::Int {
+                    return Err(unsupported(at, "actor receive signatures other than (int)->int"));
+                }
+                if !methods.is_empty() {
+                    return Err(Diagnostic::new(at, "E_DUPLICATE", "actor has more than one receive handler"));
+                }
+                handler.name = format!("{name}.receive");
+                handlers.push(handler.name.clone());
+                methods.push(handler);
             }
         } else if kind == "enum" {
             let mut variants = BTreeSet::new();
@@ -491,7 +520,7 @@ impl Parser {
         }
         self.expect(closing, if braces { "'}'" } else { "'end'" })?;
         self.eat(&Tok::Semi);
-        Ok((name, pos, methods))
+        Ok((name, pos, methods, handlers))
     }
 
     fn parse_func(&mut self) -> R<Func> {
@@ -530,6 +559,11 @@ impl Parser {
             ));
         }
         let (name, pos) = self.ident("a function name")?;
+        self.parse_func_tail(name, pos)
+    }
+
+    /// Share the real type/parameter/body parser with actor receive methods.
+    fn parse_func_tail(&mut self, name: String, pos: Pos) -> R<Func> {
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic functions"));
         }
