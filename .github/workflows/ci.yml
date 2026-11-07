@@ -43,6 +43,26 @@ jobs:
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
           node tests/browser-e2e.mjs
+      # Public frontend source only: no cross-repository private token and
+      # no release permissions. Pinned SHA makes browser evidence reproducible.
+      - name: Checkout exact public playground frontend for private-candidate rehearsal
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: atto-lang/atto-lang.github.io
+          ref: 84c4388fb5a9ba88abab4249c068a628df8002ac
+          path: public-site-checkout
+          persist-credentials: false
+      - name: Candidate compiler in real public playground IDE (isolated, no publication)
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+        run: |
+          test "$(git -C public-site-checkout rev-parse HEAD)" = 84c4388fb5a9ba88abab4249c068a628df8002ac
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          node tests/public-playground-candidate-e2e.mjs
+          # The tested artifact is isolated to an OS temporary directory and
+          # must not be vendored to public source or bundled in the CI artifact.
+          test ! -e public/atto_compiler.wasm
+          test ! -e public-site-checkout/play/release-manifest.json
       - name: Build immutable compiler artifact receipt
         run: |
           mkdir -p dist
