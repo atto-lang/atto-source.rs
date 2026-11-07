@@ -50,6 +50,8 @@ impl Import {
 pub enum TExpr {
     I64(i64),
     Bool(bool),
+    /// Compact, checked variant index of a distinct nominal enum type.
+    EnumTag(u32),
     Local(u32),
     Neg(Box<TE>),
     Not(Box<TE>),
@@ -123,6 +125,7 @@ struct Local {
 struct FnCx<'a> {
     sigs: &'a BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
     names: &'a BTreeMap<String, Vec<usize>>,
+    enums: &'a BTreeMap<String, (u16, Vec<String>)>,
     ret: Type,
     scopes: Vec<Vec<Local>>,
     locals: Vec<Type>,
@@ -139,9 +142,23 @@ fn type_err(pos: Pos, msg: impl Into<String>) -> Diagnostic {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // Enum nominal identities are assigned by the parser's closed-world
+    // declaration-header order. Never merge variants of distinct enum types.
+    let mut enums: BTreeMap<String, (u16, Vec<String>)> = BTreeMap::new();
+    let mut enum_id = 0u16;
+    for declaration in &p.declarations {
+        if declaration.kind == DeclarationKind::Enum {
+            enums.insert(declaration.name.clone(), (enum_id, declaration.variants.clone()));
+            enum_id += 1;
+        }
+    }
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
+        if p.declarations.iter().any(|d| d.name == f.name) {
+            return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
+                format!("function '{}' conflicts with a nominal declaration", f.name)));
+        }
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio") {
             return Err(Diagnostic::new(
                 f.pos,
@@ -196,6 +213,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         let mut cx = FnCx {
             sigs: &sigs,
             names: &names,
+            enums: &enums,
             ret: f.ret,
             scopes: vec![Vec::new()],
             locals: Vec::new(),
@@ -205,6 +223,10 @@ pub fn check(p: &Program) -> R<TProgram> {
             data: &mut data,
         };
         for (i, prm) in f.params.iter().enumerate() {
+            if cx.enums.contains_key(&prm.name) {
+                return Err(Diagnostic::new(prm.pos, "E_DUPLICATE",
+                    format!("parameter '{}' shadows a nominal enum type", prm.name)));
+            }
             cx.scopes[0].push(Local {
                 name: prm.name.clone(),
                 slot: i as u32,
@@ -268,6 +290,10 @@ impl FnCx<'_> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+        if self.enums.contains_key(name) {
+            return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                format!("binding '{name}' shadows a nominal enum type")));
+        }
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
         }
@@ -482,6 +508,20 @@ impl FnCx<'_> {
                 e: TExpr::Bool(*b),
                 ty: Type::Bool,
             },
+            ExprKind::EnumVariant { enum_name, variant } => {
+                if self.lookup(enum_name).is_some() {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "member access on local values is not supported"));
+                }
+                let (nominal_id, variants) = self.enums.get(enum_name).ok_or_else(|| {
+                    Diagnostic::new(pos, "E_UNBOUND", format!("unknown enum '{enum_name}'"))
+                })?;
+                let tag = variants.iter().position(|v| v == variant).ok_or_else(|| {
+                    Diagnostic::new(pos, "E_UNKNOWN_VARIANT",
+                        format!("enum '{enum_name}' has no variant '{variant}'"))
+                })?;
+                TE { e: TExpr::EnumTag(tag as u32), ty: Type::Enum(*nominal_id) }
+            }
             ExprKind::Str(_) => {
                 return Err(Diagnostic::new(
                     pos,
@@ -500,6 +540,9 @@ impl FnCx<'_> {
                         "E_UNSUPPORTED",
                         "functions as values are not supported by the browser compiler yet",
                     ))
+                }
+                None if self.enums.contains_key(name) => {
+                    return Err(type_err(pos, format!("'{name}' is an enum type, not a value")));
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
@@ -685,6 +728,10 @@ impl FnCx<'_> {
                 });
             }
             let v = self.value(&args[0])?;
+            if !matches!(v.ty, Type::Int | Type::Bool) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "printing nominal enum values is not supported by the browser guest ABI"));
+            }
             self.imports
                 .push(if v.ty == Type::Int { Import::PrintI64 } else { Import::PrintBool });
             return Ok(TE {
