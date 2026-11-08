@@ -283,6 +283,24 @@ try{
     compilerFetchesBeforeOversize,'oversized source must fail before compiler fetch');
   console.log('PASS browser: oversized actor source denied before fetching or compiling Wasm');
 
+  // UTF-16 code units are not UTF-8 bytes: the source cap must be checked
+  // before fetching the compiler even if the string's .length is below cap.
+  const unicodeLimit=await evaluate(`(async()=>{
+    const w=new Worker('/actor-worker.mjs',{type:'module'});
+    try {
+      return await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('unicode source deadline')),5000);
+        w.onmessage=e=>{clearTimeout(timer);resolve(e.data)};
+        w.onerror=()=>{clearTimeout(timer);reject(new Error('unicode source worker failed'))};
+        w.postMessage({kind:'init',source:'🚀'.repeat(18000)});
+      });
+    } finally {w.terminate();}
+  })()`);
+  assert.equal(unicodeLimit.kind,'fault');
+  assert.match(unicodeLimit.message,/E_SOURCE_LIMIT/);
+  assert.equal(requests.filter(x=>x.path==='/atto_compiler.wasm').length,compilerFetchesBeforeOversize,
+    'oversized UTF-8 source must fail before fetching compiler');
+  console.log('PASS browser: UTF-8 byte-limit protects actor compiler from oversized multibyte source');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
