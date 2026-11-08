@@ -35,6 +35,7 @@ const ACTOR_TICK_GLOBAL: u32 = 3;
 const ACTOR_BUDGET_GLOBAL: u32 = 4;
 const ACTOR_DEPTH_GLOBAL: u32 = 5;
 const ACTOR_FUEL_GLOBAL: u32 = 6;
+const ACTOR_BUSY_GLOBAL: u32 = 7;
 
 const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
@@ -580,13 +581,18 @@ fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
         bodies.push(e.code);
     }
     if let Some(receive) = actor_receive {
-        // Public receive is a wrapper that resets per-message quotas. The
-        // original handler stays callable (including recursion) without
-        // resetting the budget. A trapping actor worker MUST be retired; a
-        // host must never invoke this wrapper again after a guest trap.
-        // No new imports or memory are introduced.
+        // Public receive is a wrapper that resets per-message quotas only
+        // after checking the private in-flight guard. If the guest traps at
+        // any point (fuel, overflow, stack, engine), the guard remains set:
+        // catching the Wasm exception cannot resurrect or refuel that actor.
+        // A normal return clears it. A fresh Wasm instance starts unpoisoned.
+        // No new imports, memory or public exports are introduced.
         func_types.push(types.idx(Sig(vec![I64], vec![I64])));
         let mut wrapper = vec![0]; // zero local declarations
+        wrapper.push(0x23); uleb(&mut wrapper, ACTOR_BUSY_GLOBAL as u64);
+        wrapper.extend_from_slice(&[0x04, 0x40, 0x00, 0x0B]); // if busy: unreachable
+        wrapper.extend_from_slice(&[0x41, 1, 0x24]); // mark in-flight before any guest call
+        uleb(&mut wrapper, ACTOR_BUSY_GLOBAL as u64);
         for (idx, value) in [
             (ACTOR_TICK_GLOBAL, ACTOR_TICK_PERIOD),
             (ACTOR_BUDGET_GLOBAL, ACTOR_SLOW_BUDGET),
@@ -599,6 +605,8 @@ fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
         wrapper.push(0x24); uleb(&mut wrapper, ACTOR_FUEL_GLOBAL as u64);
         wrapper.push(0x20); wrapper.push(0); // local.get 0
         wrapper.push(0x10); uleb(&mut wrapper, layout.func(receive) as u64);
+        wrapper.extend_from_slice(&[0x41, 0, 0x24]); // clear only after normal return
+        uleb(&mut wrapper, ACTOR_BUSY_GLOBAL as u64);
         wrapper.push(0x0B);
         bodies.push(wrapper);
     }
@@ -635,7 +643,7 @@ fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
     // Private globals: panic code, heap bump cursor, construction scratch.
     // Reserve at least 16 bytes and align the heap past any string data.
     let heap_start = ((p.data.len() as u32 + 23) / 8) * 8;
-    let mut globals = vec![if actor_receive.is_some() { 7 } else { 3 }, I32, 0x01, 0x41, 0, 0x0B, I32, 0x01, 0x41];
+    let mut globals = vec![if actor_receive.is_some() { 8 } else { 3 }, I32, 0x01, 0x41, 0, 0x0B, I32, 0x01, 0x41];
     sleb(&mut globals, heap_start as i64);
     globals.extend_from_slice(&[0x0B, I32, 0x01, 0x41, 0, 0x0B]);
     if actor_receive.is_some() {
@@ -647,6 +655,7 @@ fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
         globals.extend_from_slice(&[I64, 0x01, 0x42]);
         sleb(&mut globals, ACTOR_FUEL_BUDGET);
         globals.push(0x0B);
+        globals.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // $actor_busy = false
     }
     section(&mut out, 6, globals);
 
