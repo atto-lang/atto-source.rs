@@ -30,10 +30,11 @@ self.onmessage=({data})=>{
     if(data?.kind==='message'){
       if(!receiver)throw new Error('E_ACTOR_NOT_READY');
       if(typeof data.value!=='bigint'||BigInt.asIntN(64,data.value)!==data.value)throw new Error('E_MESSAGE_TYPE');
+      if(!Number.isSafeInteger(data.seq)||data.seq!==processed)throw new Error('E_ACTOR_MESSAGE_SEQ');
       const result=receiver(data.value);
       if(typeof result!=='bigint')throw new Error('E_ACTOR_RESULT');
       processed++;
-      self.postMessage({kind:'reply',value:result});
+      self.postMessage({kind:'reply',seq:data.seq,value:result});
       return;
     }
     if(data?.kind==='close'){

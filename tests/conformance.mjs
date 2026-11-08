@@ -732,6 +732,92 @@ check('actor/terminal-await-fail-closed-outside-structured-scope', () => {
   }
 });
 
+
+check('actor/result-admission-discriminants-exhaustive', () => {
+  const src=[
+    'define actor Worker as receive(msg: int) -> int { return msg; } end',
+    'pub fnc main(): int {',
+    '  val worker = spawn Worker();',
+    '  val outcome: Result<void, SendError> = worker.send(41);',
+    '  if outcome.is_err() then return 99; else return 0; fi',
+    '}',
+  ].join('\n');
+  const compiled=compile(src);
+  assert.ok(compiled.ok,compiled.message);
+  const mod=new WebAssembly.Module(compiled.wasm);
+  for(const status of [0,1,2,3]){
+    const seen=[];
+    const guest=new WebAssembly.Instance(mod,{atto:{
+      actor_spawn:()=>1,
+      actor_send:(handle,value)=>{seen.push([handle,value]);return status;},
+    }});
+    assert.equal(guest.exports.main(),status===0?0n:99n,
+      'only status 0 is Ok; every nonzero code is Err');
+    assert.deepEqual(seen,[[1,41n]]);
+  }
+});
+
+check('actor/source-transport-i64-extrema-and-terminal-join-import', () => {
+  const src=[
+    'define actor Worker as receive(msg: int) -> int { return msg; } end',
+    'pub fnc main(): void {',
+    '  val worker = spawn Worker();',
+    '  val low = worker.send(-9223372036854775808);',
+    '  val high = worker.send(9223372036854775807);',
+    '  await worker.get_done();',
+    '}',
+  ].join('\n');
+  const compiled=compile(src);
+  assert.ok(compiled.ok,compiled.message);
+  const mod=new WebAssembly.Module(compiled.wasm);
+  const types=WebAssembly.Module.imports(mod);
+  assert.deepEqual(types.map(x=>[x.module,x.name,x.kind]),[
+    ['atto','actor_spawn','function'],
+    ['atto','actor_send','function'],
+    ['atto','actor_join','function'],
+  ]);
+  const messages=[],joined=[];
+  const guest=new WebAssembly.Instance(mod,{atto:{
+    actor_spawn:()=>1,
+    actor_send:(h,value)=>{messages.push([h,value]);return 0;},
+    actor_join:h=>{joined.push(h);},
+  }});
+  assert.equal(guest.exports.main(),0n);
+  assert.deepEqual(messages,[[1,-(1n<<63n)],[1,(1n<<63n)-1n]]);
+  assert.deepEqual(joined,[1],'the join executes after both admissions');
+});
+
+check('actor/reject-illegal-ownership-transport-without-guest', () => {
+  const head='define actor Worker as receive(msg: int) -> int { return msg; } end\n';
+  const point='define class Point as int x: 42 end\n';
+  for(const expr of ['true','worker','new Point()','9223372036854775808']){
+    const src=point+head+'pub fnc main(): int { val worker = spawn Worker(); '+
+      'val receipt = worker.send('+expr+'); return 0; }';
+    const result=compile(src);
+    assert.equal(result.ok,false,expr);
+    assert.equal('wasm' in result,false,'non-scalar payload cannot become a guest artifact');
+    assert.ok(['E_UNSUPPORTED','E_INTEGER_RANGE'].includes(result.code),
+      result.message);
+  }
+});
+
+check('actor/unsupported-await-shapes-fail-closed-even-when-unreachable', () => {
+  const head='define actor Worker as receive(msg: int) -> int { return msg; } end\n';
+  const cases=[
+    'pub fnc main(): void { val worker=spawn Worker(); if false then await worker.get_done(); fi }',
+    'pub fnc main(): void { val worker=spawn Worker(); loop { await worker.get_done(); break; } }',
+    'pub fnc main(): void { val worker=spawn Worker(); await worker.get_done(); return; }',
+    'pub fnc main(): void { val worker=spawn Worker(); await worker.get_done(); await worker.get_done(); }',
+    'fnc helper(): void { val worker=spawn Worker(); await worker.get_done(); }\npub fnc main(): void { helper(); }',
+  ];
+  for(const source of cases){
+    const r=compile(head+source);
+    assert.equal(r.ok,false,source);
+    assert.equal(r.code,'E_UNSUPPORTED',r.message);
+    assert.equal('wasm' in r,false,'suspended continuation without frames must not compile');
+  }
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);

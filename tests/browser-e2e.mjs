@@ -213,6 +213,111 @@ try{
   assert.match(await run(illegalAwait,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
   console.log('PASS browser: suspension with arbitrary continuation fails closed');
 
+
+  // Stage-3+ true browser regressions: compiler-generated messages must round
+  // trip signed i64 boundaries with sequence-correlated worker replies.
+  const signedBoundaries=[
+    'define actor Worker as receive(msg: int) -> int { return msg; } end',
+    'pub fnc main(): void {',
+    '  val worker = spawn Worker();',
+    '  val lower = worker.send(-9223372036854775808);',
+    '  val upper = worker.send(9223372036854775807);',
+    '  await worker.get_done();',
+    '}',
+  ].join('\n');
+  assert.equal(await run(signedBoundaries,'main() -> 0'),
+    'actor[1] receive(-9223372036854775808) -> -9223372036854775808\n'+
+    'actor[1] receive(9223372036854775807) -> 9223372036854775807\n'+
+    'main() -> 0');
+  console.log('PASS browser: signed i64 min and max survive actual actor Web Worker transport');
+
+  const emptyJoin=[
+    'define actor Worker as receive(msg: int) -> int { return msg; } end',
+    'pub fnc main(): void {',
+    '  val worker = spawn Worker();',
+    '  await worker.get_done();',
+    '}',
+  ].join('\n');
+  assert.equal(await run(emptyJoin,'main() -> 0'),'main() -> 0');
+  console.log('PASS browser: zero-message actor completes only after explicit child shutdown');
+
+  const twoActorJoin=[
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): void {',
+    '  val first = spawn Worker();',
+    '  val second = spawn Worker();',
+    '  val a = first.send(40);',
+    '  val b = second.send(50);',
+    '  await second.get_done();',
+    '}',
+  ].join('\n');
+  assert.equal(await run(twoActorJoin,'main() -> 0'),
+    'actor[1] receive(40) -> 41\nactor[2] receive(50) -> 51\nmain() -> 0');
+  console.log('PASS browser: separate actor joins preserve independent FIFO execution');
+
+  const fourActors=[
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): void {',
+    '  val first = spawn Worker();',
+    '  val second = spawn Worker();',
+    '  val third = spawn Worker();',
+    '  val fourth = spawn Worker();',
+    '  val a = first.send(1);',
+    '  val b = second.send(2);',
+    '  val c = third.send(3);',
+    '  val d = fourth.send(4);',
+    '  await fourth.get_done();',
+    '}',
+  ].join('\n');
+  assert.equal(await run(fourActors,'main() -> 0'),
+    'actor[1] receive(1) -> 2\nactor[2] receive(2) -> 3\n'+
+    'actor[3] receive(3) -> 4\nactor[4] receive(4) -> 5\nmain() -> 0');
+  console.log('PASS browser: four real actor Workers terminate independently within host quota');
+
+  const panicAfterReply=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int {',
+    '    if msg eq 0 then return msg; fi',
+    '    return msg + 9223372036854775807;',
+    '  }',
+    'end',
+    'pub fnc main(): void {',
+    '  val worker = spawn Worker();',
+    '  val first = worker.send(0);',
+    '  val second = worker.send(1);',
+    '  await worker.get_done();',
+    '}',
+  ].join('\n');
+  const panicAfterReplyOutput=await run(panicAfterReply,'E_ACTOR_PANIC_1');
+  assert.match(panicAfterReplyOutput,/^E_HOST: E_ACTOR_PANIC_1$/);
+  assert.ok(!panicAfterReplyOutput.includes('main() ->'),
+    'one successful reply cannot certify later panicked shutdown');
+  console.log('PASS browser: successful first reply cannot mask later actor panic');
+
+  const fullAwait=[
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): void {',
+    '  val worker = spawn Worker();',
+    '  for (let i = 0; i < 33; i++) do',
+    '    val attempt = worker.send(i);',
+    '  done',
+    '  await worker.get_done();',
+    '}',
+  ].join('\n');
+  const fullAwaitOutput=await run(fullAwait,'main() -> 0');
+  assert.equal((fullAwaitOutput.match(/receive\(/g)||[]).length,32);
+  assert.ok(!fullAwaitOutput.includes('receive(32)'), '33rd payload cannot bypass admission');
+  assert.match(fullAwaitOutput,/actor\[1\] receive\(31\) -> 32\nmain\(\) -> 0$/);
+  console.log('PASS browser: terminal join drains exactly 32 admitted messages after mailbox-full');
+
+  // The browser must never run an arbitrary post-suspension continuation
+  // without a compiled resumable frame. Assert recovery after failure.
+  assert.match(await run(
+    sourceAwait.replace('  await worker.get_done();',
+      '  await worker.get_done(); return;'), 'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  assert.equal(await run(emptyJoin,'main() -> 0'),'main() -> 0');
+  console.log('PASS browser: forbidden continuation rejects without poisoning next actor run');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

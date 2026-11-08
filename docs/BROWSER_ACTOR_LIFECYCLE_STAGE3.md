@@ -58,6 +58,37 @@ cancelled.
 - actor_join and actor_send cannot execute inside actor receive handlers.
   Compiler transitive host-effect checks remain active for helper call graphs.
 
+## Stage 3+ source-owned protocol hardening
+
+Each accepted parent-to-actor message carries a zero-based monotonically
+increasing integer sequence number. The dedicated child Worker checks that
+the sequence matches its completed-message count before executing receive().
+Every reply echoes this exact sequence number; the parent verifies that it
+matches its current pending delivery. Duplicate, future, malformed, missing
+or replayed response IDs therefore **fail closed** instead of acknowledging
+another queued message. Signed i64 payloads remain the only admitted
+transfers; the sequence number is protocol metadata, not user data.
+
+Fault codes received from a worker must be a bounded (up to 128-character)
+ASCII E_ code; arbitrary user-controlled error strings are mapped to a
+fixed E_ACTOR_FAULT code. The completion task never resolves on a reply,
+successful admission, or termination; only close plus the checked child
+done(processed) event can complete it.
+
+Expanded verification includes constructor and transport validation, i64
+extrema, zero-message close, duplicate drain and ready messages, replayed,
+out-of-order and malformed reply sequence IDs, cancellation during delivery,
+missing/incorrect terminal acknowledgements, protocol faults, synthetic
+clone faults, independent multi-worker lifecycle outcomes and a deterministic
+seeded 32-turn FIFO stress model. Browser tests execute actual compiled
+Atto source using nested Web Workers for both i64 limits, zero-message
+completion, multiple actor joins, overflow after an earlier valid reply,
+mailbox capacity at terminal join and post-await rejection/recovery.
+
+These checks **do not** certify a general async/await state machine or
+cross-tenant protection; the supported source suspension remains terminal
+structured join only, and the worker is not an OS security sandbox.
+
 ## Evidence requirements and deferred semantics
 
 Source-owned CI executes native Rust, builds the real wasm32 compiler, runs

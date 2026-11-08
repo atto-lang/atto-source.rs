@@ -23,6 +23,7 @@ export class ActorSession {
     this.closed = false;
     this.queue = [];
     this.processed = 0;
+    // Monotonic per-message sequence identity prevents reply/replay substitution.
     this.pending = null;
     this.ready_timer = null;
     this.done_timer = null;
@@ -116,6 +117,8 @@ export class ActorSession {
         return;
       case 'reply': {
         if (this.state !== 'draining' || !this.pending ||
+            !Number.isSafeInteger(msg.seq) ||
+            msg.seq !== this.pending.seq ||
             typeof msg.value !== 'bigint' ||
             BigInt.asIntN(64, msg.value) !== msg.value) {
           return this.fail('E_ACTOR_REPLY_PROTOCOL');
@@ -141,7 +144,8 @@ export class ActorSession {
         return;
       case 'error':
         return this.fail(typeof msg.message === 'string' &&
-          /^E_[A-Z0-9_]+$/.test(msg.message) ? msg.message : 'E_ACTOR_FAULT');
+          msg.message.length <= 128 && /^E_[A-Z0-9_]+$/.test(msg.message)
+          ? msg.message : 'E_ACTOR_FAULT');
       default:
         return this.fail('E_ACTOR_PROTOCOL');
     }
@@ -154,9 +158,10 @@ export class ActorSession {
         return;
       }
       const timer = setTimeout(() => this.fail('E_ACTOR_TIMEOUT'), this.timeout_ms);
-      this.pending = { resolve, reject, timer };
+      const seq = this.processed;
+      this.pending = { resolve, reject, timer, seq };
       try {
-        this.worker.postMessage({ kind: 'message', value });
+        this.worker.postMessage({ kind: 'message', seq, value });
       } catch {
         this.fail('E_ACTOR_MESSAGE_CLONE');
       }
