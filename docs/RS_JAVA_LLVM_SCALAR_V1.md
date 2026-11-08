@@ -1,29 +1,45 @@
-# Java/LLVM canonical scalar-v1 admission by Rust/Cranelift
+# Rust/Cranelift vs Java/LLVM scalar-v1 — security audit (2026-11-08)
 
-**Status: NOT_EXECUTED / NOT_CERTIFIED.** No Rust runner or guest execution evidence is claimed by this authored patch. Source provenance: canonical `contracts/atto-scalar-v1` registry and its 15 files on Java and LLVM main (2026-11-08). Expected Git blob IDs:
+**DRAFT / NOT_EXECUTED / NOT_CERTIFIED.** This is source-level implementation and
+test definition only; an exact-head runner with real nonzero job steps is still
+required. An unadmitted CI job is not a compiler failure or a pass.
 
-```text
-positive/canonical-add.atto 015f8b0f79aafa796a148d2adeff1574e8d6c491
-positive/precedence.atto 50414e5e95c8007f066696f55aa75309555b83e2
-positive/parentheses.atto 9f508169c741486d5cec7510ac84fb761f342def
-positive/signed-minimum.atto 450ebee951733d3f0b567413e70724155d26ce13
-positive/signed-max-minus-one.atto c400f440fde2fbc10514ab7cfd2ffe3d19729ee1
-positive/type-first-readonly.atto 75ff4afc98fc65a774611eb7686e893f3d28a6da
-positive/typed-const-readonly.atto 0325018c54dd3534ddac76dc29724aa61e979683
-positive/inferred-const-readonly.atto 4fe471862d90ba57e135b93728bd44690ff2c894
-positive/pure-call.atto e5ab32f7d8f684d655a83a3df989f16c52090c05
-positive/type-first-parameter.atto 3d6c16ed04aa86f954461885ec77c8f10b47fb5c
-negative/type-first-reassignment.atto b118f53e68565dcb9e6acd58deb8ee47dca67606
-negative/typed-const-reassignment.atto 784ebd47a50211e6f00cb732cc74319ed1e58fac
-negative/removed-modulo.atto 45d5794870e93074d9b11b90833a849e96aaa4c1
-negative/removed-caret.atto 6889c7e83c8d94b906fbfe78723caee9580da6aa
-negative/removed-double-caret.atto 7ee99948018e927cce74c9ad0edc1975e4251689
-```
+## Audit findings addressed
 
-The ten positives cover arithmetic precedence, parentheses, full-width signed-i64 boundaries, immutable-by-default local declarations and both `int x` and `x: int` scalar parameter forms. The five negatives cover immutable rebinding and removed operators. The Rust frontend adds **only** name-first typed parameter parsing, preserving the same AST/MIR, duplicate-binding and arity gates. Unsupported or untyped parameters fail closed.
+1. **Noncanonical removed-operator diagnostics.** Prior Rust returned generic
+   `syntax_error` on %, ^, and ^^. The lexer now recognizes all three only
+   to reject them immediately as `removed_operator` with an exact source byte
+   offset, matching the canonical diagnostic family after dash/underscore
+   normalization. No executable/IR/operator behavior is introduced.
+2. **Recursive unary source could evade the 64-parenthesis cap.** Nested unary
+   minus invokes the parser recursively without parentheses. The parser now
+   enforces a 64-level primary recursion budget and fails closed with
+   `resource_limit` before recursing deeper.
+3. **Long additive/multiplicative left folds could manufacture deep ASTs.**
+   Enforce 64 operators per direct additive or multiplicative chain.
+   This is an interim bounded scalar admission rule, **not** an arbitrary-depth
+   parser or a complete semantic complexity proof.
+4. **No persistent cross-backend fixture-identity gate.** Add 15 Git blob
+   SHA-1 golden checks, and physical compiler-backed positive/negative paths.
+   The fixture bytes are unchanged; this prevents subsequent accidental drift.
+5. **Native ABI under-tested.** Extend with a four-argument, mixed typed
+   parameter C caller using integer values larger than 2^53; verify
+   signed 64-bit argument precision, order, and return value.
+6. **Negative diagnostic coverage insufficient.** Add rejected `any`,
+   `unknown`, `bool`, `float`, `Option<int>`, optional parameters,
+   default params, duplicates, and call-arity cases. None of these types or
+   features is implicitly enabled.
 
-The Rust main compiler does **not** certify the contract's four additional checked-overflow negative cases. The main scalar arithmetic wraps by default; runtime `--checked-i64` traps are not equivalent to a checked compiler diagnostic. The Java/LLVM contract registry does not currently list Rust as a certified route and is not modified here. Rust currently reports `syntax_error` on %, ^, ^^ rather than the normalized `removed-operator` family; this is a known diagnostic-parity gap.
+## Evidence requirements
 
-New `tests/atto_scalar_java_llvm_v1.rs` uses real parser, MIR and Cranelift compilation, actual `oresc --strict-aot`/ELF/`cc`/native execution on Linux, stdout/stderr gates, full-width C i64 oracles for both signed extremes, and invalid-object nonpublication/overwrite checks. It also checks AST equivalence, no type inference, duplicate names, and call arity.
+On this exact PR head: `cargo fmt --all -- --check`,
+`cargo clippy --locked --all-targets -- -D warnings`,
+`cargo test --locked --all-targets`, source SHA/tree read-back, real
+strict-AOT ELF/`cc` guest execution, sentinel nonpublication negatives, and
+independent Java/LLVM guest receipts. Require independent review.
 
-Required exact-head verified gates: `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked --all-targets`, source blob read-back, stepful native tests, independently verified Java/LLVM actual guest outcomes, and independent review. Zero-step GitHub Actions is runner admission failure, not proof. No claims for actors, 32-bit compressed pointers, heaps, ownership, async, generics or release parity.
+Rust currently does **not** implement canonical checked-overflow compile-time
+rejection for the four remaining shared scalar-v1 negative files. Runtime
+`--checked-i64` trap mode is not equivalent. Actor, ownership, threads,
+32-bit actor-heap addressing, suspension and generics are outside the
+implemented scalar subset; none is certified here.

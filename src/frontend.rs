@@ -93,6 +93,14 @@ enum Kind {
     Minus,
     #[token("*")]
     Star,
+    // Explicitly classify removed operators instead of letting a generic
+    // lexer error obscure the canonical Java/LLVM diagnostic family.
+    #[token("%")]
+    RemovedModulo,
+    #[token("^^")]
+    RemovedDoubleCaret,
+    #[token("^")]
+    RemovedCaret,
     #[regex(r"[0-9][0-9_]*")]
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
@@ -181,6 +189,8 @@ fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
+pub const MAX_PRIMARY_DEPTH: usize = 64;
+pub const MAX_INFIX_OPERATORS: usize = 64;
 
 /// Execution-domain words reserved by every Oreslang backend (Java and LLVM
 /// reject them as identifiers too).
@@ -240,6 +250,13 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             });
         }
         match kind {
+            Kind::RemovedModulo | Kind::RemovedCaret | Kind::RemovedDoubleCaret => {
+                return Err(ParseError {
+                    offset: range.start,
+                    class: "removed_operator",
+                    message: "operator is reserved; use named arithmetic functions".into(),
+                });
+            }
             Kind::LParen => {
                 paren_depth += 1;
                 if paren_depth > MAX_PAREN_NESTING {
@@ -266,6 +283,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         tokens,
         cursor: 0,
         source_len: source.len(),
+        primary_depth: 0,
     };
     let mut functions = Vec::new();
     while parser.peek().is_some() {
@@ -284,6 +302,7 @@ struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     source_len: usize,
+    primary_depth: usize,
 }
 impl Parser {
     fn peek(&self) -> Option<Kind> {
@@ -440,7 +459,18 @@ impl Parser {
     }
     fn expression(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.product()?;
+        let mut infix_count = 0_usize;
         loop {
+            if matches!(self.peek(), Some(Kind::Plus | Kind::Minus)) {
+                if infix_count >= MAX_INFIX_OPERATORS {
+                    return Err(ParseError {
+                        offset: self.pos(),
+                        class: "resource_limit",
+                        message: "additive expression exceeds scalar depth budget".into(),
+                    });
+                }
+                infix_count += 1;
+            }
             lhs = match self.peek() {
                 Some(Kind::Plus) => {
                     self.expect(Kind::Plus)?;
@@ -457,13 +487,38 @@ impl Parser {
     }
     fn product(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.primary()?;
+        let mut infix_count = 0_usize;
         while self.peek() == Some(Kind::Star) {
+            if infix_count >= MAX_INFIX_OPERATORS {
+                return Err(ParseError {
+                    offset: self.pos(),
+                    class: "resource_limit",
+                    message: "multiplicative expression exceeds scalar depth budget".into(),
+                });
+            }
+            infix_count += 1;
             self.expect(Kind::Star)?;
             lhs = Expr::Multiply(Box::new(lhs), Box::new(self.primary()?));
         }
         Ok(lhs)
     }
     fn primary(&mut self) -> Result<Expr, ParseError> {
+        // Unary chains recurse without parentheses and previously evaded the
+        // lexer parenthesis-depth cap. Fail closed before stack exhaustion.
+        if self.primary_depth >= MAX_PRIMARY_DEPTH {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "resource_limit",
+                message: "unary/call expression exceeds recursive parser budget".into(),
+            });
+        }
+        self.primary_depth += 1;
+        let parsed = self.primary_impl();
+        self.primary_depth -= 1;
+        parsed
+    }
+
+    fn primary_impl(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
