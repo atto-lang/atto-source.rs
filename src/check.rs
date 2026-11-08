@@ -19,6 +19,47 @@ use crate::diag::{Diagnostic, Pos};
 pub const MAX_LOCALS: usize = 1024;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
 
+/// Fixed-width, immutable scalar class field default. A single class instance
+/// occupies at most 512 guest-heap bytes with 8-byte aligned fields.
+#[derive(Clone, Copy, Debug)]
+pub enum FieldValue {
+    Int(i64),
+    Bool(bool),
+}
+
+#[derive(Clone, Debug)]
+struct ClassFieldInfo {
+    name: String,
+    ty: Type,
+    offset: u32,
+    value: FieldValue,
+}
+
+#[derive(Clone, Debug)]
+struct ClassLayout {
+    id: u16,
+    size: u32,
+    fields: Vec<ClassFieldInfo>,
+}
+
+fn class_default(e: &Expr) -> R<FieldValue> {
+    match &e.kind {
+        ExprKind::Int(Some(v)) => Ok(FieldValue::Int(*v as i64)),
+        ExprKind::Int(None) => Err(Diagnostic::new(e.pos, "E_INTEGER_RANGE",
+            "field initializer is outside signed i64 range")),
+        ExprKind::Bool(v) => Ok(FieldValue::Bool(*v)),
+        ExprKind::Unary(UnOp::Neg, inner) => match &inner.kind {
+            ExprKind::Int(None) => Ok(FieldValue::Int(i64::MIN)),
+            ExprKind::Int(Some(v)) => Ok(FieldValue::Int(-(*v as i64))),
+            _ => Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+                "class fields currently require scalar literal defaults")),
+        },
+        _ => Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+            "class fields currently require scalar literal defaults")),
+    }
+}
+
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
     And,
@@ -32,16 +73,22 @@ pub enum Import {
     PrintBool,
     PrintStr,
     PrintNewline,
+    ActorSpawn,
+    ActorSend,
+    ActorJoin,
 }
 
 impl Import {
-    pub const ALL: [Import; 4] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline];
+    pub const ALL: [Import; 7] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend, Import::ActorJoin];
     pub fn name(self) -> &'static str {
         match self {
             Import::PrintI64 => "print_i64",
             Import::PrintBool => "print_bool",
             Import::PrintStr => "print_str",
             Import::PrintNewline => "print_newline",
+            Import::ActorSpawn => "actor_spawn",
+            Import::ActorSend => "actor_send",
+            Import::ActorJoin => "actor_join",
         }
     }
 }
@@ -50,6 +97,17 @@ impl Import {
 pub enum TExpr {
     I64(i64),
     Bool(bool),
+    /// Compact, checked variant index of a distinct nominal enum type.
+    EnumTag(u32),
+    SpawnActor(u16),
+    /// Admission attempt only; Result<void, SendError> uses a zero Ok tag.
+    ActorSend(Box<TE>, Box<TE>),
+    /// Result inspection: true for a zero admission status, or its complement.
+    SendStatus(Box<TE>, bool),
+    /// Allocate an independently owned guest instance with immutable defaults.
+    NewClass { size: u32, fields: Vec<(u32, FieldValue)> },
+    /// Load a scalar class field at a checked, compiler-derived byte offset.
+    Field(Box<TE>, u32),
     Local(u32),
     Neg(Box<TE>),
     Not(Box<TE>),
@@ -81,6 +139,9 @@ pub struct TE {
 pub enum TStmt {
     Set(u32, TE),
     Expr(TE),
+    /// Source 'await actor.get_done()' is admitted only as the last statement
+    /// of a void main(). Host joins after guest main returns, never blocking Wasm.
+    AwaitActor(TE),
     Return(Option<TE>),
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
     /// `while`, `loop` and C-style `for`: `cond` absent means unconditional;
@@ -111,6 +172,9 @@ pub struct TProgram {
     pub main: u32,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
+    pub heap_used: bool,
+    /// Explicit checked actor handler exports (nominal actor id, function index).
+    pub actor_handlers: Vec<(u16, u32)>,
 }
 
 struct Local {
@@ -123,6 +187,11 @@ struct Local {
 struct FnCx<'a> {
     sigs: &'a BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
     names: &'a BTreeMap<String, Vec<usize>>,
+    enums: &'a BTreeMap<String, (u16, Vec<String>)>,
+    classes: &'a BTreeMap<String, ClassLayout>,
+    actors: &'a BTreeMap<String, (u16, bool)>,
+    in_actor_handler: bool,
+    heap_used: &'a mut bool,
     ret: Type,
     scopes: Vec<Vec<Local>>,
     locals: Vec<Type>,
@@ -139,9 +208,68 @@ fn type_err(pos: Pos, msg: impl Into<String>) -> Diagnostic {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // Enum nominal identities are assigned by the parser's closed-world
+    // declaration-header order. Never merge variants of distinct enum types.
+    let mut enums: BTreeMap<String, (u16, Vec<String>)> = BTreeMap::new();
+    let mut enum_id = 0u16;
+    for declaration in &p.declarations {
+        if declaration.kind == DeclarationKind::Enum {
+            enums.insert(declaration.name.clone(), (enum_id, declaration.variants.clone()));
+            enum_id += 1;
+        }
+    }
+    let mut classes: BTreeMap<String, ClassLayout> = BTreeMap::new();
+    let mut class_id = 0u16;
+    for declaration in &p.declarations {
+        if declaration.kind != DeclarationKind::Class { continue; }
+        let mut fields = Vec::new();
+        for (i, field) in declaration.fields.iter().enumerate() {
+            let value = class_default(&field.default)?;
+            let valid_type = matches!((field.ty, value),
+                (Type::Int, FieldValue::Int(_)) | (Type::Bool, FieldValue::Bool(_)));
+            if !valid_type {
+                return Err(type_err(field.pos,
+                    format!("class field '{}' requires a literal of type {}",
+                        field.name, field.ty.name())));
+            }
+            fields.push(ClassFieldInfo {
+                name: field.name.clone(), ty: field.ty,
+                offset: (i as u32) * 8, value,
+            });
+        }
+        let size = (fields.len().max(1) as u32) * 8;
+        classes.insert(declaration.name.clone(), ClassLayout { id: class_id, size, fields });
+        class_id += 1;
+    }
+    // Actor handler bodies are compiled as hidden free functions, exported for
+    // execution only in a distinct browser Worker with its own Wasm instance.
+    let mut all_funcs = p.funcs.clone();
+    let mut actors = BTreeMap::new();
+    let mut actor_handlers = Vec::new();
+    let mut actor_id = 0u16;
+    for d in &p.declarations {
+        if d.kind != DeclarationKind::Actor { continue; }
+        if let Some(handler) = &d.handler {
+            let mut h = handler.clone();
+            h.name = format!("__atto_actor_receive_{actor_id}");
+            actor_handlers.push((actor_id, all_funcs.len() as u32));
+            all_funcs.push(h);
+        }
+        actors.insert(d.name.clone(), (actor_id, d.handler.is_some()));
+        actor_id += 1;
+    }
+    for f in &p.funcs {
+        if f.name.starts_with("__atto_actor_") {
+            return Err(Diagnostic::new(f.pos, "E_RESERVED", "compiler-internal actor function name"));
+        }
+    }
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (i, f) in p.funcs.iter().enumerate() {
+    for (i, f) in all_funcs.iter().enumerate() {
+        if p.declarations.iter().any(|d| d.name == f.name) {
+            return Err(Diagnostic::new(f.pos, "E_DUPLICATE",
+                format!("function '{}' conflicts with a nominal declaration", f.name)));
+        }
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio") {
             return Err(Diagnostic::new(
                 f.pos,
@@ -176,8 +304,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             *i
         }
         None => {
-            let pos = p
-                .funcs
+            let pos = all_funcs
                 .iter()
                 .find(|f| f.name == "main")
                 .map(|f| f.pos)
@@ -192,10 +319,16 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut imports = Vec::new();
     let mut data = Vec::new();
     let mut funcs = Vec::new();
-    for f in &p.funcs {
+    let mut heap_used = false;
+    for f in &all_funcs {
         let mut cx = FnCx {
             sigs: &sigs,
             names: &names,
+            enums: &enums,
+            classes: &classes,
+            actors: &actors,
+            in_actor_handler: f.name.starts_with("__atto_actor_receive_"),
+            heap_used: &mut heap_used,
             ret: f.ret,
             scopes: vec![Vec::new()],
             locals: Vec::new(),
@@ -205,6 +338,10 @@ pub fn check(p: &Program) -> R<TProgram> {
             data: &mut data,
         };
         for (i, prm) in f.params.iter().enumerate() {
+            if cx.enums.contains_key(&prm.name) || cx.classes.contains_key(&prm.name) {
+                return Err(Diagnostic::new(prm.pos, "E_DUPLICATE",
+                    format!("parameter '{}' shadows a nominal enum type", prm.name)));
+            }
             cx.scopes[0].push(Local {
                 name: prm.name.clone(),
                 slot: i as u32,
@@ -213,7 +350,17 @@ pub fn check(p: &Program) -> R<TProgram> {
             });
         }
         cx.scopes.push(Vec::new());
-        let body = cx.stmts(&f.body)?;
+        let body = if let Some(Stmt::AwaitDone(awaited, pos)) = f.body.last() {
+            if f.name != "main" || f.ret != Type::Void {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "await actor.get_done() is supported only as the final statement of void main()"));
+            }
+            let mut lowered = cx.stmts(&f.body[..f.body.len() - 1])?;
+            lowered.push(cx.lower_terminal_actor_join(awaited, *pos)?);
+            lowered
+        } else {
+            cx.stmts(&f.body)?
+        };
         if f.ret != Type::Void && !returns(&body) {
             return Err(Diagnostic::new(
                 f.pos,
@@ -229,6 +376,18 @@ pub fn check(p: &Program) -> R<TProgram> {
             body,
         });
     }
+
+    // The stage-1 actor worker grants no stdio or nested-spawn capabilities.
+    // Direct calls are rejected during lowering; this closed-world call-graph
+    // walk also rejects helper functions that *transitively* reach those effects.
+    // A bounded recursion guard permits pure mutually recursive helpers.
+    for (_, idx) in &actor_handlers {
+        let mut visiting = vec![false; funcs.len()];
+        if actor_func_requires_host(*idx as usize, &funcs, &mut visiting) {
+            return Err(Diagnostic::new(all_funcs[*idx as usize].pos, "E_UNSUPPORTED",
+                "actor receive() transitively requires host capabilities not granted to the worker"));
+        }
+    }
     imports.sort();
     imports.dedup();
     Ok(TProgram {
@@ -236,7 +395,63 @@ pub fn check(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
+        heap_used,
+        actor_handlers,
     })
+}
+
+
+// Host-effect reachability, scoped to actor receive() entrypoints. This is
+// deliberately conservative: even a branch that is never taken cannot grant
+// an implicit host capability to a separately instantiated actor worker.
+fn actor_func_requires_host(index: usize, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
+    if visiting[index] { return false; }
+    visiting[index] = true;
+    let found = funcs[index].body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting));
+    visiting[index] = false;
+    found
+}
+
+fn actor_stmt_requires_host(stmt: &TStmt, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
+    match stmt {
+        TStmt::AwaitActor(_) => true,
+        TStmt::Set(_, expr) | TStmt::Expr(expr) | TStmt::Return(Some(expr)) =>
+            actor_expr_requires_host(expr, funcs, visiting),
+        TStmt::If(arms, other) =>
+            arms.iter().any(|(cond, body)|
+                actor_expr_requires_host(cond, funcs, visiting) ||
+                body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting))) ||
+            other.as_ref().is_some_and(|body|
+                body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting))),
+        TStmt::Loop { cond, body, update } =>
+            cond.as_ref().is_some_and(|expr| actor_expr_requires_host(expr, funcs, visiting)) ||
+            body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting)) ||
+            update.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting)),
+        TStmt::Block(body) =>
+            body.iter().any(|stmt| actor_stmt_requires_host(stmt, funcs, visiting)),
+        TStmt::Return(None) | TStmt::Break | TStmt::Continue => false,
+    }
+}
+
+fn actor_expr_requires_host(expr: &TE, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
+    match &expr.e {
+        TExpr::Print { .. } | TExpr::PrintStr { .. } | TExpr::SpawnActor(_) | TExpr::ActorSend(_, _) => true,
+        TExpr::SendStatus(expr, _) => actor_expr_requires_host(expr, funcs, visiting),
+        TExpr::Field(inner, _) | TExpr::Neg(inner) | TExpr::Not(inner) =>
+            actor_expr_requires_host(inner, funcs, visiting),
+        TExpr::Bin(_, lhs, rhs) | TExpr::Builtin(_, lhs, rhs) =>
+            actor_expr_requires_host(lhs, funcs, visiting) ||
+            actor_expr_requires_host(rhs, funcs, visiting),
+        TExpr::Ternary(cond, yes, no) =>
+            actor_expr_requires_host(cond, funcs, visiting) ||
+            actor_expr_requires_host(yes, funcs, visiting) ||
+            actor_expr_requires_host(no, funcs, visiting),
+        TExpr::Call(index, args) =>
+            args.iter().any(|arg| actor_expr_requires_host(arg, funcs, visiting)) ||
+            actor_func_requires_host(*index as usize, funcs, visiting),
+        TExpr::I64(_) | TExpr::Bool(_) | TExpr::EnumTag(_) |
+        TExpr::NewClass { .. } | TExpr::Local(_) => false,
+    }
 }
 
 /// Definite-return analysis matching the Java reference: an `if` returns
@@ -268,6 +483,10 @@ impl FnCx<'_> {
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+        if self.enums.contains_key(name) || self.classes.contains_key(name) {
+            return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                format!("binding '{name}' shadows a nominal type")));
+        }
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
         }
@@ -352,6 +571,9 @@ impl FnCx<'_> {
                 TStmt::Set(slot, v)
             }
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::AwaitDone(_, pos) => return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                "await actor.get_done() is only admitted as the final direct statement of void main()")),
+
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {
@@ -455,6 +677,28 @@ impl FnCx<'_> {
         })
     }
 
+    /// Narrow terminal await: this does not pretend to resume arbitrary Wasm
+    /// stacks. No source instructions can follow this join, and the browser
+    /// host awaits the child 'done' protocol asynchronously after main exits.
+    fn lower_terminal_actor_join(&mut self, expr: &Expr, pos: Pos) -> R<TStmt> {
+        match &expr.kind {
+            ExprKind::MethodCall(receiver, method, args) if method == "get_done" => {
+                if !args.is_empty() {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        "get_done() takes no arguments"));
+                }
+                let actor = self.value(receiver)?;
+                if !matches!(actor.ty, Type::Actor(_)) {
+                    return Err(type_err(pos, "get_done() requires a typed actor handle"));
+                }
+                self.imports.push(Import::ActorJoin);
+                Ok(TStmt::AwaitActor(actor))
+            }
+            _ => Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "only terminal 'await actor.get_done()' is admitted; arbitrary suspension requires async frames")),
+        }
+    }
+
     /// An expression used as a value (not void).
     fn value(&mut self, e: &Expr) -> R<TE> {
         let v = self.expr(e)?;
@@ -482,6 +726,38 @@ impl FnCx<'_> {
                 e: TExpr::Bool(*b),
                 ty: Type::Bool,
             },
+            ExprKind::Field(object, field_name) => {
+                let object = self.value(object)?;
+                let id = match object.ty {
+                    Type::Class(id) => id,
+                    Type::Actor(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "actor methods including send() -> Result are not lowered yet")),
+                    _ => return Err(type_err(pos, "field access requires a class reference")),
+                };
+                let layout = self.classes.values().find(|c| c.id == id)
+                    .expect("a checked class reference has a nominal layout");
+                let field = layout.fields.iter().find(|f| &f.name == field_name)
+                    .ok_or_else(|| Diagnostic::new(pos, "E_UNKNOWN_FIELD",
+                        format!("class has no field '{field_name}'")))?;
+                TE {
+                    e: TExpr::Field(Box::new(object), field.offset),
+                    ty: field.ty,
+                }
+            }
+            ExprKind::EnumVariant { enum_name, variant } => {
+                if self.lookup(enum_name).is_some() {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "member access on local values is not supported"));
+                }
+                let (nominal_id, variants) = self.enums.get(enum_name).ok_or_else(|| {
+                    Diagnostic::new(pos, "E_UNBOUND", format!("unknown enum '{enum_name}'"))
+                })?;
+                let tag = variants.iter().position(|v| v == variant).ok_or_else(|| {
+                    Diagnostic::new(pos, "E_UNKNOWN_VARIANT",
+                        format!("enum '{enum_name}' has no variant '{variant}'"))
+                })?;
+                TE { e: TExpr::EnumTag(tag as u32), ty: Type::Enum(*nominal_id) }
+            }
             ExprKind::Str(_) => {
                 return Err(Diagnostic::new(
                     pos,
@@ -500,6 +776,9 @@ impl FnCx<'_> {
                         "E_UNSUPPORTED",
                         "functions as values are not supported by the browser compiler yet",
                     ))
+                }
+                None if self.enums.contains_key(name) || self.classes.contains_key(name) => {
+                    return Err(type_err(pos, format!("'{name}' is a nominal type, not a value")));
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
@@ -581,6 +860,10 @@ impl FnCx<'_> {
                         Type::Bool
                     }
                     BinOp::Eq | BinOp::Ne => {
+                        if matches!(a.ty, Type::Class(_) | Type::Actor(_)) || matches!(b.ty, Type::Class(_) | Type::Actor(_)) {
+                            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                                "class identity equality is not admitted by the browser compiler"));
+                        }
                         if a.ty != b.ty {
                             return Err(type_err(
                                 pos,
@@ -626,11 +909,94 @@ impl FnCx<'_> {
                     ty,
                 }
             }
+            ExprKind::NewClass(name, args) => self.construct_class(name, args, pos)?,
+            ExprKind::MethodCall(receiver, name, args) => self.method_call(receiver, name, args, pos)?,
+            ExprKind::SpawnActor(name, args) => {
+                if self.in_actor_handler { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "nested actor spawn from receive() is not admitted without a supervisor")); }
+                let (id, runnable) = self.actors.get(name).ok_or_else(|| Diagnostic::new(pos,
+                    "E_SPAWN_TYPE", format!("'{name}' is not a declared actor")))?;
+                if !args.is_empty() { return Err(Diagnostic::new(pos, "E_ARITY",
+                    "stage-1 actors have no constructor arguments")); }
+                if !runnable { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "actor must declare a stateless receive(int) -> int handler before spawn")); }
+                self.imports.push(Import::ActorSpawn);
+                TE { e: TExpr::SpawnActor(*id), ty: Type::Actor(*id) }
+            },
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
         })
     }
 
+
+    /// Only scalar actor handles can send. The return value is a distinct
+    /// Result<void, SendError>, not a boolean or a completion acknowledgement.
+    fn method_call(&mut self, receiver: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        let value = self.value(receiver)?;
+        match (value.ty, name) {
+            (Type::Actor(_), "send") => {
+                if self.in_actor_handler {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "actor receive() cannot send without an explicit capability"));
+                }
+                if args.len() != 1 {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        "actor send() requires exactly one int message"));
+                }
+                let message = self.value(&args[0])?;
+                if message.ty != Type::Int {
+                    return Err(Diagnostic::new(args[0].pos, "E_UNSUPPORTED",
+                        "actor send transport admits only owned scalar int values; references and pointers cannot cross workers"));
+                }
+                self.imports.push(Import::ActorSend);
+                Ok(TE { e: TExpr::ActorSend(Box::new(value), Box::new(message)),
+                    ty: Type::SendResult })
+            }
+            (Type::Actor(_), "get_done") =>
+                Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "get_done() must be terminally awaited in void main(); general task values are not supported")),
+            (Type::SendResult, "is_ok" | "is_err") => {
+                if !args.is_empty() {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        "Result.is_ok() / is_err() takes no arguments"));
+                }
+                Ok(TE { e: TExpr::SendStatus(Box::new(value), name == "is_ok"),
+                    ty: Type::Bool })
+            }
+            (Type::Actor(_), _) | (Type::SendResult, _) =>
+                Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    format!("member '{name}' is not part of the admitted actor/Result subset"))),
+            _ => Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("method '{name}' is not supported on type {}", value.ty.name()))),
+        }
+    }
+
+    /// Allocation is only authorized by an explicit syntax node from `new`.
+    /// This gate is separate from function call/arity lookup: class names are
+    /// *never* callable constructor aliases.
+    fn construct_class(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        let info = self.classes.get(name).ok_or_else(|| {
+            Diagnostic::new(pos, "E_NEW_TYPE",
+                format!("'new' requires a class name, but '{name}' is not a class"))
+        })?;
+        if !args.is_empty() {
+            return Err(Diagnostic::new(pos, "E_ARITY",
+                format!("class '{name}' currently has only a zero-argument default constructor")));
+        }
+        *self.heap_used = true;
+        Ok(TE {
+            e: TExpr::NewClass {
+                size: info.size,
+                fields: info.fields.iter().map(|f| (f.offset, f.value)).collect(),
+            },
+            ty: Type::Class(info.id),
+        })
+    }
+
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if self.classes.contains_key(name) {
+            return Err(Diagnostic::new(pos, "E_NEW_REQUIRED",
+                format!("class '{name}' requires explicit 'new {name}(...)' construction")));
+        }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
             "Or" => Some(Builtin::Or),
@@ -657,6 +1023,8 @@ impl FnCx<'_> {
             }
         }
         if name == "stdio.print" || name == "stdio.println" {
+            if self.in_actor_handler { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "receive() cannot use direct stdio; actor output requires explicit capabilities")); }
             let newline = name == "stdio.println";
             if args.len() != 1 {
                 return Err(Diagnostic::new(
@@ -685,6 +1053,10 @@ impl FnCx<'_> {
                 });
             }
             let v = self.value(&args[0])?;
+            if !matches!(v.ty, Type::Int | Type::Bool) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "printing nominal enum values is not supported by the browser guest ABI"));
+            }
             self.imports
                 .push(if v.ty == Type::Int { Import::PrintI64 } else { Import::PrintBool });
             return Ok(TE {

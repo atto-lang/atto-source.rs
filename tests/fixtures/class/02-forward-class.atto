@@ -1,0 +1,10 @@
+// expect-exit: 48
+fnc fresh(): Score { return new Score(); }
+pub fnc main(): int {
+  val a = fresh();
+  val b = fresh();
+  return a.score + b.score;
+}
+define class Score as
+  int score: 24
+end

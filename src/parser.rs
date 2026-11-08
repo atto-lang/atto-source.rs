@@ -8,9 +8,13 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use std::collections::BTreeMap;
 
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
+pub const MAX_DECLARATIONS: usize = 1024;
+pub const MAX_ENUM_VARIANTS: usize = 256;
+pub const MAX_CLASS_FIELDS: usize = 64;
 pub const MAX_PARAMS: usize = 32;
 /// Bound on the height of any syntax tree the parser builds. Left-associative
 /// operator chains (`a + b + ...`) and `elif` arms are parsed iteratively but
@@ -196,6 +200,10 @@ pub fn is_reserved(name: &str) -> bool {
 
 pub struct Parser {
     toks: Vec<Token>,
+    /// Closed-world enum names gathered from define headers before type parsing.
+    enum_types: BTreeMap<String, u16>,
+    class_types: BTreeMap<String, u16>,
+    actor_types: BTreeMap<String, u16>,
     i: usize,
     depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
@@ -213,8 +221,51 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
+        // Header pre-scan permits named enum types in functions declared before
+        // the enum, without evaluating arbitrary source or trusting a tag.
+        // The actual declaration parser validates all headers and bodies.
+        let mut enum_types = BTreeMap::new();
+        let mut class_types = BTreeMap::new();
+        let mut actor_types = BTreeMap::new();
+        let mut next_id = 0u16;
+        let mut next_class_id = 0u16;
+        let mut next_actor_id = 0u16;
+        for i in 0..toks.len() {
+            if !matches!(toks[i].tok, Tok::Ident(ref w) if w == "define") {
+                continue;
+            }
+            let mut j = i + 1;
+            if matches!(toks.get(j), Some(Token { tok: Tok::Ident(w), .. }) if w == "pub") {
+                j += 1;
+            }
+            if matches!(toks.get(j), Some(Token { tok: Tok::Ident(w), .. }) if w == "enum") {
+                if let Some(Token { tok: Tok::Ident(name), .. }) = toks.get(j + 1) {
+                    if !enum_types.contains_key(name) {
+                        enum_types.insert(name.clone(), next_id);
+                        next_id = next_id.saturating_add(1);
+                    }
+                }
+            } else if matches!(toks.get(j), Some(Token { tok: Tok::Ident(w), .. }) if w == "class") {
+                if let Some(Token { tok: Tok::Ident(name), .. }) = toks.get(j + 1) {
+                    if !class_types.contains_key(name) {
+                        class_types.insert(name.clone(), next_class_id);
+                        next_class_id = next_class_id.saturating_add(1);
+                    }
+                }
+            } else if matches!(toks.get(j), Some(Token { tok: Tok::Ident(w), .. }) if w == "actor") {
+                if let Some(Token { tok: Tok::Ident(name), .. }) = toks.get(j + 1) {
+                    if !actor_types.contains_key(name) {
+                        actor_types.insert(name.clone(), next_actor_id);
+                        next_actor_id = next_actor_id.saturating_add(1);
+                    }
+                }
+            }
+        }
         Parser {
             toks,
+            enum_types,
+            class_types,
+            actor_types,
             i: 0,
             depth: 0,
             height: 0,
@@ -336,7 +387,7 @@ impl Parser {
 
     fn is_type_word(&self, n: usize) -> bool {
         matches!(self.word_at(n), Some("int" | "bool" | "boolean" | "void"))
-            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+            || self.word_at(n).is_some_and(|w| w == "Result" || UNSUPPORTED_TYPES.contains(&w) || self.enum_types.contains_key(w) || self.class_types.contains_key(w) || self.actor_types.contains_key(w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -346,6 +397,16 @@ impl Parser {
             _ => return Err(self.expected("a type")),
         };
         self.advance();
+        // The first actor slice admits only this concrete Result specialization.
+        // All other generic Results remain unsupported until full generic typing.
+        if name == "Result" {
+            self.expect(Tok::Lt, "'<' for Result<void, SendError>")?;
+            self.expect_word("void")?;
+            self.expect(Tok::Comma, "',' in Result<void, SendError>")?;
+            self.expect_word("SendError")?;
+            self.expect(Tok::Gt, "'>' to finish Result<void, SendError>")?;
+            return Ok(Type::SendResult);
+        }
         let ty = match name.as_str() {
             "int" => Type::Int,
             "bool" | "boolean" => Type::Bool,
@@ -357,6 +418,9 @@ impl Parser {
                     format!("type '{n}' is not supported by the browser compiler yet"),
                 ))
             }
+            n if self.enum_types.contains_key(n) => Type::Enum(self.enum_types[n]),
+            n if self.class_types.contains_key(n) => Type::Class(self.class_types[n]),
+            n if self.actor_types.contains_key(n) => Type::Actor(self.actor_types[n]),
             n => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
         };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
@@ -369,20 +433,176 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> R<Program> {
         let mut funcs = Vec::new();
+        let mut declarations: Vec<Declaration> = Vec::new();
         while *self.peek() != Tok::Eof {
-            if funcs.len() >= MAX_FUNCS {
-                return Err(Diagnostic::new(
-                    self.pos(),
-                    "E_SOURCE_LIMIT",
-                    format!("more than {MAX_FUNCS} functions"),
-                ));
+            if self.is_word("define") {
+                if declarations.len() >= MAX_DECLARATIONS {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        format!("more than {MAX_DECLARATIONS} top-level declarations"),
+                    ));
+                }
+                let declaration = self.parse_definition()?;
+                if declarations.iter().any(|d| d.name == declaration.name) {
+                    return Err(Diagnostic::new(
+                        declaration.pos,
+                        "E_DUPLICATE",
+                        format!("duplicate top-level declaration '{}'", declaration.name),
+                    ));
+                }
+                declarations.push(declaration);
+            } else {
+                if funcs.len() >= MAX_FUNCS {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        format!("more than {MAX_FUNCS} functions"),
+                    ));
+                }
+                funcs.push(self.parse_func()?);
             }
-            funcs.push(self.parse_func()?);
         }
-        Ok(Program { funcs })
+        Ok(Program { funcs, declarations })
+    }
+
+    /// Admit the bounded nominal declaration subset. Classes have literal
+    /// scalar fields, enums have nominal values, and actors may have exactly
+    /// one stateless receive(int)->int method. All other actor state, members
+    /// and unsupported forms fail closed instead of fabricating execution.
+    fn parse_definition(&mut self) -> R<Declaration> {
+        self.expect_word("define")?;
+        self.eat_word("pub");
+        let kind = match self.word_at(0) {
+            Some("class") => DeclarationKind::Class,
+            Some("actor") => DeclarationKind::Actor,
+            Some("struct") => DeclarationKind::Struct,
+            Some("enum") => DeclarationKind::Enum,
+            Some("module") => DeclarationKind::Module,
+            Some("interface") => DeclarationKind::Interface,
+            Some("trait") => DeclarationKind::Trait,
+            Some("supervisor") => DeclarationKind::Supervisor,
+            _ => return Err(unsupported(self.pos(), "this 'define' declaration kind")),
+        };
+        self.advance();
+        let (name, pos) = self.ident("a declaration name")?;
+        if matches!(name.as_str(), "int" | "bool" | "boolean" | "void")
+            || UNSUPPORTED_TYPES.contains(&name.as_str())
+        {
+            return Err(Diagnostic::new(pos, "E_RESERVED", format!("'{name}' is a builtin type")));
+        }
+        if *self.peek() == Tok::Lt {
+            return Err(unsupported(self.pos(), "generic declarations"));
+        }
+        self.expect_word("as")?;
+        let mut variants = Vec::new();
+        let mut fields = Vec::new();
+        let mut handler = None;
+        if kind == DeclarationKind::Enum {
+            while !self.is_word("end") {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected("'end'"));
+                }
+                if variants.len() >= MAX_ENUM_VARIANTS {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        format!("more than {MAX_ENUM_VARIANTS} enum variants"),
+                    ));
+                }
+                let (variant, variant_pos) = self.ident("an enum variant")?;
+                if variants.contains(&variant) {
+                    return Err(Diagnostic::new(
+                        variant_pos,
+                        "E_DUPLICATE",
+                        format!("duplicate enum variant '{variant}'"),
+                    ));
+                }
+                variants.push(variant);
+                let separated = self.eat(&Tok::Comma) || self.eat(&Tok::Semi);
+                if !separated && !self.is_word("end") && self.pos().line <= variant_pos.line {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SYNTAX",
+                        "enum variants must be separated by a newline, ',' or ';'",
+                    ));
+                }
+            }
+        } else if kind == DeclarationKind::Class {
+            // Explicit scalar default fields are the first executable class
+            // subset. Methods, inheritance, mutable fields, nested definitions
+            // and data-dependent defaults need separate typing/runtime gates.
+            while !self.is_word("end") {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected("'end'"));
+                }
+                if fields.len() >= MAX_CLASS_FIELDS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                        format!("more than {MAX_CLASS_FIELDS} class fields")));
+                }
+                if self.is_word("fnc") || self.is_word("routine") || self.is_word("pub")
+                    || self.is_word("define") || self.is_word("constructor")
+                    || self.is_word("let") || self.is_word("mut") || self.is_word("final")
+                    || *self.peek_at(1) == Tok::LParen
+                {
+                    return Err(unsupported(self.pos(), "class methods, mutable fields or constructors"));
+                }
+                let field_pos = self.pos();
+                let ty = self.parse_type()?;
+                if !matches!(ty, Type::Int | Type::Bool) {
+                    return Err(unsupported(field_pos, "non-scalar class field types"));
+                }
+                let (field_name, _) = self.ident("a class field")?;
+                if fields.iter().any(|f: &ClassField| f.name == field_name) {
+                    return Err(Diagnostic::new(field_pos, "E_DUPLICATE",
+                        format!("duplicate class field '{field_name}'")));
+                }
+                self.expect(Tok::Colon, "':' for a field initializer")?;
+                let default = self.parse_expr()?;
+                let last_line = self.toks[self.i.saturating_sub(1)].pos.line;
+                fields.push(ClassField { name: field_name, ty, default, pos: field_pos });
+                let separated = self.eat(&Tok::Semi) || self.eat(&Tok::Comma);
+                if !separated && !self.is_word("end") && self.pos().line <= last_line {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "class fields need a newline, ',' or ';' separator"));
+                }
+            }
+        } else if kind == DeclarationKind::Actor {
+            if !self.is_word("end") {
+                let f = self.parse_func_with_actor(true).map_err(|d| {
+                    if d.code == "E_SYNTAX" {
+                        return unsupported(d.pos, "actor handler syntax outside receive(int) -> int { ... }");
+                    }
+                    d
+                })?;
+                if f.name != "receive" || f.params.len() != 1 || f.params[0].ty != Type::Int
+                    || f.ret != Type::Int || f.params[0].mutable {
+                    return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                        "stage-1 actor requires exactly receive(msg: int) -> int { ... }"));
+                }
+                handler = Some(f);
+                if !self.is_word("end") {
+                    return Err(unsupported(self.pos(), "additional actor members or state"));
+                }
+            }
+        } else if !self.is_word("end") {
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected("'end'"));
+            }
+            return Err(unsupported(
+                self.pos(),
+                &format!("members of '{}' declarations", kind.as_str()),
+            ));
+        }
+        self.expect_word("end")?;
+        Ok(Declaration { kind, name, pos, variants, fields, handler })
     }
 
     fn parse_func(&mut self) -> R<Func> {
+        self.parse_func_with_actor(false)
+    }
+
+    fn parse_func_with_actor(&mut self, actor_method: bool) -> R<Func> {
         if *self.peek() == Tok::At {
             return Err(unsupported(self.pos(), "annotations"));
         }
@@ -405,7 +625,7 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        if !(self.eat_word("fnc") || self.eat_word("routine")) {
+        if !(self.eat_word("fnc") || self.eat_word("routine") || (actor_method && self.is_word("receive"))) {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
                     return Err(unsupported(self.pos(), &format!("top-level '{w}'")));
@@ -584,6 +804,12 @@ impl Parser {
                 "E_SYNTAX",
                 "a local binding starts with 'val', 'const' or 'let' (for example 'val x: int = 1;')",
             )),
+            Some("await") => {
+                self.advance();
+                let expr = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::AwaitDone(expr, pos))
+            }
             Some("return") => {
                 self.advance();
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)
@@ -622,6 +848,11 @@ impl Parser {
             }
             Some("do") if matches!(self.word_at(1), Some("match" | "switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
+            }
+            Some("spawn") => {
+                let e = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(e))
             }
             Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
@@ -1086,6 +1317,33 @@ impl Parser {
         })
     }
 
+    /// Shared argument parser for ordinary calls and explicit class allocation.
+    /// Both forms receive identical limits and disallow positional/named mixing
+    /// until the named argument checker is implemented.
+    fn parse_call_args(&mut self) -> R<Vec<Expr>> {
+        self.expect(Tok::LParen, "'(' to begin call arguments")?;
+        let mut args = Vec::new();
+        if *self.peek() != Tok::RParen {
+            loop {
+                if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+                    return Err(unsupported(self.pos(), "named arguments"));
+                }
+                if *self.peek() == Tok::Dot {
+                    return Err(unsupported(self.pos(), "spread arguments"));
+                }
+                args.push(self.parse_expr()?);
+                if args.len() > MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
+                }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Tok::RParen, "')' to close the call")?;
+        Ok(args)
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
         let pos = self.pos();
         let mut e = self.parse_primary()?;
@@ -1096,26 +1354,7 @@ impl Parser {
                         ExprKind::Var(n) => n.clone(),
                         _ => return Err(unsupported(self.pos(), "calling a computed value")),
                     };
-                    self.advance();
-                    let mut args = Vec::new();
-                    if *self.peek() != Tok::RParen {
-                        loop {
-                            if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                                return Err(unsupported(self.pos(), "named arguments"));
-                            }
-                            if *self.peek() == Tok::Dot {
-                                return Err(unsupported(self.pos(), "spread arguments"));
-                            }
-                            args.push(self.parse_expr()?);
-                            if args.len() > MAX_PARAMS {
-                                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
-                            }
-                            if !self.eat(&Tok::Comma) {
-                                break;
-                            }
-                        }
-                    }
-                    self.expect(Tok::RParen, "')' to close the call")?;
+                    let args = self.parse_call_args()?;
                     e = Expr {
                         kind: ExprKind::Call(name, args),
                         pos,
@@ -1142,8 +1381,26 @@ impl Parser {
                                 continue;
                             }
                         }
+                        if self.enum_types.contains_key(base) {
+                            let enum_name = base.clone();
+                            self.advance();
+                            let (variant, _) = self.ident("an enum variant")?;
+                            e = Expr {
+                                kind: ExprKind::EnumVariant { enum_name, variant },
+                                pos,
+                            };
+                            continue;
+                        }
                     }
-                    return Err(unsupported(dot, "member access"));
+                    self.advance();
+                    let (member, _) = self.ident("a field or method")?;
+                    e = if *self.peek() == Tok::LParen {
+                        let args = self.parse_call_args()?;
+                        Expr { kind: ExprKind::MethodCall(Box::new(e), member, args), pos }
+                    } else {
+                        Expr { kind: ExprKind::Field(Box::new(e), member), pos }
+                    };
+                    continue;
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
                 Tok::Question => {
@@ -1192,7 +1449,24 @@ impl Parser {
                     ExprKind::Bool(false)
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
-                "new" | "spawn" | "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "spawn" => {
+                    self.advance();
+                    let (actor_name, _) = self.ident("an actor name after 'spawn'")?;
+                    if *self.peek() == Tok::Lt {
+                        return Err(unsupported(self.pos(), "generic actor constructors"));
+                    }
+                    ExprKind::SpawnActor(actor_name, self.parse_call_args()?)
+                }
+                "new" => {
+                    self.advance();
+                    let (class_name, _) = self.ident("a class name after 'new'")?;
+                    if *self.peek() == Tok::Lt {
+                        return Err(unsupported(self.pos(), "generic constructors"));
+                    }
+                    let args = self.parse_call_args()?;
+                    ExprKind::NewClass(class_name, args)
+                }
+                "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {

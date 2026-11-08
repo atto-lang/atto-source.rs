@@ -17,6 +17,7 @@ The compiler does not define any syntax of its own:
 | Area | Admitted |
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
+| Top-level declarations | `define class Name as ... end` admits **immutable `int`/`bool` literal-default fields** and an explicit `new Name()` zero-argument constructor that allocates a fresh bounded guest-private instance; typed field reads, nominal class parameters/returns. `define enum` admits fieldless nominal variants. One stateless actor `receive(int)->int` handler and typed `spawn Worker()` are admitted only by the actor-aware private browser host; empty actors and struct/module/interface/trait/supervisor bodies remain inert. No language-level `send()->Result`, supervisor or actor heap semantics are claimed. |
 | Entry point | zero-argument `main` returning `int` or `void` |
 | Types | `int` (i64), `bool` / `boolean`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut` |
@@ -31,7 +32,8 @@ The following are rejected, with the code shown:
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
-- Classes, actors, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give `E_UNSUPPORTED`.
+- Bare `Point()` constructor calls give `E_NEW_REQUIRED` (no guest output). Class methods, mutable fields, custom constructors, nonliteral defaults, inheritance and general actor state/methods or struct/module/interface/trait/supervisor members are **not** executable in the browser; only the separately documented stateless actor `receive(int)->int` slice is admitted. Those constructs fail closed. Nominal class values cannot be implicitly converted to scalars and class equality is not yet admitted.
+- `define macro` and other unsupported `define` forms, `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try` and `defer` give fail-closed diagnostics.
 
 ### Known divergences from the Java reference
 
@@ -40,10 +42,54 @@ These are recorded in fixtures and checked by the differential run:
 - Binding the result of a void call. Java accepts it. Here it is `E_TYPE`, because a void call has no value.
 - Integer overflow. Java wraps silently. Here it panics, following spec 17 and the LLVM backend.
 
+
+### Top-level `define` staging boundary
+
+This branch implements **nominal fieldless enum values and a constrained nominal class subset**, not the full declaration system. The compiler resolves types and variants (including forward type references), enforces enum identity at assignments, calls, returns, ternaries and equality, then emits actual `i32` guest values in Rust-native and WebAssembly-hosted compilation. Default class construction allocates a fresh, 8-byte-aligned object in a **single fixed 64-KiB guest-private Wasm memory**, with checked bump allocation and panic code 3 on exhaustion. Each immutable `int`/`bool` field occupies an 8-byte slot; field offsets, types and initializer literals are compiler-validated. This is NOT actor heap isolation or a general-purpose allocator. Class methods, writable fields, custom constructors, enum payloads, actor spawning, and other unsupported constructs fail closed with **no** Wasm artifact.
+
+The compiler Wasm shipped at the public `/play/` URL is separately hash-pinned: this source-only PR does not update that artifact or deploy any syntax changes. Promotion requires exact-head Rust+wasm32 guest tests, independently reviewed compiler bytes and provenance receipts, source/playground mirror parity, and the site's protected publication gate.
+
+### Executable nominal enum example
+
+```atto
+define enum Status as
+  Pending
+  Ready
+end
+
+fnc ready(Status status): bool { return status eq Status.Ready; }
+pub fnc main(): int {
+  val current: Status = Status.Ready;
+  if ready(current) then return 42; else return 0; fi
+}
+```
+
+`Status.Ready` is not implicitly converted to `int`, `bool`, or another enum. The in-browser Rust compiler and native CLI share this implementation; the existing **public** playground Wasm artifact is unchanged until the protected release process completes.
+
+### Executable immutable-class example
+
+Class allocation requires the explicit `new` keyword. `Point()` is rejected with `E_NEW_REQUIRED`; only `new Point()` allocates. Ordinary `fnc` calls remain `f()`, without `new`.
+
+```atto
+define class Point as
+  int x: 40
+  int y: 2
+  bool valid: true
+end
+
+fnc total(Point p): int { return p.x + p.y; }
+pub fnc main(): int {
+  val point = new Point();  // explicit fresh guest-heap allocation
+  if point.valid then return total(point); else return 0; fi
+}
+```
+
+The bounded class allocator uses the same guest `memory` export as literal output. It introduces **no new imports**, but adds a reserved panic code `3` for class heap exhaustion; consumers must display the updated diagnostic when promoting compiler artifacts. This narrow class implementation is a compiler-backed feature slice, not proof of canonical class lifetime/reclamation or actor-heap parity.
+
 ## Guest contract `atto.browser.guest.v1`
 
-- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; code 2 is reserved and unreachable because integer division/remainder is not admitted). `memory` is exported only when string literals are printed.
-- **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)` and `print_newline()`. There are no other capabilities.
+- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; code 2 reserved/unreachable; 3 = fixed class heap exhausted). `memory` is exported when string literals are printed **or class instances are allocated**. Stage-1 actor handlers are additionally exported as `atto_actor_receive_<nominal-id>(i64)->i64`, for a separate browser worker guest instance.
+- **Imports:** only those used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)`, `print_newline()`, and for a checked executable actor spawn only, `actor_spawn(i32 actor_type)->i32 actor_handle`. The `actor_spawn` capability is implemented **only in the private browser test host**, not in the published playground. No other host capabilities are admitted.
 - **Determinism:** output is a pure function of the source. The native and wasm32 hosts emit byte-identical modules.
 
 ## Compiler ABI v2 (wasm32 build)
@@ -107,3 +153,46 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+
+## Private browser actor stage-1 proposal (PR #18)
+
+A **restricted stateless actor** may be declared with a single
+`receive(msg: int) -> int { ... }` body (optional `fnc` prefix), then
+spawned as `val actor: Worker = spawn Worker();`. Its result is a nominal
+actor handle, never an integer, pointer or class reference. A standalone
+browser host must supply `atto.actor_spawn(i32)->i32` and implement an
+actor worker for that declared handler. The guest exports
+`atto_actor_receive_<nominal-id>(i64)->i64` for the actor worker to
+invoke with its own guest Wasm instance, per-worker memory and JS
+execution stack. The real-browser test harness uses explicit host
+message injection to deliver canonical signed i64 values, as
+language-level `actor.send(msg) -> Result` is **not admitted yet**.
+
+For example, source compilation is allowed (with the actor-aware host):
+
+```atto
+define actor Worker as
+  receive(msg: int) -> int { return msg + 1; }
+end
+pub fnc main(): int {
+  val worker: Worker = spawn Worker();
+  return 0;
+}
+```
+
+This is **not** a complete actor runtime. The following remain fail-closed:
+actor state, multiple handler arms, constructors, actor-side stdio or
+nested spawning, member calls such as `actor.send(...)`, and
+`rt take`/borrowing/ownership transfers. The browser host rejects
+objects, class pointers, noncanonical or out-of-range messages.
+The stage-1 harness bounds actors per guest run (four) and its ready
+and request handshakes (two seconds each), serializes replies and
+terminates workers. It does **not** implement canonical language
+`Result`/completion, supervisor CONTROL, actor arena lifetime,
+independent guaranteed guest stacks, or cross-tenant enforced security.
+
+The test host's actor import is **not** part of the current published
+playground's grant list. No release of actor-capable compiler bytes or
+public site changes is authorized without the source, playground and
+Pages release gates.

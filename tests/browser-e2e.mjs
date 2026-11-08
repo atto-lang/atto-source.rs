@@ -10,6 +10,8 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-lifecycle.mjs',[new URL('./browser/actor-lifecycle.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-worker.mjs',[new URL('./browser/actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -77,6 +79,59 @@ try{
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
+
+  const classExample = [
+    'define class Point as',
+    '  int x: 40',
+    '  int y: 33',
+    'end',
+    'pub fnc main(): int {',
+    '  val p = new Point();',
+    '  return p.x + p.y;',
+    '}',
+  ].join('\n');
+  assert.match(await run(classExample,'main() -> 73'),/73/);
+  console.log('PASS browser: native Rust-compiled Wasm compiler generates and runs a class allocation guest');
+  // User-reported /play/ repro. This runs in real Chromium using the actual
+  // Rust->Wasm compiler and then the compiler-produced guest Wasm, not an
+  // editor parser approximation or JavaScript fallback.
+  const userPointExample = [
+    'define class Point as',
+    '  int x: 40',
+    '  int y: 2',
+    '  bool active: true',
+    'end',
+    '',
+    'pub fnc main(): int {',
+    '  val p = new Point();',
+    '  if p.active then',
+    '    return p.x + p.y;',
+    '  else',
+    '    return 0;',
+    '  fi',
+    '}',
+  ].join('\n');
+  assert.match(await run(userPointExample, 'main() -> 42'), /^main\(\) -> 42$/);
+  console.log('PASS browser: exact user Point/new constructor, bool field and two int fields return 42');
+  assert.match(await run(userPointExample.replace('new Point()', 'Point()'), 'E_NEW_REQUIRED'), /E_NEW_REQUIRED/);
+  console.log('PASS browser: exact user Point without new rejects and worker enforces zero Wasm artifact');
+  assert.match(await run(userPointExample.replace('p.x + p.y', 'p.missing'), 'E_UNKNOWN_FIELD'), /E_UNKNOWN_FIELD/);
+  console.log('PASS browser: invalid class field rejects with E_UNKNOWN_FIELD and zero Wasm artifact');
+  const enumExample = [
+    'define enum Status as Pending, Ready end',
+    'pub fnc main(): int {',
+    '  val s: Status = Status.Ready;',
+    '  if s eq Status.Ready then return 42; else return 0; fi',
+    '}',
+  ].join('\n');
+  assert.match(await run(enumExample, 'main() -> 42'), /^main\(\) -> 42$/);
+  console.log('PASS browser: nominal enum variant compiles and executes to 42');
+  assert.match(await run(userPointExample, 'main() -> 42'), /^main\(\) -> 42$/);
+  console.log('PASS browser: real compiler recovers after two rejected class programs');
+  assert.match(await run(classExample.replace('new Point()', 'Point()'),'E_NEW_REQUIRED'), /E_NEW_REQUIRED/);
+  console.log('PASS browser: bare class calls are diagnosed without guest execution');
+  assert.match(await run(classExample,'main() -> 73'),/73/);
+  console.log('PASS browser: explicit new recovers after rejected bare class invocation');
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
   console.log('PASS browser: val reassignment fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 8; }','main() -> 48'),/48/);
@@ -88,6 +143,112 @@ try{
   console.log('PASS browser: checked int overflow panics with output preserved');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: error recovery restores valid execution');
+  const actorExample=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg + 1; }',
+    'end',
+    'pub fnc main(): int {',
+    '  val worker: Worker = spawn Worker();',
+    '  return 0;',
+    '}',
+  ].join('\n');
+  await evaluate("window.__attoActorMessages=[{handle:1,value:'41'}]");
+  assert.match(await run(actorExample,'actor[1] receive(41) -> 42'),/actor\[1\] receive\(41\) -> 42/);
+  await evaluate("window.__attoActorMessages=undefined");
+  console.log('PASS browser: guest spawn creates real nested Web Worker with separate Wasm instance and typed i64 reply');
+  assert.ok(requests.some(x=>x.path==='/actor-worker.mjs'),'actor worker was actually loaded');
+  // Re-use a single actor's mailbox sequentially; never rely on another
+  // 'ready' signal after the first typed response.
+  await evaluate("window.__attoActorMessages=[{handle:1,value:'41'},{handle:1,value:'42'}]");
+  assert.match(await run(actorExample,'actor[1] receive(42) -> 43'),/actor\[1\] receive\(41\) -> 42\nactor\[1\] receive\(42\) -> 43/);
+  console.log('PASS browser: sequential mailbox messages retain ordering');
+  // Two spawns get different worker handles and independent Wasm instances.
+  const twoActors=actorExample.replace('  return 0;', '  val other: Worker = spawn Worker();\n  return 0;');
+  await evaluate("window.__attoActorMessages=[{handle:1,value:'41'},{handle:2,value:'42'}]");
+  assert.match(await run(twoActors,'actor[2] receive(42) -> 43'),/actor\[1\] receive\(41\) -> 42\nactor\[2\] receive\(42\) -> 43/);
+  console.log('PASS browser: two real actor workers have independent handles and execution instances');
+  await evaluate("window.__attoActorMessages=[{handle:1,value:'9223372036854775808'}]");
+  assert.match(await run(actorExample,'E_MESSAGE_RANGE'),/E_MESSAGE_RANGE/);
+  await evaluate("window.__attoActorMessages=undefined");
+  console.log('PASS browser: out-of-range message is rejected before worker invocation');
+  await evaluate("window.__attoActorMessages=[{handle:1,value:{untrustedPointer:123}}]");
+  assert.match(await run(actorExample,'E_MESSAGE_TYPE'),/E_MESSAGE_TYPE/);
+  await evaluate("window.__attoActorMessages=undefined");
+  console.log('PASS browser: object and pointer-shaped messages fail closed');
+  // Source-level send() compiles to a checked Result-valued mailbox admission.
+  // Responses are delivered later by the host from the real dedicated actor.
+  const sourceSend=[
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): int {',
+    '  val worker = spawn Worker();',
+    '  val accepted: Result<void, SendError> = worker.send(41);',
+    '  if accepted.is_ok() then return 42; else return 0; fi',
+    '}',
+  ].join('\n');
+  assert.match(await run(sourceSend,'actor[1] receive(41) -> 42'),
+    /^actor\[1\] receive\(41\) -> 42\nmain\(\) -> 42$/);
+  console.log('PASS browser: source send Result admits real scalar message and returns before completion');
+  const sourceTwoSends=sourceSend.replace(
+    '  if accepted.is_ok() then return 42; else return 0; fi',
+    '  val second = worker.send(42); if accepted.is_ok() , second.is_ok() then return 42; else return 0; fi');
+  assert.match(await run(sourceTwoSends,'actor[1] receive(42) -> 43'),
+    /^actor\[1\] receive\(41\) -> 42\nactor\[1\] receive\(42\) -> 43\nmain\(\) -> 42$/);
+  console.log('PASS browser: source sends preserve per-actor FIFO across real Worker messages');
+
+  // Admission is bounded at 32 pending messages, before any asynchronous
+  // receive completes. The 33rd send must produce Result::Err while all
+  // admitted messages are delivered in deterministic per-actor order.
+  const fullSource=[
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): int {',
+    '  val worker = spawn Worker();',
+    '  let rejected = 0;',
+    '  for (let i = 0; i < 33; i++) do',
+    '    val attempt = worker.send(i);',
+    '    if attempt.is_err() then rejected = rejected + 1; fi',
+    '  done',
+    '  return rejected;',
+    '}',
+  ].join('\n');
+  const fullOutput=await run(fullSource,'main() -> 1');
+  assert.equal((fullOutput.match(/receive\(/g)||[]).length,32,
+    'exactly 32 messages admitted and executed');
+  assert.ok(!fullOutput.includes('receive(32)'), '33rd message must not execute');
+  assert.match(fullOutput,/actor\[1\] receive\(31\) -> 32\nmain\(\) -> 1$/);
+  console.log('PASS browser: real 32-slot admission backpressure and 33rd Result::Err');
+
+
+  assert.match(await run(sourceSend.replace('worker.send(41)','worker.get_done()'), 'E_UNSUPPORTED'),
+    /E_UNSUPPORTED/);
+  console.log('PASS browser: unawaited get_done task values remain unsupported');
+
+  // True async source scope join: main() has no continuation after await,
+  // and the parent Worker cannot report success before the child acknowledges
+  // all accepted messages and explicit terminal shutdown.
+  const sourceAwait=[
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): void {',
+    '  val worker = spawn Worker();',
+    '  val accepted = worker.send(41);',
+    '  await worker.get_done();',
+    '}',
+  ].join('\n');
+  assert.equal(await run(sourceAwait,'main() -> 0'),
+    'actor[1] receive(41) -> 42\nmain() -> 0');
+  console.log('PASS browser: terminal source await joins acknowledged actor shutdown asynchronously');
+  assert.ok(requests.some(x=>x.path==='/actor-lifecycle.mjs'),
+    'real lifecycle module fetched by browser Worker');
+  const panicAwait=sourceAwait.replace('msg + 1','msg + 9223372036854775807');
+  const panicResult=await run(panicAwait,'E_ACTOR_PANIC_1');
+  assert.match(panicResult,/^E_HOST: E_ACTOR_PANIC_1$/);
+  assert.ok(!panicResult.includes('main() -> 0'),
+    'panicked actor must not produce successful completed task');
+  console.log('PASS browser: actor panic rejects terminal join, never invents completion');
+  const illegalAwait=sourceAwait.replace('  await worker.get_done();',
+    '  await worker.get_done(); stdio.println(99);');
+  assert.match(await run(illegalAwait,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  console.log('PASS browser: suspension with arbitrary continuation fails closed');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

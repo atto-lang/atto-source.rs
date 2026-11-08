@@ -7,18 +7,22 @@
 //! * export `memory` only when string literals are printed
 //! * imports, only those used, from module `atto`:
 //!   `print_i64(i64)`, `print_bool(i32)`, `print_str(i32 offset, i32 len)`,
-//!   `print_newline()`
+//!   `print_newline()`, or `actor_spawn(i32)->i32` for checked actor spawn.
+//! * actor-specific exports (if present): `atto_actor_receive_<id>(i64)->i64`;
+//!   hosts MUST instantiate those on a separate Worker with per-actor Wasm state.
 //!
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
 use crate::ast::{BinOp, Type};
-use crate::check::{Builtin, Import, TExpr, TProgram, TStmt, TE};
+use crate::check::{Builtin, FieldValue, Import, TExpr, TProgram, TStmt, TE};
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
 /// Reserved ABI value; current admitted expressions cannot generate this panic.
 pub const PANIC_DIV_ZERO: i32 = 2;
+/// Exhaustion of the fixed guest-private, one-page class heap.
+pub const PANIC_HEAP_LIMIT: i32 = 3;
 
 const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
@@ -61,7 +65,7 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 fn vt(t: Type) -> Option<u8> {
     match t {
         Type::Int => Some(I64),
-        Type::Bool => Some(I32),
+        Type::Bool | Type::Enum(_) | Type::Class(_) | Type::Actor(_) | Type::SendResult => Some(I32),
         Type::Void => None,
     }
 }
@@ -85,7 +89,8 @@ const H_ADD: u32 = 0;
 const H_SUB: u32 = 1;
 const H_MUL: u32 = 2;
 const H_NEG: u32 = 3;
-const HELPERS: u32 = 4;
+const H_ALLOC: u32 = 4;
+const HELPERS: u32 = 5;
 
 struct Layout {
     imports: Vec<Import>,
@@ -169,6 +174,10 @@ impl Emit<'_> {
                     self.op(0x1A);
                 }
             }
+            TStmt::AwaitActor(actor) => {
+                self.expr(actor);
+                self.call(self.l.import(Import::ActorJoin));
+            }
             TStmt::Return(v) => {
                 if let Some(v) = v {
                     self.expr(v);
@@ -220,6 +229,55 @@ impl Emit<'_> {
         match &v.e {
             TExpr::I64(n) => self.i64c(*n),
             TExpr::Bool(b) => self.i32c(*b as i32),
+            TExpr::EnumTag(tag) => self.i32c(*tag as i32),
+            TExpr::SpawnActor(id) => {
+                self.i32c(*id as i32);
+                self.call(self.l.import(Import::ActorSpawn));
+            }
+            TExpr::ActorSend(handle, value) => {
+                self.expr(handle);
+                self.expr(value);
+                self.call(self.l.import(Import::ActorSend));
+            }
+            TExpr::SendStatus(result, is_ok) => {
+                self.expr(result);
+                self.op(0x45); // i32.eqz: status 0 == admitted
+                if !is_ok { self.op(0x45); } // opposite status
+            }
+            TExpr::NewClass { size, fields } => {
+                // Every constructor call allocates fresh storage; all defaults
+                // are checked literals, so the private scratch global cannot
+                // be clobbered by a nested guest call while initializing.
+                self.i32c(*size as i32);
+                self.call(self.l.helper(H_ALLOC));
+                self.op(0x24); // global.set $class_tmp
+                uleb(&mut self.code, 2);
+                for (offset, field_value) in fields {
+                    self.op(0x23); // global.get $class_tmp
+                    uleb(&mut self.code, 2);
+                    match field_value {
+                        FieldValue::Int(n) => {
+                            self.i64c(*n);
+                            self.op(0x37); // i64.store
+                            uleb(&mut self.code, 3); // alignment 8
+                        }
+                        FieldValue::Bool(b) => {
+                            self.i32c(*b as i32);
+                            self.op(0x36); // i32.store
+                            uleb(&mut self.code, 2); // alignment 4
+                        }
+                    }
+                    uleb(&mut self.code, *offset as u64);
+                }
+                self.op(0x23); // global.get $class_tmp, reference result
+                uleb(&mut self.code, 2);
+            }
+            TExpr::Field(object, offset) => {
+                self.expr(object);
+                self.op(if v.ty == Type::Int { 0x29 } else { 0x28 }); // i64.load / i32.load
+                uleb(&mut self.code, if v.ty == Type::Int { 3 } else { 2 });
+                uleb(&mut self.code, *offset as u64);
+            }
             TExpr::Local(slot) => {
                 self.op(0x20);
                 uleb(&mut self.code, *slot as u64);
@@ -353,6 +411,28 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     c.extend_from_slice(&[0x0B, 0x42, 0, 0x20, 0, 0x7D, 0x0B]);
     v.push((Sig(vec![I64], vec![I64]), no_locals.clone(), c));
 
+    // $alloc(size: i32) -> pointer: fixed 64-KiB guest-private arena.
+    // global 1 is the next free aligned offset, global 2 is a class ctor temp.
+    // On exhaustion, signal panic_code 3 before trapping; never wrap the bump
+    // pointer or return an overlapping instance.
+    let mut c = vec![
+        0x23, 1,       // global.get $heap_ptr
+        0x22, 1,       // local.tee $old
+        0x20, 0,       // local.get size
+        0x6A,          // i32.add
+        0x22, 2,       // local.tee $next
+        0x41,          // i32.const 65536
+    ];
+    sleb(&mut c, 65536);
+    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // i32.gt_u; if
+    panic(&mut c, PANIC_HEAP_LIMIT);
+    c.push(0x0B); // end if
+    c.extend_from_slice(&[
+        0x20, 2, 0x24, 1,  // local.get next; global.set heap_ptr
+        0x20, 1, 0x0B,     // local.get old; end
+    ]);
+    v.push((Sig(vec![I32], vec![I32]), vec![1, 2, I32], c));
+
     v
 }
 
@@ -388,6 +468,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintBool => Sig(vec![I32], vec![]),
             Import::PrintStr => Sig(vec![I32, I32], vec![]),
             Import::PrintNewline => Sig(vec![], vec![]),
+            Import::ActorSpawn => Sig(vec![I32], vec![I32]),
+            Import::ActorSend => Sig(vec![I32, I64], vec![I32]),
+            Import::ActorJoin => Sig(vec![I32], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -448,17 +531,22 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 3, fsec);
 
-    let has_memory = !p.data.is_empty();
+    let has_memory = !p.data.is_empty() || p.heap_used;
     if has_memory {
         // one fixed, non-growable page holding the string literals
         section(&mut out, 5, vec![1, 0x01, 1, 1]);
     }
 
-    // global 0: mut i32 panic_code = 0
-    section(&mut out, 6, vec![1, I32, 0x01, 0x41, 0, 0x0B]);
+    // Private globals: panic code, heap bump cursor, construction scratch.
+    // Reserve at least 16 bytes and align the heap past any string data.
+    let heap_start = ((p.data.len() as u32 + 23) / 8) * 8;
+    let mut globals = vec![3, I32, 0x01, 0x41, 0, 0x0B, I32, 0x01, 0x41];
+    sleb(&mut globals, heap_start as i64);
+    globals.extend_from_slice(&[0x0B, I32, 0x01, 0x41, 0, 0x0B]);
+    section(&mut out, 6, globals);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, if has_memory { 3 } else { 2 });
+    uleb(&mut exp, (if has_memory { 3 } else { 2 }) + p.actor_handlers.len() as u64);
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -470,6 +558,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         exp.push(0x02);
         uleb(&mut exp, 0);
     }
+    for (id, function_index) in &p.actor_handlers {
+        name(&mut exp, &format!("atto_actor_receive_{id}"));
+        exp.push(0x00);
+        uleb(&mut exp, layout.func(*function_index) as u64);
+    }
     section(&mut out, 7, exp);
 
     let mut code_sec = Vec::new();
@@ -480,7 +573,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 10, code_sec);
 
-    if has_memory {
+    if !p.data.is_empty() {
         let mut d = vec![1, 0x00, 0x41, 0x00, 0x0B];
         uleb(&mut d, p.data.len() as u64);
         d.extend_from_slice(&p.data);
@@ -499,6 +592,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
                 "atto.checked_sub",
                 "atto.checked_mul",
                 "atto.checked_neg",
+                "atto.class_alloc_bounded",
             ]
             .map(String::from),
         )

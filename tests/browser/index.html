@@ -13,7 +13,7 @@ button.addEventListener('click',()=>{
   const timer=setTimeout(()=>{worker.terminate();if(id===last){out.textContent='E_TIMEOUT';button.disabled=false}},5000);
   worker.onmessage=event=>{clearTimeout(timer);worker.terminate();if(id!==last)return;out.textContent=event.data.ok?event.data.stdout+'main() -> '+event.data.value:event.data.error;button.disabled=false};
   worker.onerror=()=>{clearTimeout(timer);worker.terminate();if(id===last){out.textContent='E_WORKER';button.disabled=false}};
-  worker.postMessage({source:editor.value});
+  worker.postMessage({source:editor.value,actorMessages:window.__attoActorMessages});
 });
 window.__attoReady=true;
 </script>

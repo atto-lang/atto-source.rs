@@ -1,0 +1,9 @@
+// expect-error: E_NEW_REQUIRED
+// A class name is a nominal type, not a callable constructor.
+define class Point as
+  int x: 40
+end
+pub fnc main(): int {
+  val p = Point()
+  return p.x
+}

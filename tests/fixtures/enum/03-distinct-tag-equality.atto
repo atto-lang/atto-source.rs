@@ -1,0 +1,22 @@
+// expect-exit: 75
+define enum Color as
+  Red
+  Green
+  Blue
+end
+define enum State as
+  Red
+  Green
+  Blue
+end
+fnc same_color(Color first, Color second): bool {
+  return first eq second;
+}
+pub fnc main(): int {
+  val blue = Color.Blue;
+  if same_color(blue, Color.Blue) then
+    if blue neq Color.Red then return 75; else return 0; fi
+  else
+    return 0;
+  fi
+}

@@ -7,6 +7,15 @@ pub enum Type {
     Int,
     Bool,
     Void,
+    /// Nominal enum type. This ID is compiler-owned, not a user-supplied tag.
+    Enum(u16),
+    /// Nominal heap-allocated class reference (guest-private i32 offset).
+    Class(u16),
+    /// Nominal browser actor handle; never a transferable object pointer.
+    Actor(u16),
+    /// Specialised Result<void, SendError>. 0 = Ok admission, nonzero = Err.
+    /// Does not imply the actor has completed processing the message.
+    SendResult,
 }
 
 impl Type {
@@ -15,6 +24,10 @@ impl Type {
             Type::Int => "int",
             Type::Bool => "bool",
             Type::Void => "void",
+            Type::Enum(_) => "enum",
+            Type::Class(_) => "class",
+            Type::Actor(_) => "actor",
+            Type::SendResult => "Result<void, SendError>",
         }
     }
 }
@@ -22,6 +35,60 @@ impl Type {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub funcs: Vec<Func>,
+    /// Top-level nominal declarations: immutable class fields, enum tags and
+    /// the private browser-only stateless actor receive handler subset.
+    pub declarations: Vec<Declaration>,
+}
+
+/// Nominal declarations are independently type-gated. The only executable
+/// actor member is a stateless receive(int)->int body dispatched by a Web
+/// Worker host; state, general methods and full actor semantics are rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclarationKind {
+    Class,
+    Actor,
+    Struct,
+    Enum,
+    Module,
+    Interface,
+    Trait,
+    Supervisor,
+}
+
+impl DeclarationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Class => "class",
+            Self::Actor => "actor",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Module => "module",
+            Self::Interface => "interface",
+            Self::Trait => "trait",
+            Self::Supervisor => "supervisor",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Declaration {
+    pub kind: DeclarationKind,
+    pub name: String,
+    pub pos: Pos,
+    /// Checked nominal enum variant names; lowered as distinct typed tags.
+    pub variants: Vec<String>,
+    /// Class fields with explicit scalar defaults; no methods/actors yet.
+    pub fields: Vec<ClassField>,
+    /// Stage-1 stateless receive(int) -> int handler.
+    pub handler: Option<Func>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClassField {
+    pub name: String,
+    pub ty: Type,
+    pub default: Expr,
+    pub pos: Pos,
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +133,9 @@ pub enum Stmt {
         pos: Pos,
     },
     Expr(Expr),
+    /// Terminal-only structured actor join: main(void) ends its guest phase,
+    /// then the browser host suspends asynchronously for an explicit child done.
+    AwaitDone(Expr, Pos),
     Return(Option<Expr>, Pos),
     If {
         arms: Vec<(Expr, Vec<Stmt>)>,
@@ -142,11 +212,22 @@ pub enum ExprKind {
     /// Integer literal. `None` is 2^63, only legal as the operand of unary minus.
     Int(Option<u64>),
     Bool(bool),
+    /// A nominal enum's named variant; resolved to an i32 tag by the checker.
+    EnumVariant { enum_name: String, variant: String },
+    /// Field read; checked against the class's nominal schema.
+    Field(Box<Expr>, String),
     Str(String),
     Var(String),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Class allocation requires an explicit `new ClassName(args)`.
+    /// Ordinary function calls must never silently construct objects.
+    NewClass(String, Vec<Expr>),
+    /// Actor spawn is host-mediated; no local pseudo-actor execution.
+    SpawnActor(String, Vec<Expr>),
+    /// Source-level member invocation, type-checked before lowering.
+    MethodCall(Box<Expr>, String, Vec<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
     Call(String, Vec<Expr>),
 }

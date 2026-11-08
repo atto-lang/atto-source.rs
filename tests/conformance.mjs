@@ -100,6 +100,323 @@ function check(label, fn) {
 }
 const digests = [];
 
+// This is a browser compiler/guest check, not Java reference parity:
+// nominal definitions are admitted only while unreachable, with no guest
+// actor scheduler, heap objects, or enum representation.
+check('define/inert-declarations-guest-exec', () => {
+  const source = [
+    'define class Point as end',
+    'define actor Worker as end',
+    'define struct Pair as end',
+    'define enum Status as',
+    '  Pending',
+    '  Ready',
+    '  Failed',
+    'end',
+    'define pub module tools as end',
+    'pub fnc main(): int { return 42; }',
+  ].join('\n');
+  const compiled = compile(source);
+  assert.ok(compiled.ok, compiled.message);
+  const guest = runGuest(compiled.wasm);
+  assert.deepEqual([guest.ok, guest.value, guest.stdout], [true, 42n, '']);
+  const plain = compile('pub fnc main(): int { return 42; }');
+  assert.ok(plain.ok);
+  assert.deepEqual(compiled.wasm, plain.wasm,
+    'unreferenced declaration metadata must not change the executable Wasm');
+});
+
+check('define/rejection-and-no-artifact', () => {
+  const main = 'pub fnc main(): int { return 0; }';
+  for (const [prefix, code] of [
+    ['define class P as\n fnc method(): int { return 0; }\nend\n', 'E_UNSUPPORTED'],
+    ['define actor A as\n receive(int msg) -> void :: return; end\nend\n', 'E_UNSUPPORTED'],
+    ['define enum E as X X end\n', 'E_SYNTAX'],
+    ['define enum E as\n X\n X\nend\n', 'E_DUPLICATE'],
+    ['define module Mod as\n fnc f(): int { return 2; }\nend\n', 'E_UNSUPPORTED'],
+    ['define enum E as X end\ndefine class E as end\n', 'E_DUPLICATE'],
+    ['define macro M as end\n', 'E_UNSUPPORTED'],
+    ['define class C<T> as end\n', 'E_UNSUPPORTED'],
+    ['define actor A as end\n', 'E_ENTRY'], // executable still needs main
+  ]) {
+    const result = compile(prefix + (code === 'E_ENTRY' ? '' : main));
+    assert.equal(result.ok, false, prefix);
+    assert.equal(result.code, code, result.message);
+    assert.ok(result.line > 0 && result.col > 0, result.message);
+    assert.equal('wasm' in result, false, prefix);
+  }
+  const spawn = compile('define actor A as end\npub fnc main(): int { val a = spawn A(); return 0; }');
+  assert.equal(spawn.code, 'E_UNSUPPORTED');
+  assert.equal('wasm' in spawn, false);
+});
+
+
+// Regression bridge from the earlier declaration/semantics stack:
+// do not let unrelated valid class, enum and actor declarations mask removed
+// operators or suppress eager right-hand-side guest effects.
+const combinedDecls = [
+  'define class Counter as',
+  '  int start: 2',
+  'end',
+  'define enum Status as Ready, Done end',
+  'define actor Worker as end',
+].join('\n') + '\n';
+for (const op of ['%', '^', '^^']) {
+  check('combined-declarations/removed-operator-' + op, () => {
+    const result = compile(combinedDecls +
+      'pub fnc main(): int { val c = new Counter(); return c.start ' + op + ' 2; }');
+    assert.equal(result.ok, false, 'removed operator accepted in declaration-bearing source');
+    assert.equal(result.code, 'E_UNSUPPORTED', result.message);
+    assert.equal('wasm' in result, false, 'invalid source must produce no Wasm guest');
+    assert.ok(result.line > 0 && result.col > 0, 'diagnostic position must be valid');
+  });
+}
+for (const [name, condition] of [
+  ['and-false', 'false, crash()'],
+  ['or-true', 'true | crash()'],
+]) {
+  check('combined-declarations/eager-' + name + '-traps', () => {
+    const source = combinedDecls + [
+      'fnc crash(): bool {',
+      '  stdio.println("rhs");',
+      '  val max_value = 9223372036854775807;',
+      '  return max_value + 1 eq 0;',
+      '}',
+      'pub fnc main(): int {',
+      '  val counter = new Counter();',
+      '  val status: Status = Status.Ready;',
+      '  if ' + condition + ' then',
+      '    return counter.start;',
+      '  fi',
+      '  return 42;',
+      '}',
+    ].join('\n');
+    const result = compile(source);
+    assert.ok(result.ok, result.message);
+    assert.deepEqual(compile(source).wasm, result.wasm, 'compilation must be deterministic');
+    const guest = runGuest(result.wasm);
+    assert.equal(guest.ok, false, 'eager RHS must trap rather than short-circuit');
+    assert.equal(guest.panic, 1, 'checked-overflow panic code must survive');
+    assert.equal(guest.stdout, 'rhs\n', 'RHS side effect must occur before trap');
+  });
+}
+
+// Same source and compiler image runs on the native Rust host and wasm32.
+// These tests execute the generated guest module, not just check parser AST.
+check('enum/forward-type-guest-execution', () => {
+  const src = [
+    'fnc is_ready(Status value): bool { return value eq Status.Ready; }',
+    'pub fnc main(): int {',
+    '  val status: Status = Status.Ready;',
+    '  if is_ready(status) then',
+    '    return 42;',
+    '  else',
+    '    return 0;',
+    '  fi',
+    '}',
+    'define enum Status as',
+    '  Pending',
+    '  Ready',
+    '  Failed',
+    'end',
+  ].join('\n');
+  const compiled = compile(src);
+  assert.ok(compiled.ok, compiled.message);
+  const result = runGuest(compiled.wasm);
+  assert.deepEqual([result.ok, result.value, result.stdout], [true, 42n, '']);
+  assert.deepEqual(compiled.wasm, compile(src).wasm, 'byte-identical deterministic compilation');
+});
+
+check('enum/function-and-reassignment', () => {
+  const src = [
+    'define enum Flag as Off, On end',
+    'fnc flip(Flag f): Flag {',
+    '  return f eq Flag.Off ? Flag.On : Flag.Off;',
+    '}',
+    'pub fnc main(): int {',
+    '  let f: Flag = Flag.Off;',
+    '  f = flip(f);',
+    '  if f eq Flag.On then return 48; else return 0; fi',
+    '}',
+  ].join('\n');
+  const compiled = compile(src);
+  assert.ok(compiled.ok, compiled.message);
+  assert.equal(runGuest(compiled.wasm).value, 48n);
+});
+
+check('enum/nominality-and-fail-closed', () => {
+  const defs = 'define enum Flag as Off, On end\ndefine enum Mode as Off, On end\n';
+  for (const [body, code] of [
+    ['return Flag.Unknown;', 'E_UNKNOWN_VARIANT'],
+    ['if Flag.On eq Mode.On then return 1; fi return 0;', 'E_TYPE'],
+    ['if Flag.On eq 1 then return 1; fi return 0;', 'E_TYPE'],
+    ['val n: int = Flag.Off; return n;', 'E_TYPE'],
+    ['return Flag.On + 1;', 'E_TYPE'],
+    ['val Flag = 1; return Flag;', 'E_DUPLICATE'],
+    ['stdio.println(Flag.On); return 0;', 'E_UNSUPPORTED'],
+    ['return Flag;', 'E_TYPE'],
+  ]) {
+    const r = compile(defs + 'pub fnc main(): int { ' + body + ' }');
+    assert.equal(r.ok, false, body);
+    assert.equal(r.code, code, r.message);
+    assert.equal('wasm' in r, false, 'failed compile must not return a guest module');
+  }
+});
+
+// Dedicated nominal-enum corpus is intentionally separate from the Java
+// differential corpus: Java enum parity is not yet established.
+// Fixed-size immutable-class subset. Actual native Rust and wasm32 compilers
+// must produce identical guest code with a bounded, guest-private heap.
+for (const f of await fixtures('class')) {
+  check('class-fixture/' + f.name, () => {
+    const r = compile(f.source);
+    assert.ok(r.ok, r.message);
+    assert.ok(WebAssembly.validate(r.wasm), 'generated guest is valid core Wasm');
+    assert.deepEqual(compile(f.source).wasm, r.wasm, 'deterministic class layout');
+    const g = runGuest(r.wasm);
+    assert.ok(g.ok, g.error);
+    assert.equal(g.value, BigInt(header(f.source, 'expect-exit')[0]));
+    assert.equal(g.stdout, '');
+    if (attoc) {
+      assert.deepEqual(nativeBytes(f.path), r.wasm, 'native vs wasm32 class byte parity');
+      nativeChecked++;
+    }
+  });
+}
+
+check('class/bounded-guest-heap', () => {
+  const src = 'define class Unit as\n int value: 1\nend\n' +
+    'pub fnc main(): int {\n for (let i = 0; i < 10000; i++) do\n' +
+    '  val item = new Unit();\n done\n return 0;\n}';
+  const compiled = compile(src);
+  assert.ok(compiled.ok, compiled.message);
+  const guest = runGuest(compiled.wasm);
+  assert.equal(guest.ok, false, 'allocation beyond 64 KiB must trap');
+  assert.equal(guest.panic, 3, 'bounded class allocator signals explicit heap exhaustion');
+});
+
+// Exact bump-pointer boundary: with no string data the heap begins at byte
+// 16 in a 64-KiB non-growable page. An 8-byte object can be allocated
+// (65536 - 16) / 8 = 8190 times, never 8191, without wrapping or overlapping.
+check('class/heap-exact-capacity-and-per-instance-reset', () => {
+  const sourceFor = count => 'define class Unit as\n int value: 1\nend\n' +
+    'pub fnc main(): int {\n for (let i = 0; i < ' + count + '; i++) do\n' +
+    '  val item = new Unit();\n done\n return 42;\n}';
+  for (const [count,shouldTrap] of [[8190,false],[8191,true]]) {
+    const r = compile(sourceFor(count));
+    assert.ok(r.ok, r.message);
+    for (let instance = 0; instance < 2; instance++) {
+      // Each runGuest call instantiates a fresh Wasm module: the heap cursor
+      // and panic_code must never leak across otherwise identical instances.
+      const g = runGuest(r.wasm);
+      assert.equal(g.ok, !shouldTrap, 'unexpected heap boundary at ' + count);
+      if (shouldTrap) assert.equal(g.panic, 3, 'explicit bounded heap panic');
+      else assert.equal(g.value, 42n, 'last permitted allocation succeeds');
+    }
+  }
+});
+
+// Multiple constructor results must survive evaluation of later arguments:
+// the scratch allocator global must not replace an already pushed pointer.
+check('class/multiple-constructor-arguments-and-literal-data-safety', () => {
+  const src = [
+    'define class Unit as',
+    '  int value: 21',
+    'end',
+    'fnc sum(Unit a, Unit b): int { return a.value + b.value; }',
+    'pub fnc main(): int {',
+    '  stdio.println("class data intact");',
+    '  return sum(new Unit(), new Unit());',
+    '}',
+  ].join('\n');
+  const r = compile(src);
+  assert.ok(r.ok, r.message);
+  assert.deepEqual(compile(src).wasm, r.wasm, 'deterministic nested allocation');
+  const g = runGuest(r.wasm);
+  assert.ok(g.ok, g.error);
+  assert.equal(g.value, 42n, 'two distinct constructor args remain readable');
+  assert.equal(g.stdout, 'class data intact\n', 'heap must not clobber static string data');
+});
+
+check('class/field-access-and-ctor-negative-controls', () => {
+  const prefix = 'define class P as\n int x: 7\n bool active: true\nend\n';
+  for (const [body, code] of [
+    ['val p = new P(); return p.missing;', 'E_UNKNOWN_FIELD'],
+    ['val p = new P(1); return 0;', 'E_ARITY'],
+    ['val p: int = new P(); return p;', 'E_TYPE'],
+    ['return new P();', 'E_TYPE'],
+    ['if new P() eq new P() then return 1; fi return 0;', 'E_UNSUPPORTED'],
+    ['stdio.println(new P()); return 0;', 'E_UNSUPPORTED'],
+    ['return new P().x + new P().active;', 'E_TYPE'],
+    ['val p = P(); return 0;', 'E_NEW_REQUIRED'],
+    ['return P().x;', 'E_NEW_REQUIRED'],
+    ['return new Unknown().x;', 'E_NEW_TYPE'],
+    ['return new P;', 'E_SYNTAX'],
+    ['return new P(1).x;', 'E_ARITY'],
+    ['val P = 2; return P;', 'E_DUPLICATE'],
+  ]) {
+    const compiled = compile(prefix + 'pub fnc main(): int { ' + body + ' }');
+    assert.equal(compiled.ok, false, body);
+    assert.equal(compiled.code, code, compiled.message);
+    assert.equal('wasm' in compiled, false, 'rejected program must not emit bytes');
+  }
+});
+
+check('class/exact-new-point-example-with-implicit-newlines', () => {
+  const src = [
+    'define class Point as',
+    '  int x: 40',
+    '  int y: 2',
+    '  bool active: true',
+    'end',
+    '',
+    'pub fnc main(): int {',
+    '  val p = new Point()',
+    '  if p.active then',
+    '    return p.x + p.y',
+    '  else',
+    '    return 0',
+    '  fi',
+    '}',
+  ].join('\n');
+  const built = compile(src);
+  assert.equal(built.ok, true, built.message);
+  assert.ok(WebAssembly.validate(built.wasm));
+  assert.equal(runGuest(built.wasm).value, 42n);
+  const invalid = compile(src.replace('new Point()', 'Point()'));
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, 'E_NEW_REQUIRED');
+  assert.equal('wasm' in invalid, false);
+});
+
+check('class/new-required-and-postfix-positive', () => {
+  const src = 'define class P as\n int x: 42\nend\n' +
+    'pub fnc main(): int { return (new P()).x; }';
+  const result = compile(src);
+  assert.equal(result.ok, true, result.message);
+  assert.equal(runGuest(result.wasm).value, 42n);
+  const rejected = compile(src.replace('new P()', 'P()'));
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'E_NEW_REQUIRED');
+  assert.equal('wasm' in rejected, false);
+});
+
+for (const f of await fixtures('enum')) {
+  check('enum-fixture/' + f.name, () => {
+    const r = compile(f.source);
+    assert.ok(r.ok, r.message);
+    assert.deepEqual(compile(f.source).wasm, r.wasm, 'deterministic guest bytes');
+    const g = runGuest(r.wasm);
+    assert.ok(g.ok, g.error);
+    assert.equal(g.value, BigInt(header(f.source, 'expect-exit')[0]));
+    assert.equal(g.stdout, '');
+    if (attoc) {
+      assert.deepEqual(nativeBytes(f.path), r.wasm, 'native and wasm32 enum byte parity');
+      nativeChecked++;
+    }
+  });
+}
+
 for (const f of await fixtures('pass')) {
   check(`pass/${f.name}`, () => {
     const r = compile(f.source);
@@ -202,10 +519,10 @@ check('wasm/name-section-matches-emitted-function-count', () => {
     assert.equal(pos, end, 'name subsection decoded exactly');
     assert.equal(end, bytes.length, 'no unexpected second subsection');
     assert.deepEqual(names.map(([index]) => index), Array.from({length: count}, (_, i) => i));
-    assert.equal(count, WebAssembly.Module.imports(mod).length + 4 + 1,
-      'imports + four checked helpers + main');
-    assert.deepEqual(names.slice(-5).map(([, name]) => name),
-      ['atto.checked_add','atto.checked_sub','atto.checked_mul','atto.checked_neg','main']);
+    assert.equal(count, WebAssembly.Module.imports(mod).length + 5 + 1,
+      'imports + four checked arithmetic helpers + bounded class allocator + main');
+    assert.deepEqual(names.slice(-6).map(([, name]) => name),
+      ['atto.checked_add','atto.checked_sub','atto.checked_mul','atto.checked_neg','atto.class_alloc_bounded','main']);
     assert.ok(!names.some(([, name]) => name === 'atto.checked_rem'),
       'removed remainder helper must not appear in guest debug names');
   }
@@ -238,6 +555,182 @@ for (const op of ['%', '^', '^^']) {
     assert.ok(r.line >= 1 && r.col >= 1);
   });
 }
+
+// Browser-actor stage 1: the compiled guest really exports one checked receive
+// handler. The host must create a separate worker/instance; this test only
+// verifies the Wasm entrypoint and fail-closed compiler contracts.
+check('actor/spawn-import-and-receive-guest',()=>{
+  const source=[
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return msg + 1; }',
+    'end',
+    'pub fnc main(): int {',
+    '  val worker: Worker = spawn Worker();',
+    '  return 0;',
+    '}',
+  ].join('\n');
+  const r=compile(source);
+  assert.ok(r.ok,r.message);
+  const module=new WebAssembly.Module(r.wasm);
+  assert.ok(WebAssembly.Module.imports(module).some(i=>i.module==='atto'&&i.name==='actor_spawn'));
+  assert.ok(WebAssembly.Module.exports(module).some(i=>i.name==='atto_actor_receive_0'));
+  let spawned=-1;
+  const instance=new WebAssembly.Instance(module,{atto:{actor_spawn:id=>(spawned=id,1)}});
+  assert.equal(instance.exports.main(),0n);
+  assert.equal(spawned,0);
+  assert.equal(instance.exports.atto_actor_receive_0(41n),42n);
+});
+check('actor/fail-closed-ownership-and-handler',()=>{
+  for(const [src,expected] of [
+    ['define actor Worker as end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
+    ['define class Point as int x: 2 end\npub fnc main(): int { val w = spawn Point(); return 0; }','E_SPAWN_TYPE'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(1); return 0; }','E_ARITY'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); w.send(new Point()); return 0; }','E_NEW_TYPE'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { rt take w; return 0; }','E_UNSUPPORTED'],
+    ['define actor Worker as receive(msg: int) -> int { return msg; } end\npub fnc main(): int { val w = spawn Worker(); return w; }','E_TYPE'],
+    ['define actor Worker as receive(msg: int) -> int { stdio.println(msg); return msg; } end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
+    ['define actor Worker as receive(msg: int) -> int { val nested = spawn Worker(); return msg; } end\npub fnc main(): int { val w = spawn Worker(); return 0; }','E_UNSUPPORTED'],
+  ]){
+    const r=compile(src);
+    assert.equal(r.ok,false,src);
+    assert.equal(r.code,expected,r.message);
+    assert.equal('wasm' in r,false,'failed actor program must never emit guest bytes');
+  }
+});
+
+
+// Actor receive() may call pure helpers, but an apparently pure handler may
+// not smuggle stdio or recursively spawn another actor through a helper chain.
+// Reject before emitting *any* executable guest bytes.
+check('actor/transitive-host-capability-gate', () => {
+  const actor = [
+    'define actor Worker as',
+    '  receive(msg: int) -> int { return bridge(msg); }',
+    'end',
+    'pub fnc main(): int { val w = spawn Worker(); return 0; }',
+  ].join('\n');
+  const unsafeCases = [
+    'fnc bridge(int msg): int { stdio.println(msg); return msg; }\n',
+    'fnc bridge(int msg): int { return leak(msg); }\n' +
+      'fnc leak(int msg): int { stdio.println(msg); return msg; }\n',
+    'fnc bridge(int msg): int { val other = spawn Worker(); return msg; }\n',
+    'fnc bridge(int msg): int { return recurse(msg); }\n' +
+      'fnc recurse(int msg): int { if msg eq 0 then stdio.println(msg); fi return bridge(msg - 1); }\n',
+  ];
+  for (const extra of unsafeCases) {
+    const result = compile(extra + actor);
+    assert.equal(result.ok, false, 'actor helper reachable host effect must fail closed');
+    assert.equal(result.code, 'E_UNSUPPORTED', result.message);
+    assert.equal('wasm' in result, false, 'forbidden capability must not emit guest bytes');
+    assert.ok(result.line > 0 && result.col > 0, 'error must be located');
+  }
+  const pure = compile('fnc bridge(int msg): int { return msg + 1; }\n' + actor);
+  assert.ok(pure.ok, pure.message);
+  const mod = new WebAssembly.Module(pure.wasm);
+  const inst = new WebAssembly.Instance(mod, {atto:{actor_spawn: () => 1}});
+  assert.equal(inst.exports.main(), 0n);
+  assert.equal(inst.exports.atto_actor_receive_0(41n), 42n,
+    'pure helper remains callable inside actual compiled actor guest');
+});
+
+
+// Source-level actor send is an admission-only Result<void,SendError>.
+// Result status cannot be silently converted to bool/int or completion.
+check('actor/source-send-result-and-typed-admission', () => {
+  const source = [
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): int {',
+    '  val w: Worker = spawn Worker();',
+    '  val admitted: Result<void, SendError> = w.send(41);',
+    '  if admitted.is_ok() then return 42; else return 0; fi',
+    '}',
+  ].join('\n');
+  const compiled = compile(source);
+  assert.ok(compiled.ok, compiled.message);
+  const mod = new WebAssembly.Module(compiled.wasm);
+  assert.deepEqual(WebAssembly.Module.imports(mod).map(x => x.name),
+    ['actor_spawn', 'actor_send'], 'only host admission and actor spawn are imported');
+  let received = null;
+  const instance = new WebAssembly.Instance(mod, {atto:{
+    actor_spawn: () => 1,
+    actor_send: (handle, message) => { received = [handle, message]; return 0; },
+  }});
+  assert.equal(instance.exports.main(), 42n, 'Ok admission is observable as Result');
+  assert.deepEqual(received, [1, 41n], 'send transports scalar signed i64');
+  const rejected = compile(source.replace('admitted.is_ok()', 'admitted.is_err()'));
+  assert.ok(rejected.ok, rejected.message);
+  const full = new WebAssembly.Instance(new WebAssembly.Module(rejected.wasm), {atto:{
+    actor_spawn: () => 1,
+    actor_send: () => 2, // bounded mailbox full, not handler failure
+  }});
+  assert.equal(full.exports.main(), 42n, 'mailbox-full is Result::Err, not a panic');
+});
+
+check('actor/send-and-completion-negative-controls', () => {
+  const head = 'define actor Worker as receive(msg: int) -> int { return msg; } end\n';
+  const main = body => head + 'pub fnc main(): int { val w = spawn Worker(); ' + body + ' }';
+  for(const [body, code] of [
+    ['w.send(new Worker()); return 0;', 'E_NEW_TYPE'],
+    ['w.send(w); return 0;', 'E_UNSUPPORTED'],
+    ['w.send(41, 42); return 0;', 'E_ARITY'],
+    ['val result = w.send(41); return result;', 'E_TYPE'],
+    ['val result = w.send(41); return result.is_ok(1);', 'E_ARITY'],
+    ['val result = w.send(41); return result.unknown();', 'E_UNSUPPORTED'],
+    ['val task = w.get_done(); return 0;', 'E_UNSUPPORTED'],
+    ['val result: Result<int, SendError> = w.send(41); return 0;', 'E_SYNTAX'],
+  ]) {
+    const r = compile(main(body));
+    assert.equal(r.ok, false, body);
+    assert.equal(r.code, code, r.message);
+    assert.equal('wasm' in r, false, 'invalid actor send must never emit guest bytes');
+  }
+});
+
+
+check('actor/terminal-await-get-done-registers-real-join', () => {
+  const source = [
+    'define actor Worker as receive(msg: int) -> int { return msg + 1; } end',
+    'pub fnc main(): void {',
+    '  val worker = spawn Worker();',
+    '  val admission = worker.send(41);',
+    '  await worker.get_done();',
+    '}',
+  ].join('\n');
+  const result=compile(source);
+  assert.ok(result.ok,result.message);
+  const module=new WebAssembly.Module(result.wasm);
+  assert.deepEqual(WebAssembly.Module.imports(module).map(x=>x.name),
+    ['actor_spawn','actor_send','actor_join']);
+  let joined=0, sent=null;
+  const guest=new WebAssembly.Instance(module,{atto:{
+    actor_spawn:() => 1,
+    actor_send:(handle,payload) => {sent=[handle,payload];return 0;},
+    actor_join:handle => {joined=handle;},
+  }});
+  assert.equal(guest.exports.main(),0n);
+  assert.deepEqual(sent,[1,41n]);
+  assert.equal(joined,1,'guest registers explicit terminal join in host');
+  // This test verifies the ABI registration; actual async shutdown must be
+  // proved by the Chromium worker test, not fabricated by the Wasm guest.
+});
+
+check('actor/terminal-await-fail-closed-outside-structured-scope', () => {
+  const head='define actor Worker as receive(msg: int) -> int { return msg; } end\n';
+  for(const [src,expected] of [
+    ['pub fnc main(): int { val w=spawn Worker(); await w.get_done(); }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); await w.get_done(); stdio.println(1); }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); if true then await w.get_done(); fi }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); await w.send(1); }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); await w.get_done(1); }','E_ARITY'],
+    ['fnc helper(): void { val w=spawn Worker(); await w.get_done(); }\npub fnc main(): void { helper(); }','E_UNSUPPORTED'],
+    ['pub fnc main(): void { val w=spawn Worker(); val task=w.get_done(); }','E_UNSUPPORTED'],
+  ]) {
+    const result=compile(head+src);
+    assert.equal(result.ok,false,src);
+    assert.equal(result.code,expected,result.message);
+    assert.equal('wasm' in result,false,'unsupported suspension must never emit guest bytes');
+  }
+});
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
