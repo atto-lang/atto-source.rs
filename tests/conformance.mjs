@@ -710,6 +710,36 @@ check('actor/recursive-function-depth-bounded-independent-of-loop-fuel', () => {
   assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(5n),42n);
 });
 
+// Compile identical actor sources through the native Rust CLI and the wasm32
+// compiler ABI. Both must emit byte-identical import-free actor guests; the
+// ordinary compile path must fail closed rather than quietly erasing receive.
+for (const fixture of await fixtures('actor')) {
+  check('actor/native-wasm-byte-parity/' + fixture.name, () => {
+    const input = encoder.encode(fixture.source);
+    assert.ok(input.length <= api.input_capacity());
+    new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+    assert.equal(api.compile_actor(input.length),0,'wasm32 actor fixture must compile');
+    const wasm=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+    assert.ok(WebAssembly.validate(wasm));
+    const module=new WebAssembly.Module(wasm);
+    assert.deepEqual(WebAssembly.Module.imports(module),[]);
+    assert.deepEqual(WebAssembly.Module.exports(module).map(e=>e.name),['receive']);
+    const instance=new WebAssembly.Instance(module,{});
+    assert.equal(instance.exports.receive(BigInt(header(fixture.source,'actor-input')[0])),
+      BigInt(header(fixture.source,'actor-result')[0]));
+    if(attoc) {
+      const native=spawnSync(attoc,['--actor',fixture.path],{maxBuffer:1<<22});
+      assert.equal(native.status,0,'native actor fixture failed: '+String(native.stderr));
+      assert.deepEqual(new Uint8Array(native.stdout),wasm,
+        'native Rust vs wasm32 actor emitted Wasm must be byte identical');
+      const normal=spawnSync(attoc,[fixture.path],{maxBuffer:1<<22});
+      assert.equal(normal.status,1,'normal compiler must not reinterpret actor as main');
+      assert.equal(normal.stdout.length,0,'rejected actor cannot emit main guest');
+      nativeChecked++;
+    }
+  });
+}
+
 // ---- source-compiled scalar actor receive guest ABI --------------------------
 check('actor/source-compiled-receive-guest-executes', () => {
   assert.equal(typeof api.compile_actor, 'function', 'compiler must expose separate actor ABI entrypoint');
