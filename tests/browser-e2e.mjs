@@ -519,6 +519,83 @@ try{
   assert.ok(requests.some(x=>x.path==='/actor-supervisor.mjs'),
     'real compiler worker fetched supervisor CONTROL module');
 
+  // Stage 4B: typed source-level supervisor admission emits the actual host
+  // Wasm imports. The observed CONTROL parent ID must be the watched monitor,
+  // not merely the run-scoped fallback parent ID of 0.
+  const supervisorSourceProbe = await evaluate(`(async()=>{
+    async function run(source){
+      const host=new Worker('/worker.mjs',{type:'module'});
+      try {
+        return await new Promise((resolve,reject)=>{
+          const timer=setTimeout(()=>reject(new Error('typed supervisor source timeout')),4000);
+          host.onmessage=({data})=>{clearTimeout(timer);resolve(data)};
+          host.onerror=()=>{clearTimeout(timer);reject(new Error('typed supervisor host fault'))};
+          host.postMessage({source});
+        });
+      } finally {host.terminate()}
+    }
+    const supervisor='define supervisor Monitor as end ';
+    const worker='define actor Worker as receive(msg: int) -> int { return msg + 1; } end ';
+    const panicking='define actor Worker as receive(msg: int) -> int { return msg + 9223372036854775807; } end ';
+    return {
+      watched:await run(supervisor+worker+
+        'pub fnc main(): void { val s: Monitor=spawn Monitor(); '+
+        'val w: Worker=spawn Worker(); val admitted: Result<void, SupervisionError> = s.watch(w); '+
+        'val x=w.send(41); await w.get_done(); }'),
+      panic:await run(supervisor+panicking+
+        'pub fnc main(): void { val s=spawn Monitor(); val w=spawn Worker(); '+
+        'val receipt=s.watch(w); val sent=w.send(1); await w.get_done(); }'),
+      two_parents:await run(supervisor+worker+
+        'pub fnc main(): void { val a=spawn Monitor(); val b=spawn Monitor(); '+
+        'val x=spawn Worker(); val y=spawn Worker(); '+
+        'val ax=a.watch(x); val by=b.watch(y); '+
+        'val sx=x.send(40); val sy=y.send(41); await y.get_done(); }'),
+      duplicate:await run(supervisor+worker+
+        'pub fnc main(): void { val a=spawn Monitor(); val b=spawn Monitor(); '+
+        'val child=spawn Worker(); val first=a.watch(child); val second=b.watch(child); '+
+        'if first.is_ok(), second.is_err() then stdio.println(42); fi '+
+        'await child.get_done(); }'),
+      unsupervised:await run(supervisor+worker+
+        'pub fnc main(): void { val a=spawn Monitor(); val child=spawn Worker(); '+
+        'await child.get_done(); }'),
+      invalid:await run(supervisor+worker+
+        'pub fnc main(): void { val a=spawn Monitor(); '+
+        'val receipt=a.watch(41); }'),
+    };
+  })()`);
+  assert.equal(supervisorSourceProbe.watched.ok,true,JSON.stringify(supervisorSourceProbe.watched));
+  assert.deepEqual(supervisorSourceProbe.watched.control.map(x=>x.parent_id),[1]);
+  assert.deepEqual(supervisorSourceProbe.watched.control.map(x=>x.kind),['terminated']);
+  assert.equal(supervisorSourceProbe.watched.control[0].processed,1);
+  console.log('PASS browser: compiled typed supervisor watch routes real actor completion to parent');
+
+  assert.equal(supervisorSourceProbe.panic.ok,false);
+  assert.match(supervisorSourceProbe.panic.error,/E_ACTOR_PANIC_1/);
+  assert.deepEqual(supervisorSourceProbe.panic.control.map(x=>x.parent_id),[1]);
+  assert.deepEqual(supervisorSourceProbe.panic.control.map(x=>x.kind),['panic']);
+  console.log('PASS browser: supervised actor panic remains priority CONTROL, not false success');
+
+  assert.equal(supervisorSourceProbe.two_parents.ok,true);
+  assert.deepEqual(supervisorSourceProbe.two_parents.control.map(x=>x.parent_id),[1,2]);
+  assert.deepEqual(supervisorSourceProbe.two_parents.control.map(x=>x.actor_handle),[1,2]);
+  assert.ok(supervisorSourceProbe.two_parents.control.every(x=>x.kind==='terminated'));
+  console.log('PASS browser: two typed supervisor instances own separate actor terminal notices');
+
+  assert.equal(supervisorSourceProbe.duplicate.ok,true);
+  assert.match(supervisorSourceProbe.duplicate.stdout,/^42\n$/);
+  assert.deepEqual(supervisorSourceProbe.duplicate.control.map(x=>x.parent_id),[1]);
+  console.log('PASS browser: repeated watch returns typed Err and cannot steal actor parent');
+
+  assert.equal(supervisorSourceProbe.unsupervised.ok,true);
+  assert.deepEqual(supervisorSourceProbe.unsupervised.control.map(x=>x.parent_id),[0]);
+  console.log('PASS browser: merely spawning supervisor does not implicitly adopt child');
+
+  assert.equal(supervisorSourceProbe.invalid.ok,false);
+  assert.match(supervisorSourceProbe.invalid.error,/E_TYPE/);
+  assert.equal(supervisorSourceProbe.invalid.control,undefined,
+    'invalid source rejects before any guest worker/supervisor execution');
+  console.log('PASS browser: invalid source supervisor target fails closed without guest code');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

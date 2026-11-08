@@ -14,6 +14,8 @@ self.onmessage=({data})=>{
         actor_spawn:()=>{throw new Error('E_ACTOR_NESTED_SPAWN')},
         actor_send:()=>{throw new Error('E_ACTOR_NESTED_SEND')},
         actor_join:()=>{throw new Error('E_ACTOR_NESTED_JOIN')},
+        supervisor_create:()=>{throw new Error('E_ACTOR_SUPERVISOR_CAPABILITY')},
+        supervisor_watch:()=>{throw new Error('E_ACTOR_SUPERVISOR_CAPABILITY')},
         print_i64:()=>{throw new Error('E_ACTOR_STDIO')},
         print_bool:()=>{throw new Error('E_ACTOR_STDIO')},
         print_str:()=>{throw new Error('E_ACTOR_STDIO')},

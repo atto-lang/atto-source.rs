@@ -65,7 +65,8 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 fn vt(t: Type) -> Option<u8> {
     match t {
         Type::Int => Some(I64),
-        Type::Bool | Type::Enum(_) | Type::Class(_) | Type::Actor(_) | Type::SendResult => Some(I32),
+        Type::Bool | Type::Enum(_) | Type::Class(_) | Type::Actor(_) |
+        Type::Supervisor(_) | Type::SendResult | Type::SupervisionResult => Some(I32),
         Type::Void => None,
     }
 }
@@ -233,6 +234,15 @@ impl Emit<'_> {
             TExpr::SpawnActor(id) => {
                 self.i32c(*id as i32);
                 self.call(self.l.import(Import::ActorSpawn));
+            }
+            TExpr::SpawnSupervisor(id) => {
+                self.i32c(*id as i32);
+                self.call(self.l.import(Import::SupervisorCreate));
+            }
+            TExpr::SupervisorWatch(supervisor, child) => {
+                self.expr(supervisor);
+                self.expr(child);
+                self.call(self.l.import(Import::SupervisorWatch));
             }
             TExpr::ActorSend(handle, value) => {
                 self.expr(handle);
@@ -471,6 +481,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![I32]),
             Import::ActorJoin => Sig(vec![I32], vec![]),
+            Import::SupervisorCreate => Sig(vec![I32], vec![I32]),
+            Import::SupervisorWatch => Sig(vec![I32,I32], vec![I32]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());

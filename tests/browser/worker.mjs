@@ -53,6 +53,16 @@ self.onmessage=async ({data})=>{
         if(!Number.isInteger(handle)||handle<1||handle>actors.length)return ACTOR_ADMISSION.INVALID;
         return actors[handle-1].admit(value);
       },
+      // Source compiler only emits these imports for typed
+      // 'spawn Monitor()' and 'monitor.watch(child)'. They are not exposed
+      // to actor child Workers or untrusted actor receive() functions.
+      supervisor_create:type_id=>{
+        if(!Number.isInteger(type_id)||type_id<0||type_id>1024)
+          throw new Error('E_CONTROL_SUPERVISOR_TYPE');
+        return supervisor.create_supervisor(type_id);
+      },
+      supervisor_watch:(supervisor_handle,actor_handle)=>
+        supervisor.watch_actor(supervisor_handle,actor_handle),
       // Guest call only records the terminal join. main() is synchronous and
       // must not execute source instructions after this instruction. The host
       // asynchronously drains the actor and resolves only on its child 'done'.

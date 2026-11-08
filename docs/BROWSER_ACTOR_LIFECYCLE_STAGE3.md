@@ -199,6 +199,60 @@ priority queue. Java/LLVM/Forge/.NET parity, multi-tenant hard isolation,
 actor-private allocator domains, general Task/await continuations, and
 fully preemptive watchdog enforcement remain unimplemented.
 
+## Stage 4B — typed source-level supervisor watch admission (narrow browser subset)
+
+The compiler now admits **empty nominal supervisor declarations** and typed,
+host-mediated supervisor creation and watch admission:
+
+```text
+define supervisor Monitor as end
+define actor Worker as receive(msg: int) -> int { return msg + 1; } end
+
+pub fnc main(): void {
+    val monitor: Monitor = spawn Monitor();
+    val child: Worker = spawn Worker();
+    val receipt: Result<void, SupervisionError> = monitor.watch(child);
+    val admitted: Result<void, SendError> = child.send(41);
+    await child.get_done();
+}
+```
+
+- `spawn Monitor()` creates a **host-owned** supervisor handle, distinct from
+  a normal actor handle. It does **not** create a separate nested Worker, an
+  actor message mailbox, or a Wasm guest allocator.
+- `monitor.watch(child)` requires a compiler-typed supervisor and a
+  compiler-typed actor. It returns only the specialized
+  `Result<void, SupervisionError>` admission result (0 = Ok, nonzero =
+  Err); `is_ok()` and `is_err()` are supported but a successful watch does
+  not mean a child has executed or terminated.
+- Two new exact function imports, `atto.supervisor_create(i32)->i32`
+  and `atto.supervisor_watch(i32,i32)->i32`, are checked against the
+  raw Wasm binary's canonical type/import sections in the **same** strict
+  ABI validator as existing actor imports. Invalid kinds, signatures,
+  aliases, duplicates, modules and unsafe nested effects fail closed.
+- Watch registration changes only the **parent_id** of future host-owned
+  CONTROL terminal records. An unregistered child stays with the run-level
+  default parent. Each child may have at most one watched parent, forever;
+  duplicate watching returns Err, and terminal actors cannot be adopted.
+  The parent attribution is committed before terminal success/failure.
+- There are at most **four supervisor instances** and **four actor instances**
+  per run. Actor mailboxes remain bounded at 32 pending messages each.
+  Watch registration never consumes an actor data-message slot. Host
+  supervisor handles cannot be used as pointers or message payloads.
+- Child actors are **never** supplied the supervisor imports as effective
+  capabilities: the child Worker binds both imports to fail-closed traps.
+  The type checker also rejects direct and transitive supervisor host
+  effects from a scalar actor `receive()` handler.
+
+**Deferred behavior:** Source-level `on_child_terminated` callbacks, dynamically
+implemented `extends Supervisor` actor inheritance, supervisor strategies or restart
+policies, rich `ActorExit` typed values, arbitrary `Task<T>` suspension, arbitrary
+continuations after `await`, independently preempted actor execution, dynamic
+revocation, cross-tenant security isolation and five-backend parity are **not
+claimed**. This milestone is *typed source-to-runtime watch admission* and
+checked routing of the existing trusted browser host's CONTROL journal,
+not full language-level supervision.
+
 ## Evidence requirements and deferred semantics
 
 Source-owned CI executes native Rust, builds the real wasm32 compiler, runs

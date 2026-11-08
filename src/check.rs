@@ -76,10 +76,12 @@ pub enum Import {
     ActorSpawn,
     ActorSend,
     ActorJoin,
+    SupervisorCreate,
+    SupervisorWatch,
 }
 
 impl Import {
-    pub const ALL: [Import; 7] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend, Import::ActorJoin];
+    pub const ALL: [Import; 9] = [Import::PrintI64, Import::PrintBool, Import::PrintStr, Import::PrintNewline, Import::ActorSpawn, Import::ActorSend, Import::ActorJoin, Import::SupervisorCreate, Import::SupervisorWatch];
     pub fn name(self) -> &'static str {
         match self {
             Import::PrintI64 => "print_i64",
@@ -89,6 +91,8 @@ impl Import {
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
             Import::ActorJoin => "actor_join",
+            Import::SupervisorCreate => "supervisor_create",
+            Import::SupervisorWatch => "supervisor_watch",
         }
     }
 }
@@ -100,6 +104,10 @@ pub enum TExpr {
     /// Compact, checked variant index of a distinct nominal enum type.
     EnumTag(u32),
     SpawnActor(u16),
+    /// Host-created nominal supervisor capability, never a guest pointer.
+    SpawnSupervisor(u16),
+    /// Typed source-level watch admission (0=Ok; nonzero=Err).
+    SupervisorWatch(Box<TE>, Box<TE>),
     /// Admission attempt only; Result<void, SendError> uses a zero Ok tag.
     ActorSend(Box<TE>, Box<TE>),
     /// Result inspection: true for a zero admission status, or its complement.
@@ -190,6 +198,7 @@ struct FnCx<'a> {
     enums: &'a BTreeMap<String, (u16, Vec<String>)>,
     classes: &'a BTreeMap<String, ClassLayout>,
     actors: &'a BTreeMap<String, (u16, bool)>,
+    supervisors: &'a BTreeMap<String, u16>,
     in_actor_handler: bool,
     heap_used: &'a mut bool,
     ret: Type,
@@ -257,6 +266,13 @@ pub fn check(p: &Program) -> R<TProgram> {
         }
         actors.insert(d.name.clone(), (actor_id, d.handler.is_some()));
         actor_id += 1;
+    }
+    let mut supervisors = BTreeMap::new();
+    let mut supervisor_id = 0u16;
+    for d in &p.declarations {
+        if d.kind != DeclarationKind::Supervisor { continue; }
+        supervisors.insert(d.name.clone(), supervisor_id);
+        supervisor_id += 1;
     }
     for f in &p.funcs {
         if f.name.starts_with("__atto_actor_") {
@@ -327,6 +343,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             enums: &enums,
             classes: &classes,
             actors: &actors,
+            supervisors: &supervisors,
             in_actor_handler: f.name.starts_with("__atto_actor_receive_"),
             heap_used: &mut heap_used,
             ret: f.ret,
@@ -435,7 +452,9 @@ fn actor_stmt_requires_host(stmt: &TStmt, funcs: &[TFunc], visiting: &mut [bool]
 
 fn actor_expr_requires_host(expr: &TE, funcs: &[TFunc], visiting: &mut [bool]) -> bool {
     match &expr.e {
-        TExpr::Print { .. } | TExpr::PrintStr { .. } | TExpr::SpawnActor(_) | TExpr::ActorSend(_, _) => true,
+        TExpr::Print { .. } | TExpr::PrintStr { .. } |
+        TExpr::SpawnActor(_) | TExpr::ActorSend(_, _) |
+        TExpr::SpawnSupervisor(_) | TExpr::SupervisorWatch(_, _) => true,
         TExpr::SendStatus(expr, _) => actor_expr_requires_host(expr, funcs, visiting),
         TExpr::Field(inner, _) | TExpr::Neg(inner) | TExpr::Not(inner) =>
             actor_expr_requires_host(inner, funcs, visiting),
@@ -730,7 +749,7 @@ impl FnCx<'_> {
                 let object = self.value(object)?;
                 let id = match object.ty {
                     Type::Class(id) => id,
-                    Type::Actor(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    Type::Actor(_) | Type::Supervisor(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                         "actor methods including send() -> Result are not lowered yet")),
                     _ => return Err(type_err(pos, "field access requires a class reference")),
                 };
@@ -860,7 +879,7 @@ impl FnCx<'_> {
                         Type::Bool
                     }
                     BinOp::Eq | BinOp::Ne => {
-                        if matches!(a.ty, Type::Class(_) | Type::Actor(_)) || matches!(b.ty, Type::Class(_) | Type::Actor(_)) {
+                        if matches!(a.ty, Type::Class(_) | Type::Actor(_) | Type::Supervisor(_)) || matches!(b.ty, Type::Class(_) | Type::Actor(_) | Type::Supervisor(_)) {
                             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                                 "class identity equality is not admitted by the browser compiler"));
                         }
@@ -913,15 +932,21 @@ impl FnCx<'_> {
             ExprKind::MethodCall(receiver, name, args) => self.method_call(receiver, name, args, pos)?,
             ExprKind::SpawnActor(name, args) => {
                 if self.in_actor_handler { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                    "nested actor spawn from receive() is not admitted without a supervisor")); }
-                let (id, runnable) = self.actors.get(name).ok_or_else(|| Diagnostic::new(pos,
-                    "E_SPAWN_TYPE", format!("'{name}' is not a declared actor")))?;
+                    "nested spawn from receive() is not admitted without a supervisor capability")); }
                 if !args.is_empty() { return Err(Diagnostic::new(pos, "E_ARITY",
-                    "stage-1 actors have no constructor arguments")); }
-                if !runnable { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                    "actor must declare a stateless receive(int) -> int handler before spawn")); }
-                self.imports.push(Import::ActorSpawn);
-                TE { e: TExpr::SpawnActor(*id), ty: Type::Actor(*id) }
+                    "stage-4B browser actor and supervisor spawns have no constructor arguments")); }
+                if let Some((id, runnable)) = self.actors.get(name) {
+                    if !runnable { return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "actor must declare a stateless receive(int) -> int handler before spawn")); }
+                    self.imports.push(Import::ActorSpawn);
+                    TE { e: TExpr::SpawnActor(*id), ty: Type::Actor(*id) }
+                } else if let Some(id) = self.supervisors.get(name) {
+                    self.imports.push(Import::SupervisorCreate);
+                    TE { e: TExpr::SpawnSupervisor(*id), ty: Type::Supervisor(*id) }
+                } else {
+                    return Err(Diagnostic::new(pos,
+                        "E_SPAWN_TYPE", format!("'{name}' is not a declared actor or supervisor")));
+                }
             },
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
         })
@@ -954,7 +979,25 @@ impl FnCx<'_> {
             (Type::Actor(_), "get_done") =>
                 Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                     "get_done() must be terminally awaited in void main(); general task values are not supported")),
-            (Type::SendResult, "is_ok" | "is_err") => {
+            (Type::Supervisor(_), "watch") => {
+                if self.in_actor_handler {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "actor receive() cannot assign supervisor CONTROL capabilities"));
+                }
+                if args.len() != 1 {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        "supervisor.watch() takes exactly one typed actor handle"));
+                }
+                let child = self.value(&args[0])?;
+                if !matches!(child.ty, Type::Actor(_)) {
+                    return Err(type_err(args[0].pos,
+                        "supervisor.watch() requires a typed actor handle"));
+                }
+                self.imports.push(Import::SupervisorWatch);
+                Ok(TE {e: TExpr::SupervisorWatch(Box::new(value),Box::new(child)),
+                    ty:Type::SupervisionResult})
+            }
+            (Type::SendResult | Type::SupervisionResult, "is_ok" | "is_err") => {
                 if !args.is_empty() {
                     return Err(Diagnostic::new(pos, "E_ARITY",
                         "Result.is_ok() / is_err() takes no arguments"));
@@ -962,7 +1005,8 @@ impl FnCx<'_> {
                 Ok(TE { e: TExpr::SendStatus(Box::new(value), name == "is_ok"),
                     ty: Type::Bool })
             }
-            (Type::Actor(_), _) | (Type::SendResult, _) =>
+            (Type::Actor(_), _) | (Type::SendResult, _) |
+            (Type::Supervisor(_), _) | (Type::SupervisionResult, _) =>
                 Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                     format!("member '{name}' is not part of the admitted actor/Result subset"))),
             _ => Err(Diagnostic::new(pos, "E_UNSUPPORTED",

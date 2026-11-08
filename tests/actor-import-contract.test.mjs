@@ -58,7 +58,7 @@ test('each named Atto guest capability is granted once as a function',()=>{
   }
 });
 
-test('all seven distinct imports can coexist without duplicates',()=>{
+test('all nine distinct imports can coexist without duplicates',()=>{
   const declarations=ACTOR_GUEST_IMPORTS.map(field=>({field}));
   const imports=validate_actor_guest_imports(moduleWithImports(declarations));
   assert.equal(imports.length,ACTOR_GUEST_IMPORTS.length);
@@ -126,7 +126,7 @@ test('invalid bytes must be rejected by WebAssembly before import validation',()
 });
 
 
-test('exact Wasm function signatures are enforced for all seven capabilities',()=>{
+test('exact Wasm function signatures are enforced for all nine capabilities',()=>{
   for(const [field,declared] of Object.entries(ACTOR_GUEST_IMPORT_SIGNATURES)){
     assert.deepEqual(
       validate_actor_guest_imports(moduleWithImports([{field}])),
@@ -206,4 +206,39 @@ test('a copied buffer view with offset still validates only the targeted module'
     validate_actor_guest_imports(slice).map(x=>x.name),['actor_send']);
   assert.throws(()=>validate_actor_guest_imports(padding),
     /(E_ACTOR_IMPORT_BINARY|CompileError)/);
+});
+
+
+test('supervisor_create accepts only one i32 and returns one i32 handle',()=>{
+  for(const altered of [
+    {params:[]},{params:[0x7e]},{params:[0x7f,0x7f]},
+    {results:[]},{results:[0x7e]},{results:[0x7f,0x7f]},
+  ]){
+    const bytes=moduleWithImports([{field:'supervisor_create',...altered}]);
+    assert.throws(()=>validate_actor_guest_imports(bytes),
+      /E_ACTOR_IMPORT_SIGNATURE/,JSON.stringify(altered));
+  }
+});
+
+test('supervisor_watch requires two ordered i32 handles and returns a status i32',()=>{
+  for(const altered of [
+    {params:[]},{params:[0x7f]},{params:[0x7e,0x7f]},
+    {params:[0x7f,0x7e]},{params:[0x7f,0x7f,0x7f]},
+    {results:[]},{results:[0x7e]},{results:[0x7f,0x7f]},
+  ]){
+    const bytes=moduleWithImports([{field:'supervisor_watch',...altered}]);
+    assert.throws(()=>validate_actor_guest_imports(bytes),
+      /E_ACTOR_IMPORT_SIGNATURE/,JSON.stringify(altered));
+  }
+});
+
+test('supervisor imports cannot be duplicated or passed under an attacker module',()=>{
+  for(const field of ['supervisor_create','supervisor_watch']){
+    assert.throws(()=>validate_actor_guest_imports(
+      moduleWithImports([{field},{field}])),/E_ACTOR_IMPORT_DUPLICATE/);
+    assert.throws(()=>validate_actor_guest_imports(
+      moduleWithImports([{field,module:'env'}])),/E_ACTOR_IMPORT_NAME/);
+    assert.throws(()=>validate_actor_guest_imports(
+      moduleWithImports([{field,kind:'global'}])),/E_ACTOR_IMPORT_KIND/);
+  }
 });

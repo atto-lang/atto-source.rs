@@ -11,6 +11,7 @@ export class SupervisorControl {
     this.capacity=capacity;
     this.parent_id=parent_id;
     this.slots=new Map();
+    this.supervisors=new Map();
     this.tokens=new WeakMap();
     this.queue=[];
     this.waiters=[];
@@ -25,8 +26,34 @@ export class SupervisorControl {
     if(this.slots.size>=this.capacity)throw new Error('E_CONTROL_CAPACITY');
     const token=Object.freeze(Object.create(null));
     this.tokens.set(token,actor_handle);
-    this.slots.set(actor_handle,{actor_id,terminal:null});
+    this.slots.set(actor_handle,{actor_id,parent_id:this.parent_id,watcher:null,terminal:null});
     return token;
+  }
+
+  // Runtime-supervisor handles are parent-owned numeric capabilities created
+  // only by the compiler's supervisor_create host import. No child-worker
+  // message is permitted to call this method.
+  create_supervisor(type_id) {
+    if(!Number.isSafeInteger(type_id)||type_id<0||
+       this.supervisors.size>=this.capacity)throw new Error('E_CONTROL_SUPERVISOR_LIMIT');
+    const handle=this.supervisors.size+1;
+    this.supervisors.set(handle,{type_id});
+    return handle;
+  }
+
+  // Zero means watch admitted; any nonzero status is Err<SupervisionError>.
+  // A terminal or previously assigned child can never be adopted again.
+  watch_actor(supervisor_handle, actor_handle) {
+    if(!Number.isSafeInteger(supervisor_handle)||supervisor_handle<1||
+       !Number.isSafeInteger(actor_handle)||actor_handle<1) return 1;
+    if(!this.supervisors.has(supervisor_handle))return 1;
+    const slot=this.slots.get(actor_handle);
+    if(!slot)return 1;
+    if(slot.terminal)return 3;
+    if(slot.watcher!==null)return 2;
+    slot.watcher=supervisor_handle;
+    slot.parent_id=supervisor_handle;
+    return 0;
   }
 
   record_terminal(token,state,code,processed) {
@@ -45,7 +72,7 @@ export class SupervisorControl {
       code.endsWith('_TIMEOUT')?'timeout':'failure';
     const notice=Object.freeze({
       route:'CONTROL',kind,state,code,
-      actor_handle,actor_id:slot.actor_id,parent_id:this.parent_id,processed,
+      actor_handle,actor_id:slot.actor_id,parent_id:slot.parent_id,processed,
     });
     slot.terminal=notice; // Durable record BEFORE notifying a waiter.
     const waiter=this.waiters.shift();
