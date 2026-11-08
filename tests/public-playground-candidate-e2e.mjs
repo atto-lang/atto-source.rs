@@ -10,7 +10,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node
 import { join, resolve, sep, extname } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const PUBLIC_SITE_COMMIT = '335ed06a0963a445a568ae86e20e9e6bad354a81';
+const PUBLIC_SITE_COMMIT = 'fb4a8032ef7eb3d3325222ed631c1b7db5cf3c9c';
 const root = resolve(new URL('..', import.meta.url).pathname);
 const publicCheckout = join(root, 'public-site-checkout');
 const compilerPath = join(root, 'target/wasm32-unknown-unknown/release/atto_compiler.wasm');
@@ -184,6 +184,14 @@ try {
   },'downloaded actual candidate guest');
   const inst=await WebAssembly.instantiate(downloaded,{atto:{print_i64:()=>{},print_bool:()=>{},print_str:()=>{},print_newline:()=>{}}});
   assert.equal(inst.instance.exports.main(),42n);
+  // A real compiler-produced Point class uses a single fixed 64-KiB guest
+  // memory. Check that the instance itself cannot grow past that bound.
+  const heap=inst.instance.exports.memory;
+  assert.ok(heap instanceof WebAssembly.Memory,
+    'Point constructor must allocate its own bounded Wasm linear memory');
+  assert.equal(heap.buffer.byteLength,65536);
+  assert.throws(()=>heap.grow(1),RangeError,
+    'compiled class heap unexpectedly grew above its fixed one-page limit');
   // Cross-repo ABI: the actual private Rust compiler must never emit a
   // WebAssembly start section (which runs before main and host admission).
   const {admitGuestWasm}=await import('../public-site-checkout/play/src/wasm-admission.js');

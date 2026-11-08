@@ -162,3 +162,17 @@ passes the new host's admission contract. The public host passed 69 Node
 tests, 33 real Chromium scenarios and 15 release-policy tests, plus staged
 browser verification. These are private CI integration checks and are not
 authorization to disclose compiler bytes or deploy Pages.
+
+## Bounded per-instance memory and noncooperative cancellation host
+
+The source CI now pins the immutable public host `fb4a8032ef7eb3d3325222ed631c1b7db5cf3c9c` with
+strict bounded guest Wasm memory admission: at most 16 x 64-KiB pages,
+no unbounded/shared/imported memory or imported/local tables, and 1024
+function maximum for admitted body and imports. Public host Node tests
+(72) and real Chromium tests (35) include a noncooperative nested actor
+infinite loop canceled by the parent. The private compiler's real
+`new Point()` guest is now independently instantiated and checked to
+export a fixed 64-KiB non-growable memory; the already existing
+`admitGuestWasm` check also rejects disallowed memory structure.
+This proves only the narrow compiler-backed guest subset, not general
+AttoLang actor heaps, native stack or CPU budgets.

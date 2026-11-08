@@ -51,14 +51,14 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: atto-lang/atto-lang.github.io
-          ref: 335ed06a0963a445a568ae86e20e9e6bad354a81
+          ref: fb4a8032ef7eb3d3325222ed631c1b7db5cf3c9c
           path: public-site-checkout
           persist-credentials: false
       - name: Rehearse class, enum, and two live actors in actual public IDE with private candidate
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
-          test "$(git -C public-site-checkout rev-parse HEAD)" = '335ed06a0963a445a568ae86e20e9e6bad354a81'
+          test "$(git -C public-site-checkout rev-parse HEAD)" = 'fb4a8032ef7eb3d3325222ed631c1b7db5cf3c9c'
           node tests/public-playground-candidate-e2e.mjs
           test ! -e public/atto_compiler.wasm
 
