@@ -96,7 +96,7 @@ enum Kind {
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
     #[regex(r"[ \t\n\r\f]+", logos::skip)]
-    #[regex(r"//[^\n]*", logos::skip, allow_greedy = true)]
+    #[regex(r"//[^\r\n]*", logos::skip, allow_greedy = true)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -556,5 +556,36 @@ mod tests {
     #[test]
     fn ignores_double_slash_comment() {
         assert!(parse("// first\npub fnc main(): int { return 40+2; }").is_ok());
+    }
+
+    #[test]
+    fn line_comment_block_opener_does_not_swallow_source() {
+        let source = "// /* ignored until newline\npub fnc main(): int { return 42; }";
+        let parsed = parse(source).expect("block opener inside // must be inert");
+        assert_eq!(parsed.functions.len(), 1);
+        assert_eq!(parsed.functions[0].expression, Expr::Integer(42));
+    }
+
+    #[test]
+    fn line_comment_does_not_hide_real_unterminated_block() {
+        let source = "// /* inert\n/* real unterminated block";
+        let error = parse(source).expect_err("real unclosed block must still fail");
+        assert_eq!(error.class, "unterminated_comment");
+        assert_eq!(error.offset, source.find("\n/*").unwrap() + 1);
+    }
+
+    #[test]
+    fn block_comment_does_not_turn_nested_line_markers_into_line_comments() {
+        let source = "/* // /* nested */ outer */ pub fnc main(): int { return 42; }";
+        let parsed = parse(source).expect("nested blocks remain valid");
+        assert_eq!(parsed.functions.len(), 1);
+        assert_eq!(parsed.functions[0].expression, Expr::Integer(42));
+    }
+
+    #[test]
+    fn carriage_return_line_comment_is_opaque_to_block_scanner() {
+        let source = "// /* not a block opener\rpub fnc main(): int { return 42; }";
+        let parsed = parse(source).expect("CR terminates a line comment");
+        assert_eq!(parsed.functions[0].expression, Expr::Integer(42));
     }
 }
