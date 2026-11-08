@@ -2,6 +2,7 @@
 // Actor task completion is provided by the explicit child shutdown protocol.
 import { ActorSession, ACTOR_ADMISSION } from './actor-lifecycle.mjs';
 import { validate_actor_guest_imports } from './actor-import-contract.mjs';
+import { MAX_RUN_OUTPUT_CHARS } from './run-watchdog.mjs';
 self.onmessage=async ({data})=>{
   const actors=[];
   try{
@@ -26,12 +27,18 @@ self.onmessage=async ({data})=>{
     // atto.browser.guest.v1: output imports and the gated actor_spawn capability.
     validate_actor_guest_imports(out);
     let stdout='',instance;
+    const append_output = text => {
+      const fragment=String(text);
+      if(stdout.length+fragment.length>MAX_RUN_OUTPUT_CHARS)
+        throw new Error('E_OUTPUT_LIMIT');
+      stdout+=fragment;
+    };
     const awaited_handles=new Set();
     const atto={
-      print_i64:v=>{stdout+=String(v)},
-      print_bool:v=>{stdout+=v?'true':'false'},
-      print_str:(p,n)=>{stdout+=new TextDecoder('utf-8',{fatal:true}).decode(new Uint8Array(instance.exports.memory.buffer,p,n))},
-      print_newline:()=>{stdout+='\n'},
+      print_i64:v=>append_output(v),
+      print_bool:v=>append_output(v?'true':'false'),
+      print_str:(p,n)=>append_output(new TextDecoder('utf-8',{fatal:true}).decode(new Uint8Array(instance.exports.memory.buffer,p,n))),
+      print_newline:()=>append_output('\n'),
       actor_spawn:id=>{
         if(!Number.isInteger(id)||id<0||actors.length>=4)throw new Error('E_ACTOR_LIMIT');
         const child=new Worker('/actor-worker.mjs',{type:'module'});
@@ -60,14 +67,15 @@ self.onmessage=async ({data})=>{
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':'trap: '+e.message;
       for(const actor of actors)actor.cancel();
-      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
+      self.postMessage({ok:false,error:e?.message==='E_OUTPUT_LIMIT'?'E_OUTPUT_LIMIT':stdout+'E_PANIC: '+kind});return;
     }
     try{
       if(data.actorMessages!==undefined){
         if(!Array.isArray(data.actorMessages)||data.actorMessages.length>4)
           throw new Error('E_ACTOR_LIMIT');
         for(const req of data.actorMessages){
-          if(!req||!Number.isInteger(req.handle)||typeof req.value!=='string'||! /^-?(0|[1-9][0-9]*)$/.test(req.value)){
+          if(!req||!Number.isInteger(req.handle)||typeof req.value!=='string'||
+             req.value.length>20||! /^-?(0|[1-9][0-9]*)$/.test(req.value)){
             throw new Error('E_MESSAGE_TYPE: only canonical signed i64 payloads are admitted');
           }
           const big=BigInt(req.value);
@@ -83,7 +91,7 @@ self.onmessage=async ({data})=>{
       for(let i=0;i<actors.length;i++){
         const actor=actors[i];
         const outcome=await actor.drain_and_close((message,reply)=>{
-          stdout+='actor['+(i+1)+'] receive('+String(message)+') -> '+String(reply)+'\n';
+          append_output('actor['+(i+1)+'] receive('+String(message)+') -> '+String(reply)+'\n');
         });
         if(outcome.kind!=='completed'||outcome.processed===undefined)
           throw new Error('E_ACTOR_DONE_PROTOCOL');

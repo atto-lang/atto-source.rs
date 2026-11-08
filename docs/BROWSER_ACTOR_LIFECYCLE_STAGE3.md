@@ -152,6 +152,44 @@ memory limits, arbitrary Wasm exports, dynamic resource capabilities,
 untrusted host JavaScript, tenant process isolation, general async
 suspension and per-actor heap/stack enforcement remain separate gates.
 
+## Stage 4a — independent browser watchdog and bounded output
+
+The page owns a per-run watchdog independent of the compiler Web Worker
+and of every actor Worker. If compiled guest `main()` enters a synchronous
+noncooperative infinite loop, its blocked worker can be terminated after a
+5,000 ms parent deadline without blocking the browser page event loop.
+Timeout, success, worker errors and cancellation are terminal, single-winner
+events; late/queued results after termination cannot turn a failed run into a
+successful one. A new run allocates a fresh Worker and Wasm instance.
+The parent validates response shapes and rejects oversized success output.
+
+The browser worker bounds aggregate `stdio` and actor-result output to
+16,384 UTF-16 code units per run. No more than 4 actor child Workers may
+spawn; each actor admits 32 queued i64 messages. Externally supplied
+host-originated decimal i64 payload strings must have no more than 20
+characters, rejecting oversized untrusted values before BigInt parsing.
+Wasm guest class memory is already one fixed min=max 64-KiB page; the
+class bump allocator fails closed on exhaustion. Browser and compiler
+tests assert that the guest memory cannot grow.
+
+Each child actor has a 2,000 ms per-message deadline enforced by the parent
+worker and terminates on timeout. A non-cooperative actor's Wasm loop cannot
+resolve `get_done()` just because the parent terminates its Worker.
+The independent page watchdog remains a final fallback if the parent
+compiler worker itself stops responding. These checks are not OS-level
+resource isolation, CPU accounting, memory RSS limits, or general safe-point
+instrumentation: the compiler does **not** yet inject `rt cooperate` or
+128/512-iteration reduction polls. Those require a separate compiler MIR
+instrumentation and runtime protocol milestone and cross-backend proof.
+
+Added deterministic Node cases test exactly-once timeout/success/error,
+cancel-before-queued-reply, malformed/oversized responses, cleanup and
+independent run sessions. Real Chromium executes a compiler-generated
+infinite main loop, a dedicated actor stuck in `receive`, output
+exhaustion, oversized host payload and memory.grow denial, plus recovery
+after each fault. This CI is source-owned/private and confers no right
+to promote artifacts to the public playground or GitHub Pages.
+
 ## Evidence requirements and deferred semantics
 
 Source-owned CI executes native Rust, builds the real wasm32 compiler, runs
