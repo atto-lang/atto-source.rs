@@ -1,6 +1,7 @@
 // Stage-3 browser actor lifecycle: genuine asynchronous completion, not mailbox
 // admission. This module runs in the browser compiler's module Web Worker and
 // has no access to user JavaScript or source evaluation.
+import { SupervisorControl } from './actor-supervisor.mjs';
 export const ACTOR_MAILBOX_CAPACITY = 32;
 export const ACTOR_ADMISSION = Object.freeze({
   OK: 0, CLOSED: 1, FULL: 2, INVALID: 3,
@@ -11,11 +12,20 @@ function actor_error(code) {
 }
 
 export class ActorSession {
-  constructor(worker, actor_id, wasm, { timeout_ms = 2000 } = {}) {
+  constructor(worker, actor_id, wasm, { timeout_ms = 2000, supervisor = null, actor_handle = null } = {}) {
     if (!worker || !Number.isInteger(actor_id) || actor_id < 0 ||
         !Number.isInteger(timeout_ms) || timeout_ms < 1) {
       throw actor_error('E_ACTOR_SESSION_ARGS');
     }
+    // The parent registers an unforgeable CONTROL capability before init.
+    // The child never receives it and cannot manufacture terminal notices.
+    if (supervisor !== null &&
+        (!(supervisor instanceof SupervisorControl) ||
+         !Number.isSafeInteger(actor_handle) || actor_handle < 1)) {
+      throw actor_error('E_CONTROL_CONFIG');
+    }
+    this.supervisor = supervisor;
+    this.control_token = supervisor ? supervisor.register_actor(actor_handle, actor_id) : null;
     this.worker = worker;
     this.actor_id = actor_id;
     this.timeout_ms = timeout_ms;
@@ -90,6 +100,12 @@ export class ActorSession {
     const error = actor_error(code);
     this.terminal_error = error;
     this.state = cancelled ? 'cancelled' : 'failed';
+    // Reserved CONTROL notice takes precedence over all mailbox admission,
+    // Promise rejection, and child teardown; one record per actor.
+    if (this.supervisor) {
+      this.supervisor.record_terminal(
+        this.control_token, this.state, code, this.processed);
+    }
     this.closed = true;
     this.queue.length = 0;
     clearTimeout(this.ready_timer);
@@ -140,6 +156,10 @@ export class ActorSession {
         }
         clearTimeout(this.done_timer);
         this.state = 'completed';
+        if (this.supervisor) {
+          this.supervisor.record_terminal(
+            this.control_token, 'completed', 'OK', this.processed);
+        }
         this.resolve_done({
           kind: 'completed', actor_id: this.actor_id, processed: this.processed,
         });

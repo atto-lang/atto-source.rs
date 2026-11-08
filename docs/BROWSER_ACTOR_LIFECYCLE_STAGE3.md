@@ -152,6 +152,53 @@ memory limits, arbitrary Wasm exports, dynamic resource capabilities,
 untrusted host JavaScript, tenant process isolation, general async
 suspension and per-actor heap/stack enforcement remain separate gates.
 
+## Stage 4A — host-owned supervisor terminal CONTROL path (browser subset)
+
+The browser parent owns a separate SupervisorControl instance with four
+reserved actor slots, matching the maximum four actor Workers per guest run.
+Each ActorSession registers an opaque parent-owned capability token before
+worker initialization. The token is never sent to child Wasm or to a nested
+Web Worker. Child messages cannot author a terminal CONTROL event: only
+the parent's own verified lifecycle state transition records one.
+
+A terminal notice is an immutable record with:
+- route=CONTROL and kind=terminated | panic | failure | cancelled | timeout
+- state=completed | failed | cancelled
+- actor_handle, actor_id (source actor type ID), parent_id
+- bounded error code (or OK), processed-message count
+
+The first terminal event is permanently journaled for its actor handle,
+and subsequently delivered at most once via take_control, drain_control, or
+wait_control. The priority take_next API consumes queued CONTROL notices
+before any ordinary actor messages. CONTROL slots are independent of the
+actor's 32-message FIFO, so normal mailbox saturation cannot drop a terminal
+event. Four actor sessions each reserve a slot before their worker starts;
+a fifth session fails closed. The journal is retained even after dequeue.
+
+The parent publishes terminal records before resolving/rejecting its
+get_done Promise. A genuine close/processed ACK yields terminated;
+a runtime panic yielded by the trusted child execution wrapper yields
+panic; explicit cancellation yields cancelled; timeout and other host
+failure events retain distinct kinds. Late/duplicate child replies,
+post-termination errors and repeated cancellation cannot rewrite the
+journal or create duplicate terminal notices. This is trusted-host
+capability gating, not cryptographic child authentication.
+
+The browser compiler Worker exposes a control array in its test-facing
+postMessage result. The playground UI continues to display the existing
+output; no new public release is authorized. Integration tests execute
+actual source-compiled actor Wasm in nested Web Workers and inspect host
+CONTROL notices for multiple normal terminations, handler panic, main
+panic/cancellation, and full-mailbox shutdown. Deterministic Node
+tests cover priority delivery, spoofed child CONTROL messages,
+fault classification, four reserved slots, and races.
+
+**Scope limit:** these terminal notices are host-private and run-scoped,
+not yet a general language-level Supervisor actor API or a distinct OS
+priority queue. Java/LLVM/Forge/.NET parity, multi-tenant hard isolation,
+actor-private allocator domains, general Task/await continuations, and
+fully preemptive watchdog enforcement remain unimplemented.
+
 ## Evidence requirements and deferred semantics
 
 Source-owned CI executes native Rust, builds the real wasm32 compiler, runs

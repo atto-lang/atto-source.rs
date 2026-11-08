@@ -11,6 +11,7 @@ const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-lifecycle.mjs',[new URL('./browser/actor-lifecycle.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-supervisor.mjs',[new URL('./browser/actor-supervisor.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-import-contract.mjs',[new URL('./browser/actor-import-contract.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-worker.mjs',[new URL('./browser/actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
@@ -455,6 +456,68 @@ try{
   console.log('PASS browser: child rejects swapped actor_send parameter types');
   console.log('PASS browser: child rejects actor_join returning a value');
   console.log('PASS browser: child rejects print_bool accepting i64');
+
+  // Observe actual host-owned CONTROL records produced by the same compiler
+  // Worker the playground uses. Nested actor Workers never author these.
+  const controlProbe = await evaluate(`(async()=>{
+    async function run(source){
+      const host=new Worker('/worker.mjs',{type:'module'});
+      try{
+        return await new Promise((resolve,reject)=>{
+          const timer=setTimeout(()=>reject(new Error('CONTROL probe timeout')),4000);
+          host.onmessage=({data})=>{clearTimeout(timer);resolve(data)};
+          host.onerror=()=>{clearTimeout(timer);reject(new Error('CONTROL host fault'))};
+          host.postMessage({source});
+        });
+      }finally{host.terminate()}
+    }
+    const simple='define actor Worker as receive(msg: int) -> int { return msg + 1; } end ';
+    const panicking='define actor Worker as receive(msg: int) -> int { return msg + 9223372036854775807; } end ';
+    return {
+      normal:await run(simple+
+        'pub fnc main(): void { val a=spawn Worker(); val b=spawn Worker(); '+
+        'val x=a.send(40); val y=b.send(50); await a.get_done(); }'),
+      panic:await run(panicking+
+        'pub fnc main(): void { val w=spawn Worker(); '+
+        'val x=w.send(1); await w.get_done(); }'),
+      cancellation:await run(simple+
+        'pub fnc main(): int { val w=spawn Worker(); val x=w.send(1); '+
+        'val max: int=9223372036854775807; return max + 1; }'),
+      saturated:await run(simple+
+        'pub fnc main(): void { val w=spawn Worker(); '+
+        'for (let i=0; i<33; i++) do val status=w.send(i); done '+
+        'await w.get_done(); }'),
+    };
+  })()`);
+  assert.equal(controlProbe.normal.ok,true);
+  assert.deepEqual(controlProbe.normal.control.map(x=>x.kind),
+    ['terminated','terminated']);
+  assert.deepEqual(controlProbe.normal.control.map(x=>x.actor_handle),[1,2]);
+  assert.deepEqual(controlProbe.normal.control.map(x=>x.processed),[1,1]);
+  assert.ok(controlProbe.normal.control.every(x=>
+    x.route==='CONTROL'&&x.parent_id===0&&x.code==='OK'));
+  console.log('PASS browser: supervisor CONTROL reports exactly one termination per real actor');
+
+  assert.equal(controlProbe.panic.ok,false);
+  assert.match(controlProbe.panic.error,/E_ACTOR_PANIC_1/);
+  assert.deepEqual(controlProbe.panic.control.map(x=>x.kind),['panic']);
+  assert.equal(controlProbe.panic.control[0].state,'failed');
+  assert.equal(controlProbe.panic.control[0].processed,0);
+  console.log('PASS browser: actor panic creates host-owned CONTROL notice without false success');
+
+  assert.equal(controlProbe.cancellation.ok,false);
+  assert.match(controlProbe.cancellation.error,/E_PANIC: integer overflow/);
+  assert.deepEqual(controlProbe.cancellation.control.map(x=>x.kind),['cancelled']);
+  assert.equal(controlProbe.cancellation.control[0].code,'E_ACTOR_CANCELLED');
+  console.log('PASS browser: main panic cancels child with exactly one CONTROL event');
+
+  assert.equal(controlProbe.saturated.ok,true);
+  assert.deepEqual(controlProbe.saturated.control.map(x=>x.kind),['terminated']);
+  assert.equal(controlProbe.saturated.control[0].processed,32);
+  assert.equal(controlProbe.saturated.control[0].route,'CONTROL');
+  console.log('PASS browser: saturated 32-message mailbox cannot discard CONTROL terminal notice');
+  assert.ok(requests.some(x=>x.path==='/actor-supervisor.mjs'),
+    'real compiler worker fetched supervisor CONTROL module');
 
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
