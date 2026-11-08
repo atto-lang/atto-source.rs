@@ -29,3 +29,28 @@ This is an intentionally narrow nominal-class compiler subset: explicit `new Nam
 ## Merge policy
 
 Either merge approved stacked PRs in dependency order (#3 → #4 → #6 → #11 → #13), **or** approve and merge the consolidated integration PR directly to `main`, but **not both**. Prefer the consolidated PR when the original PR #3 still carries unresolved changes-requested review against an obsolete tree. Never interpret this integration branch as an approval for the separate playground or site.
+
+## GitHub administrator protection and independent reviewer roles
+
+The complete compiler PR #28 and the frontend PR #21 now have explicit
+CODEOWNERS (`@oresoftware` and `@the1mills`); GitHub must independently
+enforce required code-owner review via an active `main` branch ruleset.
+CODEOWNERS alone does not require approval. A PR author/pusher's own
+approval never substitutes for independent review. Use at least one
+authorized non-author approval, dismiss stale reviews on changes, and
+require approval after the last reviewable push. Protect `main` against
+force pushes, deletion and unauthorized admin bypass; require the actual
+`real-compiler` exact-head job.
+
+The combined-main candidate #28 and original layered PRs #15/#18/#20/
+#22/#25/#26 overlap; select exactly one merge path with independent
+review and re-test the resulting main tree. PR #19 scalar-v0 actor ABI
+is separate from the integrated browser v1 actor runtime; do not silently
+merge it into this combined candidate.
+
+The public site release workflow now fails closed on any approved-release
+dispatch when its branch protection/rules, Pages workflow-only+HTTPS,
+or `github-pages` environment policy cannot be established. This is
+only an additional preflight; administrator bypass review and explicit
+compiler artifact disclosure authorization remain mandatory. The
+private compiler candidate artifact must not be published by this CI.
