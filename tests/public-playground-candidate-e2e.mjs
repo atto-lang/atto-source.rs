@@ -10,7 +10,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node
 import { join, resolve, sep, extname } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const PUBLIC_SITE_COMMIT = 'fbaf1e7cc6a974cac659aea8ac0e732c3dc5bc86';
+const PUBLIC_SITE_COMMIT = '335ed06a0963a445a568ae86e20e9e6bad354a81';
 const root = resolve(new URL('..', import.meta.url).pathname);
 const publicCheckout = join(root, 'public-site-checkout');
 const compilerPath = join(root, 'target/wasm32-unknown-unknown/release/atto_compiler.wasm');
@@ -19,6 +19,7 @@ const assets = [
   'src/app.js', 'src/compiler.js', 'src/compiler-worker.js', 'src/runner-worker.js',
   'src/guest.js', 'src/worker-task.js', 'src/editor.js', 'src/ui.js',
   'src/actor-lifecycle.js', 'src/actor-guest-worker.js',
+  'src/wasm-admission.js',
   'src/program-picker.js', 'src/saved-programs.js', 'src/syntax-highlight.js',
   'src/formatter-worker.js', 'src/formatter-runtime.js', 'src/formatter-pin.js',
   'src/compiler-pin.js', 'public/atto_compiler.wasm', 'public/atto_compiler.receipt.json',
@@ -183,6 +184,13 @@ try {
   },'downloaded actual candidate guest');
   const inst=await WebAssembly.instantiate(downloaded,{atto:{print_i64:()=>{},print_bool:()=>{},print_str:()=>{},print_newline:()=>{}}});
   assert.equal(inst.instance.exports.main(),42n);
+  // Cross-repo ABI: the actual private Rust compiler must never emit a
+  // WebAssembly start section (which runs before main and host admission).
+  const {admitGuestWasm}=await import('../public-site-checkout/play/src/wasm-admission.js');
+  assert.equal(admitGuestWasm(downloaded),downloaded,
+    'compiler-produced guest must satisfy the hardened public Wasm admission contract');
+  assert.ok(assets.includes('src/wasm-admission.js'),
+    'the temporary candidate browser must stage its new shared worker import');
   pass('downloaded compiled guest Wasm independently validates and executes 42');
   await setSource(point.replace('new Point()', 'Point()'));
   state=await run('error','E_NEW_REQUIRED');

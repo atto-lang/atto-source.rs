@@ -149,3 +149,16 @@ that head passed 64 Node tests, 31 actual-browser tests and 14 guarded
 release-package tests (release workflow deploy job was skipped).
 CI checks class, enum, and per-actor Web Worker execution against this exact
 host without publicly publishing the candidate compiler or setting approval.
+
+## Strict Wasm-start admission and unfiltered required checks
+
+The actual browser compiler candidate suite pins public playground source
+`335ed06a0963a445a568ae86e20e9e6bad354a81`, where both runtime domains reject valid Wasm modules
+containing start functions, the child has the same bounded bytecode admission
+as its parent, and parent cancel-before-init is terminal. A source-backed
+temporary browser fixture includes `src/wasm-admission.js` in its explicit
+nonpublic asset allowlist and asserts a Rust-compiled `new Point()` guest
+passes the new host's admission contract. The public host passed 69 Node
+tests, 33 real Chromium scenarios and 15 release-policy tests, plus staged
+browser verification. These are private CI integration checks and are not
+authorization to disclose compiler bytes or deploy Pages.
