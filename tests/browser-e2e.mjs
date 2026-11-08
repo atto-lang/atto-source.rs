@@ -59,7 +59,8 @@ try{
   }
   const evaluate=async code=>{
     const result=await command('Runtime.evaluate',{expression:code,returnByValue:true,awaitPromise:true});
-    if(result.exceptionDetails)throw new Error(result.exceptionDetails.text);
+    if(result.exceptionDetails)throw new Error(
+      result.exceptionDetails.exception?.description || result.exceptionDetails.text);
     return result.result?.value;
   };
   await command('Page.enable');await command('Runtime.enable');
@@ -325,7 +326,7 @@ try{
     const raw=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
     const api=new WebAssembly.Instance(new WebAssembly.Module(raw),{}).exports;
     const code=new TextEncoder().encode(
-      'define actor Worker as receive(msg: int) -> int { return msg + 1; } end\n'+
+      'define actor Worker as receive(msg: int) -> int { return msg + 1; } end '+
       'pub fnc main(): int { return 0; }');
     if(code.length>api.input_capacity())throw new Error('compiler capacity');
     new Uint8Array(api.memory.buffer,api.input_ptr(),code.length).set(code);
