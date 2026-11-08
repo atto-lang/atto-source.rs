@@ -705,7 +705,7 @@ check('actor/continue-paths-and-straight-line-metering-actually-run-in-wasm', ()
     '    return visited;',
     '  }',
     'end'
-  ].join('\\n');
+  ].join('\n');
   const input=encoder.encode(src);
   new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
   assert.equal(api.compile_actor(input.length),0,'real compiler must accept continue loop');
