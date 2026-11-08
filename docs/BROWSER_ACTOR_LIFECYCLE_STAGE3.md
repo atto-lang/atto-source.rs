@@ -180,3 +180,7 @@ AttoLang actor heaps, native stack or CPU budgets.
 ## Forced parent lifetime / browser CPU deadline cross-repo pin
 
 The private compiler integration now pins public host ced47338040427e824728fc96ffeb5906982efe6. Its direct Chromium suite tests four nested noncooperative actor launches, forced parent termination, absence of late success, fresh independent recovery and an actual 450-ms wall-clock deadline. Node has 160 deterministic worker-task late-reply/cancellation/timeout race trials. Chromium target enumeration did not independently prove orphan-worker reclamation. The compiler remains privately staged; no public release is authorized.
+
+## Page-owned supervisor and 110-run reclamation stress
+
+Private compiler CI pins the exact public host `053dd8bff5dedcb6d41562f1198e526db0acc73e`. Its public source now owns actor worker handles on the page, transfers MessagePorts to the parent compiler runner and revokes child handles independently on parent Stop, timeout, failure or success. Public CI verifies 110 real four-actor cancellation trials (440 child handles, zero active at every boundary), 128 deterministic four-child fault trials and a fresh recovery execution. The private candidate includes both `src/actor-worker-supervisor.js` and `src/actor-worker-port.js` in its staged public IDE, and must prove actual Rust-compiled class/enum/actor execution against them. Browser Worker handle revocation is independently observed; OS process RSS reclamation remains unverified.

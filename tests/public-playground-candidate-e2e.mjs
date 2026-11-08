@@ -10,7 +10,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node
 import { join, resolve, sep, extname } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const PUBLIC_SITE_COMMIT = 'ced47338040427e824728fc96ffeb5906982efe6';
+const PUBLIC_SITE_COMMIT = '053dd8bff5dedcb6d41562f1198e526db0acc73e';
 const root = resolve(new URL('..', import.meta.url).pathname);
 const publicCheckout = join(root, 'public-site-checkout');
 const compilerPath = join(root, 'target/wasm32-unknown-unknown/release/atto_compiler.wasm');
@@ -19,6 +19,7 @@ const assets = [
   'src/app.js', 'src/compiler.js', 'src/compiler-worker.js', 'src/runner-worker.js',
   'src/guest.js', 'src/worker-task.js', 'src/editor.js', 'src/ui.js',
   'src/actor-lifecycle.js', 'src/actor-guest-worker.js',
+  'src/actor-worker-supervisor.js', 'src/actor-worker-port.js',
   'src/wasm-admission.js',
   'src/program-picker.js', 'src/saved-programs.js', 'src/syntax-highlight.js',
   'src/formatter-worker.js', 'src/formatter-runtime.js', 'src/formatter-pin.js',
@@ -199,6 +200,8 @@ try {
     'compiler-produced guest must satisfy the hardened public Wasm admission contract');
   assert.ok(assets.includes('src/wasm-admission.js'),
     'the temporary candidate browser must stage its new shared worker import');
+  for(const file of ['src/actor-worker-supervisor.js','src/actor-worker-port.js'])
+    assert.ok(assets.includes(file),'candidate browser must stage supervised actor '+file);
   pass('downloaded compiled guest Wasm independently validates and executes 42');
   await setSource(point.replace('new Point()', 'Point()'));
   state=await run('error','E_NEW_REQUIRED');
