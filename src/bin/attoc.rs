@@ -4,11 +4,15 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (input, output) = match args.as_slice() {
+    // The separate actor entry point is opt-in; do not reinterpret normal
+    // main() programs or silently compile receive() as a standard guest.
+    let actor = args.first().is_some_and(|flag| flag == "--actor");
+    let rest = if actor { &args[1..] } else { &args[..] };
+    let (input, output) = match rest {
         [i] => (i.clone(), None),
         [i, o, out] if o == "-o" => (i.clone(), Some(out.clone())),
         _ => {
-            eprintln!("usage: attoc <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc [--actor] <input.atto> [-o out.wasm]");
             return ExitCode::from(2);
         }
     };
@@ -19,7 +23,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match atto_compiler::compile(&source) {
+    match if actor { atto_compiler::compile_actor(&source) }
+          else { atto_compiler::compile(&source) } {
         Ok(bytes) => {
             if let Some(o) = output {
                 if std::fs::write(&o, &bytes).is_err() {
