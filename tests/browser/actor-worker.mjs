@@ -4,6 +4,8 @@ let actor = null;
 let initializing = false;
 let terminal = false;
 let nextMessageId = 1;
+const I64_MIN = -(1n << 63n);
+const I64_MAX = (1n << 63n) - 1n;
 function error(reason) {
   if (terminal) return;
   terminal = true;
@@ -57,6 +59,7 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (data?.kind !== 'message' || typeof data.value !== 'bigint' ||
+      data.value < I64_MIN || data.value > I64_MAX ||
       !Number.isSafeInteger(data.id) || data.id !== nextMessageId) {
     return error('E_ACTOR_PROTOCOL: skipped/replayed actor sequence');
   }
