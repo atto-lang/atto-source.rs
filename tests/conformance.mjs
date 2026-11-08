@@ -582,6 +582,73 @@ check('actor/function-budget-includes-receive-and-synthetic-main', () => {
   assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(41n),42n);
 });
 
+// Exercise the actual wasm32-exported compiler ABI, rather than using the
+// safe host wrapper which rejects oversized inputs before entering Wasm.
+check('actor/ABI-negative-and-overcapacity-lengths-fail-without-artifact', () => {
+  const readError = () => {
+    const mem = new Uint8Array(api.memory.buffer);
+    const start = api.error_ptr();
+    let end = start;
+    while (end < mem.length && end - start < 512 && mem[end]) end++;
+    return decoder.decode(mem.subarray(start, end));
+  };
+  for (const length of [-1, api.input_capacity() + 1, 0x7fffffff]) {
+    assert.equal(api.compile_actor(length), 1, 'invalid ABI length ' + length);
+    assert.equal(api.result_length(), 0, 'invalid length must clear previous guest');
+    assert.match(readError(), /^E_SOURCE_LIMIT:/);
+    assert.equal(api.error_line_number(), 1);
+    assert.equal(api.error_column_number(), 1);
+  }
+});
+
+check('actor/ABI-invalid-UTF8-never-leaks-previous-Wasm-and-recovers', () => {
+  const source = 'define actor Identity as receive(int x): int { return x; } end';
+  const bytes = encoder.encode(source);
+  const emit = () => {
+    new Uint8Array(api.memory.buffer, api.input_ptr(), bytes.length).set(bytes);
+    assert.equal(api.compile_actor(bytes.length), 0);
+    const output = new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+    assert.ok(WebAssembly.validate(output));
+    return output;
+  };
+  const before = emit();
+  assert.equal(new WebAssembly.Instance(new WebAssembly.Module(before),{}).exports.receive(-1n),-1n);
+  new Uint8Array(api.memory.buffer,api.input_ptr(),2).set([0xc3,0x28]);
+  assert.equal(api.compile_actor(2),1,'invalid UTF-8 must not enter parser');
+  assert.equal(api.result_length(),0,'invalid UTF-8 must clear previous guest');
+  const mem = new Uint8Array(api.memory.buffer);
+  const start = api.error_ptr();
+  let end = start;
+  while (end < mem.length && end - start < 512 && mem[end]) end++;
+  assert.match(decoder.decode(mem.subarray(start,end)),/^E_UTF8:/);
+  assert.ok(api.error_line_number()>0 && api.error_column_number()>0);
+  const after = emit();
+  assert.deepEqual(after,before,'recovered actor bytes must be deterministic');
+  assert.equal(api.error_line_number(),0,'success clears stale actor diagnostics');
+  assert.equal(api.error_column_number(),0);
+});
+
+check('actor/compiler-entrypoints-must-not-confuse-main-and-receive-guests', () => {
+  const write = source => {
+    const input = encoder.encode(source);
+    new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+    return input.length;
+  };
+  const main = 'pub fnc main(): int { return 42; }';
+  const actor = 'define actor Worker as receive(int x): int { return x; } end';
+  assert.equal(api.compile(write(main)),0);
+  assert.ok(api.result_length()>0);
+  assert.equal(api.compile_actor(write(main)),1,'ordinary main must not become actor guest');
+  assert.equal(api.result_length(),0,'no normal guest may leak after rejected actor compile');
+  assert.equal(api.compile(write(actor)),1,'actor receive must not silently compile as main');
+  assert.equal(api.result_length(),0,'rejected main cannot expose previous Wasm');
+  assert.equal(api.compile_actor(write(actor)),0);
+  const bytes=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  const mod=new WebAssembly.Module(bytes);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(x=>x.name),['receive']);
+  assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(42n),42n);
+});
 // ---- source-compiled scalar actor receive guest ABI --------------------------
 check('actor/source-compiled-receive-guest-executes', () => {
   assert.equal(typeof api.compile_actor, 'function', 'compiler must expose separate actor ABI entrypoint');
