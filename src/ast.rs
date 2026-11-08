@@ -7,21 +7,120 @@ pub enum Type {
     Int,
     Bool,
     Void,
+    /// Unresolved user type name: index into [`Program::type_names`].
+    /// The checker replaces it with `Class` or `Enum`.
+    Named(u32),
+    /// Unresolved `ActorRef<Name>`: index into [`Program::type_names`].
+    NamedRef(u32),
+    /// Instance of `Program::classes[i]` (a heap reference).
+    Class(u32),
+    /// Value of `Program::enums[i]`.
+    Enum(u32),
+    /// `ActorRef<A>` for `Program::actors[i]`: a copyable mailbox capability.
+    ActorRef(u32),
 }
 
 impl Type {
+    /// Name of a scalar type. User types are named by the checker, which
+    /// knows the declaration tables.
     pub fn name(self) -> &'static str {
         match self {
             Type::Int => "int",
             Type::Bool => "bool",
             Type::Void => "void",
+            _ => "object",
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Program {
     pub funcs: Vec<Func>,
+    pub classes: Vec<ClassDecl>,
+    pub enums: Vec<EnumDecl>,
+    pub actors: Vec<ActorDecl>,
+    /// Spellings referenced by `Type::Named` / `Type::NamedRef`.
+    pub type_names: Vec<(String, Pos)>,
+}
+
+/// Who may assign a field after its initializer ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldMode {
+    /// `name: T = e`, `final ...`, `val`/`const` fields: never reassigned.
+    Final,
+    /// Class `T name: e`, `mut T name = e`, `let T name = e`: the constructor
+    /// may assign it; methods see a read-only `self` (Java ownership rule).
+    Constructor,
+    /// Actor `let T name = e`: mailbox-owned state any actor method may assign.
+    ActorState,
+}
+
+#[derive(Clone, Debug)]
+pub struct Field {
+    pub name: String,
+    pub pos: Pos,
+    pub ty: Type,
+    pub public: bool,
+    pub mode: FieldMode,
+    pub init: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub struct Method {
+    pub name: String,
+    pub pos: Pos,
+    pub public: bool,
+    pub is_static: bool,
+    pub params: Vec<Param>,
+    pub ret: Type,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Constructor {
+    pub pos: Pos,
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+}
+
+/// `[pub] define class Name as { member } end` (grammar.ebnf `class_decl`).
+#[derive(Clone, Debug)]
+pub struct ClassDecl {
+    pub name: String,
+    pub pos: Pos,
+    pub public: bool,
+    pub fields: Vec<Field>,
+    pub ctor: Option<Constructor>,
+    pub methods: Vec<Method>,
+}
+
+/// `define enum Name as Variant ... end`: the oreslang-source.llvm v1 design
+/// contract spelling (contracts/v1/design/enum_pattern_cases.json). The Java
+/// reference parser does not admit it yet.
+#[derive(Clone, Debug)]
+pub struct EnumDecl {
+    pub name: String,
+    pub pos: Pos,
+    pub variants: Vec<(String, Pos)>,
+}
+
+/// `receive(ActorMail<T> mail): void { ... }`.
+#[derive(Clone, Debug)]
+pub struct Receive {
+    pub pos: Pos,
+    pub mail: String,
+    pub payload: Type,
+    pub body: Vec<Stmt>,
+}
+
+/// `define actor Name as ... end` or `actor Name ... end` (Java Parser).
+#[derive(Clone, Debug)]
+pub struct ActorDecl {
+    pub name: String,
+    pub pos: Pos,
+    pub fields: Vec<Field>,
+    pub receive: Option<Receive>,
+    pub methods: Vec<Method>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +161,13 @@ pub enum Stmt {
     },
     Assign {
         name: String,
+        value: Expr,
+        pos: Pos,
+    },
+    /// `target.field = value`; only `self.field` is admitted by the checker.
+    FieldAssign {
+        target: Expr,
+        field: String,
         value: Expr,
         pos: Pos,
     },
@@ -149,6 +255,16 @@ pub enum ExprKind {
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
     Call(String, Vec<Expr>),
+    /// `self`
+    SelfRef,
+    /// `new Class(args)`
+    New(String, Vec<Expr>),
+    /// `spawn Actor()`
+    Spawn(String),
+    /// `base.name`: field read, `Enum.Variant`, or `mail.value`.
+    Member(Box<Expr>, String),
+    /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
+    MethodCall(Box<Expr>, String, Vec<Expr>),
 }
 
 #[derive(Clone, Debug)]

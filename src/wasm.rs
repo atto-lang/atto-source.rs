@@ -1,24 +1,36 @@
 //! Typed IR -> WebAssembly binary (core spec 1.0 plus mutable-global export).
 //!
-//! Guest contract `atto.browser.guest.v1`:
+//! Guest contract `atto.browser.guest.v2` (v1 plus classes and actors):
 //! * export `main: () -> i64` (a void `main` returns 0)
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
-//!   1 = integer overflow; code 2 is reserved (division/remainder unsupported)
-//! * export `memory` only when string literals are printed
+//!   1 = integer overflow; 2 is reserved (division/remainder unsupported);
+//!   3 = object heap exhausted
+//! * export `memory` only when string literals are printed or classes exist;
+//!   with classes it is a fixed, non-growable [`HEAP_PAGES`]-page memory
 //! * imports, only those used, from module `atto`:
 //!   `print_i64(i64)`, `print_bool(i32)`, `print_str(i32 offset, i32 len)`,
-//!   `print_newline()`
+//!   `print_newline()`, `actor_spawn(i32 type) -> i32 ref`,
+//!   `actor_send(i32 ref, i64 value)`
+//! * with actors, also export `actor_init(i32 type)` and
+//!   `actor_receive(i32 type, i64 value, i64 sequence)`, plus a custom section
+//!   `atto.actors` listing actor type names by type index. The host runs each
+//!   spawned actor in its own instance (one Web Worker per actor in the
+//!   playground), calls `actor_init` once, then `actor_receive` per message in
+//!   FIFO order. Actor state lives in that instance's globals.
 //!
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
 use crate::ast::{BinOp, Type};
-use crate::check::{Builtin, Import, TExpr, TProgram, TStmt, TE};
+use crate::check::{Builtin, Import, PrintPiece, TExpr, TProgram, TStmt, TE};
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
 /// Reserved ABI value; current admitted expressions cannot generate this panic.
 pub const PANIC_DIV_ZERO: i32 = 2;
+pub const PANIC_HEAP: i32 = 3;
+/// Fixed memory size, in 64 KiB pages, of a module that allocates objects.
+pub const HEAP_PAGES: u32 = 16;
 
 const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
@@ -63,6 +75,8 @@ fn vt(t: Type) -> Option<u8> {
         Type::Int => Some(I64),
         Type::Bool => Some(I32),
         Type::Void => None,
+        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) => Some(I32),
+        Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
     }
 }
 
@@ -85,21 +99,39 @@ const H_ADD: u32 = 0;
 const H_SUB: u32 = 1;
 const H_MUL: u32 = 2;
 const H_NEG: u32 = 3;
-const HELPERS: u32 = 4;
+/// present only when the program has classes
+const H_ALLOC: u32 = 4;
 
 struct Layout {
     imports: Vec<Import>,
+    helpers: u32,
+    /// global index of actor-state global 0
+    state_base: u32,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
         self.imports.iter().position(|x| *x == i).expect("import registered by checker") as u32
     }
     fn helper(&self, h: u32) -> u32 {
+        debug_assert!(h < self.helpers);
         self.imports.len() as u32 + h
     }
     fn func(&self, f: u32) -> u32 {
-        self.imports.len() as u32 + HELPERS + f
+        self.imports.len() as u32 + self.helpers + f
     }
+}
+
+/// Load (`store = false`) or store a field slot of type `t` at `offset`.
+fn field_op(code: &mut Vec<u8>, t: Type, offset: u32, store: bool) {
+    let (op, align) = match (t, store) {
+        (Type::Int, false) => (0x29, 3),
+        (Type::Int, true) => (0x37, 3),
+        (_, false) => (0x28, 2),
+        (_, true) => (0x36, 2),
+    };
+    code.push(op);
+    code.push(align);
+    uleb(code, offset as u64);
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -162,6 +194,16 @@ impl Emit<'_> {
                 self.expr(v);
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
+            }
+            TStmt::FieldSet { obj, offset, ty, value } => {
+                self.expr(obj);
+                self.expr(value);
+                field_op(&mut self.code, *ty, *offset, true);
+            }
+            TStmt::GlobalSet(g, v) => {
+                self.expr(v);
+                self.op(0x24);
+                uleb(&mut self.code, (self.l.state_base + g) as u64);
             }
             TStmt::Expr(v) => {
                 self.expr(v);
@@ -252,7 +294,7 @@ impl Emit<'_> {
                     BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
                     BinOp::Div => unreachable!("division not admitted by checker"),
                 }
-            },
+            }
             TExpr::Ternary(c, a, b) => {
                 self.expr(c);
                 self.open(0x04, vt(v.ty).expect("ternary value type"), Frame::Other);
@@ -292,6 +334,55 @@ impl Emit<'_> {
                 self.i32c(*offset as i32);
                 self.i32c(*len as i32);
                 self.call(self.l.import(Import::PrintStr));
+                if *newline {
+                    self.call(self.l.import(Import::PrintNewline));
+                }
+            }
+            TExpr::EnumVal(i) => self.i32c(*i as i32),
+            TExpr::FieldGet { obj, offset } => {
+                self.expr(obj);
+                field_op(&mut self.code, v.ty, *offset, false);
+            }
+            TExpr::GlobalGet(g) => {
+                self.op(0x23);
+                uleb(&mut self.code, (self.l.state_base + g) as u64);
+            }
+            TExpr::Alloc(n) => {
+                self.i32c(*n as i32);
+                self.call(self.l.helper(H_ALLOC));
+            }
+            TExpr::Spawn(a) => {
+                self.i32c(*a as i32);
+                self.call(self.l.import(Import::ActorSpawn));
+            }
+            TExpr::Send { target, value } => {
+                self.expr(target);
+                self.expr(value);
+                if value.ty == Type::Bool {
+                    self.op(0xAD); // i64.extend_i32_u
+                }
+                self.call(self.l.import(Import::ActorSend));
+            }
+            TExpr::PrintObj { obj, tmp, pieces, newline } => {
+                self.expr(obj);
+                self.op(0x21);
+                uleb(&mut self.code, *tmp as u64);
+                for piece in pieces {
+                    match piece {
+                        PrintPiece::Str(offset, len) => {
+                            self.i32c(*offset as i32);
+                            self.i32c(*len as i32);
+                            self.call(self.l.import(Import::PrintStr));
+                        }
+                        PrintPiece::Field(offset, ty) => {
+                            self.op(0x20);
+                            uleb(&mut self.code, *tmp as u64);
+                            field_op(&mut self.code, *ty, *offset, false);
+                            let imp = if *ty == Type::Int { Import::PrintI64 } else { Import::PrintBool };
+                            self.call(self.l.import(imp));
+                        }
+                    }
+                }
                 if *newline {
                     self.call(self.l.import(Import::PrintNewline));
                 }
@@ -356,6 +447,22 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     v
 }
 
+/// `alloc(size: i32) -> i32`: bump-allocate from `heap_ptr`; panic 3 when the
+/// fixed memory is exhausted. Objects are never freed (no GC in this subset).
+fn alloc_body(heap_global: u32) -> (Sig, Vec<u8>, Vec<u8>) {
+    let limit = (HEAP_PAGES * 65536) as i64;
+    let mut c = vec![0x23];
+    uleb(&mut c, heap_global as u64);
+    c.extend_from_slice(&[0x21, 1, 0x20, 1, 0x20, 0, 0x6A, 0x41]); // p = heap; p + size
+    sleb(&mut c, limit);
+    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // if (p + size) >u limit
+    panic(&mut c, PANIC_HEAP);
+    c.extend_from_slice(&[0x0B, 0x20, 1, 0x20, 0, 0x6A, 0x24]); // heap = p + size
+    uleb(&mut c, heap_global as u64);
+    c.extend_from_slice(&[0x20, 1, 0x0B]); // return p
+    (Sig(vec![I32], vec![I32]), vec![1u8, 1, I32], c)
+}
+
 fn locals_decl(types: &[Type]) -> Vec<u8> {
     let mut groups: Vec<(u32, u8)> = Vec::new();
     for t in types {
@@ -375,8 +482,11 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    let heap_global = 1;
     let layout = Layout {
         imports: p.imports.clone(),
+        helpers: if p.heap { H_ALLOC + 1 } else { H_ALLOC },
+        state_base: 1 + u32::from(p.heap),
     };
     let mut types = Types(Vec::new());
 
@@ -388,6 +498,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintBool => Sig(vec![I32], vec![]),
             Import::PrintStr => Sig(vec![I32, I32], vec![]),
             Import::PrintNewline => Sig(vec![], vec![]),
+            Import::ActorSpawn => Sig(vec![I32], vec![I32]),
+            Import::ActorSend => Sig(vec![I32, I64], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -397,7 +509,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
 
     let mut func_types = Vec::new();
     let mut bodies = Vec::new();
-    for (sig, locals, code) in helper_bodies() {
+    let mut helpers = helper_bodies();
+    if p.heap {
+        helpers.push(alloc_body(heap_global));
+    }
+    for (sig, locals, code) in helpers {
         func_types.push(types.idx(sig));
         let mut b = locals;
         b.extend(code);
@@ -425,6 +541,47 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         bodies.push(e.code);
     }
 
+    // actor_init(type) / actor_receive(type, value, sequence) dispatchers
+    let has_actors = !p.actors.is_empty();
+    let actor_init_idx = layout.func(p.funcs.len() as u32);
+    if has_actors {
+        func_types.push(types.idx(Sig(vec![I32], vec![])));
+        let mut e = Emit {
+            l: &layout,
+            code: vec![0],
+            frames: Vec::new(),
+            void_main: false,
+        };
+        for (ai, a) in p.actors.iter().enumerate() {
+            e.code.extend_from_slice(&[0x20, 0]);
+            e.i32c(ai as i32);
+            e.op(0x46);
+            e.open(0x04, 0x40, Frame::Other);
+            for (g, init) in &a.inits {
+                e.stmt(&TStmt::GlobalSet(*g, init.clone()));
+            }
+            e.op(0x0F);
+            e.close();
+        }
+        e.op(0x00); // unknown actor type
+        e.op(0x0B);
+        bodies.push(e.code);
+
+        func_types.push(types.idx(Sig(vec![I32, I64, I64], vec![])));
+        let mut c = vec![0];
+        for (ai, a) in p.actors.iter().enumerate() {
+            if let Some(r) = a.receive {
+                c.extend_from_slice(&[0x20, 0, 0x41]);
+                sleb(&mut c, ai as i64);
+                c.extend_from_slice(&[0x46, 0x04, 0x40, 0x20, 1, 0x20, 2, 0x10]);
+                uleb(&mut c, layout.func(r) as u64);
+                c.extend_from_slice(&[0x0F, 0x0B]);
+            }
+        }
+        c.extend_from_slice(&[0x00, 0x0B]); // no receive handler for this type
+        bodies.push(c);
+    }
+
     let mut out = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
 
     let mut type_sec = Vec::new();
@@ -448,17 +605,34 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 3, fsec);
 
-    let has_memory = !p.data.is_empty();
+    let has_memory = !p.data.is_empty() || p.heap;
     if has_memory {
-        // one fixed, non-growable page holding the string literals
-        section(&mut out, 5, vec![1, 0x01, 1, 1]);
+        // fixed and non-growable: string literals, then the object heap
+        let pages = if p.heap { HEAP_PAGES } else { 1 };
+        let mut m = vec![1, 0x01];
+        uleb(&mut m, pages as u64);
+        uleb(&mut m, pages as u64);
+        section(&mut out, 5, m);
     }
 
-    // global 0: mut i32 panic_code = 0
-    section(&mut out, 6, vec![1, I32, 0x01, 0x41, 0, 0x0B]);
+    // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
+    let mut gsec = Vec::new();
+    uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64);
+    gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
+    if p.heap {
+        let heap_start = (p.data.len() as i64 + 7) & !7;
+        gsec.extend_from_slice(&[I32, 0x01, 0x41]);
+        sleb(&mut gsec, heap_start);
+        gsec.push(0x0B);
+    }
+    for t in &p.globals {
+        let ty = vt(*t).expect("value global");
+        gsec.extend_from_slice(&[ty, 0x01, if ty == I64 { 0x42 } else { 0x41 }, 0, 0x0B]);
+    }
+    section(&mut out, 6, gsec);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, if has_memory { 3 } else { 2 });
+    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 });
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -470,6 +644,14 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         exp.push(0x02);
         uleb(&mut exp, 0);
     }
+    if has_actors {
+        name(&mut exp, "actor_init");
+        exp.push(0x00);
+        uleb(&mut exp, actor_init_idx as u64);
+        name(&mut exp, "actor_receive");
+        exp.push(0x00);
+        uleb(&mut exp, actor_init_idx as u64 + 1);
+    }
     section(&mut out, 7, exp);
 
     let mut code_sec = Vec::new();
@@ -480,7 +662,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 10, code_sec);
 
-    if has_memory {
+    if !p.data.is_empty() {
         let mut d = vec![1, 0x00, 0x41, 0x00, 0x0B];
         uleb(&mut d, p.data.len() as u64);
         d.extend_from_slice(&p.data);
@@ -489,21 +671,21 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
 
     // custom "name" section: function names for readable traps and stack traces
     let mut names = Vec::new();
-    let all: Vec<String> = p
+    let mut helper_names = vec!["atto.checked_add", "atto.checked_sub", "atto.checked_mul", "atto.checked_neg"];
+    if p.heap {
+        helper_names.push("atto.alloc");
+    }
+    let mut all: Vec<String> = p
         .imports
         .iter()
         .map(|i| format!("atto.{}", i.name()))
-        .chain(
-            [
-                "atto.checked_add",
-                "atto.checked_sub",
-                "atto.checked_mul",
-                "atto.checked_neg",
-            ]
-            .map(String::from),
-        )
+        .chain(helper_names.into_iter().map(String::from))
         .chain(p.funcs.iter().map(|f| f.name.clone()))
         .collect();
+    if has_actors {
+        all.push("atto.actor_init".into());
+        all.push("atto.actor_receive".into());
+    }
     let mut sub = Vec::new();
     uleb(&mut sub, all.len() as u64);
     for (i, n) in all.iter().enumerate() {
@@ -515,5 +697,16 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     uleb(&mut names, sub.len() as u64);
     names.extend(sub);
     section(&mut out, 0, names);
+
+    if has_actors {
+        // custom "atto.actors": vec(name) indexed by actor type
+        let mut a = Vec::new();
+        name(&mut a, "atto.actors");
+        uleb(&mut a, p.actors.len() as u64);
+        for actor in &p.actors {
+            name(&mut a, &actor.name);
+        }
+        section(&mut out, 0, a);
+    }
     out
 }

@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+// java: rejects
+define actor Worker as
+    ping(): void { return; }
+end
+pub fnc main(): int { val w = spawn Worker(); w.send(1); return 0; }

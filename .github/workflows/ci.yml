@@ -64,7 +64,7 @@ jobs:
             source_tree:git('rev-parse','HEAD^{tree}'),
             target:'wasm32-unknown-unknown',
             abi:'atto-playground-v2',
-            guest_abi:'atto.browser.guest.v1',
+            guest_abi:'atto.browser.guest.v2',
             compiler_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),
             compiler_bytes:bytes.length,
             import_count:imports.length,
