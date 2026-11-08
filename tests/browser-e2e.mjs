@@ -222,6 +222,49 @@ try{
   assert.deepEqual(actorProtocol,{doubleInit:true,replayed:true,skipped:true});
   console.log('PASS browser: actor double-init, replay and skipped IDs are rejected before guest execution');
 
+  // Real worker transport must preserve the full signed-i64 domain. A raw
+  // BigInt outside it must NOT be implicitly truncated modulo 2^64 by Wasm.
+  const actorI64Bounds=await evaluate(`(async()=>{
+    const source='define actor Identity as receive(int value): int { return value; } end';
+    async function open() {
+      const w=new Worker('/actor-worker.mjs',{type:'module'});
+      const request=packet=>new Promise((resolve,reject)=>{
+        const timeout=setTimeout(()=>reject(new Error('actor i64 deadline')),5000);
+        w.onmessage=e=>{clearTimeout(timeout);resolve(e.data)};
+        w.onerror=()=>{clearTimeout(timeout);reject(new Error('actor i64 worker error'))};
+        w.postMessage(packet);
+      });
+      const init=await request({kind:'init',source});
+      if(init.kind!=='ready'){w.terminate();throw Error('actor did not initialize');}
+      return {w,request};
+    }
+    const values=[-(1n<<63n),-1n,0n,(1n<<63n)-1n];
+    const first=await open();
+    try {
+      const results=[];
+      for(let i=0;i<values.length;i++){
+        const r=await first.request({kind:'message',id:i+1,value:values[i]});
+        results.push(r.kind==='result'&&r.id===i+1&&r.value===values[i]);
+      }
+      const reinit=await first.request({kind:'init',source});
+      if(reinit.kind!=='fault'||!/E_ACTOR_PROTOCOL/.test(reinit.message))
+        throw Error('reinit after ready must fault');
+      const bad=[(1n<<63n),-(1n<<63n)-1n,1,1.2,null,
+        {value:1n},true,undefined];
+      const refused=[];
+      for(const value of bad){
+        const a=await open();
+        try {
+          const r=await a.request({kind:'message',id:1,value});
+          refused.push(r.kind==='fault'&&/E_ACTOR_PROTOCOL/.test(r.message));
+        } finally {a.w.terminate();}
+      }
+      return {boundary:results,invalid:refused,reinit:true};
+    } finally {first.w.terminate();}
+  })()`);
+  assert.deepEqual(actorI64Bounds,{boundary:[true,true,true,true],
+    invalid:Array(8).fill(true),reinit:true});
+  console.log('PASS browser: actor signed i64 min/max roundtrip; out-of-range and non-BigInt payloads and second init fail closed');
   const compilerFetchesBeforeOversize=requests.filter(x=>x.path==='/atto_compiler.wasm').length;
   const oversizedActor=await evaluate(`(async()=>{
     const worker=new Worker('/actor-worker.mjs',{type:'module'});
