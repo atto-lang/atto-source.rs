@@ -318,6 +318,66 @@ try{
   assert.equal(await run(emptyJoin,'main() -> 0'),'main() -> 0');
   console.log('PASS browser: forbidden continuation rejects without poisoning next actor run');
 
+  // Directly test the real child worker's protocol gate. These are NOT fake
+  // worker replies: a real browser-generated guest Wasm module is instantiated
+  // inside a dedicated Chromium Web Worker; hostile host messages are injected.
+  const protocolProbe = await evaluate(`(async()=>{
+    const raw=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
+    const api=new WebAssembly.Instance(new WebAssembly.Module(raw),{}).exports;
+    const code=new TextEncoder().encode(
+      'define actor Worker as receive(msg: int) -> int { return msg + 1; } end\n'+
+      'pub fnc main(): int { return 0; }');
+    if(code.length>api.input_capacity())throw new Error('compiler capacity');
+    new Uint8Array(api.memory.buffer,api.input_ptr(),code.length).set(code);
+    if(api.compile(code.length)!==0)throw new Error('direct probe compile failed');
+    const guest=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+    if(!WebAssembly.validate(guest))throw new Error('invalid guest in direct probe');
+    async function probe(kind){
+      const worker=new Worker('/actor-worker.mjs',{type:'module'});
+      const next=()=>new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('probe worker timeout')),2000);
+        worker.onmessage=({data})=>{clearTimeout(timer);resolve(data)};
+        worker.onerror=()=>{clearTimeout(timer);reject(new Error('probe worker error'))};
+      });
+      try{
+        let response=next();
+        worker.postMessage({kind:'init',actorId:0,wasm:guest});
+        if((await response).kind!=='ready')throw new Error('probe init');
+        response=next();
+        if(kind==='future')worker.postMessage({kind:'message',seq:1,value:41n});
+        if(kind==='missing')worker.postMessage({kind:'message',value:41n});
+        if(kind==='invalid')worker.postMessage({kind:'message',seq:0,value:{pointer:42}});
+        if(kind==='replay'){
+          worker.postMessage({kind:'message',seq:0,value:41n});
+          const reply=await response;
+          if(reply.kind!=='reply'||reply.seq!==0||reply.value!==42n)
+            throw new Error('probe first reply not correlated');
+          response=next();
+          worker.postMessage({kind:'message',seq:0,value:42n});
+        }
+        const outcome=await response;
+        if(outcome.kind!=='error')throw new Error('hostile actor message accepted: '+outcome.kind);
+        return outcome.message;
+      }finally{worker.terminate()}
+    }
+    return {
+      future:await probe('future'),
+      replay:await probe('replay'),
+      missing:await probe('missing'),
+      invalid:await probe('invalid'),
+    };
+  })()`);
+  assert.deepEqual(protocolProbe,{
+    future:'E_ACTOR_MESSAGE_SEQ',
+    replay:'E_ACTOR_MESSAGE_SEQ',
+    missing:'E_ACTOR_MESSAGE_SEQ',
+    invalid:'E_MESSAGE_TYPE',
+  });
+  console.log('PASS browser: real actor Worker rejects future sequence IDs');
+  console.log('PASS browser: real actor Worker rejects replayed sequence IDs');
+  console.log('PASS browser: real actor Worker rejects missing sequence IDs');
+  console.log('PASS browser: real actor Worker rejects object/pointer-shaped messages');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
