@@ -184,3 +184,15 @@ The private compiler integration now pins public host ced47338040427e824728fc96f
 ## Page-owned supervisor and 110-run reclamation stress
 
 Private compiler CI pins the exact public host `053dd8bff5dedcb6d41562f1198e526db0acc73e`. Its public source now owns actor worker handles on the page, transfers MessagePorts to the parent compiler runner and revokes child handles independently on parent Stop, timeout, failure or success. Public CI verifies 110 real four-actor cancellation trials (440 child handles, zero active at every boundary), 128 deterministic four-child fault trials and a fresh recovery execution. The private candidate includes both `src/actor-worker-supervisor.js` and `src/actor-worker-port.js` in its staged public IDE, and must prove actual Rust-compiled class/enum/actor execution against them. Browser Worker handle revocation is independently observed; OS process RSS reclamation remains unverified.
+
+## Allocation, transfer, and supervisor quarantine fault matrix
+
+The private compiler candidate now pins the exact public frontend
+`2b66373c373e39c2a214dc31db05743409dbd28f`. At that head the browser runtime counts and closes children
+after Worker/MessageChannel partial constructor failures, rejects duplicate
+port transfers, catches timer/event-handler registration errors and refuses
+actor supervisor reuse if any child Worker termination throws. The public
+test matrix includes 256 deterministic four-actor terminal races, nine
+real-browser child/channel/port-transfer negative scenarios, and 110
+independent four-child Stop trials. The Rust compiler is exercised only in a
+private ephemeral browser candidate; no private binary is published.
