@@ -1,0 +1,7 @@
+// expect-error: E_MOVED
+// expect-line: 7
+// java: rejects
+define class P as
+    pub int x: 20
+end
+pub fnc main(): int { val a = new P(); val b = a; return a.x + b.x; }

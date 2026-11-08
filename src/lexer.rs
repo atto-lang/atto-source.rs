@@ -265,7 +265,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('/', _) => (Tok::Slash, 1),
             ('%', _) | ('^', _) => {
                 return Err(Diagnostic::new(
-                    pos, "E_UNSUPPORTED", "removed arithmetic operator is not part of AttoLang"
+                    pos,
+                    "E_UNSUPPORTED",
+                    "removed arithmetic operator is not part of AttoLang",
                 ));
             }
             ('?', _) => (Tok::Question, 1),

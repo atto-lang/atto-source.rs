@@ -12,6 +12,9 @@ use crate::lexer::{Tok, Token};
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
+/// Members (fields, methods, constructor, receive) in one class or actor,
+/// and variants in one enum.
+pub const MAX_MEMBERS: usize = 256;
 /// Bound on the height of any syntax tree the parser builds. Left-associative
 /// operator chains (`a + b + ...`) and `elif` arms are parsed iteratively but
 /// produce trees that the checker, emitter and `Drop` walk recursively, so
@@ -203,6 +206,23 @@ pub struct Parser {
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
     /// boolean AND / OR (spec chapter 16).
     cond: u32,
+    /// Spellings of user type references, see `Type::Named`.
+    type_names: Vec<(String, Pos)>,
+}
+
+struct TypeFirstField {
+    field: Field,
+    /// `T name: e` (class field spelling) rather than `T name = e`.
+    init_was_colon: bool,
+}
+
+/// Members collected from a class or actor body.
+#[derive(Default)]
+struct Members {
+    fields: Vec<Field>,
+    ctor: Option<Constructor>,
+    methods: Vec<Method>,
+    receive: Option<Receive>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -219,6 +239,7 @@ impl Parser {
             depth: 0,
             height: 0,
             cond: 0,
+            type_names: Vec::new(),
         }
     }
 
@@ -357,7 +378,22 @@ impl Parser {
                     format!("type '{n}' is not supported by the browser compiler yet"),
                 ))
             }
-            n => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
+            "ActorRef" => {
+                self.expect(Tok::Lt, "'<' after ActorRef")?;
+                let (actor, apos) = self.ident("an actor name")?;
+                self.expect(Tok::Gt, "'>'")?;
+                Type::NamedRef(self.type_name(actor, apos))
+            }
+            "ActorMail" => {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_TYPE",
+                    "ActorMail<T> is only the parameter type of an actor receive handler",
+                ))
+            }
+            n if is_reserved(n) => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
+            // A class or enum name; the checker resolves it.
+            n => Type::Named(self.type_name(n.to_string(), pos)),
         };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
             return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
@@ -365,21 +401,483 @@ impl Parser {
         Ok(ty)
     }
 
+    fn type_name(&mut self, name: String, pos: Pos) -> u32 {
+        self.type_names.push((name, pos));
+        (self.type_names.len() - 1) as u32
+    }
+
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
-        let mut funcs = Vec::new();
+        let mut prog = Program::default();
+        let mut decls = 0usize;
         while *self.peek() != Tok::Eof {
-            if funcs.len() >= MAX_FUNCS {
+            if decls >= MAX_FUNCS {
                 return Err(Diagnostic::new(
                     self.pos(),
                     "E_SOURCE_LIMIT",
-                    format!("more than {MAX_FUNCS} functions"),
+                    format!("more than {MAX_FUNCS} top-level declarations"),
                 ));
             }
-            funcs.push(self.parse_func()?);
+            decls += 1;
+            let public = self.is_word("pub");
+            let at = usize::from(public);
+            let start = self.pos();
+            match (self.word_at(at), self.word_at(at + 1)) {
+                (Some("define"), Some("class")) => {
+                    self.i += at + 2;
+                    prog.classes.push(self.parse_class(public)?);
+                }
+                (Some("define"), Some("actor")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += 2;
+                    let decl = self.parse_actor(true)?;
+                    prog.actors.push(decl);
+                }
+                (Some("actor"), Some(w)) if w != "fnc" => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += 1;
+                    let decl = self.parse_actor(false)?;
+                    prog.actors.push(decl);
+                }
+                (Some("define"), Some("enum")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' enums"));
+                    }
+                    self.i += 2;
+                    prog.enums.push(self.parse_enum()?);
+                }
+                (Some("define"), Some(w)) => {
+                    let what = match w {
+                        "abstract" => "abstract classes".to_string(),
+                        "pub" | "private" => {
+                            "visibility after 'define' on classes, actors and enums (write 'pub define class')".to_string()
+                        }
+                        _ => format!("'define {w}' declarations"),
+                    };
+                    return Err(unsupported(self.pos(), &what));
+                }
+                _ => prog.funcs.push(self.parse_func()?),
+            }
         }
-        Ok(Program { funcs })
+        prog.type_names = std::mem::take(&mut self.type_names);
+        Ok(prog)
+    }
+
+    /// After `define class`: `Name as { class_member } end`.
+    fn parse_class(&mut self, public: bool) -> R<ClassDecl> {
+        let (name, pos) = self.ident("a class name")?;
+        self.decl_head("class")?;
+        self.expect_word("as")?;
+        let m = self.parse_members(&name, false, "end")?;
+        Ok(ClassDecl {
+            name,
+            pos,
+            public,
+            fields: m.fields,
+            ctor: m.ctor,
+            methods: m.methods,
+        })
+    }
+
+    /// After `define actor` (`defined`) or a bare `actor`.
+    fn parse_actor(&mut self, defined: bool) -> R<ActorDecl> {
+        let (name, pos) = self.ident("an actor name")?;
+        self.decl_head("actor")?;
+        let close = if defined {
+            self.expect_word("as")?;
+            "end"
+        } else if self.eat(&Tok::LBrace) {
+            "}"
+        } else {
+            "end"
+        };
+        let m = self.parse_members(&name, true, close)?;
+        Ok(ActorDecl {
+            name,
+            pos,
+            fields: m.fields,
+            receive: m.receive,
+            methods: m.methods,
+        })
+    }
+
+    /// Generic parameters and inheritance clauses are outside the subset.
+    fn decl_head(&mut self, kind: &str) -> R<()> {
+        if *self.peek() == Tok::Lt {
+            return Err(unsupported(self.pos(), &format!("generic {kind}es")));
+        }
+        if let Some(w @ ("extends" | "implements" | "impl" | "conforms")) = self.word_at(0) {
+            return Err(unsupported(self.pos(), &format!("'{w}' on a {kind}")));
+        }
+        Ok(())
+    }
+
+    /// After `define enum`: `Name as Variant { Variant } end`.
+    fn parse_enum(&mut self) -> R<EnumDecl> {
+        let (name, pos) = self.ident("an enum name")?;
+        self.decl_head("enum")?;
+        self.expect_word("as")?;
+        let mut variants: Vec<(String, Pos)> = Vec::new();
+        while !self.eat_word("end") {
+            if variants.len() >= MAX_MEMBERS {
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SOURCE_LIMIT",
+                    format!("more than {MAX_MEMBERS} enum variants"),
+                ));
+            }
+            let (v, vpos) = self.ident("an enum variant or 'end'")?;
+            match self.peek() {
+                Tok::LParen => return Err(unsupported(self.pos(), "enum variants with payloads")),
+                Tok::Assign => return Err(unsupported(self.pos(), "enum variants with explicit values")),
+                Tok::Comma => return Err(self.expected("an enum variant on its own line")),
+                _ => {}
+            }
+            if variants.iter().any(|(w, _)| *w == v) {
+                return Err(Diagnostic::new(
+                    vpos,
+                    "E_DUPLICATE",
+                    format!("duplicate variant '{v}' in enum '{name}'"),
+                ));
+            }
+            variants.push((v, vpos));
+        }
+        if variants.is_empty() {
+            return Err(Diagnostic::new(
+                pos,
+                "E_SYNTAX",
+                format!("enum '{name}' needs at least one variant"),
+            ));
+        }
+        Ok(EnumDecl { name, pos, variants })
+    }
+
+    fn at_close(&self, close: &str) -> bool {
+        if close == "}" {
+            *self.peek() == Tok::RBrace
+        } else {
+            self.is_word(close)
+        }
+    }
+
+    /// Class or actor members up to and including `close` (`end` or `}`).
+    fn parse_members(&mut self, owner: &str, actor: bool, close: &str) -> R<Members> {
+        let kind = if actor { "actor" } else { "class" };
+        let mut m = Members::default();
+        let mut count = 0usize;
+        loop {
+            if self.at_close(close) {
+                self.advance();
+                break;
+            }
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected(&format!("'{close}' to close {kind} '{owner}'")));
+            }
+            count += 1;
+            if count > MAX_MEMBERS {
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SOURCE_LIMIT",
+                    format!("more than {MAX_MEMBERS} members in {kind} '{owner}'"),
+                ));
+            }
+            if *self.peek() == Tok::At {
+                return Err(unsupported(self.pos(), "annotations"));
+            }
+            let mpos = self.pos();
+            let public = if self.eat_word("pub") {
+                true
+            } else {
+                self.eat_word("private");
+                false
+            };
+            let word = self.word_at(0).map(str::to_owned);
+            match word.as_deref() {
+                Some("static") => {
+                    if actor {
+                        return Err(unsupported(self.pos(), "static functions in actors"));
+                    }
+                    self.advance();
+                    if let Some(w @ ("async" | "structural")) = self.word_at(0) {
+                        return Err(unsupported(self.pos(), &format!("'{w}' static functions")));
+                    }
+                    self.expect_word("fnc")?;
+                    let method = self.parse_method(public, true)?;
+                    m.methods.push(method);
+                }
+                Some("constructor") => {
+                    if actor {
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_ACTOR",
+                            "actors do not declare constructors; initialize actor-local state with fields",
+                        ));
+                    }
+                    if m.ctor.is_some() {
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_DUPLICATE",
+                            format!("class '{owner}' may declare at most one constructor"),
+                        ));
+                    }
+                    self.advance();
+                    self.expect(Tok::LParen, "'('")?;
+                    let params = self.parse_params()?;
+                    let body = self.parse_block()?;
+                    m.ctor = Some(Constructor { pos: mpos, params, body });
+                }
+                Some("final") => {
+                    self.advance();
+                    if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+                        let f = self.parse_named_field(public, actor)?;
+                        m.fields.push(f);
+                    } else if actor {
+                        return Err(self.expected("'name: type' after 'final' in an actor"));
+                    } else {
+                        self.eat_word("mut");
+                        let f = self.parse_type_first_field(public, FieldMode::Final)?;
+                        m.fields.push(f.field);
+                    }
+                }
+                Some("mut") if !actor => {
+                    self.advance();
+                    let f = self.parse_type_first_field(public, FieldMode::Constructor)?;
+                    m.fields.push(f.field);
+                }
+                Some(w @ ("let" | "val" | "const")) => {
+                    let mode = match (w, actor) {
+                        ("let", true) => FieldMode::ActorState,
+                        ("let", false) => FieldMode::Constructor,
+                        _ => FieldMode::Final,
+                    };
+                    self.advance();
+                    if self.is_word("mut") && w != "val" {
+                        self.advance();
+                    }
+                    if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+                        return Err(self.expected("a field type before the field name"));
+                    }
+                    let f = self.parse_type_first_field(public, mode)?;
+                    if f.init_was_colon {
+                        return Err(Diagnostic::new(
+                            f.field.init.pos,
+                            "E_SYNTAX",
+                            "a 'let'/'val'/'const' field initializer uses '='",
+                        ));
+                    }
+                    m.fields.push(f.field);
+                }
+                Some("fnc" | "method") => {
+                    self.advance();
+                    let method = self.parse_method(public, false)?;
+                    m.methods.push(method);
+                }
+                Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
+                    return Err(unsupported(self.pos(), &format!("'{w}' members")));
+                }
+                Some("receive") if actor && *self.peek_at(1) == Tok::LParen => {
+                    if public {
+                        return Err(Diagnostic::new(
+                            mpos,
+                            "E_ACTOR",
+                            format!("receive handler '{owner}.receive' is actor-local and cannot be pub"),
+                        ));
+                    }
+                    if m.receive.is_some() {
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_DUPLICATE",
+                            format!("actor '{owner}' already declares receive"),
+                        ));
+                    }
+                    let r = self.parse_receive(owner)?;
+                    m.receive = Some(r);
+                }
+                Some(_) if *self.peek_at(1) == Tok::LParen => {
+                    let method = self.parse_method(public, false)?;
+                    m.methods.push(method);
+                }
+                Some(_) if *self.peek_at(1) == Tok::Colon && !actor => {
+                    let f = self.parse_named_field(public, actor)?;
+                    m.fields.push(f);
+                }
+                Some(_) if matches!(self.peek_at(1), Tok::Ident(_)) && !actor => {
+                    let f = self.parse_type_first_field(public, FieldMode::Constructor)?;
+                    m.fields.push(f.field);
+                }
+                _ => {
+                    return Err(self.expected(if actor {
+                        "an actor member (field, method or receive)"
+                    } else {
+                        "a class member (field, constructor or method)"
+                    }))
+                }
+            }
+        }
+        Ok(m)
+    }
+
+    /// `name: type [= expr]` (immutable field).
+    fn parse_named_field(&mut self, public: bool, _actor: bool) -> R<Field> {
+        let (name, pos) = self.ident("a field name")?;
+        self.expect(Tok::Colon, "':'")?;
+        let ty = self.parse_type()?;
+        if !self.eat(&Tok::Assign) {
+            return Err(unsupported(self.pos(), "fields without an initializer"));
+        }
+        let init = self.parse_expr()?;
+        self.terminator()?;
+        Ok(Field {
+            name,
+            pos,
+            ty,
+            public,
+            mode: FieldMode::Final,
+            init,
+        })
+    }
+
+    /// `type name (":" | "=") expr`.
+    fn parse_type_first_field(&mut self, public: bool, mode: FieldMode) -> R<TypeFirstField> {
+        let ty = self.parse_type()?;
+        let (name, pos) = self.ident("a field name")?;
+        let init_was_colon = if self.eat(&Tok::Colon) {
+            true
+        } else if self.eat(&Tok::Assign) {
+            false
+        } else {
+            return Err(unsupported(self.pos(), "fields without an initializer"));
+        };
+        let init = self.parse_expr()?;
+        self.terminator()?;
+        Ok(TypeFirstField {
+            field: Field {
+                name,
+                pos,
+                ty,
+                public,
+                mode,
+                init,
+            },
+            init_was_colon,
+        })
+    }
+
+    /// Method head after any `fnc`/`method`/`static fnc` keyword.
+    fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
+        let (name, pos) = self.ident("a method name")?;
+        if *self.peek() == Tok::Lt {
+            return Err(unsupported(self.pos(), "generic methods"));
+        }
+        self.expect(Tok::LParen, "'('")?;
+        if self.is_word("self") {
+            return Err(unsupported(self.pos(), "explicit 'self' receivers"));
+        }
+        let params = self.parse_params()?;
+        if *self.peek() == Tok::LParen {
+            return Err(unsupported(self.pos(), "curried method parameter lists"));
+        }
+        let ret = self.parse_return_spec()?;
+        if *self.peek() != Tok::LBrace {
+            return Err(unsupported(self.pos(), "methods without a body"));
+        }
+        let body = self.parse_block()?;
+        Ok(Method {
+            name,
+            pos,
+            public,
+            is_static,
+            params,
+            ret,
+            body,
+        })
+    }
+
+    /// `receive ( ActorMail < T > name ) [ : void ] block`.
+    fn parse_receive(&mut self, owner: &str) -> R<Receive> {
+        let pos = self.pos();
+        self.advance();
+        self.expect(Tok::LParen, "'('")?;
+        if !self.is_word("ActorMail") {
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_TYPE",
+                format!("actor mailbox handler '{owner}.receive' parameter must be ActorMail<T>"),
+            ));
+        }
+        self.advance();
+        if *self.peek() != Tok::Lt {
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_TYPE",
+                "ActorMail requires an explicit payload type, for example ActorMail<int>",
+            ));
+        }
+        self.advance();
+        let payload = self.parse_type()?;
+        self.expect(Tok::Gt, "'>'")?;
+        let (mail, _) = self.ident("a mail parameter name")?;
+        if *self.peek() == Tok::Comma {
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_TYPE",
+                format!("actor mailbox handler '{owner}.receive' takes exactly one ActorMail<T> parameter"),
+            ));
+        }
+        self.expect(Tok::RParen, "')'")?;
+        if self.parse_return_spec()? != Type::Void {
+            return Err(Diagnostic::new(
+                pos,
+                "E_TYPE",
+                format!("actor mailbox handler '{owner}.receive' must return void"),
+            ));
+        }
+        let body = self.parse_block()?;
+        Ok(Receive { pos, mail, payload, body })
+    }
+
+    /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.
+    fn parse_return_spec(&mut self) -> R<Type> {
+        if self.eat(&Tok::Colon) || self.eat(&Tok::Arrow) {
+            self.parse_type()
+        } else {
+            Ok(Type::Void)
+        }
+    }
+
+    /// Parameters after `(` up to and including `)`.
+    fn parse_params(&mut self) -> R<Vec<Param>> {
+        let mut params: Vec<Param> = Vec::new();
+        if *self.peek() != Tok::RParen {
+            loop {
+                if params.len() >= MAX_PARAMS {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        format!("more than {MAX_PARAMS} parameters"),
+                    ));
+                }
+                let p = self.parse_param()?;
+                if params.iter().any(|q| q.name == p.name) {
+                    return Err(Diagnostic::new(
+                        p.pos,
+                        "E_DUPLICATE",
+                        format!("duplicate parameter name '{}'", p.name),
+                    ));
+                }
+                params.push(p);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Tok::RParen, "')'")?;
+        Ok(params)
     }
 
     fn parse_func(&mut self) -> R<Func> {
@@ -422,37 +920,8 @@ impl Parser {
             return Err(unsupported(self.pos(), "generic functions"));
         }
         self.expect(Tok::LParen, "'('")?;
-        let mut params: Vec<Param> = Vec::new();
-        if *self.peek() != Tok::RParen {
-            loop {
-                if params.len() >= MAX_PARAMS {
-                    return Err(Diagnostic::new(
-                        self.pos(),
-                        "E_SOURCE_LIMIT",
-                        format!("more than {MAX_PARAMS} parameters"),
-                    ));
-                }
-                let p = self.parse_param()?;
-                if params.iter().any(|q| q.name == p.name) {
-                    return Err(Diagnostic::new(
-                        p.pos,
-                        "E_DUPLICATE",
-                        format!("duplicate parameter name '{}'", p.name),
-                    ));
-                }
-                params.push(p);
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
-            }
-        }
-        self.expect(Tok::RParen, "')'")?;
-        // grammar.ebnf: return_spec = [ ( ":" | "->" ) type_ref ] ; body = block
-        let ret = if self.eat(&Tok::Colon) || self.eat(&Tok::Arrow) {
-            self.parse_type()?
-        } else {
-            Type::Void
-        };
+        let params = self.parse_params()?;
+        let ret = self.parse_return_spec()?;
         let body = self.parse_block()?;
         let _ = start;
         Ok(Func {
@@ -630,16 +1099,34 @@ impl Parser {
                 if *self.peek() == Tok::Assign {
                     let at = self.pos();
                     self.advance();
-                    let name = match e.kind {
-                        ExprKind::Var(n) => n,
-                        _ => return Err(Diagnostic::new(at, "E_ASSIGN_TARGET", "only a local variable can be assigned")),
+                    let value_of = |p: &mut Self| -> R<Expr> {
+                        let value = p.parse_expr()?;
+                        if *p.peek() == Tok::Assign {
+                            return Err(unsupported(p.pos(), "chained assignment"));
+                        }
+                        p.terminator()?;
+                        Ok(value)
                     };
-                    let value = self.parse_expr()?;
-                    if *self.peek() == Tok::Assign {
-                        return Err(unsupported(self.pos(), "chained assignment"));
-                    }
-                    self.terminator()?;
-                    return Ok(Stmt::Assign { name, value, pos });
+                    return match e.kind {
+                        ExprKind::Var(name) => {
+                            let value = value_of(self)?;
+                            Ok(Stmt::Assign { name, value, pos })
+                        }
+                        ExprKind::Member(target, field) => {
+                            let value = value_of(self)?;
+                            Ok(Stmt::FieldAssign {
+                                target: *target,
+                                field,
+                                value,
+                                pos,
+                            })
+                        }
+                        _ => Err(Diagnostic::new(
+                            at,
+                            "E_ASSIGN_TARGET",
+                            "only a local variable or a 'self' field can be assigned",
+                        )),
+                    };
                 }
                 if matches!(self.peek(), Tok::PlusPlus | Tok::MinusMinus) {
                     return Err(Diagnostic::new(
@@ -1086,7 +1573,40 @@ impl Parser {
         })
     }
 
+    /// Call arguments after `(` up to and including `)`.
+    fn parse_args(&mut self) -> R<Vec<Expr>> {
+        self.expect(Tok::LParen, "'('")?;
+        let mut args = Vec::new();
+        if *self.peek() != Tok::RParen {
+            loop {
+                if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+                    return Err(unsupported(self.pos(), "named arguments"));
+                }
+                if *self.peek() == Tok::Dot {
+                    return Err(unsupported(self.pos(), "spread arguments"));
+                }
+                args.push(self.parse_expr()?);
+                if args.len() > MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
+                }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Tok::RParen, "')' to close the call")?;
+        Ok(args)
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
+        let mut chain = 0u32;
+        let r = self.parse_postfix_chain(&mut chain);
+        // member links nest one tree level each, like operator chain links
+        self.height -= chain;
+        r
+    }
+
+    fn parse_postfix_chain(&mut self, chain: &mut u32) -> R<Expr> {
         let pos = self.pos();
         let mut e = self.parse_primary()?;
         loop {
@@ -1096,26 +1616,7 @@ impl Parser {
                         ExprKind::Var(n) => n.clone(),
                         _ => return Err(unsupported(self.pos(), "calling a computed value")),
                     };
-                    self.advance();
-                    let mut args = Vec::new();
-                    if *self.peek() != Tok::RParen {
-                        loop {
-                            if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                                return Err(unsupported(self.pos(), "named arguments"));
-                            }
-                            if *self.peek() == Tok::Dot {
-                                return Err(unsupported(self.pos(), "spread arguments"));
-                            }
-                            args.push(self.parse_expr()?);
-                            if args.len() > MAX_PARAMS {
-                                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
-                            }
-                            if !self.eat(&Tok::Comma) {
-                                break;
-                            }
-                        }
-                    }
-                    self.expect(Tok::RParen, "')' to close the call")?;
+                    let args = self.parse_args()?;
                     e = Expr {
                         kind: ExprKind::Call(name, args),
                         pos,
@@ -1143,7 +1644,29 @@ impl Parser {
                             }
                         }
                     }
-                    return Err(unsupported(dot, "member access"));
+                    if matches!(&e.kind, ExprKind::Var(b) if b == "stdio") {
+                        return Err(unsupported(dot, "stdio members other than print and println"));
+                    }
+                    self.advance();
+                    let member = match self.peek().clone() {
+                        Tok::Ident(m) if !is_reserved(&m) => m,
+                        _ => return Err(self.expected("a member name after '.'")),
+                    };
+                    self.advance();
+                    self.grow(1)?;
+                    *chain += 1;
+                    if *self.peek() == Tok::LParen {
+                        let args = self.parse_args()?;
+                        e = Expr {
+                            kind: ExprKind::MethodCall(Box::new(e), member, args),
+                            pos: dot,
+                        };
+                    } else {
+                        e = Expr {
+                            kind: ExprKind::Member(Box::new(e), member),
+                            pos: dot,
+                        };
+                    }
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
                 Tok::Question => {
@@ -1192,7 +1715,39 @@ impl Parser {
                     ExprKind::Bool(false)
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
-                "new" | "spawn" | "await" | "self" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "self" => {
+                    self.advance();
+                    ExprKind::SelfRef
+                }
+                "new" => {
+                    self.advance();
+                    let (class, _) = self.ident("a class name after 'new'")?;
+                    if *self.peek() == Tok::Lt {
+                        return Err(unsupported(self.pos(), "generic class instantiation"));
+                    }
+                    if *self.peek() != Tok::LParen {
+                        return Err(self.expected("'(' after the class name"));
+                    }
+                    let args = self.parse_args()?;
+                    ExprKind::New(class, args)
+                }
+                "spawn" => {
+                    self.advance();
+                    let (actor, _) = self.ident("an actor name after 'spawn'")?;
+                    self.expect(Tok::LParen, "'(' after the actor name")?;
+                    if *self.peek() != Tok::RParen {
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_ACTOR",
+                            format!(
+                                "actor '{actor}' does not accept constructor/startup arguments; initialize actor-local state with fields"
+                            ),
+                        ));
+                    }
+                    self.advance();
+                    ExprKind::Spawn(actor)
+                }
+                "await" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {

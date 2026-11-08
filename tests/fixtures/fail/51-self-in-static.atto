@@ -1,0 +1,7 @@
+// expect-error: E_UNBOUND
+// java: rejects
+define class C as
+    mut int x = 1;
+    pub static fnc f(): int { return self.x; }
+end
+pub fnc main(): int { return C.f(); }

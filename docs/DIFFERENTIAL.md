@@ -24,3 +24,19 @@ During development, the differential corrected two compiler rules to match `Pars
 
 - implicit newline statement terminators
 - `const mut` / `let mut` referent qualifiers
+
+## Run of 2026-11-07: classes, actors and enums
+
+- Reference: oreslang-source.java at `9424b2deeef76fae14f1f8332e8690741c6a5e3e` (the same launcher), GraalVM JDK 25, macOS arm64
+- Compiler: branch `feat/define-class-actor-enum-java-canonical-20261107`
+- Result: `conformance: 171 passed, 3 failed, 137 Java-differential, 148 native-vs-wasm`
+
+The 3 failures are `pass/27-short-circuit`, `pass/47-eager-boolean-precedence` and `pass/48-while-eager-exit`. They fail identically on the unmodified base (`chatgpt/compiler-semantics-eager-no-removed-ops-20261107`: 122 passed, 3 failed). The eager-condition decision in that base differs from the Java build's short-circuit behaviour. This branch does not touch it.
+
+Every class, actor and enum construct was probed against the launcher before it was admitted:
+
+- **19 new positive fixtures** (50–68). Java agrees on exit status and stdout for each, except two cases. `68-enum-values` is `// java: llvm-design`: Java still rejects `define enum`, so the check asserts that rejection. Actor fixtures sometimes hit the Java runtime's shutdown race (`The context is currently executing on another thread`, status 1). Their stdout is then a truncated prefix, so only acceptance and the prefix are compared.
+- **30 new or updated negative fixtures** (35, 37, 43–72). Java rejects every one marked `rejects`. It accepts `69-object-identity-comparison` and `72-mail-string-payload`, which are features this compiler has not lowered.
+- **Recorded runtime divergence.** Java wraps integer overflow inside actors (it printed `-2` for `2 * 9223372036854775807`). The browser compiler panics, following spec 17. `panic/10-actor-overflow` is excluded from the Java comparison like the other panic fixtures.
+
+Spellings rejected by Java that earlier branches had used are now negative fixtures: `receive(int value): int`, a non-`pub` `static fnc` called from outside, `let n: int = 0` fields and constructing a class without `new`.

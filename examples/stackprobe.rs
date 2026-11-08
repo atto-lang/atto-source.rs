@@ -32,6 +32,14 @@ fn main() {
             )
         }),
         (
+            "member chain",
+            format!("pub fnc main(): int {{ val a = 1; return a{}; }}", ".b".repeat(h - 4)),
+        ),
+        (
+            "method chain",
+            format!("pub fnc main(): int {{ val a = 1; return a{}; }}", ".b()".repeat(h - 4)),
+        ),
+        (
             "ternaries",
             format!("pub fnc main(): int {{ val t = true; return {}0; }}", "t ? 1 : ".repeat(d / 2 - 4)),
         ),

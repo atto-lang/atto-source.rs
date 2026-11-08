@@ -1,0 +1,16 @@
+// Java-verified class form: mut field, one constructor, pub method, new.
+// expect-exit: 42
+define class Counter as
+    mut int n = 0;
+    constructor(int value) {
+        self.n = value;
+    }
+    pub next(): int {
+        return self.n + 1;
+    }
+end
+
+pub fnc main(): int {
+    val c = new Counter(40);
+    return c.next() + 1;
+}

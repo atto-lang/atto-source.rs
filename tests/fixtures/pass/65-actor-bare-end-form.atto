@@ -1,0 +1,14 @@
+// expect-exit: 0
+// expect-stdout: 5
+actor W
+    receive(ActorMail<int> mail): void {
+        stdio.println(mail.value);
+        return;
+    }
+end
+
+pub fnc main(): int {
+    val a = spawn W();
+    a.send(5);
+    return 0;
+}
