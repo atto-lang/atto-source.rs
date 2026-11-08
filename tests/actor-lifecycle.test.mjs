@@ -191,7 +191,7 @@ test('admission treats signed i64 boundaries as values, never pointer handles', 
   const min=-(1n<<63n), max=(1n<<63n)-1n;
   for(const value of [min, max, 0n])assert.equal(actor.admit(value),ACTOR_ADMISSION.OK);
   for(const value of [
-    min-1n, max+1n, 2n**128n, -2n**128n, null, undefined,
+    min-1n, max+1n, 2n**128n, -(2n**128n), null, undefined,
     0, 1.5, true, '41', [], {}, {ptr:1}, new Uint8Array([42]),
   ]) {
     assert.equal(actor.admit(value),ACTOR_ADMISSION.INVALID,String(value));
