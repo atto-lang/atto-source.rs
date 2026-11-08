@@ -129,3 +129,13 @@ one-shot runner admission and typed/memory-bounded guest Wasm admission.
 This public frontend passed 64 Node tests and 31 real Chromium scenarios.
 The source checkout remains immutable and is **private CI rehearsal only**:
 no copying of private compiler artifacts into public GitHub Pages.
+
+## Exact public release-governance candidate pin
+
+The private compiler candidate suite now checks out the exact **latest**
+public host PR #21 head `36f82281adf29a08eef696754a83ba66425bab04` to include its
+fail-closed `workflow_dispatch` governance preflight, GitHub Pages
+administrator checklist, CODEOWNERS, and the previously tested
+parent-owned actor runtime. Public PR smoke/release verification is
+source-only and does not activate the protected deployment job.
+Do not treat the guarded workflow or CI success as live publication.
