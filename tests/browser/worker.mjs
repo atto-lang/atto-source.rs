@@ -1,6 +1,7 @@
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Actor task completion is provided by the explicit child shutdown protocol.
 import { ActorSession, ACTOR_ADMISSION } from './actor-lifecycle.mjs';
+import { validate_actor_guest_imports } from './actor-import-contract.mjs';
 self.onmessage=async ({data})=>{
   const actors=[];
   try{
@@ -23,10 +24,7 @@ self.onmessage=async ({data})=>{
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
     // atto.browser.guest.v1: output imports and the gated actor_spawn capability.
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','actor_spawn','actor_send','actor_join']);
-    for(const imp of WebAssembly.Module.imports(guest)){
-      if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
-    }
+    validate_actor_guest_imports(guest);
     let stdout='',instance;
     const awaited_handles=new Set();
     const atto={

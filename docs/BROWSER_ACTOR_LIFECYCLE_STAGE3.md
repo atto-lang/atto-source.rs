@@ -89,6 +89,37 @@ These checks **do not** certify a general async/await state machine or
 cross-tenant protection; the supported source suspension remains terminal
 structured join only, and the worker is not an OS security sandbox.
 
+## Stage 3++ cancellation and import-boundary audit
+
+Cancellation is an immutable terminal outcome. A resolved ready Promise
+can race with synchronous cancellation before the awaiting drain resumes.
+Likewise, a reply Promise can resolve immediately before cancellation, or
+the on_reply observer can cancel the actor. A resumed continuation must
+check the actor's terminal state *before changing it* and before invoking
+reply observers, sending another message, or issuing close. The original
+terminal Error object remains stable for all subsequent observers. Failing
+to recheck would allow a cancelled actor to become draining/closing again
+and could permit an invalid done acknowledgement to change observable state.
+
+A single source-owned strict guest-import validator now runs in both the
+compiler worker and the child actor worker. Import entries must use the
+exact module name atto, one of the seven explicit capability names, kind
+function, and at most one occurrence per name (no alias slots). More than
+seven imports is rejected. This is *name/kind/uniqueness* validation; it
+does not prove the binary matches the exact expected function-signature
+types. The compiler-produced guest remains provenance-pinned, and any
+future untrusted guest loader must additionally validate typed ABI
+signatures before use.
+
+Regression gates cover cancellation between a ready resolution and its
+scheduled drain microtask, between a reply resolution and the awaiting
+observer, observer-initiated cancellation, multimesage cancellation,
+first-error preservation and 128 deterministic ready/cancel interleavings.
+Node tests construct actual valid Wasm modules containing duplicate,
+foreign, global, memory and table capability imports; Chromium tests inject
+malformed Wasm import modules into a real child worker and require rejection
+before actor instantiation. These tests are not full tenant-isolation proof.
+
 ## Evidence requirements and deferred semantics
 
 Source-owned CI executes native Rust, builds the real wasm32 compiler, runs

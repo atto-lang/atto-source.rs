@@ -11,6 +11,7 @@ const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-lifecycle.mjs',[new URL('./browser/actor-lifecycle.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/actor-import-contract.mjs',[new URL('./browser/actor-import-contract.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/actor-worker.mjs',[new URL('./browser/actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
@@ -378,6 +379,57 @@ try{
   console.log('PASS browser: real actor Worker rejects replayed sequence IDs');
   console.log('PASS browser: real actor Worker rejects missing sequence IDs');
   console.log('PASS browser: real actor Worker rejects object/pointer-shaped messages');
+
+  // Exercise the *real child Worker*, not just a unit-test import checker:
+  // crafted valid Wasm modules with duplicate/nonfunction/foreign imports
+  // must be refused before receiving any actor message.
+  const guestImportAttacks=await evaluate(`(async()=>{
+    const utf8=new TextEncoder();
+    const leb=n=>{const out=[];do{let b=n&127;n=Math.floor(n/128);out.push(n?b|128:b)}while(n);return out};
+    const name=s=>{const bytes=[...utf8.encode(s)];return [...leb(bytes.length),...bytes]};
+    const sec=(id,v)=>[id,...leb(v.length),...v];
+    function guest(specs){
+      let imports=[];
+      for(const spec of specs){
+        imports.push(...name(spec.module||'atto'),...name(spec.field||'actor_send'));
+        if(spec.kind==='global')imports.push(3,127,0);
+        else imports.push(0,0);
+      }
+      const bytes=new Uint8Array([
+        0,97,115,109,1,0,0,0,
+        ...sec(1,[1,96,0,0]),...sec(2,[...leb(specs.length),...imports])
+      ]);
+      if(!WebAssembly.validate(bytes))throw new Error('invalid test Wasm fixture');
+      return bytes;
+    }
+    async function invalid_import(specs){
+      const worker=new Worker('/actor-worker.mjs',{type:'module'});
+      try{
+        const received=new Promise((resolve,reject)=>{
+          const timeout=setTimeout(()=>reject(new Error('import probe timed out')),2000);
+          worker.onmessage=({data})=>{clearTimeout(timeout);resolve(data)};
+          worker.onerror=()=>{clearTimeout(timeout);reject(new Error('actor init failed'))};
+        });
+        worker.postMessage({kind:'init',actorId:0,wasm:guest(specs)});
+        const message=await received;
+        if(message.kind!=='error')throw new Error('bad import unexpectedly admitted');
+        return message.message;
+      }finally{worker.terminate()}
+    }
+    return {
+      duplicate:await invalid_import([{field:'actor_send'},{field:'actor_send'}]),
+      wrong_kind:await invalid_import([{field:'actor_send',kind:'global'}]),
+      foreign_module:await invalid_import([{module:'env',field:'actor_send'}]),
+    };
+  })()`);
+  assert.deepEqual(guestImportAttacks,{
+    duplicate:'E_ACTOR_IMPORT_DUPLICATE',
+    wrong_kind:'E_ACTOR_IMPORT_KIND',
+    foreign_module:'E_ACTOR_IMPORT_NAME',
+  });
+  console.log('PASS browser: child rejects duplicate actor capability imports');
+  console.log('PASS browser: child rejects wrong-kind global imports');
+  console.log('PASS browser: child rejects foreign namespace capability imports');
 
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));

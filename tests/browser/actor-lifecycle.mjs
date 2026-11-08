@@ -28,6 +28,8 @@ export class ActorSession {
     this.ready_timer = null;
     this.done_timer = null;
     this.drain_task = null;
+    // Preserve the first terminal error for in-flight await continuations.
+    this.terminal_error = null;
 
     this.ready = new Promise((resolve, reject) => {
       this.resolve_ready = resolve;
@@ -86,6 +88,7 @@ export class ActorSession {
   fail(code, cancelled = false) {
     if (this.is_terminal()) return;
     const error = actor_error(code);
+    this.terminal_error = error;
     this.state = cancelled ? 'cancelled' : 'failed';
     this.closed = true;
     this.queue.length = 0;
@@ -176,12 +179,21 @@ export class ActorSession {
     this.closed = true;
     this.drain_task = (async () => {
       await this.ready;
+      // ready.then() runs on a microtask: cancellation may have happened
+      // after ready resolved but before this continuation resumed.
+      if (this.is_terminal()) throw this.terminal_error;
       this.state = 'draining';
       try {
         for (const payload of this.queue) {
           const result = await this.send_to_worker(payload);
+          // A reply may have resolved just before cancellation. Neither the
+          // observer nor close may execute after terminal cancellation.
+          if (this.is_terminal()) throw this.terminal_error;
           on_reply(payload, result);
+          // An observer can itself cancel an actor: never undo that state.
+          if (this.is_terminal()) throw this.terminal_error;
         }
+        if (this.is_terminal()) throw this.terminal_error;
         this.queue.length = 0;
         this.state = 'closing';
         this.done_timer = setTimeout(

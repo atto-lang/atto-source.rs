@@ -414,3 +414,135 @@ test('deterministic 32-turn FIFO model matches real state-machine admission', as
     assert.equal(actor.admit(1n),ACTOR_ADMISSION.CLOSED);
   }
 });
+
+
+test('cancellation in ready-resolution microtask cannot restart a terminal actor', async () => {
+  const worker=new FakeActorWorker({hold_ready:true});
+  const actor=new ActorSession(worker,0,new Uint8Array(),{timeout_ms:150});
+  assert.equal(actor.admit(41n),ACTOR_ADMISSION.OK);
+  const task=actor.drain_and_close();
+  // resolves ready, scheduling the drain continuation, but cancel wins before
+  // the continuation executes; pre-fix it overwrote cancelled with closing.
+  worker.emit({kind:'ready'});
+  actor.cancel();
+  await assert.rejects(task,/E_ACTOR_CANCELLED/);
+  await assert.rejects(actor.get_done(),/E_ACTOR_CANCELLED/);
+  assert.equal(actor.state,'cancelled');
+  assert.equal(actor.processed,0);
+  assert.equal(actor.worker.terminated,1);
+  assert.deepEqual(worker.messages.map(x=>x.kind),['init'],
+    'no message or close may be sent to a cancelled child');
+  worker.emit({kind:'done',processed:0});
+  assert.equal(actor.state,'cancelled');
+});
+
+test('cancellation immediately after a resolved reply prevents callback and close', async () => {
+  const worker=new FakeActorWorker({hold_reply:true});
+  const actor=new ActorSession(worker,0,new Uint8Array(),{timeout_ms:150});
+  assert.equal(actor.admit(7n),ACTOR_ADMISSION.OK);
+  const observed=[];
+  const task=actor.drain_and_close((msg,reply)=>observed.push([msg,reply]));
+  await tick();
+  assert.equal(actor.pending?.seq,0);
+  worker.emit({kind:'reply',seq:0,value:8n});
+  actor.cancel(); // immediately before await send_to_worker continuation
+  await assert.rejects(task,/E_ACTOR_CANCELLED/);
+  assert.equal(actor.state,'cancelled');
+  assert.deepEqual(observed,[],'no observation after terminal cancellation');
+  assert.equal(worker.messages.filter(x=>x.kind==='close').length,0);
+  assert.equal(actor.processed,1,'reply happened before cancellation');
+  assert.equal(actor.worker.terminated,1);
+});
+
+test('observer-initiated cancellation cannot be overwritten by closing', async () => {
+  const worker=new FakeActorWorker();
+  const actor=new ActorSession(worker,0,new Uint8Array());
+  actor.admit(11n);
+  const task=actor.drain_and_close((msg,reply)=>{
+    assert.deepEqual([msg,reply],[11n,12n]);
+    actor.cancel();
+  });
+  await assert.rejects(task,/E_ACTOR_CANCELLED/);
+  await assert.rejects(actor.get_done(),/E_ACTOR_CANCELLED/);
+  assert.equal(actor.state,'cancelled');
+  assert.equal(worker.messages.filter(x=>x.kind==='close').length,0);
+  assert.equal(worker.terminated,1);
+});
+
+test('cancel between two admitted sends never dispatches a later message', async () => {
+  const worker=new FakeActorWorker();
+  const actor=new ActorSession(worker,0,new Uint8Array());
+  actor.admit(1n);
+  actor.admit(2n);
+  const replies=[];
+  const task=actor.drain_and_close((msg,reply)=>{
+    replies.push([msg,reply]);
+    actor.cancel();
+  });
+  await assert.rejects(task,/E_ACTOR_CANCELLED/);
+  assert.deepEqual(replies,[[1n,2n]]);
+  assert.deepEqual(
+    worker.messages.filter(x=>x.kind==='message').map(x=>x.value),
+    [1n],
+    'the second admission was dropped on cancellation, never dispatched');
+  assert.equal(actor.state,'cancelled');
+  assert.equal(actor.admit(3n),ACTOR_ADMISSION.CLOSED);
+});
+
+test('first terminal cause is stable across repeated cancellation and stale messages', async () => {
+  const worker=new FakeActorWorker({hold_reply:true});
+  const actor=new ActorSession(worker,0,new Uint8Array());
+  actor.admit(3n);
+  const draining=actor.drain_and_close();
+  await tick();
+  actor.fail('E_ACTOR_WORKER');
+  const first=await actor.get_done().then(()=>null,e=>e);
+  assert.match(first.message,/E_ACTOR_WORKER/);
+  actor.cancel();
+  actor.fail('E_ACTOR_PANIC_1');
+  worker.emit({kind:'reply',seq:0,value:4n});
+  worker.emit({kind:'done',processed:1});
+  await assert.rejects(draining,e=>e===first,
+    'drain must fail with the original terminal error object');
+  await assert.rejects(actor.get_done(),e=>e===first,
+    'completion remains the first failure, never overwritten');
+  assert.equal(actor.state,'failed');
+  assert.equal(worker.terminated,1);
+});
+
+test('cancellation after genuine terminal ack is idempotent and cannot rewrite success', async () => {
+  const worker=new FakeActorWorker();
+  const actor=new ActorSession(worker,0,new Uint8Array());
+  actor.admit(5n);
+  const completed=await actor.drain_and_close();
+  assert.deepEqual(completed,{kind:'completed',actor_id:0,processed:1});
+  actor.cancel();
+  actor.fail('E_ACTOR_WORKER');
+  worker.emit({kind:'error',message:'E_ACTOR_PANIC_1'});
+  assert.strictEqual(await actor.get_done(),completed);
+  assert.equal(actor.state,'completed');
+  assert.equal(worker.terminated,1);
+});
+
+test('cancelled actor never regains drain privileges under randomized ready races', async () => {
+  let seed=0x9217b64d;
+  const rand=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed};
+  for(let i=0;i<128;i++){
+    const worker=new FakeActorWorker({hold_ready:true});
+    const actor=new ActorSession(worker,i,new Uint8Array(),{timeout_ms:500});
+    actor.admit(BigInt(i));
+    const task=actor.drain_and_close();
+    const order=rand()&1;
+    if(order===0){
+      actor.cancel();
+      worker.emit({kind:'ready'});
+    }else{
+      worker.emit({kind:'ready'});
+      actor.cancel();
+    }
+    await assert.rejects(task,/E_ACTOR_CANCELLED/);
+    assert.equal(actor.state,'cancelled','iteration '+i);
+    assert.deepEqual(worker.messages.map(x=>x.kind),['init'],'iteration '+i);
+    assert.equal(worker.terminated,1,'iteration '+i);
+  }
+});
