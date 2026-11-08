@@ -556,7 +556,7 @@ for (const op of ['%', '^', '^^']) {
   });
 }
 
-// Actor receive and its internal synthetic main both consume function slots.
+// Actor receive, synthetic main and metered public wrapper consume three slots.
 // Test the exact 1024-function boundary through the WASM compiler ABI.
 check('actor/function-budget-includes-receive-and-synthetic-main', () => {
   const helper = count => Array.from({length:count},(_,i)=>
@@ -568,13 +568,13 @@ check('actor/function-budget-includes-receive-and-synthetic-main', () => {
     new Uint8Array(api.memory.buffer,api.input_ptr(),bytes.length).set(bytes);
     return api.compile_actor(bytes.length);
   };
-  assert.equal(attempt(helper(1023)+actor),1,'1025 total functions must fail');
+  assert.equal(attempt(helper(1022)+actor),1,'1025 total functions with wrapper must fail');
   assert.equal(api.result_length(),0,'over-budget actor must not expose Wasm');
   const mem = new Uint8Array(api.memory.buffer);
   let end=api.error_ptr();
   while(end<mem.length&&mem[end]&&end-api.error_ptr()<512)end++;
   assert.match(decoder.decode(mem.subarray(api.error_ptr(),end)),/^E_SOURCE_LIMIT:/);
-  assert.equal(attempt(helper(1022)+actor),0,'1024 total functions must fit');
+  assert.equal(attempt(helper(1021)+actor),0,'1024 total functions including wrapper must fit');
   const guest = new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
   const mod=new WebAssembly.Module(guest);
   assert.deepEqual(WebAssembly.Module.imports(mod),[]);
@@ -649,6 +649,64 @@ check('actor/compiler-entrypoints-must-not-confuse-main-and-receive-guests', () 
   assert.deepEqual(WebAssembly.Module.exports(mod).map(x=>x.name),['receive']);
   assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(42n),42n);
 });
+// One private, import-free meter resets at each public receive invocation.
+// The 128-tick fast path amortizes budget checks; trap before endless loops or
+// recursion can consume the worker forever (host watchdog remains independent).
+check('actor/reduction-budget-resets-per-message-and-traps-runaway-loop', () => {
+  const src = [
+    'define actor Worker as',
+    '  receive(int value): int {',
+    '    let i = 0;',
+    '    while i < value do',
+    '      i = i + 1;',
+    '    done',
+    '    return i;',
+    '  }',
+    'end',
+  ].join('\n');
+  const input=encoder.encode(src);
+  new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+  assert.equal(api.compile_actor(input.length),0);
+  const wasm=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  assert.ok(WebAssembly.validate(wasm));
+  const mod=new WebAssembly.Module(wasm);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  assert.deepEqual(WebAssembly.Module.exports(mod).map(e=>e.name),['receive']);
+  const actor=new WebAssembly.Instance(mod,{});
+  assert.equal(actor.exports.receive(120000n),120000n);
+  assert.equal(actor.exports.receive(120000n),120000n,
+    'guest reductions must reset at message boundary, not accumulate');
+  assert.throws(()=>actor.exports.receive(200000n),WebAssembly.RuntimeError,
+    'runaway actor loop must hit the compiler fuel trap');
+  // Trapped actor instances are terminal in the Web Worker. Fresh instances
+  // retain independent quotas and cannot inherit the exhausted fuel global.
+  const fresh=new WebAssembly.Instance(mod,{});
+  assert.equal(fresh.exports.receive(42n),42n);
+});
+
+check('actor/recursive-function-depth-bounded-independent-of-loop-fuel', () => {
+  const src = [
+    'fnc recurse(int n): int {',
+    '  if n eq 0 then return 42; fi',
+    '  return recurse(n - 1);',
+    '}',
+    'define actor Worker as receive(int value): int { return recurse(value); } end',
+  ].join('\n');
+  const input=encoder.encode(src);
+  new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+  assert.equal(api.compile_actor(input.length),0);
+  const wasm=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  assert.ok(WebAssembly.validate(wasm));
+  const mod=new WebAssembly.Module(wasm);
+  assert.deepEqual(WebAssembly.Module.imports(mod),[]);
+  const actor=new WebAssembly.Instance(mod,{});
+  assert.equal(actor.exports.receive(60n),42n);
+  assert.equal(actor.exports.receive(60n),42n, 'call depth resets after successful return');
+  assert.throws(()=>actor.exports.receive(400n),WebAssembly.RuntimeError,
+    'deep recursion must trap from depth quota before native stack overflow');
+  assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(5n),42n);
+});
+
 // ---- source-compiled scalar actor receive guest ABI --------------------------
 check('actor/source-compiled-receive-guest-executes', () => {
   assert.equal(typeof api.compile_actor, 'function', 'compiler must expose separate actor ABI entrypoint');
