@@ -119,3 +119,13 @@ source-free Wasm fixture verifies 4 x 32 admitted FIFO actor messages,
 spawn, and a one-shot parent runner. These are host and bounded runtime
 receipts; this private compiler candidate remains unpublished and requires
 independent approval before any public release.
+
+## Parent-owned actor scope: exact public frontend
+
+The compiler-in-public-IDE candidate is now tested against public frontend
+PR #21 exact `802bbcbcfce1ddee0db80b5bde3494ba606048a2` with parent-owned scope, concurrent child draining,
+deterministic stdout, fail-fast cancellation of all still-live siblings,
+one-shot runner admission and typed/memory-bounded guest Wasm admission.
+This public frontend passed 64 Node tests and 31 real Chromium scenarios.
+The source checkout remains immutable and is **private CI rehearsal only**:
+no copying of private compiler artifacts into public GitHub Pages.

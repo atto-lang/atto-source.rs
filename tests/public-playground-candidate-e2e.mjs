@@ -10,7 +10,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node
 import { join, resolve, sep, extname } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const PUBLIC_SITE_COMMIT = '133bb2d1479f7fec5aa0615ff85fcd0f07ebb4cb';
+const PUBLIC_SITE_COMMIT = '802bbcbcfce1ddee0db80b5bde3494ba606048a2';
 const root = resolve(new URL('..', import.meta.url).pathname);
 const publicCheckout = join(root, 'public-site-checkout');
 const compilerPath = join(root, 'target/wasm32-unknown-unknown/release/atto_compiler.wasm');
