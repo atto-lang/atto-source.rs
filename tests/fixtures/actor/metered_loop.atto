@@ -1,0 +1,11 @@
+// actor-input: 42
+// actor-result: 42
+define actor Metered as
+  receive(int value): int {
+    let i = 0;
+    while i < value do
+      i = i + 1;
+    done
+    return i;
+  }
+end
