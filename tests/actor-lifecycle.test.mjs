@@ -25,7 +25,8 @@ class FakeActorWorker {
         queueMicrotask(() => this.emit({kind:'error',message:'E_ACTOR_PANIC_1'}));
       } else if (!this.options.hold_reply) {
         this.received++;
-        queueMicrotask(() => this.emit({kind:'reply',seq:msg.seq,value:msg.value+1n}));
+        queueMicrotask(() => this.emit({kind:'reply',seq:msg.seq,
+          value:this.options.identity?msg.value:msg.value+1n}));
       }
       return;
     }
@@ -187,7 +188,7 @@ test('a duplicate drain call is the same task and never sends a second close', a
 });
 
 test('admission treats signed i64 boundaries as values, never pointer handles', async () => {
-  const actor=new ActorSession(new FakeActorWorker(),0,new Uint8Array());
+  const actor=new ActorSession(new FakeActorWorker({identity:true}),0,new Uint8Array());
   const min=-(1n<<63n), max=(1n<<63n)-1n;
   for(const value of [min, max, 0n])assert.equal(actor.admit(value),ACTOR_ADMISSION.OK);
   for(const value of [
@@ -196,8 +197,8 @@ test('admission treats signed i64 boundaries as values, never pointer handles', 
   ]) {
     assert.equal(actor.admit(value),ACTOR_ADMISSION.INVALID,String(value));
   }
-  // The fake increments the reply, but the transport itself preserves i64
-  // bit patterns. -2^63 is valid and 2^63 is not transportable.
+  // An identity-echo worker avoids overflowing the max i64 on reply.
+  // The transport preserves both i64 extrema; pointers are not messages.
   const messages=[];
   const outcome=await actor.drain_and_close((message)=>messages.push(message));
   assert.equal(outcome.processed,3);
