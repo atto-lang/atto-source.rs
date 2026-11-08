@@ -24,7 +24,7 @@ self.onmessage=async ({data})=>{
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
     // atto.browser.guest.v1: output imports and the gated actor_spawn capability.
-    validate_actor_guest_imports(guest);
+    validate_actor_guest_imports(out);
     let stdout='',instance;
     const awaited_handles=new Set();
     const atto={

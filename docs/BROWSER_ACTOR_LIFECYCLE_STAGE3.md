@@ -102,14 +102,11 @@ to recheck would allow a cancelled actor to become draining/closing again
 and could permit an invalid done acknowledgement to change observable state.
 
 A single source-owned strict guest-import validator now runs in both the
-compiler worker and the child actor worker. Import entries must use the
-exact module name atto, one of the seven explicit capability names, kind
-function, and at most one occurrence per name (no alias slots). More than
-seven imports is rejected. This is *name/kind/uniqueness* validation; it
-does not prove the binary matches the exact expected function-signature
-types. The compiler-produced guest remains provenance-pinned, and any
-future untrusted guest loader must additionally validate typed ABI
-signatures before use.
+compiler worker and the child actor worker. Import entries must use the exact module name atto, one of the seven
+explicit capability names, kind function, and at most one occurrence per
+name (no alias slots). More than seven imports is rejected. The subsequent
+Stage 3+++ gate also validates all declared function signatures from the
+exact source bytes; compiler-produced guests remain provenance-pinned.
 
 Regression gates cover cancellation between a ready resolution and its
 scheduled drain microtask, between a reply resolution and the awaiting
@@ -119,6 +116,41 @@ Node tests construct actual valid Wasm modules containing duplicate,
 foreign, global, memory and table capability imports; Chromium tests inject
 malformed Wasm import modules into a real child worker and require rejection
 before actor instantiation. These tests are not full tenant-isolation proof.
+
+## Stage 3+++ exact Wasm ABI signature gate
+
+The parent compiler Worker and child actor Worker now validate the **raw
+Wasm guest bytes** against the exact canonical Atto host import function
+signatures, in addition to the existing module/name/kind/uniqueness gates.
+A caller cannot validate a different Module object's import metadata while
+instantiating another binary. The validator first calls the native browser
+WebAssembly decoder and then reads the bounded core Wasm type/import
+sections, resolving each function import's type index. It accepts
+custom sections without treating their contents as core import metadata.
+The supported scalar profile allows only i32 and i64 function types.
+
+Exact type contracts (function parameters -> result):
+
+- print_i64: (i64) -> void
+- print_bool: (i32) -> void
+- print_str: (i32, i32) -> void
+- print_newline: () -> void
+- actor_spawn: (i32) -> i32
+- actor_send: (i32, i64) -> i32
+- actor_join: (i32) -> void
+
+A mismatched function type fails closed with E_ACTOR_IMPORT_SIGNATURE
+before any guest instantiation, including when a function has an allowed
+name but different stack argument/result types. Node tests construct
+real valid Wasm binaries for all seven positive types, altered arguments,
+altered result types, custom sections, malicious typed aliases, and raw
+buffer offset views. Real Chromium tests instantiate dedicated actor
+Workers with deliberately wrong scalar ABI imports and check rejection.
+
+This establishes **the declared import function ABI**, not full sandboxing:
+memory limits, arbitrary Wasm exports, dynamic resource capabilities,
+untrusted host JavaScript, tenant process isolation, general async
+suspension and per-actor heap/stack enforcement remain separate gates.
 
 ## Evidence requirements and deferred semantics
 

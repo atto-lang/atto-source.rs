@@ -9,7 +9,7 @@ self.onmessage=({data})=>{
       if(!Number.isInteger(data.actorId)||data.actorId<0||data.actorId>1024)throw new Error('E_ACTOR_ID');
       if(!(data.wasm instanceof Uint8Array)||!WebAssembly.validate(data.wasm))throw new Error('E_ACTOR_WASM');
       const module=new WebAssembly.Module(data.wasm);
-      validate_actor_guest_imports(module);
+      validate_actor_guest_imports(data.wasm);
       const atto={
         actor_spawn:()=>{throw new Error('E_ACTOR_NESTED_SPAWN')},
         actor_send:()=>{throw new Error('E_ACTOR_NESTED_SEND')},

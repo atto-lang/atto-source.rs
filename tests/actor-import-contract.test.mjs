@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTOR_GUEST_IMPORTS, validate_actor_guest_imports,
+  ACTOR_GUEST_IMPORTS, ACTOR_GUEST_IMPORT_SIGNATURES,
+  validate_actor_guest_imports,
 } from './browser/actor-import-contract.mjs';
 
 // Construct minimal *real* Wasm modules instead of mocking Module.imports().
@@ -15,27 +16,32 @@ const leb=n=>{
 };
 const name=s=>[...leb(stringBytes(s).length),...stringBytes(s)];
 const section=(id,data)=>[id,...leb(data.length),...data];
-function moduleWithImports(descriptors){
-  const typeSection=section(1,[1,0x60,0,0]); // () -> () function type 0
-  const imports=[];
-  for(const {module='atto',field='actor_send',kind='function'} of descriptors){
+function moduleWithImports(descriptors,{customBeforeImport=false}={}){
+  const typeEntries=[],imports=[];
+  for(let i=0;i<descriptors.length;i++){
+    const {module='atto',field='actor_send',kind='function',params,results}=descriptors[i];
+    const expected=ACTOR_GUEST_IMPORT_SIGNATURES[field] ||
+      ACTOR_GUEST_IMPORT_SIGNATURES.actor_send;
+    const ps=params??expected.params, rs=results??expected.results;
+    typeEntries.push(0x60,...leb(ps.length),...ps,...leb(rs.length),...rs);
     imports.push(...name(module),...name(field));
     switch(kind){
-      case 'function': imports.push(0,0);break;  // kind+type index
-      case 'table': imports.push(1,0x70,0,1);break; // externref? funcref, min=1
-      case 'memory': imports.push(2,0,1);break; // min=1
-      case 'global': imports.push(3,0x7f,0);break; // immutable i32
+      case 'function': imports.push(0,...leb(i));break;
+      case 'table': imports.push(1,0x70,0,1);break;
+      case 'memory': imports.push(2,0,1);break;
+      case 'global': imports.push(3,0x7f,0);break;
       default: throw new Error('test fixture kind');
     }
   }
   const bytes=new Uint8Array([
     0,97,115,109,1,0,0,0,
-    ...typeSection,
+    ...section(1,[...leb(descriptors.length),...typeEntries]),
+    ...(customBeforeImport ? section(0,[...name('security.probe'),1,2,3]) : []),
     ...section(2,[...leb(descriptors.length),...imports]),
   ]);
   assert.equal(WebAssembly.validate(bytes),true,
     'test fixture must be a valid real Wasm binary');
-  return new WebAssembly.Module(bytes);
+  return bytes;
 }
 
 test('empty Wasm guest imports are permitted',()=>{
@@ -117,4 +123,87 @@ test('invalid bytes must be rejected by WebAssembly before import validation',()
   const data=new Uint8Array([0,97,115,109,1,0,0,0,255]);
   assert.equal(WebAssembly.validate(data),false);
   assert.throws(()=>new WebAssembly.Module(data),WebAssembly.CompileError);
+});
+
+
+test('exact Wasm function signatures are enforced for all seven capabilities',()=>{
+  for(const [field,declared] of Object.entries(ACTOR_GUEST_IMPORT_SIGNATURES)){
+    assert.deepEqual(
+      validate_actor_guest_imports(moduleWithImports([{field}])),
+      [{module:'atto',name:field,kind:'function'}],field);
+    const wrongParam = declared.params.length===0 ? [0x7f] :
+      declared.params.map((v,i)=>i===0?(v===0x7f?0x7e:0x7f):v);
+    const wrongResult = declared.results.length===0 ? [0x7f] : [];
+    for(const [label,override] of [
+      ['parameter',{params:wrongParam}],
+      ['return',{results:wrongResult}],
+    ]) {
+      const binary=moduleWithImports([{field,...override}]);
+      assert.throws(()=>validate_actor_guest_imports(binary),
+        /E_ACTOR_IMPORT_SIGNATURE/,field+':'+label);
+    }
+  }
+});
+
+test('actor_send cannot alias a single 64-bit integer or swap argument order',()=>{
+  for(const params of [[0x7e],[0x7e,0x7f],[0x7f,0x7f],[0x7f,0x7e,0x7f]]) {
+    const bytes=moduleWithImports([{field:'actor_send',params}]);
+    assert.throws(()=>validate_actor_guest_imports(bytes),
+      /E_ACTOR_IMPORT_SIGNATURE/,JSON.stringify(params));
+  }
+});
+
+test('actor_join cannot return i32, i64, or accept an i64 actor handle',()=>{
+  for(const descriptor of [
+    {results:[0x7f]},{results:[0x7e]},{params:[0x7e]},
+  ]) {
+    assert.throws(
+      ()=>validate_actor_guest_imports(
+        moduleWithImports([{field:'actor_join',...descriptor}])),
+      /E_ACTOR_IMPORT_SIGNATURE/);
+  }
+});
+
+test('custom sections between type and import do not hide valid ABI',()=>{
+  const input=moduleWithImports([
+    {field:'print_newline'},
+    {field:'actor_send'},
+    {field:'actor_join'},
+  ],{customBeforeImport:true});
+  assert.deepEqual(
+    validate_actor_guest_imports(input).map(x=>x.name),
+    ['print_newline','actor_send','actor_join']);
+});
+
+test('a WebAssembly.Module object without matching source bytes fails closed',()=>{
+  const bytes=moduleWithImports([{field:'actor_send'}]);
+  const module=new WebAssembly.Module(bytes);
+  assert.throws(()=>validate_actor_guest_imports(module),/E_ACTOR_IMPORT_BYTES/);
+  assert.throws(()=>validate_actor_guest_imports({module,bytes}),/E_ACTOR_IMPORT_BYTES/);
+  assert.throws(()=>validate_actor_guest_imports(null),/E_ACTOR_IMPORT_BYTES/);
+});
+
+test('Wasm module with absent type section but no imports is valid',()=>{
+  const bytes=new Uint8Array([0,97,115,109,1,0,0,0]);
+  assert.deepEqual(validate_actor_guest_imports(bytes),[]);
+});
+
+test('noncanonical ABI values cannot be smuggled via a type alias',()=>{
+  const bytes=moduleWithImports([
+    {field:'print_i64',params:[0x7f]},
+    {field:'print_bool',params:[0x7f]},
+  ]);
+  assert.throws(()=>validate_actor_guest_imports(bytes),/E_ACTOR_IMPORT_SIGNATURE/);
+});
+
+test('a copied buffer view with offset still validates only the targeted module',()=>{
+  const inner=moduleWithImports([{field:'actor_send'}]);
+  const padding=new Uint8Array(inner.length+32);
+  padding.fill(0xa5);
+  padding.set(inner,16);
+  const slice=padding.subarray(16,16+inner.length);
+  assert.deepEqual(
+    validate_actor_guest_imports(slice).map(x=>x.name),['actor_send']);
+  assert.throws(()=>validate_actor_guest_imports(padding),
+    /(E_ACTOR_IMPORT_BINARY|CompileError)/);
 });

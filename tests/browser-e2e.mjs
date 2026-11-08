@@ -389,15 +389,28 @@ try{
     const name=s=>{const bytes=[...utf8.encode(s)];return [...leb(bytes.length),...bytes]};
     const sec=(id,v)=>[id,...leb(v.length),...v];
     function guest(specs){
-      let imports=[];
-      for(const spec of specs){
+      let imports=[], types=[];
+      const signatures={
+        actor_send:{params:[127,126],results:[127]},
+        actor_join:{params:[127],results:[]},
+        actor_spawn:{params:[127],results:[127]},
+        print_i64:{params:[126],results:[]},
+        print_bool:{params:[127],results:[]},
+        print_str:{params:[127,127],results:[]},
+        print_newline:{params:[],results:[]},
+      };
+      for(let i=0;i<specs.length;i++){
+        const spec=specs[i], baseline=signatures[spec.field]||signatures.actor_send;
+        const params=spec.params||baseline.params, results=spec.results||baseline.results;
+        types.push(96,...leb(params.length),...params,...leb(results.length),...results);
         imports.push(...name(spec.module||'atto'),...name(spec.field||'actor_send'));
         if(spec.kind==='global')imports.push(3,127,0);
-        else imports.push(0,0);
+        else imports.push(0,...leb(i));
       }
       const bytes=new Uint8Array([
         0,97,115,109,1,0,0,0,
-        ...sec(1,[1,96,0,0]),...sec(2,[...leb(specs.length),...imports])
+        ...sec(1,[...leb(specs.length),...types]),
+        ...sec(2,[...leb(specs.length),...imports])
       ]);
       if(!WebAssembly.validate(bytes))throw new Error('invalid test Wasm fixture');
       return bytes;
@@ -420,16 +433,28 @@ try{
       duplicate:await invalid_import([{field:'actor_send'},{field:'actor_send'}]),
       wrong_kind:await invalid_import([{field:'actor_send',kind:'global'}]),
       foreign_module:await invalid_import([{module:'env',field:'actor_send'}]),
+      send_wrong_param:await invalid_import([{field:'actor_send',params:[126]}]),
+      send_wrong_order:await invalid_import([{field:'actor_send',params:[126,127]}]),
+      join_wrong_result:await invalid_import([{field:'actor_join',results:[127]}]),
+      print_wrong_param:await invalid_import([{field:'print_bool',params:[126]}]),
     };
   })()`);
   assert.deepEqual(guestImportAttacks,{
     duplicate:'E_ACTOR_IMPORT_DUPLICATE',
     wrong_kind:'E_ACTOR_IMPORT_KIND',
     foreign_module:'E_ACTOR_IMPORT_NAME',
+    send_wrong_param:'E_ACTOR_IMPORT_SIGNATURE',
+    send_wrong_order:'E_ACTOR_IMPORT_SIGNATURE',
+    join_wrong_result:'E_ACTOR_IMPORT_SIGNATURE',
+    print_wrong_param:'E_ACTOR_IMPORT_SIGNATURE',
   });
   console.log('PASS browser: child rejects duplicate actor capability imports');
   console.log('PASS browser: child rejects wrong-kind global imports');
   console.log('PASS browser: child rejects foreign namespace capability imports');
+  console.log('PASS browser: child rejects mismatched actor_send parameter count');
+  console.log('PASS browser: child rejects swapped actor_send parameter types');
+  console.log('PASS browser: child rejects actor_join returning a value');
+  console.log('PASS browser: child rejects print_bool accepting i64');
 
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
