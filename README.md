@@ -94,6 +94,21 @@ and emits an import-free actor guest with exactly one
 `receive(i64)->i64` export, compatible with the experimental
 `atto.browser.actor.scalar.v0` Web Worker contract.
 
+**Experimental actor execution budget (not ordinary `main` guests):**
+a private Wasm counter charges every actor function entry and loop iteration.
+Most ticks only decrement a counter and test for zero; the expensive fuel
+check executes once every **128 ticks**. Each exported `receive` invocation
+resets a **1,024 slow-check** allowance (up to **131,072 charged ticks**),
+while actor call depth is limited to **256 active guest functions**.
+The public entry is a wrapper: recursive calls to the underlying handler
+cannot reset fuel. Over-budget work or deep recursion traps the guest Wasm;
+the dedicated browser worker reports a terminal actor panic and the host
+rejects pending messages. This is a deliberate resource limit, not a
+cooperative `await`/yield or a complete tenant-security boundary.
+The independent host wall-clock watchdog is still required for non-compiler
+or malicious guest modules. Budget values and policy must be versioned
+before exposing them as general language/runtime guarantees.
+
 Regular `compile` rejects source containing an actor receive handler; it
 must not erase it or run it as a normal `main` guest. This prototype rejects
 source-level `main`, multiple actor declarations, class/enum declarations
