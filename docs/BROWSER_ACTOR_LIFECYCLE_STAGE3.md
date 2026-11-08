@@ -176,3 +176,7 @@ export a fixed 64-KiB non-growable memory; the already existing
 `admitGuestWasm` check also rejects disallowed memory structure.
 This proves only the narrow compiler-backed guest subset, not general
 AttoLang actor heaps, native stack or CPU budgets.
+
+## Forced parent lifetime / browser CPU deadline cross-repo pin
+
+The private compiler integration now pins public host ced47338040427e824728fc96ffeb5906982efe6. Its direct Chromium suite tests four nested noncooperative actor launches, forced parent termination, absence of late success, fresh independent recovery and an actual 450-ms wall-clock deadline. Node has 160 deterministic worker-task late-reply/cancellation/timeout race trials. Chromium target enumeration did not independently prove orphan-worker reclamation. The compiler remains privately staged; no public release is authorized.
