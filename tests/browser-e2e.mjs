@@ -164,8 +164,8 @@ try{
   console.log('PASS browser: real Atto actor source -> compiler Wasm -> actor guest Wasm -> dedicated Web Worker receive');
 
   // Metering is enforced by real compiler-produced Wasm, not a simulated
-  // host counter: the guest traps on the slow-path fuel check and a distinct
-  // worker can start cleanly with an independently replenished quota.
+  // host counter: the guest traps on *immediate* fuel depletion, independently
+  // of its once-per-128-charges slow path. A distinct fresh worker recovers.
   const meteredActor=await evaluate(`(async()=>{
     const src='define actor Metered as receive(int value): int { let i = 0; while i < value do i = i + 1; done return i; } end';
     async function open() {
@@ -182,8 +182,8 @@ try{
     }
     const first=await open();
     try {
-      const a=await first.request({kind:'message',id:1,value:120000n});
-      const b=await first.request({kind:'message',id:2,value:120000n});
+      const a=await first.request({kind:'message',id:1,value:60000n});
+      const b=await first.request({kind:'message',id:2,value:60000n});
       const fault=await first.request({kind:'message',id:3,value:200000n});
       const fresh=await open();
       try {
@@ -193,12 +193,12 @@ try{
       } finally { fresh.worker.terminate(); }
     } finally { first.worker.terminate(); }
   })()`);
-  assert.equal(meteredActor.a,'120000');
-  assert.equal(meteredActor.b,'120000');
+  assert.equal(meteredActor.a,'60000');
+  assert.equal(meteredActor.b,'60000');
   assert.equal(meteredActor.fault,'fault');
   assert.match(meteredActor.message,/E_ACTOR_PANIC/);
   assert.equal(meteredActor.fresh,'42');
-  console.log('PASS browser: source-compiled actor fuel resets per receive, runaway loops trap, and fresh worker recovers');
+  console.log('PASS browser: generated Wasm charges statements and loops, immediate fuel traps and fresh worker recovers');
   const rejectedActor=await evaluate(`(async()=>{
     const worker=new Worker('/actor-worker.mjs',{type:'module'});
     try {
