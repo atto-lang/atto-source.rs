@@ -19,6 +19,18 @@ use crate::diag::{Diagnostic, Pos};
 pub const MAX_LOCALS: usize = 1024;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
 
+// Reserve canonical type identities even before their guest implementation is
+// admitted. A user-defined class, enum, actor or function named Option/Array
+// must never masquerade as the compiler's eventual generic collection or
+// non-forgeable loan type. This is a *name* hardening gate, not borrow checking.
+const RESERVED_COLLECTION_AND_LOAN_NAMES: &[&str] = &[
+    "Option", "Result", "Array", "FixedArray", "List", "FixedList",
+    "Vector", "Slice", "Tuple", "Map", "Set", "ReadLoan", "WriteLoan",
+];
+fn is_reserved_collection_or_loan_name(name: &str) -> bool {
+    RESERVED_COLLECTION_AND_LOAN_NAMES.contains(&name)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
     And,
@@ -369,7 +381,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         if matches!(
             name,
             "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "int" | "bool" | "boolean"
-        ) {
+        ) || is_reserved_collection_or_loan_name(name) {
             return Err(Diagnostic::new(
                 pos,
                 "E_DUPLICATE",
@@ -401,7 +413,8 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio") {
+        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio")
+            || is_reserved_collection_or_loan_name(&f.name) {
             return Err(Diagnostic::new(
                 f.pos,
                 "E_DUPLICATE",
