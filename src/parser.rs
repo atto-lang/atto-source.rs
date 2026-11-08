@@ -121,7 +121,6 @@ const RESERVED: &[&str] = &[
 /// Statement-leading keywords that name real AttoLang features this compiler
 /// does not lower yet. They are rejected, never approximated.
 const UNSUPPORTED_STMT: &[&str] = &[
-    "match",
     "switch",
     "try",
     "select",
@@ -158,11 +157,7 @@ const UNSUPPORTED_STMT: &[&str] = &[
 ];
 
 const UNSUPPORTED_TYPES: &[&str] = &[
-    "String",
-    "string",
-    "float",
     "f32",
-    "f64",
     "decimal",
     "complex",
     "complex64",
@@ -356,8 +351,10 @@ impl Parser {
     // ---------------------------------------------------------------- types
 
     fn is_type_word(&self, n: usize) -> bool {
-        matches!(self.word_at(n), Some("int" | "bool" | "boolean" | "void"))
-            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+        matches!(
+            self.word_at(n),
+            Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String")
+        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -371,6 +368,8 @@ impl Parser {
             "int" => Type::Int,
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
+            "float" | "f64" => Type::Float,
+            "string" | "String" => Type::Str,
             n if UNSUPPORTED_TYPES.contains(&n) => {
                 return Err(Diagnostic::new(
                     pos,
@@ -1048,10 +1047,28 @@ impl Parser {
                 self.terminator()?;
                 Ok(s)
             }
+            // Java Parser.looksLikePrimitiveTypeFirstImmutableBinding: exactly
+            // `int|bool|string|String name = expr` is an immutable binding.
+            Some("int" | "bool" | "string" | "String")
+                if matches!(self.peek_at(1), Tok::Ident(_)) && *self.peek_at(2) == Tok::Assign =>
+            {
+                let ty = self.parse_type()?;
+                let (name, _) = self.ident("a variable name")?;
+                self.advance();
+                let init = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Bind {
+                    kind: BindKind::Const,
+                    name,
+                    ty: Some(ty),
+                    init,
+                    pos,
+                })
+            }
             Some(_) if self.is_type_word(0) && matches!(self.peek_at(1), Tok::Ident(_)) => Err(Diagnostic::new(
                 pos,
                 "E_SYNTAX",
-                "a local binding starts with 'val', 'const' or 'let' (for example 'val x: int = 1;')",
+                "a local binding starts with 'val', 'const' or 'let' (for example 'val x: int = 1;'); only int, bool and string have the immutable 'T name = e' form",
             )),
             Some("return") => {
                 self.advance();
@@ -1089,7 +1106,12 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Continue(pos))
             }
-            Some("do") if matches!(self.word_at(1), Some("match" | "switch" | "select" | "nb")) => {
+            Some("match") => self.parse_match(false),
+            Some("do") if self.word_at(1) == Some("match") => {
+                self.advance();
+                self.parse_match(true)
+            }
+            Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
             Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
@@ -1266,6 +1288,156 @@ impl Parser {
         // each elif arm nests one level deeper in the lowered if/else chain
         self.height -= arms.len() as u32 - 1;
         Ok(Stmt::If { arms, otherwise, pos })
+    }
+
+    /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
+    /// (or `over { on P { } }`); legacy `match [first] x [;] P -> { } end`
+    /// with `else` as the catch-all. `do match` requires `over`.
+    fn parse_match(&mut self, procedural: bool) -> R<Stmt> {
+        let pos = self.pos();
+        self.expect_word("match")?;
+        if *self.peek() == Tok::Lt {
+            return Err(unsupported(self.pos(), "value match ('match<T>')"));
+        }
+        self.eat_word("first");
+        let subject = self.parse_expr()?;
+        let over = self.eat_word("over");
+        if !over {
+            self.eat(&Tok::Semi);
+        }
+        let braced = over && self.eat(&Tok::LBrace);
+        if procedural && !over {
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_SYNTAX",
+                "'do match' requires 'over' before its arms",
+            ));
+        }
+        let mut arms = Vec::new();
+        loop {
+            let done = if braced { *self.peek() == Tok::RBrace } else { self.is_word("end") };
+            if done || *self.peek() == Tok::Eof {
+                break;
+            }
+            self.grow(1)?;
+            let apos = self.pos();
+            if over && !self.eat_word("on") {
+                let msg = if self.is_word("else") || self.is_word("default") {
+                    "match has no default/else keyword; use 'on _ -> { ... }'"
+                } else {
+                    "every 'match ... over' arm must start with contextual keyword 'on'"
+                };
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", msg));
+            }
+            let pattern = if !over && self.eat_word("else") {
+                Pattern::Wild
+            } else {
+                self.parse_pattern()?
+            };
+            let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
+            if *self.peek() == Tok::Assign && *self.peek_at(1) == Tok::Gt {
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "match implementations use the slim arrow '->'; '=>' is reserved for type definitions",
+                ));
+            }
+            if !self.eat(&Tok::Arrow) && !braced {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "match arms in 'over ... end' use '->'"));
+            }
+            let body = self.parse_block()?;
+            arms.push(MatchArm {
+                pattern,
+                guard,
+                body,
+                pos: apos,
+            });
+        }
+        if braced {
+            self.expect(Tok::RBrace, "'}' to close braced match")?;
+        } else if !self.eat_word("end") {
+            return Err(Diagnostic::new(
+                self.pos(),
+                if *self.peek() == Tok::Eof { "E_EOF" } else { "E_SYNTAX" },
+                "expected 'end' to close match",
+            ));
+        }
+        self.height -= arms.len() as u32;
+        if arms.is_empty() {
+            return Err(Diagnostic::new(pos, "E_SYNTAX", "match requires at least one arm"));
+        }
+        Ok(Stmt::Match { subject, arms, pos })
+    }
+
+    /// Java Parser.parsePattern, restricted to the forms this compiler lowers.
+    fn parse_pattern(&mut self) -> R<Pattern> {
+        let pos = self.pos();
+        match self.peek().clone() {
+            Tok::Int(Some(v)) => {
+                self.advance();
+                Ok(Pattern::Int(v as i64))
+            }
+            Tok::Int(None) => Err(Diagnostic::new(
+                pos,
+                "E_INTEGER_RANGE",
+                "integer literal does not fit in a signed 64-bit int",
+            )),
+            Tok::Float(_) => Err(unsupported(pos, "float literal patterns")),
+            Tok::Str(_) => Err(unsupported(pos, "string literal patterns")),
+            Tok::LParen => Err(unsupported(pos, "tuple patterns")),
+            Tok::LBracket => Err(Diagnostic::new(
+                pos,
+                "E_SYNTAX",
+                "list patterns are not supported; use tuples for fixed structural matching",
+            )),
+            Tok::Ident(w) => match w.as_str() {
+                "true" | "false" => {
+                    self.advance();
+                    Ok(Pattern::Bool(w == "true"))
+                }
+                "_" => {
+                    self.advance();
+                    Ok(Pattern::Wild)
+                }
+                "is" | "structural" => Err(unsupported(pos, "type patterns")),
+                _ => {
+                    self.advance();
+                    if *self.peek() == Tok::Dot {
+                        self.advance();
+                        let (variant, _) = self.ident("an enum variant")?;
+                        if self.is_word("as") || *self.peek() == Tok::Dot {
+                            return Err(unsupported(self.pos(), "variant payload patterns"));
+                        }
+                        return Ok(Pattern::Variant(w, variant));
+                    }
+                    if *self.peek() == Tok::LParen {
+                        return Err(unsupported(pos, "constructor patterns"));
+                    }
+                    if let Tok::Ident(next) = self.peek() {
+                        if next != "when" && next != "_" {
+                            return Err(unsupported(pos, "typed binding patterns ('Type name')"));
+                        }
+                        if next == "when" {
+                            // Java parses `name when` as the typed binding
+                            // pattern `name when` and then fails; mirror that.
+                            return Err(Diagnostic::new(
+                                self.pos(),
+                                "E_SYNTAX",
+                                "a binding pattern cannot take a 'when' guard",
+                            ));
+                        }
+                    }
+                    if w.chars().next().is_some_and(|c| c.is_uppercase()) {
+                        return Err(unsupported(pos, "constructor patterns"));
+                    }
+                    if is_reserved(&w) {
+                        return Err(Diagnostic::new(pos, "E_RESERVED", format!("'{w}' is a reserved word")));
+                    }
+                    Ok(Pattern::Bind(w))
+                }
+            },
+            _ => Err(Diagnostic::new(pos, "E_SYNTAX", "expected match pattern")),
+        }
     }
 
     fn parse_for(&mut self) -> R<Stmt> {
@@ -1695,6 +1867,10 @@ impl Parser {
             Tok::Str(s) => {
                 self.advance();
                 ExprKind::Str(s)
+            }
+            Tok::Float(bits) => {
+                self.advance();
+                ExprKind::Float(bits)
             }
             Tok::LParen => {
                 self.advance();

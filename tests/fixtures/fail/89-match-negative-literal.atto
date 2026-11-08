@@ -1,0 +1,9 @@
+// expect-error: E_SYNTAX
+// java: rejects
+pub fnc main(): int {
+  match 3
+    -3 -> { stdio.println("neg"); }
+    _ -> { stdio.println("pos"); }
+  end
+  return 0;
+}

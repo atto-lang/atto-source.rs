@@ -1,0 +1,6 @@
+// expect-error: E_FLOAT_LITERAL
+// java: rejects
+pub fnc main(): int {
+  stdio.println(1e);
+  return 0;
+}

@@ -12,6 +12,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { formatJavaDouble } from './java-double.mjs';
 
 const here = new URL('.', import.meta.url).pathname;
 const compilerPath = process.argv[2] || join(here, '../target/wasm32-unknown-unknown/release/atto_compiler.wasm');
@@ -48,7 +49,7 @@ export function compile(source) {
 // does in a dedicated Web Worker), runs actor_init, and queues mail. After
 // main returns, mailboxes drain FIFO, actor by actor in spawn order: one
 // valid schedule of the concurrent browser runtime.
-const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'actor_spawn', 'actor_send']);
+const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send']);
 const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', 'actor_receive']);
 export const MAX_ACTORS = 16;
 export const MAX_MAILBOX = 10_000;
@@ -87,6 +88,7 @@ export function runGuest(wasm) {
       print_bool: v => { out += v ? 'true' : 'false'; },
       print_str: (ptr, len) => { out += decoder.decode(new Uint8Array(instance.exports.memory.buffer, ptr, len)); },
       print_newline: () => { out += '\n'; },
+      print_f64: v => { out += formatJavaDouble(v); },
       actor_spawn: type => {
         if (inActor) throw new Error('spawn inside an actor');
         if (!(type >= 0 && type < names.length)) throw new Error('unknown actor type');
@@ -186,7 +188,15 @@ for (const f of await fixtures('pass')) {
         assert.ok(j.rejected, 'Java now accepts this LLVM-design spelling: update the fixture claim');
       } else {
         assert.ok(!j.rejected, `Java reference rejected it: ${j.stdout}`);
-        if (j.race) {
+        if (j.race && header(f.source, 'stdout-order')[0] === 'unordered') {
+          // truncated and concurrently interleaved: Java's lines must be a sub-multiset of ours
+          const pool = g.stdout.split('\n');
+          for (const line of j.stdout.split('\n').filter(Boolean)) {
+            const at = pool.indexOf(line);
+            assert.ok(at >= 0, `Java printed a line the browser runtime did not: ${JSON.stringify(line)}`);
+            pool.splice(at, 1);
+          }
+        } else if (j.race) {
           assert.ok(g.stdout.startsWith(j.stdout), `Java stdout (truncated by its shutdown race) is not a prefix: ${JSON.stringify(j.stdout)}`);
         } else {
           assert.equal(j.status, Number(BigInt.asUintN(8, g.value)), 'Java exit status agrees');
@@ -194,6 +204,12 @@ for (const f of await fixtures('pass')) {
             // several actors print concurrently: only the multiset of lines is defined
             const lines = t => t.split('\n').sort().join('\n');
             assert.equal(lines(j.stdout), lines(g.stdout), 'Java stdout lines agree (any actor interleaving)');
+          } else if (claim === 'diverges') {
+            // a documented semantic divergence (see docs/DIFFERENTIAL.md): Java's
+            // own output is pinned so drift on either side is caught
+            const jw = header(f.source, 'java-stdout');
+            assert.ok(jw.length, 'a "java: diverges" fixture pins Java output with "// java-stdout:" lines');
+            assert.equal(j.stdout, jw.join('\n') + '\n', 'Java stdout matches the pinned divergent output');
           } else {
             assert.equal(j.stdout, g.stdout, 'Java stdout agrees');
           }
@@ -332,6 +348,9 @@ const chains = {
   eq: n => M(`  val b = ${Array(n).fill('true').join(' == ')};\n  return 0;`),
   and: n => M(`  val t = true;\n  if ${Array(n).fill('t').join(', ')} then\n    return 1;\n  fi\n  return 0;`),
   or: n => M(`  val t = false;\n  if ${Array(n).fill('t').join(' | ')} then\n    return 1;\n  fi\n  return 0;`),
+  match: n => M(`  val x = ${n - 2};\n  match x\n${Array.from({ length: n - 1 }, (_, i) => `    ${i} -> { return ${i}; }\n`).join('')}    _ -> { return -1; }\n  end`),
+  concat: n => M(`  val s = ${Array(n).fill('"ab"').join(' + ')};\n  return 0;`),
+  float: n => M(`  val f = ${Array(n).fill('1.5').join(' * ')};\n  return 0;`),
   elif: n => M(`  val x = ${n - 1};\n  if x eq 0 then return 0;\n${Array.from({ length: n - 1 }, (_, i) => `  elif x eq ${i + 1} then return ${i + 1};\n`).join('')}  fi\n  return -1;`),
 };
 for (const [name, make] of Object.entries(chains)) {

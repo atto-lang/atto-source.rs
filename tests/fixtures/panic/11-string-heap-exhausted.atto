@@ -1,0 +1,11 @@
+// Concatenated strings live on the fixed 1 MiB bump heap; exhausting it is
+// panic 3, never a host crash (Java has a garbage collector and continues).
+// expect-panic: 3
+// expect-stdout: start
+pub fnc main(): int {
+  stdio.println("start");
+  let s = "0123456789abcdef";
+  loop {
+    s = s + s;
+  }
+}

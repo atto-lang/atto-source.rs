@@ -18,12 +18,15 @@ The compiler does not define any syntax of its own:
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
 | Entry point | zero-argument `main` returning `int` or `void` |
-| Types | `int` (i64), `bool` / `boolean`, `void` (return only) |
-| Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut` |
-| Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }` |
-| Expressions | `+ - *`, unary `- + !`, `< <= > >=`, `eq neq == != !eq`, ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
-| Output | `stdio.print(x)` / `stdio.println(x)` for `int`, `bool`, string literals and objects (`P{a=1, b=true}`) |
-| Classes | `[pub] define class Name as … end`. Fields: `T name: e`, `mut T name = e`, `let T name = e` (assignable in the constructor) and `name: T = e`, `final …`, `val`/`const` (fixed). One `constructor(…)`; instance methods `[pub] [fnc] name(…)`; `[pub] static fnc name(…)`, always called qualified as `Name.f(…)`. Construction is `new Name(…)` |
+| Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
+| Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut`; the immutable type-first form `int x = 7;` for exactly `int`, `bool`, `string` and `String` (Java `looksLikePrimitiveTypeFirstImmutableBinding`) |
+| Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }`, `match` (below) |
+| Expressions | `+ - *` on int and float, `/` with at least one float operand (an int operand widens, Java numeric promotion), `+` joining two strings, unary `- + !`, `< <= > >=` on numbers and on strings (Java `String.compareTo` order), `eq neq == != !eq` (strings by content), ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
+| Literals | decimal ints; floats exactly as the Java lexer: `1.5`, `1e3`, `2E-3`, `1_000.25` (digits on both sides of `.`) |
+| Strings | members `trim()`, `starts_with(s)`, `ends_with(s)`, `contains_literal(s)` (Java string member table); concatenation allocates on the bounded heap |
+| Match | legacy `match [first] x  P -> { } … end` with `else`, and canonical `match x over on P -> { } … end` / `do match x over …` / `over { on P { } }`. Patterns: `_`, int and bool literals, a lower-case binding, `Enum.Variant` (LLVM design spelling); `when` guards on literals and `_`, evaluated only after the pattern matched. Unreachable arms and non-exhaustive matches are `E_MATCH`; a match whose arms all return is a definite return |
+| Output | `stdio.print(x)` / `stdio.println(x)` for `int`, `bool`, `float` (Java `Double.toString`: `3.5`, `1.0E7`, `1.0E-4`, `NaN`, `Infinity`, `-0.0`), strings and objects (`P{a=1, b=true}`) |
+| Classes | `[pub] define class Name as … end`. Fields of type int, bool, float, string or an enum: `T name: e`, `mut T name = e`, `let T name = e` (assignable in the constructor) and `name: T = e`, `final …`, `val`/`const` (fixed). One `constructor(…)`; instance methods `[pub] [fnc] name(…)`; `[pub] static fnc name(…)`, always called qualified as `Name.f(…)`. Construction is `new Name(…)` |
 | Actors | `define actor Name as … end` or `actor Name … end`. State `let T name = e` (mutable) and `val`/`const`/`final` (fixed), one `receive(ActorMail<int\|bool> mail): void` reading `mail.value` and `mail.sequence`, and helper methods called as `self.f(…)`. `val r = spawn Name();` gives a copyable `ActorRef<Name>`, and `r.send(v)` enqueues mail |
 | Enums | `define enum Name as A B C end` and `Name.A` values compared with `eq`/`neq`. This spelling comes from the oreslang-source.llvm v1 design contract (`contracts/v1/design/enum_pattern_cases.json`). The Java parser does not admit it yet, and the fixtures record that |
 
@@ -41,8 +44,11 @@ The following are rejected, with the code shown:
 - Condition `,` / `|` evaluate **both** boolean operands left-to-right (eager), including observable side effects.
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
-- Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
-- `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
+- `int / int` stays `E_UNSUPPORTED` (S-25, below); write a float operand.
+- `f32`, sized integers, `Option`/`Result`, arrays and collections give `E_UNSUPPORTED_TYPE`.
+- `string + int` is `E_TYPE`, as in Java (no implicit conversion). `string.replace_literal`, `split_literal`, `is_identifier` and `is_route_segment` give `E_UNSUPPORTED`; unknown string members are `E_UNBOUND`.
+- Match patterns other than the ones above (string and float literals, tuples, constructors, `Type name`, `is T`) give `E_UNSUPPORTED`. Negative literal patterns, `1 | 4` alternatives and `name when …` are `E_SYNTAX`, as in Java.
+- `switch`, value `match<T>`, imports, lambdas, `Option` / `Result`, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
 - Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
 
 ### Known divergences from the Java reference
@@ -50,6 +56,9 @@ The following are rejected, with the code shown:
 These are recorded in fixtures and checked by the differential run:
 
 - Binding the result of a void call. Java accepts it. Here it is `E_TYPE`, because a void call has no value.
+- Conditions. `,` and `|` are eager here (PR #4); Java short-circuits. Fixtures pin Java's output with `// java: diverges` and `// java-stdout:` lines.
+- An `int` where a `float` is required (`val f: float = 3;`, a float parameter). Java keeps the int and prints `3`; here it is `E_TYPE`.
+- `let s = "";` then `s = s + "x"`. Java infers the singleton literal type `""` and rejects the assignment; here the binding has type `string`.
 - Integer overflow. Java wraps silently. Here it panics, following spec 17 and the LLVM backend.
 - Object references. Java compares them by identity, but here comparison is not admitted yet.
 - Object heap. Java has a garbage collector. Here objects come from a fixed 1 MiB bump heap that is never freed, and exhausting it panics with code 3.
@@ -59,8 +68,8 @@ These are recorded in fixtures and checked by the differential run:
 
 v2 extends v1. Every v1 guest is still a valid v2 guest.
 
-- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; 2 is reserved, because integer division and remainder are not admitted; 3 = object heap exhausted). `memory` is exported only when string literals are printed or classes exist. With classes it is a fixed, non-growable 16-page (1 MiB) memory.
-- **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)` and `print_newline()`, plus, when the program spawns actors, `actor_spawn(i32 type) -> i32 ref` and `actor_send(i32 ref, i64 value)`. There are no other capabilities.
+- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; 2 is reserved, because integer division and remainder are not admitted; 3 = heap exhausted, by objects or string concatenation). `memory` is exported only when strings or classes exist. With classes or string concatenation it is a fixed, non-growable 16-page (1 MiB) memory. A string value is an `i64` `offset << 32 | len` into that memory.
+- **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)`, `print_newline()` and `print_f64(f64)` (the host renders Java `Double.toString`; `tests/java-double.mjs`), plus, when the program spawns actors, `actor_spawn(i32 type) -> i32 ref` and `actor_send(i32 ref, i64 value)`. There are no other capabilities.
 - **Actors:** a program with actors also exports `actor_init(i32 type)` and `actor_receive(i32 type, i64 value, i64 sequence)`, and carries a custom section `atto.actors` listing actor type names in type order. The host runs each spawned actor in its own instance of the same module (one dedicated Web Worker per actor in the playground). It calls `actor_init` once and then `actor_receive` once per message, in FIFO order with sequence numbers from 0. Actor state lives in that instance's globals, so actors share no memory. Bool mail is passed as 0 or 1.
 - **Determinism:** output is a pure function of the source. The native and wasm32 hosts emit byte-identical modules.
 

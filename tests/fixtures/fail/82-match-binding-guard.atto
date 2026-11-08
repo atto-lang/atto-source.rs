@@ -1,0 +1,9 @@
+// expect-error: E_SYNTAX
+// java: rejects
+pub fnc main(): int {
+  match 3
+    k when k > 2 -> { stdio.println(k); }
+    _ -> { stdio.println(0); }
+  end
+  return 0;
+}

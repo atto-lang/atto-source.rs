@@ -32,6 +32,8 @@ pub enum Import {
     PrintBool,
     PrintStr,
     PrintNewline,
+    /// `print_f64(f64)`: the host renders it like Java `Double.toString`
+    PrintF64,
     /// `actor_spawn(type: i32) -> i32`: start one actor, return its reference
     ActorSpawn,
     /// `actor_send(ref: i32, value: i64)`: enqueue one message
@@ -39,11 +41,12 @@ pub enum Import {
 }
 
 impl Import {
-    pub const ALL: [Import; 6] = [
+    pub const ALL: [Import; 7] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
         Import::PrintNewline,
+        Import::PrintF64,
         Import::ActorSpawn,
         Import::ActorSend,
     ];
@@ -53,6 +56,7 @@ impl Import {
             Import::PrintBool => "print_bool",
             Import::PrintStr => "print_str",
             Import::PrintNewline => "print_newline",
+            Import::PrintF64 => "print_f64",
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
         }
@@ -68,10 +72,38 @@ pub enum PrintPiece {
     Field(u32, Type),
 }
 
+/// String operations lowered to module helpers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrOp {
+    Eq,
+    StartsWith,
+    EndsWith,
+    Contains,
+    Trim,
+    /// `a + b`: allocates the result on the bump heap
+    Concat,
+    /// Java `String.compareTo` sign (-1, 0, 1) as an int
+    Cmp,
+}
+
 #[derive(Clone, Debug)]
 pub enum TExpr {
     I64(i64),
+    F64(f64),
     Bool(bool),
+    /// string value `offset << 32 | len` into the module's string data
+    StrConst(u32, u32),
+    /// `int` widened to `float` (Java numeric promotion)
+    IntToFloat(Box<TE>),
+    FNeg(Box<TE>),
+    /// string helper call; `Eq` and the predicates take `arg`, `Trim` does not
+    Str(StrOp, Box<TE>, Option<Box<TE>>),
+    /// print a string value; `tmp` is an i64 scratch local holding it
+    PrintStrVal {
+        value: Box<TE>,
+        tmp: u32,
+        newline: bool,
+    },
     Local(u32),
     Neg(Box<TE>),
     Not(Box<TE>),
@@ -149,6 +181,8 @@ pub enum TStmt {
     Break,
     Continue,
     Block(Vec<TStmt>),
+    /// a path the checker proved impossible (after an exhaustive match)
+    Unreachable,
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +216,8 @@ pub struct TProgram {
     /// Types of the actor-state globals, indexed by `TExpr::GlobalGet`.
     pub globals: Vec<Type>,
     pub actors: Vec<TActor>,
+    /// String values exist: the module carries memory and the string helpers.
+    pub strings: bool,
 }
 
 /// Size in bytes of every field slot in a class instance.
@@ -280,6 +316,17 @@ struct FnCx<'a> {
 
 type R<T> = Result<T, Diagnostic>;
 
+fn string_member_err(name: &str, pos: Pos) -> Diagnostic {
+    match name {
+        "replace_literal" | "split_literal" | "is_identifier" | "is_route_segment" => Diagnostic::new(
+            pos,
+            "E_UNSUPPORTED",
+            format!("string.{name} is not supported by the browser compiler yet"),
+        ),
+        _ => Diagnostic::new(pos, "E_UNBOUND", format!("unknown string member '{name}'")),
+    }
+}
+
 fn type_err(pos: Pos, msg: impl Into<String>) -> Diagnostic {
     Diagnostic::new(pos, "E_TYPE", msg)
 }
@@ -346,7 +393,7 @@ fn isolation(pos: Pos, actor: &str, what: &str, name: &str) -> Diagnostic {
 /// reference forbids calls there, and this compiler admits only constants.
 fn const_init(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Int(_) | ExprKind::Bool(_) => true,
+        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
         ExprKind::Unary(_, a) => const_init(a),
         ExprKind::Binary(_, a, b) => const_init(a) && const_init(b),
         ExprKind::Ternary(c, a, b) => const_init(c) && const_init(a) && const_init(b),
@@ -465,7 +512,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             let ty = res(f.ty)?;
             let ok = match ty {
                 Type::Int | Type::Bool => true,
-                Type::Enum(_) => !actor,
+                Type::Float | Type::Str | Type::Enum(_) => !actor,
                 _ => false,
             };
             if !ok {
@@ -477,7 +524,7 @@ pub fn check(p: &Program) -> R<TProgram> {
                         f.name,
                         tn_plain(ty, tn, &class_names, &p.enums, &actor_names),
                         if actor { "actor" } else { "class" },
-                        if actor { "" } else { " or an enum" }
+                        if actor { "" } else { ", float, string or an enum" }
                     ),
                 ));
             }
@@ -803,14 +850,21 @@ pub fn check(p: &Program) -> R<TProgram> {
 
     imports.sort();
     imports.dedup();
+    let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    let strings = funcs
+        .iter()
+        .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
+        || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
+    let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     Ok(TProgram {
-        funcs: funcs.into_iter().map(|f| f.expect("every function index is defined")).collect(),
+        funcs,
         main,
         imports,
         data,
-        heap: !p.classes.is_empty(),
+        heap: !p.classes.is_empty() || concat,
         globals,
         actors: tactors,
+        strings,
     })
 }
 
@@ -914,12 +968,55 @@ fn body_check(
 /// without a `break` never falls through; `while true` is not special.
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Return(_) => true,
+        TStmt::Return(_) | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) => returns(b),
         _ => false,
     })
+}
+
+/// Whether any expression node in `body` satisfies `f`.
+fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
+    body.iter().any(|s| match s {
+        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::FieldSet { obj, value, .. } => any_in(obj, f) || any_in(value, f),
+        TStmt::If(arms, other) => {
+            arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
+        }
+        TStmt::Loop { cond, body, update } => {
+            cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
+        }
+        TStmt::Block(b) => any_in_stmts(b, f),
+        TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
+    })
+}
+
+fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
+    if f(e) {
+        return true;
+    }
+    match &e.e {
+        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
+        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
+        TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
+        TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
+        TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
+        TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
+        TExpr::FieldGet { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
+        TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
+        _ => false,
+    }
+}
+
+fn uses_str(e: &TE) -> bool {
+    e.ty == Type::Str
+        || matches!(e.e, TExpr::Str(..) | TExpr::StrConst(..) | TExpr::PrintStrVal { .. })
+        || matches!(&e.e, TExpr::PrintObj { pieces, .. } if pieces.iter().any(|p| matches!(p, PrintPiece::Field(_, Type::Str))))
+}
+
+fn uses_concat(e: &TE) -> bool {
+    matches!(e.e, TExpr::Str(StrOp::Concat, ..))
 }
 
 /// Whether a loop body contains a `break` that targets this loop.
@@ -1198,7 +1295,192 @@ impl<'a> FnCx<'a> {
                 }
             }
             Stmt::Block(b) => TStmt::Block(self.scoped(b)?),
+            Stmt::Match { subject, arms, pos } => self.match_stmt(subject, arms, *pos)?,
         })
+    }
+
+    /// `match`: the subject is evaluated once into a temp; arms are tried in
+    /// source order; a guard runs only after its pattern matched. The checker
+    /// rejects unreachable arms and requires exhaustiveness (Java reference:
+    /// "unreachable match arm", "non-exhaustive match").
+    fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
+        let subj = self.value(subject)?;
+        let sty = subj.ty;
+        if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
+            return Err(Diagnostic::new(
+                subject.pos,
+                "E_UNSUPPORTED",
+                format!("matching a {} value is not supported by the browser compiler yet", self.tn(sty)),
+            ));
+        }
+        let tmp = self.temp(sty, pos)?;
+        let get = || TE {
+            e: TExpr::Local(tmp),
+            ty: sty,
+        };
+        let variants = match sty {
+            Type::Enum(e) => self.g.enums[e as usize].variants.len(),
+            Type::Bool => 2,
+            _ => usize::MAX,
+        };
+        let mut seen: BTreeSet<i64> = BTreeSet::new();
+        let mut covered = false;
+        let mut out = Vec::new();
+        let mut after: BTreeSet<u32> = BTreeSet::new();
+        for (i, arm) in arms.iter().enumerate() {
+            if covered {
+                return Err(Diagnostic::new(
+                    arm.pos,
+                    "E_MATCH",
+                    format!("unreachable match arm {}: earlier arms already match every value", i + 1),
+                ));
+            }
+            // (pattern test, literal key for reachability, binding name)
+            let (test, key, bind): (Option<TE>, Option<i64>, Option<&str>) = match &arm.pattern {
+                Pattern::Wild => (None, None, None),
+                Pattern::Bind(n) => (None, None, Some(n.as_str())),
+                Pattern::Int(v) => {
+                    if sty != Type::Int {
+                        return Err(type_err(arm.pos, format!("int pattern cannot match a {} value", self.tn(sty))));
+                    }
+                    let lit = TE {
+                        e: TExpr::I64(*v),
+                        ty: Type::Int,
+                    };
+                    (
+                        Some(TE {
+                            e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(lit)),
+                            ty: Type::Bool,
+                        }),
+                        Some(*v),
+                        None,
+                    )
+                }
+                Pattern::Bool(b) => {
+                    if sty != Type::Bool {
+                        return Err(type_err(arm.pos, format!("bool pattern cannot match a {} value", self.tn(sty))));
+                    }
+                    let lit = TE {
+                        e: TExpr::Bool(*b),
+                        ty: Type::Bool,
+                    };
+                    (
+                        Some(TE {
+                            e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(lit)),
+                            ty: Type::Bool,
+                        }),
+                        Some(*b as i64),
+                        None,
+                    )
+                }
+                Pattern::Variant(en, var) => {
+                    let ev = self.enum_value(en, var, arm.pos, arm.pos)?;
+                    if ev.ty != sty {
+                        return Err(type_err(
+                            arm.pos,
+                            format!(
+                                "pattern {en}.{var} has type {} but the subject has type {}",
+                                self.tn(ev.ty),
+                                self.tn(sty)
+                            ),
+                        ));
+                    }
+                    let ord = match ev.e {
+                        TExpr::EnumVal(o) => o as i64,
+                        _ => unreachable!("enum_value yields an ordinal"),
+                    };
+                    (
+                        Some(TE {
+                            e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(ev)),
+                            ty: Type::Bool,
+                        }),
+                        Some(ord),
+                        None,
+                    )
+                }
+            };
+            if let Some(k) = key {
+                if seen.contains(&k) {
+                    return Err(Diagnostic::new(
+                        arm.pos,
+                        "E_MATCH",
+                        format!(
+                            "unreachable match arm {}: an earlier arm already matches every value accepted by it",
+                            i + 1
+                        ),
+                    ));
+                }
+            }
+            self.scopes.push(Vec::new());
+            let r = (|| -> R<(TE, Vec<TStmt>)> {
+                let mut body = Vec::new();
+                if let Some(n) = bind {
+                    let slot = self.declare(n, sty, false, arm.pos)?;
+                    body.push(TStmt::Set(slot, get()));
+                }
+                let guard = match &arm.guard {
+                    Some(g) => Some(self.cond(g, "match guard")?),
+                    None => None,
+                };
+                let at_arm = self.moved.clone();
+                body.extend(self.stmts(&arm.body)?);
+                if !returns(&body) {
+                    after.extend(self.moved.iter().copied());
+                }
+                self.moved = at_arm;
+                let truth = TE {
+                    e: TExpr::Bool(true),
+                    ty: Type::Bool,
+                };
+                let cond = match (test, guard) {
+                    (None, None) => truth,
+                    (Some(t), None) => t,
+                    (None, Some(g)) => g,
+                    // the guard must not run when the pattern fails
+                    (Some(t), Some(g)) => TE {
+                        e: TExpr::Ternary(
+                            Box::new(t),
+                            Box::new(g),
+                            Box::new(TE {
+                                e: TExpr::Bool(false),
+                                ty: Type::Bool,
+                            }),
+                        ),
+                        ty: Type::Bool,
+                    },
+                };
+                Ok((cond, body))
+            })();
+            self.scopes.pop();
+            let (cond, body) = r?;
+            if arm.guard.is_none() {
+                match key {
+                    Some(k) => {
+                        seen.insert(k);
+                        if seen.len() == variants {
+                            covered = true;
+                        }
+                    }
+                    None => covered = true,
+                }
+            }
+            out.push((cond, body));
+        }
+        if !covered {
+            return Err(Diagnostic::new(
+                pos,
+                "E_MATCH",
+                format!(
+                    "non-exhaustive match for {}; add an unguarded 'on _ -> {{ ... }}' arm or cover every provable case",
+                    self.tn(sty)
+                ),
+            ));
+        }
+        self.moved = after;
+        Ok(TStmt::Block(vec![
+            TStmt::Set(tmp, subj),
+            TStmt::If(out, Some(vec![TStmt::Unreachable])),
+        ]))
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
@@ -1351,12 +1633,22 @@ impl<'a> FnCx<'a> {
         Ok({
             let v = self.value(inner)?;
             match op {
+                UnOp::Neg | UnOp::Plus if v.ty == Type::Float => {
+                    if *op == UnOp::Plus {
+                        v
+                    } else {
+                        TE {
+                            e: TExpr::FNeg(Box::new(v)),
+                            ty: Type::Float,
+                        }
+                    }
+                }
                 UnOp::Neg | UnOp::Plus => {
                     if v.ty != Type::Int {
                         return Err(type_err(
                             pos,
                             format!(
-                                "unary '{}' needs an int operand, found {}",
+                                "unary '{}' needs an int or float operand, found {}",
                                 if *op == UnOp::Neg { "-" } else { "+" },
                                 self.tn(v.ty)
                             ),
@@ -1390,42 +1682,91 @@ impl<'a> FnCx<'a> {
         Ok({
             let a = self.value(l)?;
             let b = self.value(r)?;
-            let ty = match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul => {
-                    if a.ty != Type::Int || b.ty != Type::Int {
-                        return Err(type_err(
-                            pos,
-                            format!(
-                                "operator '{}' needs int operands, found {} and {}",
-                                op.symbol(),
-                                self.tn(a.ty),
-                                self.tn(b.ty)
-                            ),
-                        ));
-                    }
-                    Type::Int
-                }
-                BinOp::Div => {
-                    return Err(Diagnostic::new(
+            if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
+                let both = a.ty == Type::Str && b.ty == Type::Str;
+                return match op {
+                    // Java: '+' joins two strings; it never converts other operands
+                    BinOp::Add if both => Ok(TE {
+                        e: TExpr::Str(StrOp::Concat, Box::new(a), Some(Box::new(b))),
+                        ty: Type::Str,
+                    }),
+                    // Java String.compareTo order
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge if both => Ok(TE {
+                        e: TExpr::Bin(
+                            *op,
+                            Box::new(TE {
+                                e: TExpr::Str(StrOp::Cmp, Box::new(a), Some(Box::new(b))),
+                                ty: Type::Int,
+                            }),
+                            Box::new(TE {
+                                e: TExpr::I64(0),
+                                ty: Type::Int,
+                            }),
+                        ),
+                        ty: Type::Bool,
+                    }),
+                    _ => Err(type_err(
                         pos,
-                        "E_UNSUPPORTED",
-                        "'/' on int is not admitted: whether int / int yields float or int is undecided (spec S-25)",
-                    ))
+                        format!(
+                            "operator '{}' needs numeric operands (or two strings for '+' and comparisons), found {} and {}",
+                            op.symbol(),
+                            self.tn(a.ty),
+                            self.tn(b.ty)
+                        ),
+                    )),
+                };
+            }
+            let numeric = |t: Type| matches!(t, Type::Int | Type::Float);
+            if matches!(
+                op,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            ) {
+                if !numeric(a.ty) || !numeric(b.ty) {
+                    return Err(type_err(
+                        pos,
+                        format!(
+                            "operator '{}' needs int or float operands, found {} and {}",
+                            op.symbol(),
+                            self.tn(a.ty),
+                            self.tn(b.ty)
+                        ),
+                    ));
                 }
-                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    if a.ty != Type::Int || b.ty != Type::Int {
-                        return Err(type_err(
+                if a.ty == Type::Int && b.ty == Type::Int {
+                    if *op == BinOp::Div {
+                        return Err(Diagnostic::new(
                             pos,
-                            format!(
-                                "operator '{}' needs int operands, found {} and {}",
-                                op.symbol(),
-                                self.tn(a.ty),
-                                self.tn(b.ty)
-                            ),
+                            "E_UNSUPPORTED",
+                            "'/' on two ints is not admitted: whether int / int yields float or int is undecided (spec S-25); write a float operand, e.g. 7.0 / 2",
                         ));
                     }
-                    Type::Bool
+                } else {
+                    // Java binary numeric promotion: an int operand widens to float.
+                    let widen = |v: TE| -> TE {
+                        if v.ty == Type::Int {
+                            TE {
+                                e: TExpr::IntToFloat(Box::new(v)),
+                                ty: Type::Float,
+                            }
+                        } else {
+                            v
+                        }
+                    };
+                    let ty = if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
+                        Type::Float
+                    } else {
+                        Type::Bool
+                    };
+                    return Ok(TE {
+                        e: TExpr::Bin(*op, Box::new(widen(a)), Box::new(widen(b))),
+                        ty,
+                    });
                 }
+            }
+            let ty = match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
+                BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Type::Bool,
                 BinOp::Eq | BinOp::Ne => {
                     if a.ty != b.ty {
                         return Err(type_err(
@@ -1444,6 +1785,21 @@ impl<'a> FnCx<'a> {
                             "E_UNSUPPORTED",
                             "comparing object or actor references is not supported by the browser compiler yet",
                         ));
+                    }
+                    if a.ty == Type::Str {
+                        // strings compare by content (spec 17), never by reference
+                        let eq = TE {
+                            e: TExpr::Str(StrOp::Eq, Box::new(a), Some(Box::new(b))),
+                            ty: Type::Bool,
+                        };
+                        return Ok(if *op == BinOp::Ne {
+                            TE {
+                                e: TExpr::Not(Box::new(eq)),
+                                ty: Type::Bool,
+                            }
+                        } else {
+                            eq
+                        });
                     }
                     Type::Bool
                 }
@@ -1528,12 +1884,16 @@ impl<'a> FnCx<'a> {
                 e: TExpr::Bool(*b),
                 ty: Type::Bool,
             },
-            ExprKind::Str(_) => {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED_TYPE",
-                    "String values are not supported by the browser compiler yet (string literals may only be printed)",
-                ))
+            ExprKind::Float(bits) => TE {
+                e: TExpr::F64(f64::from_bits(*bits)),
+                ty: Type::Float,
+            },
+            ExprKind::Str(text) => {
+                let (offset, len) = self.string(text, pos)?;
+                TE {
+                    e: TExpr::StrConst(offset, len),
+                    ty: Type::Str,
+                }
             }
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(l) if l.mail.is_some() => {
@@ -1795,6 +2155,9 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn member_on(&mut self, obj: TE, name: &str, pos: Pos) -> R<TE> {
+        if obj.ty == Type::Str {
+            return Err(string_member_err(name, pos));
+        }
         match obj.ty {
             Type::Class(_) => self.field_get(obj, name, pos),
             Type::ActorRef(_) => Err(Diagnostic::new(
@@ -1929,6 +2292,9 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn method_on(&mut self, recv: TE, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if recv.ty == Type::Str {
+            return self.string_method(recv, name, args, pos);
+        }
         match recv.ty {
             Type::Class(c) => self.instance_call(recv, c, name, args, pos),
             Type::ActorRef(a) => {
@@ -2065,6 +2431,28 @@ impl<'a> FnCx<'a> {
             }
             let v = self.value(&args[0])?;
             return match v.ty {
+                Type::Float => {
+                    self.imports.push(Import::PrintF64);
+                    Ok(TE {
+                        e: TExpr::Print {
+                            value: Box::new(v),
+                            newline,
+                        },
+                        ty: Type::Void,
+                    })
+                }
+                Type::Str => {
+                    self.imports.push(Import::PrintStr);
+                    let tmp = self.temp(Type::Str, pos)?;
+                    Ok(TE {
+                        e: TExpr::PrintStrVal {
+                            value: Box::new(v),
+                            tmp,
+                            newline,
+                        },
+                        ty: Type::Void,
+                    })
+                }
                 Type::Int | Type::Bool => {
                     self.imports
                         .push(if v.ty == Type::Int { Import::PrintI64 } else { Import::PrintBool });
@@ -2125,6 +2513,34 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    /// The Java reference's string members (TypeChecker string member
+    /// table) that lower without allocation.
+    fn string_method(&mut self, recv: TE, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        let (op, arity) = match name {
+            "trim" => (StrOp::Trim, 0),
+            "starts_with" => (StrOp::StartsWith, 1),
+            "ends_with" => (StrOp::EndsWith, 1),
+            "contains_literal" => (StrOp::Contains, 1),
+            _ => return Err(string_member_err(name, pos)),
+        };
+        let label = format!("string.{name}");
+        self.arity(&label, arity, args.len(), pos)?;
+        let arg = match args.first() {
+            Some(a) => {
+                let v = self.value(a)?;
+                if v.ty != Type::Str {
+                    return Err(type_err(a.pos, format!("{label} needs a string argument, found {}", self.tn(v.ty))));
+                }
+                Some(Box::new(v))
+            }
+            None => None,
+        };
+        Ok(TE {
+            ty: if op == StrOp::Trim { Type::Str } else { Type::Bool },
+            e: TExpr::Str(op, Box::new(recv), arg),
+        })
+    }
+
     fn string(&mut self, s: &str, pos: Pos) -> R<(u32, u32)> {
         if self.data.len() + s.len() > MAX_STRING_DATA {
             return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too much string literal data"));
@@ -2161,8 +2577,12 @@ impl<'a> FnCx<'a> {
             let (off, len) = self.string(&s, pos)?;
             pieces.push(PrintPiece::Str(off, len));
             if let Some((offset, ty)) = field {
-                self.imports
-                    .push(if ty == Type::Int { Import::PrintI64 } else { Import::PrintBool });
+                self.imports.push(match ty {
+                    Type::Int => Import::PrintI64,
+                    Type::Float => Import::PrintF64,
+                    Type::Str => Import::PrintStr,
+                    _ => Import::PrintBool,
+                });
                 pieces.push(PrintPiece::Field(offset, ty));
             }
         }

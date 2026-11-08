@@ -7,6 +7,11 @@ pub enum Type {
     Int,
     Bool,
     Void,
+    /// `float` / `f64`: IEEE-754 binary64 (Java `double`).
+    Float,
+    /// `string` / `String`: immutable UTF-8 text, a view into the module's
+    /// string data (no heap).
+    Str,
     /// Unresolved user type name: index into [`Program::type_names`].
     /// The checker replaces it with `Class` or `Enum`.
     Named(u32),
@@ -28,6 +33,8 @@ impl Type {
             Type::Int => "int",
             Type::Bool => "bool",
             Type::Void => "void",
+            Type::Float => "float",
+            Type::Str => "string",
             _ => "object",
         }
     }
@@ -197,6 +204,33 @@ pub enum Stmt {
     Break(Pos),
     Continue(Pos),
     Block(Vec<Stmt>),
+    /// `match subject over on P -> { } ... end` (canonical, source-ordered)
+    /// or the legacy `match [first] subject P -> { } ... end`.
+    Match {
+        subject: Expr,
+        arms: Vec<MatchArm>,
+        pos: Pos,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum Pattern {
+    /// `_`, or `else` in the legacy form
+    Wild,
+    Int(i64),
+    Bool(bool),
+    /// lower-case name: binds the subject
+    Bind(String),
+    /// `Enum.Variant` (oreslang-source.llvm v1 enum design spelling)
+    Variant(String, String),
+}
+
+#[derive(Clone, Debug)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Vec<Stmt>,
+    pub pos: Pos,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -247,6 +281,8 @@ impl BinOp {
 pub enum ExprKind {
     /// Integer literal. `None` is 2^63, only legal as the operand of unary minus.
     Int(Option<u64>),
+    /// float literal, as `f64::to_bits`
+    Float(u64),
     Bool(bool),
     Str(String),
     Var(String),
