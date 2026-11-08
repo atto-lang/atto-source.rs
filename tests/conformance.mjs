@@ -684,7 +684,9 @@ check('actor/immediate-fuel-boundary-resets-per-message-and-traps-runaway-loop',
     'per-message fuel must reset at the public wrapper boundary');
   assert.throws(()=>actor.exports.receive(65534n),WebAssembly.RuntimeError,
     'the first exhausted unit must trap before its statement effects');
-  // Trapped actor instances are terminal in the Web Worker. Fresh instances
+  assert.throws(()=>actor.exports.receive(0n),WebAssembly.RuntimeError,
+    'a trapped Wasm actor cannot reset fuel by invoking receive again');
+  // Trapped actor instances are terminal even outside the Web Worker. Fresh instances
   // retain independent quotas and cannot inherit the exhausted fuel global.
   const fresh=new WebAssembly.Instance(mod,{});
   assert.equal(fresh.exports.receive(42n),42n);
@@ -719,6 +721,8 @@ check('actor/continue-paths-and-straight-line-metering-actually-run-in-wasm', ()
   assert.equal(instance.exports.receive(42n),33n);
   assert.throws(()=>instance.exports.receive(100000n),WebAssembly.RuntimeError,
     'nonterminating or large continue loop must exhaust local fuel');
+  assert.throws(()=>instance.exports.receive(0n),WebAssembly.RuntimeError,
+    'the same actor instance cannot reuse its trapped budget');
   const fresh=new WebAssembly.Instance(module,{});
   assert.equal(fresh.exports.receive(15n),6n);
 });
@@ -853,6 +857,10 @@ for (const [label, condition, safeResult] of [
     assert.equal(actor.exports.receive(0n), safeResult);
     assert.throws(() => actor.exports.receive(9223372036854775807n),
       WebAssembly.RuntimeError, 'eager RHS checked arithmetic must not be skipped');
+    assert.throws(() => actor.exports.receive(0n), WebAssembly.RuntimeError,
+      'checked-overflow guest trap must poison the actor wrapper permanently');
+    assert.equal(new WebAssembly.Instance(mod, {}).exports.receive(0n), safeResult,
+      'a fresh isolated actor instance starts without the previous trap state');
   });
 }
 
