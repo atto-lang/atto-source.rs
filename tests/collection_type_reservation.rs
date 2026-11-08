@@ -33,16 +33,7 @@ fn plain_functions_cannot_masquerade_as_core_type_constructors() {
 
 #[test]
 fn reserved_core_names_do_not_change_user_types_or_native_wasm() {
-    let source = r#"
-define class Basket as
-  mut int total = 40;
-  pub answer(): int { return self.total + 2; }
-end
-pub fnc main(): int {
-  val x = new Basket();
-  return x.answer();
-}
-"#;
+    let source = include_str!("fixtures/pass/50-class-constructor-method.atto");
     let bytes = compile(source).expect("ordinary user class compiles");
     assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
 }
