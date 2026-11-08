@@ -26,7 +26,8 @@ export class SupervisorControl {
     if(this.slots.size>=this.capacity)throw new Error('E_CONTROL_CAPACITY');
     const token=Object.freeze(Object.create(null));
     this.tokens.set(token,actor_handle);
-    this.slots.set(actor_handle,{actor_id,parent_id:this.parent_id,watcher:null,terminal:null});
+    this.slots.set(actor_handle,{actor_id,parent_id:this.parent_id,
+      watcher:null,sealed:false,terminal:null});
     return token;
   }
 
@@ -41,6 +42,15 @@ export class SupervisorControl {
     return handle;
   }
 
+  // Once structured draining starts, watch assignment is irrevocably closed,
+  // even if a terminal acknowledgement has not yet been received.
+  seal_actor_watch(token) {
+    if(!token||typeof token!=='object'||!this.tokens.has(token))
+      throw new Error('E_CONTROL_CAPABILITY');
+    const slot=this.slots.get(this.tokens.get(token));
+    slot.sealed=true;
+  }
+
   // Zero means watch admitted; any nonzero status is Err<SupervisionError>.
   // A terminal or previously assigned child can never be adopted again.
   watch_actor(supervisor_handle, actor_handle) {
@@ -50,6 +60,7 @@ export class SupervisorControl {
     const slot=this.slots.get(actor_handle);
     if(!slot)return 1;
     if(slot.terminal)return 3;
+    if(slot.sealed)return 4;
     if(slot.watcher!==null)return 2;
     slot.watcher=supervisor_handle;
     slot.parent_id=supervisor_handle;

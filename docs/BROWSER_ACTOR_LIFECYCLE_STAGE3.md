@@ -235,6 +235,10 @@ pub fnc main(): void {
   default parent. Each child may have at most one watched parent, forever;
   duplicate watching returns Err, and terminal actors cannot be adopted.
   The parent attribution is committed before terminal success/failure.
+  As soon as structured drain begins, host watch admission is sealed.
+  A late attempt returns Err even if no terminal acknowledgement has arrived,
+  preventing mid-flight reparenting after message execution begins. Sealing
+  requires the parent-only actor-registration capability.
 - There are at most **four supervisor instances** and **four actor instances**
   per run. Actor mailboxes remain bounded at 32 pending messages each.
   Watch registration never consumes an actor data-message slot. Host
