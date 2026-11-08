@@ -673,11 +673,14 @@ check('actor/reduction-budget-resets-per-message-and-traps-runaway-loop', () => 
   assert.deepEqual(WebAssembly.Module.imports(mod),[]);
   assert.deepEqual(WebAssembly.Module.exports(mod).map(e=>e.name),['receive']);
   const actor=new WebAssembly.Instance(mod,{});
-  assert.equal(actor.exports.receive(120000n),120000n);
-  assert.equal(actor.exports.receive(120000n),120000n,
+  // One actor function entry + loop body iterations + final condition poll
+  // accounts for N+2 ticks. The 1024th slow poll at 128*1024 is terminal.
+  assert.equal(actor.exports.receive(131069n),131069n,
+    '131071 charged ticks must remain within the budget');
+  assert.equal(actor.exports.receive(131069n),131069n,
     'guest reductions must reset at message boundary, not accumulate');
-  assert.throws(()=>actor.exports.receive(200000n),WebAssembly.RuntimeError,
-    'runaway actor loop must hit the compiler fuel trap');
+  assert.throws(()=>actor.exports.receive(131070n),WebAssembly.RuntimeError,
+    '131072nd charged tick must trap before guest returns');
   // Trapped actor instances are terminal in the Web Worker. Fresh instances
   // retain independent quotas and cannot inherit the exhausted fuel global.
   const fresh=new WebAssembly.Instance(mod,{});
