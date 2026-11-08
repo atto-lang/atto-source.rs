@@ -51,6 +51,8 @@ impl std::error::Error for ParseError {}
 enum Kind {
     #[token("pub")]
     Pub,
+    #[token("define")]
+    Define,
     #[token("static")]
     Static,
     #[token("fnc")]
@@ -305,9 +307,18 @@ impl Parser {
         Ok(token)
     }
     fn function(&mut self) -> Result<Function, ParseError> {
+        // Canonical AttoLang permits both "define pub fnc" and
+        // "pub define fnc"; the declaration still must be a scalar fnc.
+        let leading_define = self.peek() == Some(Kind::Define);
+        if leading_define {
+            self.expect(Kind::Define)?;
+        }
         let exported = self.peek() == Some(Kind::Pub);
         if exported {
             self.expect(Kind::Pub)?;
+        }
+        if !leading_define && self.peek() == Some(Kind::Define) {
+            self.expect(Kind::Define)?;
         }
         if self.peek() == Some(Kind::Static) {
             self.expect(Kind::Static)?;
@@ -379,6 +390,27 @@ impl Parser {
                 name: local_name,
                 value,
             });
+        }
+        // A source-level immutable binding must never silently turn into a
+        // write; the Rust scalar compiler does not yet lower let/mut.
+        if let (Some(name), Some(op)) = (
+            self.tokens.get(self.cursor),
+            self.tokens.get(self.cursor + 1),
+        ) {
+            let is_bound = name.kind == Kind::Identifier
+                && (params.iter().any(|param| param == &name.text)
+                    || locals.iter().any(|local| local.name == name.text));
+            let compound_rhs = self.tokens.get(self.cursor + 2).map(|token| token.kind);
+            let is_assignment = op.kind == Kind::Equals
+                || (matches!(op.kind, Kind::Plus | Kind::Minus)
+                    && compound_rhs == Some(Kind::Equals));
+            if is_bound && is_assignment {
+                return Err(ParseError {
+                    offset: name.start,
+                    class: "immutable_binding",
+                    message: "immutable binding cannot be reassigned; let/mut unsupported".into(),
+                });
+            }
         }
         self.expect(Kind::Return)?;
         let expression = self.expression()?;
