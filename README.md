@@ -95,19 +95,27 @@ and emits an import-free actor guest with exactly one
 `atto.browser.actor.scalar.v0` Web Worker contract.
 
 **Experimental actor execution budget (not ordinary `main` guests):**
-a private Wasm counter charges every actor function entry and loop iteration.
-Most ticks only decrement a counter and test for zero; the expensive fuel
-check executes once every **128 ticks**. Each exported `receive` invocation
-resets a **1,024 slow-check** allowance (up to **131,072 charged ticks**),
-while actor call depth is limited to **256 active guest functions**.
-The public entry is a wrapper: recursive calls to the underlying handler
-cannot reset fuel. Over-budget work or deep recursion traps the guest Wasm;
-the dedicated browser worker reports a terminal actor panic and the host
-rejects pending messages. This is a deliberate resource limit, not a
-cooperative `await`/yield or a complete tenant-security boundary.
-The independent host wall-clock watchdog is still required for non-compiler
-or malicious guest modules. Budget values and policy must be versioned
-before exposing them as general language/runtime guarantees.
+the source compiler inserts **immediate guest-private i64 fuel checks** at
+every actor function entry, statement boundary and loop iteration. Each unit
+is charged *before* guest-visible statement effects, and fuel exhaustion
+traps immediately even between the scheduled slow-path polls. The second,
+private i32 countdown performs a slow reduction check only every **128 fuel
+charges**, avoiding expensive scheduler or wall-clock calls on every charge.
+Each exported `receive` resets a **131,072-unit per-message fuel budget** and
+a secondary **1,024 slow-check ceiling**. Actor call depth is bounded to
+**256 active functions**. The public entry is a wrapper, so recursive guest
+calls cannot reset fuel; a browser worker that observes a Wasm trap must be
+retired permanently and fresh messages must use a fresh actor instance.
+
+These are **unweighted unit charges**, not yet a general MIR `ChargeFuel(cost)`
+operation, instruction-accurate CPU accounting, optimizer provenance proof,
+or true cooperative suspension. The compiler emits typed guest Wasm directly;
+it does not run an independent target-level checkpoint verifier. Native
+Wasmtime fuel/epoch and an independently killable host boundary remain
+required for hostile code and untrusted FFI. A Web Worker is not an OS-level
+tenant security sandbox. Keep the companion conformance contract at
+`atto-lang/atto-platform-conformance` at **NOT_EXECUTED** until a scope-specific
+backend receipt is independently verified.
 
 Regular `compile` rejects source containing an actor receive handler; it
 must not erase it or run it as a normal `main` guest. This prototype rejects
