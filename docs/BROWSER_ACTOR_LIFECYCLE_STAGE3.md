@@ -139,3 +139,13 @@ administrator checklist, CODEOWNERS, and the previously tested
 parent-owned actor runtime. Public PR smoke/release verification is
 source-only and does not activate the protected deployment job.
 Do not treat the guarded workflow or CI success as live publication.
+
+## Final read-only governance token fix and compiler candidate pin
+
+The public frontend reference is now exact `fbaf1e7cc6a974cac659aea8ac0e732c3dc5bc86`, including
+read-only `actions:read` and `pages:read` GitHub API scopes for release
+verification and source-only regression tests. Public host PR #21 at
+that head passed 64 Node tests, 31 actual-browser tests and 14 guarded
+release-package tests (release workflow deploy job was skipped).
+CI checks class, enum, and per-actor Web Worker execution against this exact
+host without publicly publishing the candidate compiler or setting approval.
