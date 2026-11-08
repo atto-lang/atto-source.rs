@@ -104,8 +104,12 @@ charges**, avoiding expensive scheduler or wall-clock calls on every charge.
 Each exported `receive` resets a **131,072-unit per-message fuel budget** and
 a secondary **1,024 slow-check ceiling**. Actor call depth is bounded to
 **256 active functions**. The public entry is a wrapper, so recursive guest
-calls cannot reset fuel; a browser worker that observes a Wasm trap must be
-retired permanently and fresh messages must use a fresh actor instance.
+calls cannot reset fuel. An additional private in-flight global is set
+before entering the receive handler and cleared **only after successful return**.
+If fuel, stack, checked arithmetic or another guest operation traps, this
+global remains set and the same Wasm instance rejects every later receive
+call, even if a host catches the trap. The browser worker also terminates;
+fresh messages require a fresh actor instance.
 
 These are **unweighted unit charges**, not yet a general MIR `ChargeFuel(cost)`
 operation, instruction-accurate CPU accounting, optimizer provenance proof,
