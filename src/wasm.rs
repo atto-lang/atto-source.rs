@@ -22,16 +22,19 @@ pub const PANIC_DIV_ZERO: i32 = 2;
 /// Exhaustion of the fixed guest-private, one-page class heap.
 pub const PANIC_HEAP_LIMIT: i32 = 3;
 
-// Scalar actor v0 uses a private, import-free execution meter. Every actor
-// function entry and loop backedge consumes one inexpensive tick. A slow
-// budget check runs only after 128 ticks; one message gets 1024 slow checks.
-// Dedicated-worker watchdog termination remains a separate hard boundary.
+// Scalar actor v0 uses two import-free private accounting mechanisms:
+// (1) immediate saturating i64 fuel denial before guest-visible statements,
+// function entry, or loop iteration; (2) amortized i32 slow-path polls every
+// 128 charges. Worker/watchdog termination remains an independent boundary.
+// This is direct typed-Wasm lowering, not yet a verified post-opt MIR pass.
 const ACTOR_TICK_PERIOD: i32 = 128;
 const ACTOR_SLOW_BUDGET: i32 = 1024;
 const ACTOR_MAX_CALL_DEPTH: i32 = 256;
+const ACTOR_FUEL_BUDGET: i64 = (ACTOR_TICK_PERIOD as i64) * (ACTOR_SLOW_BUDGET as i64);
 const ACTOR_TICK_GLOBAL: u32 = 3;
 const ACTOR_BUDGET_GLOBAL: u32 = 4;
 const ACTOR_DEPTH_GLOBAL: u32 = 5;
+const ACTOR_FUEL_GLOBAL: u32 = 6;
 
 const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
@@ -189,6 +192,19 @@ impl Emit<'_> {
 
     fn actor_poll(&mut self) {
         if !self.actor_metered { return; }
+        // Charge exactly one logical execution unit BEFORE guest side effects,
+        // including in the 127 calls between expensive scheduler polls. A zero
+        // or exhausted i64 quota traps before it may wrap or refuel.
+        self.op(0x23); uleb(&mut self.code, ACTOR_FUEL_GLOBAL as u64);
+        self.i64c(1);
+        self.op(0x58); // i64.le_u: remaining <= charge
+        self.open(0x04, 0x40, Frame::Other);
+        self.op(0x00); // unreachable: actor fuel exhausted
+        self.close();
+        self.op(0x23); uleb(&mut self.code, ACTOR_FUEL_GLOBAL as u64);
+        self.i64c(1);
+        self.op(0x7D); // i64.sub; remains positive, never underflows
+        self.op(0x24); uleb(&mut self.code, ACTOR_FUEL_GLOBAL as u64);
         // Fast path: decrement and branch on the private countdown. No host
         // calls, wall-clock access, allocator work, or slow check each tick.
         self.op(0x23); uleb(&mut self.code, ACTOR_TICK_GLOBAL as u64);
@@ -213,6 +229,10 @@ impl Emit<'_> {
 
     fn stmts(&mut self, s: &[TStmt]) {
         for st in s {
+            // Meter straight-line blocks too: a long chain of assignments,
+            // branches, and calls must not escape until the next loop edge.
+            // The loop header's separate tick covers empty-body infinite loops.
+            self.actor_poll();
             self.stmt(st);
         }
     }
@@ -562,7 +582,9 @@ fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
     if let Some(receive) = actor_receive {
         // Public receive is a wrapper that resets per-message quotas. The
         // original handler stays callable (including recursion) without
-        // resetting the budget. No new imports or memory are introduced.
+        // resetting the budget. A trapping actor worker MUST be retired; a
+        // host must never invoke this wrapper again after a guest trap.
+        // No new imports or memory are introduced.
         func_types.push(types.idx(Sig(vec![I64], vec![I64])));
         let mut wrapper = vec![0]; // zero local declarations
         for (idx, value) in [
@@ -573,6 +595,8 @@ fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
             wrapper.push(0x41); sleb(&mut wrapper, value as i64);
             wrapper.push(0x24); uleb(&mut wrapper, idx as u64);
         }
+        wrapper.push(0x42); sleb(&mut wrapper, ACTOR_FUEL_BUDGET);
+        wrapper.push(0x24); uleb(&mut wrapper, ACTOR_FUEL_GLOBAL as u64);
         wrapper.push(0x20); wrapper.push(0); // local.get 0
         wrapper.push(0x10); uleb(&mut wrapper, layout.func(receive) as u64);
         wrapper.push(0x0B);
@@ -611,7 +635,7 @@ fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
     // Private globals: panic code, heap bump cursor, construction scratch.
     // Reserve at least 16 bytes and align the heap past any string data.
     let heap_start = ((p.data.len() as u32 + 23) / 8) * 8;
-    let mut globals = vec![if actor_receive.is_some() { 6 } else { 3 }, I32, 0x01, 0x41, 0, 0x0B, I32, 0x01, 0x41];
+    let mut globals = vec![if actor_receive.is_some() { 7 } else { 3 }, I32, 0x01, 0x41, 0, 0x0B, I32, 0x01, 0x41];
     sleb(&mut globals, heap_start as i64);
     globals.extend_from_slice(&[0x0B, I32, 0x01, 0x41, 0, 0x0B]);
     if actor_receive.is_some() {
@@ -620,6 +644,9 @@ fn emit_inner(p: &TProgram, actor_receive: Option<u32>) -> Vec<u8> {
             sleb(&mut globals, initial as i64);
             globals.push(0x0B);
         }
+        globals.extend_from_slice(&[I64, 0x01, 0x42]);
+        sleb(&mut globals, ACTOR_FUEL_BUDGET);
+        globals.push(0x0B);
     }
     section(&mut out, 6, globals);
 
