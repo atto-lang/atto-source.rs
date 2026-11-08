@@ -1,9 +1,12 @@
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Actor task completion is provided by the explicit child shutdown protocol.
 import { ActorSession, ACTOR_ADMISSION } from './actor-lifecycle.mjs';
+import { SupervisorControl } from './actor-supervisor.mjs';
 import { validate_actor_guest_imports } from './actor-import-contract.mjs';
 self.onmessage=async ({data})=>{
   const actors=[];
+  // Four reserved CONTROL slots, independent of every 32-message mailbox.
+  const supervisor=new SupervisorControl({capacity:4,parent_id:0});
   try{
     const bytes=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
     if(!WebAssembly.validate(bytes))throw new Error('invalid compiler wasm');
@@ -35,9 +38,16 @@ self.onmessage=async ({data})=>{
       actor_spawn:id=>{
         if(!Number.isInteger(id)||id<0||actors.length>=4)throw new Error('E_ACTOR_LIMIT');
         const child=new Worker('/actor-worker.mjs',{type:'module'});
-        const actor=new ActorSession(child,id,out);
-        actors.push(actor);
-        return actors.length;
+        try {
+          const actor=new ActorSession(child,id,out,{
+            supervisor,actor_handle:actors.length+1,
+          });
+          actors.push(actor);
+          return actors.length;
+        } catch (error) {
+          child.terminate();
+          throw error;
+        }
       },
       actor_send:(handle,value)=>{
         if(!Number.isInteger(handle)||handle<1||handle>actors.length)return ACTOR_ADMISSION.INVALID;
@@ -60,7 +70,9 @@ self.onmessage=async ({data})=>{
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':'trap: '+e.message;
       for(const actor of actors)actor.cancel();
-      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
+      self.postMessage({
+        ok:false,error:stdout+'E_PANIC: '+kind,control:supervisor.drain_control(),
+      });return;
     }
     try{
       if(data.actorMessages!==undefined){
@@ -97,6 +109,15 @@ self.onmessage=async ({data})=>{
       // worker.terminate() or by merely draining an admission queue.
       for(const actor of actors)if(!actor.is_terminal())actor.cancel();
     }
-    self.postMessage({ok:true,value:String(value),stdout});
-  }catch(e){for(const actor of actors)if(!actor.is_terminal())actor.cancel();self.postMessage({ok:false,error:'E_HOST: '+e.message})}
+    const control=supervisor.drain_control();
+    if(control.length!==actors.length ||
+       control.some(notice=>notice.route!=='CONTROL'||notice.state!=='completed'))
+      throw new Error('E_CONTROL_TERMINAL');
+    self.postMessage({ok:true,value:String(value),stdout,control});
+  }catch(e){
+    for(const actor of actors)if(!actor.is_terminal())actor.cancel();
+    self.postMessage({
+      ok:false,error:'E_HOST: '+e.message,control:supervisor.drain_control(),
+    });
+  }
 };
