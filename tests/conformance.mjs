@@ -649,10 +649,11 @@ check('actor/compiler-entrypoints-must-not-confuse-main-and-receive-guests', () 
   assert.deepEqual(WebAssembly.Module.exports(mod).map(x=>x.name),['receive']);
   assert.equal(new WebAssembly.Instance(mod,{}).exports.receive(42n),42n);
 });
-// One private, import-free meter resets at each public receive invocation.
-// The 128-tick fast path amortizes budget checks; trap before endless loops or
-// recursion can consume the worker forever (host watchdog remains independent).
-check('actor/reduction-budget-resets-per-message-and-traps-runaway-loop', () => {
+// Each actor function entry, statement and loop header immediately consumes
+// one private fuel unit. A separate countdown amortizes the slow path to 128
+// charges. Only a new public message gets a fresh allotment; a Web Worker
+// that observes a trap must permanently retire the actor instance.
+check('actor/immediate-fuel-boundary-resets-per-message-and-traps-runaway-loop', () => {
   const src = [
     'define actor Worker as',
     '  receive(int value): int {',
@@ -673,18 +674,53 @@ check('actor/reduction-budget-resets-per-message-and-traps-runaway-loop', () => 
   assert.deepEqual(WebAssembly.Module.imports(mod),[]);
   assert.deepEqual(WebAssembly.Module.exports(mod).map(e=>e.name),['receive']);
   const actor=new WebAssembly.Instance(mod,{});
-  // One actor function entry + loop body iterations + final condition poll
-  // accounts for N+2 ticks. The 1024th slow poll at 128*1024 is terminal.
-  assert.equal(actor.exports.receive(131069n),131069n,
-    '131071 charged ticks must remain within the budget');
-  assert.equal(actor.exports.receive(131069n),131069n,
-    'guest reductions must reset at message boundary, not accumulate');
-  assert.throws(()=>actor.exports.receive(131070n),WebAssembly.RuntimeError,
-    '131072nd charged tick must trap before guest returns');
+  // This compiled actor consumes: one function entry, one initial binding,
+  // one while-statement entry, (loop condition + assignment) * N,
+  // one final condition and one return = 2*N + 5 fuel charges.
+  // Fuel 131072 denies before the 131072nd charged operation.
+  assert.equal(actor.exports.receive(65533n),65533n,
+    '131071 charges fit in the actor fuel budget');
+  assert.equal(actor.exports.receive(65533n),65533n,
+    'per-message fuel must reset at the public wrapper boundary');
+  assert.throws(()=>actor.exports.receive(65534n),WebAssembly.RuntimeError,
+    'the first exhausted unit must trap before its statement effects');
   // Trapped actor instances are terminal in the Web Worker. Fresh instances
   // retain independent quotas and cannot inherit the exhausted fuel global.
   const fresh=new WebAssembly.Instance(mod,{});
   assert.equal(fresh.exports.receive(42n),42n);
+});
+
+
+check('actor/continue-paths-and-straight-line-metering-actually-run-in-wasm', () => {
+  const src=[
+    'define actor Worker as',
+    '  receive(int value): int {',
+    '    let i = 0;',
+    '    let visited = 0;',
+    '    while i < value do',
+    '      i = i + 1;',
+    '      if i < 10 then continue; fi',
+    '      visited = visited + 1;',
+    '    done',
+    '    return visited;',
+    '  }',
+    'end'
+  ].join('\\n');
+  const input=encoder.encode(src);
+  new Uint8Array(api.memory.buffer,api.input_ptr(),input.length).set(input);
+  assert.equal(api.compile_actor(input.length),0,'real compiler must accept continue loop');
+  const guest=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
+  assert.ok(WebAssembly.validate(guest),'the instrumented emitted Wasm must validate');
+  const module=new WebAssembly.Module(guest);
+  assert.deepEqual(WebAssembly.Module.imports(module),[]);
+  assert.deepEqual(WebAssembly.Module.exports(module).map(e=>e.name),['receive']);
+  const instance=new WebAssembly.Instance(module,{});
+  assert.equal(instance.exports.receive(9n),0n);
+  assert.equal(instance.exports.receive(42n),33n);
+  assert.throws(()=>instance.exports.receive(100000n),WebAssembly.RuntimeError,
+    'nonterminating or large continue loop must exhaust local fuel');
+  const fresh=new WebAssembly.Instance(module,{});
+  assert.equal(fresh.exports.receive(15n),6n);
 });
 
 check('actor/recursive-function-depth-bounded-independent-of-loop-fuel', () => {
