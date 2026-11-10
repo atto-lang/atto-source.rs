@@ -70,7 +70,10 @@ fn checked_i64_portable_positive_native_guest_matrix() {
         (include_str!("fixtures/checked_i64_v1/near-min.atto"), 1),
         (include_str!("fixtures/checked_i64_v1/negate.atto"), 42),
         (include_str!("fixtures/checked_i64_v1/dynamic.atto"), 42),
-        (include_str!("fixtures/checked_i64_v1/zero-times-max.atto"), 42),
+        (
+            include_str!("fixtures/checked_i64_v1/zero-times-max.atto"),
+            42,
+        ),
     ] {
         let observed = compile_link_execute(source);
         assert_eq!(observed.code(), Some(expected), "{source:?}: {observed:?}");

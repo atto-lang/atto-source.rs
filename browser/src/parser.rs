@@ -228,7 +228,11 @@ struct Members {
 type R<T> = Result<T, Diagnostic>;
 
 fn unsupported(pos: Pos, what: &str) -> Diagnostic {
-    Diagnostic::new(pos, "E_UNSUPPORTED", format!("{what} is not supported by the browser compiler yet"))
+    Diagnostic::new(
+        pos,
+        "E_UNSUPPORTED",
+        format!("{what} is not supported by the browser compiler yet"),
+    )
 }
 
 impl Parser {
@@ -357,7 +361,9 @@ impl Parser {
 
     fn is_type_word(&self, n: usize) -> bool {
         matches!(self.word_at(n), Some("int" | "bool" | "boolean" | "void"))
-            || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+            || self
+                .word_at(n)
+                .is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -391,12 +397,24 @@ impl Parser {
                     "ActorMail<T> is only the parameter type of an actor receive handler",
                 ))
             }
-            n if is_reserved(n) => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
+            n if is_reserved(n) => {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNKNOWN_TYPE",
+                    format!("unknown type '{n}'"),
+                ))
+            }
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
         };
-        if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
-            return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
+        if matches!(
+            self.peek(),
+            Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe
+        ) {
+            return Err(unsupported(
+                self.pos(),
+                "generic, optional, union and sequence types",
+            ));
         }
         Ok(ty)
     }
@@ -534,7 +552,12 @@ impl Parser {
             let (v, vpos) = self.ident("an enum variant or 'end'")?;
             match self.peek() {
                 Tok::LParen => return Err(unsupported(self.pos(), "enum variants with payloads")),
-                Tok::Assign => return Err(unsupported(self.pos(), "enum variants with explicit values")),
+                Tok::Assign => {
+                    return Err(unsupported(
+                        self.pos(),
+                        "enum variants with explicit values",
+                    ))
+                }
                 Tok::Comma => return Err(self.expected("an enum variant on its own line")),
                 _ => {}
             }
@@ -554,7 +577,11 @@ impl Parser {
                 format!("enum '{name}' needs at least one variant"),
             ));
         }
-        Ok(EnumDecl { name, pos, variants })
+        Ok(EnumDecl {
+            name,
+            pos,
+            variants,
+        })
     }
 
     fn at_close(&self, close: &str) -> bool {
@@ -629,7 +656,11 @@ impl Parser {
                     self.expect(Tok::LParen, "'('")?;
                     let params = self.parse_params()?;
                     let body = self.parse_block()?;
-                    m.ctor = Some(Constructor { pos: mpos, params, body });
+                    m.ctor = Some(Constructor {
+                        pos: mpos,
+                        params,
+                        body,
+                    });
                 }
                 Some("final") => {
                     self.advance();
@@ -677,7 +708,10 @@ impl Parser {
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
                 }
-                Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
+                Some(
+                    w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex"
+                    | "shared"),
+                ) => {
                     return Err(unsupported(self.pos(), &format!("'{w}' members")));
                 }
                 Some("receive") if actor && *self.peek_at(1) == Tok::LParen => {
@@ -838,7 +872,12 @@ impl Parser {
             ));
         }
         let body = self.parse_block()?;
-        Ok(Receive { pos, mail, payload, body })
+        Ok(Receive {
+            pos,
+            mail,
+            payload,
+            body,
+        })
     }
 
     /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.
@@ -912,7 +951,10 @@ impl Parser {
             return Err(Diagnostic::new(
                 self.pos(),
                 "E_TOPLEVEL",
-                format!("expected a 'fnc' declaration, found {}", describe(self.peek())),
+                format!(
+                    "expected a 'fnc' declaration, found {}",
+                    describe(self.peek())
+                ),
             ));
         }
         let (name, pos) = self.ident("a function name")?;
@@ -954,12 +996,21 @@ impl Parser {
 
     fn finish_param(&self, name: String, ty: Type, mutable: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
-            return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_TYPE",
+                "a parameter cannot have type void",
+            ));
         }
         if *self.peek() == Tok::Assign {
             return Err(unsupported(self.pos(), "default parameter values"));
         }
-        Ok(Param { name, ty, mutable, pos })
+        Ok(Param {
+            name,
+            ty,
+            mutable,
+            pos,
+        })
     }
 
     // ----------------------------------------------------------- statements
@@ -1025,7 +1076,9 @@ impl Parser {
                 self.word_at(0),
                 Some("fi" | "end" | "done" | "elif" | "elseif" | "else" | "catch" | "finally")
             );
-        let newline = self.i > 0 && *self.peek() != Tok::Eof && self.toks[self.i - 1].pos.line < self.pos().line;
+        let newline = self.i > 0
+            && *self.peek() != Tok::Eof
+            && self.toks[self.i - 1].pos.line < self.pos().line;
         if boundary || newline {
             Ok(())
         } else {
@@ -1179,7 +1232,11 @@ impl Parser {
             (name, None)
         };
         if ty == Some(Type::Void) {
-            return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_TYPE",
+                "a variable cannot have type void",
+            ));
         }
         if *self.peek() != Tok::Assign {
             return Err(Diagnostic::new(
@@ -1190,7 +1247,13 @@ impl Parser {
         }
         self.advance();
         let init = self.parse_expr()?;
-        Ok(Stmt::Bind { kind, name, ty, init, pos })
+        Ok(Stmt::Bind {
+            kind,
+            name,
+            ty,
+            init,
+            pos,
+        })
     }
 
     fn parse_if(&mut self) -> R<Stmt> {
@@ -1254,7 +1317,11 @@ impl Parser {
         if !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
-                if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
+                if *self.peek() == Tok::Eof {
+                    "E_EOF"
+                } else {
+                    "E_FI"
+                },
                 format!(
                     "expected 'fi' to close the if started at {}:{}, found {}",
                     pos.line,
@@ -1265,7 +1332,11 @@ impl Parser {
         }
         // each elif arm nests one level deeper in the lowered if/else chain
         self.height -= arms.len() as u32 - 1;
-        Ok(Stmt::If { arms, otherwise, pos })
+        Ok(Stmt::If {
+            arms,
+            otherwise,
+            pos,
+        })
     }
 
     fn parse_for(&mut self) -> R<Stmt> {
@@ -1316,7 +1387,11 @@ impl Parser {
             } else {
                 self.expect(Tok::Assign, "'++', '--' or '='")?;
                 let value = self.parse_expr()?;
-                Some(Box::new(Stmt::Assign { name, value, pos: upos }))
+                Some(Box::new(Stmt::Assign {
+                    name,
+                    value,
+                    pos: upos,
+                }))
             }
         };
         if paren {
@@ -1453,7 +1528,9 @@ impl Parser {
                     self.advance();
                     BinOp::Ne
                 }
-                Tok::Ident(s) if s == "is" => return Err(unsupported(pos, "the identity operator 'is'")),
+                Tok::Ident(s) if s == "is" => {
+                    return Err(unsupported(pos, "the identity operator 'is'"))
+                }
                 _ => break,
             };
             self.advance();
@@ -1479,7 +1556,9 @@ impl Parser {
                 Tok::Le => BinOp::Le,
                 Tok::Gt => BinOp::Gt,
                 Tok::Ge => BinOp::Ge,
-                Tok::Ident(s) if s == "as" || s == "matches" => return Err(unsupported(pos, &format!("'{s}'"))),
+                Tok::Ident(s) if s == "as" || s == "matches" => {
+                    return Err(unsupported(pos, &format!("'{s}'")))
+                }
                 _ => break,
             };
             self.advance();
@@ -1587,7 +1666,11 @@ impl Parser {
                 }
                 args.push(self.parse_expr()?);
                 if args.len() > MAX_PARAMS {
-                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        "too many call arguments",
+                    ));
                 }
                 if !self.eat(&Tok::Comma) {
                     break;
@@ -1645,7 +1728,10 @@ impl Parser {
                         }
                     }
                     if matches!(&e.kind, ExprKind::Var(b) if b == "stdio") {
-                        return Err(unsupported(dot, "stdio members other than print and println"));
+                        return Err(unsupported(
+                            dot,
+                            "stdio members other than print and println",
+                        ));
                     }
                     self.advance();
                     let member = match self.peek().clone() {
@@ -1698,12 +1784,19 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
-                let inner = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
+                let inner = if self.cond > 0 {
+                    self.parse_cond()?
+                } else {
+                    self.parse_expr()?
+                };
                 if *self.peek() == Tok::Comma {
                     return Err(unsupported(self.pos(), "tuples"));
                 }
                 self.expect(Tok::RParen, "')'")?;
-                return Ok(Expr { kind: inner.kind, pos });
+                return Ok(Expr {
+                    kind: inner.kind,
+                    pos,
+                });
             }
             Tok::Ident(s) => match s.as_str() {
                 "true" => {
@@ -1714,7 +1807,13 @@ impl Parser {
                     self.advance();
                     ExprKind::Bool(false)
                 }
-                "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
+                "null" => {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_NULL",
+                        "AttoLang has no null value; use Option<T>",
+                    ))
+                }
                 "self" => {
                     self.advance();
                     ExprKind::SelfRef
@@ -1747,9 +1846,8 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
-                    return Err(unsupported(pos, &format!("'{s}' expressions")))
-                }
+                "await" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr"
+                | "typeof" => return Err(unsupported(pos, &format!("'{s}' expressions"))),
                 w if is_reserved(w) => {
                     return Err(Diagnostic::new(
                         pos,
@@ -1775,7 +1873,9 @@ impl Parser {
 
     /// `f<int>(..)` heuristic: `<` Type `>` `(`.
     fn looks_generic(&self) -> bool {
-        matches!(self.peek_at(1), Tok::Ident(_)) && *self.peek_at(2) == Tok::Gt && *self.peek_at(3) == Tok::LParen
+        matches!(self.peek_at(1), Tok::Ident(_))
+            && *self.peek_at(2) == Tok::Gt
+            && *self.peek_at(3) == Tok::LParen
     }
 }
 

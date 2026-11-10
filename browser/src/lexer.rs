@@ -77,7 +77,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         let c = chars[i];
         let pos = Pos { line, col };
         if c == '\0' {
-            return Err(Diagnostic::new(pos, "E_NUL", "NUL characters are not allowed in source"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_NUL",
+                "NUL characters are not allowed in source",
+            ));
         }
         if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
             bump!();
@@ -93,7 +97,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             let mut depth = 0usize;
             loop {
                 if i >= chars.len() {
-                    return Err(Diagnostic::new(pos, "E_COMMENT", "unterminated block comment"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_COMMENT",
+                        "unterminated block comment",
+                    ));
                 }
                 if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
                     depth += 1;
@@ -121,7 +129,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 s.push(chars[i]);
                 bump!();
             }
-            out.push(Token { tok: Tok::Ident(s), pos });
+            out.push(Token {
+                tok: Tok::Ident(s),
+                pos,
+            });
             continue;
         }
         if c.is_ascii_digit() {
@@ -132,14 +143,20 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
                 bump!();
             }
-            if i < chars.len() && (chars[i] == 'x' || chars[i] == 'X' || chars[i] == 'b' || chars[i] == 'o') && digits == "0" {
+            if i < chars.len()
+                && (chars[i] == 'x' || chars[i] == 'X' || chars[i] == 'b' || chars[i] == 'o')
+                && digits == "0"
+            {
                 return Err(Diagnostic::new(
                     pos,
                     "E_INTEGER_LITERAL",
                     "only decimal integer literals are supported",
                 ));
             }
-            if i < chars.len() && chars[i] == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit()) {
+            if i < chars.len()
+                && chars[i] == '.'
+                && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit())
+            {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED_TYPE",
@@ -153,7 +170,12 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     "float literals are not supported by the browser compiler yet",
                 ));
             }
-            if i < chars.len() && chars[i] == 'i' && !chars.get(i + 1).is_some_and(|d| d.is_alphanumeric() || *d == '_') {
+            if i < chars.len()
+                && chars[i] == 'i'
+                && !chars
+                    .get(i + 1)
+                    .is_some_and(|d| d.is_alphanumeric() || *d == '_')
+            {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED_TYPE",
@@ -161,7 +183,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 ));
             }
             if i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_') {
-                return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL", "malformed integer literal"));
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_INTEGER_LITERAL",
+                    "malformed integer literal",
+                ));
             }
             let value = digits.parse::<u64>().ok().filter(|v| *v <= 1u64 << 63);
             if value.is_none() {
@@ -184,7 +210,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             let mut s = String::new();
             loop {
                 if i >= chars.len() || chars[i] == '\n' {
-                    return Err(Diagnostic::new(pos, "E_STRING", "unterminated string literal"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_STRING",
+                        "unterminated string literal",
+                    ));
                 }
                 let ch = chars[i];
                 if ch == quote {
@@ -194,7 +224,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 if ch == '\\' {
                     bump!();
                     if i >= chars.len() {
-                        return Err(Diagnostic::new(pos, "E_STRING", "unterminated string literal"));
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_STRING",
+                            "unterminated string literal",
+                        ));
                     }
                     let e = chars[i];
                     match e {
@@ -213,12 +247,22 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                                 bump!();
                             }
                             if i >= chars.len() || chars[i] != '}' {
-                                return Err(Diagnostic::new(pos, "E_STRING", "malformed \\u{...} escape"));
+                                return Err(Diagnostic::new(
+                                    pos,
+                                    "E_STRING",
+                                    "malformed \\u{...} escape",
+                                ));
                             }
                             let cp = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
                             match cp {
                                 Some(cp) => s.push(cp),
-                                None => return Err(Diagnostic::new(pos, "E_STRING", "invalid Unicode scalar in \\u{...} escape")),
+                                None => {
+                                    return Err(Diagnostic::new(
+                                        pos,
+                                        "E_STRING",
+                                        "invalid Unicode scalar in \\u{...} escape",
+                                    ))
+                                }
                             }
                         }
                         other => s.push(other), // spec 16: unknown escape keeps the character
@@ -229,10 +273,17 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 s.push(ch);
                 bump!();
                 if s.len() > MAX_STRING_BYTES {
-                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "string literal is too long"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_SOURCE_LIMIT",
+                        "string literal is too long",
+                    ));
                 }
             }
-            out.push(Token { tok: Tok::Str(s), pos });
+            out.push(Token {
+                tok: Tok::Str(s),
+                pos,
+            });
             continue;
         }
         let next = chars.get(i + 1).copied();
