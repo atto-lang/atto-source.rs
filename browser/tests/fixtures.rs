@@ -25,7 +25,11 @@ fn positive_fixtures_compile_to_valid_looking_modules() {
     for (name, src) in c.iter().chain(corpus("panic").iter()) {
         let bytes = atto_compiler::compile(src).unwrap_or_else(|d| panic!("{name}: {d}"));
         assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0", "{name}");
-        assert_eq!(atto_compiler::compile(src).unwrap(), bytes, "{name}: deterministic");
+        assert_eq!(
+            atto_compiler::compile(src).unwrap(),
+            bytes,
+            "{name}: deterministic"
+        );
     }
 }
 
@@ -34,7 +38,8 @@ fn negative_fixtures_fail_closed_with_expected_code() {
     let c = corpus("fail");
     assert!(c.len() >= 25);
     for (name, src) in c {
-        let want = header(&src, "expect-error").unwrap_or_else(|| panic!("{name}: no expect-error"));
+        let want =
+            header(&src, "expect-error").unwrap_or_else(|| panic!("{name}: no expect-error"));
         let d = atto_compiler::compile(&src).expect_err(&name);
         assert_eq!(d.code, want, "{name}: {d}");
         if let Some(line) = header(&src, "expect-line") {
@@ -45,7 +50,8 @@ fn negative_fixtures_fail_closed_with_expected_code() {
 
 #[test]
 fn diagnostics_carry_line_and_column() {
-    let d = atto_compiler::compile("pub fnc main(): int {\n  val x = 1;\n  x = 2;\n  return x;\n}").unwrap_err();
+    let d = atto_compiler::compile("pub fnc main(): int {\n  val x = 1;\n  x = 2;\n  return x;\n}")
+        .unwrap_err();
     assert_eq!((d.code, d.pos.line, d.pos.col), ("E_IMMUTABLE", 3, 3));
     let d = atto_compiler::compile("pub fnc main(): int {\n  return y;\n}").unwrap_err();
     assert_eq!((d.code, d.pos.line, d.pos.col), ("E_UNBOUND", 2, 10));
@@ -53,16 +59,31 @@ fn diagnostics_carry_line_and_column() {
 
 #[test]
 fn source_limit_is_enforced() {
-    let big = format!("pub fnc main(): int {{ return 0; }}{}", " ".repeat(atto_compiler::SOURCE_CAP));
-    assert_eq!(atto_compiler::compile(&big).unwrap_err().code, "E_SOURCE_LIMIT");
+    let big = format!(
+        "pub fnc main(): int {{ return 0; }}{}",
+        " ".repeat(atto_compiler::SOURCE_CAP)
+    );
+    assert_eq!(
+        atto_compiler::compile(&big).unwrap_err().code,
+        "E_SOURCE_LIMIT"
+    );
 }
 
 #[test]
 fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
-    let chain = |n: usize, op: &str| format!("pub fnc main(): int {{ return {}; }}", vec!["1"; n].join(op));
+    let chain = |n: usize, op: &str| {
+        format!(
+            "pub fnc main(): int {{ return {}; }}",
+            vec!["1"; n].join(op)
+        )
+    };
     assert!(atto_compiler::compile(&chain(250, " + ")).is_ok());
     for op in [" + ", " * ", " - ", " == ", " < "] {
-        assert_eq!(atto_compiler::compile(&chain(3_000, op)).unwrap_err().code, "E_NESTING", "{op}");
+        assert_eq!(
+            atto_compiler::compile(&chain(3_000, op)).unwrap_err().code,
+            "E_NESTING",
+            "{op}"
+        );
     }
     let elif = |n: usize| {
         let arms = (1..n)
@@ -72,5 +93,8 @@ fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
         format!("pub fnc main(): int {{\nval x = 1;\nif x eq 0 then return 0;\n{arms}\nfi\nreturn 0;\n}}")
     };
     assert!(atto_compiler::compile(&elif(250)).is_ok());
-    assert_eq!(atto_compiler::compile(&elif(300)).unwrap_err().code, "E_NESTING");
+    assert_eq!(
+        atto_compiler::compile(&elif(300)).unwrap_err().code,
+        "E_NESTING"
+    );
 }

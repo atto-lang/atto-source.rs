@@ -84,7 +84,10 @@ fn main() -> ExitCode {
             return Err("--checked-i64 cannot be combined with safety/effect/CFG/fact export: conditional overflow traps are not yet modeled".into());
         }
         if (mode == "--wasm" || mode == "--js") && (profile_seen || freestanding || checked_i64) {
-            return Err("browser targets do not accept native profile, freestanding or checked-i64 flags".into());
+            return Err(
+                "browser targets do not accept native profile, freestanding or checked-i64 flags"
+                    .into(),
+            );
         }
         let source_id = fs::canonicalize(input).map_err(|e| e.to_string())?;
         let object_id = if let Some(path) = output {
@@ -115,7 +118,10 @@ fn main() -> ExitCode {
         if mode == "--wasm" || mode == "--js" {
             let bytes = if mode == "--js" {
                 oreslang_source_rs::transpile_browser(&source).map(String::into_bytes)
-            } else { oreslang_source_rs::compile_browser(&source) }.map_err(|e| e.to_string())?;
+            } else {
+                oreslang_source_rs::compile_browser(&source)
+            }
+            .map_err(|e| e.to_string())?;
             fs::write(output.ok_or("missing Wasm output")?, bytes).map_err(|e| e.to_string())?;
             return Ok(());
         }

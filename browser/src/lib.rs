@@ -9,8 +9,8 @@
 pub mod ast;
 pub mod check;
 pub mod diag;
-pub mod lexer;
 pub mod js;
+pub mod lexer;
 pub mod parser;
 pub mod wasm;
 
@@ -46,13 +46,21 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
 /// Emit JavaScript ESM from the same checked IR as the Wasm target.
 pub fn compile_js(source: &str) -> Result<String, Diagnostic> {
     if source.len() > SOURCE_CAP {
-        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT", "source exceeds 64 KiB"));
+        return Err(Diagnostic::new(
+            Pos { line: 1, col: 1 },
+            "E_SOURCE_LIMIT",
+            "source exceeds 64 KiB",
+        ));
     }
     let program = parser::Parser::new(lexer::lex(source)?).parse_program()?;
     let typed = check::check(&program)?;
     let text = js::emit(&typed);
     if text.len() > wasm::MAX_OUTPUT {
-        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_OUTPUT_LIMIT", "generated ESM exceeds 1 MiB"));
+        return Err(Diagnostic::new(
+            Pos { line: 1, col: 1 },
+            "E_OUTPUT_LIMIT",
+            "generated ESM exceeds 1 MiB",
+        ));
     }
     Ok(text)
 }
@@ -155,11 +163,19 @@ mod abi {
                 Err(_) => {
                     return fail(
                         &mut st,
-                        Diagnostic::new(Pos { line: 1, col: 1 }, "E_UTF8", "source is not valid UTF-8"),
+                        Diagnostic::new(
+                            Pos { line: 1, col: 1 },
+                            "E_UTF8",
+                            "source is not valid UTF-8",
+                        ),
                     )
                 }
             };
-            match if javascript { super::compile_js(source).map(String::into_bytes) } else { super::compile(source) } {
+            match if javascript {
+                super::compile_js(source).map(String::into_bytes)
+            } else {
+                super::compile(source)
+            } {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0

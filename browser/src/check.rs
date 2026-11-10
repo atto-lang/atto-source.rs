@@ -296,18 +296,33 @@ impl Globals<'_> {
     }
 
     fn class(&self, name: &str) -> Option<u32> {
-        self.classes.iter().position(|c| c.name == name).map(|i| i as u32)
+        self.classes
+            .iter()
+            .position(|c| c.name == name)
+            .map(|i| i as u32)
     }
     fn enum_(&self, name: &str) -> Option<u32> {
-        self.enums.iter().position(|c| c.name == name).map(|i| i as u32)
+        self.enums
+            .iter()
+            .position(|c| c.name == name)
+            .map(|i| i as u32)
     }
     fn actor(&self, name: &str) -> Option<u32> {
-        self.actors.iter().position(|c| c.name == name).map(|i| i as u32)
+        self.actors
+            .iter()
+            .position(|c| c.name == name)
+            .map(|i| i as u32)
     }
 }
 
 /// Resolve parser type names against the declaration tables.
-fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> R<Type> {
+fn resolve(
+    t: Type,
+    type_names: &[(String, Pos)],
+    classes: &[String],
+    enums: &[EnumDecl],
+    actors: &[String],
+) -> R<Type> {
     Ok(match t {
         Type::Named(i) => {
             let (n, pos) = &type_names[i as usize];
@@ -316,16 +331,28 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
             } else if let Some(e) = enums.iter().position(|e| e.name == *n) {
                 Type::Enum(e as u32)
             } else if actors.iter().any(|a| a == n) {
-                return Err(type_err(*pos, format!("'{n}' is an actor; its references have type ActorRef<{n}>")));
+                return Err(type_err(
+                    *pos,
+                    format!("'{n}' is an actor; its references have type ActorRef<{n}>"),
+                ));
             } else {
-                return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'")));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_UNKNOWN_TYPE",
+                    format!("unknown type '{n}'"),
+                ));
             }
         }
         Type::NamedRef(i) => {
             let (n, pos) = &type_names[i as usize];
             match actors.iter().position(|a| a == n) {
                 Some(a) => Type::ActorRef(a as u32),
-                None => return Err(type_err(*pos, format!("ActorRef<{n}> needs an actor type, and '{n}' is not one"))),
+                None => {
+                    return Err(type_err(
+                        *pos,
+                        format!("ActorRef<{n}> needs an actor type, and '{n}' is not one"),
+                    ))
+                }
             }
         }
         t => t,
@@ -422,7 +449,10 @@ pub fn check(p: &Program) -> R<TProgram> {
         }
         let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
         sigs.insert(key, (i as u32, params, res(f.ret)?));
-        names.entry(f.name.clone()).or_default().push(f.params.len());
+        names
+            .entry(f.name.clone())
+            .or_default()
+            .push(f.params.len());
     }
 
     // ---- member function indices follow the top-level functions
@@ -452,7 +482,11 @@ pub fn check(p: &Program) -> R<TProgram> {
         }
         Ok(out)
     };
-    let fields_of = |owner: &str, fs: &[Field], actor: bool, global_base: u32| -> R<Vec<FieldInfo>> {
+    let fields_of = |owner: &str,
+                     fs: &[Field],
+                     actor: bool,
+                     global_base: u32|
+     -> R<Vec<FieldInfo>> {
         let mut out: Vec<FieldInfo> = Vec::new();
         for (i, f) in fs.iter().enumerate() {
             if out.iter().any(|o| o.name == f.name) {
@@ -486,7 +520,11 @@ pub fn check(p: &Program) -> R<TProgram> {
                 ty,
                 public: f.public,
                 mode: f.mode,
-                slot: if actor { global_base + i as u32 } else { i as u32 * FIELD_BYTES },
+                slot: if actor {
+                    global_base + i as u32
+                } else {
+                    i as u32 * FIELD_BYTES
+                },
             });
         }
         Ok(out)
@@ -524,7 +562,10 @@ pub fn check(p: &Program) -> R<TProgram> {
             return Err(Diagnostic::new(
                 m.pos,
                 "E_TYPE",
-                format!("actor mailbox handler '{}.receive' parameter must be ActorMail<T>", a.name),
+                format!(
+                    "actor mailbox handler '{}.receive' parameter must be ActorMail<T>",
+                    a.name
+                ),
             ));
         }
         let receive_idx = a.receive.as_ref().map(|_| take());
@@ -721,9 +762,25 @@ pub fn check(p: &Program) -> R<TProgram> {
             if !m.is_static {
                 named.push(("self", me, false));
             }
-            named.extend(m.params.iter().zip(&mi.params).map(|(q, t)| (q.name.as_str(), *t, q.mutable)));
+            named.extend(
+                m.params
+                    .iter()
+                    .zip(&mi.params)
+                    .map(|(q, t)| (q.name.as_str(), *t, q.mutable)),
+            );
             let label = format!("{}.{}", c.name, m.name);
-            let body = body_check(&g, owner, &named, None, mi.ret, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            let body = body_check(
+                &g,
+                owner,
+                &named,
+                None,
+                mi.ret,
+                &m.body,
+                &label,
+                m.pos,
+                &mut imports,
+                &mut data,
+            )?;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: named.iter().map(|x| x.1).collect(),
@@ -741,11 +798,17 @@ pub fn check(p: &Program) -> R<TProgram> {
         let owner = Owner::Actor { a: ai as u32 };
         let mut inits = Vec::new();
         for (f, fi) in a.fields.iter().zip(&info.fields) {
-            inits.push((fi.slot, field_init(&g, f, fi.ty, &a.name, true, &mut imports, &mut data)?));
+            inits.push((
+                fi.slot,
+                field_init(&g, f, fi.ty, &a.name, true, &mut imports, &mut data)?,
+            ));
         }
         if let (Some(r), Some(ridx)) = (&a.receive, info.receive_idx) {
             let label = format!("{}.receive", a.name);
-            let named = [("$value", Type::Int, false), ("$sequence", Type::Int, false)];
+            let named = [
+                ("$value", Type::Int, false),
+                ("$sequence", Type::Int, false),
+            ];
             let body = body_check(
                 &g,
                 owner,
@@ -767,15 +830,21 @@ pub fn check(p: &Program) -> R<TProgram> {
             });
         }
         for (m, mi) in a.methods.iter().zip(&info.methods) {
-            for (q, t) in m.params.iter().zip(&mi.params).map(|(q, t)| (q, *t)).chain(std::iter::once((
-                &Param {
-                    name: String::new(),
-                    ty: mi.ret,
-                    mutable: false,
-                    pos: m.pos,
-                },
-                mi.ret,
-            ))) {
+            for (q, t) in
+                m.params
+                    .iter()
+                    .zip(&mi.params)
+                    .map(|(q, t)| (q, *t))
+                    .chain(std::iter::once((
+                        &Param {
+                            name: String::new(),
+                            ty: mi.ret,
+                            mutable: false,
+                            pos: m.pos,
+                        },
+                        mi.ret,
+                    )))
+            {
                 actor_type_ok(&g, &a.name, t, q.pos)?;
             }
             let named: Vec<(&str, Type, bool)> = m
@@ -785,7 +854,18 @@ pub fn check(p: &Program) -> R<TProgram> {
                 .map(|(q, t)| (q.name.as_str(), *t, q.mutable))
                 .collect();
             let label = format!("{}.{}", a.name, m.name);
-            let body = body_check(&g, owner, &named, None, mi.ret, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            let body = body_check(
+                &g,
+                owner,
+                &named,
+                None,
+                mi.ret,
+                &m.body,
+                &label,
+                m.pos,
+                &mut imports,
+                &mut data,
+            )?;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: mi.params.clone(),
@@ -804,7 +884,10 @@ pub fn check(p: &Program) -> R<TProgram> {
     imports.sort();
     imports.dedup();
     Ok(TProgram {
-        funcs: funcs.into_iter().map(|f| f.expect("every function index is defined")).collect(),
+        funcs: funcs
+            .into_iter()
+            .map(|f| f.expect("every function index is defined"))
+            .collect(),
         main,
         imports,
         data,
@@ -814,7 +897,13 @@ pub fn check(p: &Program) -> R<TProgram> {
     })
 }
 
-fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> String {
+fn tn_plain(
+    t: Type,
+    tn: &[(String, Pos)],
+    classes: &[String],
+    enums: &[EnumDecl],
+    actors: &[String],
+) -> String {
     match t {
         Type::Class(i) => classes[i as usize].clone(),
         Type::Enum(i) => enums[i as usize].name.clone(),
@@ -827,14 +916,32 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
 /// Actors are isolated from sibling classes, enums and other actors.
 fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
     match t {
-        Type::Class(i) => Err(isolation(pos, actor, "sibling class", &g.classes[i as usize].name)),
-        Type::Enum(i) => Err(isolation(pos, actor, "sibling enum", &g.enums[i as usize].name)),
+        Type::Class(i) => Err(isolation(
+            pos,
+            actor,
+            "sibling class",
+            &g.classes[i as usize].name,
+        )),
+        Type::Enum(i) => Err(isolation(
+            pos,
+            actor,
+            "sibling enum",
+            &g.enums[i as usize].name,
+        )),
         Type::ActorRef(i) => Err(isolation(pos, actor, "actor", &g.actors[i as usize].name)),
         _ => Ok(()),
     }
 }
 
-fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, imports: &mut Vec<Import>, data: &mut Vec<u8>) -> R<TE> {
+fn field_init(
+    g: &Globals,
+    f: &Field,
+    ty: Type,
+    owner: &str,
+    actor: bool,
+    imports: &mut Vec<Import>,
+    data: &mut Vec<u8>,
+) -> R<TE> {
     if !const_init(&f.init) {
         return Err(Diagnostic::new(
             f.init.pos,
@@ -899,7 +1006,11 @@ fn body_check(
     cx.scopes.push(Vec::new());
     let tbody = cx.stmts(body)?;
     if ret != Type::Void && !returns(&tbody) {
-        let what = if matches!(owner, Owner::TopLevel) { "fnc" } else { "method" };
+        let what = if matches!(owner, Owner::TopLevel) {
+            "fnc"
+        } else {
+            "method"
+        };
         return Err(Diagnostic::new(
             pos,
             "E_RETURN",
@@ -916,7 +1027,9 @@ fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
-        TStmt::Loop { cond: None, body, .. } => !breaks(body),
+        TStmt::Loop {
+            cond: None, body, ..
+        } => !breaks(body),
         TStmt::Block(b) => returns(b),
         _ => false,
     })
@@ -926,14 +1039,22 @@ fn returns(body: &[TStmt]) -> bool {
 fn breaks(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Break => true,
-        TStmt::If(arms, other) => arms.iter().any(|(_, b)| breaks(b)) || other.as_ref().is_some_and(|b| breaks(b)),
+        TStmt::If(arms, other) => {
+            arms.iter().any(|(_, b)| breaks(b)) || other.as_ref().is_some_and(|b| breaks(b))
+        }
         TStmt::Block(b) => breaks(b),
         _ => false,
     })
 }
 
 impl<'a> FnCx<'a> {
-    fn new(g: &'a Globals<'a>, owner: Owner, ret: Type, imports: &'a mut Vec<Import>, data: &'a mut Vec<u8>) -> Self {
+    fn new(
+        g: &'a Globals<'a>,
+        owner: Owner,
+        ret: Type,
+        imports: &'a mut Vec<Import>,
+        data: &'a mut Vec<u8>,
+    ) -> Self {
         FnCx {
             g,
             owner,
@@ -961,7 +1082,11 @@ impl<'a> FnCx<'a> {
     }
 
     fn lookup(&self, name: &str) -> Option<&Local> {
-        self.scopes.iter().rev().flat_map(|s| s.iter().rev()).find(|l| l.name == name)
+        self.scopes
+            .iter()
+            .rev()
+            .flat_map(|s| s.iter().rev())
+            .find(|l| l.name == name)
     }
 
     fn resolve(&self, t: Type, pos: Pos) -> R<Type> {
@@ -976,10 +1101,18 @@ impl<'a> FnCx<'a> {
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
-            return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+            return Err(Diagnostic::new(
+                pos,
+                "E_DUPLICATE",
+                format!("duplicate binding '{name}'"),
+            ));
         }
         if name == "self" {
-            return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_RESERVED",
+                "'self' cannot be rebound",
+            ));
         }
         let slot = self.temp(ty, pos)?;
         self.scopes.last_mut().unwrap().push(Local {
@@ -1015,7 +1148,8 @@ impl<'a> FnCx<'a> {
 
     fn looped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.loops += 1;
-        self.loop_floors.push(self.nparams + self.locals.len() as u32);
+        self.loop_floors
+            .push(self.nparams + self.locals.len() as u32);
         let r = self.scoped(body);
         self.loop_floors.pop();
         self.loops -= 1;
@@ -1031,7 +1165,10 @@ impl<'a> FnCx<'a> {
         if c.ty != Type::Bool {
             return Err(type_err(
                 e.pos,
-                format!("{what} condition must have type bool, found {}", self.tn(c.ty)),
+                format!(
+                    "{what} condition must have type bool, found {}",
+                    self.tn(c.ty)
+                ),
             ));
         }
         Ok(c)
@@ -1039,7 +1176,13 @@ impl<'a> FnCx<'a> {
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
         Ok(match s {
-            Stmt::Bind { kind, name, ty, init, pos } => {
+            Stmt::Bind {
+                kind,
+                name,
+                ty,
+                init,
+                pos,
+            } => {
                 let want = match ty {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
@@ -1063,7 +1206,13 @@ impl<'a> FnCx<'a> {
             Stmt::Assign { name, value, pos } => {
                 let (slot, ty, mutable, mail) = match self.lookup(name) {
                     Some(l) => (l.slot, l.ty, l.mutable, l.mail.is_some()),
-                    None => return Err(Diagnostic::new(*pos, "E_UNBOUND", format!("unknown name '{name}'"))),
+                    None => {
+                        return Err(Diagnostic::new(
+                            *pos,
+                            "E_UNBOUND",
+                            format!("unknown name '{name}'"),
+                        ))
+                    }
                 };
                 if !mutable || mail {
                     return Err(Diagnostic::new(
@@ -1076,14 +1225,23 @@ impl<'a> FnCx<'a> {
                 if v.ty != ty {
                     return Err(type_err(
                         value.pos,
-                        format!("cannot assign {} to '{name}' of type {}", self.tn(v.ty), self.tn(ty)),
+                        format!(
+                            "cannot assign {} to '{name}' of type {}",
+                            self.tn(v.ty),
+                            self.tn(ty)
+                        ),
                     ));
                 }
                 // a reassigned object binding owns a value again
                 self.moved.remove(&slot);
                 TStmt::Set(slot, v)
             }
-            Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
+            Stmt::FieldAssign {
+                target,
+                field,
+                value,
+                pos,
+            } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
@@ -1094,19 +1252,27 @@ impl<'a> FnCx<'a> {
                         format!("return needs a value of type {}", self.tn(t)),
                     ))
                 }
-                (Some(e), Type::Void) => return Err(type_err(e.pos, "a void fnc cannot return a value")),
+                (Some(e), Type::Void) => {
+                    return Err(type_err(e.pos, "a void fnc cannot return a value"))
+                }
                 (Some(e), t) => {
                     let v = self.consume(e)?;
                     if v.ty != t {
                         return Err(type_err(
                             e.pos,
-                            format!("return value has type {} but expected {}", self.tn(v.ty), self.tn(t)),
+                            format!(
+                                "return value has type {} but expected {}",
+                                self.tn(v.ty),
+                                self.tn(t)
+                            ),
                         ));
                     }
                     TStmt::Return(Some(v))
                 }
             },
-            Stmt::If { arms, otherwise, .. } => {
+            Stmt::If {
+                arms, otherwise, ..
+            } => {
                 // Ownership after the if is the union over arms that can
                 // fall through; arms that always return do not contribute.
                 let mut out = Vec::new();
@@ -1155,7 +1321,11 @@ impl<'a> FnCx<'a> {
                 }
             }
             Stmt::For {
-                init, cond, update, body, ..
+                init,
+                cond,
+                update,
+                body,
+                ..
             } => {
                 self.scopes.push(Vec::new());
                 let r = (|| {
@@ -1184,7 +1354,11 @@ impl<'a> FnCx<'a> {
             }
             Stmt::Break(pos) | Stmt::Continue(pos) => {
                 if self.loops == 0 {
-                    let w = if matches!(s, Stmt::Break(_)) { "break" } else { "continue" };
+                    let w = if matches!(s, Stmt::Break(_)) {
+                        "break"
+                    } else {
+                        "continue"
+                    };
                     return Err(Diagnostic::new(
                         *pos,
                         "E_LOOP",
@@ -1212,7 +1386,11 @@ impl<'a> FnCx<'a> {
         match self.owner {
             Owner::Class { c, ctor, is_static } => {
                 if is_static {
-                    return Err(Diagnostic::new(target.pos, "E_UNBOUND", "unknown name 'self'"));
+                    return Err(Diagnostic::new(
+                        target.pos,
+                        "E_UNBOUND",
+                        "unknown name 'self'",
+                    ));
                 }
                 let class = &self.g.classes[c as usize];
                 let f = match class.fields.iter().find(|f| f.name == field) {
@@ -1247,7 +1425,11 @@ impl<'a> FnCx<'a> {
                 if v.ty != fty {
                     return Err(type_err(
                         value.pos,
-                        format!("cannot assign {} to field '{field}' of type {}", self.tn(v.ty), self.tn(fty)),
+                        format!(
+                            "cannot assign {} to field '{field}' of type {}",
+                            self.tn(v.ty),
+                            self.tn(fty)
+                        ),
                     ));
                 }
                 Ok(TStmt::FieldSet {
@@ -1287,12 +1469,20 @@ impl<'a> FnCx<'a> {
                 if v.ty != fty {
                     return Err(type_err(
                         value.pos,
-                        format!("cannot assign {} to field '{field}' of type {}", self.tn(v.ty), self.tn(fty)),
+                        format!(
+                            "cannot assign {} to field '{field}' of type {}",
+                            self.tn(v.ty),
+                            self.tn(fty)
+                        ),
                     ));
                 }
                 Ok(TStmt::GlobalSet(global, v))
             }
-            _ => Err(Diagnostic::new(target.pos, "E_UNBOUND", "unknown name 'self'")),
+            _ => Err(Diagnostic::new(
+                target.pos,
+                "E_UNBOUND",
+                "unknown name 'self'",
+            )),
         }
     }
 
@@ -1325,19 +1515,25 @@ impl<'a> FnCx<'a> {
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
-            ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
-                e: TExpr::I64(i64::MIN),
-                ty: Type::Int,
-            }),
+            ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => {
+                Ok(TE {
+                    e: TExpr::I64(i64::MIN),
+                    ty: Type::Int,
+                })
+            }
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             // receivers that are not names recurse; keep that path thin
-            ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
+            ExprKind::Member(base, name)
+                if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) =>
+            {
                 let obj = self.value(base)?;
                 self.member_on(obj, name, e.pos)
             }
-            ExprKind::MethodCall(base, name, args) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
+            ExprKind::MethodCall(base, name, args)
+                if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) =>
+            {
                 let recv = self.value(base)?;
                 self.method_on(recv, name, args, e.pos)
             }
@@ -1373,7 +1569,10 @@ impl<'a> FnCx<'a> {
                 }
                 UnOp::Not => {
                     if v.ty != Type::Bool {
-                        return Err(type_err(pos, format!("'!' needs a bool operand, found {}", self.tn(v.ty))));
+                        return Err(type_err(
+                            pos,
+                            format!("'!' needs a bool operand, found {}", self.tn(v.ty)),
+                        ));
                     }
                     TE {
                         e: TExpr::Not(Box::new(v)),
@@ -1620,7 +1819,9 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(
                     base_pos,
                     "E_UNSUPPORTED",
-                    format!("field initializers may only read enum variants; '{enum_name}' is not an enum"),
+                    format!(
+                    "field initializers may only read enum variants; '{enum_name}' is not an enum"
+                ),
                 ))
             }
         };
@@ -1643,14 +1844,27 @@ impl<'a> FnCx<'a> {
             return Err(isolation(pos, me, "sibling class", class));
         }
         if matches!(self.owner, Owner::FieldInit { .. }) {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "'new' in a field initializer"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                "'new' in a field initializer",
+            ));
         }
         let ci = match self.g.class(class) {
             Some(c) => c,
             None if self.g.actor(class).is_some() => {
-                return Err(type_err(pos, format!("'{class}' is an actor; start it with spawn {class}()")))
+                return Err(type_err(
+                    pos,
+                    format!("'{class}' is an actor; start it with spawn {class}()"),
+                ))
             }
-            None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown class '{class}'"))),
+            None => {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNBOUND",
+                    format!("unknown class '{class}'"),
+                ))
+            }
         };
         let info = &self.g.classes[ci as usize];
         if args.len() != info.ctor_params.len() {
@@ -1762,7 +1976,11 @@ impl<'a> FnCx<'a> {
         }
         if let ExprKind::SelfRef = base.kind {
             match self.owner {
-                Owner::Class { c, is_static: false, .. } => {
+                Owner::Class {
+                    c,
+                    is_static: false,
+                    ..
+                } => {
                     return self.field_get(
                         TE {
                             e: TExpr::Local(0),
@@ -1786,7 +2004,13 @@ impl<'a> FnCx<'a> {
                         )),
                     };
                 }
-                _ => return Err(Diagnostic::new(base.pos, "E_UNBOUND", "unknown name 'self'")),
+                _ => {
+                    return Err(Diagnostic::new(
+                        base.pos,
+                        "E_UNBOUND",
+                        "unknown name 'self'",
+                    ))
+                }
             }
         }
         let obj = self.value(base)?;
@@ -1802,7 +2026,10 @@ impl<'a> FnCx<'a> {
                 "E_PRIVATE",
                 "actor fields are private mailbox-owned state; communicate with send(...)",
             )),
-            t => Err(type_err(pos, format!("{} has no member '{name}'", self.tn(t)))),
+            t => Err(type_err(
+                pos,
+                format!("{} has no member '{name}'", self.tn(t)),
+            )),
         }
     }
 
@@ -1861,7 +2088,10 @@ impl<'a> FnCx<'a> {
                         }
                     };
                     if !m.is_static {
-                        return Err(type_err(pos, format!("'{n}.{name}' is an instance method; call it on an instance")));
+                        return Err(type_err(
+                            pos,
+                            format!("'{n}.{name}' is an instance method; call it on an instance"),
+                        ));
                     }
                     if !m.public && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(
@@ -1879,14 +2109,22 @@ impl<'a> FnCx<'a> {
                     });
                 }
                 if self.g.enum_(n).is_some() || self.g.actor(n).is_some() {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED", format!("'{n}' has no callable members")));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED",
+                        format!("'{n}' has no callable members"),
+                    ));
                 }
             }
         }
         // self.method(args)
         if let ExprKind::SelfRef = base.kind {
             match self.owner {
-                Owner::Class { c, is_static: false, .. } => {
+                Owner::Class {
+                    c,
+                    is_static: false,
+                    ..
+                } => {
                     let recv = TE {
                         e: TExpr::Local(0),
                         ty: Type::Class(c),
@@ -1920,7 +2158,13 @@ impl<'a> FnCx<'a> {
                         ty: m.ret,
                     });
                 }
-                _ => return Err(Diagnostic::new(base.pos, "E_UNBOUND", "unknown name 'self'")),
+                _ => {
+                    return Err(Diagnostic::new(
+                        base.pos,
+                        "E_UNBOUND",
+                        "unknown name 'self'",
+                    ))
+                }
             }
         }
         let recv = self.value(base)?;
@@ -1974,7 +2218,10 @@ impl<'a> FnCx<'a> {
                     ty: Type::Void,
                 })
             }
-            t => Err(type_err(pos, format!("{} has no method '{name}'", self.tn(t)))),
+            t => Err(type_err(
+                pos,
+                format!("{} has no method '{name}'", self.tn(t)),
+            )),
         }
     }
 
@@ -2016,7 +2263,11 @@ impl<'a> FnCx<'a> {
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                "calls in a field initializer",
+            ));
         }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
@@ -2059,15 +2310,22 @@ impl<'a> FnCx<'a> {
                 let (offset, len) = self.string(s, pos)?;
                 self.imports.push(Import::PrintStr);
                 return Ok(TE {
-                    e: TExpr::PrintStr { offset, len, newline },
+                    e: TExpr::PrintStr {
+                        offset,
+                        len,
+                        newline,
+                    },
                     ty: Type::Void,
                 });
             }
             let v = self.value(&args[0])?;
             return match v.ty {
                 Type::Int | Type::Bool => {
-                    self.imports
-                        .push(if v.ty == Type::Int { Import::PrintI64 } else { Import::PrintBool });
+                    self.imports.push(if v.ty == Type::Int {
+                        Import::PrintI64
+                    } else {
+                        Import::PrintBool
+                    });
                     Ok(TE {
                         e: TExpr::Print {
                             value: Box::new(v),
@@ -2080,7 +2338,10 @@ impl<'a> FnCx<'a> {
                 t => Err(Diagnostic::new(
                     args[0].pos,
                     "E_UNSUPPORTED",
-                    format!("printing a {} value is not supported by the browser compiler yet", self.tn(t)),
+                    format!(
+                        "printing a {} value is not supported by the browser compiler yet",
+                        self.tn(t)
+                    ),
                 )),
             };
         }
@@ -2105,7 +2366,11 @@ impl<'a> FnCx<'a> {
                         "E_ARITY",
                         format!(
                             "call arity mismatch: '{name}' takes {} argument(s), found {}",
-                            arities.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" or "),
+                            arities
+                                .iter()
+                                .map(|a| a.to_string())
+                                .collect::<Vec<_>>()
+                                .join(" or "),
                             args.len()
                         ),
                     ),
@@ -2127,7 +2392,11 @@ impl<'a> FnCx<'a> {
 
     fn string(&mut self, s: &str, pos: Pos) -> R<(u32, u32)> {
         if self.data.len() + s.len() > MAX_STRING_DATA {
-            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too much string literal data"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_SOURCE_LIMIT",
+                "too much string literal data",
+            ));
         }
         let offset = self.data.len() as u32;
         self.data.extend_from_slice(s.as_bytes());
@@ -2144,7 +2413,10 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED",
-                    format!("printing class '{}' with enum field '{}' is not supported yet", class.name, f.name),
+                    format!(
+                        "printing class '{}' with enum field '{}' is not supported yet",
+                        class.name, f.name
+                    ),
                 ));
             }
             if i > 0 {
@@ -2161,8 +2433,11 @@ impl<'a> FnCx<'a> {
             let (off, len) = self.string(&s, pos)?;
             pieces.push(PrintPiece::Str(off, len));
             if let Some((offset, ty)) = field {
-                self.imports
-                    .push(if ty == Type::Int { Import::PrintI64 } else { Import::PrintBool });
+                self.imports.push(if ty == Type::Int {
+                    Import::PrintI64
+                } else {
+                    Import::PrintBool
+                });
                 pieces.push(PrintPiece::Field(offset, ty));
             }
         }

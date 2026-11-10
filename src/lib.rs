@@ -6,10 +6,10 @@ pub mod flow;
 pub mod frontend;
 pub mod mir;
 pub mod profile;
-pub mod safety;
-pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;
+pub mod safety;
+pub mod static_facts;
 
 /// Compile the current scalar grammar with opt-in signed i64 overflow traps.
 /// No safety/effect certificate is emitted: those IR schemas cannot yet
@@ -51,6 +51,12 @@ pub fn compile_with_effect_ir(source: &str) -> Result<(Vec<u8>, serde_json::Valu
     let object = codegen::emit_object(&module)?;
     Ok((object, effects))
 }
+/// Canonical browser target: source to core Wasm with the browser v2 actor ABI.
+/// This target has its own explicit subset; native Cranelift actor parity is pending.
+pub use atto_compiler::compile as compile_browser;
+/// Emit ESM from the canonical browser target checker.
+pub use atto_compiler::compile_js as transpile_browser;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,9 +105,3 @@ mod tests {
         assert!(compile("define actor Foo as end").is_err());
     }
 }
-
-/// Canonical browser target: source to core Wasm with the browser v2 actor ABI.
-/// This target has its own explicit subset; native Cranelift actor parity is pending.
-pub use atto_compiler::compile as compile_browser;
-/// Emit ESM from the canonical browser target checker.
-pub use atto_compiler::compile_js as transpile_browser;

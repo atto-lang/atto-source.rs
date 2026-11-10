@@ -111,7 +111,10 @@ struct Layout {
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
-        self.imports.iter().position(|x| *x == i).expect("import registered by checker") as u32
+        self.imports
+            .iter()
+            .position(|x| *x == i)
+            .expect("import registered by checker") as u32
     }
     fn helper(&self, h: u32) -> u32 {
         debug_assert!(h < self.helpers);
@@ -169,7 +172,11 @@ impl Emit<'_> {
         uleb(&mut self.code, idx as u64);
     }
     fn br_to(&mut self, f: Frame) {
-        let at = self.frames.iter().rposition(|x| *x == f).expect("loop frame");
+        let at = self
+            .frames
+            .iter()
+            .rposition(|x| *x == f)
+            .expect("loop frame");
         self.op(0x0C);
         uleb(&mut self.code, (self.frames.len() - 1 - at) as u64);
     }
@@ -196,7 +203,12 @@ impl Emit<'_> {
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
             }
-            TStmt::FieldSet { obj, offset, ty, value } => {
+            TStmt::FieldSet {
+                obj,
+                offset,
+                ty,
+                value,
+            } => {
                 self.expr(obj);
                 self.expr(value);
                 field_op(&mut self.code, *ty, *offset, true);
@@ -204,7 +216,12 @@ impl Emit<'_> {
             TStmt::GlobalSet(g, v) => {
                 self.i32c(0);
                 self.expr(v);
-                field_op(&mut self.code, self.l.state_types[*g as usize], self.l.state_base + g * 8, true);
+                field_op(
+                    &mut self.code,
+                    self.l.state_types[*g as usize],
+                    self.l.state_base + g * 8,
+                    true,
+                );
             }
             TStmt::Expr(v) => {
                 self.expr(v);
@@ -331,7 +348,11 @@ impl Emit<'_> {
                     self.call(self.l.import(Import::PrintNewline));
                 }
             }
-            TExpr::PrintStr { offset, len, newline } => {
+            TExpr::PrintStr {
+                offset,
+                len,
+                newline,
+            } => {
                 self.i32c(*offset as i32);
                 self.i32c(*len as i32);
                 self.call(self.l.import(Import::PrintStr));
@@ -364,7 +385,12 @@ impl Emit<'_> {
                 }
                 self.call(self.l.import(Import::ActorSend));
             }
-            TExpr::PrintObj { obj, tmp, pieces, newline } => {
+            TExpr::PrintObj {
+                obj,
+                tmp,
+                pieces,
+                newline,
+            } => {
                 self.expr(obj);
                 self.op(0x21);
                 uleb(&mut self.code, *tmp as u64);
@@ -379,7 +405,11 @@ impl Emit<'_> {
                             self.op(0x20);
                             uleb(&mut self.code, *tmp as u64);
                             field_op(&mut self.code, *ty, *offset, false);
-                            let imp = if *ty == Type::Int { Import::PrintI64 } else { Import::PrintBool };
+                            let imp = if *ty == Type::Int {
+                                Import::PrintI64
+                            } else {
+                                Import::PrintBool
+                            };
                             self.call(self.l.import(imp));
                         }
                     }
@@ -408,7 +438,8 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
 
     // add: r = a + b; overflow iff ((a ^ r) & (b ^ r)) < 0
     let mut c = vec![
-        0x20, 0, 0x20, 1, 0x7C, 0x21, 2, 0x20, 0, 0x20, 2, 0x85, 0x20, 1, 0x20, 2, 0x85, 0x83, 0x42, 0, 0x53, 0x04, 0x40,
+        0x20, 0, 0x20, 1, 0x7C, 0x21, 2, 0x20, 0, 0x20, 2, 0x85, 0x20, 1, 0x20, 2, 0x85, 0x83,
+        0x42, 0, 0x53, 0x04, 0x40,
     ];
     panic(&mut c, PANIC_OVERFLOW);
     c.extend_from_slice(&[0x0B, 0x20, 2, 0x0B]);
@@ -416,7 +447,8 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
 
     // sub: r = a - b; overflow iff ((a ^ b) & (a ^ r)) < 0
     let mut c = vec![
-        0x20, 0, 0x20, 1, 0x7D, 0x21, 2, 0x20, 0, 0x20, 1, 0x85, 0x20, 0, 0x20, 2, 0x85, 0x83, 0x42, 0, 0x53, 0x04, 0x40,
+        0x20, 0, 0x20, 1, 0x7D, 0x21, 2, 0x20, 0, 0x20, 1, 0x85, 0x20, 0, 0x20, 2, 0x85, 0x83,
+        0x42, 0, 0x53, 0x04, 0x40,
     ];
     panic(&mut c, PANIC_OVERFLOW);
     c.extend_from_slice(&[0x0B, 0x20, 2, 0x0B]);
@@ -527,7 +559,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     for (i, f) in p.funcs.iter().enumerate() {
         let params: Vec<u8> = f.params.iter().map(|t| vt(*t).unwrap()).collect();
         let is_void_main = i as u32 == p.main && main_void;
-        let results: Vec<u8> = if is_void_main { vec![I64] } else { vt(f.ret).into_iter().collect() };
+        let results: Vec<u8> = if is_void_main {
+            vec![I64]
+        } else {
+            vt(f.ret).into_iter().collect()
+        };
         func_types.push(types.idx(Sig(params, results)));
         let mut e = Emit {
             l: &layout,
@@ -612,7 +648,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     let has_memory = !p.data.is_empty() || p.heap || has_actors;
     if has_memory {
         // Fixed, non-shared wasm32: strings, aligned actor slots, object heap.
-        let pages = if p.heap { HEAP_PAGES } else { heap_start.div_ceil(65536).max(1) };
+        let pages = if p.heap {
+            HEAP_PAGES
+        } else {
+            heap_start.div_ceil(65536).max(1)
+        };
         let mut m = vec![1, 0x01];
         uleb(&mut m, pages as u64);
         uleb(&mut m, pages as u64);
@@ -631,7 +671,10 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     section(&mut out, 6, gsec);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 });
+    uleb(
+        &mut exp,
+        2 + u64::from(has_memory) + if has_actors { 2 } else { 0 },
+    );
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -670,7 +713,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
 
     // custom "name" section: function names for readable traps and stack traces
     let mut names = Vec::new();
-    let mut helper_names = vec!["atto.checked_add", "atto.checked_sub", "atto.checked_mul", "atto.checked_neg"];
+    let mut helper_names = vec![
+        "atto.checked_add",
+        "atto.checked_sub",
+        "atto.checked_mul",
+        "atto.checked_neg",
+    ];
     if p.heap {
         helper_names.push("atto.alloc");
     }

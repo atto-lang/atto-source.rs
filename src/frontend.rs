@@ -457,13 +457,14 @@ impl Parser {
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
-                let integer = normalized_integer_digits(&t)?
-                    .parse::<i64>()
-                    .map_err(|_| ParseError {
-                        offset: t.start,
-                        class: "integer_overflow",
-                        message: "i64 integer literal overflow".into(),
-                    })?;
+                let integer =
+                    normalized_integer_digits(&t)?
+                        .parse::<i64>()
+                        .map_err(|_| ParseError {
+                            offset: t.start,
+                            class: "integer_overflow",
+                            message: "i64 integer literal overflow".into(),
+                        })?;
                 Ok(Expr::Integer(integer))
             }
             Some(Kind::Identifier) => {
