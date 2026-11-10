@@ -1,0 +1,7 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+pub fnc main(): int {
+  for (const x of xs) do
+  done
+  return 0;
+}

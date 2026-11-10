@@ -72,14 +72,19 @@ fn main() -> ExitCode {
             [_, flag, input] if flag == "--cfg-ir" => ("cfg", input.as_str(), None, None, None),
             [_, flag, input, units] if flag == "--cfg-ir" => ("cfg", input.as_str(), None, None,
                 Some(units.parse::<u64>().map_err(|_| "invalid abstract compute budget")?)),
+            [_, flag, input, output] if flag == "--wasm" || flag == "--js" =>
+                (flag.as_str(), input.as_str(), Some(output.as_str()), None, None),
             [_, input, output] if !input.starts_with("--") =>
                 ("object", input.as_str(), Some(output.as_str()), None, None),
-            _ => return Err("usage: oresc [--release|--strict-aot|--hard-rt] [--freestanding] [--checked-i64] --safety-ir <source.ores> [abstract-budget] | --flow <max-uninterrupted-units> <source.ores> | --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
+            _ => return Err("usage: oresc [--release|--strict-aot|--hard-rt] [--freestanding] [--checked-i64] --wasm <source.atto> <out.wasm> | --safety-ir <source.ores> [abstract-budget] | --flow <max-uninterrupted-units> <source.ores> | --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
         };
         // Current analysis exporters model only linear scalar computations.
         // Refuse to issue falsely complete facts for checked overflow traps.
         if checked_i64 && mode != "object" {
             return Err("--checked-i64 cannot be combined with safety/effect/CFG/fact export: conditional overflow traps are not yet modeled".into());
+        }
+        if (mode == "--wasm" || mode == "--js") && (profile_seen || freestanding || checked_i64) {
+            return Err("browser targets do not accept native profile, freestanding or checked-i64 flags".into());
         }
         let source_id = fs::canonicalize(input).map_err(|e| e.to_string())?;
         let object_id = if let Some(path) = output {
@@ -106,6 +111,13 @@ fn main() -> ExitCode {
             .map_err(|e| e.to_string())?;
         if source.len() > MAX_SOURCE_BYTES {
             return Err("source too large: exceeds 1 MiB admission budget".into());
+        }
+        if mode == "--wasm" || mode == "--js" {
+            let bytes = if mode == "--js" {
+                oreslang_source_rs::transpile_browser(&source).map(String::into_bytes)
+            } else { oreslang_source_rs::compile_browser(&source) }.map_err(|e| e.to_string())?;
+            fs::write(output.ok_or("missing Wasm output")?, bytes).map_err(|e| e.to_string())?;
+            return Ok(());
         }
         let parsed = frontend::parse(&source).map_err(|e| e.to_string())?;
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;

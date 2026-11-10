@@ -1,0 +1,17 @@
+// expect-exit: 3
+// expect-stdout: 1
+// expect-stdout: 2
+fnc show(int a): void {
+  stdio.println(a);
+  return;
+}
+
+fnc show_twice(int a): void {
+  show(a);
+  show(a + 1);
+}
+
+pub fnc main(): int {
+  show_twice(1);
+  return 3;
+}

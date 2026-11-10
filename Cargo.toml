@@ -5,6 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
+atto-compiler-browser = { path = "browser" }
 logos = "0.16.1"
 cranelift = { version = "0.136.3", features = ["module", "object", "native"] }
 serde_json = "1.0"

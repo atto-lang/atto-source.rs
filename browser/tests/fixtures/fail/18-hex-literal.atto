@@ -1,0 +1,6 @@
+// spec 16: decimal only
+// expect-error: E_INTEGER_LITERAL
+// java: rejects
+pub fnc main(): int {
+  return 0x2A;
+}

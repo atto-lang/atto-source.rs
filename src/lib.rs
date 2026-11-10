@@ -99,3 +99,9 @@ mod tests {
         assert!(compile("define actor Foo as end").is_err());
     }
 }
+
+/// Canonical browser target: source to core Wasm with the browser v2 actor ABI.
+/// This target has its own explicit subset; native Cranelift actor parity is pending.
+pub use atto_compiler::compile as compile_browser;
+/// Emit ESM from the canonical browser target checker.
+pub use atto_compiler::compile_js as transpile_browser;

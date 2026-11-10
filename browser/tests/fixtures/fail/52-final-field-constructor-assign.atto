@@ -1,0 +1,7 @@
+// expect-error: E_IMMUTABLE
+// java: rejects
+define class P as
+    final int x: 1
+    constructor(int v) { self.x = v; }
+end
+pub fnc main(): int { val p = new P(3); return 0; }

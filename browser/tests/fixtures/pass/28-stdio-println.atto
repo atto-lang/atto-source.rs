@@ -1,0 +1,15 @@
+// expect-exit: 0
+// expect-stdout: 5
+// expect-stdout: hi
+// expect-stdout: true
+// expect-stdout: -12
+// expect-stdout: 7false
+pub fnc main(): int {
+  stdio.println(5);
+  stdio.println("hi");
+  stdio.println(true);
+  stdio.println(-3 * 4);
+  stdio.print(7);
+  stdio.println(false);
+  return 0;
+}

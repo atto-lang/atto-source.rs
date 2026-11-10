@@ -1,0 +1,6 @@
+/* block comments /* nest */ */
+// expect-exit: 42
+pub fnc main(): int {
+  val million = 1_000_000; // underscores separate digits
+  return million - 999_958;
+}

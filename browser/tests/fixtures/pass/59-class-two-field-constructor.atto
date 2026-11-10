@@ -1,0 +1,15 @@
+// expect-exit: 42
+define class P as
+    mut int x = 5;
+    mut int y = 6;
+    constructor(int a, int b) {
+        self.x = a;
+        self.y = b;
+    }
+    pub sum(): int { return self.x + self.y; }
+end
+
+pub fnc main(): int {
+    val p = new P(40, 2);
+    return p.sum();
+}

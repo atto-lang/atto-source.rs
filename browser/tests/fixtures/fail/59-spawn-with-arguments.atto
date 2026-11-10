@@ -1,0 +1,6 @@
+// expect-error: E_ACTOR
+// java: rejects
+define actor W as
+    receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { val a = spawn W(1); return 0; }

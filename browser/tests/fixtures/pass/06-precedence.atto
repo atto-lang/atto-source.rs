@@ -1,0 +1,9 @@
+// expect-exit: 120
+pub fnc main(): int {
+  val a = 5 + 6 * 7;
+  val b = (5 + 6) * 7;
+  val c = -7 + 10;
+  val d = 13 - 25;
+  val e = 10 - 4 - 3;
+  return a + b - c + d - e + 14;
+}

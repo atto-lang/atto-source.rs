@@ -1,0 +1,8 @@
+// expect-error: E_IMMUTABLE
+// expect-line: 6
+// java: rejects
+pub fnc main(): int {
+  val x = 7;
+  x = 8;
+  return x;
+}

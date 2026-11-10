@@ -37,3 +37,9 @@ Hard-RT admission is intentionally fail-closed: the compiler now proves a bounde
 acyclic call graph as a precondition, but rejects the final `--hard-rt` request until
 target-specific WCET/deadline evidence is implemented. It does not relabel “native AOT”
 as a hard-real-time proof.
+
+## Canonical browser and JavaScript target
+
+The browser compiler now lives in [`browser/`](browser/README.md), integrated from the AttoLang browser compiler, with a shared typed-IR ESM emitter and actor state in fixed private wasm32 linear memory. The root library exposes `compile_browser` and `transpile_browser`. `cargo run --bin oresc -- --wasm input.atto output.wasm` and `--js input.atto output.mjs` select these targets explicitly; ordinary native compilation still uses Cranelift. Build the import-free compiler itself with `cargo rustc --manifest-path browser/Cargo.toml --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864`.
+
+This integration establishes common source ownership and an executable compiler path; it does not merge the native and browser frontends or establish full Java/LLVM/native-Cranelift parity. See `browser/README.md` for admitted syntax and differential tests. The playground, source.js transpiler adapter and source.wasm browser bridge consume a digest-pinned artifact built from this repository.

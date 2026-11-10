@@ -1,0 +1,22 @@
+// Actor-local mutable state; main runs to completion before the mailbox drains.
+// expect-exit: 0
+// expect-stdout: main done
+// expect-stdout: 40
+// expect-stdout: 42
+define actor Counter as
+    let int total = 0;
+
+    receive(ActorMail<int> mail): void {
+        self.total = self.total + mail.value;
+        stdio.println(self.total);
+        return;
+    }
+end
+
+pub fnc main(): int {
+    val c = spawn Counter();
+    c.send(40);
+    c.send(2);
+    stdio.println("main done");
+    return 0;
+}
