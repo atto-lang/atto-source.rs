@@ -7,7 +7,7 @@ This implementation deliberately begins with a **narrow executable subset**, not
 Quick start:
 
     cargo test
-    cargo run --bin oresc -- examples/answer.ores target/answer.o
+    cargo run --bin oresc -- examples/answer.atto target/answer.o
     cc target/answer.o examples/driver.c -o target/answer
     ./target/answer
 

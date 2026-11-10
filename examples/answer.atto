@@ -1,0 +1,4 @@
+// Public C ABI entry for the native driver; the legacy static example is private.
+pub fnc answer(): int {
+    return 40 + 2;
+}
