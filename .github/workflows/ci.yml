@@ -1,82 +1,118 @@
-name: Portable Atto frontend and browser Wasm conformance
+name: Rust compiler checks
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/**"]
   pull_request:
-  workflow_dispatch:
-permissions:
-  contents: read
 jobs:
-  real-compiler:
-    runs-on: ubuntu-24.04
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Bind checkout to exact head/tree
+          persist-credentials: false
+      - name: Verify exact source revision, clean index and physical checkout
+        shell: bash
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          git rev-parse HEAD
-          git rev-parse HEAD^{tree}
-      - name: Install pinned Rust toolchain and Wasm target
+          set -euo pipefail
+          bash verification/ci-worktree-v1/verify.sh "$EXPECTED_HEAD"
+          bash verification/ci-worktree-v1/test.sh
+          bash verification/ci-worktree-v1/verify.sh "$EXPECTED_HEAD"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable snapshot 2026-10-25
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked --all-targets
+      - name: Export scalar CFG contract
         run: |
-          rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
-          rustup default 1.85.1
-          rustc --version
-      - name: Test native compiler core over the fixture corpus
-        run: cargo test --locked --verbose
-      - name: Build native attoc host
-        run: cargo build --locked --release --bin attoc
-      - name: Build actual Wasm compiler
+          cargo run --locked --bin oresc -- --flow 6 tests/fixtures/flow-scalar.ores > target/flow.json
+          cargo run --locked --bin ci_verify -- scalar-flow
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Canonical JVM/LLVM scalar fixture execution
+        shell: bash
         run: |
-          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
-          sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
-      - name: Conformance - wasm32 compiler, guest execution, native-vs-wasm byte parity
-        env:
-          ATTOC: target/release/attoc
-        run: node tests/conformance.mjs
-
-      - name: Real Chromium browser and worker E2E
+          set -euo pipefail
+          for pair in add:42 precedence:40 forward:42 underscores:42 unary:42 owned-identifier:42 nested-comments:42; do
+            name="${pair%%:*}"
+            expected="${pair##*:}"
+            cargo run --locked --bin oresc -- "tests/fixtures/${name}.ores" "target/${name}.o"
+            cc "target/${name}.o" -o "target/${name}"
+            set +e
+            "target/${name}"
+            actual=$?
+            set -e
+            test "$actual" -eq "$expected" || { echo "$name: wanted $expected, got $actual"; exit 1; }
+          done
+      - name: Canonical .atto immutable-binding native execution
+        shell: bash
         run: |
-          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
-          node tests/browser-e2e.mjs
-      - name: Build immutable compiler artifact receipt
+          set -euo pipefail
+          cargo run --locked --bin oresc -- tests/fixtures/immutable-bindings.atto target/immutable-bindings.o
+          cc target/immutable-bindings.o -o target/immutable-bindings
+          set +e
+          target/immutable-bindings
+          actual=$?
+          set -e
+          test "$actual" -eq 42 || { echo "immutable-bindings: wanted 42, got $actual"; exit 1; }
+      - name: Canonical semantic error classification
+        shell: bash
         run: |
-          mkdir -p dist
-          cp target/wasm32-unknown-unknown/release/atto_compiler.wasm dist/atto_compiler.wasm
-          node --input-type=module <<'JS'
-          import fs from 'node:fs';
-          import crypto from 'node:crypto';
-          import { execFileSync } from 'node:child_process';
-          const bytes = fs.readFileSync('dist/atto_compiler.wasm');
-          const module = new WebAssembly.Module(bytes);
-          const imports = WebAssembly.Module.imports(module);
-          const exports = WebAssembly.Module.exports(module).map(x => x.name);
-          const required = ['memory','abi_version','input_ptr','input_capacity','compile','result_ptr','result_length','error_ptr','error_line_number','error_column_number'];
-          if (imports.length || required.some(x => !exports.includes(x))) throw new Error('unexpected compiler ABI');
-          const git = (...args) => execFileSync('git', args, {encoding:'utf8'}).trim();
-          const receipt = {
-            schema:'atto.browser.compiler.artifact.v1',
-            source_head:git('rev-parse','HEAD'),
-            source_tree:git('rev-parse','HEAD^{tree}'),
-            target:'wasm32-unknown-unknown',
-            abi:'atto-playground-v2',
-            guest_abi:'atto.browser.guest.v2',
-            compiler_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),
-            compiler_bytes:bytes.length,
-            import_count:imports.length,
-            exports
-          };
-          fs.writeFileSync('dist/receipt.json',JSON.stringify(receipt,null,2)+'\n');
-          console.log(receipt);
-          JS
-      - name: Publish verified compiler plus provenance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: atto-compiler-wasm32-${{ github.event.pull_request.head.sha || github.sha }}
-          path: dist/
-          if-no-files-found: error
-          retention-days: 14
+          set -euo pipefail
+          for pair in unknown:unknown_name arity:call_arity duplicate:duplicate_declaration overflow:integer_overflow comment:unterminated_comment; do
+            name="${pair%%:*}"
+            expected="${pair##*:}"
+            if cargo run --locked --bin oresc -- --check "tests/fixtures/${name}.ores" >target/diagnostic.out 2>&1; then
+              echo "Expected rejection for $name"; exit 1
+            fi
+            grep -F "$expected" target/diagnostic.out
+          done
+      - name: Verify shared v0 source-backed facts and fail-closed unsupported calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- --static-facts tests/fixtures/forward.ores > target/static-facts-v0.json
+          cargo run --locked --bin ci_verify -- static-facts
+          if cargo run --locked --bin oresc -- --static-facts tests/fixtures/unknown.ores >target/unverified.json; then
+            echo 'Unverified source emitted static facts'; exit 1
+          fi
+      - name: Validate compiler emitted effect IR
+        run: |
+          cargo run --locked --bin oresc -- --effects tests/fixtures/forward.ores > target/effects.json
+          cargo run --locked --bin ci_verify -- effects
+      - name: Compile, link and execute native object
+        run: |
+          cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
+          cc target/answer.o examples/driver.c -o target/answer
+          ./target/answer
+      - name: Verify CFG-v2 exporter preserves scalar and unresolved calls
+        run: |
+          cargo run --locked --bin oresc -- --cfg-ir examples/answer.ores 10 > target/cfg-v2.json
+          cargo run --locked --bin oresc -- --cfg-ir tests/fixtures/forward.ores 10 > target/cfg-v2-call.json
+          cargo run --locked --bin ci_verify -- cfg
+          cargo run --locked --bin ci_verify -- cfg-call
+      - name: Reject excessive source bytes before unbounded allocation
+        run: |
+          cargo run --locked --bin ci_verify -- oversized
+          if cargo run --locked --bin oresc -- --cfg-ir target/oversized.ores 16 >target/oversized.out 2>target/oversized.err; then
+            echo "Oversized input unexpectedly accepted"; exit 1
+          fi
+          grep -Fq 'source too large' target/oversized.err
+      - name: Paired executable object and checked effect facts (one MIR)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- --compile-with-effects tests/fixtures/forward.ores target/paired-forward.o target/paired-forward.effects.json
+          cargo run --locked --bin ci_verify -- paired-effects
+          cc target/paired-forward.o -o target/paired-forward
+          set +e
+          target/paired-forward
+          actual=$?
+          set -e
+          test "$actual" -eq 42 || { echo "paired native executable must return 42, got $actual"; exit 1; }
+      - name: Verify safety MIR exporter and fail-closed call edges
+        run: |
+          cargo run --locked --bin oresc -- --safety-ir examples/answer.ores 16 > target/safety.json
+          cargo run --locked --bin oresc -- --safety-ir tests/fixtures/forward.ores 16 > target/safety-calls.json
+          cargo run --locked --bin ci_verify -- safety

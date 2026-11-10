@@ -1,130 +1,45 @@
-# atto-source.rs: AttoLang browser compiler
+# Oreslang Rust compiler
 
-A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
+Independent Oreslang frontend, MIR and native code generation with Cranelift; neither LLVM nor GraalVM is a dependency.
 
-It compiles a **subset** of AttoLang. Everything outside the subset is rejected with a diagnostic, and a rejected program never produces an artifact. The compiler does not approximate unsupported features.
+This implementation deliberately begins with a **narrow executable subset**, not a claim of language completeness. A zero-argument static function returning an int64 arithmetic expression is tokenized with Logos, parsed into an AST, validated/lowered to MIR, and compiled by Cranelift to a native object file.
 
-## Where the syntax comes from
+Quick start:
 
-The compiler does not define any syntax of its own:
+    cargo test
+    cargo run --bin oresc -- examples/answer.ores target/answer.o
+    cc target/answer.o examples/driver.c -o target/answer
+    ./target/answer
 
-- **Syntax** follows `docs/grammar.ebnf` and `Parser.java` in `oreslang-source.java`. That includes binding forms, the `const mut` / `let mut` referent qualifier, statement terminators with implicit newline termination, condition `,` / `|`, and arity overloading.
-- **`int`** is a signed 64-bit integer with checked arithmetic. Overflow is a panic, never a silent wrap. This matches the LLVM backend's trap and spec chapter 17 (TARGET, decided).
-- **Spec** decisions come from the AttoLang spec chapters 01, 16 and 17.
+Long-term choices: Rowan lossless CST, Salsa incremental query engine, owned Oreslang HIR/MIR, Cranelift native AOT/JIT. See docs/ARCHITECTURE.md.
 
-## Admitted subset
+The prototype currently accepts both the braced and as/end spellings for a static function. Its grammar and integer-overflow semantics need reconciliation against the Java and LLVM Oreslang language specification before broad use.
 
-| Area | Admitted |
-| --- | --- |
-| Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
-| Entry point | zero-argument `main` returning `int` or `void` |
-| Types | `int` (i64), `bool` / `boolean`, `void` (return only) |
-| Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut` |
-| Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }` |
-| Expressions | `+ - *`, unary `- + !`, `< <= > >=`, `eq neq == != !eq`, ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
-| Output | `stdio.print(x)` / `stdio.println(x)` for `int`, `bool`, string literals and objects (`P{a=1, b=true}`) |
-| Classes | `[pub] define class Name as … end`. Fields: `T name: e`, `mut T name = e`, `let T name = e` (assignable in the constructor) and `name: T = e`, `final …`, `val`/`const` (fixed). One `constructor(…)`; instance methods `[pub] [fnc] name(…)`; `[pub] static fnc name(…)`, always called qualified as `Name.f(…)`. Construction is `new Name(…)` |
-| Actors | `define actor Name as … end` or `actor Name … end`. State `let T name = e` (mutable) and `val`/`const`/`final` (fixed), one `receive(ActorMail<int\|bool> mail): void` reading `mail.value` and `mail.sequence`, and helper methods called as `self.f(…)`. `val r = spawn Name();` gives a copyable `ActorRef<Name>`, and `r.send(v)` enqueues mail |
-| Enums | `define enum Name as A B C end` and `Name.A` values compared with `eq`/`neq`. This spelling comes from the oreslang-source.llvm v1 design contract (`contracts/v1/design/enum_pattern_cases.json`). The Java parser does not admit it yet, and the fixtures record that |
+## Rust-only tooling policy (no Python)
 
-### Class and actor rules (checked against the Java reference)
+**Python is prohibited in this organization.** Do not add, maintain, invoke, generate, or require Python code or Python-based scripts, helpers, tests, code generators, build utilities, automation, CI steps, notebooks, or runtime dependencies. This includes `.py`, `.pyi`, `.ipynb`, `python` / `python3` commands, `pip`, `uv`, `poetry`, `pytest`, and Python GitHub Actions setup steps.
 
-- Members are private by default. A private field, method or static function is visible only to code inside its own class, which includes other instances of that class.
-- Instance methods see a read-only `self`. Only the constructor assigns fields (`E_OWNERSHIP`), and fixed fields reject even that (`E_IMMUTABLE`).
-- Objects move. `val b = a`, passing `a` as an argument and `return a` all transfer ownership. Using `a` afterwards is `E_MOVED`, and so is moving an outer object inside a loop. Field reads, method calls on `a` and printing `a` do not move it.
-- Actors are isolated. Their bodies cannot reach file-level functions, sibling classes or enums (`E_ISOLATION`). Actor state is private and changes only through mail.
-- `spawn` takes no arguments and actors have no constructor (`E_ACTOR`). `receive` is actor-local: it cannot be `pub`, takes exactly one `ActorMail<T>` and returns `void`.
+Implement tooling previously written in Python in **Rust** instead. Preserve behavior and test coverage while migrating; use `cargo fmt`, `cargo clippy`, and `cargo test` for Rust code. Existing Python must be inventoried and ported, not merely deleted if it implements required behavior. Changes introducing Python must be rejected in review and CI. References discussing the prohibition are allowed in documentation; they are not an authorization to execute Python.
 
-The following are rejected, with the code shown:
+This rule applies across all repositories, including compiler backends, examples, benchmarks, workflows, and documentation. Language implementations written in Java, LLVM/other native languages, .NET, etc. remain in their existing implementation languages; **the Python-to-Rust mandate applies to Python tooling and Python implementations**.
 
-- Removed `%`, `^` and `^^` give `E_UNSUPPORTED` with no artifact emitted.
-- Condition `,` / `|` evaluate **both** boolean operands left-to-right (eager), including observable side effects.
-- `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
-- `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
-- Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
-- `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
-- Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
+## Build profiles
 
-### Known divergences from the Java reference
+The compiler accepts `--release`, `--strict-aot`, and `--hard-rt` as mutually
+exclusive selectors, plus orthogonal `--freestanding`.
 
-These are recorded in fixtures and checked by the differential run:
+The current scalar subset contains no runtime reflection, heap/GC, dynamic dispatch,
+dynamic code loading, blocking I/O, or loops. Release-or-stronger compilation performs
+a semantic call-graph reachability pass before Cranelift and removes unreachable private
+functions. Strict AOT uses the same closed world and emits only native object code.
 
-- Binding the result of a void call. Java accepts it. Here it is `E_TYPE`, because a void call has no value.
-- Integer overflow. Java wraps silently. Here it panics, following spec 17 and the LLVM backend.
-- Object references. Java compares them by identity, but here comparison is not admitted yet.
-- Object heap. Java has a garbage collector. Here objects come from a fixed 1 MiB bump heap that is never freed, and exhausting it panics with code 3.
-- Cross-actor output order. Different actors run concurrently in both runtimes, so lines from different actors may interleave in any order. Within one actor, mail is processed in FIFO order.
+Hard-RT admission is intentionally fail-closed: the compiler now proves a bounded,
+acyclic call graph as a precondition, but rejects the final `--hard-rt` request until
+target-specific WCET/deadline evidence is implemented. It does not relabel “native AOT”
+as a hard-real-time proof.
 
-## Guest contract `atto.browser.guest.v2`
+## Canonical browser and JavaScript target
 
-v2 extends v1. Every v1 guest is still a valid v2 guest.
+The browser compiler now lives in [`browser/`](browser/README.md), integrated from the AttoLang browser compiler, with a shared typed-IR ESM emitter and actor state in fixed private wasm32 linear memory. The root library exposes `compile_browser` and `transpile_browser`. `cargo run --bin oresc -- --wasm input.atto output.wasm` and `--js input.atto output.mjs` select these targets explicitly; ordinary native compilation still uses Cranelift. Build the import-free compiler itself with `cargo rustc --manifest-path browser/Cargo.toml --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864`.
 
-- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; 2 is reserved, because integer division and remainder are not admitted; 3 = object heap exhausted). `memory` is exported only when string literals are printed or classes exist. With classes it is a fixed, non-growable 16-page (1 MiB) memory.
-- **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)` and `print_newline()`, plus, when the program spawns actors, `actor_spawn(i32 type) -> i32 ref` and `actor_send(i32 ref, i64 value)`. There are no other capabilities.
-- **Actors:** a program with actors also exports `actor_init(i32 type)` and `actor_receive(i32 type, i64 value, i64 sequence)`, and carries a custom section `atto.actors` listing actor type names in type order. The host runs each spawned actor in its own instance of the same module (one dedicated Web Worker per actor in the playground). It calls `actor_init` once and then `actor_receive` once per message, in FIFO order with sequence numbers from 0. Actor state lives in that instance's globals, so actors share no memory. Bool mail is passed as 0 or 1.
-- **Determinism:** output is a pure function of the source. The native and wasm32 hosts emit byte-identical modules.
-
-## Compiler ABI v2 (wasm32 build)
-
-The compiler has no imports and memory capped at 64 MiB. It exports:
-
-- `abi_version()`, which returns 2
-- `memory`, `input_ptr()` and `input_capacity()` (64 KiB)
-- `compile(len)`, which returns 0 on success and 1 on a diagnostic
-- `result_ptr()` and `result_length()`, which are 0 on error
-- `error_ptr()`, a NUL-terminated `E_CODE: message`
-- `error_line_number()` and `error_column_number()`
-
-## Resource limits
-
-Every limit fails closed with a diagnostic; none of them can trap the compiler.
-
-| Limit | Value | Code |
-|---|---|---|
-| Source size | 64 KiB of UTF-8 | `E_SOURCE_LIMIT` |
-| Tokens | 32,768 | `E_SOURCE_LIMIT` |
-| Recursive nesting (parens, blocks, unary operators, ternaries, calls) | 128 levels | `E_NESTING` |
-| Syntax-tree height, counting each link of an operator chain, each `.member` / `.method()` link and each `elif` arm | 256 | `E_NESTING` |
-| Top-level declarations / parameters / locals per function | 1,024 / 32 / 1,024 | `E_SOURCE_LIMIT` |
-| Members per class or actor; variants per enum | 256 | `E_SOURCE_LIMIT` |
-| One string literal / all string data | 4 KiB / 32 KiB | `E_SOURCE_LIMIT` |
-| Generated module | 1 MiB | `E_OUTPUT_LIMIT` |
-
-The tree-height budget exists because `a + b + c + ...` is parsed in a loop
-but produces a left-leaning tree that the checker and emitter walk
-recursively; without it a 30 KB source exhausted the stack. The checker keeps
-its recursive path (operators, member and method chains) in small
-`#[inline(never)]` frames. At 256 levels every worst case, member and method
-chains included, fits in 1.5 MiB of stack in a debug build (measured with
-`examples/stackprobe.rs`), so `compile()` is safe on a default 2 MiB thread.
-
-## Build and test
-
-```sh
-rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
-cargo test --locked
-cargo build --locked --release --bin attoc
-cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
-ATTOC=target/release/attoc node tests/conformance.mjs
-# Optional Java reference differential (local only; the reference is private):
-ATTO_JAVA=/path/to/oreslang-java-launcher ATTOC=target/release/attoc node tests/conformance.mjs
-```
-
-The fixture corpus is in `tests/fixtures/`:
-
-- `pass/`: expected `main()` result and stdout
-- `pass/`: a `// java: llvm-design` claim marks a spelling taken from the LLVM design contracts that Java must still reject. `// stdout-order: unordered` marks output from several concurrent actors, compared as a multiset of lines.
-- `fail/`: expected diagnostic code, plus a `// java: rejects|accepts` claim
-- `panic/`: expected panic code
-
-`tests/conformance.mjs` checks the following:
-
-- It compiles every fixture with the wasm32 compiler and executes every guest.
-- It compiles 200 generated programs.
-- It feeds the compiler 2,000 random inputs.
-- It checks the nesting, tree-height and source limits, at and just over each budget.
-- It feeds the compiler adversarial shapes (15,000-link chains, 30,000 unary operators, unclosed nesting) and requires a diagnostic, never a trap.
-- It mutates every positive fixture at the token level (60 mutants each; set `ATTO_FUZZ=<n>` for more) and requires every accepted mutant to be valid Wasm and every rejection to carry a code and position.
-- It checks recovery after an error.
-- With `ATTOC` set, it requires byte-identical native output.
-- With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+This integration establishes common source ownership and an executable compiler path; it does not merge the native and browser frontends or establish full Java/LLVM/native-Cranelift parity. See `browser/README.md` for admitted syntax and differential tests. The playground, source.js transpiler adapter and source.wasm browser bridge consume a digest-pinned artifact built from this repository.

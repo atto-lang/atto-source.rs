@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Atto compiler browser ABI E2E</title>
+<h1>Atto browser compiler acceptance harness</h1>
+<textarea id="source" rows="5" cols="70">pub fnc main(): int { return 6 * 7; }</textarea>
+<button id="run">Compile and run</button><pre id="result">Ready</pre>
+<script type="module">
+const editor=document.querySelector('#source'),out=document.querySelector('#result'),button=document.querySelector('#run');
+let last=0;
+button.addEventListener('click',()=>{
+  const id=++last;
+  const worker=new Worker('/worker.mjs',{type:'module'});
+  button.disabled=true;out.textContent='Compiling';
+  const timer=setTimeout(()=>{worker.terminate();if(id===last){out.textContent='E_TIMEOUT';button.disabled=false}},5000);
+  worker.onmessage=event=>{window.__attoLastResult=event.data;clearTimeout(timer);worker.terminate();if(id!==last)return;out.textContent=event.data.ok?event.data.stdout+'main() -> '+event.data.value:(event.data.error||event.data.message);button.disabled=false};
+  worker.onerror=()=>{clearTimeout(timer);worker.terminate();if(id===last){out.textContent='E_WORKER';button.disabled=false}};
+  worker.postMessage({source:editor.value,target:window.__attoTarget||'wasm'});
+});
+window.__attoReady=true;
+</script>
+</html>

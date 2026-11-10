@@ -1,149 +1,107 @@
-//! AttoLang browser compiler: `.atto` source -> WebAssembly, itself built for
-//! `wasm32-unknown-unknown` so the playground compiles entirely client-side.
-//!
-//! Syntax follows `docs/grammar.ebnf` of the Java reference compiler; `int`
-//! follows the LLVM backend and spec chapter 17 (signed 64-bit, checked).
-//! This is a subset compiler: every construct outside the admitted subset is
-//! rejected with a diagnostic and never produces an artifact. See README.md.
+//! Independent Rust Oreslang frontend, validated MIR and Cranelift backend.
+pub mod cfg;
+pub mod codegen;
+pub mod effects;
+pub mod flow;
+pub mod frontend;
+pub mod mir;
+pub mod profile;
+pub mod safety;
+pub mod static_facts;
+pub mod ref_codegen;
+pub mod ref_layout;
 
-pub mod ast;
-pub mod check;
-pub mod diag;
-pub mod lexer;
-pub mod parser;
-pub mod wasm;
-
-pub use diag::{Diagnostic, Pos};
-
-pub const SOURCE_CAP: usize = 64 * 1024;
-pub const ABI_VERSION: u32 = 2;
-pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Compile one `.atto` source file to a guest WebAssembly module.
-pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
-    if source.len() > SOURCE_CAP {
-        return Err(Diagnostic::new(
-            Pos { line: 1, col: 1 },
-            "E_SOURCE_LIMIT",
-            format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
-        ));
-    }
-    let toks = lexer::lex(source)?;
-    let program = parser::Parser::new(toks).parse_program()?;
-    let typed = check::check(&program)?;
-    let bytes = wasm::emit(&typed);
-    if bytes.len() > wasm::MAX_OUTPUT {
-        return Err(Diagnostic::new(
-            Pos { line: 1, col: 1 },
-            "E_OUTPUT_LIMIT",
-            "generated module exceeds 1 MiB",
-        ));
-    }
-    Ok(bytes)
+/// Compile the current scalar grammar with opt-in signed i64 overflow traps.
+/// No safety/effect certificate is emitted: those IR schemas cannot yet
+/// express the new conditional integer-overflow failure edges.
+pub fn compile_checked_i64(source: &str) -> Result<Vec<u8>, String> {
+    let ast = frontend::parse(source).map_err(|e| e.to_string())?;
+    let module = mir::lower(ast).map_err(|e| e.to_string())?;
+    // Reuse the bounded traversal guard only; its v1 facts do not model
+    // checked overflow edges and must not be published as a certificate.
+    let _ = effects::export_effect_ir_checked(&module)?;
+    codegen::emit_object_checked_i64(&module)
 }
 
-/// Browser host ABI (`atto-playground` compiler contract v2). One instance is
-/// owned by one worker; callers copy results out before compiling again.
-#[cfg(target_arch = "wasm32")]
-mod abi {
+/// Compile the admitted scalar subset using the default managed-reference layout.
+pub fn compile(source: &str) -> Result<Vec<u8>, String> {
+    compile_with_ref_layout(source, ref_layout::ManagedRefLayout::default())
+}
+
+/// Compile while explicitly selecting the backend-neutral managed-reference layout.
+/// Oreslang source does not expose a Ref<T>/pointer operation surface; this choice is
+/// preserved in MIR for future actor/object lowering and static-analysis metadata.
+pub fn compile_with_ref_layout(
+    source: &str,
+    managed_refs: ref_layout::ManagedRefLayout,
+) -> Result<Vec<u8>, String> {
+    let ast = frontend::parse(source).map_err(|e| e.to_string())?;
+    let module = mir::lower_with_ref_layout(ast, managed_refs).map_err(|e| e.to_string())?;
+    // Preserve mainline admission before ordinary code generation.
+    effects::export_effect_ir_checked(&module)?;
+    codegen::emit_object(&module)
+}
+/// Generate the object and its conservative effect-IR model from precisely
+/// one parsed + type-checked Oreslang MIR. This is model conformance evidence,
+/// not authenticated compiler provenance or physical hard-RT certification.
+pub fn compile_with_effect_ir(source: &str) -> Result<(Vec<u8>, serde_json::Value), String> {
+    let ast = frontend::parse(source).map_err(|e| e.to_string())?;
+    let module = mir::lower(ast).map_err(|e| e.to_string())?;
+    let effects = effects::export_effect_ir_checked(&module)?;
+    let object = codegen::emit_object(&module)?;
+    Ok((object, effects))
+}
+#[cfg(test)]
+mod tests {
     use super::*;
-    use std::cell::RefCell;
-
-    const ERROR_CAP: usize = 512;
-
-    struct State {
-        bytes: Vec<u8>,
-        error: [u8; ERROR_CAP],
-        line: u32,
-        col: u32,
+    #[test]
+    fn compiles_real_native_object() {
+        let result = compile(
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }",
+        );
+        assert!(result.is_ok(), "{result:?}");
+        let object = result.unwrap();
+        assert!(!object.is_empty());
+        #[cfg(target_os = "linux")]
+        assert!(object.starts_with(b"\x7fELF"));
+    }
+    #[test]
+    fn paired_mode_uses_current_scalar_mir_and_call_graph() {
+        let input =
+            "pub fnc main(): int { return add(40,2); }\nfnc add(int a,int b): int { return a+b; }";
+        let (object, effects) = compile_with_effect_ir(input).unwrap();
+        assert!(!object.is_empty());
+        assert_eq!(effects["functions"][0]["operations"][2]["kind"], "call");
+        assert_eq!(effects["functions"][0]["operations"][2]["target"], "add");
+        assert_eq!(
+            effects["functions"][1]["operations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+    #[test]
+    fn paired_mode_rejects_unverified_actor_syntax() {
+        assert!(compile_with_effect_ir("define actor Foo as end").is_err());
+    }
+    #[test]
+    fn native_managed_ref_layout_compiles_same_scalar_semantics() {
+        let result = compile_with_ref_layout(
+            "pub fnc main(): int { return 42; }",
+            ref_layout::ManagedRefLayout::native(),
+        );
+        assert!(result.is_ok(), "{result:?}");
     }
 
-    thread_local! {
-        static STATE: RefCell<State> = const { RefCell::new(State { bytes: Vec::new(), error: [0; ERROR_CAP], line: 0, col: 0 }) };
-    }
-    static mut INPUT: [u8; SOURCE_CAP] = [0; SOURCE_CAP];
-
-    #[no_mangle]
-    pub extern "C" fn abi_version() -> u32 {
-        ABI_VERSION
-    }
-    #[no_mangle]
-    pub extern "C" fn input_ptr() -> u32 {
-        std::ptr::addr_of_mut!(INPUT) as *mut u8 as usize as u32
-    }
-    #[no_mangle]
-    pub extern "C" fn input_capacity() -> u32 {
-        SOURCE_CAP as u32
-    }
-    #[no_mangle]
-    pub extern "C" fn result_ptr() -> u32 {
-        STATE.with(|s| s.borrow().bytes.as_ptr() as usize as u32)
-    }
-    #[no_mangle]
-    pub extern "C" fn result_length() -> u32 {
-        STATE.with(|s| s.borrow().bytes.len() as u32)
-    }
-    #[no_mangle]
-    pub extern "C" fn error_ptr() -> u32 {
-        STATE.with(|s| s.borrow().error.as_ptr() as usize as u32)
-    }
-    #[no_mangle]
-    pub extern "C" fn error_line_number() -> u32 {
-        STATE.with(|s| s.borrow().line)
-    }
-    #[no_mangle]
-    pub extern "C" fn error_column_number() -> u32 {
-        STATE.with(|s| s.borrow().col)
-    }
-
-    /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
-    #[no_mangle]
-    pub extern "C" fn compile(length: i32) -> i32 {
-        STATE.with(|s| {
-            let mut st = s.borrow_mut();
-            st.bytes = Vec::new();
-            st.error = [0; ERROR_CAP];
-            st.line = 0;
-            st.col = 0;
-            let fail = |st: &mut State, d: Diagnostic| {
-                let msg = d.render();
-                let mut n = msg.len().min(ERROR_CAP - 1);
-                while !msg.is_char_boundary(n) {
-                    n -= 1;
-                }
-                st.error[..n].copy_from_slice(&msg.as_bytes()[..n]);
-                st.line = d.pos.line;
-                st.col = d.pos.col;
-                1
-            };
-            if length < 0 || length as usize > SOURCE_CAP {
-                return fail(
-                    &mut st,
-                    Diagnostic::new(
-                        Pos { line: 1, col: 1 },
-                        "E_SOURCE_LIMIT",
-                        format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
-                    ),
-                );
-            }
-            // SAFETY: single-threaded wasm; the host wrote `length` bytes before calling.
-            let input: &[u8] = unsafe { &(*std::ptr::addr_of!(INPUT))[..length as usize] };
-            let source = match std::str::from_utf8(input) {
-                Ok(s) => s,
-                Err(_) => {
-                    return fail(
-                        &mut st,
-                        Diagnostic::new(Pos { line: 1, col: 1 }, "E_UTF8", "source is not valid UTF-8"),
-                    )
-                }
-            };
-            match super::compile(source) {
-                Ok(bytes) => {
-                    st.bytes = bytes;
-                    0
-                }
-                Err(d) => fail(&mut st, d),
-            }
-        })
+    #[test]
+    fn rejects_unsupported_actor_syntax() {
+        assert!(compile("define actor Foo as end").is_err());
     }
 }
+
+/// Canonical browser target: source to core Wasm with the browser v2 actor ABI.
+/// This target has its own explicit subset; native Cranelift actor parity is pending.
+pub use atto_compiler::compile as compile_browser;
+/// Emit ESM from the canonical browser target checker.
+pub use atto_compiler::compile_js as transpile_browser;
