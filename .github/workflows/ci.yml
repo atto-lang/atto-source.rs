@@ -132,7 +132,8 @@ jobs:
           mkdir -p build
           cp ../artifact/atto_compiler.wasm build/
           cp ../artifact/receipt.json build/
-          git add build/atto_compiler.wasm build/receipt.json
+          base64 -w0 ../artifact/atto_compiler.wasm > build/atto_compiler.wasm.base64
+          git add build/atto_compiler.wasm build/atto_compiler.wasm.base64 build/receipt.json
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
             commit -m "artifact: exact-head verified actor-state compiler ${HEAD_SHA}"
           git push origin "HEAD:refs/heads/ci-artifacts/actor-state-${HEAD_SHA}"
