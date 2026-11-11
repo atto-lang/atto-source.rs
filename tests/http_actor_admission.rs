@@ -45,7 +45,9 @@ fn comments_do_not_grant_or_remove_http_actor_admission() {
         "pub fnc main(): int { return http(); }"
     );
     assert!(frontend::parse(source).is_ok());
-    assert!(!compile(source).expect("valid http identifier object").is_empty());
+    assert!(!compile(source)
+        .expect("valid http identifier object")
+        .is_empty());
     // The unsupported declaration remains visible through adjacent comments.
     rejected("/* define http actor Hidden as end */\n define http actor Endpoint as end");
 }
