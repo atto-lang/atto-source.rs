@@ -24,7 +24,7 @@ The compiler does not define any syntax of its own:
 | Expressions | `+ - *`, unary `- + !`, `< <= > >=`, `eq neq == != !eq`, ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
 | Output | `stdio.print(x)` / `stdio.println(x)` for `int`, `bool`, string literals and objects (`P{a=1, b=true}`) |
 | Classes | `[pub] define class Name as … end`. Fields: `T name: e`, `mut T name = e`, `let T name = e` (assignable in the constructor) and `name: T = e`, `final …`, `val`/`const` (fixed). One `constructor(…)`; instance methods `[pub] [fnc] name(…)`; `[pub] static fnc name(…)`, always called qualified as `Name.f(…)`. Construction is `new Name(…)` |
-| Actors | `define actor Name as … end` or `actor Name … end`. State `let T name = e` (mutable) and `val`/`const`/`final` (fixed), one `receive(ActorMail<int\|bool> mail): void` reading `mail.value` and `mail.sequence`, and helper methods called as `self.f(…)`. `val r = spawn Name();` gives a copyable `ActorRef<Name>`, and `r.send(v)` enqueues mail |
+| Actors | `define actor Name as … end` or `actor Name … end`. Explicit `state { let T name = e; }` (mutable) or `val`/`const` (fixed); scoped `self.handle_state(critical-write |s| -> { ... });` for exclusive access or `critical-read` for read-only access, one `receive(ActorMail<int\|bool> mail): void` reading `mail.value` and `mail.sequence`, and helper methods called as `self.f(…)`. `val r = spawn Name();` gives a copyable `ActorRef<Name>`, and `r.send(v)` enqueues mail |
 | Enums | `define enum Name as A B C end` and `Name.A` values compared with `eq`/`neq`. This spelling comes from the oreslang-source.llvm v1 design contract (`contracts/v1/design/enum_pattern_cases.json`). The Java parser does not admit it yet, and the fixtures record that |
 
 ### Class and actor rules (checked against the Java reference)
@@ -32,7 +32,7 @@ The compiler does not define any syntax of its own:
 - Members are private by default. A private field, method or static function is visible only to code inside its own class, which includes other instances of that class.
 - Instance methods see a read-only `self`. Only the constructor assigns fields (`E_OWNERSHIP`), and fixed fields reject even that (`E_IMMUTABLE`).
 - Objects move. `val b = a`, passing `a` as an argument and `return a` all transfer ownership. Using `a` afterwards is `E_MOVED`, and so is moving an outer object inside a loop. Field reads, method calls on `a` and printing `a` do not move it.
-- Actors are isolated. Their bodies cannot reach file-level functions, sibling classes or enums (`E_ISOLATION`). Actor state is private and changes only through mail.
+- Actors are isolated. Their bodies cannot reach file-level functions, sibling classes or enums (`E_ISOLATION`). Actor state is private and changes only under checked handle_state scopes; actor-local Wasm globals remain per-instance. State loans cannot nest, escape, suspend, return, or pass to helper methods without effect analysis.
 - `spawn` takes no arguments and actors have no constructor (`E_ACTOR`). `receive` is actor-local: it cannot be `pub`, takes exactly one `ActorMail<T>` and returns `void`.
 
 The following are rejected, with the code shown:
@@ -42,7 +42,7 @@ The following are rejected, with the code shown:
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - Strings as values, floats and sized integers give `E_UNSUPPORTED_TYPE`.
-- `match` / `switch`, imports, lambdas, `Option` / `Result`, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
+- `match` / `switch`, imports, general-purpose lambdas (the scoped handle_state form is special), `Option` / `Result`, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
 - Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
 
 ### Known divergences from the Java reference

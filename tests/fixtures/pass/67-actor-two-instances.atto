@@ -5,10 +5,12 @@
 // expect-stdout: 1
 // expect-stdout: 2
 define actor A as
-    let int base = 0;
+    state { let int base = 0; }
     receive(ActorMail<int> mail): void {
-        self.base = self.base + mail.value;
-        stdio.println(self.base);
+        self.handle_state(critical-write |s| -> {
+            self.base = self.base + mail.value;
+            stdio.println(self.base);
+        });
         return;
     }
 end

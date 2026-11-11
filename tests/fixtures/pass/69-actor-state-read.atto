@@ -1,0 +1,9 @@
+// expect-exit: 0
+// expect-stdout: 3
+define actor W as
+    state { let int total = 3; }
+    receive(ActorMail<int> mail): void {
+        self.handle_state(critical-read |s| -> { stdio.println(self.total); });
+    }
+end
+pub fnc main(): int { val a = spawn W(); a.send(0); return 0; }

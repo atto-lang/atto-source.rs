@@ -1,0 +1,10 @@
+// expect-error: E_STATE_BORROW
+define actor W as
+    state { let int n = 0; }
+    receive(ActorMail<int> mail): void {
+        self.handle_state(critical-write |s| -> {
+            self.handle_state(critical-write |t| -> { self.n = 1; });
+        });
+    }
+end
+pub fnc main(): int { val w = spawn W(); return 0; }
