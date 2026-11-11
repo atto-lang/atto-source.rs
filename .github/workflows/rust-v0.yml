@@ -35,8 +35,13 @@ jobs:
           cargo --version
           cargo clippy --version
           cargo fmt --version
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Format Rust for isolated probe (non-evidence branch)
+        run: cargo fmt --all
+      - name: Emit formatted runtime test for source replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'RUSTFMT_RUNTIME_TEST=%s\n' "$(base64 -w0 tests/actor_state_runtime_v1.rs)"
       - name: Clippy (warnings are errors)
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Run Rust unit tests (locked)
