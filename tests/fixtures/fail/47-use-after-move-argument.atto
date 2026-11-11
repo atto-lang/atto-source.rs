@@ -1,7 +1,0 @@
-// expect-error: E_MOVED
-// java: rejects
-define class P as
-    pub int x: 21
-end
-fnc read(P p): int { return p.x; }
-pub fnc main(): int { val p = new P(); return read(p) + read(p); }

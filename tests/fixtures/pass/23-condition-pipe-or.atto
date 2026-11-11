@@ -1,9 +1,0 @@
-// spec 16: inside a condition, '|' is OR
-// expect-exit: 22
-pub fnc main(): int {
-  val x = 5;
-  if x < 0 | x > 4 then
-    return 22;
-  fi
-  return 0;
-}

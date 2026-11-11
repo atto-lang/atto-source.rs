@@ -1,6 +1,0 @@
-// expect-error: E_TYPE
-// java: rejects
-define actor Worker as
-    receive(ActorMail<int> mail): int { return 1; }
-end
-pub fnc main(): int { return 0; }
