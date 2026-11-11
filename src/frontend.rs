@@ -215,6 +215,31 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+/// Stage-0 does not lower singleton identity, initialization or guarded shared memory.
+/// Recognize the source declaration *contextually*, before scalar parsing and codegen.
+/// 'singleton' remains an ordinary identifier in function and expression positions.
+fn reject_singleton_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (i, token) in tokens.iter().enumerate() {
+        let after = match token.kind {
+            Kind::Define => {
+                if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Pub) { i + 2 } else { i + 1 }
+            }
+            Kind::Pub if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Define) => i + 2,
+            _ => continue,
+        };
+        if let Some(next) = tokens.get(after) {
+            if next.kind == Kind::Identifier && next.text == "singleton" {
+                return Err(ParseError {
+                    offset: next.start,
+                    class: "singleton_unsupported",
+                    message: "ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and owned shared-region RW lowering".into(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -261,6 +286,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             start: range.start,
         });
     }
+    reject_singleton_declarations(&tokens)?;
     reject_execution_domains(&tokens)?;
     let mut parser = Parser {
         tokens,
