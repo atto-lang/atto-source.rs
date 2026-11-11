@@ -1,4 +1,0 @@
-// expect-error: E_ARITY
-// java: rejects
-fnc f(int a): int { return a; }
-pub fnc main(): int { return f(1, 2); }

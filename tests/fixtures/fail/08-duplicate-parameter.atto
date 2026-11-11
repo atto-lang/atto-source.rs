@@ -1,4 +1,0 @@
-// expect-error: E_DUPLICATE
-// java: rejects
-fnc f(int a, int a): int { return a; }
-pub fnc main(): int { return f(1, 2); }

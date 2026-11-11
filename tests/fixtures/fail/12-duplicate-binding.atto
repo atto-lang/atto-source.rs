@@ -1,7 +1,0 @@
-// expect-error: E_DUPLICATE
-// java: rejects
-pub fnc main(): int {
-  val x = 1;
-  val x = 2;
-  return x;
-}

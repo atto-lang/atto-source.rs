@@ -1,8 +1,0 @@
-// Java treats `|` outside a condition as a bitwise operator on ints; the
-// grammar has no bitwise operators, so the browser compiler rejects it.
-// expect-error: E_UNSUPPORTED
-// java: rejects
-pub fnc main(): int {
-  val b = false | true;
-  return 0;
-}

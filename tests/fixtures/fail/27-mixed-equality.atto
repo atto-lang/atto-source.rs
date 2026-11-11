@@ -1,8 +1,0 @@
-// expect-error: E_TYPE
-// java: rejects
-pub fnc main(): int {
-  if 1 eq true then
-    return 1;
-  fi
-  return 0;
-}

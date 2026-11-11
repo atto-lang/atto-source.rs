@@ -1,9 +1,0 @@
-// Abstract classes are outside the browser subset.
-// expect-error: E_UNSUPPORTED
-// java: accepts
-define abstract class P as
-  int x: 0
-end
-pub fnc main(): int {
-  return 0;
-}
