@@ -128,7 +128,7 @@ jobs:
           set -euo pipefail
           cd trusted
           git switch --orphan snapshot
-          git rm -rf . > /dev/null
+          git rm -rf --ignore-unmatch . > /dev/null
           mkdir -p build
           cp ../artifact/atto_compiler.wasm build/
           cp ../artifact/receipt.json build/
