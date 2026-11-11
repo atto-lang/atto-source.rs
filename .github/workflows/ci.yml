@@ -39,6 +39,11 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
 
+      - name: Shared scalar-v1 native-vs-wasm32 browser parity (exact sources)
+        env:
+          ATTOC: target/release/attoc
+        run: node --test tests/shared-scalar-v1.test.mjs
+
       - name: Real Chromium browser and worker E2E
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
