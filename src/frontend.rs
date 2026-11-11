@@ -215,6 +215,30 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+/// Native Rust backend is scalar-only: detect the *declaration* form of
+/// AttoLang singleton using the real Lexer tokens (not raw source grep).
+/// Comments and harmless identifiers remain inert.
+fn reject_unlowered_singleton(tokens: &[Token]) -> Result<(), ParseError> {
+    for (i, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Define {
+            continue;
+        }
+        let next = i + 1 + usize::from(
+            tokens.get(i + 1).is_some_and(|t| t.kind == Kind::Pub)
+        );
+        if let Some(head) = tokens.get(next) {
+            if head.kind == Kind::Identifier && head.text == "singleton" {
+                return Err(ParseError {
+                    offset: head.start,
+                    class: "singleton_unsupported",
+                    message: "define singleton requires canonical identity, ownership and runtime lowering; Rust scalar backend has none".into(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -262,6 +286,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         });
     }
     reject_execution_domains(&tokens)?;
+    reject_unlowered_singleton(&tokens)?;
     let mut parser = Parser {
         tokens,
         cursor: 0,
