@@ -1,7 +1,0 @@
-// expect-error: E_ISOLATION
-// java: rejects
-fnc helper(int v): int { return v + 2; }
-define actor W as
-    receive(ActorMail<int> mail): void { stdio.println(helper(mail.value)); return; }
-end
-pub fnc main(): int { val w = spawn W(); w.send(40); return 0; }

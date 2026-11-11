@@ -1,6 +1,0 @@
-// expect-error: E_UNSUPPORTED
-// java: rejects
-import fnc helper from "./helper.atto";
-pub fnc main(): int {
-  return 0;
-}

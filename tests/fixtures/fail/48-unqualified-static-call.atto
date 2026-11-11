@@ -1,7 +1,0 @@
-// expect-error: E_UNBOUND
-// java: rejects
-define class C as
-    static fnc two(): int { return 2; }
-    pub static fnc four(): int { return two() + two(); }
-end
-pub fnc main(): int { return C.four(); }

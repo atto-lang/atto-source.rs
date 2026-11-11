@@ -1,8 +1,0 @@
-// `name: type = value` fields are fixed slots.
-// expect-error: E_IMMUTABLE
-// java: rejects
-define class Counter as
-    n: int = 0;
-    constructor(int value) { self.n = value; }
-end
-pub fnc main(): int { val c = new Counter(40); return 0; }

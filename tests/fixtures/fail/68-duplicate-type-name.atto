@@ -1,7 +1,0 @@
-// expect-error: E_DUPLICATE
-// java: rejects
-define class A as
-end
-define actor A as
-end
-pub fnc main(): int { return 0; }

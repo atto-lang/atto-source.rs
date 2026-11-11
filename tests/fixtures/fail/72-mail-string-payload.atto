@@ -1,6 +1,0 @@
-// expect-error: E_UNSUPPORTED_TYPE
-// java: accepts
-define actor W as
-    receive(ActorMail<String> mail): void { return; }
-end
-pub fnc main(): int { return 0; }

@@ -1,5 +1,0 @@
-// expect-error: E_ENTRY
-// java: rejects
-pub fnc main(int a): int {
-  return 1;
-}

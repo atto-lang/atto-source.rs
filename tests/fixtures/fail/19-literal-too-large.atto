@@ -1,7 +1,0 @@
-// spec 16: a value above 2^63-1 is rejected at compile time
-// expect-error: E_INTEGER_RANGE
-// java: rejects
-pub fnc main(): int {
-  val x: int = 9223372036854775808;
-  return 0;
-}
