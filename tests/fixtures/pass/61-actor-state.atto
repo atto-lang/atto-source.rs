@@ -4,11 +4,15 @@
 // expect-stdout: 40
 // expect-stdout: 42
 define actor Counter as
-    let int total = 0;
+    state {
+        let int total = 0;
+    }
 
     receive(ActorMail<int> mail): void {
-        self.total = self.total + mail.value;
-        stdio.println(self.total);
+        self.handle_state(critical-write |s| -> {
+            self.total = self.total + mail.value;
+            stdio.println(self.total);
+        });
         return;
     }
 end

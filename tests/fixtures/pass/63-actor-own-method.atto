@@ -2,11 +2,14 @@
 // expect-stdout: 40
 // expect-stdout: 42
 define actor W as
-    let int seen = 0;
+    state { let int seen = 0; }
     bump(int v): int { return v * 2; }
     receive(ActorMail<int> mail): void {
-        self.seen = self.seen + self.bump(mail.value);
-        stdio.println(self.seen);
+        let int delta = self.bump(mail.value);
+        self.handle_state(critical-write |s| -> {
+            self.seen = self.seen + delta;
+            stdio.println(self.seen);
+        });
         return;
     }
 end

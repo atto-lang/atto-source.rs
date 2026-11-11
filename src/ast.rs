@@ -171,6 +171,8 @@ pub enum Stmt {
         value: Expr,
         pos: Pos,
     },
+    /// Synchronous, lexical actor-state borrow; no closure escape.
+    StateScope { write: bool, binder: String, body: Vec<Stmt>, pos: Pos },
     Expr(Expr),
     Return(Option<Expr>, Pos),
     If {

@@ -1,0 +1,6 @@
+// expect-error: E_STATE_ACCESS
+define actor W as
+    state { let int n = 0; }
+    receive(ActorMail<int> mail): void { stdio.println(self.n); }
+end
+pub fnc main(): int { val w = spawn W(); return 0; }

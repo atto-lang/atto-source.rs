@@ -1,7 +1,7 @@
 // expect-error: E_IMMUTABLE
 // java: rejects
 define actor W as
-    val int n = 0;
-    receive(ActorMail<int> mail): void { self.n = mail.value; return; }
+    state { val int n = 0; }
+    receive(ActorMail<int> mail): void { self.handle_state(critical-write |s| -> { self.n = mail.value; }); }
 end
 pub fnc main(): int { val a = spawn W(); a.send(1); return 0; }

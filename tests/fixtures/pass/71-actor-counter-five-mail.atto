@@ -1,0 +1,29 @@
+// Canonical actor state container and exclusive write loan.
+// expect-exit: 0
+// expect-stdout: main sent 5 messages
+// expect-stdout: 1
+// expect-stdout: 3
+// expect-stdout: 6
+// expect-stdout: 10
+// expect-stdout: 15
+define actor Counter as
+    state {
+        let int total = 0;
+    }
+
+    receive(ActorMail<int> mail): void {
+        self.handle_state(critical-write |s| -> {
+            self.total = self.total + mail.value;
+            stdio.println(self.total);
+        });
+    }
+end
+
+pub fnc main(): int {
+    val counter = spawn Counter();
+    for (let i = 1; i <= 5; i++) {
+        counter.send(i);
+    }
+    stdio.println("main sent 5 messages");
+    return 0;
+}

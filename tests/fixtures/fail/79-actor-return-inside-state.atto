@@ -1,0 +1,8 @@
+// expect-error: E_STATE_ESCAPE
+define actor W as
+    state { let int n = 0; }
+    receive(ActorMail<int> mail): void {
+        self.handle_state(critical-write |s| -> { return; });
+    }
+end
+pub fnc main(): int { val w = spawn W(); return 0; }

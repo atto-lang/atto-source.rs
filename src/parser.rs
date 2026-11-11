@@ -223,6 +223,7 @@ struct Members {
     ctor: Option<Constructor>,
     methods: Vec<Method>,
     receive: Option<Receive>,
+    state_seen: bool,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -598,6 +599,13 @@ impl Parser {
             };
             let word = self.word_at(0).map(str::to_owned);
             match word.as_deref() {
+                Some("state") if actor => {
+                    if public { return Err(Diagnostic::new(mpos, "E_STATE", "actor state cannot be public")); }
+                    if m.state_seen { return Err(Diagnostic::new(mpos, "E_DUPLICATE", "only one state {} block is allowed per actor")); }
+                    m.state_seen = true;
+                    self.parse_actor_state(&mut m, owner)?;
+                }
+                Some("state") => return Err(Diagnostic::new(mpos, "E_STATE", "state {} is only valid inside actors")),
                 Some("static") => {
                     if actor {
                         return Err(unsupported(self.pos(), "static functions in actors"));
@@ -632,6 +640,7 @@ impl Parser {
                     m.ctor = Some(Constructor { pos: mpos, params, body });
                 }
                 Some("final") => {
+                    if actor { return Err(Diagnostic::new(mpos, "E_STATE", "actor fields must be declared inside state {}")); }
                     self.advance();
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                         let f = self.parse_named_field(public, actor)?;
@@ -650,6 +659,7 @@ impl Parser {
                     m.fields.push(f.field);
                 }
                 Some(w @ ("let" | "val" | "const")) => {
+                    if actor { return Err(Diagnostic::new(mpos, "E_STATE", "actor fields must be declared inside state {}")); }
                     let mode = match (w, actor) {
                         ("let", true) => FieldMode::ActorState,
                         ("let", false) => FieldMode::Constructor,
@@ -720,6 +730,32 @@ impl Parser {
             }
         }
         Ok(m)
+    }
+
+    /// Actor-owned fields must live inside an explicit state container.
+    fn parse_actor_state(&mut self, members: &mut Members, owner: &str) -> R<()> {
+        self.expect_word("state")?;
+        self.expect(Tok::LBrace, "'{' after state")?;
+        while !self.eat(&Tok::RBrace) {
+            if *self.peek() == Tok::Eof { return Err(self.expected("'}' to close actor state")); }
+            if members.fields.len() >= MAX_MEMBERS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", format!("more than {MAX_MEMBERS} fields in actor '{owner}'")));
+            }
+            let pos = self.pos();
+            let mode = match self.word_at(0) {
+                Some("let") => FieldMode::ActorState,
+                Some("val" | "const") => FieldMode::Final,
+                _ => return Err(Diagnostic::new(pos, "E_STATE", "state {} accepts only let, val or const fields")),
+            };
+            self.advance();
+            if self.is_word("mut") { self.advance(); }
+            let field = self.parse_type_first_field(false, mode)?;
+            if field.init_was_colon {
+                return Err(Diagnostic::new(field.field.init.pos, "E_SYNTAX", "state field initializer uses '='"));
+            }
+            members.fields.push(field.field);
+        }
+        Ok(())
     }
 
     /// `name: type [= expr]` (immutable field).
@@ -1043,6 +1079,7 @@ impl Parser {
         }
         let word = self.word_at(0).map(str::to_owned);
         match word.as_deref() {
+            Some("self") if *self.peek_at(1) == Tok::Dot && self.word_at(2) == Some("handle_state") && *self.peek_at(3) == Tok::LParen => self.parse_state_scope(),
             Some("val" | "const" | "let") => {
                 let s = self.parse_binding()?;
                 self.terminator()?;
@@ -1139,6 +1176,28 @@ impl Parser {
                 Ok(Stmt::Expr(e))
             }
         }
+    }
+
+    /// A checked lexical state loan, not a general-purpose closure.
+    fn parse_state_scope(&mut self) -> R<Stmt> {
+        let pos = self.pos();
+        self.expect_word("self")?;
+        self.expect(Tok::Dot, "'.'")?;
+        self.expect_word("handle_state")?;
+        self.expect(Tok::LParen, "'('")?;
+        self.expect_word("critical")?;
+        self.expect(Tok::Minus, "'-' in critical-read or critical-write")?;
+        let write = if self.eat_word("write") { true } else if self.eat_word("read") { false } else {
+            return Err(Diagnostic::new(self.pos(), "E_STATE", "expected critical-read or critical-write"));
+        };
+        self.expect(Tok::Pipe, "'|' before state borrow")?;
+        let (binder, _) = self.ident("state borrow name")?;
+        self.expect(Tok::Pipe, "'|' after state borrow")?;
+        self.expect(Tok::Arrow, "'->' after state borrow")?;
+        let body = self.parse_block()?;
+        self.expect(Tok::RParen, "')' after state scope")?;
+        self.terminator()?;
+        Ok(Stmt::StateScope { write, binder, body, pos })
     }
 
     /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.

@@ -80,3 +80,60 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 14
+
+  snapshot-reviewed-artifact:
+    # Only the explicit same-repository actor-state PR may publish a build
+    # snapshot. The build/test job remains read-only; this job does not execute
+    # PR scripts or instantiate untrusted guest Wasm.
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/actor-state-container-critical-write-20261110' }}
+    needs: real-compiler
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download exact-head verified build receipt and binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "atto-compiler-wasm32-${HEAD_SHA}" --dir artifact
+          HEAD_SHA="$HEAD_SHA" node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          const receipt = JSON.parse(fs.readFileSync('artifact/receipt.json','utf8'));
+          const binary = fs.readFileSync('artifact/atto_compiler.wasm');
+          if (receipt.source_head !== process.env.HEAD_SHA || receipt.compiler_bytes !== binary.length ||
+              receipt.compiler_sha256 !== crypto.createHash('sha256').update(binary).digest('hex') ||
+              receipt.import_count !== 0 || !WebAssembly.validate(binary)) {
+            throw new Error('Rejecting stale or invalid CI compiler artifact');
+          }
+          const module = new WebAssembly.Module(binary);
+          if (WebAssembly.Module.imports(module).length) throw new Error('Unexpected compiler imports');
+          JS
+      - name: Save immutable artifact branch for downstream authenticated vendoring
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          path: trusted
+          persist-credentials: true
+      - name: Publish content-only snapshot (no default-branch changes)
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          cd trusted
+          git switch --orphan snapshot
+          git rm -rf --ignore-unmatch . > /dev/null
+          mkdir -p build
+          cp ../artifact/atto_compiler.wasm build/
+          cp ../artifact/receipt.json build/
+          base64 -w0 ../artifact/atto_compiler.wasm > build/atto_compiler.wasm.base64
+          git add build/atto_compiler.wasm build/atto_compiler.wasm.base64 build/receipt.json
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "artifact: exact-head verified actor-state compiler ${HEAD_SHA}"
+          git push origin "HEAD:refs/heads/ci-artifacts/actor-state-${HEAD_SHA}"
