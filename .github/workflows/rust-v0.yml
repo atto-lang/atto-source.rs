@@ -37,6 +37,17 @@ jobs:
           cargo fmt --version
       - name: Format source before Clippy/semantic probe (non-exact-tree)
         run: cargo fmt --all
+      - name: Export canonical rustfmt output for exact source PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r path; do
+            case "$path" in
+              src/*.rs|tests/*.rs)
+                printf 'RUSTFMT_RECORD=%s=%s\n' "$path" "$(base64 -w0 "$path")"
+                ;;
+            esac
+          done < <(git diff --name-only -- '*.rs')
       - name: Clippy (warnings are errors)
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Run Rust unit tests (locked)
