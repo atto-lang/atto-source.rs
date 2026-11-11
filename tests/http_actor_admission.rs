@@ -38,10 +38,12 @@ fn serial_1x1_public_mixed_modifiers_and_isoactors_fail_closed() {
 
 #[test]
 fn comments_do_not_grant_or_remove_http_actor_admission() {
-    let source = "/* define http actor Hidden as end */\n\\
-                  // define serial http actor Hidden as end\n\\
-                  fnc http(): int { return 42; }\n\\
-                  pub fnc main(): int { return http(); }";
+    let source = concat!(
+        "/* define http actor Hidden as end */\n",
+        "// define serial http actor Hidden as end\n",
+        "fnc http(): int { return 42; }\n",
+        "pub fnc main(): int { return http(); }"
+    );
     assert!(frontend::parse(source).is_ok());
     assert!(!compile(source).expect("valid http identifier object").is_empty());
     // The unsupported declaration remains visible through adjacent comments.
