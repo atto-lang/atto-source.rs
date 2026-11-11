@@ -232,8 +232,17 @@ fn reject_http_actor_declarations(tokens: &[Token]) -> Result<(), ParseError> {
                 Kind::Pub => true,
                 Kind::Identifier => matches!(
                     next.text.as_str(),
-                    "private" | "shared" | "untrusted" | "serial" | "http" | "tcp"
-                        | "websocket" | "ws" | "stream" | "unary" | "abstract"
+                    "private"
+                        | "shared"
+                        | "untrusted"
+                        | "serial"
+                        | "http"
+                        | "tcp"
+                        | "websocket"
+                        | "ws"
+                        | "stream"
+                        | "unary"
+                        | "abstract"
                 ),
                 _ => false,
             };
