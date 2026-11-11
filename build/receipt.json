@@ -1,0 +1,25 @@
+{
+  "schema": "atto.browser.compiler.artifact.v1",
+  "source_head": "1b01117dbbdb5e58e4fa01d61319b61928e0578e",
+  "source_tree": "cebe289d1561cf78ab517282bb8ccd85d82f024e",
+  "target": "wasm32-unknown-unknown",
+  "abi": "atto-playground-v2",
+  "guest_abi": "atto.browser.guest.v2",
+  "compiler_sha256": "985e3a992a25e1993d64434a02e719ab2993fb9da9ac9262aae9170e5c18e9e7",
+  "compiler_bytes": 260994,
+  "import_count": 0,
+  "exports": [
+    "memory",
+    "abi_version",
+    "input_ptr",
+    "input_capacity",
+    "result_ptr",
+    "result_length",
+    "error_ptr",
+    "error_line_number",
+    "error_column_number",
+    "compile",
+    "__data_end",
+    "__heap_base"
+  ]
+}
