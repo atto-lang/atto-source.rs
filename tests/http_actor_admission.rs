@@ -57,3 +57,18 @@ fn unrelated_actor_kind_not_mislabeled_as_source_http() {
     let err = frontend::parse("define actor Foo as end").expect_err("actors not implemented");
     assert_ne!(err.class, "http_actor_backend_unsupported");
 }
+
+#[test]
+fn unicode_line_separators_cannot_hide_http_actor_after_comment() {
+    for separator in ["\r", "\n", "\u{0085}", "\u{2028}", "\u{2029}"] {
+        let source = format!("// inert actor words{separator}define http actor Endpoint as end");
+        rejected(&source);
+        let valid = format!(
+            "// define http actor Inert as end{separator}\
+             fnc http(): int {{ return 42; }}\
+             pub fnc main(): int {{ return http(); }}"
+        );
+        assert!(frontend::parse(&valid).is_ok(), "separator: {separator:?}");
+        assert!(!compile(&valid).expect("valid http identifier source").is_empty());
+    }
+}
