@@ -11,6 +11,11 @@ pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;
 
+/// This independent scalar object emitter has no TenantVM runtime or actor
+/// lowering. This is a machine-readable fail-closed capability declaration,
+/// not a placeholder sandbox.
+pub const TENANT_VM_RUNTIME_SUPPORT: &str = "UNSUPPORTED";
+
 /// Compile the current scalar grammar with opt-in signed i64 overflow traps.
 /// No safety/effect certificate is emitted: those IR schemas cannot yet
 /// express the new conditional integer-overflow failure edges.
@@ -54,6 +59,14 @@ pub fn compile_with_effect_ir(source: &str) -> Result<(Vec<u8>, serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tenant_vm_execution_is_explicitly_unsupported() {
+        assert_eq!(TENANT_VM_RUNTIME_SUPPORT, "UNSUPPORTED");
+        // An RTL/object scalar compiler must never accept actor declarations
+        // without owning the corresponding TenantVM runtime semantics.
+        assert!(compile("define actor Evil as end").is_err());
+    }
+
     #[test]
     fn compiles_real_native_object() {
         let result = compile(
