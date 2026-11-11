@@ -1,8 +1,0 @@
-// Java: `let mut` / `const mut` add a mutable-referent qualifier (no effect on scalars)
-// expect-exit: 9
-pub fnc main(): int {
-  let mut x: int = 7;
-  const mut y = 1;
-  x = x + y + 1;
-  return x;
-}

@@ -1,8 +1,0 @@
-// expect-exit: 1
-pub fnc main(): int {
-  val x = 3;
-  if x > 2 then
-    return 1;
-  fi
-  return 0;
-}

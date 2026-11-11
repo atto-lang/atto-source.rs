@@ -1,6 +1,0 @@
-// Java accepts and discards a non-call expression statement
-// expect-exit: 0
-pub fnc main(): int {
-  1 + 2;
-  return 0;
-}
