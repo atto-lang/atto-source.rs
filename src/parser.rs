@@ -91,7 +91,6 @@ const RESERVED: &[&str] = &[
     "trap",
     "defer",
     "actor",
-    "state",
     "isoactor",
     "shared",
     "untrusted",
