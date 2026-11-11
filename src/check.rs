@@ -274,6 +274,7 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    state_scope: Option<(String, bool)>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -944,6 +945,7 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            state_scope: None,
             imports,
             data,
         }
@@ -980,6 +982,9 @@ impl<'a> FnCx<'a> {
         }
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
+        }
+        if self.state_scope.as_ref().is_some_and(|(alias, _)| alias == name) {
+            return Err(Diagnostic::new(pos, "E_STATE_ESCAPE", "the state loan alias cannot be shadowed"));
         }
         let slot = self.temp(ty, pos)?;
         self.scopes.last_mut().unwrap().push(Local {
@@ -1038,6 +1043,10 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
+        if self.state_scope.is_some() && matches!(s, Stmt::Return(..) | Stmt::Break(..) | Stmt::Continue(..)) {
+            let pos = match s { Stmt::Return(_, p) | Stmt::Break(p) | Stmt::Continue(p) => *p, _ => unreachable!() };
+            return Err(Diagnostic::new(pos, "E_STATE_ESCAPE", "state loan cannot exit through return, break or continue"));
+        }
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
                 let want = match ty {
@@ -1084,6 +1093,21 @@ impl<'a> FnCx<'a> {
                 TStmt::Set(slot, v)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
+            Stmt::StateScope { write, binder, body, pos } => {
+                if !matches!(self.owner, Owner::Actor { .. }) {
+                    return Err(Diagnostic::new(*pos, "E_STATE", "handle_state is only available inside actors"));
+                }
+                if self.state_scope.is_some() {
+                    return Err(Diagnostic::new(*pos, "E_STATE_BORROW", "nested state borrows are not permitted"));
+                }
+                if self.lookup(binder).is_some() {
+                    return Err(Diagnostic::new(*pos, "E_STATE_BORROW", "state alias cannot shadow an outer binding"));
+                }
+                self.state_scope = Some((binder.clone(), *write));
+                let checked = self.scoped(body);
+                self.state_scope = None;
+                TStmt::Block(checked?)
+            }
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
@@ -1202,7 +1226,9 @@ impl<'a> FnCx<'a> {
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
-        if !matches!(target.kind, ExprKind::SelfRef) {
+        let scoped_alias = matches!(&target.kind, ExprKind::Var(name)
+            if self.state_scope.as_ref().is_some_and(|(alias, _)| alias == name));
+        if !matches!(target.kind, ExprKind::SelfRef) && !scoped_alias {
             return Err(Diagnostic::new(
                 pos,
                 "E_OWNERSHIP",
@@ -1261,6 +1287,9 @@ impl<'a> FnCx<'a> {
                 })
             }
             Owner::Actor { a } => {
+                if !self.state_scope.as_ref().is_some_and(|(_, write)| *write) {
+                    return Err(Diagnostic::new(pos, "E_STATE_ACCESS", "state writes require handle_state(critical-write |s| -> { ... })"));
+                }
                 let actor = &self.g.actors[a as usize];
                 let f = match actor.fields.iter().find(|f| f.name == field) {
                     Some(f) => f,
@@ -1535,7 +1564,11 @@ impl<'a> FnCx<'a> {
                     "String values are not supported by the browser compiler yet (string literals may only be printed)",
                 ))
             }
-            ExprKind::Var(name) => match self.lookup(name) {
+            ExprKind::Var(name) => {
+                if self.state_scope.as_ref().is_some_and(|(alias, _)| alias == name) {
+                    return Err(Diagnostic::new(pos, "E_STATE_ESCAPE", "state loan cannot be used as a value, returned, or sent to another actor"));
+                }
+                match self.lookup(name) {
                 Some(l) if l.mail.is_some() => {
                     return Err(Diagnostic::new(
                         pos,
@@ -1567,6 +1600,7 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
+                }
             },
             ExprKind::Unary(..) | ExprKind::Binary(..) | ExprKind::Ternary(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
@@ -1760,7 +1794,8 @@ impl<'a> FnCx<'a> {
                 ));
             }
         }
-        if let ExprKind::SelfRef = base.kind {
+        if matches!(base.kind, ExprKind::SelfRef) || matches!(&base.kind, ExprKind::Var(name)
+            if self.state_scope.as_ref().is_some_and(|(alias, _)| alias == name)) {
             match self.owner {
                 Owner::Class { c, is_static: false, .. } => {
                     return self.field_get(
@@ -1773,6 +1808,9 @@ impl<'a> FnCx<'a> {
                     )
                 }
                 Owner::Actor { a } => {
+                    if self.state_scope.is_none() {
+                        return Err(Diagnostic::new(pos, "E_STATE_ACCESS", "state reads require a critical-read or critical-write scope"));
+                    }
                     let actor = &self.g.actors[a as usize];
                     return match actor.fields.iter().find(|f| f.name == name) {
                         Some(f) => Ok(TE {
@@ -1894,6 +1932,9 @@ impl<'a> FnCx<'a> {
                     return self.instance_call(recv, c, name, args, pos);
                 }
                 Owner::Actor { a } => {
+                    if self.state_scope.is_some() {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW", "actor method calls inside state borrows require transitive effect checking"));
+                    }
                     let actor = &self.g.actors[a as usize];
                     if name == "receive" {
                         return Err(Diagnostic::new(
