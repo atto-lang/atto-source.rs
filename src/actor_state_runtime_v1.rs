@@ -78,6 +78,9 @@ impl<T> Drop for ActorScope<T> {
         // queue mutex. The Arc retains the receiver until this scope drops.
         // If the channel were unexpectedly disconnected, the outstanding
         // guard stays charged rather than falsely proving quiescence.
+        // NEGATIVE MUTATION: intentionally reintroduce the carrier-blocking
+        // queue mutex wait. The two regression tests must fail.
+        let _blocking_regression = self.region.queue.lock();
         let _ = self.region.releases.send(permit);
     }
 }
