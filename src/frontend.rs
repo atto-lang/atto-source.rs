@@ -215,6 +215,51 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+/// Typed fail-closed admission shared with the .NET/JS source compiler gates.
+/// Source HTTP actors require request/mail ownership, state-loan, cancellation
+/// and physical shutdown lowering. An optional host HTTP server is not proof
+/// of an executable source actor. Only examine actual lexer tokens, not text
+/// inside comments; preserve normal user identifiers such as `http`.
+fn reject_http_actor_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Define {
+            continue;
+        }
+        let mut cursor = index + 1;
+        let mut http = false;
+        while let Some(next) = tokens.get(cursor) {
+            let modifier = match next.kind {
+                Kind::Pub => true,
+                Kind::Identifier => matches!(
+                    next.text.as_str(),
+                    "private" | "shared" | "untrusted" | "serial" | "http" | "tcp"
+                        | "websocket" | "ws" | "stream" | "unary" | "abstract"
+                ),
+                _ => false,
+            };
+            if !modifier {
+                break;
+            }
+            http |= next.text == "http";
+            cursor += 1;
+        }
+        if http {
+            if let Some(next) = tokens.get(cursor) {
+                if next.kind == Kind::Identifier
+                    && matches!(next.text.as_str(), "actor" | "isoactor")
+                {
+                    return Err(ParseError {
+                        offset: next.start,
+                        class: "http_actor_backend_unsupported",
+                        message: "HTTP_ACTOR_BACKEND_UNSUPPORTED: Rust scalar compiler cannot lower source HTTP actor request/mail lifetimes, guarded state, or physical shutdown".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -262,6 +307,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         });
     }
     reject_execution_domains(&tokens)?;
+    reject_http_actor_declarations(&tokens)?;
     let mut parser = Parser {
         tokens,
         cursor: 0,
