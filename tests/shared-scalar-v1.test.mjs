@@ -99,7 +99,7 @@ const decoder=new TextDecoder('utf-8',{fatal:true});
 
 function gitBlobSha1(source) {
   const b=Buffer.from(source,'utf8');
-  return createHash('sha1').update('blob '+b.length+'\\0').update(b).digest('hex');
+  return createHash('sha1').update('blob '+b.length+'\0').update(b).digest('hex');
 }
 function compile(source) {
   const input=Buffer.from(source,'utf8');
