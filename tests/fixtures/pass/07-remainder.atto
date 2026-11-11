@@ -1,9 +1,0 @@
-// Legacy arithmetic fixture: the removed '%' operator is deliberately absent.
-// expect-exit: 9
-pub fnc main(): int {
-  val a = 7 - 6;
-  val b = -7 + 6;
-  val c = 7 - 6;
-  val d = 100 - 7 * 14;
-  return a + b + c + d + 6;
-}

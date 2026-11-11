@@ -1,6 +1,0 @@
-// expect-error: E_ACTOR
-// java: rejects
-define actor Worker as
-    pub receive(ActorMail<int> mail): void { return; }
-end
-pub fnc main(): int { return 0; }

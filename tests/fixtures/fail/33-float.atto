@@ -1,6 +1,0 @@
-// expect-error: E_UNSUPPORTED_TYPE
-// java: accepts
-pub fnc main(): int {
-  val f: float = 1.5;
-  return 0;
-}

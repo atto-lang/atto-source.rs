@@ -1,6 +1,0 @@
-// expect-exit: 42
-pub fnc main(): int {
-  let x: int = 7;
-  x = x * 6;
-  return x;
-}

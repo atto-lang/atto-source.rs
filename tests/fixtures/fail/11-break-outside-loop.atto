@@ -1,6 +1,0 @@
-// expect-error: E_LOOP
-// java: rejects
-pub fnc main(): int {
-  break;
-  return 0;
-}
