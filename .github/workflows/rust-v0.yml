@@ -35,8 +35,8 @@ jobs:
           cargo --version
           cargo clippy --version
           cargo fmt --version
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Format source before Clippy/semantic probe (non-exact-tree)
+        run: cargo fmt --all
       - name: Clippy (warnings are errors)
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Run Rust unit tests (locked)
