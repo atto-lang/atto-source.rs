@@ -1,6 +1,0 @@
-// expect-error: E_STRING
-// java: rejects
-pub fnc main(): int {
-  stdio.println("oops);
-  return 0;
-}

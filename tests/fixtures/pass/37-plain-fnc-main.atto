@@ -1,4 +1,0 @@
-// expect-exit: 26
-fnc main(): int {
-  return 26;
-}

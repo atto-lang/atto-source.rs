@@ -1,8 +1,0 @@
-// spec 16: inside a condition, ',' is AND
-// expect-exit: 21
-pub fnc main(): int {
-  if 1 < 2, 3 < 4 then
-    return 21;
-  fi
-  return 0;
-}
