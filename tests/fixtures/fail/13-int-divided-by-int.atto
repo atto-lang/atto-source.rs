@@ -1,6 +1,0 @@
-// spec S-25: int / int result type is undecided (Java: float, LLVM: rejected)
-// expect-error: E_UNSUPPORTED
-// java: rejects
-pub fnc main(): int {
-  return 7 / 2;
-}

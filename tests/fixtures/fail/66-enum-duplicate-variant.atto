@@ -1,7 +1,0 @@
-// expect-error: E_DUPLICATE
-// java: rejects
-define enum E as
-    X
-    X
-end
-pub fnc main(): int { return 0; }

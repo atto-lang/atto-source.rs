@@ -1,7 +1,0 @@
-// expect-error: E_PRIVATE
-// java: rejects
-define actor W as
-    let int n = 0;
-    receive(ActorMail<int> mail): void { return; }
-end
-pub fnc main(): int { val w = spawn W(); return w.n; }

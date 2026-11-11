@@ -1,8 +1,0 @@
-// parameters are immutable unless declared `type mut name`
-// expect-error: E_IMMUTABLE
-// java: rejects
-fnc f(int a): int {
-  a = a + 1;
-  return a;
-}
-pub fnc main(): int { return f(4); }

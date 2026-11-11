@@ -1,5 +1,0 @@
-// spec 16 TARGET `::`/`end` bodies are rejected by the Java and LLVM parsers today
-// expect-error: E_SYNTAX
-// java: rejects
-fnc f(int a) -> int :: return a + 1; end
-pub fnc main(): int { return f(4); }

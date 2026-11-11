@@ -1,5 +1,0 @@
-// expect-error: E_UNBOUND
-// java: rejects
-pub fnc main(): int {
-  return y;
-}

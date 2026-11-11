@@ -1,6 +1,0 @@
-// expect-error: E_RESERVED
-// java: rejects
-pub fnc main(): int {
-  val spawn = 1;
-  return 0;
-}

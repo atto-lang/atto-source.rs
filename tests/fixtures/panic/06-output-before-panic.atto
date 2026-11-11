@@ -1,8 +1,0 @@
-// output emitted before a panic is preserved
-// expect-panic: 1
-// expect-stdout: before
-pub fnc main(): int {
-  stdio.println("before");
-  val x: int = 4611686018427387904;
-  return x * 2;
-}

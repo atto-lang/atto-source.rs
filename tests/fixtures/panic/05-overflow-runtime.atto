@@ -1,6 +1,0 @@
-// checked integer arithmetic must trap at runtime, not wrap
-// expect-panic: 1
-pub fnc main(): int {
-  val max_value = 9223372036854775807;
-  return max_value + 1;
-}

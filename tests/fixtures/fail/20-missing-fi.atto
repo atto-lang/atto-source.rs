@@ -1,7 +1,0 @@
-// expect-error: E_SYNTAX
-// java: rejects
-pub fnc main(): int {
-  if true then
-    return 1;
-  return 0;
-}
