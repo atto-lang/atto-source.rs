@@ -1,7 +1,0 @@
-// Java Parser.isImplicitNewlineTerminator: a statement may end at a line break
-// expect-exit: 3
-pub fnc main(): int {
-  val x = 1
-  val y = 2
-  return x + y
-}

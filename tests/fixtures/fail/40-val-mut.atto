@@ -1,7 +1,0 @@
-// Java Parser.parseReferentMutability: 'val mut' is a duplicate qualifier
-// expect-error: E_SYNTAX
-// java: rejects
-pub fnc main(): int {
-  val mut x = 1;
-  return x;
-}

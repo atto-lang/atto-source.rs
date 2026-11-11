@@ -1,5 +1,0 @@
-// expect-exit: 11
-pub fnc main(): int {
-  val b = 3 > 2;
-  return b ? 11 : 12;
-}

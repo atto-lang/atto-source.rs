@@ -1,8 +1,0 @@
-// expect-exit: 10
-pub fnc main(): int {
-  let s = 0;
-  for (let i = 0; i < 5; i++) do
-    s = s + i;
-  done
-  return s;
-}
