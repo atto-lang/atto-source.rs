@@ -11,6 +11,17 @@ pub struct ActorIncarnation {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(pub u64);
+
+/// Logical replay fence only; the trusted scheduler must independently
+/// authenticate the physical actor WAKE turn and the Future producer receipt.
+/// Private fields prevent caller construction, not theft of a copied ticket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskWakeTicket {
+    owner: ActorIncarnation,
+    task: TaskId,
+    generation: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskStage {
     Ready,
@@ -31,12 +42,15 @@ pub enum TaskError {
     NotQuiescent,
     Cancelled,
     ActorBusy,
+    WakeRequired,
+    InvalidWake,
 }
 #[derive(Clone, Copy, Debug)]
 struct Entry {
     parent: Option<TaskId>,
     stage: TaskStage,
     cancel_requested: bool,
+    wake_generation: u64,
 }
 
 /// A bounded per-actor logical task ledger. `Done` records still count toward
@@ -73,7 +87,9 @@ impl ActorTaskLedger {
         }
         self.next_id = self.next_id.checked_add(1).ok_or(TaskError::ExhaustedIds)?;
         let id = TaskId(self.next_id);
-        self.tasks.insert(id, Entry { parent, stage: TaskStage::Ready, cancel_requested: false });
+        self.tasks.insert(id, Entry {
+            parent, stage: TaskStage::Ready, cancel_requested: false, wake_generation: 0
+        });
         Ok(id)
     }
     pub fn start_or_resume(
@@ -89,18 +105,44 @@ impl ActorTaskLedger {
         }
         let task = self.tasks.get_mut(&id).ok_or(TaskError::MissingTask)?;
         if task.cancel_requested { return Err(TaskError::Cancelled); }
-        if task.stage != TaskStage::Ready && task.stage != TaskStage::Suspended {
-            return Err(TaskError::InvalidTransition);
-        }
+        if task.stage == TaskStage::Suspended { return Err(TaskError::WakeRequired); }
+        if task.stage != TaskStage::Ready { return Err(TaskError::InvalidTransition); }
         task.stage = TaskStage::Running;
         Ok(())
     }
-    pub fn suspend(&mut self, owner: ActorIncarnation, id: TaskId) -> Result<(), TaskError> {
+    /// This is a logical ticket consumption check. Only a physical actor WAKE
+    /// callback may call it after checking the scheduler's exact incarnation,
+    /// carrier lease and trusted producer ticket. It does not do that itself.
+    pub fn resume_from_authenticated_wake(
+        &mut self, owner: ActorIncarnation, id: TaskId, ticket: TaskWakeTicket
+    ) -> Result<(), TaskError> {
         self.check_owner(owner)?;
+        if self.stopped { return Err(TaskError::Stopped); }
+        if self.tasks.iter().any(|(other, task)|
+            *other != id && task.stage == TaskStage::Running) {
+            return Err(TaskError::ActorBusy);
+        }
         let task = self.tasks.get_mut(&id).ok_or(TaskError::MissingTask)?;
-        if task.stage != TaskStage::Running { return Err(TaskError::InvalidTransition); }
-        task.stage = TaskStage::Suspended;
+        if task.cancel_requested { return Err(TaskError::Cancelled); }
+        if task.stage != TaskStage::Suspended || ticket.owner != owner
+            || ticket.task != id || ticket.generation != task.wake_generation {
+            return Err(TaskError::InvalidWake);
+        }
+        task.stage = TaskStage::Running; // consumes ticket before guest execution
         Ok(())
+    }
+    pub fn suspend(
+        &mut self, owner: ActorIncarnation, id: TaskId
+    ) -> Result<TaskWakeTicket, TaskError> {
+        self.check_owner(owner)?;
+        if self.stopped { return Err(TaskError::Stopped); }
+        let task = self.tasks.get_mut(&id).ok_or(TaskError::MissingTask)?;
+        if task.cancel_requested { return Err(TaskError::Cancelled); }
+        if task.stage != TaskStage::Running { return Err(TaskError::InvalidTransition); }
+        task.wake_generation = task.wake_generation.checked_add(1)
+            .ok_or(TaskError::ExhaustedIds)?;
+        task.stage = TaskStage::Suspended;
+        Ok(TaskWakeTicket { owner, task: id, generation: task.wake_generation })
     }
     /// Called only after the task's physical turn has returned.
     pub fn complete_turn(&mut self, owner: ActorIncarnation, id: TaskId) -> Result<(), TaskError> {
@@ -238,18 +280,62 @@ mod tests {
         assert!(l.admit_in_authenticated_turn(OWNER, None).is_ok());
     }
     #[test]
+    fn wake_replay_wrong_task_and_stale_incarnation_fail_closed() {
+        let mut l = ledger(3);
+        let a = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        let b = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        l.start_or_resume(OWNER, a).unwrap();
+        let first = l.suspend(OWNER, a).unwrap();
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, b, first),
+            Err(TaskError::InvalidWake));
+        let stale = ActorIncarnation { id: OWNER.id, generation: OWNER.generation + 1 };
+        assert_eq!(l.resume_from_authenticated_wake(stale, a, first),
+            Err(TaskError::StaleActor));
+        l.resume_from_authenticated_wake(OWNER, a, first).unwrap();
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, a, first),
+            Err(TaskError::InvalidWake));
+        let second = l.suspend(OWNER, a).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, a, first),
+            Err(TaskError::InvalidWake));
+        l.resume_from_authenticated_wake(OWNER, a, second).unwrap();
+        l.complete_turn(OWNER, a).unwrap();
+        l.retire(OWNER, a).unwrap();
+        l.start_or_resume(OWNER, b).unwrap();
+        l.complete_turn(OWNER, b).unwrap();
+        l.retire(OWNER, b).unwrap();
+        assert!(l.is_physically_quiescent());
+    }
+    #[test]
+    fn stop_revokes_late_wake_without_forging_physical_retirement() {
+        let mut l = ledger(1);
+        let t = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        l.start_or_resume(OWNER, t).unwrap();
+        let wake = l.suspend(OWNER, t).unwrap();
+        l.stop(OWNER).unwrap();
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, t, wake),
+            Err(TaskError::Stopped));
+        assert!(!l.is_physically_quiescent());
+        l.cleanup_cancelled(OWNER, t).unwrap();
+        assert!(!l.is_physically_quiescent());
+        l.retire(OWNER, t).unwrap();
+        assert!(l.is_physically_quiescent());
+    }
+    #[test]
     fn concurrent_logical_tasks_never_run_mutable_actor_turns_together() {
         let mut l = ledger(2);
         let a = l.admit_in_authenticated_turn(OWNER, None).unwrap();
         let b = l.admit_in_authenticated_turn(OWNER, None).unwrap();
         l.start_or_resume(OWNER, a).unwrap();
         assert_eq!(l.start_or_resume(OWNER, b), Err(TaskError::ActorBusy));
-        l.suspend(OWNER, a).unwrap();
+        let ticket = l.suspend(OWNER, a).unwrap();
         l.start_or_resume(OWNER, b).unwrap();
-        assert_eq!(l.start_or_resume(OWNER, a), Err(TaskError::ActorBusy));
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, a, ticket),
+            Err(TaskError::ActorBusy));
         l.complete_turn(OWNER, b).unwrap();
         l.retire(OWNER, b).unwrap();
-        l.start_or_resume(OWNER, a).unwrap();
+        assert_eq!(l.start_or_resume(OWNER, a), Err(TaskError::WakeRequired));
+        l.resume_from_authenticated_wake(OWNER, a, ticket).unwrap();
         l.complete_turn(OWNER, a).unwrap();
         l.retire(OWNER, a).unwrap();
         assert!(l.is_physically_quiescent());
