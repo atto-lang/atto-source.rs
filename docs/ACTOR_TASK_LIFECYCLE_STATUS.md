@@ -38,3 +38,9 @@ Nested task admission now requires the exact parent task to be `Running`, not me
 The logical wake ticket now requires a valid matching task, actor incarnation and per-suspension generation; ordinary `start_or_resume` rejects suspended tasks. This is **not** a cryptographic capability and does not prove physical actor WAKE ownership without a trusted scheduler.
 
 Current implementation blob: `9394b2ff1fba07dd396aac3482a602dd151a2e5c`. Embedded lifecycle unit tests: **8 authored, NOT_EXECUTED**; local Rust toolchain unavailable. Private CI export allowlist has no approved destinations, so no out-of-org source transfer was attempted. Exact-head Cargo execution and compiler-backed `.atto` guest tests remain required.
+
+## Task-identity side-channel audit
+
+The original Rust model checked whether another task was running before verifying that the incoming TaskId existed. A guessed ID could therefore receive `ActorBusy` instead of `MissingTask`, exposing per-actor scheduling state. Both ordinary task start and wake-resume now validate task presence, lifecycle and wake identity before the single-writer busy check.
+
+Unit tests currently authored: **9**, all **NOT_EXECUTED** without a Rust toolchain/approved CI. Implementation blob `19528a03cf3ff69a349c9cb21e8c3ebe00240bd8`.
