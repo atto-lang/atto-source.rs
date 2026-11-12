@@ -30,8 +30,11 @@ self.onmessage=async ({data})=>{
     const out=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
-    // atto.browser.guest.v1: only these output capabilities may be imported
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64']);
+    const asyncSections=WebAssembly.Module.customSections(guest,'atto.async');
+    const useAsync=asyncSections.length===1&&new Uint8Array(asyncSections[0]).length===1&&new Uint8Array(asyncSections[0])[0]===1;
+    if(asyncSections.length&&!useAsync)throw new Error('invalid async marker');
+    if(useAsync&&(typeof WebAssembly.Suspending!=='function'||typeof WebAssembly.promising!=='function'))throw new Error('JSPI unsupported');
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',...(useAsync?['sleep_ms','barrier','task_start','task_await']:[])]);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
@@ -43,9 +46,46 @@ self.onmessage=async ({data})=>{
       print_newline:()=>{stdout+='\n'},
       print_f64:v=>{stdout+=javaDouble(v)},
     };
+    const jobs=new Map();let nextJob=1,barrierWaiters=[];
+    if(useAsync){
+      atto.sleep_ms=new WebAssembly.Suspending(async ms=>{
+        if(ms<0n||ms>1000n)throw new Error('invalid sleep duration');
+        await new Promise(resolve=>setTimeout(resolve,Number(ms)));
+        return 0n;
+      });
+      atto.barrier=new WebAssembly.Suspending(async n=>{
+        if(n!==2n)throw new Error('invalid barrier party count');
+        return new Promise(resolve=>{
+          barrierWaiters.push(resolve);
+          if(barrierWaiters.length===2){
+            const ready=barrierWaiters;barrierWaiters=[];
+            queueMicrotask(()=>ready.forEach(f=>f(0n)));
+          }
+        });
+      });
+      atto.task_start=id=>{
+        if(jobs.size>=64||id<0||id>1024)throw new Error('task quota/index violation');
+        const handle=nextJob++;
+        let ok,bad;
+        const p=new Promise((res,rej)=>{ok=res;bad=rej;});
+        p.catch(()=>{});
+        jobs.set(handle,{p});
+        queueMicrotask(async()=>{
+          try{const result=await WebAssembly.promising(instance.exports.task_invoke)(id);ok(result)}
+          catch(error){bad(error)}
+        });
+        return handle;
+      };
+      atto.task_await=new WebAssembly.Suspending(async handle=>{
+        const job=jobs.get(handle);
+        if(!job)throw new Error('bad/consumed task handle');
+        jobs.delete(handle);
+        return await job.p;
+      });
+    }
     instance=new WebAssembly.Instance(guest,{atto});
     let value;
-    try{value=instance.exports.main()}
+    try{value=useAsync?await WebAssembly.promising(instance.exports.main)():instance.exports.main()}
     catch(e){
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':'trap: '+e.message;
