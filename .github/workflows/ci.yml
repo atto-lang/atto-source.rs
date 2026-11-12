@@ -73,6 +73,11 @@ jobs:
           fs.writeFileSync('dist/receipt.json',JSON.stringify(receipt,null,2)+'\n');
           console.log(receipt);
           JS
+      - name: One-shot private compiler handoff (no credentials)
+        run: |
+          echo ATTO_WASM_B64_START
+          base64 -w 8192 dist/atto_compiler.wasm
+          echo ATTO_WASM_B64_END
       - name: Publish verified compiler plus provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
