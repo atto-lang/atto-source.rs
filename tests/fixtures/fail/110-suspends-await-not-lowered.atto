@@ -1,0 +1,9 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+suspends fnc delayedAnswer(): int {
+  await rt.sleep(25);
+  return 42;
+}
+pub suspends fnc main(): int {
+  return await delayedAnswer();
+}

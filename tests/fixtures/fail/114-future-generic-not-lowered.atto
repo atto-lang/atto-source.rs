@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// java: rejects
+pub fnc main(): int {
+  val future: Future<int> = 42;
+  return 0;
+}

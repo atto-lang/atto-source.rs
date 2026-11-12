@@ -98,6 +98,7 @@ const RESERVED: &[&str] = &[
     "stop",
     "rt",
     "await",
+    "task",
     "nb",
     "cb",
     "select",
@@ -132,6 +133,7 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "trap",
     "spawn",
     "await",
+    "task",
     "actor",
     "isoactor",
     "define",
@@ -176,6 +178,7 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "Option",
     "Result",
     "Array",
+    "Future",
     "List",
     "Vector",
     "Slice",
@@ -1111,6 +1114,9 @@ impl Parser {
                 self.advance();
                 self.parse_match(true)
             }
+            Some("do") if self.word_at(1) == Some("task") => {
+                Err(unsupported(pos, "'do task' (structured detached tasks)"))
+            }
             Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
@@ -1923,7 +1929,7 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "await" | "task" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {

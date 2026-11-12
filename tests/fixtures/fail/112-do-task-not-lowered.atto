@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+pub fnc main(): int {
+  do task {
+    stdio.println(42);
+  }
+  return 0;
+}
