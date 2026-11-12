@@ -78,9 +78,9 @@ jobs:
       # Remove this step once linked private playground has vendored exact bytes.
       - name: Temporary private compiler binary handoff (no secrets)
         run: |
-          printf 'ATTO_WASM_B64_START\\n'
+          echo ATTO_WASM_B64_START
           base64 -w 8192 dist/atto_compiler.wasm
-          printf '\\nATTO_WASM_B64_END\\n'
+          echo ATTO_WASM_B64_END
       - name: Publish verified compiler plus provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
