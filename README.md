@@ -52,6 +52,9 @@ The following are rejected, with the code shown:
 - `switch`, value `match<T>`, imports, lambdas, `Option` / `Result`, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
 - Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
 
+
+> **Compiler parity note:** the return-position `return match ... over ... end` form is currently executable in this Rust/Wasm browser compiler. The Java reference has not yet admitted the same form; the positive conformance fixtures explicitly mark `// java: rejects` until Java parity is implemented and proved. This is not evidence of five-backend parity.
+
 ### Known divergences from the Java reference
 
 These are recorded in fixtures and checked by the differential run:

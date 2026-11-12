@@ -1,4 +1,5 @@
 // A return match subject must be evaluated exactly once.
+// java: rejects
 // expect-exit: 22
 // expect-stdout: subject
 fnc subject(): int {

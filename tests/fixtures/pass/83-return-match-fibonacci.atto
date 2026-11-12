@@ -1,4 +1,5 @@
 // Return-position pattern matching Fibonacci: canonical match/over/end.
+// java: rejects
 // expect-exit: 144
 // expect-stdout: 0 1 1 2 3 5 8 13 21 34 
 fnc fib(int n): int {
