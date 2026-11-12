@@ -384,6 +384,8 @@ impl Emit<'_> {
             TExpr::Barrier(count) => {self.expr(count);self.call(self.l.import(Import::Barrier));}
             TExpr::TaskStart(idx) => {self.i32c(*idx as i32);self.call(self.l.import(Import::TaskStart));}
             TExpr::TaskAwait(handle) => {self.expr(handle);self.call(self.l.import(Import::TaskAwait));}
+            // Value stays on the Wasm stack over the void JSPI host call.
+            TExpr::AwaitYield(value) => {self.expr(value);self.call(self.l.import(Import::Cooperate));}
             TExpr::Call(f, args) => {
                 for a in args {
                     self.expr(a);
@@ -819,6 +821,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::Barrier => Sig(vec![I64], vec![I64]),
             Import::TaskStart => Sig(vec![I32], vec![I32]),
             Import::TaskAwait => Sig(vec![I32], vec![I64]),
+            Import::Cooperate => Sig(vec![], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1072,10 +1075,10 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     // Deliberately versioned and opt-in: the public guest.v2 contract
     // remains unchanged for programs without actual async imports.
-    if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait)) {
+    if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.async");
-        marker.push(1); // JSPI + scoped capture-free task ABI v1
+        marker.push(2); // JSPI + mandatory cooperative yield; old v1 guests must fail closed
         section(&mut out, 0, marker);
     }
     out
