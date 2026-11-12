@@ -30,6 +30,7 @@ pub enum TaskError {
     HasLiveChildren,
     NotQuiescent,
     Cancelled,
+    ActorBusy,
 }
 #[derive(Clone, Copy, Debug)]
 struct Entry {
@@ -50,7 +51,7 @@ pub struct ActorTaskLedger {
 }
 impl ActorTaskLedger {
     pub fn new(incarnation: ActorIncarnation, capacity: usize) -> Result<Self, TaskError> {
-        if incarnation.id == 0 || incarnation.generation == 0 || capacity == 0 {
+        if incarnation.id == 0 || incarnation.generation == 0 || capacity == 0 || capacity > 1024 {
             return Err(TaskError::InvalidTransition);
         }
         Ok(Self { incarnation, capacity, next_id: 0, stopped: false, tasks: BTreeMap::new() })
@@ -80,6 +81,12 @@ impl ActorTaskLedger {
     ) -> Result<(), TaskError> {
         self.check_owner(owner)?;
         if self.stopped { return Err(TaskError::Stopped); }
+        // Suspended tasks are logical concurrency, not simultaneous
+        // mutable execution on two physical carriers for one actor.
+        if self.tasks.iter().any(|(other, task)|
+            *other != id && task.stage == TaskStage::Running) {
+            return Err(TaskError::ActorBusy);
+        }
         let task = self.tasks.get_mut(&id).ok_or(TaskError::MissingTask)?;
         if task.cancel_requested { return Err(TaskError::Cancelled); }
         if task.stage != TaskStage::Ready && task.stage != TaskStage::Suspended {
