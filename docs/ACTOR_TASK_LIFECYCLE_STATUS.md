@@ -30,3 +30,11 @@ A suspended task no longer restarts through ordinary `start_or_resume`; that pat
 **Security boundary:** This ticket is a logical replay fence, **not an unforgeable carrier capability**. Trusted scheduler code must authenticate the physical actor WAKE lease and external Future readiness before calling the ledger. Until it does, this remains a host model, not guest task resumption.
 
 Authored Rust unit regression cases include wrong-task, stale-generation, repeated-suspension replay, STOP while awaiting, nested cancellation, quotas and single-writer serialization. No local Rust toolchain or executed Rust CI is available, so these are NOT_EXECUTED.
+
+## Audit and hardening — 2026-11-12
+
+Nested task admission now requires the exact parent task to be `Running`, not merely alive. This prevents a suspended/settled parent from being used to mint child tasks through a late Future callback. Added `parent_must_be_actively_running_to_admit_nested_task` regression, including ready, suspended, completed parent and same-actor exclusivity cases.
+
+The logical wake ticket now requires a valid matching task, actor incarnation and per-suspension generation; ordinary `start_or_resume` rejects suspended tasks. This is **not** a cryptographic capability and does not prove physical actor WAKE ownership without a trusted scheduler.
+
+Current implementation blob: `9394b2ff1fba07dd396aac3482a602dd151a2e5c`. Embedded lifecycle unit tests: **8 authored, NOT_EXECUTED**; local Rust toolchain unavailable. Private CI export allowlist has no approved destinations, so no out-of-org source transfer was attempted. Exact-head Cargo execution and compiler-backed `.atto` guest tests remain required.
