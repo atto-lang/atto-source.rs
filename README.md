@@ -137,3 +137,17 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+## Experimental native Wasm suspending-task slice (JSPI)
+
+The **private** Rust compiler now admits a deliberately narrow, typed async subset:
+
+- `suspends fnc`, `await suspendingCall()` and `await rt.sleep(milliseconds)`;
+- capture-free `task { return int; }` blocks, yielding a single-owner `Future<int>`; `await future` consumes the handle;
+- `rt.barrier(2)` is an experimental bounded synchronization primitive for testing genuine task overlap;
+- async modules contain an explicit `atto.async` custom-section byte 1, native Wasm task bodies and `task_invoke(i32) -> i64` when tasks exist;
+- imports `sleep_ms(i64)->i64`, `barrier(i64)->i64`, `task_start(i32)->i32`, `task_await(i32)->i64` are granted **only** by the versioned JSPI-compatible worker host.
+
+This is *not* the general AttoLang async implementation. No closures/captures, actor-owned futures, Future<bool>, async methods, detached `do task`, arbitrary I/O or portable non-JSPI continuation lowering. The browser worker may refuse if JSPI is absent; it must not silently evaluate task bodies synchronously. Compiler-generated task bodies are Wasm, not JS source.
+
+The exact guest ABI is a versioned `atto.browser.guest.v2 + atto.async/1` extension. Scope ownership and JSPI host suspension must be proven by executed head CI before shipping as runnable; do not assume native Rust compile alone proves scheduling.

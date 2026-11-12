@@ -1,0 +1,10 @@
+// await may suspend the Wasm stack through the narrow rt.sleep host import.
+suspends fnc delayedAnswer(): int {
+  await rt.sleep(25);
+  return 42;
+}
+pub suspends fnc main(): int {
+  val result = await delayedAnswer();
+  stdio.println(result);
+  return result;
+}

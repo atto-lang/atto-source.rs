@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_EFFECT
 // java: rejects
 pub fnc main(): int {
   val n = await 42;

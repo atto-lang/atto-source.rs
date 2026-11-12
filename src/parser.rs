@@ -206,6 +206,8 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    /// Synthetic, capture-free task body functions; cannot be named by source.
+    task_funcs: Vec<Func>,
 }
 
 struct TypeFirstField {
@@ -238,6 +240,7 @@ impl Parser {
             height: 0,
             cond: 0,
             type_names: Vec::new(),
+            task_funcs: Vec::new(),
         }
     }
 
@@ -466,6 +469,10 @@ impl Parser {
                 _ => prog.funcs.push(self.parse_func()?),
             }
         }
+        if prog.funcs.len() + self.task_funcs.len() > MAX_FUNCS {
+            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many source and task callables"));
+        }
+        prog.funcs.append(&mut self.task_funcs);
         prog.type_names = std::mem::take(&mut self.type_names);
         Ok(prog)
     }
@@ -888,6 +895,7 @@ impl Parser {
         }
         let start = self.pos();
         self.eat_word("pub");
+        let suspends = self.eat_word("suspends");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
         }
@@ -905,7 +913,9 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        if !(self.eat_word("fnc") || self.eat_word("routine")) {
+        if suspends {
+            self.expect_word("fnc")?;
+        } else if !(self.eat_word("fnc") || self.eat_word("routine")) {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
                     return Err(unsupported(self.pos(), &format!("top-level '{w}'")));
@@ -928,6 +938,7 @@ impl Parser {
         let _ = start;
         Ok(Func {
             name,
+            suspends,
             pos,
             params,
             ret,
@@ -1740,7 +1751,11 @@ impl Parser {
                     "'++' and '--' exist only in a for update clause",
                 ))
             }
-            Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            Tok::Ident(s) if s == "await" => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                return Ok(Expr {kind: ExprKind::Await(Box::new(inner)), pos});
+            },
             _ => return self.parse_postfix(),
         };
         self.advance();
@@ -1821,6 +1836,17 @@ impl Parser {
                                 continue;
                             }
                         }
+                    }
+                    // Restrict the async runtime namespace to known, typed calls.
+                    if matches!(&e.kind, ExprKind::Var(b) if b == "rt") {
+                        if let Some(m @ ("sleep" | "barrier")) = self.word_at(1) {
+                            self.advance(); // '.'
+                            self.advance(); // member
+                            if *self.peek() != Tok::LParen { return Err(self.expected("'('")); }
+                            e = Expr {kind: ExprKind::Var(format!("rt.{m}")), pos};
+                            continue;
+                        }
+                        return Err(unsupported(dot, "runtime members other than sleep/barrier"));
                     }
                     if matches!(&e.kind, ExprKind::Var(b) if b == "stdio") {
                         return Err(unsupported(dot, "stdio members other than print and println"));
@@ -1913,6 +1939,16 @@ impl Parser {
                     let args = self.parse_args()?;
                     ExprKind::New(class, args)
                 }
+                "task" => {
+                    self.advance();
+                    if *self.peek() != Tok::LBrace {return Err(self.expected("a task block '{ ... }'"));}
+                    let body = self.parse_block()?;
+                    if self.task_funcs.len() >= MAX_FUNCS {return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many task blocks"));}
+                    let name = format!("$atto_task_{}", self.task_funcs.len());
+                    self.task_funcs.push(Func {name: name.clone(), suspends: true, pos, params: Vec::new(), ret: Type::Int, body});
+                    ExprKind::Task(name)
+                }
+                "rt" => { self.advance(); ExprKind::Var(s) }
                 "spawn" => {
                     self.advance();
                     let (actor, _) = self.ident("an actor name after 'spawn'")?;
@@ -1929,7 +1965,7 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "task" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "await" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
