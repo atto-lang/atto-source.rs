@@ -46,6 +46,9 @@ pub enum Tok {
     Question,
     Pipe,
     PipeGt,
+    AndAnd,
+    OrOr,
+    XorXor,
     Amp,
     At,
     Eof,
@@ -294,6 +297,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('>', _) => (Tok::Gt, 1),
             ('*', _) => (Tok::Star, 1),
             ('/', _) => (Tok::Slash, 1),
+            ('^', Some('^')) => (Tok::XorXor, 2),
             ('%', _) | ('^', _) => {
                 return Err(Diagnostic::new(
                     pos,
@@ -302,8 +306,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 ));
             }
             ('?', _) => (Tok::Question, 1),
+            ('|', Some('|')) => (Tok::OrOr, 2),
             ('|', Some('>')) => (Tok::PipeGt, 2),
             ('|', _) => (Tok::Pipe, 1),
+            ('&', Some('&')) => (Tok::AndAnd, 2),
             ('&', _) => (Tok::Amp, 1),
             ('@', _) => (Tok::At, 1),
             ('`', _) => {

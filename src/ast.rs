@@ -256,6 +256,12 @@ pub enum BinOp {
     And,
     /// `|` inside an if/while condition: eager, left-to-right OR
     Or,
+    /// `&&` and infix `AND`: short-circuiting Boolean AND.
+    ShortAnd,
+    /// `||` and infix `OR`: short-circuiting Boolean OR.
+    ShortOr,
+    /// `^^` and infix `XOR`: eager Boolean exclusive OR.
+    Xor,
 }
 
 impl BinOp {
@@ -273,6 +279,9 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::And => ",",
             BinOp::Or => "|",
+            BinOp::ShortAnd => "&&",
+            BinOp::ShortOr => "||",
+            BinOp::Xor => "^^",
         }
     }
 }

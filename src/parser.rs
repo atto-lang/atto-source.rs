@@ -105,6 +105,9 @@ const RESERVED: &[&str] = &[
     "writech",
     "eq",
     "neq",
+    "AND",
+    "OR",
+    "XOR",
     "is",
     "new",
     "true",
@@ -198,8 +201,8 @@ pub struct Parser {
     depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
     height: u32,
-    /// Nonzero while parsing an if/while condition head, where `,` and `|` are
-    /// boolean AND / OR (spec chapter 16).
+    /// Nonzero while parsing an if/while condition head, retaining legacy
+    /// eager `,` / `|` for migration; canonical Boolean operators work everywhere.
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
@@ -1556,13 +1559,13 @@ impl Parser {
 
     fn parse_cond_and(&mut self) -> R<Expr> {
         let mut links = 0;
-        let mut left = self.parse_equality()?;
+        let mut left = self.parse_ternary()?;
         while *self.peek() == Tok::Comma {
             let pos = self.pos();
             self.advance();
             self.grow(1)?;
             links += 1;
-            let right = self.parse_equality()?;
+            let right = self.parse_ternary()?;
             left = Expr {
                 kind: ExprKind::Binary(BinOp::And, Box::new(left), Box::new(right)),
                 pos,
@@ -1583,8 +1586,9 @@ impl Parser {
     }
 
     fn parse_ternary(&mut self) -> R<Expr> {
-        let c = self.parse_equality()?;
+        let c = self.parse_logical_or()?;
         match self.peek() {
+            Tok::Pipe if self.cond > 0 => return Ok(c),
             Tok::Pipe => {
                 return Err(Diagnostic::new(
                     self.pos(),
@@ -1609,6 +1613,62 @@ impl Parser {
             _ => {}
         }
         Ok(c)
+    }
+
+    /// Precedence (tight to loose): comparison/equality, &&, ^^, ||, ternary.
+    /// Uppercase AND/OR/XOR are infix aliases, not standalone Boolean values.
+    fn parse_logical_or(&mut self) -> R<Expr> {
+        let mut links = 0;
+        let mut left = self.parse_logical_xor()?;
+        while *self.peek() == Tok::OrOr || self.is_word("OR") {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_logical_xor()?;
+            left = Expr {
+                kind: ExprKind::Binary(BinOp::ShortOr, Box::new(left), Box::new(right)),
+                pos,
+            };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_logical_xor(&mut self) -> R<Expr> {
+        let mut links = 0;
+        let mut left = self.parse_logical_and()?;
+        while *self.peek() == Tok::XorXor || self.is_word("XOR") {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_logical_and()?;
+            left = Expr {
+                kind: ExprKind::Binary(BinOp::Xor, Box::new(left), Box::new(right)),
+                pos,
+            };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_logical_and(&mut self) -> R<Expr> {
+        let mut links = 0;
+        let mut left = self.parse_equality()?;
+        while *self.peek() == Tok::AndAnd || self.is_word("AND") {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_equality()?;
+            left = Expr {
+                kind: ExprKind::Binary(BinOp::ShortAnd, Box::new(left), Box::new(right)),
+                pos,
+            };
+        }
+        self.height -= links;
+        Ok(left)
     }
 
     fn parse_equality(&mut self) -> R<Expr> {
@@ -2011,6 +2071,9 @@ fn describe(t: &Tok) -> String {
                 Tok::Question => "?",
                 Tok::Pipe => "|",
                 Tok::PipeGt => "|>",
+                Tok::AndAnd => "&&",
+                Tok::OrOr => "||",
+                Tok::XorXor => "^^",
                 Tok::Amp => "&",
                 Tok::At => "@",
                 _ => "?",

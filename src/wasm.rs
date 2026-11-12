@@ -335,8 +335,27 @@ impl Emit<'_> {
                 self.op(0x45);
             }
             TExpr::Bin(op, a, b) => {
-                // Canonical AttoLang conditions are eager: both operands
-                // execute in source order even when the left decides truth.
+                // Canonical && and || must not evaluate the right operand if
+                // the left decides the result. Legacy comma/pipe and ^^ remain
+                // eager, left-to-right, as do ordinary function arguments.
+                if *op == BinOp::ShortAnd {
+                    self.expr(a);
+                    self.open(0x04, 0x7F, Frame::Other); // if (result i32)
+                    self.expr(b);
+                    self.op(0x05); // else
+                    self.i32c(0);
+                    self.close();
+                    return;
+                }
+                if *op == BinOp::ShortOr {
+                    self.expr(a);
+                    self.open(0x04, 0x7F, Frame::Other); // if (result i32)
+                    self.i32c(1);
+                    self.op(0x05); // else
+                    self.expr(b);
+                    self.close();
+                    return;
+                }
                 self.expr(a);
                 self.expr(b);
                 let int = a.ty == Type::Int;
@@ -352,7 +371,7 @@ impl Emit<'_> {
                         BinOp::Gt => 0x64,
                         BinOp::Le => 0x65,
                         BinOp::Ge => 0x66,
-                        BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
+                        BinOp::And | BinOp::Or | BinOp::ShortAnd | BinOp::ShortOr | BinOp::Xor => unreachable!("logical operands are bool"),
                     });
                     return;
                 }
@@ -361,7 +380,9 @@ impl Emit<'_> {
                     BinOp::Sub => self.call(self.l.helper(H_SUB)),
                     BinOp::Mul => self.call(self.l.helper(H_MUL)),
                     BinOp::And => self.op(0x71), // i32.and
-                    BinOp::Or => self.op(0x72),  // i32.or
+                    BinOp::Or => self.op(0x72),  // legacy eager i32.or
+                    BinOp::Xor => self.op(0x73), // eager i32.xor
+                    BinOp::ShortAnd | BinOp::ShortOr => unreachable!("short-circuit emitted above"),
                     BinOp::Lt => self.op(0x53),
                     BinOp::Le => self.op(0x57),
                     BinOp::Gt => self.op(0x55),
