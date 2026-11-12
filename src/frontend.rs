@@ -195,12 +195,29 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
             continue;
         }
         let opens_block = tokens.get(index + 1).map(|next| next.kind) == Some(Kind::LBrace);
+        let opens_task_scope = token.text == "task"
+            && tokens.get(index + 1).map(|next| next.text.as_str()) == Some("scope")
+            && tokens.get(index + 2).map(|next| next.kind) == Some(Kind::LBrace);
+        // Await is valid in the language only inside a suspends fnc/mtd.
+        // This scalar-only compiler cannot typecheck or lower those functions,
+        // so reject them *semantically*, before IR can be emitted.
+        if token.text == "await" || token.text == "suspends" {
+            return Err(ParseError {
+                offset: token.start,
+                class: "suspension_unsupported",
+                message: format!(
+                    "'{}' requires checked suspends/await continuation lowering; this backend cannot execute it",
+                    token.text
+                ),
+            });
+        }
         let message = if EXECUTION_DOMAIN_WORDS.contains(&token.text.as_str()) {
             format!(
                 "execution domain '{}' is reserved and not lowered by this backend; no implicit CPU fallback",
                 token.text
             )
-        } else if opens_block && (token.text == "task" || token.text == "nb") {
+        } else if (opens_block && (token.text == "task" || token.text == "nb"))
+            || opens_task_scope {
             "execution task requires scheduler-aware Future lowering; no implicit inline execution"
                 .into()
         } else {
