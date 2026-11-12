@@ -612,11 +612,12 @@ impl Parser {
                         return Err(unsupported(self.pos(), "static functions in actors"));
                     }
                     self.advance();
+                    let suspends = self.eat_word("suspends");
                     if let Some(w @ ("async" | "structural")) = self.word_at(0) {
                         return Err(unsupported(self.pos(), &format!("'{w}' static functions")));
                     }
                     self.expect_word("fnc")?;
-                    let method = self.parse_method(public, true)?;
+                    let method = self.parse_method(public, true, suspends)?;
                     m.methods.push(method);
                 }
                 Some("constructor") => {
@@ -681,12 +682,23 @@ impl Parser {
                     }
                     m.fields.push(f.field);
                 }
-                Some("fnc" | "method") => {
+                Some("fnc" | "method" | "mtd") => {
                     self.advance();
-                    let method = self.parse_method(public, false)?;
+                    let method = self.parse_method(public, false, false)?;
                     m.methods.push(method);
                 }
-                Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
+                Some("suspends") => {
+                    self.advance();
+                    if !(self.eat_word("fnc") || self.eat_word("mtd") || self.eat_word("method")) {
+                        return Err(self.expected("'fnc' or 'mtd' after 'suspends'"));
+                    }
+                    if actor {
+                        return Err(unsupported(mpos, "suspends actor mtd until actor carrier scheduling is implemented"));
+                    }
+                    let method = self.parse_method(public, false, true)?;
+                    m.methods.push(method);
+                }
+                Some(w @ ("async" | "suspend" | "structural" | "abstract" | "nlex" | "shared")) => {
                     return Err(unsupported(self.pos(), &format!("'{w}' members")));
                 }
                 Some("receive") if actor && *self.peek_at(1) == Tok::LParen => {
@@ -708,7 +720,7 @@ impl Parser {
                     m.receive = Some(r);
                 }
                 Some(_) if *self.peek_at(1) == Tok::LParen => {
-                    let method = self.parse_method(public, false)?;
+                    let method = self.parse_method(public, false, false)?;
                     m.methods.push(method);
                 }
                 Some(_) if *self.peek_at(1) == Tok::Colon && !actor => {
@@ -778,7 +790,7 @@ impl Parser {
     }
 
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
-    fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
+    fn parse_method(&mut self, public: bool, is_static: bool, suspends: bool) -> R<Method> {
         let (name, pos) = self.ident("a method name")?;
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic methods"));
@@ -801,6 +813,7 @@ impl Parser {
             pos,
             public,
             is_static,
+            suspends,
             params,
             ret,
             body,

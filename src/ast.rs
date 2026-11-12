@@ -78,6 +78,7 @@ pub struct Field {
 #[derive(Clone, Debug)]
 pub struct Method {
     pub name: String,
+    pub suspends: bool,
     pub pos: Pos,
     pub public: bool,
     pub is_static: bool,
