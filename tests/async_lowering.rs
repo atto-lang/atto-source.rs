@@ -45,7 +45,7 @@ fn await_of_ready_scalar_is_valid_and_requires_no_future_or_host_import() {
     ];
     for source in programs {
         let guest = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
-        assert_eq!(&guest[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
         assert!(!contains(&guest, b"atto.async"), "immediate await must not claim JSPI suspension");
         assert!(!contains(&guest, b"task_await"), "no Future handle exists for a scalar await");
         assert_eq!(guest, compile(source).unwrap(), "deterministic Wasm lowering");
