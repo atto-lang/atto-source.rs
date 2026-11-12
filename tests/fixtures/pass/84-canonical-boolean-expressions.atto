@@ -1,0 +1,18 @@
+// Full expressions (not just if/while heads) and nested ternary branches.
+// expect-exit: 42
+// java: llvm-design
+fnc choose(bool p, bool q): bool {
+  return p && !q || p ^^ q;
+}
+pub fnc main(): int {
+  val a = choose(true, false);
+  val b = (false OR true) ? (true XOR false) : false;
+  let n = 0;
+  while n < 3 && a do
+    n = n + 1;
+  done
+  if a && b && n eq 3 then
+    return 42;
+  fi
+  return 0;
+}

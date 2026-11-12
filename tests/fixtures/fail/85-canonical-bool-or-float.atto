@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+  val broken = false || 1.5;
+  return 0;
+}

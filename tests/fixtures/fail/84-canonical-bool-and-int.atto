@@ -1,0 +1,7 @@
+// Operators require bool operands; no truthiness.
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+  val broken = true && 1;
+  return 0;
+}
