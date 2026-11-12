@@ -182,10 +182,10 @@ for (const f of await fixtures('pass')) {
     if (java) {
       const j = runJava(f.path);
       const claim = header(f.source, 'java')[0];
-      if (claim === 'llvm-design') {
+      if (claim === 'llvm-design' || claim === 'rejects') {
         // spelling from the oreslang-source.llvm v1 design contracts; tracked
         // so this fixture is revisited when the Java parser admits it
-        assert.ok(j.rejected, 'Java now accepts this LLVM-design spelling: update the fixture claim');
+        assert.ok(j.rejected, 'Java now accepts a feature marked rejected: update the fixture claim and compare guest output');
       } else {
         assert.ok(!j.rejected, `Java reference rejected it: ${j.stdout}`);
         if (j.race && header(f.source, 'stdout-order')[0] === 'unordered') {

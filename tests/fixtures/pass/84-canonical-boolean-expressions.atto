@@ -1,6 +1,6 @@
 // Full expressions (not just if/while heads) and nested ternary branches.
 // expect-exit: 42
-// java: llvm-design
+// java: rejects
 fnc choose(bool p, bool q): bool {
   return p && !q || p ^^ q;
 }

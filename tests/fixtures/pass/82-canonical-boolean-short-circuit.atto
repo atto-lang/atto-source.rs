@@ -10,7 +10,7 @@
 // expect-stdout: 10
 // expect-stdout: 11
 // expect-stdout: 12
-// java: llvm-design
+// java: rejects
 fnc mark(bool v, int n): bool {
   stdio.println(n);
   return v;

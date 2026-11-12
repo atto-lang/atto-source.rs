@@ -1,6 +1,6 @@
 // && binds tighter than ^^ which binds tighter than ||; comparison is tighter.
 // expect-exit: 42
-// java: llvm-design
+// java: rejects
 pub fnc main(): int {
   val a = false || true && false;
   val b = true ^^ true && false;

@@ -4,7 +4,7 @@
 // expect-stdout: 54
 // expect-stdout: 54
 // expect-stdout: 27
-// java: llvm-design
+// java: rejects
 fnc bits(bool a, bool b): int {
   let n = 0;
   if a && b then
