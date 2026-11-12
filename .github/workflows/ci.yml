@@ -80,13 +80,3 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 14
-      - name: Private same-org compiler handoff via authenticated review logs
-        # The source repo is private. This is a one-PR, no-token handoff:
-        # no cross-repository checkout or repository write permission.
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feat/return-match-fibonacci-20261112' && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
-          test -s dist/atto_compiler.wasm
-          echo "ATTO_PRIVATE_WASM_B64_BEGIN"
-          base64 -w 76 dist/atto_compiler.wasm
-          echo "ATTO_PRIVATE_WASM_B64_END"
