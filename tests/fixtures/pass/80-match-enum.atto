@@ -1,0 +1,19 @@
+// Enum value arms follow the oreslang-source.llvm v1 design contract
+// (contracts/v1/design/enum_pattern_cases.json, enum-value-match).
+// java: llvm-design
+// expect-exit: 2
+define enum Status as
+    Pending
+    Running
+end
+
+fnc code(Status s): int {
+  match s over
+    on Status.Pending -> { return 1; }
+    on Status.Running -> { return 2; }
+  end
+}
+
+pub fnc main(): int {
+  return code(Status.Running);
+}

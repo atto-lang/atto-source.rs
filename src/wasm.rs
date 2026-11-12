@@ -22,7 +22,7 @@
 //! randomness, so identical input yields byte-identical modules on every host.
 
 use crate::ast::{BinOp, Type};
-use crate::check::{Builtin, Import, PrintPiece, TExpr, TProgram, TStmt, TE};
+use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TProgram, TStmt, TE};
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
@@ -34,6 +34,7 @@ pub const HEAP_PAGES: u32 = 16;
 
 const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
+const F64: u8 = 0x7C;
 
 fn uleb(out: &mut Vec<u8>, mut v: u64) {
     loop {
@@ -75,6 +76,8 @@ fn vt(t: Type) -> Option<u8> {
         Type::Int => Some(I64),
         Type::Bool => Some(I32),
         Type::Void => None,
+        Type::Float => Some(F64),
+        Type::Str => Some(I64),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) => Some(I32),
         Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
     }
@@ -101,10 +104,23 @@ const H_MUL: u32 = 2;
 const H_NEG: u32 = 3;
 /// present only when the program has classes
 const H_ALLOC: u32 = 4;
+// string helpers, present only when the program has string values; they
+// follow H_ALLOC (or H_NEG) at `Layout::str_base + offset`
+const S_BYTES_EQ: u32 = 0;
+const S_EQ: u32 = 1;
+const S_STARTS: u32 = 2;
+const S_ENDS: u32 = 3;
+const S_CONTAINS: u32 = 4;
+const S_TRIM: u32 = 5;
+const S_CONCAT: u32 = 6;
+const S_CMP: u32 = 7;
+const STRING_HELPERS: u32 = 8;
 
 struct Layout {
     imports: Vec<Import>,
     helpers: u32,
+    /// helper index of `S_BYTES_EQ`
+    str_base: u32,
     /// global index of actor-state global 0
     state_base: u32,
 }
@@ -119,13 +135,18 @@ impl Layout {
     fn func(&self, f: u32) -> u32 {
         self.imports.len() as u32 + self.helpers + f
     }
+    fn str_helper(&self, s: u32) -> u32 {
+        self.helper(self.str_base + s)
+    }
 }
 
 /// Load (`store = false`) or store a field slot of type `t` at `offset`.
 fn field_op(code: &mut Vec<u8>, t: Type, offset: u32, store: bool) {
     let (op, align) = match (t, store) {
-        (Type::Int, false) => (0x29, 3),
-        (Type::Int, true) => (0x37, 3),
+        (Type::Int | Type::Str, false) => (0x29, 3),
+        (Type::Int | Type::Str, true) => (0x37, 3),
+        (Type::Float, false) => (0x2B, 3),
+        (Type::Float, true) => (0x39, 3),
         (_, false) => (0x28, 2),
         (_, true) => (0x36, 2),
     };
@@ -240,6 +261,7 @@ impl Emit<'_> {
             TStmt::Break => self.br_to(Frame::Break),
             TStmt::Continue => self.br_to(Frame::Continue),
             TStmt::Block(b) => self.stmts(b),
+            TStmt::Unreachable => self.op(0x00),
         }
     }
 
@@ -261,6 +283,44 @@ impl Emit<'_> {
     fn expr(&mut self, v: &TE) {
         match &v.e {
             TExpr::I64(n) => self.i64c(*n),
+            TExpr::F64(x) => {
+                self.op(0x44);
+                self.code.extend_from_slice(&x.to_le_bytes());
+            }
+            TExpr::StrConst(offset, len) => self.i64c(((*offset as i64) << 32) | *len as i64),
+            TExpr::IntToFloat(a) => {
+                self.expr(a);
+                self.op(0xB9); // f64.convert_i64_s
+            }
+            TExpr::FNeg(a) => {
+                self.expr(a);
+                self.op(0x9A);
+            }
+            TExpr::Str(op, a, arg) => {
+                self.expr(a);
+                if let Some(b) = arg {
+                    self.expr(b);
+                }
+                self.call(self.l.str_helper(match op {
+                    StrOp::Eq => S_EQ,
+                    StrOp::StartsWith => S_STARTS,
+                    StrOp::EndsWith => S_ENDS,
+                    StrOp::Contains => S_CONTAINS,
+                    StrOp::Trim => S_TRIM,
+                    StrOp::Concat => S_CONCAT,
+                    StrOp::Cmp => S_CMP,
+                }));
+            }
+            TExpr::PrintStrVal { value, tmp, newline } => {
+                self.expr(value);
+                self.op(0x21);
+                uleb(&mut self.code, *tmp as u64);
+                str_parts(&mut self.code, *tmp);
+                self.call(self.l.import(Import::PrintStr));
+                if *newline {
+                    self.call(self.l.import(Import::PrintNewline));
+                }
+            }
             TExpr::Bool(b) => self.i32c(*b as i32),
             TExpr::Local(slot) => {
                 self.op(0x20);
@@ -280,6 +340,22 @@ impl Emit<'_> {
                 self.expr(a);
                 self.expr(b);
                 let int = a.ty == Type::Int;
+                if a.ty == Type::Float {
+                    self.op(match op {
+                        BinOp::Add => 0xA0,
+                        BinOp::Sub => 0xA1,
+                        BinOp::Mul => 0xA2,
+                        BinOp::Div => 0xA3,
+                        BinOp::Eq => 0x61,
+                        BinOp::Ne => 0x62,
+                        BinOp::Lt => 0x63,
+                        BinOp::Gt => 0x64,
+                        BinOp::Le => 0x65,
+                        BinOp::Ge => 0x66,
+                        BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
+                    });
+                    return;
+                }
                 match op {
                     BinOp::Add => self.call(self.l.helper(H_ADD)),
                     BinOp::Sub => self.call(self.l.helper(H_SUB)),
@@ -320,10 +396,10 @@ impl Emit<'_> {
             }
             TExpr::Print { value, newline } => {
                 self.expr(value);
-                let imp = if value.ty == Type::Int {
-                    Import::PrintI64
-                } else {
-                    Import::PrintBool
+                let imp = match value.ty {
+                    Type::Int => Import::PrintI64,
+                    Type::Float => Import::PrintF64,
+                    _ => Import::PrintBool,
                 };
                 self.call(self.l.import(imp));
                 if *newline {
@@ -374,11 +450,28 @@ impl Emit<'_> {
                             self.i32c(*len as i32);
                             self.call(self.l.import(Import::PrintStr));
                         }
+                        PrintPiece::Field(offset, Type::Str) => {
+                            // (ptr, len) from two loads of the packed field
+                            for half in [true, false] {
+                                self.op(0x20);
+                                uleb(&mut self.code, *tmp as u64);
+                                field_op(&mut self.code, Type::Str, *offset, false);
+                                if half {
+                                    self.code.extend_from_slice(&[0x42, 32, 0x88]);
+                                }
+                                self.op(0xA7);
+                            }
+                            self.call(self.l.import(Import::PrintStr));
+                        }
                         PrintPiece::Field(offset, ty) => {
                             self.op(0x20);
                             uleb(&mut self.code, *tmp as u64);
                             field_op(&mut self.code, *ty, *offset, false);
-                            let imp = if *ty == Type::Int { Import::PrintI64 } else { Import::PrintBool };
+                            let imp = match ty {
+                                Type::Int => Import::PrintI64,
+                                Type::Float => Import::PrintF64,
+                                _ => Import::PrintBool,
+                            };
                             self.call(self.l.import(imp));
                         }
                     }
@@ -463,6 +556,220 @@ fn alloc_body(heap_global: u32) -> (Sig, Vec<u8>, Vec<u8>) {
     (Sig(vec![I32], vec![I32]), vec![1u8, 1, I32], c)
 }
 
+/// Push `(ptr: i32, len: i32)` of the packed string in local `l`.
+fn str_parts(c: &mut Vec<u8>, l: u32) {
+    c.push(0x20);
+    uleb(c, l as u64);
+    c.extend_from_slice(&[0x42, 32, 0x88, 0xA7]); // (v >> 32) as i32
+    c.push(0x20);
+    uleb(c, l as u64);
+    c.push(0xA7); // v as i32
+}
+
+fn ptr_of(c: &mut Vec<u8>, l: u8) {
+    c.extend_from_slice(&[0x20, l, 0x42, 32, 0x88, 0xA7]);
+}
+fn len_of(c: &mut Vec<u8>, l: u8) {
+    c.extend_from_slice(&[0x20, l, 0xA7]);
+}
+/// `if (len t > len s) return 0`
+fn guard_longer(c: &mut Vec<u8>, s: u8, t: u8) {
+    len_of(c, t);
+    len_of(c, s);
+    c.extend_from_slice(&[0x4B, 0x04, 0x40, 0x41, 0, 0x0F, 0x0B]);
+}
+
+/// Byte-exact string helpers over `offset << 32 | len` values. `base` is
+/// the function index of `S_BYTES_EQ`, which the others call.
+fn string_helpers(base: u32, alloc: Option<u32>) -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
+    let call_eq = |c: &mut Vec<u8>| {
+        c.push(0x10);
+        uleb(c, base as u64);
+    };
+    let pred = Sig(vec![I64, I64], vec![I32]);
+    let mut v = Vec::new();
+
+    // bytes_eq(p: i32, q: i32, n: i32) -> i32; local 3 = i
+    let c = vec![
+        0x02, 0x40, 0x03, 0x40, // block loop
+        0x20, 3, 0x20, 2, 0x4F, 0x0D, 1, // i >= n -> exit
+        0x20, 0, 0x20, 3, 0x6A, 0x2D, 0, 0, // p[i]
+        0x20, 1, 0x20, 3, 0x6A, 0x2D, 0, 0, // q[i]
+        0x47, 0x04, 0x40, 0x41, 0, 0x0F, 0x0B, // differ -> return 0
+        0x20, 3, 0x41, 1, 0x6A, 0x21, 3, 0x0C, 0, // i++; continue
+        0x0B, 0x0B, 0x41, 1, 0x0B,
+    ];
+    v.push((Sig(vec![I32, I32, I32], vec![I32]), vec![1, 1, I32], c));
+
+    // str_eq(a, b)
+    let mut c = Vec::new();
+    len_of(&mut c, 0);
+    len_of(&mut c, 1);
+    c.extend_from_slice(&[0x47, 0x04, 0x40, 0x41, 0, 0x0F, 0x0B]);
+    ptr_of(&mut c, 0);
+    ptr_of(&mut c, 1);
+    len_of(&mut c, 0);
+    call_eq(&mut c);
+    c.push(0x0B);
+    v.push((pred.clone(), vec![0], c));
+
+    // starts_with(s, t)
+    let mut c = Vec::new();
+    guard_longer(&mut c, 0, 1);
+    ptr_of(&mut c, 0);
+    ptr_of(&mut c, 1);
+    len_of(&mut c, 1);
+    call_eq(&mut c);
+    c.push(0x0B);
+    v.push((pred.clone(), vec![0], c));
+
+    // ends_with(s, t): compare at ptr s + len s - len t
+    let mut c = Vec::new();
+    guard_longer(&mut c, 0, 1);
+    ptr_of(&mut c, 0);
+    len_of(&mut c, 0);
+    c.push(0x6A);
+    len_of(&mut c, 1);
+    c.push(0x6B);
+    ptr_of(&mut c, 1);
+    len_of(&mut c, 1);
+    call_eq(&mut c);
+    c.push(0x0B);
+    v.push((pred.clone(), vec![0], c));
+
+    // contains_literal(s, t); local 2 = i, tries i = 0 ..= len s - len t
+    let mut c = Vec::new();
+    guard_longer(&mut c, 0, 1);
+    c.extend_from_slice(&[0x02, 0x40, 0x03, 0x40, 0x20, 2]);
+    len_of(&mut c, 0);
+    len_of(&mut c, 1);
+    c.extend_from_slice(&[0x6B, 0x4B, 0x0D, 1]); // i > len s - len t -> exit
+    ptr_of(&mut c, 0);
+    c.extend_from_slice(&[0x20, 2, 0x6A]);
+    ptr_of(&mut c, 1);
+    len_of(&mut c, 1);
+    call_eq(&mut c);
+    c.extend_from_slice(&[0x04, 0x40, 0x41, 1, 0x0F, 0x0B]);
+    c.extend_from_slice(&[0x20, 2, 0x41, 1, 0x6A, 0x21, 2, 0x0C, 0, 0x0B, 0x0B, 0x41, 0, 0x0B]);
+    v.push((pred, vec![1, 1, I32], c));
+
+    // trim(s) -> string: Java String.trim drops chars <= U+0020 at both
+    // ends; in UTF-8 those are exactly the bytes <= 0x20. locals 1 = start, 2 = end
+    let mut c = Vec::new();
+    ptr_of(&mut c, 0);
+    c.extend_from_slice(&[0x22, 1]);
+    len_of(&mut c, 0);
+    c.extend_from_slice(&[0x6A, 0x21, 2]);
+    c.extend_from_slice(&[
+        0x02, 0x40, 0x03, 0x40, 0x20, 1, 0x20, 2, 0x4F, 0x0D, 1, // start >= end
+        0x20, 1, 0x2D, 0, 0, 0x41, 0x20, 0x4B, 0x0D, 1, // byte > ' ' -> stop
+        0x20, 1, 0x41, 1, 0x6A, 0x21, 1, 0x0C, 0, 0x0B, 0x0B,
+    ]);
+    c.extend_from_slice(&[
+        0x02, 0x40, 0x03, 0x40, 0x20, 2, 0x20, 1, 0x4D, 0x0D, 1, // end <= start
+        0x20, 2, 0x41, 1, 0x6B, 0x2D, 0, 0, 0x41, 0x20, 0x4B, 0x0D, 1, // byte before end > ' '
+        0x20, 2, 0x41, 1, 0x6B, 0x21, 2, 0x0C, 0, 0x0B, 0x0B,
+    ]);
+    c.extend_from_slice(&[
+        0x20, 1, 0xAD, 0x42, 32, 0x86, // (start as i64) << 32
+        0x20, 2, 0x20, 1, 0x6B, 0xAD, 0x84, // | (end - start)
+        0x0B,
+    ]);
+    v.push((Sig(vec![I64], vec![I64]), vec![1, 2, I32], c));
+
+    // concat(a, b) -> string; locals 2 = p, 3 = i, 4 = len a, 5 = len b.
+    // Without a heap (no concatenation in the program) the body only traps.
+    let mut c = Vec::new();
+    if let Some(alloc) = alloc {
+        len_of(&mut c, 0);
+        c.extend_from_slice(&[0x21, 4]);
+        len_of(&mut c, 1);
+        c.extend_from_slice(&[0x21, 5]);
+        // p = alloc((la + lb + 7) & -8): keep the bump pointer 8-aligned for objects
+        c.extend_from_slice(&[0x20, 4, 0x20, 5, 0x6A, 0x41, 7, 0x6A, 0x41, 0x78, 0x71, 0x10]);
+        uleb(&mut c, alloc as u64);
+        c.extend_from_slice(&[0x21, 2]);
+        for (src, dst_extra) in [(0u8, false), (1u8, true)] {
+            let lim = if src == 0 { 4 } else { 5 };
+            c.extend_from_slice(&[0x41, 0, 0x21, 3, 0x02, 0x40, 0x03, 0x40, 0x20, 3, 0x20, lim, 0x4F, 0x0D, 1]);
+            c.extend_from_slice(&[0x20, 2]);
+            if dst_extra {
+                c.extend_from_slice(&[0x20, 4, 0x6A]);
+            }
+            c.extend_from_slice(&[0x20, 3, 0x6A]);
+            ptr_of(&mut c, src);
+            c.extend_from_slice(&[0x20, 3, 0x6A, 0x2D, 0, 0, 0x3A, 0, 0]); // dst[i] = src[i]
+            c.extend_from_slice(&[0x20, 3, 0x41, 1, 0x6A, 0x21, 3, 0x0C, 0, 0x0B, 0x0B]);
+        }
+        c.extend_from_slice(&[0x20, 2, 0xAD, 0x42, 32, 0x86, 0x20, 4, 0x20, 5, 0x6A, 0xAD, 0x84, 0x0B]);
+    } else {
+        c.extend_from_slice(&[0x00, 0x0B]);
+    }
+    v.push((Sig(vec![I64, I64], vec![I64]), vec![1, 4, I32], c));
+
+    // cmp(a, b) -> int: sign of Java String.compareTo. UTF-8 byte order is
+    // code point order; UTF-16 order differs only between a supplementary
+    // character (UTF-8 lead >= 0xF0) and U+E000..U+FFFF (lead 0xEE/0xEF),
+    // so that case flips. locals 2 = n, 3 = i, 4 = lead a, 5 = lead b, 6 = k
+    let byte_at = |c: &mut Vec<u8>, s: u8, l: u8| {
+        ptr_of(c, s);
+        c.extend_from_slice(&[0x20, l, 0x6A, 0x2D, 0, 0]);
+    };
+    let k32 = |c: &mut Vec<u8>, v: i64| {
+        c.push(0x41);
+        sleb(c, v);
+    };
+    let mut c = Vec::new();
+    len_of(&mut c, 0);
+    len_of(&mut c, 1);
+    len_of(&mut c, 0);
+    len_of(&mut c, 1);
+    c.extend_from_slice(&[0x49, 0x1B, 0x21, 2]); // n = min(la, lb)
+    c.extend_from_slice(&[0x02, 0x40, 0x03, 0x40, 0x20, 3, 0x20, 2, 0x4F, 0x0D, 1]);
+    byte_at(&mut c, 0, 3);
+    byte_at(&mut c, 1, 3);
+    c.extend_from_slice(&[0x47, 0x0D, 1, 0x20, 3, 0x41, 1, 0x6A, 0x21, 3, 0x0C, 0, 0x0B, 0x0B]);
+    // equal prefix of length n: the shorter string is smaller
+    c.extend_from_slice(&[0x20, 3, 0x20, 2, 0x46, 0x04, 0x40]);
+    len_of(&mut c, 0);
+    len_of(&mut c, 1);
+    c.extend_from_slice(&[0x49, 0x04, 0x40, 0x42, 0x7F, 0x0F, 0x0B]);
+    len_of(&mut c, 0);
+    len_of(&mut c, 1);
+    c.extend_from_slice(&[0x4B, 0x04, 0x40, 0x42, 1, 0x0F, 0x0B, 0x42, 0, 0x0F, 0x0B]);
+    // k = start of the character holding byte i (shared prefix, so the same in both)
+    c.extend_from_slice(&[0x20, 3, 0x21, 6, 0x02, 0x40, 0x03, 0x40, 0x20, 6, 0x45, 0x0D, 1]);
+    byte_at(&mut c, 0, 6);
+    k32(&mut c, 0xC0);
+    c.push(0x71);
+    k32(&mut c, 0x80);
+    c.extend_from_slice(&[0x47, 0x0D, 1, 0x20, 6, 0x41, 1, 0x6B, 0x21, 6, 0x0C, 0, 0x0B, 0x0B]);
+    byte_at(&mut c, 0, 6);
+    c.extend_from_slice(&[0x21, 4]);
+    byte_at(&mut c, 1, 6);
+    c.extend_from_slice(&[0x21, 5]);
+    for (x, y) in [(4u8, 5u8), (5, 4)] {
+        c.extend_from_slice(&[0x20, x]);
+        k32(&mut c, 0xF0);
+        c.extend_from_slice(&[0x4F, 0x20, y]);
+        k32(&mut c, 0xEE);
+        c.extend_from_slice(&[0x4F, 0x71, 0x20, y]);
+        k32(&mut c, 0xF0);
+        c.extend_from_slice(&[0x49, 0x71]);
+    }
+    c.push(0x72); // flip?
+    c.extend_from_slice(&[0x04, I64, 0x42, 1, 0x42, 0x7F]);
+    byte_at(&mut c, 0, 3);
+    byte_at(&mut c, 1, 3);
+    c.extend_from_slice(&[0x49, 0x1B, 0x05, 0x42, 0x7F, 0x42, 1]);
+    byte_at(&mut c, 0, 3);
+    byte_at(&mut c, 1, 3);
+    c.extend_from_slice(&[0x49, 0x1B, 0x0B, 0x0B]);
+    v.push((Sig(vec![I64, I64], vec![I64]), vec![1, 5, I32], c));
+    debug_assert_eq!(v.len() as u32, STRING_HELPERS);
+    v
+}
+
 fn locals_decl(types: &[Type]) -> Vec<u8> {
     let mut groups: Vec<(u32, u8)> = Vec::new();
     for t in types {
@@ -483,9 +790,11 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
     let heap_global = 1;
+    let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
         imports: p.imports.clone(),
-        helpers: if p.heap { H_ALLOC + 1 } else { H_ALLOC },
+        helpers: str_base + if p.strings { STRING_HELPERS } else { 0 },
+        str_base,
         state_base: 1 + u32::from(p.heap),
     };
     let mut types = Types(Vec::new());
@@ -498,6 +807,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintBool => Sig(vec![I32], vec![]),
             Import::PrintStr => Sig(vec![I32, I32], vec![]),
             Import::PrintNewline => Sig(vec![], vec![]),
+            Import::PrintF64 => Sig(vec![F64], vec![]),
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![]),
         };
@@ -512,6 +822,10 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     let mut helpers = helper_bodies();
     if p.heap {
         helpers.push(alloc_body(heap_global));
+    }
+    if p.strings {
+        let alloc = p.heap.then(|| layout.helper(H_ALLOC));
+        helpers.extend(string_helpers(layout.str_helper(S_BYTES_EQ), alloc));
     }
     for (sig, locals, code) in helpers {
         func_types.push(types.idx(sig));
@@ -605,7 +919,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 3, fsec);
 
-    let has_memory = !p.data.is_empty() || p.heap;
+    let has_memory = !p.data.is_empty() || p.heap || p.strings;
     if has_memory {
         // fixed and non-growable: string literals, then the object heap
         let pages = if p.heap { HEAP_PAGES } else { 1 };
@@ -674,6 +988,18 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     let mut helper_names = vec!["atto.checked_add", "atto.checked_sub", "atto.checked_mul", "atto.checked_neg"];
     if p.heap {
         helper_names.push("atto.alloc");
+    }
+    if p.strings {
+        helper_names.extend([
+            "atto.bytes_eq",
+            "atto.str_eq",
+            "atto.str_starts_with",
+            "atto.str_ends_with",
+            "atto.str_contains",
+            "atto.str_trim",
+            "atto.str_concat",
+            "atto.str_cmp",
+        ]);
     }
     let mut all: Vec<String> = p
         .imports

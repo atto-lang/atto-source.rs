@@ -14,6 +14,8 @@ pub enum Tok {
     /// Decimal integer literal. `None` means it exceeds 2^63 (only valid
     /// directly after unary minus as `-9223372036854775808`).
     Int(Option<u64>),
+    /// Float literal, stored as `f64::to_bits` so `Tok` stays `Eq`.
+    Float(u64),
     Str(String),
     LParen,
     RParen,
@@ -139,19 +141,37 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     "only decimal integer literals are supported",
                 ));
             }
+            // Float literals follow the Java lexer exactly: digits '.' digits,
+            // and/or an exponent e/E [+-] digits; '_' separators allowed.
+            let mut floating = false;
             if i < chars.len() && chars[i] == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit()) {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED_TYPE",
-                    "float literals are not supported by the browser compiler yet",
-                ));
+                floating = true;
+                digits.push('.');
+                bump!();
+                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+                    if chars[i] != '_' {
+                        digits.push(chars[i]);
+                    }
+                    bump!();
+                }
             }
             if i < chars.len() && (chars[i] == 'e' || chars[i] == 'E') {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED_TYPE",
-                    "float literals are not supported by the browser compiler yet",
-                ));
+                floating = true;
+                digits.push('e');
+                bump!();
+                if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
+                    digits.push(chars[i]);
+                    bump!();
+                }
+                if !(i < chars.len() && chars[i].is_ascii_digit()) {
+                    return Err(Diagnostic::new(pos, "E_FLOAT_LITERAL", "malformed exponent"));
+                }
+                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+                    if chars[i] != '_' {
+                        digits.push(chars[i]);
+                    }
+                    bump!();
+                }
             }
             if i < chars.len() && chars[i] == 'i' && !chars.get(i + 1).is_some_and(|d| d.is_alphanumeric() || *d == '_') {
                 return Err(Diagnostic::new(
@@ -162,6 +182,17 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             }
             if i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_') {
                 return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL", "malformed integer literal"));
+            }
+            if floating {
+                // Rust and Java both parse decimal text with correct rounding.
+                let v: f64 = digits
+                    .parse()
+                    .map_err(|_| Diagnostic::new(pos, "E_FLOAT_LITERAL", "malformed float literal"))?;
+                out.push(Token {
+                    tok: Tok::Float(v.to_bits()),
+                    pos,
+                });
+                continue;
             }
             let value = digits.parse::<u64>().ok().filter(|v| *v <= 1u64 << 63);
             if value.is_none() {

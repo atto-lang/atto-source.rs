@@ -1,0 +1,7 @@
+// expect-error: E_UNBOUND
+// java: rejects
+pub fnc main(): int {
+  val s = "abc";
+  stdio.println(s.length);
+  return 0;
+}

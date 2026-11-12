@@ -1,0 +1,22 @@
+// Canonical source-ordered match: "match x over on P -> { } end" and
+// "do match x over ... end".
+// expect-exit: 4
+// expect-stdout: over-on
+// expect-stdout: do
+// expect-stdout: guard-skipped
+pub fnc main(): int {
+  val x = 4;
+  match x over
+    on 4 -> { stdio.println("over-on"); }
+    on _ -> { stdio.println("other"); }
+  end
+  do match x over
+    on 4 -> { stdio.println("do"); }
+    on _ -> { stdio.println("no"); }
+  end
+  match x over
+    on 4 when x > 9 -> { stdio.println("big"); }
+    on _ -> { stdio.println("guard-skipped"); }
+  end
+  return x;
+}
