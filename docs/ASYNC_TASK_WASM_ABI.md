@@ -26,11 +26,11 @@ pub suspends fnc main(): int {
 }
 ```
 
-- `suspends fnc` declares an effect. Its stated return type remains `T`, not `Future<T>`; a call from a suspending context may suspend and eventually produce `T`.
+- `suspends fnc f(): T` declares a suspension effect and the **eventual result type** `T`. As a proposed source rule, invoking it in a suspending context yields a `Future<T>`; `await f()` extracts the eventual `T` (and may suspend). This is distinct from changing its declaration to `Future<T>`, and must be made consistent across backend call sites.
 - An expression `task { ... }` evaluates to a **typed, single-completion `Future<T>`**, scheduled as a child of the current task scope. A `return` inside the block returns from that task only; it must not return from its lexical parent.
 - `await f` is only legal inside a suspending callable/task and consumes or safely observes completion of `Future<T>`. Awaiting an arbitrary `T` is a type error. It suspends **only that task's continuation**, never blocks an actor carrier or entire Wasm instance.
 - `do task { ... }` schedules work and returns `void`, with explicit scope/supervisor ownership; it is **not** an immortal, unsupervised background job.
-- Multiple task handles begin executing before awaiting them. No implicit auto-flatten, no transfer of borrowed mutable actor state or captured closures across worker/actor boundaries. Task closures and frames obey ownership and lifetime checks.
+- Multiple task handles become runnable before awaiting them. No implicit auto-flatten, no transfer of borrowed mutable actor state or captured closures across worker/actor boundaries. A task block may suspend, and its result must not be evaluated eagerly at the spawn expression. Task closures and frames obey ownership and lifetime checks.
 - Cancellation and errors propagate to the owning scope/supervisor. Each completion is exactly once; cancellation, actor generation changes and hot reload fence all stale wakeups.
 - This design does not retroactively claim that Java/.NET/LLVM/Forge compilers implement this syntax. Reference grammar contains `suspends` and unary `await`; the browser subset needs an actual runtime. `task { }` syntax and the exact `rt.sleep` spelling are subject to cross-backend approval.
 
@@ -53,7 +53,7 @@ All three strategies need the same exact-once task state machine semantics, canc
 ## Required executable acceptance gates before changing preview to runnable
 
 - Native Rust compiler + wasm32 compiler build; source/head/tree pin and reproducible guest Wasm byte parity; no zero-step CI.
-- Positive: delay truly yields then resumes with result 42; two `task` expressions are started before awaits; `main()` returns 42 through **actual guest Wasm**; only chosen branch side effects run.
+- Positive: delay truly yields then resumes with result 42; two `task` expressions become runnable before awaits; a synchronization-barrier fixture **must deadlock under sequential/eager execution yet complete with concurrent scheduling** (without timing-only assumptions); `main()` returns 42 through **actual guest Wasm**; only chosen branch side effects run.
 - Negative: await in non-suspending callable, await on non-Future, escaping mutable borrow, sending closure across actor, orphaned `do task`, invalid handles, double resume, double cancel, stale generation, runaway task, resource quota and timer cancellation.
 - Browser: real Chromium + Worker path; host only receives a verified, strict import allowlist; no mutable cross-worker memory. Exercise timeout and stop without lingering callbacks, nested tasks and pending I/O. Verify JSPI-disabled path.
 - Preserve actor non-reentrancy and suspension execution context, and prove sibling tasks survive child failure where supervisor policy allows.
