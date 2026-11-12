@@ -4,6 +4,21 @@ A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unkn
 
 It compiles a **subset** of AttoLang. Everything outside the subset is rejected with a diagnostic, and a rejected program never produces an artifact. The compiler does not approximate unsupported features.
 
+## Explicit terminal traps (browser subset)
+
+The browser subset now lowers bare `trap;` to a terminal WebAssembly
+`unreachable` after setting the existing mutable `panic_code` export to **4**.
+This does **not** add new imports, capabilities, or change compiler/guest ABI
+versions. In an isolated actor Wasm instance, the fault terminates that actor
+invocation; the host/supervisor is responsible for deciding containment and
+restart policy. It is not an `Err` value, cannot be caught by guest code,
+and counts as terminal for definite-return analysis.
+
+`trap "message";` and `trap expression;` are **not supported** in this
+milestone: they yield `E_UNSUPPORTED` with no emitted Wasm instead of
+silently discarding a payload. The message transport, observability policy,
+and exact supervisor propagation need an approved versioned runtime contract.
+
 ## Where the syntax comes from
 
 The compiler does not define any syntax of its own:

@@ -1,0 +1,6 @@
+// expect-panic: 4
+// expect-stdout: before trap
+pub fnc main(): int {
+  stdio.println("before trap");
+  trap;
+}

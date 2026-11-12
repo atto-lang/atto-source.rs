@@ -170,6 +170,8 @@ pub enum TStmt {
     GlobalSet(u32, TE),
     Expr(TE),
     Return(Option<TE>),
+    /// Uncatchable guest terminal fault; affects only its Wasm instance.
+    Trap,
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
     /// `while`, `loop` and C-style `for`: `cond` absent means unconditional;
     /// `update` runs after the body and after `continue`.
@@ -968,7 +970,7 @@ fn body_check(
 /// without a `break` never falls through; `while true` is not special.
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Return(_) | TStmt::Unreachable => true,
+        TStmt::Return(_) | TStmt::Trap | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) => returns(b),
@@ -988,7 +990,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
         TStmt::Block(b) => any_in_stmts(b, f),
-        TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
+        TStmt::Return(None) | TStmt::Trap | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
     })
 }
 
@@ -1182,6 +1184,7 @@ impl<'a> FnCx<'a> {
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::Trap(_) => TStmt::Trap,
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {

@@ -180,6 +180,8 @@ pub enum Stmt {
     },
     Expr(Expr),
     Return(Option<Expr>, Pos),
+    /// Explicit terminal fault; no host callback or catchable Result.
+    Trap(Pos),
     If {
         arms: Vec<(Expr, Vec<Stmt>)>,
         otherwise: Option<Vec<Stmt>>,
