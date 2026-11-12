@@ -837,7 +837,7 @@ pub fn check(p: &Program) -> R<TProgram> {
                 &named,
                 Some((r.mail.as_str(), info.payload)),
                 Type::Void,
-                false,
+                r.suspends,
                 &r.body,
                 &label,
                 r.pos,
@@ -871,7 +871,7 @@ pub fn check(p: &Program) -> R<TProgram> {
                 .map(|(q, t)| (q.name.as_str(), *t, q.mutable))
                 .collect();
             let label = format!("{}.{}", a.name, m.name);
-            let body = body_check(&g, owner, &named, None, mi.ret, false, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            let body = body_check(&g, owner, &named, None, mi.ret, m.suspends, &m.body, &label, m.pos, &mut imports, &mut data)?;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: mi.params.clone(),
@@ -2365,9 +2365,9 @@ impl<'a> FnCx<'a> {
                         }
                     };
                     let label = format!("{}.{name}", actor.name);
-                    if m.suspends {
-                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                            "suspends actor mtd requires an actor-owned scheduler and non-reentrancy enforcement"));
+                    if m.suspends && (!self.suspends || !self.awaiting) {
+                        return Err(Diagnostic::new(pos, "E_EFFECT",
+                            "suspends actor mtd requires await inside a suspends receive/mtd"));
                     }
                     self.arity(&label, m.params.len(), args.len(), pos)?;
                     let targs = self.args(&label, args, &m.params)?;

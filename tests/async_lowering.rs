@@ -77,3 +77,41 @@ pub suspends fnc main(): int {
     let bad3 = good.replace("pub suspends mtd answer()", "pub mtd answer()");
     assert_eq!(compile(&bad3).unwrap_err().code, "E_EFFECT");
 }
+
+#[test]
+fn actor_suspending_mailbox_methods_compile_with_explicit_effects() {
+    // The private actor instance owns its globals and serialized mailbox.
+    // JSPI is granted only by that actor's dedicated Worker; never CONTROL.
+    const SOURCE: &str = r#"define actor Counter as
+  let int count = 0;
+  suspends mtd add(int n): int {
+    await 42;
+    return self.count + n;
+  }
+  suspends receive(ActorMail<int> mail): void {
+    self.count = await self.add(mail.value);
+    stdio.println(self.count);
+    return;
+  }
+end
+pub fnc main(): int {
+  val c = spawn Counter();
+  c.send(20);
+  c.send(22);
+  return 0;
+}"#;
+    let guest = compile(SOURCE).expect("actor-owned suspended mailbox compiles");
+    assert!(contains(&guest, b"atto.actors"), "actor metadata must remain present");
+    assert!(contains(&guest, b"atto.async"), "suspension capability version is mandatory");
+    assert!(contains(&guest, b"cooperate"), "every actor await cooperatively yields");
+    assert!(contains(&guest, b"actor_receive"), "actor mailbox dispatcher must remain exported");
+    assert_eq!(guest, compile(SOURCE).unwrap(), "deterministic lowering");
+    let non_suspends_receive = SOURCE.replace("suspends receive(", "receive(");
+    assert_eq!(compile(&non_suspends_receive).unwrap_err().code, "E_EFFECT");
+    let non_suspends_method = SOURCE.replace("suspends mtd add(", "mtd add(");
+    assert_eq!(compile(&non_suspends_method).unwrap_err().code, "E_EFFECT");
+    let unawaited_method = SOURCE.replace("self.count = await self.add(mail.value);", "self.count = self.add(mail.value);");
+    assert_eq!(compile(&unawaited_method).unwrap_err().code, "E_EFFECT");
+    let forbidden_public = SOURCE.replace("suspends receive(", "pub suspends receive(");
+    assert_eq!(compile(&forbidden_public).unwrap_err().code, "E_ACTOR");
+}

@@ -118,6 +118,8 @@ pub struct EnumDecl {
 /// `receive(ActorMail<T> mail): void { ... }`.
 #[derive(Clone, Debug)]
 pub struct Receive {
+    /// Explicit async effect: mailbox execution remains non-reentrant during suspension.
+    pub suspends: bool,
     pub pos: Pos,
     pub mail: String,
     pub payload: Type,
