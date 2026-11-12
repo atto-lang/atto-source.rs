@@ -132,7 +132,7 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "recover",
     "trap",
     "spawn",
-    "await",
+    // await now parses as a typed expression statement, not unsupported.
     "task",
     "actor",
     "isoactor",
