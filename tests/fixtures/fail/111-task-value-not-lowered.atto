@@ -1,0 +1,6 @@
+// expect-error: E_EFFECT
+// java: rejects
+pub fnc main(): int {
+  val future = task { return 42; };
+  return await future;
+}

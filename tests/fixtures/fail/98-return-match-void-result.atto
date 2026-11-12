@@ -1,0 +1,7 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): void {
+  return match 5 over
+    on _ -> 3,
+  end
+}

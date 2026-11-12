@@ -24,6 +24,7 @@ The compiler does not define any syntax of its own:
 | Expressions | `+ - *` on int and float, `/` with at least one float operand (an int operand widens, Java numeric promotion), `+` joining two strings, unary `- + !`, `< <= > >=` on numbers and on strings (Java `String.compareTo` order), `eq neq == != !eq` (strings by content), ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
 | Literals | decimal ints; floats exactly as the Java lexer: `1.5`, `1e3`, `2E-3`, `1_000.25` (digits on both sides of `.`) |
 | Strings | members `trim()`, `starts_with(s)`, `ends_with(s)`, `contains_literal(s)` (Java string member table); concatenation allocates on the bounded heap |
+| Return match | `return match x over on 0 -> 0, on 1 -> 1, default -> fallback(), end`: return-position scalar value match; uses the exhaustive statement matcher, evaluates subject once and type-checks each result. Trailing comma allowed; requires `end`. Other value-match positions remain unsupported |
 | Match | legacy `match [first] x  P -> { } … end` with `else`, and canonical `match x over on P -> { } … end` / `do match x over …` / `over { on P { } }`. Patterns: `_`, int and bool literals, a lower-case binding, `Enum.Variant` (LLVM design spelling); `when` guards on literals and `_`, evaluated only after the pattern matched. Unreachable arms and non-exhaustive matches are `E_MATCH`; a match whose arms all return is a definite return |
 | Output | `stdio.print(x)` / `stdio.println(x)` for `int`, `bool`, `float` (Java `Double.toString`: `3.5`, `1.0E7`, `1.0E-4`, `NaN`, `Infinity`, `-0.0`), strings and objects (`P{a=1, b=true}`) |
 | Classes | `[pub] define class Name as … end`. Fields of type int, bool, float, string or an enum: `T name: e`, `mut T name = e`, `let T name = e` (assignable in the constructor) and `name: T = e`, `final …`, `val`/`const` (fixed). One `constructor(…)`; instance methods `[pub] [fnc] name(…)`; `[pub] static fnc name(…)`, always called qualified as `Name.f(…)`. Construction is `new Name(…)` |
@@ -50,6 +51,8 @@ The following are rejected, with the code shown:
 - Match patterns other than the ones above (string and float literals, tuples, constructors, `Type name`, `is T`) give `E_UNSUPPORTED`. Negative literal patterns, `1 | 4` alternatives and `name when …` are `E_SYNTAX`, as in Java.
 - `switch`, value `match<T>`, imports, lambdas, `Option` / `Result`, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
 - Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
+
+> **Compiler parity note:** the return-position `return match ... over ... end` form is currently executable in this Rust/Wasm browser compiler. The Java reference has not yet admitted the same form; the positive conformance fixtures explicitly mark `// java: rejects` until Java parity is implemented and proved. This is not evidence of five-backend parity.
 
 ### Known divergences from the Java reference
 
@@ -137,3 +140,17 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+## Experimental native Wasm suspending-task slice (JSPI)
+
+The **private** Rust compiler now admits a deliberately narrow, typed async subset:
+
+- `suspends fnc` / class `suspends mtd`, `await suspendingCall()` and `await rt.sleep(milliseconds)`; also `await 42;`, which evaluates the scalar and **always performs a genuine cooperative JSPI scheduler yield** before resuming;
+- capture-free `task { return int; }` blocks, yielding a single-owner `Future<int>`; `await future` consumes the handle;
+- `rt.barrier(2)` is an experimental bounded synchronization primitive for testing genuine task overlap;
+- async modules contain an explicit `atto.async` custom-section byte 1, native Wasm task bodies and `task_invoke(i32) -> i64` when tasks exist;
+- imports `sleep_ms(i64)->i64`, `barrier(i64)->i64`, `task_start(i32)->i32`, `task_await(i32)->i64`, and `cooperate()->void` are granted **only** by the version 2 JSPI-compatible worker host. Every `await` emits a cooperative host turn even for ready scalars.
+
+This is *not* the general AttoLang async implementation. No closures/captures, actor-owned futures, Future<bool>, async methods, detached `do task`, arbitrary I/O or portable non-JSPI continuation lowering. The browser worker may refuse if JSPI is absent; it must not silently evaluate task bodies synchronously. Compiler-generated task bodies are Wasm, not JS source.
+
+The exact guest ABI is a versioned `atto.browser.guest.v2 + atto.async/1` extension. Scope ownership and JSPI host suspension must be proven by executed head CI before shipping as runnable; do not assume native Rust compile alone proves scheduling.

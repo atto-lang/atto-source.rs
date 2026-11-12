@@ -98,6 +98,7 @@ const RESERVED: &[&str] = &[
     "stop",
     "rt",
     "await",
+    "task",
     "nb",
     "cb",
     "select",
@@ -131,7 +132,8 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "recover",
     "trap",
     "spawn",
-    "await",
+    // await now parses as a typed expression statement, not unsupported.
+    "task",
     "actor",
     "isoactor",
     "define",
@@ -176,6 +178,7 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "Option",
     "Result",
     "Array",
+    "Future",
     "List",
     "Vector",
     "Slice",
@@ -203,6 +206,8 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    /// Synthetic, capture-free task body functions; cannot be named by source.
+    task_funcs: Vec<Func>,
 }
 
 struct TypeFirstField {
@@ -235,6 +240,7 @@ impl Parser {
             height: 0,
             cond: 0,
             type_names: Vec::new(),
+            task_funcs: Vec::new(),
         }
     }
 
@@ -463,6 +469,10 @@ impl Parser {
                 _ => prog.funcs.push(self.parse_func()?),
             }
         }
+        if prog.funcs.len() + self.task_funcs.len() > MAX_FUNCS {
+            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many source and task callables"));
+        }
+        prog.funcs.append(&mut self.task_funcs);
         prog.type_names = std::mem::take(&mut self.type_names);
         Ok(prog)
     }
@@ -602,11 +612,12 @@ impl Parser {
                         return Err(unsupported(self.pos(), "static functions in actors"));
                     }
                     self.advance();
+                    let suspends = self.eat_word("suspends");
                     if let Some(w @ ("async" | "structural")) = self.word_at(0) {
                         return Err(unsupported(self.pos(), &format!("'{w}' static functions")));
                     }
                     self.expect_word("fnc")?;
-                    let method = self.parse_method(public, true)?;
+                    let method = self.parse_method(public, true, suspends)?;
                     m.methods.push(method);
                 }
                 Some("constructor") => {
@@ -671,12 +682,23 @@ impl Parser {
                     }
                     m.fields.push(f.field);
                 }
-                Some("fnc" | "method") => {
+                Some("fnc" | "method" | "mtd") => {
                     self.advance();
-                    let method = self.parse_method(public, false)?;
+                    let method = self.parse_method(public, false, false)?;
                     m.methods.push(method);
                 }
-                Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
+                Some("suspends") => {
+                    self.advance();
+                    if !(self.eat_word("fnc") || self.eat_word("mtd") || self.eat_word("method")) {
+                        return Err(self.expected("'fnc' or 'mtd' after 'suspends'"));
+                    }
+                    if actor {
+                        return Err(unsupported(mpos, "suspends actor mtd until actor carrier scheduling is implemented"));
+                    }
+                    let method = self.parse_method(public, false, true)?;
+                    m.methods.push(method);
+                }
+                Some(w @ ("async" | "suspend" | "structural" | "abstract" | "nlex" | "shared")) => {
                     return Err(unsupported(self.pos(), &format!("'{w}' members")));
                 }
                 Some("receive") if actor && *self.peek_at(1) == Tok::LParen => {
@@ -698,7 +720,7 @@ impl Parser {
                     m.receive = Some(r);
                 }
                 Some(_) if *self.peek_at(1) == Tok::LParen => {
-                    let method = self.parse_method(public, false)?;
+                    let method = self.parse_method(public, false, false)?;
                     m.methods.push(method);
                 }
                 Some(_) if *self.peek_at(1) == Tok::Colon && !actor => {
@@ -768,7 +790,7 @@ impl Parser {
     }
 
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
-    fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
+    fn parse_method(&mut self, public: bool, is_static: bool, suspends: bool) -> R<Method> {
         let (name, pos) = self.ident("a method name")?;
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic methods"));
@@ -791,6 +813,7 @@ impl Parser {
             pos,
             public,
             is_static,
+            suspends,
             params,
             ret,
             body,
@@ -885,6 +908,7 @@ impl Parser {
         }
         let start = self.pos();
         self.eat_word("pub");
+        let suspends = self.eat_word("suspends");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
         }
@@ -902,7 +926,9 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        if !(self.eat_word("fnc") || self.eat_word("routine")) {
+        if suspends {
+            self.expect_word("fnc")?;
+        } else if !(self.eat_word("fnc") || self.eat_word("routine")) {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
                     return Err(unsupported(self.pos(), &format!("top-level '{w}'")));
@@ -925,6 +951,7 @@ impl Parser {
         let _ = start;
         Ok(Func {
             name,
+            suspends,
             pos,
             params,
             ret,
@@ -1072,6 +1099,11 @@ impl Parser {
             )),
             Some("return") => {
                 self.advance();
+                // Tail-position value match lowers to the existing exhaustive
+                // statement match, with an explicit return in every arm.
+                if self.is_word("match") {
+                    return self.parse_return_match(pos);
+                }
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
                 let value = if at_end { None } else { Some(self.parse_expr()?) };
@@ -1110,6 +1142,9 @@ impl Parser {
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
                 self.parse_match(true)
+            }
+            Some("do") if self.word_at(1) == Some("task") => {
+                Err(unsupported(pos, "'do task' (structured detached tasks)"))
             }
             Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
@@ -1366,6 +1401,53 @@ impl Parser {
         if arms.is_empty() {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "match requires at least one arm"));
         }
+        Ok(Stmt::Match { subject, arms, pos })
+    }
+
+    /// A return-position match expression:
+    /// `return match value over on P -> expr, default -> expr, end`.
+    ///
+    /// Lowering to statement match deliberately reuses the existing
+    /// once-only subject evaluation, exhaustive pattern checker, strict return
+    /// typing, unreachable-arm detection and Wasm branches. It does not
+    /// pretend that arbitrary expressions are value matches.
+    fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
+        self.expect_word("match")?;
+        let subject = self.parse_expr()?;
+        self.expect_word("over")?;
+        let mut arms = Vec::new();
+        while !self.is_word("end") {
+            if *self.peek() == Tok::Eof {
+                return Err(Diagnostic::new(self.pos(), "E_EOF", "expected 'end' to close return match"));
+            }
+            self.grow(1)?;
+            let apos = self.pos();
+            let pattern = if self.eat_word("default") {
+                Pattern::Wild
+            } else {
+                self.expect_word("on")?;
+                self.parse_pattern()?
+            };
+            self.expect(Tok::Arrow, "'->' in a return match arm")?;
+            let value = self.parse_expr()?;
+            arms.push(MatchArm {
+                pattern,
+                guard: None,
+                body: vec![Stmt::Return(Some(value), apos)],
+                pos: apos,
+            });
+            // A final comma before 'end' is valid, and separators are
+            // mandatory between adjacent value arms.
+            if !self.eat(&Tok::Comma) && !self.is_word("end") {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "expected ',' between return match arms"));
+            }
+        }
+        self.expect_word("end")?;
+        self.height -= arms.len() as u32;
+        if arms.is_empty() {
+            return Err(Diagnostic::new(pos, "E_SYNTAX", "return match requires at least one arm"));
+        }
+        self.terminator()?;
         Ok(Stmt::Match { subject, arms, pos })
     }
 
@@ -1734,7 +1816,11 @@ impl Parser {
                     "'++' and '--' exist only in a for update clause",
                 ))
             }
-            Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            Tok::Ident(s) if s == "await" => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                return Ok(Expr {kind: ExprKind::Await(Box::new(inner)), pos});
+            },
             _ => return self.parse_postfix(),
         };
         self.advance();
@@ -1815,6 +1901,18 @@ impl Parser {
                                 continue;
                             }
                         }
+                    }
+                    // Restrict the async runtime namespace to known, typed calls.
+                    if matches!(&e.kind, ExprKind::Var(b) if b == "rt") {
+                        if let Some(m @ ("sleep" | "barrier")) = self.word_at(1) {
+                            let member = m.to_owned();
+                            self.advance(); // '.'
+                            self.advance(); // member
+                            if *self.peek() != Tok::LParen { return Err(self.expected("'('")); }
+                            e = Expr {kind: ExprKind::Var(format!("rt.{member}")), pos};
+                            continue;
+                        }
+                        return Err(unsupported(dot, "runtime members other than sleep/barrier"));
                     }
                     if matches!(&e.kind, ExprKind::Var(b) if b == "stdio") {
                         return Err(unsupported(dot, "stdio members other than print and println"));
@@ -1907,6 +2005,16 @@ impl Parser {
                     let args = self.parse_args()?;
                     ExprKind::New(class, args)
                 }
+                "task" => {
+                    self.advance();
+                    if *self.peek() != Tok::LBrace {return Err(self.expected("a task block '{ ... }'"));}
+                    let body = self.parse_block()?;
+                    if self.task_funcs.len() >= MAX_FUNCS {return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many task blocks"));}
+                    let name = format!("$atto_task_{}", self.task_funcs.len());
+                    self.task_funcs.push(Func {name: name.clone(), suspends: true, pos, params: Vec::new(), ret: Type::Int, body});
+                    ExprKind::Task(name)
+                }
+                "rt" => { self.advance(); ExprKind::Var(s) }
                 "spawn" => {
                     self.advance();
                     let (actor, _) = self.ident("an actor name after 'spawn'")?;
