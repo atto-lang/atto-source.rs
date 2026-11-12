@@ -321,9 +321,9 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// Arithmetic remainder (%) and bitwise XOR (^) are not supported.
+// Double-caret (^^) is now the canonical Boolean XOR, type-checked separately.
+for (const op of ['%', '^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
@@ -332,6 +332,13 @@ for (const op of ['%', '^', '^^']) {
     assert.ok(r.line >= 1 && r.col >= 1);
   });
 }
+
+check('boolean-xor/int-operands-rejected', () => {
+  const r = compile('pub fnc main(): int { val bad = 5 ^^ 2; return 0; }');
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'E_TYPE');
+  assert.equal('wasm' in r, false);
+});
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
