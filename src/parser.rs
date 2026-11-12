@@ -1840,10 +1840,11 @@ impl Parser {
                     // Restrict the async runtime namespace to known, typed calls.
                     if matches!(&e.kind, ExprKind::Var(b) if b == "rt") {
                         if let Some(m @ ("sleep" | "barrier")) = self.word_at(1) {
+                            let member = m.to_owned();
                             self.advance(); // '.'
                             self.advance(); // member
                             if *self.peek() != Tok::LParen { return Err(self.expected("'('")); }
-                            e = Expr {kind: ExprKind::Var(format!("rt.{m}")), pos};
+                            e = Expr {kind: ExprKind::Var(format!("rt.{member}")), pos};
                             continue;
                         }
                         return Err(unsupported(dot, "runtime members other than sleep/barrier"));
