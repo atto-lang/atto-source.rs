@@ -100,17 +100,19 @@ impl ActorTaskLedger {
     ) -> Result<(), TaskError> {
         self.check_owner(owner)?;
         if self.stopped { return Err(TaskError::Stopped); }
+        // Validate identity and lifecycle before observing other running
+        // tasks, so a forged TaskId never leaks actor scheduling state.
+        let task = self.tasks.get(&id).ok_or(TaskError::MissingTask)?;
+        if task.cancel_requested { return Err(TaskError::Cancelled); }
+        if task.stage == TaskStage::Suspended { return Err(TaskError::WakeRequired); }
+        if task.stage != TaskStage::Ready { return Err(TaskError::InvalidTransition); }
         // Suspended tasks are logical concurrency, not simultaneous
         // mutable execution on two physical carriers for one actor.
         if self.tasks.iter().any(|(other, task)|
             *other != id && task.stage == TaskStage::Running) {
             return Err(TaskError::ActorBusy);
         }
-        let task = self.tasks.get_mut(&id).ok_or(TaskError::MissingTask)?;
-        if task.cancel_requested { return Err(TaskError::Cancelled); }
-        if task.stage == TaskStage::Suspended { return Err(TaskError::WakeRequired); }
-        if task.stage != TaskStage::Ready { return Err(TaskError::InvalidTransition); }
-        task.stage = TaskStage::Running;
+        self.tasks.get_mut(&id).expect("validated task").stage = TaskStage::Running;
         Ok(())
     }
     /// This is a logical ticket consumption check. Only a physical actor WAKE
@@ -121,17 +123,18 @@ impl ActorTaskLedger {
     ) -> Result<(), TaskError> {
         self.check_owner(owner)?;
         if self.stopped { return Err(TaskError::Stopped); }
-        if self.tasks.iter().any(|(other, task)|
-            *other != id && task.stage == TaskStage::Running) {
-            return Err(TaskError::ActorBusy);
-        }
-        let task = self.tasks.get_mut(&id).ok_or(TaskError::MissingTask)?;
+        // Reject wrong task/replay before revealing another actor turn state.
+        let task = self.tasks.get(&id).ok_or(TaskError::MissingTask)?;
         if task.cancel_requested { return Err(TaskError::Cancelled); }
         if task.stage != TaskStage::Suspended || ticket.owner != owner
             || ticket.task != id || ticket.generation != task.wake_generation {
             return Err(TaskError::InvalidWake);
         }
-        task.stage = TaskStage::Running; // consumes ticket before guest execution
+        if self.tasks.iter().any(|(other, task)|
+            *other != id && task.stage == TaskStage::Running) {
+            return Err(TaskError::ActorBusy);
+        }
+        self.tasks.get_mut(&id).expect("validated task").stage = TaskStage::Running;
         Ok(())
     }
     pub fn suspend(
@@ -281,6 +284,21 @@ mod tests {
         l.complete_turn(OWNER, t).unwrap();
         l.retire(OWNER, t).unwrap();
         assert!(l.admit_in_authenticated_turn(OWNER, None).is_ok());
+    }
+    #[test]
+    fn missing_task_identity_precedes_actor_busy_signal() {
+        let mut l = ledger(2);
+        let running = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        l.start_or_resume(OWNER, running).unwrap();
+        let ghost = TaskId(999);
+        assert_eq!(l.start_or_resume(OWNER, ghost), Err(TaskError::MissingTask));
+        let bogus = TaskWakeTicket {
+            owner: OWNER, task: ghost, generation: 1
+        };
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, ghost, bogus),
+            Err(TaskError::MissingTask));
+        l.complete_turn(OWNER, running).unwrap();
+        l.retire(OWNER, running).unwrap();
     }
     #[test]
     fn parent_must_be_actively_running_to_admit_nested_task() {
