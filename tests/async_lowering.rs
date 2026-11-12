@@ -19,6 +19,8 @@ fn typed_async_source_emits_real_wasm_and_opt_in_imports() {
     let tasks = compile(TWO).unwrap();
     assert!(contains(&tasks, b"task_invoke"), "synthetic Wasm task dispatcher missing");
     assert!(contains(&tasks, b"task_await"), "typed Future await import missing");
+    assert!(contains(&tasks, b"cooperate"), "await MUST cooperatively yield");
+    assert!(contains(&tasks, b"atto.async"), "async ABI marker missing");
 }
 #[test]
 fn async_effect_and_ownership_errors_fail_closed() {
@@ -37,7 +39,7 @@ fn async_effect_and_ownership_errors_fail_closed() {
     }
 }
 #[test]
-fn await_of_ready_scalar_is_valid_and_requires_no_future_or_host_import() {
+fn await_of_ready_scalar_always_requires_a_cooperative_scheduler_handoff() {
     let programs = [
         "pub suspends fnc main(): int { await 42; return await 42; }",
         "pub suspends fnc main(): int { val x = await 20; return x + (await 22); }",
@@ -46,8 +48,32 @@ fn await_of_ready_scalar_is_valid_and_requires_no_future_or_host_import() {
     for source in programs {
         let guest = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
         assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
-        assert!(!contains(&guest, b"atto.async"), "immediate await must not claim JSPI suspension");
-        assert!(!contains(&guest, b"task_await"), "no Future handle exists for a scalar await");
+        assert!(contains(&guest, b"atto.async"), "all await sites require async ABI");
+        assert!(contains(&guest, b"cooperate"), "await 42 MUST yield a real Worker event-loop turn");
+        assert!(!contains(&guest, b"task_await"), "an immediate value does not create a Future");
         assert_eq!(guest, compile(source).unwrap(), "deterministic Wasm lowering");
     }
+}
+
+#[test]
+fn suspends_class_method_requires_await_at_call_site_and_yields() {
+    let good = r#"pub define class Worker as
+  pub suspends mtd answer(): int {
+    await 21;
+    return await 42;
+  }
+end
+pub suspends fnc main(): int {
+  val worker = new Worker();
+  return await worker.answer();
+}"#;
+    let wasm = compile(good).expect("suspends mtd under await must compile");
+    assert!(contains(&wasm, b"cooperate"));
+    assert!(contains(&wasm, b"atto.async"));
+    let bad = good.replace("return await worker.answer();", "return worker.answer();");
+    assert_eq!(compile(&bad).unwrap_err().code, "E_EFFECT");
+    let bad2 = good.replace("pub suspends fnc main()", "pub fnc main()");
+    assert_eq!(compile(&bad2).unwrap_err().code, "E_EFFECT");
+    let bad3 = good.replace("pub suspends mtd answer()", "pub mtd answer()");
+    assert_eq!(compile(&bad3).unwrap_err().code, "E_EFFECT");
 }

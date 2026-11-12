@@ -31,10 +31,10 @@ self.onmessage=async ({data})=>{
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
     const asyncSections=WebAssembly.Module.customSections(guest,'atto.async');
-    const useAsync=asyncSections.length===1&&new Uint8Array(asyncSections[0]).length===1&&new Uint8Array(asyncSections[0])[0]===1;
+    const useAsync=asyncSections.length===1&&new Uint8Array(asyncSections[0]).length===1&&new Uint8Array(asyncSections[0])[0]===2;
     if(asyncSections.length&&!useAsync)throw new Error('invalid async marker');
     if(useAsync&&(typeof WebAssembly.Suspending!=='function'||typeof WebAssembly.promising!=='function'))throw new Error('JSPI unsupported');
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',...(useAsync?['sleep_ms','barrier','task_start','task_await']:[])]);
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',...(useAsync?['sleep_ms','barrier','task_start','task_await','cooperate']:[])]);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
@@ -46,8 +46,14 @@ self.onmessage=async ({data})=>{
       print_newline:()=>{stdout+='\n'},
       print_f64:v=>{stdout+=javaDouble(v)},
     };
-    const jobs=new Map();let nextJob=1,barrierWaiters=[];
+    const jobs=new Map();let nextJob=1,barrierWaiters=[],cooperativeYields=0;
     if(useAsync){
+      // Never shortcut an immediate await; release the guest Wasm stack and
+      // reschedule on a fresh Worker event-loop turn instead of a microtask.
+      atto.cooperate=new WebAssembly.Suspending(async ()=>{
+        await new Promise(resolve=>setTimeout(resolve,0));
+        cooperativeYields++;
+      });
       atto.sleep_ms=new WebAssembly.Suspending(async ms=>{
         if(ms<0n||ms>1000n)throw new Error('invalid sleep duration');
         await new Promise(resolve=>setTimeout(resolve,Number(ms)));
@@ -91,6 +97,6 @@ self.onmessage=async ({data})=>{
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':'trap: '+e.message;
       self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
     }
-    self.postMessage({ok:true,value:String(value),stdout});
+    self.postMessage({ok:true,value:String(value),stdout,cooperativeYields});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
 };

@@ -145,11 +145,11 @@ The fixture corpus is in `tests/fixtures/`:
 
 The **private** Rust compiler now admits a deliberately narrow, typed async subset:
 
-- `suspends fnc`, `await suspendingCall()` and `await rt.sleep(milliseconds)`; also `await 42;` and other ready scalar awaits, which evaluate immediately without an invented Future or JSPI suspension;
+- `suspends fnc` / class `suspends mtd`, `await suspendingCall()` and `await rt.sleep(milliseconds)`; also `await 42;`, which evaluates the scalar and **always performs a genuine cooperative JSPI scheduler yield** before resuming;
 - capture-free `task { return int; }` blocks, yielding a single-owner `Future<int>`; `await future` consumes the handle;
 - `rt.barrier(2)` is an experimental bounded synchronization primitive for testing genuine task overlap;
 - async modules contain an explicit `atto.async` custom-section byte 1, native Wasm task bodies and `task_invoke(i32) -> i64` when tasks exist;
-- imports `sleep_ms(i64)->i64`, `barrier(i64)->i64`, `task_start(i32)->i32`, `task_await(i32)->i64` are granted **only** by the versioned JSPI-compatible worker host.
+- imports `sleep_ms(i64)->i64`, `barrier(i64)->i64`, `task_start(i32)->i32`, `task_await(i32)->i64`, and `cooperate()->void` are granted **only** by the version 2 JSPI-compatible worker host. Every `await` emits a cooperative host turn even for ready scalars.
 
 This is *not* the general AttoLang async implementation. No closures/captures, actor-owned futures, Future<bool>, async methods, detached `do task`, arbitrary I/O or portable non-JSPI continuation lowering. The browser worker may refuse if JSPI is absent; it must not silently evaluate task bodies synchronously. Compiler-generated task bodies are Wasm, not JS source.
 

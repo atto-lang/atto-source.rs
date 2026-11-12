@@ -93,7 +93,15 @@ try{
   console.log('PASS browser: float (Java Double.toString), string values and match');
   const readyAwait='pub suspends fnc main(): int { await 42; return await 42; }';
   assert.match(await run(readyAwait,'main() -> 42'),/^main\(\) -> 42$/);
-  console.log('PASS await: await 42; is accepted and returns 42 without fake JSPI suspension');
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,'two immediate awaits must both yield the browser worker');
+  console.log('PASS await: await 42 yields a real JSPI Worker turn twice, while still returning 42');
+  const readyMethod='pub define class Worker as pub suspends mtd answer(): int { await 21; return await 42; } end pub suspends fnc main(): int { val worker=new Worker(); return await worker.answer(); }';
+  assert.match(await run(readyMethod,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),3,'class mtd and caller awaits must cooperatively yield');
+  console.log('PASS await: suspends mtd and caller both enforce cooperative yielding');
+  const badClass='pub define class Worker as pub suspends mtd answer(): int { return await 42; } end pub fnc main(): int { val worker=new Worker(); return worker.answer(); }';
+  assert.match(await run(badClass,'E_EFFECT'),/E_EFFECT/);
+  console.log('PASS await: non-suspending caller of suspends mtd rejected without guest execution');
   const timer='suspends fnc delayedAnswer(): int { await rt.sleep(25); return 42; } pub suspends fnc main(): int { val result=await delayedAnswer(); stdio.println(result); return result; }';
   assert.match(await run(timer,'main() -> 42'),/^42\nmain\(\) -> 42$/);
   console.log('PASS JSPI: actual Wasm timer suspended, then resumed after host timer');
