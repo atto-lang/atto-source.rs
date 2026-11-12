@@ -240,6 +240,14 @@ impl Emit<'_> {
                 }
                 self.op(0x0F);
             }
+            TStmt::Trap => {
+                // Distinct fault code: 4 = explicit language trap.
+                // The host reports the code; it cannot catch a guest fault.
+                self.i32c(4);
+                self.op(0x24); // global.set
+                uleb(&mut self.code, 0); // exported panic_code
+                self.op(0x00); // unreachable
+            }
             TStmt::If(arms, other) => self.if_chain(arms, other.as_deref()),
             TStmt::Loop { cond, body, update } => {
                 self.open(0x02, 0x40, Frame::Break);

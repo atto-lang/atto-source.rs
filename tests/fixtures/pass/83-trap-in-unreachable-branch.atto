@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Verifies an explicit trap remains inside its branch and does not fire.
+pub fnc main(): int {
+  if false then
+    trap;
+  fi
+  return 42;
+}

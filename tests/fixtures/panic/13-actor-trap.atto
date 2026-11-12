@@ -1,0 +1,11 @@
+// expect-panic: 4
+// expect-stdout: before actor trap
+// This is a direct guest trap; actor supervision isolation is separately tested.
+pub fnc main(): int {
+  stdio.println("before actor trap");
+  if true then
+    trap;
+  else
+    return 42;
+  fi
+}

@@ -129,7 +129,6 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "raise",
     "panic",
     "recover",
-    "trap",
     "spawn",
     "await",
     "actor",
@@ -1070,6 +1069,19 @@ impl Parser {
                 "E_SYNTAX",
                 "a local binding starts with 'val', 'const' or 'let' (for example 'val x: int = 1;'); only int, bool and string have the immutable 'T name = e' form",
             )),
+            Some("trap") => {
+                self.advance();
+                // Message-bearing traps need a versioned guest fault ABI.
+                // Refuse them until the runtime can surface messages safely.
+                if !matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Eof)
+                    && !matches!(self.word_at(0), Some("fi" | "end" | "done" | "else" | "elif" | "elseif"))
+                    && !(self.i > 0 && self.toks[self.i - 1].pos.line < self.pos().line)
+                {
+                    return Err(unsupported(self.pos(), "trap payloads"));
+                }
+                self.terminator()?;
+                Ok(Stmt::Trap(pos))
+            }
             Some("return") => {
                 self.advance();
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)

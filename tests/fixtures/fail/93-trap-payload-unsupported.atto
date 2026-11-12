@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+pub fnc main(): int {
+  trap "not yet a supported runtime payload";
+}
