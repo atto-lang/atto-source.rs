@@ -96,7 +96,7 @@ try{
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,'two immediate awaits must both yield the browser worker');
   console.log('PASS await: await 42 yields a real JSPI Worker turn twice, while still returning 42');
   const readyMethod='pub define class Worker as pub suspends mtd answer(): int { await 21; return await 42; } end pub suspends fnc main(): int { val worker=new Worker(); return await worker.answer(); }';
-  assert.match(await run(readyMethod,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.match(await run(readyMethod,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),3,'class mtd and caller awaits must cooperatively yield');
   console.log('PASS await: suspends mtd and caller both enforce cooperative yielding');
   const badClass='pub define class Worker as pub suspends mtd answer(): int { return await 42; } end pub fnc main(): int { val worker=new Worker(); return worker.answer(); }';
