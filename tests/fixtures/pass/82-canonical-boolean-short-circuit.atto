@@ -1,4 +1,4 @@
-// RHS is evaluated for ^^ and named Boolean functions, not for skipped &&/||.
+// RHS is evaluated for ^^ and Xor(), but skipped by decisive &&/||/And()/Or().
 // expect-exit: 42
 // expect-stdout: 1
 // expect-stdout: 3
@@ -9,7 +9,9 @@
 // expect-stdout: 9
 // expect-stdout: 10
 // expect-stdout: 11
-// expect-stdout: 12
+// expect-stdout: 13
+// expect-stdout: 15
+// expect-stdout: 16
 // java: rejects
 fnc mark(bool v, int n): bool {
   stdio.println(n);
@@ -35,5 +37,11 @@ pub fnc main(): int {
   if And(mark(false, 11), mark(true, 12)) then
     return -2;
   fi
-  return hits eq 4 ? 42 : 0;
+  if Or(mark(true, 13), mark(false, 14)) then
+    hits = hits + 1;
+  fi
+  if Xor(mark(false, 15), mark(true, 16)) then
+    hits = hits + 1;
+  fi
+  return hits eq 6 ? 42 : 0;
 }

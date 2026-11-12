@@ -407,13 +407,32 @@ impl Emit<'_> {
                 self.call(self.l.func(*f));
             }
             TExpr::Builtin(b, x, y) => {
-                self.expr(x);
-                self.expr(y);
-                self.op(match b {
-                    Builtin::And => 0x71,
-                    Builtin::Or => 0x72,
-                    Builtin::Xor => 0x73,
-                });
+                // Named Boolean intrinsics have their own effect contract.
+                // Java/Graal short-circuits And/Or, so lower those using
+                // conditional control flow. Xor evaluates both exactly once.
+                match b {
+                    Builtin::And => {
+                        self.expr(x);
+                        self.open(0x04, 0x7F, Frame::Other); // if (result i32)
+                        self.expr(y);
+                        self.op(0x05); // else
+                        self.i32c(0);
+                        self.close();
+                    }
+                    Builtin::Or => {
+                        self.expr(x);
+                        self.open(0x04, 0x7F, Frame::Other); // if (result i32)
+                        self.i32c(1);
+                        self.op(0x05); // else
+                        self.expr(y);
+                        self.close();
+                    }
+                    Builtin::Xor => {
+                        self.expr(x);
+                        self.expr(y);
+                        self.op(0x73); // i32.xor
+                    }
+                }
             }
             TExpr::Print { value, newline } => {
                 self.expr(value);
