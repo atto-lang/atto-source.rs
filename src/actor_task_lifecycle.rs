@@ -237,4 +237,21 @@ mod tests {
         l.retire(OWNER, t).unwrap();
         assert!(l.admit_in_authenticated_turn(OWNER, None).is_ok());
     }
+    #[test]
+    fn concurrent_logical_tasks_never_run_mutable_actor_turns_together() {
+        let mut l = ledger(2);
+        let a = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        let b = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        l.start_or_resume(OWNER, a).unwrap();
+        assert_eq!(l.start_or_resume(OWNER, b), Err(TaskError::ActorBusy));
+        l.suspend(OWNER, a).unwrap();
+        l.start_or_resume(OWNER, b).unwrap();
+        assert_eq!(l.start_or_resume(OWNER, a), Err(TaskError::ActorBusy));
+        l.complete_turn(OWNER, b).unwrap();
+        l.retire(OWNER, b).unwrap();
+        l.start_or_resume(OWNER, a).unwrap();
+        l.complete_turn(OWNER, a).unwrap();
+        l.retire(OWNER, a).unwrap();
+        assert!(l.is_physically_quiescent());
+    }
 }
