@@ -81,7 +81,10 @@ impl ActorTaskLedger {
         if self.tasks.len() >= self.capacity { return Err(TaskError::Capacity); }
         if let Some(p) = parent {
             let entry = self.tasks.get(&p).ok_or(TaskError::ParentUnavailable)?;
-            if entry.cancel_requested || entry.stage == TaskStage::Done {
+            if entry.cancel_requested || entry.stage != TaskStage::Running {
+                // A child may be admitted only while its actual parent owns
+                // the actor turn, never by a late Future producer or after
+                // that parent has suspended or settled.
                 return Err(TaskError::ParentUnavailable);
             }
         }
@@ -278,6 +281,28 @@ mod tests {
         l.complete_turn(OWNER, t).unwrap();
         l.retire(OWNER, t).unwrap();
         assert!(l.admit_in_authenticated_turn(OWNER, None).is_ok());
+    }
+    #[test]
+    fn parent_must_be_actively_running_to_admit_nested_task() {
+        let mut l = ledger(4);
+        let parent = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        assert_eq!(l.admit_in_authenticated_turn(OWNER, Some(parent)),
+            Err(TaskError::ParentUnavailable));
+        l.start_or_resume(OWNER, parent).unwrap();
+        let child = l.admit_in_authenticated_turn(OWNER, Some(parent)).unwrap();
+        l.start_or_resume(OWNER, child).unwrap_err(); // same mutable actor turn
+        let wake = l.suspend(OWNER, parent).unwrap();
+        assert_eq!(l.admit_in_authenticated_turn(OWNER, Some(parent)),
+            Err(TaskError::ParentUnavailable));
+        l.resume_from_authenticated_wake(OWNER, parent, wake).unwrap();
+        l.complete_turn(OWNER, parent).unwrap();
+        assert_eq!(l.admit_in_authenticated_turn(OWNER, Some(parent)),
+            Err(TaskError::ParentUnavailable));
+        l.request_cancel(OWNER, parent).unwrap();
+        l.cleanup_cancelled(OWNER, child).unwrap();
+        l.retire(OWNER, child).unwrap();
+        l.retire(OWNER, parent).unwrap();
+        assert!(l.is_physically_quiescent());
     }
     #[test]
     fn wake_replay_wrong_task_and_stale_incarnation_fail_closed() {
