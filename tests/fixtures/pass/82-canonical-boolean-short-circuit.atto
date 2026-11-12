@@ -16,23 +16,24 @@ fnc mark(bool v, int n): bool {
   return v;
 }
 pub fnc main(): int {
+  let hits = 0;
   if mark(false, 1) && mark(true, 2) then
     return -1;
   fi
   if mark(true, 3) || mark(false, 4) then
-    stdio.println("5");
+    hits = hits + 1;
   fi
   if mark(false, 5) || mark(true, 6) then
-    stdio.println("7");
+    hits = hits + 1;
   fi
   if mark(true, 7) && mark(true, 8) then
-    stdio.println("9");
+    hits = hits + 1;
   fi
   if mark(false, 9) ^^ mark(true, 10) then
-    stdio.println("11");
+    hits = hits + 1;
   fi
   if And(mark(false, 11), mark(true, 12)) then
     return -2;
   fi
-  return 42;
+  return hits eq 4 ? 42 : 0;
 }
