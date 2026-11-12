@@ -91,6 +91,9 @@ try{
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
   assert.match(await run(values,'main() -> 1'),/^3\.5\n1\.0E7\nzero\/many\ntrue\nmain\(\) -> 1$/);
   console.log('PASS browser: float (Java Double.toString), string values and match');
+  const readyAwait='pub suspends fnc main(): int { await 42; return await 42; }';
+  assert.match(await run(readyAwait,'main() -> 42'),/^main\\(\\) -> 42$/);
+  console.log('PASS await: await 42; is accepted and returns 42 without fake JSPI suspension');
   const timer='suspends fnc delayedAnswer(): int { await rt.sleep(25); return 42; } pub suspends fnc main(): int { val result=await delayedAnswer(); stdio.println(result); return result; }';
   assert.match(await run(timer,'main() -> 42'),/^42\nmain\(\) -> 42$/);
   console.log('PASS JSPI: actual Wasm timer suspended, then resumed after host timer');

@@ -1648,8 +1648,10 @@ impl<'a> FnCx<'a> {
         match &e.kind {
             ExprKind::Await(inner) => {
                 if !self.suspends { return Err(Diagnostic::new(e.pos, "E_EFFECT", "await requires a suspends fnc")); }
-                let direct = matches!(&inner.kind, ExprKind::Call(name, args)
-                    if name == "rt.sleep" || name == "rt.barrier" || self.g.suspends.contains(&(name.clone(), args.len())));
+                // 'await' is syntactically valid for any expression. A ready,
+                // unboxed scalar is its own result; it never fabricates a
+                // pending Future, JSPI suspension, or worker microtask.
+                // Future handles still require single-use TaskAwait lowering.
                 let prior = self.awaiting;
                 self.awaiting = true;
                 let checked = self.expr(inner);
@@ -1661,10 +1663,13 @@ impl<'a> FnCx<'a> {
                     }
                     self.imports.push(Import::TaskAwait);
                     Ok(TE {e: TExpr::TaskAwait(Box::new(v)), ty: Type::Int})
-                } else if direct && v.ty == Type::Int {
-                    Ok(v) // JSPI resumes the direct Wasm call stack after its host import.
+                } else if matches!(v.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    // Immediate values are already resolved. The operand was
+                    // evaluated once and we emit the same typed Wasm value.
+                    // For a direct suspend call, the import performs JSPI.
+                    Ok(v)
                 } else {
-                    Err(type_err(e.pos, "await requires a Future<int>, a suspends fnc call or an approved async runtime operation"))
+                    Err(type_err(e.pos, "await requires an immediate scalar, Future<int>, or approved suspending call"))
                 }
             }
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {

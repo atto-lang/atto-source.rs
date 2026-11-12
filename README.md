@@ -145,7 +145,7 @@ The fixture corpus is in `tests/fixtures/`:
 
 The **private** Rust compiler now admits a deliberately narrow, typed async subset:
 
-- `suspends fnc`, `await suspendingCall()` and `await rt.sleep(milliseconds)`;
+- `suspends fnc`, `await suspendingCall()` and `await rt.sleep(milliseconds)`; also `await 42;` and other ready scalar awaits, which evaluate immediately without an invented Future or JSPI suspension;
 - capture-free `task { return int; }` blocks, yielding a single-owner `Future<int>`; `await future` consumes the handle;
 - `rt.barrier(2)` is an experimental bounded synchronization primitive for testing genuine task overlap;
 - async modules contain an explicit `atto.async` custom-section byte 1, native Wasm task bodies and `task_invoke(i32) -> i64` when tasks exist;

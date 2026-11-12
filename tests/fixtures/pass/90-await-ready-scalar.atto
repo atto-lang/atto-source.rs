@@ -1,0 +1,8 @@
+// Already-resolved scalar await is valid syntax *and* a valid no-op await.
+// java: rejects
+// expect-exit: 42
+pub suspends fnc main(): int {
+  await 42;
+  val x = await 20;
+  return x + (await 22);
+}
