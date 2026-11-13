@@ -1,0 +1,30 @@
+// Scalar intrinsics are compiler builtins, not ordinary eager calls.
+// expect-exit: 42
+// expect-stdout: left-and
+// expect-stdout: right-and
+// expect-stdout: left-or
+// expect-stdout: right-or
+// expect-stdout: right-xor
+fnc skipped(): bool {
+  stdio.println("BAD: skipped RHS executed");
+  return true;
+}
+fnc mark(bool v, string name): bool {
+  stdio.println(name);
+  return v;
+}
+pub fnc main(): int {
+  if And(false, skipped()) then
+    return -1;
+  fi
+  if !Or(true, skipped()) then
+    return -2;
+  fi
+  val a = And(mark(true, "left-and"), mark(true, "right-and"));
+  val b = Or(mark(false, "left-or"), mark(true, "right-or"));
+  val c = Xor(false, mark(true, "right-xor"));
+  if a && b && c then
+    return 42;
+  fi
+  return 0;
+}

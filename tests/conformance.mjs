@@ -182,10 +182,10 @@ for (const f of await fixtures('pass')) {
     if (java) {
       const j = runJava(f.path);
       const claim = header(f.source, 'java')[0];
-      if (claim === 'llvm-design') {
+      if (claim === 'llvm-design' || claim === 'rejects') {
         // spelling from the oreslang-source.llvm v1 design contracts; tracked
         // so this fixture is revisited when the Java parser admits it
-        assert.ok(j.rejected, 'Java now accepts this LLVM-design spelling: update the fixture claim');
+        assert.ok(j.rejected, 'Java now accepts a feature marked rejected: update the fixture claim and compare guest output');
       } else {
         assert.ok(!j.rejected, `Java reference rejected it: ${j.stdout}`);
         if (j.race && header(f.source, 'stdout-order')[0] === 'unordered') {
@@ -321,15 +321,58 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// Arithmetic remainder (%) and bitwise XOR (^) are not supported.
+// Double-caret (^^) is now the canonical Boolean XOR, type-checked separately.
+for (const op of ['%', '^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
     assert.equal(r.code, 'E_UNSUPPORTED');
     assert.equal('wasm' in r, false);
     assert.ok(r.line >= 1 && r.col >= 1);
+  });
+}
+
+check('boolean-xor/int-operands-rejected', () => {
+  const r = compile('pub fnc main(): int { val bad = 5 ^^ 2; return 0; }');
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'E_TYPE');
+  assert.equal('wasm' in r, false);
+});
+
+// Compiler must still check an unreachable RHS: short-circuit is a runtime
+// effect rule, never permission to skip type/name checking.
+check('boolean/short-circuited-rhs-still-typechecked', () => {
+  for (const expression of [
+    'false && 7', 'true || 3.5', 'false AND "text"',
+    'true OR 99', 'false && missing_name()', 'true OR missing_name()'
+  ]) {
+    const r = compile('pub fnc main(): int { val test = ' + expression + '; return 0; }');
+    assert.equal(r.ok, false, expression);
+    assert.equal('wasm' in r, false, expression);
+  }
+});
+
+// Reject malformed symbolic operator runs; they must never be silently
+// reinterpreted as legacy condition punctuation or arithmetic operators.
+check('boolean/malformed-token-boundaries-rejected', () => {
+  for (const expression of ['true &&& false', 'true ||| false',
+    'true ^^^ false', 'true & & false', 'true | | false']) {
+    const r = compile('pub fnc main(): int { val test = ' + expression + '; return 0; }');
+    assert.equal(r.ok, false, expression);
+    assert.equal('wasm' in r, false, expression);
+  }
+});
+
+// Left-leaning boolean ASTs must respect the same bounded recursion budget
+// as arithmetic; error rather than exhausting compiler stack.
+for (const operator of ['&&', '||', '^^', 'AND', 'OR', 'XOR']) {
+  check('limits/boolean-operator-chain/' + operator, () => {
+    const expression = 'true' + (' ' + operator + ' true').repeat(600);
+    const r = compile('pub fnc main(): int { val test = ' + expression + '; return 0; }');
+    assert.equal(r.ok, false, operator);
+    assert.equal(r.code, 'E_NESTING', operator);
+    assert.equal('wasm' in r, false, operator);
   });
 }
 

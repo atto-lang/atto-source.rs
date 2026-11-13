@@ -1,0 +1,15 @@
+// && binds tighter than ^^ which binds tighter than ||; comparison is tighter.
+// expect-exit: 42
+// java: rejects
+pub fnc main(): int {
+  val a = false || true && false;
+  val b = true ^^ true && false;
+  val c = true || true ^^ true;
+  val d = (true || false) && false;
+  val e = true XOR false AND false OR true;
+  val f = false || (1 + 2 eq 3) && true;
+  if !a && b && c && !d && e && f then
+    return 42;
+  fi
+  return 0;
+}

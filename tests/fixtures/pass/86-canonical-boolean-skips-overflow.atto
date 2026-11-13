@@ -1,0 +1,20 @@
+// Short-circuiting aliases must suppress checked overflow, not just output.
+// expect-exit: 42
+// java: rejects
+fnc crash(): bool {
+  stdio.println("BAD: RHS evaluated");
+  val biggest = 9223372036854775807;
+  return biggest + 1 eq 0;
+}
+pub fnc main(): int {
+  val a = false && crash();
+  val b = true || crash();
+  val c = false AND crash();
+  val d = true OR crash();
+  val e = And(false, crash());
+  val f = Or(true, crash());
+  if a || !b || c || !d || e || !f then
+    return 0;
+  fi
+  return 42;
+}

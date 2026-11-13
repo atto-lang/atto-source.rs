@@ -1,0 +1,17 @@
+// Builtin shadowing is forbidden in the browser subset. Java may differ.
+// expect-error: E_DUPLICATE
+// java: rejects
+fnc mark(bool v, string message): bool {
+  stdio.println(message);
+  return v;
+}
+fnc And(bool left, bool right): bool {
+  stdio.println("shadow");
+  return right;
+}
+pub fnc main(): int {
+  if And(mark(false, "called-left"), mark(true, "called-right")) then
+    return 42;
+  fi
+  return 0;
+}

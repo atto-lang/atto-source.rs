@@ -1,0 +1,36 @@
+// Canonical symbolic Boolean operators and uppercase infix aliases.
+// expect-exit: 135
+// expect-stdout: 0
+// expect-stdout: 54
+// expect-stdout: 54
+// expect-stdout: 27
+// java: rejects
+fnc bits(bool a, bool b): int {
+  let n = 0;
+  if a && b then
+    n = n + 1;
+  fi
+  if a || b then
+    n = n + 2;
+  fi
+  if a ^^ b then
+    n = n + 4;
+  fi
+  if a AND b then
+    n = n + 8;
+  fi
+  if a OR b then
+    n = n + 16;
+  fi
+  if a XOR b then
+    n = n + 32;
+  fi
+  return n;
+}
+pub fnc main(): int {
+  stdio.println(bits(false, false));
+  stdio.println(bits(false, true));
+  stdio.println(bits(true, false));
+  stdio.println(bits(true, true));
+  return bits(false, true) + bits(true, false) + bits(true, true);
+}
