@@ -38,10 +38,14 @@ pub enum Import {
     ActorSpawn,
     /// `actor_send(ref: i32, value: i64)`: enqueue one message
     ActorSend,
+    /// The opt-in pipeline v1 host binds topology before the first mail turn.
+    ActorLink,
+    /// Only an actor-owned receive turn can emit to its linked successor.
+    ActorEmit,
 }
 
 impl Import {
-    pub const ALL: [Import; 7] = [
+    pub const ALL: [Import; 9] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -49,6 +53,8 @@ impl Import {
         Import::PrintF64,
         Import::ActorSpawn,
         Import::ActorSend,
+        Import::ActorLink,
+        Import::ActorEmit,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -59,6 +65,8 @@ impl Import {
             Import::PrintF64 => "print_f64",
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
+            Import::ActorLink => "actor_link",
+            Import::ActorEmit => "actor_emit",
         }
     }
 }
@@ -155,8 +163,10 @@ pub enum TExpr {
     Alloc(u32),
     /// start an actor of the given type
     Spawn(u32),
-    /// Typed emit from receive; compiler rejects this before codegen while
-    /// actor-origin forwarding remains unavailable in the guest ABI.
+    /// Link a statically checked chain and return the first actor's scoped ref.
+    /// Actor refs are host-local i32 handles; no shared heap address escapes.
+    Pipeline { stages: Vec<u32>, handles: Vec<u32> },
+    /// Integer payload emitted by one actor-owned receive turn.
     Emit(Box<TE>),
     /// enqueue `value` (int, or bool widened to i64) on an actor's mailbox
     Send {
@@ -1021,14 +1031,19 @@ pub fn check(p: &Program) -> R<TProgram> {
         });
     }
 
-    // No guest can execute an emit until authenticated actor-origin DATA
-    // forwarding exists. Never turn a typed preview into a forged Wasm guest.
-    if let Some((index, _)) = g.actors.iter().enumerate().find(|(_, a)| a.emitted.is_some()) {
-        return Err(Diagnostic::new(
-            p.actors[index].receive.as_ref().unwrap().pos,
+    // Pipeline v1 is explicitly opt-in and only the statically admitted
+    // integer pipeline may request actor-origin forwarding capabilities.
+    let has_pipeline = funcs.iter().flatten().any(|f|
+        any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Pipeline { .. })));
+    if let Some((index, actor)) = g.actors.iter().enumerate()
+        .find(|(_, a)| a.emitted.is_some_and(|ty| ty != Type::Int) || (a.emitted.is_some() && !has_pipeline)) {
+        return Err(Diagnostic::new(p.actors[index].receive.as_ref().unwrap().pos,
             "E_UNSUPPORTED",
-            "actor emit is type-checked, but actor-origin forwarding and its guest ABI are not implemented",
-        ));
+            if actor.emitted != Some(Type::Int) {
+                "actor pipeline v1 cannot forward a non-int payload"
+            } else {
+                "actor emit requires a linked pipeline in this bounded Wasm contract"
+            }));
     }
     imports.sort();
     imports.dedup();
@@ -2417,6 +2432,7 @@ impl<'a> FnCx<'a> {
                     ));
                 }
                 let mut previous_emit = None;
+                let mut actor_ids = Vec::with_capacity(stages.len());
                 for (stage_index, stage) in stages.iter().enumerate() {
                     let index = match self.g.actor(stage) {
                         Some(index) => index,
@@ -2457,12 +2473,27 @@ impl<'a> FnCx<'a> {
                         }
                     }
                     previous_emit = actor.emitted;
+                    actor_ids.push(index);
                 }
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED",
-                    "actor pipeline parsed and emitted/receive types checked, but actor-origin forwarding and the browser guest ABI are not yet implemented",
-                ));
+                // This experimental Wasm contract carries only signed i64
+                // DATA. A Bool receive or emit cannot be misrepresented as
+                // an i64 without a separately proven payload ABI.
+                if actor_ids.iter().any(|i| self.g.actors[*i as usize].payload != Type::Int
+                    || self.g.actors[*i as usize].emitted == Some(Type::Bool)) {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "actor pipeline Wasm v1 supports only int-to-int stages"));
+                }
+                self.imports.push(Import::ActorSpawn);
+                self.imports.push(Import::ActorLink);
+                let mut handles = Vec::with_capacity(actor_ids.len());
+                for &id in &actor_ids {
+                    handles.push(self.temp(Type::ActorRef(id), pos)?);
+                }
+                let first = actor_ids[0];
+                TE {
+                    e: TExpr::Pipeline { stages: actor_ids, handles },
+                    ty: Type::ActorRef(first),
+                }
             }
             ExprKind::Spawn(actor) => {
                 if let Some(me) = self.actor_name() {
@@ -2921,6 +2952,7 @@ impl<'a> FnCx<'a> {
                 return Err(type_err(pos, "emit currently requires an int or bool value"));
             }
             self.emitted.push((value.ty, args[0].pos));
+            self.imports.push(Import::ActorEmit);
             return Ok(TE { e: TExpr::Emit(Box::new(value)), ty: Type::Void });
         }
         if let Some(b) = match name {
