@@ -79,7 +79,7 @@ The following are rejected, with the code shown:
 - `int / int` stays `E_UNSUPPORTED` (S-25, below); write a float operand.
 - `f32`, sized integers, unsupported generic ADT instantiations, arrays and collections give `E_UNSUPPORTED_TYPE`. Only `Option<int>` and `Result<int,string>` are admitted in this milestone.
 - `string + int` is `E_TYPE`, as in Java (no implicit conversion). `string.replace_literal`, `split_literal`, `is_identifier` and `is_route_segment` give `E_UNSUPPORTED`; unknown string members are `E_UNBOUND`.
-- Match patterns other than the ones above (string and float literals, tuples, constructors, `Type name`, `is T`) give `E_UNSUPPORTED`. Negative literal patterns, `1 | 4` alternatives and `name when …` are `E_SYNTAX`, as in Java.
+- Match patterns other than the admitted scalar/enum patterns and v1 ADT constructor variants (`Some(x)`, `None`, `Ok(x)`, `Err(x)`) give `E_UNSUPPORTED`. Tuple and type patterns remain unsupported; wrong-family or non-exhaustive ADT patterns fail with typed diagnostics. Negative literal patterns, `1 | 4` alternatives and `name when …` remain `E_SYNTAX`.
 - `switch`, value `match<T>`, imports, lambdas, non-v1 generic ADT instantiations, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
 - Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
 
