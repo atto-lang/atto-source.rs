@@ -6,12 +6,14 @@ It compiles a **subset** of AttoLang. Everything outside the subset is rejected 
 
 ## Browser tagged ADT milestone (concrete generic profiles)
 
-The browser Rust-to-Wasm frontend now executes two **specific** generic
-instantiations: `Option<int>` (`Some(int)` / `None`) and
-`Result<int,string>` (`Ok(int)` / `Err(string)`). General-purpose
-`Option<T>`, `Result<T,E>`, nested ADTs, mutable ADT payloads, generic
-classes, and cross-actor ADT transfer remain unsupported and must not
-be advertised as implemented.
+The browser Rust-to-Wasm frontend executes **three concrete ADT profiles**:
+`Option<int>` (`Some(int)` / `None`), `Result<int,string>`
+(`Ok(int)` / `Err(string)`), and `Option<Result<int,string>>`
+(`Some(Result<int,string>)` / `None`). The nested profile preserves
+the inner Result discriminant, including `Some(Err(...))`, without flattening.
+General-purpose `Option<T>` and `Result<T,E>`, other nested ADTs,
+mutable ADT payloads, generic classes, and cross-actor ADT transfer
+remain unsupported and must not be advertised as implemented.
 
 Constructors are contextual: a typed function return, local binding,
 assignment, or argument supplies the exact declared ADT type. For example,
@@ -24,7 +26,10 @@ or wrong-family arms are rejected.
 
 Each value is an immutable 16-byte record in the module's existing
 fixed 1 MiB heap, with an i32 discriminant at byte 0 and a 64-bit
-payload at byte 8. Allocation uses the same quota-checked object
+payload at byte 8. For the nested profile, the outer Some payload is
+an i32 reference to the independently allocated inner Result record;
+None has no payload. Both layers are checked before their payloads
+are read, and both allocations use the existing quota checks. Allocation uses the same quota-checked object
 allocator and panics 3 on exhaustion; values do **not** add capabilities,
 imports, reflection, or a different guest ABI. Reference equality is
 **not** silently used as value equality: `==` / `eq` and `!=` /
@@ -35,6 +40,16 @@ The checked-in `tests/fixtures/pass` and `fail` cases are compiled
 and executed by both native and wasm32 compiler paths in CI. This work
 does not update the pinned public playground compiler or lift the
 syntax-preview labels.
+
+### Caller-side trap remains separately gated
+
+The nested ADT profile is groundwork for `trap checked_id(5)`, but does
+**not** implement expression-level `trap`. The parser deliberately
+rejects that expression with `E_UNSUPPORTED` until the compiler has
+guest-proven ordinary-`throw` unwinding. Catching a Wasm engine trap,
+checked-overflow panic, `raise`, or cancellation as `None` would be
+incorrect. The public playground compiler remains separately pinned
+and unchanged.
 
 ## Where the syntax comes from
 
