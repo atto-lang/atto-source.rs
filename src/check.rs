@@ -155,6 +155,9 @@ pub enum TExpr {
     Alloc(u32),
     /// start an actor of the given type
     Spawn(u32),
+    /// Typed emit from receive; compiler rejects this before codegen while
+    /// actor-origin forwarding remains unavailable in the guest ABI.
+    Emit(Box<TE>),
     /// enqueue `value` (int, or bool widened to i64) on an actor's mailbox
     Send {
         target: Box<TE>,
@@ -280,6 +283,10 @@ struct ActorInfo {
     methods: Vec<MethodInfo>,
     receive_idx: Option<u32>,
     payload: Type,
+    /// Typed values explicitly emitted by this actor's receive handler.
+    /// `None` means the actor is a terminal sink, not that its input type
+    /// should automatically be forwarded to the next stage.
+    emitted: Option<Type>,
 }
 
 /// Program-wide declaration tables shared by every body check.
@@ -333,11 +340,19 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Explicit emit is admitted only in the mailbox receive handler.
+    allow_emit: bool,
+    emitted: Vec<(Type, Pos)>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
 
 type R<T> = Result<T, Diagnostic>;
+
+/// The statement IR, local types and typed outgoing actor messages collected
+/// from a checked callable body. Naming this result keeps the checker API
+/// readable without relaxing any actor output-type validation.
+type CheckedBody = (Vec<TStmt>, Vec<Type>, Vec<(Type, Pos)>);
 
 fn string_member_err(name: &str, pos: Pos) -> Diagnostic {
     match name {
@@ -721,11 +736,12 @@ pub fn check(p: &Program) -> R<TProgram> {
             methods,
             receive_idx,
             payload,
+            emitted: None,
         });
     }
     let total = next as usize;
 
-    let g = Globals {
+    let mut g = Globals {
         sigs,
         names,
         classes,
@@ -733,6 +749,48 @@ pub fn check(p: &Program) -> R<TProgram> {
         actors,
         type_names: tn,
     };
+
+    // Check actor receive bodies using the actual expression type checker
+    // before admitting any pipeline. A receiving type does not imply an
+    // emitted type. This preflight collects typed emit values, including those
+    // inside conditionals and loops, without exposing a guest capability.
+    for (ai, actor) in p.actors.iter().enumerate() {
+        let Some(receive) = actor.receive.as_ref() else { continue };
+        let named = [("$value", Type::Int, false), ("$sequence", Type::Int, false)];
+        let mut scratch_imports = Vec::new();
+        let mut scratch_data = Vec::new();
+        let (_, _, emits) = body_check(
+            &g,
+            Owner::Actor { a: ai as u32 },
+            &named,
+            Some((receive.mail.as_str(), g.actors[ai].payload)),
+            Type::Void,
+            &receive.body,
+            &format!("{}.receive", actor.name),
+            receive.pos,
+            &mut scratch_imports,
+            &mut scratch_data,
+        )?;
+        let mut emitted = None;
+        for (ty, pos) in emits {
+            if let Some(previous) = emitted {
+                if previous != ty {
+                    return Err(type_err(
+                        pos,
+                        format!(
+                            "actor '{}' emits incompatible payloads {} and {}",
+                            actor.name,
+                            g.tn(previous),
+                            g.tn(ty)
+                        ),
+                    ));
+                }
+            } else {
+                emitted = Some(ty);
+            }
+        }
+        g.actors[ai].emitted = emitted;
+    }
 
     let main = match g.sigs.get(&("main".to_string(), 0)) {
         Some((i, _, ret)) => {
@@ -968,6 +1026,15 @@ pub fn check(p: &Program) -> R<TProgram> {
         });
     }
 
+    // No guest can execute an emit until authenticated actor-origin DATA
+    // forwarding exists. Never turn a typed preview into a forged Wasm guest.
+    if let Some((index, _)) = g.actors.iter().enumerate().find(|(_, a)| a.emitted.is_some()) {
+        return Err(Diagnostic::new(
+            p.actors[index].receive.as_ref().unwrap().pos,
+            "E_UNSUPPORTED",
+            "actor emit is type-checked, but actor-origin forwarding and its guest ABI are not implemented",
+        ));
+    }
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
@@ -1053,9 +1120,10 @@ fn body_check(
     pos: Pos,
     imports: &mut Vec<Import>,
     data: &mut Vec<u8>,
-) -> R<(Vec<TStmt>, Vec<Type>)> {
+) -> R<CheckedBody> {
     let mut cx = FnCx::new(g, owner, ret, imports, data);
     cx.nparams = named.len() as u32;
+    cx.allow_emit = mail.is_some();
     if let Some((mail_name, payload)) = mail {
         cx.scopes[0].push(Local {
             name: mail_name.to_string(),
@@ -1085,7 +1153,7 @@ fn body_check(
             format!("non-void {what} '{label}' must explicitly return on every path"),
         ));
     }
-    Ok((tbody, cx.locals))
+    Ok((tbody, cx.locals, cx.emitted))
 }
 
 /// Definite-return analysis matching the Java reference: an `if` returns
@@ -1123,7 +1191,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
-        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
+        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a)
+        | TExpr::Emit(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
@@ -1183,6 +1252,8 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            allow_emit: false,
+            emitted: Vec::new(),
             imports,
             data,
         }
@@ -2326,6 +2397,78 @@ impl<'a> FnCx<'a> {
                 })
             }
             ExprKind::New(class, args) => self.new_object(class, args, pos)?,
+            ExprKind::ActorPipeline(stages) => {
+                // Admission only: do not generate a fake ActorRef or invoke a
+                // JavaScript-side pipeline interpreter for this source form.
+                if let Some(me) = self.actor_name() {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED",
+                        format!("actor pipeline cannot spawn stages inside actor '{me}'"),
+                    ));
+                }
+                if matches!(self.owner, Owner::FieldInit { .. }) {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED",
+                        "actor pipeline in a field initializer",
+                    ));
+                }
+                if !(2..=16).contains(&stages.len()) {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_SOURCE_LIMIT",
+                        "actor pipeline must have 2 to 16 stages",
+                    ));
+                }
+                let mut previous_emit = None;
+                for (stage_index, stage) in stages.iter().enumerate() {
+                    let index = match self.g.actor(stage) {
+                        Some(index) => index,
+                        None => {
+                            return Err(Diagnostic::new(
+                                pos,
+                                "E_UNBOUND",
+                                format!("unknown actor pipeline stage '{stage}'"),
+                            ))
+                        }
+                    };
+                    let actor = &self.g.actors[index as usize];
+                    if actor.receive_idx.is_none() {
+                        return Err(type_err(
+                            pos,
+                            format!("actor pipeline stage '{stage}' has no receive(ActorMail<T>) handler"),
+                        ));
+                    }
+                    if stage_index != 0 {
+                        match previous_emit {
+                            Some(expected) if expected == actor.payload => {}
+                            Some(expected) => {
+                                return Err(type_err(
+                                    pos,
+                                    format!(
+                                        "actor pipeline emitted {} cannot enter '{stage}' receiving {}",
+                                        self.tn(expected),
+                                        self.tn(actor.payload)
+                                    ),
+                                ));
+                            }
+                            None => {
+                                return Err(type_err(
+                                    pos,
+                                    format!("actor pipeline stage before '{stage}' does not emit"),
+                                ));
+                            }
+                        }
+                    }
+                    previous_emit = actor.emitted;
+                }
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNSUPPORTED",
+                    "actor pipeline parsed and emitted/receive types checked, but actor-origin forwarding and the browser guest ABI are not yet implemented",
+                ));
+            }
             ExprKind::Spawn(actor) => {
                 if let Some(me) = self.actor_name() {
                     return Err(Diagnostic::new(
@@ -2768,6 +2911,22 @@ impl<'a> FnCx<'a> {
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
+        }
+        if name == "emit" {
+            if !self.allow_emit {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNSUPPORTED",
+                    "emit is admitted only inside receive(ActorMail<T>) and needs a forwarding ABI",
+                ));
+            }
+            self.arity("emit", 1, args.len(), pos)?;
+            let value = self.value(&args[0])?;
+            if !matches!(value.ty, Type::Int | Type::Bool) {
+                return Err(type_err(pos, "emit currently requires an int or bool value"));
+            }
+            self.emitted.push((value.ty, args[0].pos));
+            return Ok(TE { e: TExpr::Emit(Box::new(value)), ty: Type::Void });
         }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),

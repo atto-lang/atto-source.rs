@@ -331,6 +331,9 @@ pub enum ExprKind {
     New(String, Vec<Expr>),
     /// `spawn Actor()`
     Spawn(String),
+    /// Two or more static spawned actor stages composed using actor pipe.
+    /// Parsed and type-admitted; lowering requires actor forwarding support.
+    ActorPipeline(Vec<String>),
     /// `base.name`: field read, `Enum.Variant`, or `mail.value`.
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
