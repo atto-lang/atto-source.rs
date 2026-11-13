@@ -2389,6 +2389,54 @@ impl<'a> FnCx<'a> {
                 })
             }
             ExprKind::New(class, args) => self.new_object(class, args, pos)?,
+            ExprKind::ActorPipeline(names) => {
+                if self.actor_name().is_some() || matches!(self.owner, Owner::FieldInit { .. }) {
+                    return Err(Diagnostic::new(
+                        pos, "E_UNSUPPORTED",
+                        "actor pipeline construction is only supported outside actor receive and field initializers",
+                    ));
+                }
+                if !(2..=16).contains(&names.len()) {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "actor pipeline needs 2 to 16 stages"));
+                }
+                let mut stages = Vec::with_capacity(names.len());
+                let mut emitted: Option<Type> = None;
+                for (i, stage) in names.iter().enumerate() {
+                    let index = self.g.actor(stage).ok_or_else(|| {
+                        Diagnostic::new(pos, "E_UNBOUND", format!("unknown actor pipeline stage '{stage}'"))
+                    })?;
+                    let actor = &self.g.actors[index as usize];
+                    if actor.receive_idx.is_none() {
+                        return Err(type_err(
+                            pos, format!("actor '{stage}' has no receive(ActorMail<T>) handler"),
+                        ));
+                    }
+                    if i != 0 {
+                        match emitted {
+                            Some(output) if output == actor.payload => {}
+                            Some(output) => return Err(type_err(
+                                pos,
+                                format!(
+                                    "actor pipeline emits {} but '{}' receives {}",
+                                    self.tn(output), stage, self.tn(actor.payload)
+                                ),
+                            )),
+                            None => return Err(type_err(
+                                pos, format!("pipeline stage preceding '{stage}' does not emit"),
+                            )),
+                        }
+                    }
+                    emitted = actor.emitted;
+                    // Reserve one i32 local for each actual actor handle.
+                    let local = self.temp(Type::ActorRef(index), pos)?;
+                    stages.push((index, local));
+                }
+                self.imports.push(Import::ActorSpawn);
+                self.imports.push(Import::ActorLink);
+                TE { e: TExpr::ActorPipeline(stages), ty: Type::ActorRef(
+                    self.g.actor(&names[0]).expect("pipeline head already resolved"),
+                ) }
+            }
             ExprKind::Spawn(actor) => {
                 if let Some(me) = self.actor_name() {
                     return Err(Diagnostic::new(
