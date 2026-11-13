@@ -1,0 +1,5 @@
+// expect-error: E_EOF
+fnc value(int x) -> int
+  if x > 0 then
+    return x;
+  fi

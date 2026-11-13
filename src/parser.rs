@@ -963,13 +963,34 @@ impl Parser {
         }
         self.expect(Tok::LParen, "'('")?;
         let params = self.parse_params()?;
+        // Free callables with an explicit arrow return type can use a
+        // newline/end body or an explicit '::' boundary. Keep the existing
+        // braced and generator lowering; only body delimiting changes.
+        let has_arrow_return = *self.peek() == Tok::Arrow;
         let ret = self.parse_return_spec()?;
         if is_generator && ret != Type::GeneratorInt {
             return Err(Diagnostic::new(pos, "E_TYPE",
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
         }
         self.in_generator = is_generator;
-        let body = self.parse_block()?;
+        let body = if *self.peek() == Tok::LBrace {
+            self.parse_block()?
+        } else if has_arrow_return {
+            let explicit_separator = self.eat(&Tok::ColonColon);
+            let separated_by_newline =
+                self.i > 0 && self.toks[self.i - 1].pos.line < self.pos().line;
+            if !explicit_separator && !separated_by_newline {
+                return Err(Diagnostic::new(
+                    self.pos(), "E_SYNTAX",
+                    "an end-delimited function needs a newline or '::' after its return type",
+                ));
+            }
+            let body = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            body
+        } else {
+            return Err(self.expected("'{', or '-> Type' followed by an end-delimited body"));
+        };
         self.in_generator = false;
         let _ = start;
         Ok(Func {

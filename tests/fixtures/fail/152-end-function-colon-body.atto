@@ -1,0 +1,5 @@
+// expect-error: E_SYNTAX
+fnc value(int x): int ::
+  return x;
+end
+pub fnc main(): int { return 0; }
