@@ -1,5 +1,6 @@
 // expect-exit: 9
 // expect-stdout: 9
+// java: not-tested
 fnc get_id(int id): int {
   return id;
 }
