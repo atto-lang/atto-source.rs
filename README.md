@@ -4,6 +4,34 @@ A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unkn
 
 It compiles a **subset** of AttoLang. Everything outside the subset is rejected with a diagnostic, and a rejected program never produces an artifact. The compiler does not approximate unsupported features.
 
+## Experimental, bounded actor pipeline v1 (real guest Wasm)
+
+This source branch compiles both `spawn Parse() pipe spawn Validate() pipe spawn
+Sink()` and the actor `|` alias as ordered, typed, **integer-only** stages.
+Actor `emit(value)` executes only in a receive handler and forwards the
+actual signed i64 Wasm guest value through the host's
+`atto.actor_emit(i64)` capability. Main creates links using
+`atto.actor_link(i32, i32)` after each `atto.actor_spawn(i32)`.
+The returned pipeline value is a first-stage actor ref, so
+`pipeline.send(41)` admits one mailbox message in source order.
+
+Only modules with a validated pipeline receive the opt-in custom marker
+`atto.pipeline.v1` with byte `0x01`. The host's existing v1 extension
+commits emitted data transactionally after the guest receive returns,
+enforces one predecessor and successor, bounded FIFOs and no cycles,
+and instantiates each actor with a private 32-bit linear memory.
+The integer-only type restriction is deliberate: Boolean payload
+encoding, shared-memory transfer, and arbitrary generics lack an
+executable, independently proved actor message codec.
+
+**Not the resumable actor ABI v3:** this v1 pipe extension does not
+implement `atto.actor.abi` v3, `actor_resume`, compiler-owned suspended
+stacks, priority supervisor CONTROL notices, or general cross-tenant
+capabilities. Do not use the ability to run a scalar pipeline as
+evidence of those features. Unsupported stage types, malformed chains,
+nested actor spawns and `emit` outside a linked pipeline fail
+closed, without producing a guest artifact.
+
 ## Browser tagged ADT milestone (concrete generic profiles)
 
 The browser Rust-to-Wasm frontend executes **three concrete ADT profiles**:
