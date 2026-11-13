@@ -42,9 +42,9 @@ const name = s => {const b=[...new TextEncoder().encode(s)];return [...leb(b.len
 const section = (id,data) => [id,...leb(data.length),...data];
 const surplusStages = Array.from({length:5},(_,i)=>
   'val extra' + i + ' = spawn Parse() pipe spawn Validate() pipe spawn Sink();'
-).join('\\n  ');
+).join('\n  ');
 const quotaSource = source.replace('pipeline.send(41);',
-  surplusStages + '\\n  pipeline.send(41);');
+  surplusStages + '\n  pipeline.send(41);');
 const quotaCompiled = compiler.compile(quotaSource);
 assert.equal(quotaCompiled.ok, true, JSON.stringify(quotaCompiled.diagnostics));
 const overQuotaGuest = new Uint8Array(quotaCompiled.wasm);
