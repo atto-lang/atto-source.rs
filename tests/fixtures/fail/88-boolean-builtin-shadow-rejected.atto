@@ -1,8 +1,6 @@
-// User-defined callable shadowing the intrinsic preserves eager calls.
-// expect-exit: 42
-// expect-stdout: called-left
-// expect-stdout: called-right
-// expect-stdout: shadow
+// Builtin shadowing is forbidden in the browser subset. Java may differ.
+// expect-error: E_DUPLICATE
+// java: rejects
 fnc mark(bool v, string message): bool {
   stdio.println(message);
   return v;
