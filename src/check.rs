@@ -532,7 +532,8 @@ pub fn check(p: &Program) -> R<TProgram> {
                     "this generator requires typed continuation locals, effects or yield* lowering"));
             }
         }
-        if f.ret == Type::GeneratorInt || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
+        if (!f.is_generator && f.ret == Type::GeneratorInt)
+            || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
             return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
                 "Generator<int> requires a compiled generator continuation"));
         }
