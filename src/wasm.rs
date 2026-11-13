@@ -25,6 +25,8 @@
 use crate::ast::{BinOp, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TProgram, TStmt, TE};
 
+mod generator_runtime;
+
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
 /// Reserved ABI value; current admitted expressions cannot generate this panic.
@@ -1037,7 +1039,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
 
     // Runtime ops after source functions preserve every existing index.
     if !p.generators.is_empty() {
-        for (sig, code) in generator_runtime_bodies(p, &layout) {
+        for (sig, code) in generator_runtime::bodies(p, &layout) {
             func_types.push(types.idx(sig));
             bodies.push(code);
         }
