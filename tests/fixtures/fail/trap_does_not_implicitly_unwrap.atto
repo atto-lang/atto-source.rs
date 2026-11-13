@@ -1,0 +1,14 @@
+// expect-error: E_TYPE
+// java: rejects
+fnc checked_id(int id): Result<int, string> {
+  return Ok(id);
+}
+
+fnc take_result(Result<int, string> value): void {
+  return;
+}
+
+pub fnc main(): int {
+  take_result(trap checked_id(5));
+  return 0;
+}
