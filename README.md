@@ -9,14 +9,23 @@ It compiles a **subset** of AttoLang. Everything outside the subset is rejected 
 The compiler now emits **real guest WebAssembly** for a deliberately narrow
 `fnc *gen name(): Generator<int>` profile: zero parameters, finite
 source-ordered `yield` statements containing **signed i64-compatible
-nonnegative integer literals**, optionally followed by bare `return;`.
-Generator creation is lazy: it allocates a 32-byte arena-owned continuation
-frame and returns a generation-fenced handle; only a consumer pull advances
+nonnegative integer literals** and at most **one** `yield* child()` per
+function, optionally followed by bare `return;`. Delegation targets are
+zero-argument finite generators with acyclic, statically checked call graphs.
+Generator creation is lazy: it allocates a 40-byte arena-owned continuation
+frame (including one child-handle slot) and returns a generation-fenced handle; only a consumer pull advances
 its resume PC and yields one item. The typed `for value in values() do ...
 done` loop owns a **fresh** iterator and automatically calls the guest
 close operation on completion, `break`, and early function `return`.
 Closed frames are recycled with incremented generations, detecting stale
 handles and forbidding a double insertion into the free list.
+
+Delegation creates a child frame only on the first pull through its
+`yield*` state, advances that child by at most one element per outer pull,
+and transparently resumes outer statements after child DONE. Early outer
+close recursively closes its active child before recycling the outer frame.
+Delegation cycles reject with `E_GENERATOR_CYCLE` and chains deeper than
+64 nested generators reject before guest emission.
 
 The runtime's `new`, `checked_ptr`, `next`, and `close` are compiled
 into the guest module; they do **not** use JavaScript generators, an
@@ -26,8 +35,8 @@ generator state/handle access panics with `panic_code=4`; heap exhaustion
 continues to use `panic_code=3`.
 
 **Not yet admitted:** generator parameters, live locals and loops across
-suspension, general expression yields, owned generator variables, `yield*`
-delegation, nested for-in, exception-throwing or otherwise effectful
+suspension, general expression yields, owned generator variables, more than
+one `yield*` per generator, nested for-in, exception-throwing or otherwise effectful
 for-in bodies, async suspension, cancellation unwinding, and cross-backend
 generator parity. Unsupported programs fail closed; there is no eager
 substitution. Checked arithmetic traps terminate the guest instance rather
@@ -37,8 +46,9 @@ independently gated and must not relabel `yield*` previews as runnable.
 
 The exact-blob alternate-runner conformance tests in
 `tests/generator-execution.mjs` run real guest Wasm, verify byte-identical
-native and wasm32 compiler output, 12,000-iteration frame reuse, early return
-and break cleanup, empty generators, and unsupported construct rejection.
+native and wasm32 compiler output, 12,000-iteration frame reuse, early return and break cleanup, empty
+generators, lazy nested `yield*`, cycle rejection and unsupported
+construct rejection.
 
 ## Browser tagged ADT milestone (concrete generic profiles)
 
@@ -136,7 +146,7 @@ The compiler does not define any syntax of its own:
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
 | Entry point | zero-argument `main` returning `int` or `void` |
-| Generators (restricted) | Zero-parameter `fnc *gen` with finite int-literal `yield` and fresh-handle `for ... in`; lazy Wasm resume, checked frame handle and normal/early-return close. `yield*` and captured locals still rejected. |
+| Generators (restricted) | Zero-parameter `fnc *gen` with finite int-literal `yield`, one acyclic zero-argument `yield*` per generator, and fresh-handle `for ... in`; lazy Wasm resume, checked frame and recursive child close. Captured locals and parameterized generators still rejected. |
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut`; the immutable type-first form `int x = 7;` for exactly `int`, `bool`, `string` and `String` (Java `looksLikePrimitiveTypeFirstImmutableBinding`) |
 | Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }`, `match` (below) |
