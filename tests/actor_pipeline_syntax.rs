@@ -138,3 +138,46 @@ fn bool_mailbox_pipeline_still_fails_closed_in_integer_only_extension() {
     let err = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(err.code, "E_TYPE"); // mismatched int -> bool receiver
 }
+
+#[test]
+fn orphan_emitter_cannot_borrow_authority_from_an_unrelated_pipeline() {
+    let source = program(
+        "spawn Parse() pipe spawn Validate() pipe spawn Sink()", "int"
+    );
+    let source = source.replacen(
+        "define actor Sink as",
+        "define actor Orphan as\\n  receive(ActorMail<int> mail): void { emit(mail.value); }\\nend\\ndefine actor Sink as",
+        1,
+    );
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED");
+    assert!(err.message.contains("linked nonterminal"), "{err}");
+}
+
+#[test]
+fn a_directly_spawned_emitter_must_not_lack_a_link() {
+    let source = program(
+        "spawn Parse() pipe spawn Validate() pipe spawn Sink()", "int"
+    );
+    let source = source.replace(
+        "return 0;",
+        "val orphan = spawn Parse();\\n  return 0;",
+    );
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_TYPE");
+    assert!(err.message.contains("without a downstream"), "{err}");
+}
+
+#[test]
+fn a_linked_emitter_cannot_also_serve_as_a_terminal_sink() {
+    let source = program(
+        "spawn Parse() pipe spawn Validate() pipe spawn Sink()", "int"
+    );
+    let source = source.replace(
+        "return 0;",
+        "val terminal = spawn Validate() pipe spawn Parse();\\n  return 0;",
+    );
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_TYPE");
+    assert!(err.message.contains("without a downstream"), "{err}");
+}
