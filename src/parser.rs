@@ -1170,6 +1170,15 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
+                // Preserve the current return-position exhaustive match
+                // lowering; async reconciliation must not drop this entry.
+                if self.is_word("match") {
+                    if self.in_generator {
+                        return Err(Diagnostic::new(pos, "E_RETURN",
+                            "generators cannot return a value match"));
+                    }
+                    return self.parse_return_match(pos);
+                }
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
                 let value = if at_end { None } else { Some(self.parse_expr()?) };
