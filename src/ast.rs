@@ -194,6 +194,9 @@ pub enum Stmt {
         pos: Pos,
     },
     Expr(Expr),
+    /// Ordinary guest failure. The checker admits only throw Error(string).
+    /// Wasm's fatal traps, panics and host exceptions are never this signal.
+    Throw(Expr, Pos),
     Yield(Expr, Pos),
     YieldFrom(Expr, Pos),
     Return(Option<Expr>, Pos),
@@ -313,6 +316,9 @@ pub enum ExprKind {
     Str(String),
     Var(String),
     Unary(UnOp, Box<Expr>),
+    /// Unary call-site trap: evaluates its operand once and wraps only
+    /// an ordinary guest throw into None, preserving all successful values.
+    Trap(Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// Postfix `?`: unwrap Ok/Some or propagate Err/None from the caller.

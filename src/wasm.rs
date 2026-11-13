@@ -233,6 +233,14 @@ impl Emit<'_> {
                     self.op(0x1A);
                 }
             }
+            TStmt::Throw(message) => {
+                // This is NOT unreachable/panic. The module-private tagged
+                // exception carries the guest Error message as an i64 string
+                // view and automatically unwinds across ordinary Wasm calls.
+                self.expr(message);
+                self.op(0x08); // throw tag 0
+                uleb(&mut self.code, 0);
+            }
             TStmt::Return(v) => {
                 if let Some(v) = v {
                     self.expr(v);
@@ -416,6 +424,38 @@ impl Emit<'_> {
                 }
             }
             TExpr::EnumVal(i) => self.i32c(*i as i32),
+            TExpr::Trap { value, value_tmp, some_tmp, none_tmp } => {
+                // The only caught signal is our private ordinary-throw tag.
+                // WebAssembly engine traps, arithmetic panic, cancellation,
+                // host exceptions, and any other tag bypass this catch.
+                self.open(0x06, I32, Frame::Other); // try (result i32)
+                self.expr(value); // evaluate once, before any Some allocation
+                self.op(0x21); // local.set value_tmp
+                uleb(&mut self.code, *value_tmp as u64);
+                self.i32c(16);
+                self.call(self.l.helper(H_ALLOC));
+                self.op(0x21);
+                uleb(&mut self.code, *some_tmp as u64);
+                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
+                self.i32c(1); // Some
+                field_op(&mut self.code, Type::Bool, 0, true);
+                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
+                self.op(0x20); uleb(&mut self.code, *value_tmp as u64);
+                field_op(&mut self.code, value.ty, 8, true);
+                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
+
+                self.op(0x07); // catch private tag 0
+                uleb(&mut self.code, 0);
+                self.op(0x1A); // drop i64 Error message (not a panic)
+                self.i32c(16);
+                self.call(self.l.helper(H_ALLOC));
+                self.op(0x21); uleb(&mut self.code, *none_tmp as u64);
+                self.op(0x20); uleb(&mut self.code, *none_tmp as u64);
+                self.i32c(0); // None
+                field_op(&mut self.code, Type::Bool, 0, true);
+                self.op(0x20); uleb(&mut self.code, *none_tmp as u64);
+                self.close(); // end try: one i32 Option record on stack
+            }
             TExpr::AdtNew { tag, payload, tmp } => {
                 self.i32c(16); // 8-aligned, fixed immutable tagged record
                 self.call(self.l.helper(H_ALLOC));
@@ -944,6 +984,10 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         bodies.push(c);
     }
 
+    // The tag has no JS import/export. Each instance gets its own identity,
+    // so no host exception or foreign guest tag can be forged as an ordinary
+    // Atto throw. Unaffected modules retain their original section layout.
+    let guest_error_tag_type = p.guest_eh.then(|| types.idx(Sig(vec![I64], vec![])));
     let mut out = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
 
     let mut type_sec = Vec::new();
@@ -975,6 +1019,14 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         uleb(&mut m, pages as u64);
         uleb(&mut m, pages as u64);
         section(&mut out, 5, m);
+    }
+
+    if let Some(tag_ty) = guest_error_tag_type {
+        // Legacy WebAssembly EH: section 13 is ordered between memory (5)
+        // and globals (6). One private tag: (i64 error_message) -> ().
+        let mut tags = vec![1, 0]; // count=1, attribute=exception
+        uleb(&mut tags, tag_ty as u64);
+        section(&mut out, 13, tags);
     }
 
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state

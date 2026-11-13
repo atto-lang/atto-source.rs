@@ -128,6 +128,15 @@ pub enum TExpr {
     /// Immutable tagged ADT value: 16-byte allocation, i32 tag at 0,
     /// i64 payload at 8; no payload for None. tmp is a fresh i32 local.
     AdtNew { tag: u32, payload: Option<Box<TE>>, tmp: u32 },
+    /// Typed prefix trap: the operand is evaluated exactly once before
+    /// allocating Some; only the private guest ordinary-throw tag yields None.
+    /// All temporaries are function-local to avoid shared error state.
+    Trap {
+        value: Box<TE>,
+        value_tmp: u32,
+        some_tmp: u32,
+        none_tmp: u32,
+    },
     /// Compare the discriminant with a known variant tag.
     AdtIs { obj: Box<TE>, tag: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
@@ -179,6 +188,8 @@ pub enum TStmt {
     /// assign an actor-state global
     GlobalSet(u32, TE),
     Expr(TE),
+    /// A guest Error(message) carried by a private Wasm exception tag.
+    Throw(TE),
     Return(Option<TE>),
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
     /// `while`, `loop` and C-style `for`: `cond` absent means unconditional;
@@ -228,6 +239,8 @@ pub struct TProgram {
     pub actors: Vec<TActor>,
     /// String values exist: the module carries memory and the string helpers.
     pub strings: bool,
+    /// Emit one module-private Wasm EH tag only when ordinary throw/trap exists.
+    pub guest_eh: bool,
 }
 
 /// Size in bytes of every field slot in a class instance.
@@ -953,7 +966,9 @@ pub fn check(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. })));
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+    let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
+        || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     Ok(TProgram {
         funcs,
         main,
@@ -963,6 +978,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         globals,
         actors: tactors,
         strings,
+        guest_eh,
     })
 }
 
@@ -1066,7 +1082,7 @@ fn body_check(
 /// without a `break` never falls through; `while true` is not special.
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Return(_) | TStmt::Unreachable => true,
+        TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) => returns(b),
@@ -1077,7 +1093,7 @@ fn returns(body: &[TStmt]) -> bool {
 /// Whether any expression node in `body` satisfies `f`.
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } => any_in(obj, f) || any_in(value, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
@@ -1095,6 +1111,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         return true;
     }
     match &e.e {
+        TExpr::Trap { value, .. } => any_in(value, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
@@ -1108,6 +1125,19 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
     }
+}
+
+/// An actual ordinary throw, including one nested in a conditional or loop.
+fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
+    body.iter().any(|s| match s {
+        TStmt::Throw(_) => true,
+        TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b))
+            || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
+        TStmt::Loop { body, update, .. } =>
+            guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
+        TStmt::Block(b) => guest_eh_in_stmts(b),
+        _ => false,
+    })
 }
 
 fn uses_str(e: &TE) -> bool {
@@ -1286,6 +1316,7 @@ impl<'a> FnCx<'a> {
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
             Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) => {
                 return Err(Diagnostic::new(*pos, "E_YIELD",
                     "yield and yield* require a compiled generator continuation"));
@@ -1874,6 +1905,56 @@ impl<'a> FnCx<'a> {
         Ok(v)
     }
 
+    // These non-inlined helpers keep the per-level stack frame of the
+    // recursively invoked expression checker bounded on the browser runner.
+    #[inline(never)]
+    fn trap_value(&mut self, inner: &Expr, pos: Pos) -> R<TE> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "caller-side trap inside class/actor requires lifecycle integration"));
+        }
+        let value = self.consume(inner)?;
+        let option_ty = match value.ty {
+            Type::Int => Type::OptionInt,
+            Type::ResultIntStr => Type::OptionResultIntStr,
+            _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                format!("browser trap supports only int and Result<int,string> operands, found {}", self.tn(value.ty)))),
+        };
+        let value_tmp = self.temp(value.ty, pos)?;
+        let some_tmp = self.temp(option_ty, pos)?;
+        let none_tmp = self.temp(option_ty, pos)?;
+        Ok(TE {
+            e: TExpr::Trap { value: Box::new(value), value_tmp, some_tmp, none_tmp },
+            ty: option_ty,
+        })
+    }
+
+    #[inline(never)]
+    fn guest_throw(&mut self, error: &Expr, pos: Pos) -> R<TStmt> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "ordinary throw in class and actor methods needs supervisor/cleanup integration"));
+        }
+        let args = match &error.kind {
+            ExprKind::Call(name, args) if name == "Error" => args,
+            _ => return Err(type_err(error.pos,
+                "throw requires an Error subclass; this browser slice admits only throw Error(message)")),
+        };
+        if args.len() != 1 {
+            return Err(Diagnostic::new(error.pos, "E_ARITY",
+                "Error(message) requires exactly one string argument"));
+        }
+        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
+            return Err(Diagnostic::new(error.pos, "E_RESERVED",
+                "the guest Error constructor cannot be shadowed"));
+        }
+        let msg = self.value(&args[0])?;
+        if msg.ty != Type::Str {
+            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
+        }
+        Ok(TStmt::Throw(msg))
+    }
+
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
@@ -1881,6 +1962,7 @@ impl<'a> FnCx<'a> {
                 ty: Type::Int,
             }),
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
+            ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
@@ -2217,7 +2299,7 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
