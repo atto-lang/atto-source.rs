@@ -107,6 +107,23 @@ struct Token {
     text: String,
     start: usize,
 }
+// Keep source comments aligned with the Logos lexer, which recognizes
+// CR, LF, NEL (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR. Offsets stay
+// byte-based so a // comment cannot hide a later /* block or actor declaration.
+fn line_break_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b'\r' | b'\n') => 1,
+        Some(0xc2) if bytes.get(at + 1) == Some(&0x85) => 2,
+        Some(0xe2)
+            if bytes.get(at + 1) == Some(&0x80)
+                && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)) =>
+        {
+            3
+        }
+        _ => 0,
+    }
+}
+
 /// Strip nested block comments without moving token offsets. Unsupported Unicode
 /// inside a comment becomes ASCII whitespace; outside stays byte-identical.
 fn without_block_comments(source: &str) -> Result<String, ParseError> {
@@ -119,7 +136,7 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
         // A block opener inside a // line comment is not a block comment.
         // Leave the line untouched for Logos to skip; preserve source offsets.
         if depth == 0 && i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'/' {
-            while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
+            while i < src.len() && line_break_width(src, i) == 0 {
                 i += 1;
             }
         } else if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
