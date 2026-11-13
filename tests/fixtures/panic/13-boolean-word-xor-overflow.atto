@@ -1,0 +1,13 @@
+// Uppercase XOR eagerly evaluates both operands.
+// expect-panic: 1
+// expect-stdout: rhs
+fnc crash(): bool {
+  stdio.println("rhs");
+  val biggest = 9223372036854775807;
+  return biggest + 1 eq 0;
+}
+pub fnc main(): int {
+  val b = true XOR crash();
+  if b then return 7; fi
+  return 0;
+}

@@ -366,13 +366,15 @@ check('boolean/malformed-token-boundaries-rejected', () => {
 
 // Left-leaning boolean ASTs must respect the same bounded recursion budget
 // as arithmetic; error rather than exhausting compiler stack.
-check('limits/boolean-operator-chain', () => {
-  const expression = 'true' + ' && true'.repeat(600);
-  const r = compile('pub fnc main(): int { val test = ' + expression + '; return 0; }');
-  assert.equal(r.ok, false);
-  assert.equal(r.code, 'E_NESTING');
-  assert.equal('wasm' in r, false);
-});
+for (const operator of ['&&', '||', '^^', 'AND', 'OR', 'XOR']) {
+  check('limits/boolean-operator-chain/' + operator, () => {
+    const expression = 'true' + (' ' + operator + ' true').repeat(600);
+    const r = compile('pub fnc main(): int { val test = ' + expression + '; return 0; }');
+    assert.equal(r.ok, false, operator);
+    assert.equal(r.code, 'E_NESTING', operator);
+    assert.equal('wasm' in r, false, operator);
+  });
+}
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
