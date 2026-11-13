@@ -23,6 +23,15 @@ pub enum Type {
     Enum(u32),
     /// `ActorRef<A>` for `Program::actors[i]`: a copyable mailbox capability.
     ActorRef(u32),
+    /// First executable ADT profiles; their payloads use the checked module heap.
+    /// Other generic instantiations reject without emitting an artifact.
+    OptionInt,
+    ResultIntStr,
+    /// First nested ADT profile: Some(Result<int,string>) or None.
+    /// Generic ADT instantiations remain deliberately restricted.
+    OptionResultIntStr,
+    /// Frontend-only generator iterator type, not yet lowered to Wasm.
+    GeneratorInt,
 }
 
 impl Type {
@@ -35,6 +44,10 @@ impl Type {
             Type::Void => "void",
             Type::Float => "float",
             Type::Str => "string",
+            Type::OptionInt => "Option<int>",
+            Type::ResultIntStr => "Result<int,string>",
+            Type::OptionResultIntStr => "Option<Result<int,string>>",
+            Type::GeneratorInt => "Generator<int>",
             _ => "object",
         }
     }
@@ -134,6 +147,8 @@ pub struct ActorDecl {
 pub struct Func {
     pub name: String,
     pub pos: Pos,
+    /// Explicit `fnc *gen` modifier; not inferred from `yield`.
+    pub is_generator: bool,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
@@ -179,6 +194,11 @@ pub enum Stmt {
         pos: Pos,
     },
     Expr(Expr),
+    /// Ordinary guest failure. The checker admits only throw Error(string).
+    /// Wasm's fatal traps, panics and host exceptions are never this signal.
+    Throw(Expr, Pos),
+    Yield(Expr, Pos),
+    YieldFrom(Expr, Pos),
     Return(Option<Expr>, Pos),
     If {
         arms: Vec<(Expr, Vec<Stmt>)>,
@@ -198,6 +218,13 @@ pub enum Stmt {
         init: Option<Box<Stmt>>,
         cond: Option<Expr>,
         update: Option<Box<Stmt>>,
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
+    /// Pull-driven `for value in generator do ... done` iteration.
+    ForIn {
+        name: String,
+        source: Expr,
         body: Vec<Stmt>,
         pos: Pos,
     },
@@ -223,6 +250,8 @@ pub enum Pattern {
     Bind(String),
     /// `Enum.Variant` (oreslang-source.llvm v1 enum design spelling)
     Variant(String, String),
+    /// Tagged built-in ADT variant, optionally binding the payload.
+    Adt(String, Option<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -287,8 +316,13 @@ pub enum ExprKind {
     Str(String),
     Var(String),
     Unary(UnOp, Box<Expr>),
+    /// Unary call-site trap: evaluates its operand once and wraps only
+    /// an ordinary guest throw into None, preserving all successful values.
+    Trap(Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Postfix `?`: unwrap Ok/Some or propagate Err/None from the caller.
+    Propagate(Box<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
     Call(String, Vec<Expr>),
     /// `self`

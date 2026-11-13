@@ -1,0 +1,3 @@
+// expect-error: E_ARITY
+fnc f(int x, int y): int { return x + y; }
+pub fnc main(): int { return 5 |> f; }

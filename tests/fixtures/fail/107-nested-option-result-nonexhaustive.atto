@@ -1,0 +1,7 @@
+// expect-error: E_MATCH
+fnc empty(): Option<Result<int,string>> { return None; }
+pub fnc main(): int {
+  match empty() over
+    on Some(result) -> { return 1; }
+  end
+}

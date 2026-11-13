@@ -125,6 +125,25 @@ pub enum TExpr {
     },
     /// enum variant ordinal (i32)
     EnumVal(u32),
+    /// Immutable tagged ADT value: 16-byte allocation, i32 tag at 0,
+    /// i64 payload at 8; no payload for None. tmp is a fresh i32 local.
+    AdtNew { tag: u32, payload: Option<Box<TE>>, tmp: u32 },
+    /// Typed prefix trap: the operand is evaluated exactly once before
+    /// allocating Some; only the private guest ordinary-throw tag yields None.
+    /// All temporaries are function-local to avoid shared error state.
+    Trap {
+        value: Box<TE>,
+        value_tmp: u32,
+        some_tmp: u32,
+        none_tmp: u32,
+    },
+    /// Compare the discriminant with a known variant tag.
+    AdtIs { obj: Box<TE>, tag: u32 },
+    /// Payload read, admissible only inside the tag-matched arm.
+    AdtPayload(Box<TE>),
+    /// Evaluate a tagged ADT once. On failure return its original handle from
+    /// the enclosing function; on success leave the i64 payload on the stack.
+    AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
     /// load a field of a class instance
     FieldGet {
         obj: Box<TE>,
@@ -169,6 +188,8 @@ pub enum TStmt {
     /// assign an actor-state global
     GlobalSet(u32, TE),
     Expr(TE),
+    /// A guest Error(message) carried by a private Wasm exception tag.
+    Throw(TE),
     Return(Option<TE>),
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
     /// `while`, `loop` and C-style `for`: `cond` absent means unconditional;
@@ -218,6 +239,8 @@ pub struct TProgram {
     pub actors: Vec<TActor>,
     /// String values exist: the module carries memory and the string helpers.
     pub strings: bool,
+    /// Emit one module-private Wasm EH tag only when ordinary throw/trap exists.
+    pub guest_eh: bool,
 }
 
 /// Size in bytes of every field slot in a class instance.
@@ -402,7 +425,93 @@ fn const_init(e: &Expr) -> bool {
     }
 }
 
+/// Validate locally decidable generator item/delegation types before the
+/// deliberate guest-Wasm continuation gate. This is not full expression
+/// inference: unresolved/compound expressions remain fail-closed until the
+/// generator IR and ownership-aware checker are implemented.
+fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
+    for stmt in body {
+        match stmt {
+            Stmt::Yield(expr, _) => {
+                if matches!(&expr.kind, ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_)) {
+                    return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                        "Generator<int> can only yield int items"));
+                }
+            }
+            Stmt::YieldFrom(expr, _) => {
+                match &expr.kind {
+                    ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_) => {
+                        return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                            "yield* requires a generator/iterator, not a scalar"));
+                    }
+                    ExprKind::Call(name, args) => {
+                        if let Some(target) = funcs.iter().find(|f|
+                            f.name == *name && f.params.len() == args.len())
+                        {
+                            if !target.is_generator || target.ret != Type::GeneratorInt {
+                                return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                                    format!("yield* target '{name}' is not a Generator<int>")));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Stmt::If { arms, otherwise, .. } => {
+                for (_, branch) in arms {
+                    precheck_generator_body(branch, funcs)?;
+                }
+                if let Some(branch) = otherwise {
+                    precheck_generator_body(branch, funcs)?;
+                }
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::ForIn { body, .. } | Stmt::Block(body) => {
+                precheck_generator_body(body, funcs)?;
+            }
+            Stmt::For { body, .. } => precheck_generator_body(body, funcs)?,
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    precheck_generator_body(&arm.body, funcs)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
+    // The lexer/parser preserve explicit generator AST nodes, but guest ABI v2
+    // has no bounded continuation state, iterator next or close operation.
+    // Fail closed before signature registration and never emit eager iterators.
+    for f in &p.funcs {
+        if f.is_generator {
+            precheck_generator_body(&f.body, &p.funcs)?;
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                "generator continuations, yield and yield* are not lowered to guest Wasm yet"));
+        }
+        if f.ret == Type::GeneratorInt || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
+                "Generator<int> requires a compiled generator continuation"));
+        }
+    }
+    for c in &p.classes {
+        if c.methods.iter().any(|m| m.ret == Type::GeneratorInt
+            || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
+            || c.ctor.as_ref().is_some_and(|ctor|
+                ctor.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
+                "generator methods and parameters require a compiled iterator continuation"));
+        }
+    }
+    for a in &p.actors {
+        if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
+            || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
+                "actor generator methods require a compiled iterator continuation"));
+        }
+    }
     let tn = &p.type_names;
     // ---- one namespace for functions, classes, enums and actors
     let mut seen: BTreeMap<&str, Pos> = BTreeMap::new();
@@ -448,7 +557,7 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio") {
+        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None") {
             return Err(Diagnostic::new(
                 f.pos,
                 "E_DUPLICATE",
@@ -856,15 +965,20 @@ pub fn check(p: &Program) -> R<TProgram> {
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
+    let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+    let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
+        || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     Ok(TProgram {
         funcs,
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat,
+        heap: !p.classes.is_empty() || concat || adt_alloc,
         globals,
         actors: tactors,
         strings,
+        guest_eh,
     })
 }
 
@@ -968,7 +1082,7 @@ fn body_check(
 /// without a `break` never falls through; `while true` is not special.
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Return(_) | TStmt::Unreachable => true,
+        TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) => returns(b),
@@ -979,7 +1093,7 @@ fn returns(body: &[TStmt]) -> bool {
 /// Whether any expression node in `body` satisfies `f`.
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } => any_in(obj, f) || any_in(value, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
@@ -997,16 +1111,33 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         return true;
     }
     match &e.e {
+        TExpr::Trap { value, .. } => any_in(value, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
+        TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
+        TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
+        TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
     }
+}
+
+/// An actual ordinary throw, including one nested in a conditional or loop.
+fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
+    body.iter().any(|s| match s {
+        TStmt::Throw(_) => true,
+        TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b))
+            || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
+        TStmt::Loop { body, update, .. } =>
+            guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
+        TStmt::Block(b) => guest_eh_in_stmts(b),
+        _ => false,
+    })
 }
 
 fn uses_str(e: &TE) -> bool {
@@ -1141,7 +1272,10 @@ impl<'a> FnCx<'a> {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
                 };
-                let v = self.consume(init)?;
+                let v = match want {
+                    Some(t) => self.consume_expected(init, t)?,
+                    None => self.consume(init)?,
+                };
                 if let Some(t) = want {
                     if t != v.ty {
                         return Err(type_err(
@@ -1169,7 +1303,7 @@ impl<'a> FnCx<'a> {
                         format!("cannot reassign val binding '{name}'"),
                     ));
                 }
-                let v = self.consume(value)?;
+                let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
                     return Err(type_err(
                         value.pos,
@@ -1182,6 +1316,15 @@ impl<'a> FnCx<'a> {
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
+            Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) => {
+                return Err(Diagnostic::new(*pos, "E_YIELD",
+                    "yield and yield* require a compiled generator continuation"));
+            }
+            Stmt::ForIn { pos, .. } => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "for-in iteration requires a compiled iterator continuation"));
+            }
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {
@@ -1193,7 +1336,7 @@ impl<'a> FnCx<'a> {
                 }
                 (Some(e), Type::Void) => return Err(type_err(e.pos, "a void fnc cannot return a value")),
                 (Some(e), t) => {
-                    let v = self.consume(e)?;
+                    let v = self.consume_expected(e, t)?;
                     if v.ty != t {
                         return Err(type_err(
                             e.pos,
@@ -1306,6 +1449,9 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
+        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+            return self.match_adt(subj, arms, pos);
+        }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
             return Err(Diagnostic::new(
                 subject.pos,
@@ -1373,6 +1519,8 @@ impl<'a> FnCx<'a> {
                         None,
                     )
                 }
+                Pattern::Adt(name, _) => return Err(type_err(arm.pos,
+                    format!("ADT pattern '{name}' cannot match a {}", self.tn(sty)))),
                 Pattern::Variant(en, var) => {
                     let ev = self.enum_value(en, var, arm.pos, arm.pos)?;
                     if ev.ty != sty {
@@ -1483,6 +1631,116 @@ impl<'a> FnCx<'a> {
         ]))
     }
 
+
+    /// Check a concrete tagged ADT match. Only v1 profiles are admitted:
+    /// Option<int> and Result<int,string>. Each variant has a unique tag;
+    /// the payload read occurs only inside its matching guarded arm.
+    fn match_adt(&mut self, subj: TE, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
+        let sty = subj.ty;
+        let tmp = self.temp(sty, pos)?;
+        let get = || TE { e: TExpr::Local(tmp), ty: sty };
+        let mut seen: BTreeSet<i64> = BTreeSet::new();
+        let mut covered = false;
+        let mut out = Vec::new();
+        let mut after: BTreeSet<u32> = BTreeSet::new();
+        for (i, arm) in arms.iter().enumerate() {
+            if covered {
+                return Err(Diagnostic::new(arm.pos, "E_MATCH",
+                    format!("unreachable match arm {}: prior arms cover every variant", i + 1)));
+            }
+            let (key, payload_name, payload_ty) = match &arm.pattern {
+                Pattern::Wild => (None, None, None),
+                Pattern::Bind(n) => (None, Some(n.as_str()), Some(sty)),
+                Pattern::Adt(name, bind) => {
+                    let (tag, needed) = match (sty, name.as_str()) {
+                        (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
+                        (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+                        (Type::OptionInt, "None") => (0, None),
+                        (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+                        (Type::OptionResultIntStr, "None") => (0, None),
+                        (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
+                        _ => return Err(type_err(arm.pos,
+                            format!("variant '{name}' is not part of {}", self.tn(sty)))),
+                    };
+                    if bind.is_some() != needed.is_some() {
+                        return Err(Diagnostic::new(arm.pos, "E_ARITY",
+                            format!("pattern '{name}' has incorrect payload arity")));
+                    }
+                    (Some(tag), bind.as_deref(), needed)
+                }
+                _ => return Err(type_err(arm.pos,
+                    format!("pattern is not a variant of {}", self.tn(sty)))),
+            };
+            if key.is_some_and(|tag| seen.contains(&tag)) {
+                return Err(Diagnostic::new(arm.pos, "E_MATCH",
+                    format!("unreachable match arm {}: variant already covered", i + 1)));
+            }
+            let test = key.map(|tag| TE {
+                e: TExpr::AdtIs { obj: Box::new(get()), tag: tag as u32 },
+                ty: Type::Bool,
+            });
+            self.scopes.push(Vec::new());
+            let r = (|| -> R<(TE, Vec<TStmt>)> {
+                let mut body = Vec::new();
+                if let Some(name) = payload_name {
+                    let ty = payload_ty.expect("the pattern binds a value");
+                    let slot = self.declare(name, ty, false, arm.pos)?;
+                    let value = if key.is_none() {
+                        get()
+                    } else {
+                        TE { e: TExpr::AdtPayload(Box::new(get())), ty }
+                    };
+                    body.push(TStmt::Set(slot, value));
+                }
+                let guard = match &arm.guard {
+                    Some(g) => Some(self.cond(g, "match guard")?),
+                    None => None,
+                };
+                let at_arm = self.moved.clone();
+                body.extend(self.stmts(&arm.body)?);
+                if !returns(&body) {
+                    after.extend(self.moved.iter().copied());
+                }
+                self.moved = at_arm;
+                let truth = TE { e: TExpr::Bool(true), ty: Type::Bool };
+                let cond = match (test, guard) {
+                    (None, None) => truth,
+                    (Some(t), None) => t,
+                    (None, Some(g)) => g,
+                    (Some(t), Some(g)) => TE {
+                        e: TExpr::Ternary(
+                            Box::new(t), Box::new(g),
+                            Box::new(TE { e: TExpr::Bool(false), ty: Type::Bool }),
+                        ),
+                        ty: Type::Bool,
+                    },
+                };
+                Ok((cond, body))
+            })();
+            self.scopes.pop();
+            let (cond, body) = r?;
+            if arm.guard.is_none() {
+                match key {
+                    Some(k) => {
+                        seen.insert(k);
+                        if seen.len() == 2 { covered = true; }
+                    }
+                    None => covered = true,
+                }
+            }
+            out.push((cond, body));
+        }
+        if !covered {
+            return Err(Diagnostic::new(pos, "E_MATCH",
+                format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
+        }
+        self.moved = after;
+        Ok(TStmt::Block(vec![
+            TStmt::Set(tmp, subj),
+            TStmt::If(out, Some(vec![TStmt::Unreachable])),
+        ]))
+    }
+
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if !matches!(target.kind, ExprKind::SelfRef) {
             return Err(Diagnostic::new(
@@ -1578,6 +1836,48 @@ impl<'a> FnCx<'a> {
         }
     }
 
+    /// Construct an ADT only where the full expected type is unambiguous.
+    /// Neither Null nor a bare payload implicitly converts to an ADT.
+    fn consume_expected(&mut self, e: &Expr, want: Type) -> R<TE> {
+        let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
+            ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
+                if args.len() != 1 {
+                    return Err(Diagnostic::new(e.pos, "E_ARITY",
+                        format!("{name} requires one payload argument, got {}", args.len())));
+                }
+                (name.as_str(), Some(&args[0]))
+            }
+            ExprKind::Var(name) if name == "None" => ("None", None),
+            _ => return self.consume(e),
+        };
+        let (tag, payload_type) = match (want, variant) {
+            (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
+            (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+            (Type::OptionInt, "None") => (0, None),
+            (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+            (Type::OptionResultIntStr, "None") => (0, None),
+            (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
+            _ => return Err(type_err(e.pos,
+                format!("variant '{variant}' is not valid for {}", self.tn(want)))),
+        };
+        let payload = match (argument, payload_type) {
+            (Some(arg), Some(ty)) => {
+                // A nested Some(Ok(...)) or Some(Err(...)) carries the
+                // expected inner Result type; constructors are contextual.
+                let value = self.consume_expected(arg, ty)?;
+                if value.ty != ty {
+                    return Err(type_err(arg.pos,
+                        format!("'{variant}' payload must be {}, found {}", self.tn(ty), self.tn(value.ty))));
+                }
+                Some(Box::new(value))
+            }
+            (None, None) => None,
+            _ => unreachable!("variant arity checked above"),
+        };
+        let tmp = self.temp(want, e.pos)?;
+        Ok(TE { e: TExpr::AdtNew { tag, payload, tmp }, ty: want })
+    }
+
     /// An expression used as a value (not void).
     fn value(&mut self, e: &Expr) -> R<TE> {
         let v = self.expr(e)?;
@@ -1605,6 +1905,56 @@ impl<'a> FnCx<'a> {
         Ok(v)
     }
 
+    // These non-inlined helpers keep the per-level stack frame of the
+    // recursively invoked expression checker bounded on the browser runner.
+    #[inline(never)]
+    fn trap_value(&mut self, inner: &Expr, pos: Pos) -> R<TE> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "caller-side trap inside class/actor requires lifecycle integration"));
+        }
+        let value = self.consume(inner)?;
+        let option_ty = match value.ty {
+            Type::Int => Type::OptionInt,
+            Type::ResultIntStr => Type::OptionResultIntStr,
+            _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                format!("browser trap supports only int and Result<int,string> operands, found {}", self.tn(value.ty)))),
+        };
+        let value_tmp = self.temp(value.ty, pos)?;
+        let some_tmp = self.temp(option_ty, pos)?;
+        let none_tmp = self.temp(option_ty, pos)?;
+        Ok(TE {
+            e: TExpr::Trap { value: Box::new(value), value_tmp, some_tmp, none_tmp },
+            ty: option_ty,
+        })
+    }
+
+    #[inline(never)]
+    fn guest_throw(&mut self, error: &Expr, pos: Pos) -> R<TStmt> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "ordinary throw in class and actor methods needs supervisor/cleanup integration"));
+        }
+        let args = match &error.kind {
+            ExprKind::Call(name, args) if name == "Error" => args,
+            _ => return Err(type_err(error.pos,
+                "throw requires an Error subclass; this browser slice admits only throw Error(message)")),
+        };
+        if args.len() != 1 {
+            return Err(Diagnostic::new(error.pos, "E_ARITY",
+                "Error(message) requires exactly one string argument"));
+        }
+        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
+            return Err(Diagnostic::new(error.pos, "E_RESERVED",
+                "the guest Error constructor cannot be shadowed"));
+        }
+        let msg = self.value(&args[0])?;
+        if msg.ty != Type::Str {
+            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
+        }
+        Ok(TStmt::Throw(msg))
+    }
+
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
@@ -1612,8 +1962,26 @@ impl<'a> FnCx<'a> {
                 ty: Type::Int,
             }),
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
+            ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
+            ExprKind::Propagate(inner) => {
+                let value = self.consume(inner)?;
+                let success_tag = match value.ty {
+                    Type::ResultIntStr => 0,
+                    Type::OptionInt => 1,
+                    _ => return Err(type_err(e.pos,
+                        format!("postfix '?' requires Option<int> or Result<int,string>, found {}", self.tn(value.ty)))),
+                };
+                if self.ret != value.ty {
+                    return Err(type_err(e.pos,
+                        format!("postfix '?' can propagate {} only from a function returning the same type; found {}", self.tn(value.ty), self.tn(self.ret))));
+                }
+                let tmp = self.temp(value.ty, e.pos)?;
+                Ok(TE { e: TExpr::AdtPropagate {
+                    source: Box::new(value), tmp, success_tag
+                }, ty: Type::Int })
+            }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
                 let obj = self.value(base)?;
@@ -1779,11 +2147,11 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_)) {
+                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
-                            "comparing object or actor references is not supported by the browser compiler yet",
+                            "comparing object, actor or tagged ADT references is unsupported; pointer equality is not structural equality",
                         ));
                     }
                     if a.ty == Type::Str {
@@ -1895,6 +2263,9 @@ impl<'a> FnCx<'a> {
                     ty: Type::Str,
                 }
             }
+            ExprKind::Var(name) if name == "None" => {
+                return Err(type_err(pos, "None requires a contextual Option<int> type"))
+            }
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(l) if l.mail.is_some() => {
                     return Err(Diagnostic::new(
@@ -1928,7 +2299,10 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Binary(..) | ExprKind::Ternary(..) => unreachable!("handled by expr"),
+            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            | ExprKind::Propagate(..) => unreachable!("handled by expr"),
+            ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
+                return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
             ExprKind::SelfRef => {
                 return Err(match self.owner {
@@ -2036,7 +2410,7 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
-            let v = self.consume(a)?;
+            let v = self.consume_expected(a, *want)?;
             if v.ty != *want {
                 return Err(type_err(
                     a.pos,

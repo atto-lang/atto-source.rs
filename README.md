@@ -4,6 +4,88 @@ A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unkn
 
 It compiles a **subset** of AttoLang. Everything outside the subset is rejected with a diagnostic, and a rejected program never produces an artifact. The compiler does not approximate unsupported features.
 
+## Browser tagged ADT milestone (concrete generic profiles)
+
+The browser Rust-to-Wasm frontend executes **three concrete ADT profiles**:
+`Option<int>` (`Some(int)` / `None`), `Result<int,string>`
+(`Ok(int)` / `Err(string)`), and `Option<Result<int,string>>`
+(`Some(Result<int,string>)` / `None`). The nested profile preserves
+the inner Result discriminant, including `Some(Err(...))`, without flattening.
+General-purpose `Option<T>` and `Result<T,E>`, other nested ADTs,
+mutable ADT payloads, generic classes, and cross-actor ADT transfer
+remain unsupported and must not be advertised as implemented.
+
+Postfix `?` now propagates the first executable tagged ADT profiles:
+`Result<int,string>` (extract `Ok(int)`, return the original `Err`)
+and `Option<int>` (extract `Some(int)`, return the original `None`).
+The enclosing function must return the exact same ADT profile; a function
+returning `int` or a different ADT cannot use it. The source is evaluated
+once, the failure path reuses its original tagged allocation, and the
+compiler does not convert `Err` or `None` into a panic. Ternary `? :`
+remains a distinct expression operator. This does not yet support
+generic ADTs, conversions, or `trap` exception capture: no throwable
+function effects are executable in this browser subset, so caller-side
+`trap checked_id(5)` still rejects instead of being simulated.
+
+Constructors are contextual: a typed function return, local binding,
+assignment, or argument supplies the exact declared ADT type. For example,
+`return Err("failure");` inside a `Result<int,string>` function.
+Without such a contextual type, a standalone `Some(...)`, `Ok(...)`,
+`Err(...)` or `None` is a type error. Both variants of a tagged ADT
+must be covered by unguarded constructor-pattern arms of a
+`match ... over`; guards cannot prove exhaustiveness, and duplicate
+or wrong-family arms are rejected.
+
+Each value is an immutable 16-byte record in the module's existing
+fixed 1 MiB heap, with an i32 discriminant at byte 0 and a 64-bit
+payload at byte 8. For the nested profile, the outer Some payload is
+an i32 reference to the independently allocated inner Result record;
+None has no payload. Both layers are checked before their payloads
+are read, and both allocations use the existing quota checks. Allocation uses the same quota-checked object
+allocator and panics 3 on exhaustion; values do **not** add capabilities,
+imports, reflection, or a different guest ABI. Reference equality is
+**not** silently used as value equality: `==` / `eq` and `!=` /
+`neq` on ADTs are rejected until structural comparison semantics
+are implemented. A stored `Err` or `None` never sets `panic_code`.
+
+The checked-in `tests/fixtures/pass` and `fail` cases are compiled
+and executed by both native and wasm32 compiler paths in CI. This work
+does not update the pinned public playground compiler or lift the
+syntax-preview labels.
+
+### First executable caller-side `trap expr` and ordinary guest throws
+
+The Rust/Wasm browser subset admits synchronous `trap expr` for the two
+**concrete** operand profiles `int` and `Result<int,string>`. The result
+is `Option<int>` or `Option<Result<int,string>>` respectively, without
+flattening `Some(Err(...))`. The operand is evaluated once, before the
+Some allocation. The only ordinary throwable currently admitted is a
+source-level `throw Error(message)` statement in a **top-level free
+function**, where `message: string` can be computed dynamically.
+A raw `throw "text"`, forged `Error` constructor, or non-string Error
+payload fails static checking.
+
+The compiler emits one **private WebAssembly exception tag** whose sole
+payload is the guest Error's i64 string view. It neither imports nor
+exports that tag. The `trap` catch handles only that tag and materializes
+`None`; throws automatically unwind through ordinary Wasm function calls.
+Host exceptions, unknown tags, checked-arithmetic panic, heap exhaustion,
+forced cancellation, and fatal engine traps **bypass** this catch.
+
+This is deliberately **not full language exception parity**: arbitrary
+Error subclasses, first-class Error values, `try/catch`, `recover`,
+`defer` cleanup, async/resumable traps, actor/supervisor exception routing,
+`Option<void>`, `Option<Option<T>>`, and general `Option<T>` remain gated
+by explicit unsupported diagnostics. No existing guest imports/exports or
+`panic_code` meanings change; modules without throws/traps emit no EH
+section. The generated guest needs an engine with WebAssembly exception
+handling enabled.
+
+The checked-in `tests/fixtures/pass/107-playground-trap-expression.atto`
+compiles the actual public playground preview body under the candidate
+compiler and executes it in Wasm CI. The **public playground binary** is
+pinned separately and has not been replaced or relabeled by this change.
+
 ## Where the syntax comes from
 
 The compiler does not define any syntax of its own:
@@ -21,7 +103,7 @@ The compiler does not define any syntax of its own:
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut`; the immutable type-first form `int x = 7;` for exactly `int`, `bool`, `string` and `String` (Java `looksLikePrimitiveTypeFirstImmutableBinding`) |
 | Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }`, `match` (below) |
-| Expressions | `+ - *` on int and float, `/` with at least one float operand (an int operand widens, Java numeric promotion), `+` joining two strings, unary `- + !`, `< <= > >=` on numbers and on strings (Java `String.compareTo` order), `eq neq == != !eq` (strings by content), ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
+| Expressions | Functional `|>` pipelines (`value |> named_fn |> named_fn(extra)`) lower to left-to-right ordinary calls, with the incoming value as the first argument; only named function stages are supported. `+ - *` on int and float, `/` with at least one float operand (an int operand widens, Java numeric promotion), `+` joining two strings, unary `- + !`, `< <= > >=` on numbers and on strings (Java `String.compareTo` order), `eq neq == != !eq` (strings by content), ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
 | Literals | decimal ints; floats exactly as the Java lexer: `1.5`, `1e3`, `2E-3`, `1_000.25` (digits on both sides of `.`) |
 | Strings | members `trim()`, `starts_with(s)`, `ends_with(s)`, `contains_literal(s)` (Java string member table); concatenation allocates on the bounded heap |
 | Match | legacy `match [first] x  P -> { } … end` with `else`, and canonical `match x over on P -> { } … end` / `do match x over …` / `over { on P { } }`. Patterns: `_`, int and bool literals, a lower-case binding, `Enum.Variant` (LLVM design spelling); `when` guards on literals and `_`, evaluated only after the pattern matched. Unreachable arms and non-exhaustive matches are `E_MATCH`; a match whose arms all return is a definite return |
@@ -43,12 +125,12 @@ The following are rejected, with the code shown:
 - Removed `%`, `^` and `^^` give `E_UNSUPPORTED` with no artifact emitted.
 - Condition `,` / `|` evaluate **both** boolean operands left-to-right (eager), including observable side effects.
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
-- `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
+- `|>` is functional composition only: receiver stages, actor pipelines and computed callees remain `E_UNSUPPORTED`; stage call arity and types are checked normally. `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - `int / int` stays `E_UNSUPPORTED` (S-25, below); write a float operand.
-- `f32`, sized integers, `Option`/`Result`, arrays and collections give `E_UNSUPPORTED_TYPE`.
+- `f32`, sized integers, unsupported generic ADT instantiations, arrays and collections give `E_UNSUPPORTED_TYPE`. Admitted profiles are `Option<int>`, `Result<int,string>`, and `Option<Result<int,string>>`.
 - `string + int` is `E_TYPE`, as in Java (no implicit conversion). `string.replace_literal`, `split_literal`, `is_identifier` and `is_route_segment` give `E_UNSUPPORTED`; unknown string members are `E_UNBOUND`.
-- Match patterns other than the ones above (string and float literals, tuples, constructors, `Type name`, `is T`) give `E_UNSUPPORTED`. Negative literal patterns, `1 | 4` alternatives and `name when …` are `E_SYNTAX`, as in Java.
-- `switch`, value `match<T>`, imports, lambdas, `Option` / `Result`, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
+- Match patterns other than the admitted scalar/enum patterns and v1 ADT constructor variants (`Some(x)`, `None`, `Ok(x)`, `Err(x)`) give `E_UNSUPPORTED`. Tuple and type patterns remain unsupported; wrong-family or non-exhaustive ADT patterns fail with typed diagnostics. Negative literal patterns, `1 | 4` alternatives and `name when …` remain `E_SYNTAX`.
+- `switch`, value `match<T>`, imports, lambdas, non-v1 generic ADT instantiations, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
 - Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
 
 ### Known divergences from the Java reference

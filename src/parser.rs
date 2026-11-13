@@ -203,6 +203,8 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    /// Scope of an explicit generator function body.
+    in_generator: bool,
 }
 
 struct TypeFirstField {
@@ -235,6 +237,7 @@ impl Parser {
             height: 0,
             cond: 0,
             type_names: Vec::new(),
+            in_generator: false,
         }
     }
 
@@ -366,6 +369,39 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "Option" => {
+                self.expect(Tok::Lt, "'<' after Option")?;
+                let inner = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Option payload")?;
+                match inner {
+                    Type::Int => Type::OptionInt,
+                    Type::ResultIntStr => Type::OptionResultIntStr,
+                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser ADT admits only Option<int> and Option<Result<int,string>>")),
+                }
+            }
+            "Generator" => {
+                self.expect(Tok::Lt, "'<' after Generator")?;
+                let inner = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Generator item type")?;
+                if inner != Type::Int {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "the browser generator frontend currently recognizes only Generator<int>"));
+                }
+                Type::GeneratorInt
+            }
+            "Result" => {
+                self.expect(Tok::Lt, "'<' after Result")?;
+                let good = self.parse_type()?;
+                self.expect(Tok::Comma, "',' between Result type arguments")?;
+                let bad = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Result types")?;
+                if good != Type::Int || bad != Type::Str {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser ADT v1 admits only Result<int,string>"));
+                }
+                Type::ResultIntStr
+            },
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
@@ -914,6 +950,13 @@ impl Parser {
                 format!("expected a 'fnc' declaration, found {}", describe(self.peek())),
             ));
         }
+        let is_generator = if *self.peek() == Tok::Star {
+            self.advance();
+            self.expect_word("gen")?;
+            true
+        } else {
+            false
+        };
         let (name, pos) = self.ident("a function name")?;
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic functions"));
@@ -921,11 +964,18 @@ impl Parser {
         self.expect(Tok::LParen, "'('")?;
         let params = self.parse_params()?;
         let ret = self.parse_return_spec()?;
+        if is_generator && ret != Type::GeneratorInt {
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
+        }
+        self.in_generator = is_generator;
         let body = self.parse_block()?;
+        self.in_generator = false;
         let _ = start;
         Ok(Func {
             name,
             pos,
+            is_generator,
             params,
             ret,
             body,
@@ -1040,6 +1090,17 @@ impl Parser {
         if *self.peek() == Tok::LBrace || *self.peek() == Tok::LBracket {
             return Err(unsupported(pos, "destructuring"));
         }
+        // Contiguous yield* is a dedicated token, not multiplication.
+        if *self.peek() == Tok::YieldStar {
+            if !self.in_generator {
+                return Err(Diagnostic::new(pos, "E_YIELD",
+                    "'yield*' is only valid inside a 'fnc *gen' generator"));
+            }
+            self.advance();
+            let source = self.parse_expr()?;
+            self.terminator()?;
+            return Ok(Stmt::YieldFrom(source, pos));
+        }
         let word = self.word_at(0).map(str::to_owned);
         match word.as_deref() {
             Some("val" | "const" | "let") => {
@@ -1070,13 +1131,35 @@ impl Parser {
                 "E_SYNTAX",
                 "a local binding starts with 'val', 'const' or 'let' (for example 'val x: int = 1;'); only int, bool and string have the immutable 'T name = e' form",
             )),
+            Some("yield") => {
+                if !self.in_generator {
+                    return Err(Diagnostic::new(pos, "E_YIELD",
+                        "'yield' is only valid inside a 'fnc *gen' generator"));
+                }
+                self.advance();
+                let value = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Yield(value, pos))
+            }
             Some("return") => {
                 self.advance();
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
                 let value = if at_end { None } else { Some(self.parse_expr()?) };
+                if self.in_generator && value.is_some() {
+                    return Err(Diagnostic::new(pos, "E_RETURN",
+                        "generators may terminate with 'return;' but cannot return a value"));
+                }
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
+            }
+            Some("throw") => {
+                self.advance();
+                // Only the typed Error constructor is admitted by the
+                // checker. A raw string is never silently throwable.
+                let error = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Throw(error, pos))
             }
             Some("if") => self.parse_if(),
             Some("while") => {
@@ -1114,10 +1197,38 @@ impl Parser {
             Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
+            Some("trap") => {
+                // Caller-side trap also works in expression-statement position.
+                let e = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(e))
+            }
             Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
             _ => {
                 let e = self.parse_expr()?;
+                // Compound addition uses the existing checked binary addition.
+                // Restrict it to locals: field/index targets need once-only lvalue lowering.
+                if *self.peek() == Tok::PlusAssign {
+                    let at = self.pos();
+                    self.advance();
+                    let value = self.parse_expr()?;
+                    self.terminator()?;
+                    return match e.kind {
+                        ExprKind::Var(name) => Ok(Stmt::Assign {
+                            name: name.clone(),
+                            value: Expr {
+                                kind: ExprKind::Binary(BinOp::Add, Box::new(Expr {
+                                    kind: ExprKind::Var(name), pos,
+                                }), Box::new(value)),
+                                pos: at,
+                            },
+                            pos,
+                        }),
+                        _ => Err(Diagnostic::new(at, "E_ASSIGN_TARGET",
+                            "compound '+=' currently requires a mutable local variable")),
+                    };
+                }
                 if *self.peek() == Tok::Assign {
                     let at = self.pos();
                     self.advance();
@@ -1192,7 +1303,13 @@ impl Parser {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
             (name, Some(self.parse_type()?))
-        } else if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Ident(_)) {
+        } else if matches!(self.peek(), Tok::Ident(_))
+            && (matches!(self.peek_at(1), Tok::Ident(_))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                    && *self.peek_at(1) == Tok::Lt))
+        {
+            // Recognize generic type-first bindings without treating
+            // 'Option' as a variable name and '<' as a comparison.
             let ty = self.parse_type()?;
             let (name, _) = self.ident("a variable name")?;
             (name, Some(ty))
@@ -1395,6 +1512,21 @@ impl Parser {
                     self.advance();
                     Ok(Pattern::Bool(w == "true"))
                 }
+                "None" => {
+                    self.advance();
+                    if *self.peek() == Tok::LParen {
+                        return Err(Diagnostic::new(self.pos(), "E_ARITY",
+                            "None is a zero-payload variant; write 'on None'"));
+                    }
+                    Ok(Pattern::Adt(w, None))
+                }
+                "Some" | "Ok" | "Err" => {
+                    self.advance();
+                    self.expect(Tok::LParen, "'(' after payload variant")?;
+                    let (name, _) = self.ident("a payload binding name")?;
+                    self.expect(Tok::RParen, "')' after payload binding")?;
+                    Ok(Pattern::Adt(w, Some(name)))
+                },
                 "_" => {
                     self.advance();
                     Ok(Pattern::Wild)
@@ -1443,6 +1575,13 @@ impl Parser {
     fn parse_for(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("for")?;
+        if matches!(self.peek(), Tok::Ident(_)) && self.word_at(1) == Some("in") {
+            let (name, _) = self.ident("an iteration variable")?;
+            self.expect_word("in")?;
+            let source = self.parse_expr()?;
+            let body = self.parse_loop_body()?;
+            return Ok(Stmt::ForIn { name, source, body, pos });
+        }
         let paren = self.eat(&Tok::LParen);
         if matches!(self.word_at(0), Some("const" | "let")) && self.word_at(2) == Some("of") {
             return Err(unsupported(self.pos(), "'for ... of' loops"));
@@ -1583,7 +1722,30 @@ impl Parser {
     }
 
     fn parse_ternary(&mut self) -> R<Expr> {
-        let c = self.parse_equality()?;
+        let mut c = self.parse_equality()?;
+        // Functional pipeline: value |> f |> g(extra) lowers to g(f(value), extra).
+        // Only ordinary named functions are admitted: no computed callees,
+        // receiver calls or actor piping. This preserves argument evaluation
+        // order and leaves arity/type checking to the existing call checker.
+        let mut links = 0;
+        while *self.peek() == Tok::PipeGt {
+            let pos = self.pos();
+            self.advance();
+            let stage = self.parse_postfix()?;
+            let (name, mut args) = match stage.kind {
+                ExprKind::Var(name) => (name, Vec::new()),
+                ExprKind::Call(name, args) => (name, args),
+                _ => return Err(unsupported(pos, "pipeline stages other than named function calls")),
+            };
+            if args.len() >= MAX_PARAMS {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "pipeline exceeds the call argument limit"));
+            }
+            self.grow(1)?;
+            links += 1;
+            args.insert(0, c);
+            c = Expr { kind: ExprKind::Call(name, args), pos };
+        }
+        self.height -= links;
         match self.peek() {
             Tok::Pipe => {
                 return Err(Diagnostic::new(
@@ -1592,7 +1754,6 @@ impl Parser {
                     "'|' is a boolean OR only inside an if/while condition; use Or(a, b) elsewhere",
                 ))
             }
-            Tok::PipeGt => return Err(unsupported(self.pos(), "the '|>' pipeline operator")),
             Tok::Question => {
                 let pos = self.pos();
                 self.advance();
@@ -1735,6 +1896,11 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            Tok::Ident(s) if s == "trap" => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Trap(Box::new(inner)), pos });
+            }
             _ => return self.parse_postfix(),
         };
         self.advance();
@@ -1776,6 +1942,27 @@ impl Parser {
         // member links nest one tree level each, like operator chain links
         self.height -= chain;
         r
+    }
+
+    // A '?' is ternary only when a top-level ':' follows its true arm.
+    // Otherwise it is postfix propagation. Stop at the current expression
+    // boundary and do not accidentally search into the next statement.
+    fn question_opens_ternary(&self) -> bool {
+        let mut depth = 0usize;
+        for t in self.toks.iter().skip(self.i + 1) {
+            match &t.tok {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace if depth == 0 => return false,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
+                Tok::Colon if depth == 0 => return true,
+                Tok::Semi | Tok::Comma | Tok::Eof if depth == 0 => return false,
+                Tok::Ident(w) if depth == 0 && matches!(
+                    w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else"
+                ) => return false,
+                _ => {}
+            }
+        }
+        false
     }
 
     fn parse_postfix_chain(&mut self, chain: &mut u32) -> R<Expr> {
@@ -1841,10 +2028,15 @@ impl Parser {
                     }
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
-                Tok::Question => {
-                    // ternary is handled by the caller; postfix `?` propagation is not
-                    break;
+                Tok::Question if !self.question_opens_ternary() => {
+                    let question = self.pos();
+                    self.advance();
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = Expr { kind: ExprKind::Propagate(Box::new(e)), pos: question };
                 }
+                Tok::Question => break, // true ternary: parsed by parse_ternary
+
                 _ => break,
             }
         }
@@ -2003,9 +2195,11 @@ fn describe(t: &Tok) -> String {
                 Tok::Ge => ">=",
                 Tok::Plus => "+",
                 Tok::PlusPlus => "++",
+                Tok::PlusAssign => "+=",
                 Tok::Minus => "-",
                 Tok::MinusMinus => "--",
                 Tok::Star => "*",
+                Tok::YieldStar => "yield*",
                 Tok::Slash => "/",
                 Tok::Bang => "!",
                 Tok::Question => "?",
