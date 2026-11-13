@@ -27,6 +27,9 @@ pub enum Type {
     /// Other generic instantiations reject without emitting an artifact.
     OptionInt,
     ResultIntStr,
+    /// First nested ADT profile: Some(Result<int,string>) or None.
+    /// Generic ADT instantiations remain deliberately restricted.
+    OptionResultIntStr,
 }
 
 impl Type {
@@ -41,6 +44,7 @@ impl Type {
             Type::Str => "string",
             Type::OptionInt => "Option<int>",
             Type::ResultIntStr => "Result<int,string>",
+            Type::OptionResultIntStr => "Option<Result<int,string>>",
             _ => "object",
         }
     }

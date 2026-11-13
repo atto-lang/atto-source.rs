@@ -1,0 +1,26 @@
+// expect-exit: 21
+// A nested Option<Result> is two independent tagged allocations.
+fnc checked_id(int id): Result<int,string> {
+  if id < 0 then
+    return Err("negative");
+  fi
+  return Ok(id);
+}
+fnc maybe_checked(bool present, int id): Option<Result<int,string>> {
+  if !present then
+    return None;
+  fi
+  return Some(checked_id(id));
+}
+pub fnc main(): int {
+  val Option<Result<int,string>> outcome = maybe_checked(true,21);
+  match outcome over
+    on Some(result) -> {
+      match result over
+        on Ok(value) -> { return value; }
+        on Err(message) -> { stdio.println(message); return 0; }
+      end
+    }
+    on None -> { return 0; }
+  end
+}
