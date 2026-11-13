@@ -340,6 +340,40 @@ check('boolean-xor/int-operands-rejected', () => {
   assert.equal('wasm' in r, false);
 });
 
+// Compiler must still check an unreachable RHS: short-circuit is a runtime
+// effect rule, never permission to skip type/name checking.
+check('boolean/short-circuited-rhs-still-typechecked', () => {
+  for (const expression of [
+    'false && 7', 'true || 3.5', 'false AND "text"',
+    'true OR 99', 'false && missing_name()', 'true OR missing_name()'
+  ]) {
+    const r = compile('pub fnc main(): int { val test = ' + expression + '; return 0; }');
+    assert.equal(r.ok, false, expression);
+    assert.equal('wasm' in r, false, expression);
+  }
+});
+
+// Reject malformed symbolic operator runs; they must never be silently
+// reinterpreted as legacy condition punctuation or arithmetic operators.
+check('boolean/malformed-token-boundaries-rejected', () => {
+  for (const expression of ['true &&& false', 'true ||| false',
+    'true ^^^ false', 'true & & false', 'true | | false']) {
+    const r = compile('pub fnc main(): int { val test = ' + expression + '; return 0; }');
+    assert.equal(r.ok, false, expression);
+    assert.equal('wasm' in r, false, expression);
+  }
+});
+
+// Left-leaning boolean ASTs must respect the same bounded recursion budget
+// as arithmetic; error rather than exhausting compiler stack.
+check('limits/boolean-operator-chain', () => {
+  const expression = 'true' + ' && true'.repeat(600);
+  const r = compile('pub fnc main(): int { val test = ' + expression + '; return 0; }');
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'E_NESTING');
+  assert.equal('wasm' in r, false);
+});
+
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);
