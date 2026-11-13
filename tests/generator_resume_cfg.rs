@@ -102,8 +102,8 @@ fn branch_and_nested_loop_jumps_are_in_bounds_and_break_continue_have_own_target
 #[test]
 fn delegates_have_distinct_frame_slots_even_across_conditional_arms() {
     let body = first_generator(r#"
-        fnc *gen g(bool select): Generator<int> {
-            if select then
+        fnc *gen g(bool use_first): Generator<int> {
+            if use_first then
                 yield* first();
             else
                 yield* second();
