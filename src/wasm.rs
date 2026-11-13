@@ -415,6 +415,29 @@ impl Emit<'_> {
                 }
             }
             TExpr::EnumVal(i) => self.i32c(*i as i32),
+            TExpr::TrapSome { payload, value_tmp, object_tmp } => {
+                // Evaluate the operand exactly once, BEFORE allocating the
+                // Option record. This preserves effects even if the quota
+                // allocator panics and never converts a panic into None.
+                self.expr(payload);
+                self.op(0x21); // local.set payload scratch
+                uleb(&mut self.code, *value_tmp as u64);
+                self.i32c(16);
+                self.call(self.l.helper(H_ALLOC));
+                self.op(0x21); // local.set Option object
+                uleb(&mut self.code, *object_tmp as u64);
+                self.op(0x20);
+                uleb(&mut self.code, *object_tmp as u64);
+                self.i32c(1); // Some tag
+                field_op(&mut self.code, Type::Bool, 0, true);
+                self.op(0x20);
+                uleb(&mut self.code, *object_tmp as u64);
+                self.op(0x20);
+                uleb(&mut self.code, *value_tmp as u64);
+                field_op(&mut self.code, payload.ty, 8, true);
+                self.op(0x20);
+                uleb(&mut self.code, *object_tmp as u64);
+            }
             TExpr::AdtNew { tag, payload, tmp } => {
                 self.i32c(16); // 8-aligned, fixed immutable tagged record
                 self.call(self.l.helper(H_ALLOC));
