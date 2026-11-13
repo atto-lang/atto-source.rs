@@ -125,6 +125,13 @@ pub enum TExpr {
     },
     /// enum variant ordinal (i32)
     EnumVal(u32),
+    /// Immutable tagged ADT value: 16-byte allocation, i32 tag at 0,
+    /// i64 payload at 8; no payload for None. tmp is a fresh i32 local.
+    AdtNew { tag: u32, payload: Option<Box<TE>>, tmp: u32 },
+    /// Compare the discriminant with a known variant tag.
+    AdtIs { obj: Box<TE>, tag: u32 },
+    /// Payload read, admissible only inside the tag-matched arm.
+    AdtPayload(Box<TE>),
     /// load a field of a class instance
     FieldGet {
         obj: Box<TE>,
@@ -448,7 +455,7 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio") {
+        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None") {
             return Err(Diagnostic::new(
                 f.pos,
                 "E_DUPLICATE",
@@ -861,7 +868,9 @@ pub fn check(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat,
+        heap: !p.classes.is_empty() || concat
+            || funcs.iter().any(|f| any_in_stmts(&f.body,
+                &|e| matches!(e.e, TExpr::AdtNew { .. }))),
         globals,
         actors: tactors,
         strings,
@@ -1002,6 +1011,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
+        TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
+        TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
@@ -1141,7 +1152,10 @@ impl<'a> FnCx<'a> {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
                 };
-                let v = self.consume(init)?;
+                let v = match want {
+                    Some(t) => self.consume_expected(init, t)?,
+                    None => self.consume(init)?,
+                };
                 if let Some(t) = want {
                     if t != v.ty {
                         return Err(type_err(
@@ -1169,7 +1183,7 @@ impl<'a> FnCx<'a> {
                         format!("cannot reassign val binding '{name}'"),
                     ));
                 }
-                let v = self.consume(value)?;
+                let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
                     return Err(type_err(
                         value.pos,
@@ -1193,7 +1207,7 @@ impl<'a> FnCx<'a> {
                 }
                 (Some(e), Type::Void) => return Err(type_err(e.pos, "a void fnc cannot return a value")),
                 (Some(e), t) => {
-                    let v = self.consume(e)?;
+                    let v = self.consume_expected(e, t)?;
                     if v.ty != t {
                         return Err(type_err(
                             e.pos,
@@ -1306,6 +1320,9 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
+        if matches!(sty, Type::OptionInt | Type::ResultIntStr) {
+            return self.match_adt(subj, arms, pos);
+        }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
             return Err(Diagnostic::new(
                 subject.pos,
@@ -1373,6 +1390,8 @@ impl<'a> FnCx<'a> {
                         None,
                     )
                 }
+                Pattern::Adt(name, _) => return Err(type_err(arm.pos,
+                    format!("ADT pattern '{name}' cannot match a {}", self.tn(sty)))),
                 Pattern::Variant(en, var) => {
                     let ev = self.enum_value(en, var, arm.pos, arm.pos)?;
                     if ev.ty != sty {
@@ -1576,6 +1595,44 @@ impl<'a> FnCx<'a> {
             }
             _ => Err(Diagnostic::new(target.pos, "E_UNBOUND", "unknown name 'self'")),
         }
+    }
+
+    /// Construct an ADT only where the full expected type is unambiguous.
+    /// Neither Null nor a bare payload implicitly converts to an ADT.
+    fn consume_expected(&mut self, e: &Expr, want: Type) -> R<TE> {
+        let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
+            ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
+                if args.len() != 1 {
+                    return Err(Diagnostic::new(e.pos, "E_ARITY",
+                        format!("{name} requires one payload argument, got {}", args.len())));
+                }
+                (name.as_str(), Some(&args[0]))
+            }
+            ExprKind::Var(name) if name == "None" => ("None", None),
+            _ => return self.consume(e),
+        };
+        let (tag, payload_type) = match (want, variant) {
+            (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
+            (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+            (Type::OptionInt, "None") => (0, None),
+            (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+            _ => return Err(type_err(e.pos,
+                format!("variant '{variant}' is not valid for {}", self.tn(want)))),
+        };
+        let payload = match (argument, payload_type) {
+            (Some(arg), Some(ty)) => {
+                let value = self.consume(arg)?;
+                if value.ty != ty {
+                    return Err(type_err(arg.pos,
+                        format!("'{variant}' payload must be {}, found {}", self.tn(ty), self.tn(value.ty))));
+                }
+                Some(Box::new(value))
+            }
+            (None, None) => None,
+            _ => unreachable!("variant arity checked above"),
+        };
+        let tmp = self.temp(want, e.pos)?;
+        Ok(TE { e: TExpr::AdtNew { tag, payload, tmp }, ty: want })
     }
 
     /// An expression used as a value (not void).
@@ -1895,6 +1952,9 @@ impl<'a> FnCx<'a> {
                     ty: Type::Str,
                 }
             }
+            ExprKind::Var(name) if name == "None" => {
+                return Err(type_err(pos, "None requires a contextual Option<int> type"))
+            }
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(l) if l.mail.is_some() => {
                     return Err(Diagnostic::new(
@@ -1929,6 +1989,8 @@ impl<'a> FnCx<'a> {
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
             ExprKind::Unary(..) | ExprKind::Binary(..) | ExprKind::Ternary(..) => unreachable!("handled by expr"),
+            ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
+                return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
             ExprKind::SelfRef => {
                 return Err(match self.owner {
@@ -2036,7 +2098,7 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
-            let v = self.consume(a)?;
+            let v = self.consume_expected(a, *want)?;
             if v.ty != *want {
                 return Err(type_err(
                     a.pos,

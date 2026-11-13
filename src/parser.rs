@@ -366,6 +366,28 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "Option" => {
+                self.expect(Tok::Lt, "'<' after Option")?;
+                let inner = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Option payload")?;
+                if inner != Type::Int {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser ADT v1 admits only Option<int>"));
+                }
+                Type::OptionInt
+            }
+            "Result" => {
+                self.expect(Tok::Lt, "'<' after Result")?;
+                let good = self.parse_type()?;
+                self.expect(Tok::Comma, "',' between Result type arguments")?;
+                let bad = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Result types")?;
+                if good != Type::Int || bad != Type::Str {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser ADT v1 admits only Result<int,string>"));
+                }
+                Type::ResultIntStr
+            },
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
@@ -1395,6 +1417,21 @@ impl Parser {
                     self.advance();
                     Ok(Pattern::Bool(w == "true"))
                 }
+                "None" => {
+                    self.advance();
+                    if *self.peek() == Tok::LParen {
+                        return Err(Diagnostic::new(self.pos(), "E_ARITY",
+                            "None is a zero-payload variant; write 'on None'"));
+                    }
+                    Ok(Pattern::Adt(w, None))
+                }
+                "Some" | "Ok" | "Err" => {
+                    self.advance();
+                    self.expect(Tok::LParen, "'(' after payload variant")?;
+                    let (name, _) = self.ident("a payload binding name")?;
+                    self.expect(Tok::RParen, "')' after payload binding")?;
+                    Ok(Pattern::Adt(w, Some(name)))
+                },
                 "_" => {
                     self.advance();
                     Ok(Pattern::Wild)
