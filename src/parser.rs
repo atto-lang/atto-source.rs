@@ -49,7 +49,6 @@ const RESERVED: &[&str] = &[
     "suspends",
     "generator",
     "yield",
-    "gen",
     "nlex",
     "return",
     "self",
