@@ -520,6 +520,32 @@ impl Emit<'_> {
                 self.i32c(*a as i32);
                 self.call(self.l.import(Import::ActorSpawn));
             }
+            TExpr::ActorPipeline(stages) => {
+                // Construct all actors before making any links. A host error
+                // traps main and causes tenant teardown (no partial delivery).
+                for (type_index, local) in stages {
+                    self.i32c(*type_index as i32);
+                    self.call(self.l.import(Import::ActorSpawn));
+                    self.op(0x21); // local.set actor reference
+                    uleb(&mut self.code, *local as u64);
+                }
+                for pair in stages.windows(2) {
+                    self.op(0x20); // local.get source
+                    uleb(&mut self.code, pair[0].1 as u64);
+                    self.op(0x20); // local.get destination
+                    uleb(&mut self.code, pair[1].1 as u64);
+                    self.call(self.l.import(Import::ActorLink));
+                }
+                self.op(0x20); // return head ActorRef for .send(...)
+                uleb(&mut self.code, stages[0].1 as u64);
+            }
+            TExpr::Emit(value) => {
+                self.expr(value);
+                if value.ty == Type::Bool {
+                    self.op(0xAD); // i64.extend_i32_u, matching send
+                }
+                self.call(self.l.import(Import::ActorEmit));
+            }
             TExpr::Send { target, value } => {
                 self.expr(target);
                 self.expr(value);
@@ -899,6 +925,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintF64 => Sig(vec![F64], vec![]),
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![]),
+            Import::ActorLink => Sig(vec![I32, I32], vec![]),
+            Import::ActorEmit => Sig(vec![I64], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1135,6 +1163,15 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             name(&mut a, &actor.name);
         }
         section(&mut out, 0, a);
+    }
+    if p.imports.contains(&Import::ActorLink) || p.imports.contains(&Import::ActorEmit) {
+        // The host grants actor_link / actor_emit ONLY to modules declaring
+        // this exact version marker. The byte is part of the Wasm custom
+        // section payload, not a JS-side simulation of Atto source.
+        let mut pipe = Vec::new();
+        name(&mut pipe, "atto.pipeline.v1");
+        pipe.push(1);
+        section(&mut out, 0, pipe);
     }
     out
 }
