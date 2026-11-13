@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+fnc invalid(): Option<Result<int,string>> {
+  return Some(7);
+}
+pub fnc main(): int { return 0; }

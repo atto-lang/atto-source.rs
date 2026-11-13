@@ -203,7 +203,7 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
-    /// True only within the body of an explicitly declared `fnc *gen`.
+    /// Scope of an explicit generator function body.
     in_generator: bool,
 }
 
@@ -373,11 +373,12 @@ impl Parser {
                 self.expect(Tok::Lt, "'<' after Option")?;
                 let inner = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Option payload")?;
-                if inner != Type::Int {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Option<int>"));
+                match inner {
+                    Type::Int => Type::OptionInt,
+                    Type::ResultIntStr => Type::OptionResultIntStr,
+                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser ADT admits only Option<int> and Option<Result<int,string>>")),
                 }
-                Type::OptionInt
             }
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
@@ -1089,7 +1090,7 @@ impl Parser {
         if *self.peek() == Tok::LBrace || *self.peek() == Tok::LBracket {
             return Err(unsupported(pos, "destructuring"));
         }
-        // `yield*` is a dedicated token, not "yield" followed by multiplication.
+        // Contiguous yield* is a dedicated token, not multiplication.
         if *self.peek() == Tok::YieldStar {
             if !self.in_generator {
                 return Err(Diagnostic::new(pos, "E_YIELD",
@@ -1192,9 +1193,8 @@ impl Parser {
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
             _ => {
                 let e = self.parse_expr()?;
-                // Compound addition is desugared to the existing checked
-                // integer addition operation. Only local names are admitted:
-                // field/index targets need an exactly-once lvalue lowering.
+                // Compound addition uses the existing checked binary addition.
+                // Restrict it to locals: field/index targets need once-only lvalue lowering.
                 if *self.peek() == Tok::PlusAssign {
                     let at = self.pos();
                     self.advance();
@@ -1289,7 +1289,13 @@ impl Parser {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
             (name, Some(self.parse_type()?))
-        } else if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Ident(_)) {
+        } else if matches!(self.peek(), Tok::Ident(_))
+            && (matches!(self.peek_at(1), Tok::Ident(_))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                    && *self.peek_at(1) == Tok::Lt))
+        {
+            // Recognize generic type-first bindings without treating
+            // 'Option' as a variable name and '<' as a comparison.
             let ty = self.parse_type()?;
             let (name, _) = self.ident("a variable name")?;
             (name, Some(ty))
@@ -1555,8 +1561,6 @@ impl Parser {
     fn parse_for(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("for")?;
-        // Iterable form is deliberately separate from C-style for. It will
-        // be lowered with a one-pull-per-iteration generator continuation.
         if matches!(self.peek(), Tok::Ident(_)) && self.word_at(1) == Some("in") {
             let (name, _) = self.ident("an iteration variable")?;
             self.expect_word("in")?;
@@ -1878,6 +1882,9 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            Tok::Ident(s) if s == "trap" => return Err(unsupported(
+                pos, "caller-side 'trap expression' needs typed ordinary-throw unwinding; not yet lowered",
+            )),
             _ => return self.parse_postfix(),
         };
         self.advance();
@@ -1919,6 +1926,27 @@ impl Parser {
         // member links nest one tree level each, like operator chain links
         self.height -= chain;
         r
+    }
+
+    // A '?' is ternary only when a top-level ':' follows its true arm.
+    // Otherwise it is postfix propagation. Stop at the current expression
+    // boundary and do not accidentally search into the next statement.
+    fn question_opens_ternary(&self) -> bool {
+        let mut depth = 0usize;
+        for t in self.toks.iter().skip(self.i + 1) {
+            match &t.tok {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace if depth == 0 => return false,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
+                Tok::Colon if depth == 0 => return true,
+                Tok::Semi | Tok::Comma | Tok::Eof if depth == 0 => return false,
+                Tok::Ident(w) if depth == 0 && matches!(
+                    w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else"
+                ) => return false,
+                _ => {}
+            }
+        }
+        false
     }
 
     fn parse_postfix_chain(&mut self, chain: &mut u32) -> R<Expr> {
@@ -1984,10 +2012,15 @@ impl Parser {
                     }
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
-                Tok::Question => {
-                    // ternary is handled by the caller; postfix `?` propagation is not
-                    break;
+                Tok::Question if !self.question_opens_ternary() => {
+                    let question = self.pos();
+                    self.advance();
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = Expr { kind: ExprKind::Propagate(Box::new(e)), pos: question };
                 }
+                Tok::Question => break, // true ternary: parsed by parse_ternary
+
                 _ => break,
             }
         }

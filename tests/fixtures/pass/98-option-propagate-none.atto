@@ -1,0 +1,13 @@
+// expect-exit: 0
+fnc read(): Option<int> { return None; }
+fnc compute(): Option<int> {
+  val x: int = read()?;
+  stdio.println("must not execute");
+  return Some(x + 2);
+}
+pub fnc main(): int {
+  match compute() over
+    on Some(value) -> { return value; }
+    on None -> { return 0; }
+  end
+}
