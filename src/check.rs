@@ -1944,11 +1944,11 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_)) {
+                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
-                            "comparing object or actor references is not supported by the browser compiler yet",
+                            "comparing object, actor or tagged ADT references is unsupported; pointer equality is not structural equality",
                         ));
                     }
                     if a.ty == Type::Str {

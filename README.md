@@ -4,6 +4,38 @@ A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unkn
 
 It compiles a **subset** of AttoLang. Everything outside the subset is rejected with a diagnostic, and a rejected program never produces an artifact. The compiler does not approximate unsupported features.
 
+## Browser tagged ADT milestone (concrete generic profiles)
+
+The browser Rust-to-Wasm frontend now executes two **specific** generic
+instantiations: `Option<int>` (`Some(int)` / `None`) and
+`Result<int,string>` (`Ok(int)` / `Err(string)`). General-purpose
+`Option<T>`, `Result<T,E>`, nested ADTs, mutable ADT payloads, generic
+classes, and cross-actor ADT transfer remain unsupported and must not
+be advertised as implemented.
+
+Constructors are contextual: a typed function return, local binding,
+assignment, or argument supplies the exact declared ADT type. For example,
+`return Err("failure");` inside a `Result<int,string>` function.
+Without such a contextual type, a standalone `Some(...)`, `Ok(...)`,
+`Err(...)` or `None` is a type error. Both variants of a tagged ADT
+must be covered by unguarded constructor-pattern arms of a
+`match ... over`; guards cannot prove exhaustiveness, and duplicate
+or wrong-family arms are rejected.
+
+Each value is an immutable 16-byte record in the module's existing
+fixed 1 MiB heap, with an i32 discriminant at byte 0 and a 64-bit
+payload at byte 8. Allocation uses the same quota-checked object
+allocator and panics 3 on exhaustion; values do **not** add capabilities,
+imports, reflection, or a different guest ABI. Reference equality is
+**not** silently used as value equality: `==` / `eq` and `!=` /
+`neq` on ADTs are rejected until structural comparison semantics
+are implemented. A stored `Err` or `None` never sets `panic_code`.
+
+The checked-in `tests/fixtures/pass` and `fail` cases are compiled
+and executed by both native and wasm32 compiler paths in CI. This work
+does not update the pinned public playground compiler or lift the
+syntax-preview labels.
+
 ## Where the syntax comes from
 
 The compiler does not define any syntax of its own:
@@ -45,10 +77,10 @@ The following are rejected, with the code shown:
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - `int / int` stays `E_UNSUPPORTED` (S-25, below); write a float operand.
-- `f32`, sized integers, `Option`/`Result`, arrays and collections give `E_UNSUPPORTED_TYPE`.
+- `f32`, sized integers, unsupported generic ADT instantiations, arrays and collections give `E_UNSUPPORTED_TYPE`. Only `Option<int>` and `Result<int,string>` are admitted in this milestone.
 - `string + int` is `E_TYPE`, as in Java (no implicit conversion). `string.replace_literal`, `split_literal`, `is_identifier` and `is_route_segment` give `E_UNSUPPORTED`; unknown string members are `E_UNBOUND`.
 - Match patterns other than the ones above (string and float literals, tuples, constructors, `Type name`, `is T`) give `E_UNSUPPORTED`. Negative literal patterns, `1 | 4` alternatives and `name when …` are `E_SYNTAX`, as in Java.
-- `switch`, value `match<T>`, imports, lambdas, `Option` / `Result`, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
+- `switch`, value `match<T>`, imports, lambdas, non-v1 generic ADT instantiations, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
 - Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
 
 ### Known divergences from the Java reference
