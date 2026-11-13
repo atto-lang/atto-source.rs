@@ -1,0 +1,5 @@
+// expect-error: E_SOURCE_LIMIT
+pub fnc main(): int {
+  stdio.println(Xor(true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true));
+  return 0;
+}
