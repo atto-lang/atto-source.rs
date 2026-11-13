@@ -95,6 +95,7 @@ const RESERVED: &[&str] = &[
     "shared",
     "untrusted",
     "spawn",
+    "pipe",
     "stop",
     "rt",
     "await",
@@ -1651,6 +1652,45 @@ impl Parser {
             c = Expr { kind: ExprKind::Call(name, args), pos };
         }
         self.height -= links;
+
+        // Actor composition and functional pipeline expressions are distinct.
+        // Only explicit spawn stages are admitted for actor-pipeline typing.
+        if matches!(&c.kind, ExprKind::Spawn(_))
+            && (*self.peek() == Tok::Pipe || self.is_word("pipe"))
+        {
+            let ExprKind::Spawn(first) = &c.kind else { unreachable!() };
+            let mut actors = vec![first.clone()];
+            while *self.peek() == Tok::Pipe || self.is_word("pipe") {
+                let operator = self.pos();
+                self.advance();
+                let stage = self.parse_postfix()?;
+                let ExprKind::Spawn(actor) = stage.kind else {
+                    return Err(Diagnostic::new(
+                        operator,
+                        "E_TYPE",
+                        "actor pipeline stages must be explicit spawn Actor() expressions",
+                    ));
+                };
+                if actors.len() >= 16 {
+                    return Err(Diagnostic::new(
+                        operator,
+                        "E_SOURCE_LIMIT",
+                        "actor pipeline exceeds the browser tenant's 16-actor budget",
+                    ));
+                }
+                actors.push(actor);
+            }
+            c = Expr {
+                kind: ExprKind::ActorPipeline(actors),
+                pos: c.pos,
+            };
+        } else if self.is_word("pipe") {
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_TYPE",
+                "actor pipe requires spawn Actor() stages; functional composition uses the pipe-greater operator",
+            ));
+        }
         match self.peek() {
             Tok::Pipe => {
                 return Err(Diagnostic::new(
