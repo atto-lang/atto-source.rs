@@ -1,8 +1,8 @@
 // Scalar intrinsics are compiler builtins, not ordinary eager calls.
 // expect-exit: 42
 // expect-stdout: left-and
-// expect-stdout: left-or
 // expect-stdout: right-and
+// expect-stdout: left-or
 // expect-stdout: right-or
 // expect-stdout: right-xor
 fnc skipped(): bool {
