@@ -1936,6 +1936,32 @@ impl Parser {
         Ok(args)
     }
 
+    /// A bracketed list is accepted only as the sole argument to a named
+    /// Boolean gate. This is intentional syntax sugar, not a first-class array
+    /// type or a general-purpose list expression.
+    fn parse_gate_args(&mut self) -> R<Vec<Expr>> {
+        if *self.peek_at(1) != Tok::LBracket {
+            return self.parse_args();
+        }
+        self.expect(Tok::LParen, "'('")?;
+        self.expect(Tok::LBracket, "'['")?;
+        let mut args = Vec::new();
+        if *self.peek() != Tok::RBracket {
+            loop {
+                args.push(self.parse_expr()?);
+                if args.len() > MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many Boolean gate elements"));
+                }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Tok::RBracket, "']' to close Boolean gate list")?;
+        self.expect(Tok::RParen, "')' to close Boolean gate call")?;
+        Ok(args)
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
         let mut chain = 0u32;
         let r = self.parse_postfix_chain(&mut chain);
@@ -1975,7 +2001,11 @@ impl Parser {
                         ExprKind::Var(n) => n.clone(),
                         _ => return Err(unsupported(self.pos(), "calling a computed value")),
                     };
-                    let args = self.parse_args()?;
+                    let args = if matches!(name.as_str(), "And" | "Or" | "Xor") {
+                        self.parse_gate_args()?
+                    } else {
+                        self.parse_args()?
+                    };
                     e = Expr {
                         kind: ExprKind::Call(name, args),
                         pos,
