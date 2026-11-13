@@ -1,0 +1,16 @@
+// expect-exit: 42
+// expect-stdout: 42
+// java: llvm-design
+// The first compiled runtime profile is a pure, finite Generator<int>.
+fnc *gen values(): Generator<int> {
+  yield 20;
+  yield 22;
+}
+pub fnc main(): int {
+  let sum = 0;
+  for value in values() do
+    sum += value;
+  done
+  stdio.println(sum);
+  return sum;
+}

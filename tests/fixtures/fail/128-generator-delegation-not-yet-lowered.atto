@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+fnc *gen base(): Generator<int> { yield 1; }
+fnc *gen nested(): Generator<int> { yield* base(); }
+pub fnc main(): int { return 0; }

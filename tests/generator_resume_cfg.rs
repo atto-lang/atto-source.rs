@@ -147,7 +147,6 @@ fn cfg_is_deterministic_and_keeps_guest_compilation_fail_closed() {
     let a = format!("{:?}", lower(&body).unwrap());
     let b = format!("{:?}", lower(&body).unwrap());
     assert_eq!(a, b);
-    let diagnostic = atto_compiler::compile(src).unwrap_err();
-    assert_eq!(diagnostic.code, "E_UNSUPPORTED");
-    assert!(diagnostic.message.contains("continuation"));
+    let wasm = atto_compiler::compile(src).expect("finite int yields are compiled guest Wasm");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }

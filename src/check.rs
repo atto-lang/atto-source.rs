@@ -191,6 +191,14 @@ pub enum TStmt {
     /// A guest Error(message) carried by a private Wasm exception tag.
     Throw(TE),
     Return(Option<TE>),
+    /// Pull-driven iterator loop; handle is owned by this loop, and closed
+    /// at DONE, early break, or before a function-level return.
+    ForIn {
+        source: TE,
+        handle_slot: u32,
+        value_slot: u32,
+        body: Vec<TStmt>,
+    },
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
     /// `while`, `loop` and C-style `for`: `cond` absent means unconditional;
     /// `update` runs after the body and after `continue`.
@@ -216,6 +224,14 @@ pub struct TFunc {
     pub body: Vec<TStmt>,
 }
 
+/// Restricted, fully typed first executable generator profile. All values
+/// are checked integer literals, evaluated upon pull (never at creation).
+#[derive(Clone, Debug)]
+pub struct TGenerator {
+    pub function: u32,
+    pub items: Vec<TE>,
+}
+
 /// One actor type: its state initializers and receive handler.
 #[derive(Clone, Debug)]
 pub struct TActor {
@@ -229,6 +245,7 @@ pub struct TActor {
 #[derive(Clone, Debug)]
 pub struct TProgram {
     pub funcs: Vec<TFunc>,
+    pub generators: Vec<TGenerator>,
     pub main: u32,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
@@ -481,6 +498,39 @@ fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
     Ok(())
 }
 
+/// The first executable for-in profile has no exception unwinder for
+/// arbitrary user calls inside the loop. Restrict the body to effect-free
+/// scalar expressions, local mutations, conditional control-flow, and early
+/// return/break/continue. Checked arithmetic traps terminate the Wasm
+/// instance, and no guest iterator is allowed to escape that instance.
+fn generator_forin_scalar_expr(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+        ExprKind::Str(_) | ExprKind::Var(_) => true,
+        ExprKind::Unary(_, a) => generator_forin_scalar_expr(a),
+        ExprKind::Binary(_, a, b) => generator_forin_scalar_expr(a)
+            && generator_forin_scalar_expr(b),
+        ExprKind::Ternary(a, b, c) => generator_forin_scalar_expr(a)
+            && generator_forin_scalar_expr(b) && generator_forin_scalar_expr(c),
+        _ => false,
+    }
+}
+
+fn generator_forin_safe_body(body: &[Stmt]) -> bool {
+    body.iter().all(|s| match s {
+        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } =>
+            generator_forin_scalar_expr(init),
+        Stmt::If { arms, otherwise, .. } =>
+            arms.iter().all(|(cond, branch)|
+                generator_forin_scalar_expr(cond) && generator_forin_safe_body(branch))
+                && otherwise.as_ref().is_none_or(|b| generator_forin_safe_body(b)),
+        Stmt::Block(b) => generator_forin_safe_body(b),
+        Stmt::Return(Some(e), _) => generator_forin_scalar_expr(e),
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => true,
+        _ => false,
+    })
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     // The lexer/parser preserve explicit generator AST nodes, but guest ABI v2
     // has no bounded continuation state, iterator next or close operation.
@@ -499,10 +549,24 @@ pub fn check(p: &Program) -> R<TProgram> {
             let _frame = crate::generator_frame::GeneratorFrameLayout::new(
                 f.params.len() as u32, declared_locals, plan.delegate_slots, f.pos
             )?;
-            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
-                "generator continuations, yield and yield* are not lowered to guest Wasm yet"));
+            // Initial executable profile: only no-parameter, finite pure
+            // int literal yields. Other generator CFGs still reject here.
+            // No capture/borrow, delegation or nested calls can be accepted
+            // until typed continuation frames and unwind code are complete.
+            let admitted = f.params.is_empty() && f.body.iter().enumerate().all(|(i, stmt)| {
+                match stmt {
+                    Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) => *n <= i64::MAX as u64,
+                    Stmt::Return(None, _) => i + 1 == f.body.len(),
+                    _ => false,
+                }
+            });
+            if !admitted {
+                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                    "this generator requires typed continuation locals, effects or yield* lowering"));
+            }
         }
-        if f.ret == Type::GeneratorInt || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
+        if (!f.is_generator && f.ret == Type::GeneratorInt)
+            || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
             return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
                 "Generator<int> requires a compiled generator continuation"));
         }
@@ -765,8 +829,24 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut funcs: Vec<Option<TFunc>> = (0..total).map(|_| None).collect();
 
     // ---- top-level functions
+    let mut generators = Vec::new();
     for (i, f) in p.funcs.iter().enumerate() {
         let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
+        if f.is_generator {
+            // This slice is compiled directly into native Wasm resume code,
+            // with checked, signed 64-bit yielded literals and no captures.
+            let items = f.body.iter().filter_map(|stmt| match stmt {
+                Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) =>
+                    Some(TE { e: TExpr::I64(*n as i64), ty: Type::Int }),
+                _ => None,
+            }).collect();
+            generators.push(TGenerator { function: i as u32, items });
+            funcs[i] = Some(TFunc {
+                name: f.name.clone(), params, ret,
+                locals: Vec::new(), body: Vec::new(),
+            });
+            continue;
+        }
         let named: Vec<(&str, Type, bool)> = f
             .params
             .iter()
@@ -985,7 +1065,8 @@ pub fn check(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat || adt_alloc,
+        heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
+        generators,
         globals,
         actors: tactors,
         strings,
@@ -1112,6 +1193,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::Loop { cond, body, update } => {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
+        TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
         TStmt::Block(b) => any_in_stmts(b, f),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
     })
@@ -1146,6 +1228,7 @@ fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
             || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
         TStmt::Loop { body, update, .. } =>
             guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
+        TStmt::ForIn { body, .. } => guest_eh_in_stmts(body),
         TStmt::Block(b) => guest_eh_in_stmts(b),
         _ => false,
     })
@@ -1299,6 +1382,11 @@ impl<'a> FnCx<'a> {
                         ));
                     }
                 }
+                // Unowned generator-valued locals could escape a close path.
+                if v.ty == Type::GeneratorInt {
+                    return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
+                        "generator handles must be consumed by for-in until owned bindings support close"));
+                }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
                 TStmt::Set(slot, v)
             }
@@ -1326,15 +1414,44 @@ impl<'a> FnCx<'a> {
                 TStmt::Set(slot, v)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
-            Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::Expr(e) => {
+                let v = self.expr(e)?;
+                if v.ty == Type::GeneratorInt {
+                    return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
+                        "discarding an unclosed generator handle is prohibited"));
+                }
+                TStmt::Expr(v)
+            }
             Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
             Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) => {
                 return Err(Diagnostic::new(*pos, "E_YIELD",
                     "yield and yield* require a compiled generator continuation"));
             }
-            Stmt::ForIn { pos, .. } => {
-                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    "for-in iteration requires a compiled iterator continuation"));
+            Stmt::ForIn { name, source, body, pos } => {
+                let gen = self.consume(source)?;
+                if gen.ty != Type::GeneratorInt {
+                    return Err(type_err(source.pos,
+                        format!("for-in expects Generator<int>, found {}", self.tn(gen.ty))));
+                }
+                if !generator_forin_safe_body(body) {
+                    return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                        "generator for-in body has effects requiring exception/cancellation-safe unwinding"));
+                }
+                // This first slice owns a fresh handle produced by a direct
+                // generator call. No aliasing or escaping local handles.
+                if !matches!(gen.e, TExpr::Call(_, _)) {
+                    return Err(Diagnostic::new(source.pos, "E_GENERATOR_OWNERSHIP",
+                        "for-in currently requires a fresh generator call"));
+                }
+                let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
+                self.scopes.push(Vec::new());
+                let checked = (|| {
+                    let value_slot = self.declare(name, Type::Int, false, *pos)?;
+                    let body = self.looped(body)?;
+                    Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
+                })();
+                self.scopes.pop();
+                checked?
             }
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
