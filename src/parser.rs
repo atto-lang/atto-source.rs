@@ -1801,9 +1801,11 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
-            Tok::Ident(s) if s == "trap" => return Err(unsupported(
-                pos, "caller-side 'trap expression' needs typed ordinary-throw unwinding; not yet lowered",
-            )),
+            Tok::Ident(s) if s == "trap" => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Trap(Box::new(inner)), pos });
+            }
             _ => return self.parse_postfix(),
         };
         self.advance();
