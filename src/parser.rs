@@ -49,6 +49,7 @@ const RESERVED: &[&str] = &[
     "suspends",
     "generator",
     "yield",
+    "gen",
     "nlex",
     "return",
     "self",
@@ -203,6 +204,8 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    /// True only within the body of an explicitly declared `fnc *gen`.
+    in_generator: bool,
 }
 
 struct TypeFirstField {
@@ -235,6 +238,7 @@ impl Parser {
             height: 0,
             cond: 0,
             type_names: Vec::new(),
+            in_generator: false,
         }
     }
 
@@ -375,6 +379,16 @@ impl Parser {
                         "browser ADT v1 admits only Option<int>"));
                 }
                 Type::OptionInt
+            }
+            "Generator" => {
+                self.expect(Tok::Lt, "'<' after Generator")?;
+                let inner = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Generator item type")?;
+                if inner != Type::Int {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "the browser generator frontend currently recognizes only Generator<int>"));
+                }
+                Type::GeneratorInt
             }
             "Result" => {
                 self.expect(Tok::Lt, "'<' after Result")?;
@@ -936,6 +950,13 @@ impl Parser {
                 format!("expected a 'fnc' declaration, found {}", describe(self.peek())),
             ));
         }
+        let is_generator = if *self.peek() == Tok::Star {
+            self.advance();
+            self.expect_word("gen")?;
+            true
+        } else {
+            false
+        };
         let (name, pos) = self.ident("a function name")?;
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic functions"));
@@ -943,11 +964,18 @@ impl Parser {
         self.expect(Tok::LParen, "'('")?;
         let params = self.parse_params()?;
         let ret = self.parse_return_spec()?;
+        if is_generator && ret != Type::GeneratorInt {
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
+        }
+        self.in_generator = is_generator;
         let body = self.parse_block()?;
+        self.in_generator = false;
         let _ = start;
         Ok(Func {
             name,
             pos,
+            is_generator,
             params,
             ret,
             body,
@@ -1062,6 +1090,17 @@ impl Parser {
         if *self.peek() == Tok::LBrace || *self.peek() == Tok::LBracket {
             return Err(unsupported(pos, "destructuring"));
         }
+        // `yield*` is a dedicated token, not "yield" followed by multiplication.
+        if *self.peek() == Tok::YieldStar {
+            if !self.in_generator {
+                return Err(Diagnostic::new(pos, "E_YIELD",
+                    "'yield*' is only valid inside a 'fnc *gen' generator"));
+            }
+            self.advance();
+            let source = self.parse_expr()?;
+            self.terminator()?;
+            return Ok(Stmt::YieldFrom(source, pos));
+        }
         let word = self.word_at(0).map(str::to_owned);
         match word.as_deref() {
             Some("val" | "const" | "let") => {
@@ -1092,11 +1131,25 @@ impl Parser {
                 "E_SYNTAX",
                 "a local binding starts with 'val', 'const' or 'let' (for example 'val x: int = 1;'); only int, bool and string have the immutable 'T name = e' form",
             )),
+            Some("yield") => {
+                if !self.in_generator {
+                    return Err(Diagnostic::new(pos, "E_YIELD",
+                        "'yield' is only valid inside a 'fnc *gen' generator"));
+                }
+                self.advance();
+                let value = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Yield(value, pos))
+            }
             Some("return") => {
                 self.advance();
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
                 let value = if at_end { None } else { Some(self.parse_expr()?) };
+                if self.in_generator && value.is_some() {
+                    return Err(Diagnostic::new(pos, "E_RETURN",
+                        "generators may terminate with 'return;' but cannot return a value"));
+                }
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
             }
@@ -1480,6 +1533,15 @@ impl Parser {
     fn parse_for(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("for")?;
+        // Iterable form is deliberately separate from C-style for. It will
+        // be lowered with a one-pull-per-iteration generator continuation.
+        if matches!(self.peek(), Tok::Ident(_)) && self.word_at(1) == Some("in") {
+            let (name, _) = self.ident("an iteration variable")?;
+            self.expect_word("in")?;
+            let source = self.parse_expr()?;
+            let body = self.parse_loop_body()?;
+            return Ok(Stmt::ForIn { name, source, body, pos });
+        }
         let paren = self.eat(&Tok::LParen);
         if matches!(self.word_at(0), Some("const" | "let")) && self.word_at(2) == Some("of") {
             return Err(unsupported(self.pos(), "'for ... of' loops"));
@@ -2065,6 +2127,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Minus => "-",
                 Tok::MinusMinus => "--",
                 Tok::Star => "*",
+                Tok::YieldStar => "yield*",
                 Tok::Slash => "/",
                 Tok::Bang => "!",
                 Tok::Question => "?",
