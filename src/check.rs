@@ -349,6 +349,11 @@ struct FnCx<'a> {
 
 type R<T> = Result<T, Diagnostic>;
 
+/// The statement IR, local types and typed outgoing actor messages collected
+/// from a checked callable body. Naming this result keeps the checker API
+/// readable without relaxing any actor output-type validation.
+type CheckedBody = (Vec<TStmt>, Vec<Type>, Vec<(Type, Pos)>);
+
 fn string_member_err(name: &str, pos: Pos) -> Diagnostic {
     match name {
         "replace_literal" | "split_literal" | "is_identifier" | "is_route_segment" => Diagnostic::new(
@@ -1115,7 +1120,7 @@ fn body_check(
     pos: Pos,
     imports: &mut Vec<Import>,
     data: &mut Vec<u8>,
-) -> R<(Vec<TStmt>, Vec<Type>, Vec<(Type, Pos)>)> {
+) -> R<CheckedBody> {
     let mut cx = FnCx::new(g, owner, ret, imports, data);
     cx.nparams = named.len() as u32;
     cx.allow_emit = mail.is_some();
