@@ -1,0 +1,16 @@
+// expect-exit: 9
+// expect-stdout: 9
+fnc get_id(int id): int {
+  return id;
+}
+
+pub fnc main(): int {
+  val Option<int> wrapped = trap get_id(9);
+  match wrapped over
+    on Some(value) -> {
+      stdio.println(value);
+      return value;
+    }
+    on None -> { return 0; }
+  end
+}
