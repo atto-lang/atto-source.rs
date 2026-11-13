@@ -132,6 +132,9 @@ pub enum TExpr {
     AdtIs { obj: Box<TE>, tag: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
     AdtPayload(Box<TE>),
+    /// Evaluate a tagged ADT once. On failure return its original handle from
+    /// the enclosing function; on success leave the i64 payload on the stack.
+    AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
     /// load a field of a class instance
     FieldGet {
         obj: Box<TE>,
@@ -1013,6 +1016,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
         TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
+        TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
@@ -1779,6 +1783,23 @@ impl<'a> FnCx<'a> {
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
+            ExprKind::Propagate(inner) => {
+                let value = self.consume(inner)?;
+                let success_tag = match value.ty {
+                    Type::ResultIntStr => 0,
+                    Type::OptionInt => 1,
+                    _ => return Err(type_err(e.pos,
+                        format!("postfix '?' requires Option<int> or Result<int,string>, found {}", self.tn(value.ty)))),
+                };
+                if self.ret != value.ty {
+                    return Err(type_err(e.pos,
+                        format!("postfix '?' can propagate {} only from a function returning the same type; found {}", self.tn(value.ty), self.tn(self.ret))));
+                }
+                let tmp = self.temp(value.ty, e.pos)?;
+                Ok(TE { e: TExpr::AdtPropagate {
+                    source: Box::new(value), tmp, success_tag
+                }, ty: Type::Int })
+            }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
                 let obj = self.value(base)?;
@@ -2096,7 +2117,8 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Binary(..) | ExprKind::Ternary(..) => unreachable!("handled by expr"),
+            ExprKind::Unary(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
