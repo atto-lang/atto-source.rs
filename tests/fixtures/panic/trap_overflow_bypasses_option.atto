@@ -1,0 +1,13 @@
+// expect-panic: 1
+// Checking arithmetic overflow must not be converted to None by trap.
+fnc overflow(): int {
+  return 9223372036854775807 + 1;
+}
+
+pub fnc main(): int {
+  val Option<int> result = trap overflow();
+  match result over
+    on Some(value) -> { return value; }
+    on None -> { return 0; }
+  end
+}
