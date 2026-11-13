@@ -69,8 +69,15 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let (mut i, mut line, mut col) = (0usize, 1u32, 1u32);
     macro_rules! bump {
         () => {{
-            if chars[i] == '\n' {
+            // Java's lexer treats LF, CRLF and bare CR as source-line ends.
+            // Do not advance twice for the two codepoints in CRLF.
+            if chars[i] == '\r' {
                 line += 1;
+                col = 1;
+            } else if chars[i] == '\n' {
+                if i == 0 || chars[i - 1] != '\r' {
+                    line += 1;
+                }
                 col = 1;
             } else {
                 col += 1;
@@ -89,7 +96,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             continue;
         }
         if c == '/' && chars.get(i + 1) == Some(&'/') {
-            while i < chars.len() && chars[i] != '\n' {
+            while i < chars.len() && chars[i] != '\n' && chars[i] != '\r' {
                 bump!();
             }
             continue;
