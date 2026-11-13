@@ -887,8 +887,8 @@ pub fn check(p: &Program) -> R<TProgram> {
                     })),
                 Stmt::YieldFrom(Expr { kind: ExprKind::Call(name, args), .. }, _) => {
                     assert!(args.is_empty());
-                    let &(idx, _, _) = g.sigs.get(&(name.clone(), 0))
-                        .expect("preflight requires declared generator target");
+                    let idx = g.sigs.get(&(name.clone(), 0))
+                        .expect("preflight requires declared generator target").0;
                     Some(TGenStep::Delegate(idx))
                 }
                 _ => None,
