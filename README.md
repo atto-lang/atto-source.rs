@@ -41,15 +41,35 @@ and executed by both native and wasm32 compiler paths in CI. This work
 does not update the pinned public playground compiler or lift the
 syntax-preview labels.
 
-### Caller-side trap remains separately gated
+### Caller-side `trap`: executable non-throwing browser subset only
 
-The nested ADT profile is groundwork for `trap checked_id(5)`, but does
-**not** implement expression-level `trap`. The parser deliberately
-rejects that expression with `E_UNSUPPORTED` until the compiler has
-guest-proven ordinary-`throw` unwinding. Catching a Wasm engine trap,
-checked-overflow panic, `raise`, or cancellation as `None` would be
-incorrect. The public playground compiler remains separately pinned
-and unchanged.
+The browser compiler now lowers `trap expression` when the expression's
+checked type is exactly `int` or `Result<int,string>`. This produces,
+respectively, `Option<int>` and `Option<Result<int,string>>`. The
+wrapped value is evaluated **once** and stored in the existing immutable
+16-byte tagged ADT record as `Some(value)`; `Err` remains Result data,
+so `trap checked_id(-1)` is `Some(Err(...))`, **not** `None`.
+Unsupported `trap` operand types are rejected with `E_UNSUPPORTED_TYPE`;
+passing the outer `Option` directly where a `Result` is required is
+an `E_TYPE` error.
+
+**Important limitation:** ordinary `throw`, `raise`, `panic` as
+source statements, cancellation, and unwind/catch machinery are not
+admitted by the pinned browser subset. Consequently this initial
+executable slice is sound for its *non-throwing* source inputs, but it
+cannot produce `None` from an ordinary throw and is **not** an
+implementation of ordinary-throw capture. Checked integer overflow and
+Wasm engine traps still terminate the guest and **never** become `None`.
+Do not expand this lowering to throwing callees without typed effect
+tracking and verified Wasm unwinding, including precisely-once
+cleanup/supervisor rules.
+
+The `pass/trap_*.atto`, `fail/trap_*.atto`, and
+`panic/trap_*.atto` fixtures exercise real compiled Wasm, signed
+overflow propagation, and static type boundaries. The public playground
+still has its own compiler pin; this source change does not update or
+publish a browser compiler binary, lift its preview label, or establish
+Java/LLVM/.NET parity.
 
 ## Where the syntax comes from
 
