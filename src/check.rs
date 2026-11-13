@@ -128,6 +128,10 @@ pub enum TExpr {
     /// Immutable tagged ADT value: 16-byte allocation, i32 tag at 0,
     /// i64 payload at 8; no payload for None. tmp is a fresh i32 local.
     AdtNew { tag: u32, payload: Option<Box<TE>>, tmp: u32 },
+    /// Caller-side trap: evaluate the operand exactly once BEFORE allocating
+    /// the outer Some record. A heap-quota panic must not suppress effects
+    /// from evaluating the expression (nor turn the panic into None).
+    TrapSome { payload: Box<TE>, value_tmp: u32, object_tmp: u32 },
     /// Compare the discriminant with a known variant tag.
     AdtIs { obj: Box<TE>, tag: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
@@ -864,7 +868,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. })));
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::TrapSome { .. })));
     Ok(TProgram {
         funcs,
         main,
@@ -1012,6 +1016,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
         TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
+        TExpr::TrapSome { payload, .. } => any_in(payload, f),
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
@@ -1815,8 +1820,9 @@ impl<'a> FnCx<'a> {
                 "browser trap supports only int and Result<int,string> results; ordinary throw unwinding is not implemented",
             )),
         };
-        let tmp = self.temp(wrapped, pos)?;
-        Ok(TE { e: TExpr::AdtNew { tag: 1, payload: Some(Box::new(payload)), tmp }, ty: wrapped })
+        let value_tmp = self.temp(payload.ty, pos)?;
+        let object_tmp = self.temp(wrapped, pos)?;
+        Ok(TE { e: TExpr::TrapSome { payload: Box::new(payload), value_tmp, object_tmp }, ty: wrapped })
     }
 
     #[inline(never)]
