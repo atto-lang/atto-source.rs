@@ -1799,6 +1799,26 @@ impl<'a> FnCx<'a> {
         }
     }
 
+    /// Phase one: all admitted browser-source expressions are non-throwing.
+    /// A Result.Err is a normal value, while checked arithmetic, runtime traps,
+    /// panic and cancellation MUST remain terminal (never coerced to None).
+    /// When ordinary 'throw' is admitted this lowering must be replaced with
+    /// checked unwinding, not an unconditional Some wrapper.
+    #[inline(never)]
+    fn trap_nothrow(&mut self, inner: &Expr, pos: Pos) -> R<TE> {
+        let payload = self.consume(inner)?;
+        let wrapped = match payload.ty {
+            Type::Int => Type::OptionInt,
+            Type::ResultIntStr => Type::OptionResultIntStr,
+            _ => return Err(Diagnostic::new(
+                pos, "E_UNSUPPORTED_TYPE",
+                "browser trap supports only int and Result<int,string> results; ordinary throw unwinding is not implemented",
+            )),
+        };
+        let tmp = self.temp(wrapped, pos)?;
+        Ok(TE { e: TExpr::AdtNew { tag: 1, payload: Some(Box::new(payload)), tmp }, ty: wrapped })
+    }
+
     #[inline(never)]
     fn unary(&mut self, op: UnOp, inner: &Expr, pos: Pos) -> R<TE> {
         let op = &op;
