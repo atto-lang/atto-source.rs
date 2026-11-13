@@ -146,7 +146,7 @@ fn orphan_emitter_cannot_borrow_authority_from_an_unrelated_pipeline() {
     );
     let source = source.replacen(
         "define actor Sink as",
-        "define actor Orphan as\\n  receive(ActorMail<int> mail): void { emit(mail.value); }\\nend\\ndefine actor Sink as",
+        "define actor Orphan as\n  receive(ActorMail<int> mail): void { emit(mail.value); }\nend\ndefine actor Sink as",
         1,
     );
     let err = atto_compiler::compile(&source).unwrap_err();
@@ -161,7 +161,7 @@ fn a_directly_spawned_emitter_must_not_lack_a_link() {
     );
     let source = source.replace(
         "return 0;",
-        "val orphan = spawn Parse();\\n  return 0;",
+        "val orphan = spawn Parse();\n  return 0;",
     );
     let err = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(err.code, "E_TYPE");
@@ -175,7 +175,7 @@ fn a_linked_emitter_cannot_also_serve_as_a_terminal_sink() {
     );
     let source = source.replace(
         "return 0;",
-        "val terminal = spawn Validate() pipe spawn Parse();\\n  return 0;",
+        "val terminal = spawn Validate() pipe spawn Parse();\n  return 0;",
     );
     let err = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(err.code, "E_TYPE");
