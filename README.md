@@ -13,6 +13,18 @@ instantiations: `Option<int>` (`Some(int)` / `None`) and
 classes, and cross-actor ADT transfer remain unsupported and must not
 be advertised as implemented.
 
+Postfix `?` now propagates the first executable tagged ADT profiles:
+`Result<int,string>` (extract `Ok(int)`, return the original `Err`)
+and `Option<int>` (extract `Some(int)`, return the original `None`).
+The enclosing function must return the exact same ADT profile; a function
+returning `int` or a different ADT cannot use it. The source is evaluated
+once, the failure path reuses its original tagged allocation, and the
+compiler does not convert `Err` or `None` into a panic. Ternary `? :`
+remains a distinct expression operator. This does not yet support
+generic ADTs, conversions, or `trap` exception capture: no throwable
+function effects are executable in this browser subset, so caller-side
+`trap checked_id(5)` still rejects instead of being simulated.
+
 Constructors are contextual: a typed function return, local binding,
 assignment, or argument supplies the exact declared ADT type. For example,
 `return Err("failure");` inside a `Result<int,string>` function.
