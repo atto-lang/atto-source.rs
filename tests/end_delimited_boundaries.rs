@@ -8,7 +8,7 @@ const SOURCE: &str = "fnc add_one(int x) -> int\n  return x + 1;\nend\npub fnc m
 #[test]
 fn lf_crlf_and_bare_cr_have_identical_executable_semantics() {
     let expected = compile(SOURCE).expect("LF source compiles");
-    assert!(expected.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(expected.starts_with(b"\0asm\x01\0\0\0"));
     for sep in ["\n", "\r\n", "\r"] {
         let source = SOURCE.replace('\n', sep);
         let actual = compile(&source).unwrap_or_else(|d| panic!("{sep:?}: {d}"));
@@ -31,7 +31,7 @@ fn line_comments_stop_at_lf_crlf_or_bare_cr() {
 
 #[test]
 fn separator_is_required_for_same_line_body_and_colon_returns_remain_braced() {
-    for separator in ["", " /* only comment */ ", " // no newline "] {
+    for separator in ["", " /* only comment */ ", "	"] {
         let source = format!(
             "fnc f() -> int {separator}return 42; end\npub fnc main(): int {{ return f(); }}"
         );
