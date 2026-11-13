@@ -89,42 +89,42 @@ try{
   // Real Chromium: compiler-produced Wasm guest tag catches only ordinary
   // Error(message), preserving all successful Result values and fatal traps.
   const callerTrap =
-    'fnc checked_id(int id): Result<int,string> {\\n' +
-    '  if id < 0 then return Err("bad id"); fi\\n' +
-    '  return Ok(id);\\n' +
-    '}\\n' +
-    'pub fnc main(): int {\\n' +
-    '  val Option<Result<int,string>> x = trap checked_id(-1);\\n' +
-    '  match x over\\n' +
-    '    on Some(result) -> { match result over\\n' +
-    '      on Ok(n) -> { return n; }\\n' +
-    '      on Err(msg) -> { stdio.println(msg); return 7; }\\n' +
-    '    end }\\n' +
-    '    on None -> { return 0; }\\n' +
-    '  end\\n' +
+    'fnc checked_id(int id): Result<int,string> {\n' +
+    '  if id < 0 then return Err("bad id"); fi\n' +
+    '  return Ok(id);\n' +
+    '}\n' +
+    'pub fnc main(): int {\n' +
+    '  val Option<Result<int,string>> x = trap checked_id(-1);\n' +
+    '  match x over\n' +
+    '    on Some(result) -> { match result over\n' +
+    '      on Ok(n) -> { return n; }\n' +
+    '      on Err(msg) -> { stdio.println(msg); return 7; }\n' +
+    '    end }\n' +
+    '    on None -> { return 0; }\n' +
+    '  end\n' +
     '}';
-  assert.match(await run(callerTrap, 'main() -> 7'), /^bad id\\nmain\\(\\) -> 7$/);
+  assert.match(await run(callerTrap, 'main() -> 7'), /^bad id\nmain\(\) -> 7$/);
   console.log('PASS browser: trap Some(Err) remains Result data');
 
   const ordinaryThrow =
-    'fnc leaf(): int { throw Error("failure"); }\\n' +
-    'fnc wrapper(): int { return leaf(); }\\n' +
-    'pub fnc main(): int {\\n' +
-    '  match trap wrapper() over\\n' +
-    '    on Some(v) -> { return v; }\\n' +
-    '    on None -> { return 9; }\\n' +
-    '  end\\n' +
+    'fnc leaf(): int { throw Error("failure"); }\n' +
+    'fnc wrapper(): int { return leaf(); }\n' +
+    'pub fnc main(): int {\n' +
+    '  match trap wrapper() over\n' +
+    '    on Some(v) -> { return v; }\n' +
+    '    on None -> { return 9; }\n' +
+    '  end\n' +
     '}';
-  assert.match(await run(ordinaryThrow, 'main() -> 9'), /main\\(\\) -> 9$/);
+  assert.match(await run(ordinaryThrow, 'main() -> 9'), /main\(\) -> 9$/);
   console.log('PASS browser: private guest Error unwinds across calls to None');
 
   const trappedPanic =
-    'pub fnc main(): int {\\n' +
-    '  val n: int = 9223372036854775807;\\n' +
-    '  match trap (n + 1) over\\n' +
-    '    on Some(v) -> { return v; }\\n' +
-    '    on None -> { return 0; }\\n' +
-    '  end\\n' +
+    'pub fnc main(): int {\n' +
+    '  val n: int = 9223372036854775807;\n' +
+    '  match trap (n + 1) over\n' +
+    '    on Some(v) -> { return v; }\n' +
+    '    on None -> { return 0; }\n' +
+    '  end\n' +
     '}';
   assert.match(await run(trappedPanic, 'E_PANIC'), /E_PANIC: integer overflow/);
   console.log('PASS browser: trap never catches checked arithmetic panic');
