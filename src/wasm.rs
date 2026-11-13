@@ -1025,6 +1025,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             // and return its generation-fenced handle. No body runs here.
             e.i32c(gen_id as i32);
             e.call(layout.func(layout.gen_first_func));
+            e.op(0x0F); // return the generation-fenced handle; never hit unreachable
         } else {
             e.stmts(&f.body);
         }
