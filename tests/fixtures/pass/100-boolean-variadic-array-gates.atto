@@ -1,0 +1,49 @@
+// expect-exit: 0
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: touch
+// expect-stdout: true
+fnc touch(bool v): bool {
+  stdio.println("touch");
+  return v;
+}
+pub fnc main(): int {
+  val a = true;
+  val b = false;
+  val c = true;
+  val d = false;
+  stdio.println(And(a, b, c));
+  stdio.println(Or(a, b, c, d));
+  stdio.println(Xor(a, b));
+  stdio.println(And([a, b, c]));
+  stdio.println(Or([a, b, c, d]));
+  stdio.println(Xor([a, b]));
+  stdio.println(And());
+  stdio.println(Or());
+  stdio.println(Xor());
+  stdio.println(And([]));
+  stdio.println(Or([]));
+  stdio.println(Xor([]));
+  stdio.println(And(a));
+  stdio.println(Or(b));
+  stdio.println(Xor(a));
+  stdio.println(And(false, touch(true)));
+  stdio.println(Or(true, touch(false)));
+  stdio.println(Xor(true, touch(false), false));
+  return 0;
+}
