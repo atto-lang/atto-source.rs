@@ -520,6 +520,9 @@ impl Emit<'_> {
                 self.i32c(*a as i32);
                 self.call(self.l.import(Import::ActorSpawn));
             }
+            // Must remain unreachable: check() rejects actor-origin emits
+            // until authenticated forwarding exists. Never simulate send.
+            TExpr::Emit(_) => self.op(0x00), // Wasm unreachable, defensive
             TExpr::Send { target, value } => {
                 self.expr(target);
                 self.expr(value);
