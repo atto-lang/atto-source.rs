@@ -40,6 +40,15 @@ assert.deepEqual([...new Uint8Array(WebAssembly.Module.customSections(mod,'atto.
 const leb = n => {const b=[]; do {let x=n&127;n>>>=7;if(n)x|=128;b.push(x);}while(n);return b;};
 const name = s => {const b=[...new TextEncoder().encode(s)];return [...leb(b.length),...b];};
 const section = (id,data) => [id,...leb(data.length),...data];
+const surplusStages = Array.from({length:5},(_,i)=>
+  'val extra' + i + ' = spawn Parse() pipe spawn Validate() pipe spawn Sink();'
+).join('\\n  ');
+const quotaSource = source.replace('pipeline.send(41);',
+  surplusStages + '\\n  pipeline.send(41);');
+const quotaCompiled = compiler.compile(quotaSource);
+assert.equal(quotaCompiled.ok, true, JSON.stringify(quotaCompiled.diagnostics));
+const overQuotaGuest = new Uint8Array(quotaCompiled.wasm);
+assert.equal(WebAssembly.validate(overQuotaGuest), true);
 const v3Forged = new Uint8Array([...guest,...section(0,[...name('atto.actor.abi'),3,0])]);
 assert.equal(WebAssembly.validate(v3Forged), true, 'ABI refusal needs valid core Wasm');
 
@@ -55,6 +64,7 @@ const server = createServer(async(req,res)=>{
     if(path==='/index.html'){body='<!doctype html><title>Atto actor worker contract</title>';kind='text/html';}
     else if(path==='/guest.wasm'){body=guest;kind='application/wasm';}
     else if(path==='/guest-v3.wasm'){body=v3Forged;kind='application/wasm';}
+    else if(path==='/guest-over-quota.wasm'){body=overQuotaGuest;kind='application/wasm';}
     else if(path.startsWith('/play/src/')&&staticJs.has(path.slice('/play/src/'.length))){
       body=await readFile(join(resolve(site),'play/src',path.slice('/play/src/'.length)));
       kind='text/javascript';
@@ -122,6 +132,13 @@ try {
   assert.equal(blocked.actors,0);
   assert.equal(blocked.stdout,'');
   console.log('PASS Chromium: forged full actor-resume ABI v3 rejected before actor allocation');
+  const full=await workerCase('/guest-over-quota.wasm');
+  assert.equal(full.ok,false);
+  assert.match(full.message,/^E_ACTOR_LIMIT: at most 16 actors per run/);
+  assert.equal(full.stdout,'','failed 17th spawn must not run queued actor mail');
+  assert.equal(full.actors,16,'host must stop admitting before allocating an actor beyond quota');
+  console.log('PASS Chromium: six pipelines fail actor quota at 16 without executing guest mail');
+
   assert.ok(requests.every(s=>s.startsWith('GET ')),'browser worker never posts source to server');
 }finally{
   try{ws?.close()}catch{}
