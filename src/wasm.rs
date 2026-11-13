@@ -302,7 +302,7 @@ impl Emit<'_> {
                 // Function-level returns cannot bypass iterator closure.
                 for handle in self.active_iterators.clone().into_iter().rev() {
                     self.get(handle);
-                    self.call(self.l.func(self.l.gen_first_func));
+                    self.call(self.l.func(self.l.gen_first_func + 3));
                 }
                 self.op(0x0F);
             }
