@@ -106,3 +106,30 @@ assert.equal(faulted.out.text, '', 'a failed actor turn cannot partially commit 
 assert.equal(faulted.host.count, 3);
 faulted.host.close();
 console.log('PASS: typed pipeline mismatch rejected and emitted mail rolled back on actor panic');
+
+
+const burst = compile(`
+define actor Burst as
+  receive(ActorMail<int> mail): void {
+    for (let i = 0; i <= ${10000}; i++) do
+      emit(mail.value);
+    done
+  }
+end
+define actor Sink as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+pub fnc main(): int {
+  val p = spawn Burst() pipe spawn Sink();
+  p.send(5);
+  return 0;
+}`);
+const overfull = await execute(burst);
+assert.match(overfull.fault, /^E_MAILBOX_FULL: actor emitted more than mailbox capacity in one turn in actor Burst#0$/);
+assert.equal(overfull.out.text, '', 'all 10000 staged emits are discarded when the 10001st is rejected');
+assert.equal(overfull.host.count, 2);
+overfull.host.close();
+assert.equal(overfull.host.memoryBytes, 0, 'worker host must release actor-owned memories on close');
+console.log('PASS: 10001 emissions fail bounded admission atomically without reaching downstream');
