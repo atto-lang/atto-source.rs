@@ -72,3 +72,31 @@ fn unicode_line_separators_cannot_hide_http_actor_after_comment() {
         assert!(!compile(&valid).expect("valid http identifier source").is_empty());
     }
 }
+
+#[test]
+fn unicode_comment_terminators_preserve_following_block_comment_and_http_gate() {
+    // The Logos lexer recognizes these as line boundaries. The earlier
+    // block-comment preprocessor must agree, preserving byte offsets.
+    for separator in ["\u{0085}", "\u{2028}", "\u{2029}"] {
+        let valid = format!(
+            "// inert line{separator}/* define http actor Hidden as end */\n\
+             fnc http(): int {{ return 42; }}\n\
+             pub fnc main(): int {{ return http(); }}"
+        );
+        assert!(frontend::parse(&valid).is_ok(), "separator {separator:?}");
+        assert!(!compile(&valid).expect("scalar object emitted").is_empty());
+
+        let blocked = format!(
+            "// inert line{separator}/* define http actor Hidden as end */\n\
+             define http actor Live as end"
+        );
+        rejected(&blocked);
+
+        let unclosed = format!("// inert line{separator}/* unclosed actor comment");
+        assert_eq!(
+            frontend::parse(&unclosed).unwrap_err().class,
+            "unterminated_comment",
+            "separator {separator:?}"
+        );
+    }
+}
