@@ -36,8 +36,10 @@ function viaNativeCompiler(file) {
 }
 
 function runGuest(bytes) {
-  assert.ok(WebAssembly.validate(bytes), 'actual guest module must validate');
+  // Construct before the generic validate assertion: engines provide an
+  // exact byte offset and operand-stack reason on invalid generated code.
   const mod = new WebAssembly.Module(bytes);
+  assert.ok(WebAssembly.validate(bytes), 'actual guest module must validate');
   let stdout = '';
   const atto = {
     print_i64: n => { stdout += String(n); },
