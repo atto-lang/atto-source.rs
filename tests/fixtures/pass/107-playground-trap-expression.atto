@@ -1,5 +1,6 @@
 // expect-exit: 7
-// expect-stdout: 5\nid must be nonnegative
+// expect-stdout: 5
+// expect-stdout: id must be nonnegative
 // Exact public playground preview body, executed against the candidate compiler.
 // SYNTAX PREVIEW — expression trap, Option and Result are not browser-lowered.
 // A caller writes "trap expression" to catch an ordinary throw as Option<T>.
