@@ -78,7 +78,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) => Some(I32),
+        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr => Some(I32),
         Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
     }
 }
@@ -415,6 +415,34 @@ impl Emit<'_> {
                 }
             }
             TExpr::EnumVal(i) => self.i32c(*i as i32),
+            TExpr::AdtNew { tag, payload, tmp } => {
+                self.i32c(16); // 8-aligned, fixed immutable tagged record
+                self.call(self.l.helper(H_ALLOC));
+                self.op(0x21); // local.set temp: each constructor allocates once
+                uleb(&mut self.code, *tmp as u64);
+                self.op(0x20);
+                uleb(&mut self.code, *tmp as u64);
+                self.i32c(*tag as i32);
+                field_op(&mut self.code, Type::Bool, 0, true);
+                if let Some(payload) = payload {
+                    self.op(0x20);
+                    uleb(&mut self.code, *tmp as u64);
+                    self.expr(payload);
+                    field_op(&mut self.code, payload.ty, 8, true);
+                }
+                self.op(0x20);
+                uleb(&mut self.code, *tmp as u64);
+            }
+            TExpr::AdtIs { obj, tag } => {
+                self.expr(obj);
+                field_op(&mut self.code, Type::Bool, 0, false);
+                self.i32c(*tag as i32);
+                self.op(0x46); // i32.eq
+            }
+            TExpr::AdtPayload(obj) => {
+                self.expr(obj);
+                field_op(&mut self.code, v.ty, 8, false);
+            },
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
