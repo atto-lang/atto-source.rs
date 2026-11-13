@@ -2139,6 +2139,69 @@ impl<'a> FnCx<'a> {
                 })
             }
             ExprKind::New(class, args) => self.new_object(class, args, pos)?,
+            ExprKind::ActorPipeline(stages) => {
+                // Admission only: do not generate a fake ActorRef or invoke a
+                // JavaScript-side pipeline interpreter for this source form.
+                if let Some(me) = self.actor_name() {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED",
+                        format!("actor pipeline cannot spawn stages inside actor '{me}'"),
+                    ));
+                }
+                if matches!(self.owner, Owner::FieldInit { .. }) {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED",
+                        "actor pipeline in a field initializer",
+                    ));
+                }
+                if !(2..=16).contains(&stages.len()) {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_SOURCE_LIMIT",
+                        "actor pipeline must have 2 to 16 stages",
+                    ));
+                }
+                let mut previous_payload = None;
+                for stage in stages {
+                    let index = match self.g.actor(stage) {
+                        Some(index) => index,
+                        None => {
+                            return Err(Diagnostic::new(
+                                pos,
+                                "E_UNBOUND",
+                                format!("unknown actor pipeline stage '{stage}'"),
+                            ))
+                        }
+                    };
+                    let actor = &self.g.actors[index as usize];
+                    if actor.receive_idx.is_none() {
+                        return Err(type_err(
+                            pos,
+                            format!("actor pipeline stage '{stage}' has no receive(ActorMail<T>) handler"),
+                        ));
+                    }
+                    if let Some(expected) = previous_payload {
+                        if expected != actor.payload {
+                            return Err(type_err(
+                                pos,
+                                format!(
+                                    "actor pipeline receive types mismatch at '{stage}': previous stage receives {}, next receives {}",
+                                    self.tn(expected),
+                                    self.tn(actor.payload),
+                                ),
+                            ));
+                        }
+                    }
+                    previous_payload = Some(actor.payload);
+                }
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNSUPPORTED",
+                    "actor pipeline parsed and receive types checked, but emitted message types, actor-origin forwarding and the browser guest ABI are not yet implemented",
+                ));
+            }
             ExprKind::Spawn(actor) => {
                 if let Some(me) = self.actor_name() {
                     return Err(Diagnostic::new(
