@@ -174,6 +174,10 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     }
     e.invalid_gen(); // invalid generator type
     e.close(); // pull loop
+    // A Wasm loop has a syntactically possible fallthrough regardless of the
+    // unreachable at the end of its body. The function returns i32, so its
+    // post-loop path must also be explicitly unreachable.
+    e.invalid_gen();
     e.op(0x0B);
     out.push((Sig(vec![I64], vec![I32]), e.code));
 
