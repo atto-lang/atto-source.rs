@@ -107,7 +107,7 @@ fn typed_emit_alone_must_not_generate_a_guest_without_forwarding_abi() {
     let source = program("spawn Parse()", "int");
     let error = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(error.code, "E_UNSUPPORTED");
-    assert!(error.message.contains("linked pipeline"), "{error}");
+    assert!(error.message.contains("linked nonterminal"), "{error}");
 }
 
 #[test]
