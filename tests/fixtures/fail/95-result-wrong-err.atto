@@ -1,0 +1,4 @@
+// expect-error: E_TYPE
+// java: rejects
+fnc value(): Result<int,string> { return Err(42); }
+pub fnc main(): int { return 0; }

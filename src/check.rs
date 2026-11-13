@@ -863,14 +863,14 @@ pub fn check(p: &Program) -> R<TProgram> {
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
+    let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
+        &|e| matches!(e.e, TExpr::AdtNew { .. })));
     Ok(TProgram {
         funcs,
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat
-            || funcs.iter().any(|f| any_in_stmts(&f.body,
-                &|e| matches!(e.e, TExpr::AdtNew { .. }))),
+        heap: !p.classes.is_empty() || concat || adt_alloc,
         globals,
         actors: tactors,
         strings,
@@ -1494,6 +1494,114 @@ impl<'a> FnCx<'a> {
                     self.tn(sty)
                 ),
             ));
+        }
+        self.moved = after;
+        Ok(TStmt::Block(vec![
+            TStmt::Set(tmp, subj),
+            TStmt::If(out, Some(vec![TStmt::Unreachable])),
+        ]))
+    }
+
+
+    /// Check a concrete tagged ADT match. Only v1 profiles are admitted:
+    /// Option<int> and Result<int,string>. Each variant has a unique tag;
+    /// the payload read occurs only inside its matching guarded arm.
+    fn match_adt(&mut self, subj: TE, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
+        let sty = subj.ty;
+        let tmp = self.temp(sty, pos)?;
+        let get = || TE { e: TExpr::Local(tmp), ty: sty };
+        let mut seen: BTreeSet<i64> = BTreeSet::new();
+        let mut covered = false;
+        let mut out = Vec::new();
+        let mut after: BTreeSet<u32> = BTreeSet::new();
+        for (i, arm) in arms.iter().enumerate() {
+            if covered {
+                return Err(Diagnostic::new(arm.pos, "E_MATCH",
+                    format!("unreachable match arm {}: prior arms cover every variant", i + 1)));
+            }
+            let (key, payload_name, payload_ty) = match &arm.pattern {
+                Pattern::Wild => (None, None, None),
+                Pattern::Bind(n) => (None, Some(n.as_str()), Some(sty)),
+                Pattern::Adt(name, bind) => {
+                    let (tag, needed) = match (sty, name.as_str()) {
+                        (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
+                        (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+                        (Type::OptionInt, "None") => (0, None),
+                        (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+                        _ => return Err(type_err(arm.pos,
+                            format!("variant '{name}' is not part of {}", self.tn(sty)))),
+                    };
+                    if bind.is_some() != needed.is_some() {
+                        return Err(Diagnostic::new(arm.pos, "E_ARITY",
+                            format!("pattern '{name}' has incorrect payload arity")));
+                    }
+                    (Some(tag), bind.as_deref(), needed)
+                }
+                _ => return Err(type_err(arm.pos,
+                    format!("pattern is not a variant of {}", self.tn(sty)))),
+            };
+            if key.is_some_and(|tag| seen.contains(&tag)) {
+                return Err(Diagnostic::new(arm.pos, "E_MATCH",
+                    format!("unreachable match arm {}: variant already covered", i + 1)));
+            }
+            let test = key.map(|tag| TE {
+                e: TExpr::AdtIs { obj: Box::new(get()), tag: tag as u32 },
+                ty: Type::Bool,
+            });
+            self.scopes.push(Vec::new());
+            let r = (|| -> R<(TE, Vec<TStmt>)> {
+                let mut body = Vec::new();
+                if let Some(name) = payload_name {
+                    let ty = payload_ty.expect("the pattern binds a value");
+                    let slot = self.declare(name, ty, false, arm.pos)?;
+                    let value = if key.is_none() {
+                        get()
+                    } else {
+                        TE { e: TExpr::AdtPayload(Box::new(get())), ty }
+                    };
+                    body.push(TStmt::Set(slot, value));
+                }
+                let guard = match &arm.guard {
+                    Some(g) => Some(self.cond(g, "match guard")?),
+                    None => None,
+                };
+                let at_arm = self.moved.clone();
+                body.extend(self.stmts(&arm.body)?);
+                if !returns(&body) {
+                    after.extend(self.moved.iter().copied());
+                }
+                self.moved = at_arm;
+                let truth = TE { e: TExpr::Bool(true), ty: Type::Bool };
+                let cond = match (test, guard) {
+                    (None, None) => truth,
+                    (Some(t), None) => t,
+                    (None, Some(g)) => g,
+                    (Some(t), Some(g)) => TE {
+                        e: TExpr::Ternary(
+                            Box::new(t), Box::new(g),
+                            Box::new(TE { e: TExpr::Bool(false), ty: Type::Bool }),
+                        ),
+                        ty: Type::Bool,
+                    },
+                };
+                Ok((cond, body))
+            })();
+            self.scopes.pop();
+            let (cond, body) = r?;
+            if arm.guard.is_none() {
+                match key {
+                    Some(k) => {
+                        seen.insert(k);
+                        if seen.len() == 2 { covered = true; }
+                    }
+                    None => covered = true,
+                }
+            }
+            out.push((cond, body));
+        }
+        if !covered {
+            return Err(Diagnostic::new(pos, "E_MATCH",
+                format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
         Ok(TStmt::Block(vec![
