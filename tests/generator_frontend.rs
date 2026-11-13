@@ -101,3 +101,18 @@ fn malformed_or_unsupported_generator_types_reject_without_a_guest_artifact() {
     let err = atto_compiler::compile("pub fnc main(): Generator<int> { return 0; }").unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED_TYPE");
 }
+
+#[test]
+fn plus_assign_desugars_to_checked_binary_addition_without_disabling_mutability_checks() {
+    use atto_compiler::ast::BinOp;
+    let p = parse("pub fnc main(): int { let sum = 0; sum += 41; return sum + 1; }");
+    assert!(matches!(&p.funcs[0].body[1], Stmt::Assign { name, value, .. }
+        if name == "sum" && matches!(&value.kind, ExprKind::Binary(BinOp::Add, _, _))));
+    let guest = atto_compiler::compile("pub fnc main(): int { let sum = 0; sum += 41; return sum + 1; }")
+        .expect("plain compound addition must compile to real Wasm");
+    assert!(guest.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(
+        atto_compiler::compile("pub fnc main(): int { val sum = 0; sum += 1; return sum; }")
+            .unwrap_err().code, "E_IMMUTABLE"
+    );
+}
