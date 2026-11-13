@@ -8,10 +8,10 @@ use atto_compiler::parser::Parser;
 fn program(expression: &str, middle_type: &str) -> String {
     format!(
         "define actor Parse as\n\
-           receive(ActorMail<int> mail): void {{ return; }}\n\
+           receive(ActorMail<int> mail): void {{ emit(mail.value); }}\n\
          end\n\
          define actor Validate as\n\
-           receive(ActorMail<{middle_type}> mail): void {{ return; }}\n\
+           receive(ActorMail<{middle_type}> mail): void {{ emit(mail.value); }}\n\
          end\n\
          define actor Sink as\n\
            receive(ActorMail<int> mail): void {{ return; }}\n\
@@ -78,4 +78,41 @@ fn legacy_condition_pipe_stays_boolean_or_not_actor_composition() {
     let source = "pub fnc main(): int { if true | false then return 1; fi return 0; }";
     let wasm = atto_compiler::compile(source).unwrap();
     assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+}
+
+#[test]
+fn connecting_a_sink_without_emission_is_rejected() {
+    let source = program("spawn Sink() pipe spawn Parse()", "int");
+    let error = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(error.code, "E_TYPE");
+    assert!(error.message.contains("does not emit"), "{error}");
+}
+
+#[test]
+fn one_actor_cannot_emit_two_incompatible_payload_types() {
+    let source = program("spawn Parse() pipe spawn Validate()", "int");
+    let source = source.replacen(
+        "emit(mail.value);",
+        "emit(mail.value); emit(true);",
+        1,
+    );
+    let error = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(error.code, "E_TYPE");
+    assert!(error.message.contains("incompatible payloads"), "{error}");
+}
+
+#[test]
+fn typed_emit_alone_must_not_generate_a_guest_without_forwarding_abi() {
+    let source = program("spawn Parse()", "int");
+    let error = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(error.code, "E_UNSUPPORTED");
+    assert!(error.message.contains("forwarding"), "{error}");
+}
+
+#[test]
+fn source_emit_cannot_be_used_as_an_ordinary_function() {
+    let source = "pub fnc main(): int { emit(41); return 0; }";
+    let error = atto_compiler::compile(source).unwrap_err();
+    assert_eq!(error.code, "E_UNSUPPORTED");
+    assert!(error.message.contains("receive"), "{error}");
 }
