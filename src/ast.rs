@@ -297,6 +297,8 @@ pub enum ExprKind {
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Postfix `?`: unwrap Ok/Some or propagate Err/None from the caller.
+    Propagate(Box<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
     Call(String, Vec<Expr>),
     /// `self`
