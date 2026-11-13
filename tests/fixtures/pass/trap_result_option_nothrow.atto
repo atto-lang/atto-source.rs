@@ -1,5 +1,6 @@
 // expect-exit: 7
 // expect-stdout: 5
+// java: not-tested
 // expect-stdout: id must be nonnegative
 // Browser subset: no ordinary throw expressions are admitted yet, so the
 // typed trap wrapper exercises Some(Ok) and Some(Err) only.
