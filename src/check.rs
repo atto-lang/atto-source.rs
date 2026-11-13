@@ -410,6 +410,20 @@ fn const_init(e: &Expr) -> bool {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // The parser retains explicit generator syntax in the AST, but guest ABI
+    // v2 has no resumable generator frame, next/close or delegation lowering.
+    // Reject *before* signature registration or Wasm emission: never create
+    // an eager fake iterator, silently skip yields, or publish a partial guest.
+    for f in &p.funcs {
+        if f.is_generator {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                "generator continuations, yield and yield* are not lowered to guest Wasm yet"));
+        }
+        if f.ret == Type::GeneratorInt || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
+                "Generator<int> requires a compiled generator continuation"));
+        }
+    }
     let tn = &p.type_names;
     // ---- one namespace for functions, classes, enums and actors
     let mut seen: BTreeMap<&str, Pos> = BTreeMap::new();
@@ -1196,6 +1210,14 @@ impl<'a> FnCx<'a> {
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) => {
+                return Err(Diagnostic::new(*pos, "E_YIELD",
+                    "yield and yield* require a compiled generator continuation"));
+            }
+            Stmt::ForIn { pos, .. } => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "for-in iteration requires a compiled iterator continuation"));
+            }
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {
