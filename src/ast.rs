@@ -27,6 +27,8 @@ pub enum Type {
     /// Other generic instantiations reject without emitting an artifact.
     OptionInt,
     ResultIntStr,
+    /// Frontend-only generator iterator type. Not yet lowered to guest Wasm.
+    GeneratorInt,
 }
 
 impl Type {
@@ -41,6 +43,7 @@ impl Type {
             Type::Str => "string",
             Type::OptionInt => "Option<int>",
             Type::ResultIntStr => "Result<int,string>",
+            Type::GeneratorInt => "Generator<int>",
             _ => "object",
         }
     }
@@ -140,6 +143,8 @@ pub struct ActorDecl {
 pub struct Func {
     pub name: String,
     pub pos: Pos,
+    /// Explicit `fnc *gen`; never inferred merely from seeing `yield`.
+    pub is_generator: bool,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
@@ -185,6 +190,10 @@ pub enum Stmt {
         pos: Pos,
     },
     Expr(Expr),
+    /// Single-item generator suspension.
+    Yield(Expr, Pos),
+    /// Lazy delegation to an iterable; distinct from unary multiplication.
+    YieldFrom(Expr, Pos),
     Return(Option<Expr>, Pos),
     If {
         arms: Vec<(Expr, Vec<Stmt>)>,
@@ -204,6 +213,13 @@ pub enum Stmt {
         init: Option<Box<Stmt>>,
         cond: Option<Expr>,
         update: Option<Box<Stmt>>,
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
+    /// `for item in generator do ... done`, sequential demand-driven iteration.
+    ForIn {
+        name: String,
+        source: Expr,
         body: Vec<Stmt>,
         pos: Pos,
     },
