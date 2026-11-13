@@ -1,5 +1,10 @@
 // expect-error: E_UNSUPPORTED
 // java: rejects
-fnc *gen base(): Generator<int> { yield 1; }
-fnc *gen nested(): Generator<int> { yield* base(); }
+// Parameter-capturing generator frames and loop-local suspension are still gated.
+fnc *gen base(int limit): Generator<int> {
+  for (let i = 1; i <= limit; i++) do
+    yield i;
+  done
+}
+fnc *gen nested(): Generator<int> { yield* base(4); }
 pub fnc main(): int { return 0; }
