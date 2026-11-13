@@ -1783,6 +1783,7 @@ impl<'a> FnCx<'a> {
                 ty: Type::Int,
             }),
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
+            ExprKind::Trap(inner) => self.trap_nothrow(inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             // receivers that are not names recurse; keep that path thin
