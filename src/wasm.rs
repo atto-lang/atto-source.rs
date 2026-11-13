@@ -520,9 +520,33 @@ impl Emit<'_> {
                 self.i32c(*a as i32);
                 self.call(self.l.import(Import::ActorSpawn));
             }
-            // Must remain unreachable: check() rejects actor-origin emits
-            // until authenticated forwarding exists. Never simulate send.
-            TExpr::Emit(_) => self.op(0x00), // Wasm unreachable, defensive
+            TExpr::Pipeline { stages, handles } => {
+                // Build every actor in a disjoint Wasm instance via the
+                // tenant host; link consecutive refs before sending mail.
+                // Every Wasm local is function-scoped; no handle is forged.
+                debug_assert_eq!(stages.len(), handles.len());
+                for (i, (&actor, &slot)) in stages.iter().zip(handles.iter()).enumerate() {
+                    self.i32c(actor as i32);
+                    self.call(self.l.import(Import::ActorSpawn));
+                    self.op(0x21); // local.set own scoped handle
+                    uleb(&mut self.code, slot as u64);
+                    if i > 0 {
+                        self.op(0x20); // previous stage
+                        uleb(&mut self.code, handles[i - 1] as u64);
+                        self.op(0x20); // new successor
+                        uleb(&mut self.code, slot as u64);
+                        self.call(self.l.import(Import::ActorLink));
+                    }
+                }
+                self.op(0x20); // return first actor ref for pipeline.send(...)
+                uleb(&mut self.code, handles[0] as u64);
+            }
+            TExpr::Emit(value) => {
+                // Source value comes from this actor's checked receive body.
+                // Only int->int stages are admitted in pipeline v1.
+                self.expr(value);
+                self.call(self.l.import(Import::ActorEmit));
+            }
             TExpr::Send { target, value } => {
                 self.expr(target);
                 self.expr(value);
@@ -902,6 +926,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintF64 => Sig(vec![F64], vec![]),
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![]),
+            Import::ActorLink => Sig(vec![I32, I32], vec![]),
+            Import::ActorEmit => Sig(vec![I64], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1137,6 +1163,14 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         for actor in &p.actors {
             name(&mut a, &actor.name);
         }
+        section(&mut out, 0, a);
+    }
+    if p.imports.contains(&Import::ActorLink) {
+        // Explicit, bounded opt-in extension to v2 scalar actor execution.
+        // This is NOT the future resumable actor ABI v3 / actor_resume.
+        let mut a = Vec::new();
+        name(&mut a, "atto.pipeline.v1");
+        a.push(1);
         section(&mut out, 0, a);
     }
     out
