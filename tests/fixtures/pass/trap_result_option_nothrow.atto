@@ -1,0 +1,36 @@
+// expect-exit: 7
+// expect-stdout: 5
+// expect-stdout: id must be nonnegative
+// Browser subset: no ordinary throw expressions are admitted yet, so the
+// typed trap wrapper exercises Some(Ok) and Some(Err) only.
+
+fnc checked_id(int id): Result<int, String> {
+  if id < 0 then
+    return Err("id must be nonnegative");
+  fi
+  return Ok(id);
+}
+
+fnc print_checked(Result<int, String> outcome): void {
+  match outcome over
+    on Ok(id) -> { stdio.println(id); }
+    on Err(message) -> { stdio.println(message); }
+  end
+  return;
+}
+
+fnc print_trapped(Option<Result<int, String>> outcome): void {
+  match outcome over
+    on Some(result) -> { print_checked(result); }
+    on None -> { stdio.println("ordinary throw caught"); }
+  end
+  return;
+}
+
+pub fnc main(): int {
+  val Option<Result<int, String>> success = trap checked_id(5);
+  val Option<Result<int, String>> invalid = trap checked_id(-1);
+  print_trapped(success);
+  print_trapped(invalid);
+  return 7;
+}
