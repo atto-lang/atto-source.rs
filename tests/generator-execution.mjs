@@ -61,6 +61,8 @@ function runGuest(bytes) {
 for (const [name, expected, output] of [
   ['128-generator-native-yield.atto', 42n, '42\n'],
   ['129-generator-close-reuse.atto', 42n, ''],
+  ['130-generator-early-return-close.atto', 42n, ''],
+  ['131-generator-empty.atto', 42n, ''],
 ]) {
   const file = join('tests/fixtures/pass', name);
   const src = readFileSync(file, 'utf8');
@@ -77,6 +79,7 @@ for (const [name, code] of [
   ['128-generator-delegation-not-yet-lowered.atto', 'E_UNSUPPORTED'],
   ['129-generator-ownership-no-discard.atto', 'E_GENERATOR_OWNERSHIP'],
   ['130-generator-scalar-iteration.atto', 'E_TYPE'],
+  ['131-generator-forin-throw-not-safe.atto', 'E_UNSUPPORTED'],
 ]) {
   const file = join('tests/fixtures/fail', name);
   const src = readFileSync(file, 'utf8');
