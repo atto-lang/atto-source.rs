@@ -1031,19 +1031,39 @@ pub fn check(p: &Program) -> R<TProgram> {
         });
     }
 
-    // Pipeline v1 is explicitly opt-in and only the statically admitted
-    // integer pipeline may request actor-origin forwarding capabilities.
-    let has_pipeline = funcs.iter().flatten().any(|f|
-        any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Pipeline { .. })));
-    if let Some((index, actor)) = g.actors.iter().enumerate()
-        .find(|(_, a)| a.emitted.is_some_and(|ty| ty != Type::Int) || (a.emitted.is_some() && !has_pipeline)) {
-        return Err(Diagnostic::new(p.actors[index].receive.as_ref().unwrap().pos,
-            "E_UNSUPPORTED",
-            if actor.emitted != Some(Type::Int) {
-                "actor pipeline v1 cannot forward a non-int payload"
-            } else {
-                "actor emit requires a linked pipeline in this bounded Wasm contract"
-            }));
+    // Pipeline v1 is explicitly opt-in. An actor that calls emit() must
+    // *always* be a linked, nonterminal pipeline stage. Merely having some
+    // unrelated pipeline in this module does not give an orphan actor a
+    // forwarding capability. Likewise a directly spawned emitter, or an
+    // emitting actor placed at the end of any chain, would deterministically
+    // fail at E_PIPE_SINK during execution. Reject these topologies before
+    // guest codegen so the caller never receives an unusable ActorRef.
+    for (index, actor) in g.actors.iter().enumerate() {
+        let Some(emitted_type) = actor.emitted else { continue };
+        let pos = p.actors[index].receive.as_ref().unwrap().pos;
+        if emitted_type != Type::Int {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "actor pipeline v1 cannot forward a non-int payload"));
+        }
+        let linked_source = funcs.iter().flatten().any(|f|
+            any_in_stmts(&f.body, &|e|
+                matches!(&e.e, TExpr::Pipeline { stages, .. }
+                    if stages.iter().take(stages.len() - 1).any(|a| *a as usize == index))));
+        if !linked_source {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "actor emit requires a linked nonterminal pipeline stage"));
+        }
+        let terminal_stage = funcs.iter().flatten().any(|f|
+            any_in_stmts(&f.body, &|e|
+                matches!(&e.e, TExpr::Pipeline { stages, .. }
+                    if stages.last().is_some_and(|a| *a as usize == index))));
+        let direct_spawn = funcs.iter().flatten().any(|f|
+            any_in_stmts(&f.body, &|e|
+                matches!(e.e, TExpr::Spawn(a) if a as usize == index)));
+        if terminal_stage || direct_spawn {
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                "actor with emit cannot be spawned without a downstream pipeline link"));
+        }
     }
     imports.sort();
     imports.dedup();
