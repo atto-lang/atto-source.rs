@@ -86,6 +86,49 @@ try{
   console.log('PASS browser: recursion, for loop and granted stdio imports');
   assert.match(await run('pub fnc main(): int {\n  stdio.println("hi");\n  val x: int = 9223372036854775807;\n  return x + 1;\n}','E_PANIC'),/hi\nE_PANIC: integer overflow/);
   console.log('PASS browser: checked int overflow panics with output preserved');
+  // Real Chromium: compiler-produced Wasm guest tag catches only ordinary
+  // Error(message), preserving all successful Result values and fatal traps.
+  const callerTrap =
+    'fnc checked_id(int id): Result<int,string> {\\n' +
+    '  if id < 0 then return Err("bad id"); fi\\n' +
+    '  return Ok(id);\\n' +
+    '}\\n' +
+    'pub fnc main(): int {\\n' +
+    '  val Option<Result<int,string>> x = trap checked_id(-1);\\n' +
+    '  match x over\\n' +
+    '    on Some(result) -> { match result over\\n' +
+    '      on Ok(n) -> { return n; }\\n' +
+    '      on Err(msg) -> { stdio.println(msg); return 7; }\\n' +
+    '    end }\\n' +
+    '    on None -> { return 0; }\\n' +
+    '  end\\n' +
+    '}';
+  assert.match(await run(callerTrap, 'main() -> 7'), /^bad id\\nmain\\(\\) -> 7$/);
+  console.log('PASS browser: trap Some(Err) remains Result data');
+
+  const ordinaryThrow =
+    'fnc leaf(): int { throw Error("failure"); }\\n' +
+    'fnc wrapper(): int { return leaf(); }\\n' +
+    'pub fnc main(): int {\\n' +
+    '  match trap wrapper() over\\n' +
+    '    on Some(v) -> { return v; }\\n' +
+    '    on None -> { return 9; }\\n' +
+    '  end\\n' +
+    '}';
+  assert.match(await run(ordinaryThrow, 'main() -> 9'), /main\\(\\) -> 9$/);
+  console.log('PASS browser: private guest Error unwinds across calls to None');
+
+  const trappedPanic =
+    'pub fnc main(): int {\\n' +
+    '  val n: int = 9223372036854775807;\\n' +
+    '  match trap (n + 1) over\\n' +
+    '    on Some(v) -> { return v; }\\n' +
+    '    on None -> { return 0; }\\n' +
+    '  end\\n' +
+    '}';
+  assert.match(await run(trappedPanic, 'E_PANIC'), /E_PANIC: integer overflow/);
+  console.log('PASS browser: trap never catches checked arithmetic panic');
+
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: error recovery restores valid execution');
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
