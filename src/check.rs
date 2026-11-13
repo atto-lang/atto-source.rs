@@ -490,7 +490,15 @@ pub fn check(p: &Program) -> R<TProgram> {
             precheck_generator_body(&f.body, &p.funcs)?;
             // Build the exact bounded resume graph before the ABI-v2 gate.
             // It is a compiler IR only; no generator guest artifact is emitted.
-            let _plan = crate::generator_cfg::lower(&f.body)?;
+            let plan = crate::generator_cfg::lower(&f.body)?;
+            // Preflight the AST-visible slots. The final codegen must repeat
+            // this check using all typed locals and hidden scratch slots.
+            let declared_locals = plan.instructions.iter().filter(|op|
+                matches!(op, crate::generator_cfg::Instruction::Evaluate(Stmt::Bind { .. }))
+            ).count() as u32;
+            let _frame = crate::generator_frame::GeneratorFrameLayout::new(
+                f.params.len() as u32, declared_locals, plan.delegate_slots, f.pos
+            )?;
             return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
                 "generator continuations, yield and yield* are not lowered to guest Wasm yet"));
         }
