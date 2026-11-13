@@ -1101,6 +1101,14 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
             }
+            Some("throw") => {
+                self.advance();
+                // Only the typed Error constructor is admitted by the
+                // checker. A raw string is never silently throwable.
+                let error = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Throw(error, pos))
+            }
             Some("if") => self.parse_if(),
             Some("while") => {
                 self.advance();
@@ -1136,6 +1144,12 @@ impl Parser {
             }
             Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
+            }
+            Some("trap") => {
+                // Caller-side trap also works in expression-statement position.
+                let e = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(e))
             }
             Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
@@ -1801,9 +1815,11 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
-            Tok::Ident(s) if s == "trap" => return Err(unsupported(
-                pos, "caller-side 'trap expression' needs typed ordinary-throw unwinding; not yet lowered",
-            )),
+            Tok::Ident(s) if s == "trap" => {
+                self.advance();
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Trap(Box::new(inner)), pos });
+            }
             _ => return self.parse_postfix(),
         };
         self.advance();
