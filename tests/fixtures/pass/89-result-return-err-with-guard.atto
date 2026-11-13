@@ -1,4 +1,5 @@
 // expect-exit: 4
+// expect-stdout: oops
 fnc make(): Result<int,string> { return Err("oops"); }
 pub fnc main(): int {
   match make() over
