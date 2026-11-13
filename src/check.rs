@@ -425,7 +425,93 @@ fn const_init(e: &Expr) -> bool {
     }
 }
 
+/// Validate locally decidable generator item/delegation types before the
+/// deliberate guest-Wasm continuation gate. This is not full expression
+/// inference: unresolved/compound expressions remain fail-closed until the
+/// generator IR and ownership-aware checker are implemented.
+fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
+    for stmt in body {
+        match stmt {
+            Stmt::Yield(expr, _) => {
+                if matches!(&expr.kind, ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_)) {
+                    return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                        "Generator<int> can only yield int items"));
+                }
+            }
+            Stmt::YieldFrom(expr, _) => {
+                match &expr.kind {
+                    ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_) => {
+                        return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                            "yield* requires a generator/iterator, not a scalar"));
+                    }
+                    ExprKind::Call(name, args) => {
+                        if let Some(target) = funcs.iter().find(|f|
+                            f.name == *name && f.params.len() == args.len())
+                        {
+                            if !target.is_generator || target.ret != Type::GeneratorInt {
+                                return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                                    format!("yield* target '{name}' is not a Generator<int>")));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Stmt::If { arms, otherwise, .. } => {
+                for (_, branch) in arms {
+                    precheck_generator_body(branch, funcs)?;
+                }
+                if let Some(branch) = otherwise {
+                    precheck_generator_body(branch, funcs)?;
+                }
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::ForIn { body, .. } | Stmt::Block(body) => {
+                precheck_generator_body(body, funcs)?;
+            }
+            Stmt::For { body, .. } => precheck_generator_body(body, funcs)?,
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    precheck_generator_body(&arm.body, funcs)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
+    // The lexer/parser preserve explicit generator AST nodes, but guest ABI v2
+    // has no bounded continuation state, iterator next or close operation.
+    // Fail closed before signature registration and never emit eager iterators.
+    for f in &p.funcs {
+        if f.is_generator {
+            precheck_generator_body(&f.body, &p.funcs)?;
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                "generator continuations, yield and yield* are not lowered to guest Wasm yet"));
+        }
+        if f.ret == Type::GeneratorInt || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
+                "Generator<int> requires a compiled generator continuation"));
+        }
+    }
+    for c in &p.classes {
+        if c.methods.iter().any(|m| m.ret == Type::GeneratorInt
+            || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
+            || c.ctor.as_ref().is_some_and(|ctor|
+                ctor.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
+                "generator methods and parameters require a compiled iterator continuation"));
+        }
+    }
+    for a in &p.actors {
+        if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
+            || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
+                "actor generator methods require a compiled iterator continuation"));
+        }
+    }
     let tn = &p.type_names;
     // ---- one namespace for functions, classes, enums and actors
     let mut seen: BTreeMap<&str, Pos> = BTreeMap::new();
@@ -1231,6 +1317,14 @@ impl<'a> FnCx<'a> {
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
             Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
+            Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) => {
+                return Err(Diagnostic::new(*pos, "E_YIELD",
+                    "yield and yield* require a compiled generator continuation"));
+            }
+            Stmt::ForIn { pos, .. } => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "for-in iteration requires a compiled iterator continuation"));
+            }
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {

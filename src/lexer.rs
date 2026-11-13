@@ -38,9 +38,12 @@ pub enum Tok {
     Ge,
     Plus,
     PlusPlus,
+    PlusAssign,
     Minus,
     MinusMinus,
     Star,
+    /// Contiguous `yield*` delegation token; whitespace makes it two tokens.
+    YieldStar,
     Slash,
     Bang,
     Question,
@@ -123,7 +126,15 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 s.push(chars[i]);
                 bump!();
             }
-            out.push(Token { tok: Tok::Ident(s), pos });
+            // Generator delegation is a single contiguous lexical spelling.
+            // Do not consume a separated star: `yield *value` is not `yield*`.
+            let tok = if s == "yield" && chars.get(i) == Some(&'*') {
+                bump!();
+                Tok::YieldStar
+            } else {
+                Tok::Ident(s)
+            };
+            out.push(Token { tok, pos });
             continue;
         }
         if c.is_ascii_digit() {
@@ -282,6 +293,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('-', Some('-')) => (Tok::MinusMinus, 2),
             ('-', _) => (Tok::Minus, 1),
             ('+', Some('+')) => (Tok::PlusPlus, 2),
+            ('+', Some('=')) => (Tok::PlusAssign, 2),
             ('+', _) => (Tok::Plus, 1),
             ('.', _) => (Tok::Dot, 1),
             ('=', Some('=')) => (Tok::EqEq, 2),

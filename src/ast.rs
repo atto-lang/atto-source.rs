@@ -30,6 +30,8 @@ pub enum Type {
     /// First nested ADT profile: Some(Result<int,string>) or None.
     /// Generic ADT instantiations remain deliberately restricted.
     OptionResultIntStr,
+    /// Frontend-only generator iterator type, not yet lowered to Wasm.
+    GeneratorInt,
 }
 
 impl Type {
@@ -45,6 +47,7 @@ impl Type {
             Type::OptionInt => "Option<int>",
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
+            Type::GeneratorInt => "Generator<int>",
             _ => "object",
         }
     }
@@ -144,6 +147,8 @@ pub struct ActorDecl {
 pub struct Func {
     pub name: String,
     pub pos: Pos,
+    /// Explicit `fnc *gen` modifier; not inferred from `yield`.
+    pub is_generator: bool,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
@@ -192,6 +197,8 @@ pub enum Stmt {
     /// Ordinary guest failure. The checker admits only throw Error(string).
     /// Wasm's fatal traps, panics and host exceptions are never this signal.
     Throw(Expr, Pos),
+    Yield(Expr, Pos),
+    YieldFrom(Expr, Pos),
     Return(Option<Expr>, Pos),
     If {
         arms: Vec<(Expr, Vec<Stmt>)>,
@@ -211,6 +218,13 @@ pub enum Stmt {
         init: Option<Box<Stmt>>,
         cond: Option<Expr>,
         update: Option<Box<Stmt>>,
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
+    /// Pull-driven `for value in generator do ... done` iteration.
+    ForIn {
+        name: String,
+        source: Expr,
         body: Vec<Stmt>,
         pos: Pos,
     },
