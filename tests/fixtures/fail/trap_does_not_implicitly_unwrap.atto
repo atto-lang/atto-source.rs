@@ -1,5 +1,5 @@
 // expect-error: E_TYPE
-// java: rejects
+// java: not-tested
 fnc checked_id(int id): Result<int, string> {
   return Ok(id);
 }
