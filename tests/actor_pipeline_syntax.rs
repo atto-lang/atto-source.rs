@@ -43,7 +43,7 @@ fn both_spellings_and_mixed_aliases_build_the_same_ordered_ast() {
             other => panic!("unexpected AST node: {other:?}"),
         }
         let wasm = atto_compiler::compile(&source).expect("typed int pipeline must emit guest");
-        assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
         assert!(wasm.windows(b"atto.pipeline.v1".len()).any(|w| w == b"atto.pipeline.v1"),
             "guest must opt into the bounded actor pipeline v1 extension");
     }
@@ -124,7 +124,7 @@ fn executable_linear_pipe_emits_only_explicit_bounded_guest_abi() {
         "spawn Parse() pipe spawn Validate() pipe spawn Sink()", "int"
     ).replace("return 0;", "pipeline.send(41); return 0;");
     let wasm = atto_compiler::compile(&source).unwrap();
-    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
     assert!(wasm.windows(b"atto.pipeline.v1".len()).any(|w| w == b"atto.pipeline.v1"));
     assert!(!wasm.windows(b"atto.actor.abi".len()).any(|w| w == b"atto.actor.abi"),
         "pipeline-v1 extension must never masquerade as resumable actor ABI v3");
