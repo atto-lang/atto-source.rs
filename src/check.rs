@@ -224,12 +224,18 @@ pub struct TFunc {
     pub body: Vec<TStmt>,
 }
 
-/// Restricted, fully typed first executable generator profile. All values
-/// are checked integer literals, evaluated upon pull (never at creation).
+/// Fully resolved literal-yield or zero-argument generator-delegation step.
+/// A delegated child is created only when the outer next() reaches this PC.
+#[derive(Clone, Debug)]
+pub enum TGenStep {
+    Yield(TE),
+    Delegate(u32),
+}
+
 #[derive(Clone, Debug)]
 pub struct TGenerator {
     pub function: u32,
-    pub items: Vec<TE>,
+    pub steps: Vec<TGenStep>,
 }
 
 /// One actor type: its state initializers and receive handler.
@@ -531,6 +537,40 @@ fn generator_forin_safe_body(body: &[Stmt]) -> bool {
     })
 }
 
+/// Reject delegation cycles before code generation so an actor cannot
+/// recursively allocate child frames without ever yielding an item.
+/// The admitted graph is statically resolved and each frame has at most
+/// one live delegated child; depth is bounded independently of wasm stacks.
+fn validate_generator_graph(gens: &[TGenerator], p: &Program) -> R<()> {
+    fn visit(node: usize, depth: u32, colors: &mut [u8],
+             gens: &[TGenerator], p: &Program) -> R<()> {
+        if colors[node] == 1 {
+            return Err(Diagnostic::new(p.funcs[node].pos, "E_GENERATOR_CYCLE",
+                "generator yield* delegation must be acyclic"));
+        }
+        if colors[node] == 2 { return Ok(()); }
+        if depth > 64 {
+            return Err(Diagnostic::new(p.funcs[node].pos, "E_NESTING",
+                "generator delegation chain exceeds 64 frames"));
+        }
+        colors[node] = 1;
+        if let Some(gen) = gens.iter().find(|g| g.function as usize == node) {
+            for step in &gen.steps {
+                if let TGenStep::Delegate(child) = step {
+                    visit(*child as usize, depth + 1, colors, gens, p)?;
+                }
+            }
+        }
+        colors[node] = 2;
+        Ok(())
+    }
+    let mut colors = vec![0; p.funcs.len()];
+    for g in gens {
+        visit(g.function as usize, 1, &mut colors, gens, p)?;
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     // The lexer/parser preserve explicit generator AST nodes, but guest ABI v2
     // has no bounded continuation state, iterator next or close operation.
@@ -549,20 +589,24 @@ pub fn check(p: &Program) -> R<TProgram> {
             let _frame = crate::generator_frame::GeneratorFrameLayout::new(
                 f.params.len() as u32, declared_locals, plan.delegate_slots, f.pos
             )?;
-            // Initial executable profile: only no-parameter, finite pure
-            // int literal yields. Other generator CFGs still reject here.
-            // No capture/borrow, delegation or nested calls can be accepted
-            // until typed continuation frames and unwind code are complete.
-            let admitted = f.params.is_empty() && f.body.iter().enumerate().all(|(i, stmt)| {
-                match stmt {
-                    Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) => *n <= i64::MAX as u64,
-                    Stmt::Return(None, _) => i + 1 == f.body.len(),
-                    _ => false,
-                }
-            });
+            // This second executable profile adds at most one lazy delegate
+            // slot per finite zero-capture generator. Cycles are rejected
+            // after all signatures have been registered.
+            let admitted = f.params.is_empty() && plan.delegate_slots <= 1
+                && f.body.iter().enumerate().all(|(i, stmt)| {
+                    match stmt {
+                        Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) =>
+                            *n <= i64::MAX as u64,
+                        Stmt::YieldFrom(Expr { kind: ExprKind::Call(name, args), .. }, _) =>
+                            args.is_empty() && p.funcs.iter().any(|target|
+                                target.is_generator && target.name == *name && target.params.is_empty()),
+                        Stmt::Return(None, _) => i + 1 == f.body.len(),
+                        _ => false,
+                    }
+                });
             if !admitted {
                 return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
-                    "this generator requires typed continuation locals, effects or yield* lowering"));
+                    "this generator requires typed suspension locals, parameters or multiple delegates"));
             }
         }
         if (!f.is_generator && f.ret == Type::GeneratorInt)
@@ -833,14 +877,23 @@ pub fn check(p: &Program) -> R<TProgram> {
     for (i, f) in p.funcs.iter().enumerate() {
         let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
         if f.is_generator {
-            // This slice is compiled directly into native Wasm resume code,
-            // with checked, signed 64-bit yielded literals and no captures.
-            let items = f.body.iter().filter_map(|stmt| match stmt {
+            // Resolve child generator function IDs at compile time. The
+            // runtime will materialize a child handle only on the first pull
+            // through its delegated resume PC.
+            let steps = f.body.iter().filter_map(|stmt| match stmt {
                 Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) =>
-                    Some(TE { e: TExpr::I64(*n as i64), ty: Type::Int }),
+                    Some(TGenStep::Yield(TE {
+                        e: TExpr::I64(*n as i64), ty: Type::Int
+                    })),
+                Stmt::YieldFrom(Expr { kind: ExprKind::Call(name, args), .. }, _) => {
+                    assert!(args.is_empty());
+                    let &(idx, _, _) = g.sigs.get(&(name.clone(), 0))
+                        .expect("preflight requires declared generator target");
+                    Some(TGenStep::Delegate(idx))
+                }
                 _ => None,
             }).collect();
-            generators.push(TGenerator { function: i as u32, items });
+            generators.push(TGenerator { function: i as u32, steps });
             funcs[i] = Some(TFunc {
                 name: f.name.clone(), params, ret,
                 locals: Vec::new(), body: Vec::new(),
@@ -1048,6 +1101,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         });
     }
 
+    validate_generator_graph(&generators, p)?;
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
