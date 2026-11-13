@@ -90,14 +90,14 @@ fn malformed_or_unsupported_generator_types_reject_without_a_guest_artifact() {
     ] {
         assert!(atto_compiler::compile(src).is_err(), "{src}");
     }
-    for src in [
-        SAMPLE,
-        "fnc *gen foo(): Generator<int> { yield 1; } pub fnc main(): int { return 0; }",
-    ] {
-        let err = atto_compiler::compile(src).expect_err("no guest artifact until lowering exists");
-        assert_eq!(err.code, "E_UNSUPPORTED", "{src}");
-        assert!(err.message.contains("continuations"), "{src}");
-    }
+    // Delegation still requires typed child continuation ownership and must
+    // fail closed. Pure, finite int generators now have real guest Wasm.
+    let err = atto_compiler::compile(SAMPLE).expect_err("yield* is not executable yet");
+    assert_eq!(err.code, "E_UNSUPPORTED");
+    let executable = atto_compiler::compile(
+        "fnc *gen foo(): Generator<int> { yield 1; } pub fnc main(): int { return 0; }"
+    ).expect("finite int generator must compile to actual Wasm");
+    assert!(executable.starts_with(b"\0asm\x01\0\0\0"));
     let err = atto_compiler::compile("pub fnc main(): Generator<int> { return 0; }").unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED_TYPE");
 }
