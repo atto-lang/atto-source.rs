@@ -30,6 +30,7 @@ pub const PANIC_OVERFLOW: i32 = 1;
 /// Reserved ABI value; current admitted expressions cannot generate this panic.
 pub const PANIC_DIV_ZERO: i32 = 2;
 pub const PANIC_HEAP: i32 = 3;
+pub const PANIC_GENERATOR: i32 = 4;
 /// Fixed memory size, in 64 KiB pages, of a module that allocates objects.
 pub const HEAP_PAGES: u32 = 16;
 
@@ -80,7 +81,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Float => Some(F64),
         Type::Str => Some(I64),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
-        Type::GeneratorInt => unreachable!("generator continuations must be rejected before Wasm lowering"),
+        Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
     }
 }
@@ -125,6 +126,11 @@ struct Layout {
     str_base: u32,
     /// global index of actor-state global 0
     state_base: u32,
+    /// Per-instance free-list for 32-byte generator continuation frames.
+    gen_free_global: Option<u32>,
+    /// Function index within source funcs+runtime helpers: first appended
+    /// generator operation is new(); then checked_ptr, next, close.
+    gen_first_func: u32,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -172,6 +178,9 @@ struct Emit<'a> {
     /// `Some(..)` when compiling a void `main` export: plain `return` must
     /// still produce the exported i64 status 0.
     void_main: bool,
+    /// Owned generator handles active in nested for-in loops. Function-level
+    /// returns close these in reverse order before exiting.
+    active_iterators: Vec<u32>,
 }
 
 impl Emit<'_> {
@@ -203,6 +212,46 @@ impl Emit<'_> {
     fn close(&mut self) {
         self.op(0x0B);
         self.frames.pop();
+    }
+
+    fn get(&mut self, slot: u32) {
+        self.op(0x20);
+        uleb(&mut self.code, slot as u64);
+    }
+    fn set(&mut self, slot: u32) {
+        self.op(0x21);
+        uleb(&mut self.code, slot as u64);
+    }
+    fn global_get(&mut self, slot: u32) {
+        self.op(0x23);
+        uleb(&mut self.code, slot as u64);
+    }
+    fn global_set(&mut self, slot: u32) {
+        self.op(0x24);
+        uleb(&mut self.code, slot as u64);
+    }
+    fn load_i32(&mut self, offset: u32) {
+        self.op(0x28);
+        uleb(&mut self.code, 2);
+        uleb(&mut self.code, offset as u64);
+    }
+    fn store_i32(&mut self, offset: u32) {
+        self.op(0x36);
+        uleb(&mut self.code, 2);
+        uleb(&mut self.code, offset as u64);
+    }
+    fn load_i64(&mut self, offset: u32) {
+        self.op(0x29);
+        uleb(&mut self.code, 3);
+        uleb(&mut self.code, offset as u64);
+    }
+    fn store_i64(&mut self, offset: u32) {
+        self.op(0x37);
+        uleb(&mut self.code, 3);
+        uleb(&mut self.code, offset as u64);
+    }
+    fn invalid_gen(&mut self) {
+        panic(&mut self.code, PANIC_GENERATOR);
     }
 
     fn stmts(&mut self, s: &[TStmt]) {
@@ -248,7 +297,37 @@ impl Emit<'_> {
                 } else if self.void_main {
                     self.i64c(0);
                 }
+                // Function-level returns cannot bypass iterator closure.
+                for handle in self.active_iterators.clone().into_iter().rev() {
+                    self.get(handle);
+                    self.call(self.l.func(self.l.gen_first_func));
+                }
                 self.op(0x0F);
+            }
+            TStmt::ForIn { source, handle_slot, value_slot, body } => {
+                self.expr(source);
+                self.set(*handle_slot);
+                self.open(0x02, 0x40, Frame::Break);
+                self.open(0x03, 0x40, Frame::Top);
+                self.get(*handle_slot);
+                self.call(self.l.func(self.l.gen_first_func + 2)); // next
+                self.op(0x45); // i32.eqz => DONE
+                self.op(0x0D); // br_if break
+                uleb(&mut self.code, 1);
+                self.get(*handle_slot);
+                self.op(0xA7); // i32.wrap_i64: validated by next
+                self.load_i64(16);
+                self.set(*value_slot);
+                self.open(0x02, 0x40, Frame::Continue);
+                self.active_iterators.push(*handle_slot);
+                self.stmts(body);
+                self.active_iterators.pop();
+                self.close();
+                self.br_to(Frame::Top);
+                self.close();
+                self.close();
+                self.get(*handle_slot);
+                self.call(self.l.func(self.l.gen_first_func + 3)); // close
             }
             TStmt::If(arms, other) => self.if_chain(arms, other.as_deref()),
             TStmt::Loop { cond, body, update } => {
@@ -885,6 +964,10 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         helpers: str_base + if p.strings { STRING_HELPERS } else { 0 },
         str_base,
         state_base: 1 + u32::from(p.heap),
+        gen_free_global: (!p.generators.is_empty()).then_some(
+            1 + u32::from(p.heap) + p.globals.len() as u32
+        ),
+        gen_first_func: p.funcs.len() as u32,
     };
     let mut types = Types(Vec::new());
 
@@ -933,8 +1016,16 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             code: locals_decl(&f.locals),
             frames: Vec::new(),
             void_main: is_void_main,
+            active_iterators: Vec::new(),
         };
-        e.stmts(&f.body);
+        if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
+            // Creator is lazy: allocate a 32-byte checked continuation frame
+            // and return its generation-fenced handle. No body runs here.
+            e.i32c(gen_id as i32);
+            e.call(layout.func(layout.gen_first_func));
+        } else {
+            e.stmts(&f.body);
+        }
         if is_void_main {
             e.i64c(0);
         } else if f.ret != Type::Void {
@@ -944,9 +1035,18 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         bodies.push(e.code);
     }
 
+    // Runtime ops after source functions preserve every existing index.
+    if !p.generators.is_empty() {
+        for (sig, code) in generator_runtime_bodies(p, &layout) {
+            func_types.push(types.idx(sig));
+            bodies.push(code);
+        }
+    }
+
     // actor_init(type) / actor_receive(type, value, sequence) dispatchers
     let has_actors = !p.actors.is_empty();
-    let actor_init_idx = layout.func(p.funcs.len() as u32);
+    let actor_init_idx = layout.func(p.funcs.len() as u32
+        + if p.generators.is_empty() { 0 } else { 4 });
     if has_actors {
         func_types.push(types.idx(Sig(vec![I32], vec![])));
         let mut e = Emit {
@@ -954,6 +1054,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             code: vec![0],
             frames: Vec::new(),
             void_main: false,
+            active_iterators: Vec::new(),
         };
         for (ai, a) in p.actors.iter().enumerate() {
             e.code.extend_from_slice(&[0x20, 0]);
@@ -1033,10 +1134,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
 
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
     let mut gsec = Vec::new();
-    uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64);
+    uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
+        + u64::from(!p.generators.is_empty()));
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
-        let heap_start = (p.data.len() as i64 + 7) & !7;
+        let heap_start = ((p.data.len() as i64 + 7) & !7)
+            .max(if p.generators.is_empty() { 0 } else { 8 });
         gsec.extend_from_slice(&[I32, 0x01, 0x41]);
         sleb(&mut gsec, heap_start);
         gsec.push(0x0B);
@@ -1044,6 +1147,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     for t in &p.globals {
         let ty = vt(*t).expect("value global");
         gsec.extend_from_slice(&[ty, 0x01, if ty == I64 { 0x42 } else { 0x41 }, 0, 0x0B]);
+    }
+    if !p.generators.is_empty() {
+        gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // frame freelist head
     }
     section(&mut out, 6, gsec);
 
@@ -1110,6 +1216,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         .chain(helper_names.into_iter().map(String::from))
         .chain(p.funcs.iter().map(|f| f.name.clone()))
         .collect();
+    if !p.generators.is_empty() {
+        all.extend([
+            "atto.generator_new", "atto.generator_check_ptr",
+            "atto.generator_next", "atto.generator_close",
+        ].into_iter().map(String::from));
+    }
     if has_actors {
         all.push("atto.actor_init".into());
         all.push("atto.actor_receive".into());
