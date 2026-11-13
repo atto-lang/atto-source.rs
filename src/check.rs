@@ -413,6 +413,35 @@ fn const_init(e: &Expr) -> bool {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // The lexer/parser preserve explicit generator AST nodes, but guest ABI v2
+    // has no bounded continuation state, iterator next or close operation.
+    // Fail closed before signature registration and never emit eager iterators.
+    for f in &p.funcs {
+        if f.is_generator {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                "generator continuations, yield and yield* are not lowered to guest Wasm yet"));
+        }
+        if f.ret == Type::GeneratorInt || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
+                "Generator<int> requires a compiled generator continuation"));
+        }
+    }
+    for c in &p.classes {
+        if c.methods.iter().any(|m| m.ret == Type::GeneratorInt
+            || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
+            || c.ctor.as_ref().is_some_and(|ctor|
+                ctor.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
+                "generator methods and parameters require a compiled iterator continuation"));
+        }
+    }
+    for a in &p.actors {
+        if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
+            || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
+                "actor generator methods require a compiled iterator continuation"));
+        }
+    }
     let tn = &p.type_names;
     // ---- one namespace for functions, classes, enums and actors
     let mut seen: BTreeMap<&str, Pos> = BTreeMap::new();
@@ -1200,6 +1229,14 @@ impl<'a> FnCx<'a> {
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) => {
+                return Err(Diagnostic::new(*pos, "E_YIELD",
+                    "yield and yield* require a compiled generator continuation"));
+            }
+            Stmt::ForIn { pos, .. } => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "for-in iteration requires a compiled iterator continuation"));
+            }
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {
