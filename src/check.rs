@@ -1231,7 +1231,7 @@ impl<'a> FnCx<'a> {
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
             Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
-                        Stmt::Return(v, pos) => match (v, self.ret) {
+            Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {
                     return Err(Diagnostic::new(
@@ -1869,7 +1869,7 @@ impl<'a> FnCx<'a> {
             }),
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
-                        ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
+            ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
