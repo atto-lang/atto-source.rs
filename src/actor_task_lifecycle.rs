@@ -26,6 +26,7 @@ pub struct TaskWakeTicket {
 pub enum TaskStage {
     Ready,
     Running,
+    Suspending,
     Suspended,
     Done,
 }
@@ -109,7 +110,7 @@ impl ActorTaskLedger {
         // Suspended tasks are logical concurrency, not simultaneous
         // mutable execution on two physical carriers for one actor.
         if self.tasks.iter().any(|(other, task)|
-            *other != id && task.stage == TaskStage::Running) {
+            *other != id && matches!(task.stage, TaskStage::Running | TaskStage::Suspending)) {
             return Err(TaskError::ActorBusy);
         }
         self.tasks.get_mut(&id).expect("validated task").stage = TaskStage::Running;
@@ -131,7 +132,7 @@ impl ActorTaskLedger {
             return Err(TaskError::InvalidWake);
         }
         if self.tasks.iter().any(|(other, task)|
-            *other != id && task.stage == TaskStage::Running) {
+            *other != id && matches!(task.stage, TaskStage::Running | TaskStage::Suspending)) {
             return Err(TaskError::ActorBusy);
         }
         self.tasks.get_mut(&id).expect("validated task").stage = TaskStage::Running;
@@ -147,8 +148,24 @@ impl ActorTaskLedger {
         if task.stage != TaskStage::Running { return Err(TaskError::InvalidTransition); }
         task.wake_generation = task.wake_generation.checked_add(1)
             .ok_or(TaskError::ExhaustedIds)?;
-        task.stage = TaskStage::Suspended;
+        // This callback still owns the physical lease until the trusted
+        // carrier has returned, not merely until the Future was registered.
+        task.stage = TaskStage::Suspending;
         Ok(TaskWakeTicket { owner, task: id, generation: task.wake_generation })
+    }
+    /// Trusted scheduler-only physical-turn retirement acknowledgement.
+    /// Logical Future readiness on an external producer cannot call this.
+    pub fn confirm_suspended_turn_returned(
+        &mut self, owner: ActorIncarnation, id: TaskId, ticket: TaskWakeTicket
+    ) -> Result<(), TaskError> {
+        self.check_owner(owner)?;
+        let task = self.tasks.get_mut(&id).ok_or(TaskError::MissingTask)?;
+        if task.stage != TaskStage::Suspending || ticket.owner != owner
+            || ticket.task != id || ticket.generation != task.wake_generation {
+            return Err(TaskError::InvalidWake);
+        }
+        task.stage = TaskStage::Suspended;
+        Ok(())
     }
     /// Called only after the task's physical turn has returned.
     pub fn complete_turn(&mut self, owner: ActorIncarnation, id: TaskId) -> Result<(), TaskError> {
@@ -250,7 +267,8 @@ mod tests {
         let mut l = ledger(8);
         let t = l.admit_in_authenticated_turn(OWNER, None).unwrap();
         l.start_or_resume(OWNER, t).unwrap();
-        l.suspend(OWNER, t).unwrap();
+        let ticket = l.suspend(OWNER, t).unwrap();
+        l.confirm_suspended_turn_returned(OWNER, t, ticket).unwrap();
         l.stop(OWNER).unwrap();
         assert_eq!(l.start_or_resume(OWNER, t), Err(TaskError::Stopped));
         assert_eq!(l.admit_in_authenticated_turn(OWNER, None), Err(TaskError::Stopped));
@@ -310,6 +328,7 @@ mod tests {
         let child = l.admit_in_authenticated_turn(OWNER, Some(parent)).unwrap();
         l.start_or_resume(OWNER, child).unwrap_err(); // same mutable actor turn
         let wake = l.suspend(OWNER, parent).unwrap();
+        l.confirm_suspended_turn_returned(OWNER, parent, wake).unwrap();
         assert_eq!(l.admit_in_authenticated_turn(OWNER, Some(parent)),
             Err(TaskError::ParentUnavailable));
         l.resume_from_authenticated_wake(OWNER, parent, wake).unwrap();
@@ -329,6 +348,9 @@ mod tests {
         let b = l.admit_in_authenticated_turn(OWNER, None).unwrap();
         l.start_or_resume(OWNER, a).unwrap();
         let first = l.suspend(OWNER, a).unwrap();
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, a, first),
+            Err(TaskError::InvalidWake));
+        l.confirm_suspended_turn_returned(OWNER, a, first).unwrap();
         assert_eq!(l.resume_from_authenticated_wake(OWNER, b, first),
             Err(TaskError::InvalidWake));
         let stale = ActorIncarnation { id: OWNER.id, generation: OWNER.generation + 1 };
@@ -338,6 +360,7 @@ mod tests {
         assert_eq!(l.resume_from_authenticated_wake(OWNER, a, first),
             Err(TaskError::InvalidWake));
         let second = l.suspend(OWNER, a).unwrap();
+        l.confirm_suspended_turn_returned(OWNER, a, second).unwrap();
         assert_ne!(first, second);
         assert_eq!(l.resume_from_authenticated_wake(OWNER, a, first),
             Err(TaskError::InvalidWake));
@@ -355,6 +378,7 @@ mod tests {
         let t = l.admit_in_authenticated_turn(OWNER, None).unwrap();
         l.start_or_resume(OWNER, t).unwrap();
         let wake = l.suspend(OWNER, t).unwrap();
+        l.confirm_suspended_turn_returned(OWNER, t, wake).unwrap();
         l.stop(OWNER).unwrap();
         assert_eq!(l.resume_from_authenticated_wake(OWNER, t, wake),
             Err(TaskError::Stopped));
@@ -365,6 +389,34 @@ mod tests {
         assert!(l.is_physically_quiescent());
     }
     #[test]
+    fn physical_suspend_completion_precedes_resume_and_cleanup() {
+        let mut l = ledger(2);
+        let a = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        let b = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        l.start_or_resume(OWNER, a).unwrap();
+        let ticket = l.suspend(OWNER, a).unwrap();
+        assert_eq!(l.stage(a), Some(TaskStage::Suspending));
+        assert_eq!(l.start_or_resume(OWNER, b), Err(TaskError::ActorBusy));
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, a, ticket),
+            Err(TaskError::InvalidWake));
+        l.stop(OWNER).unwrap();
+        assert_eq!(l.cleanup_cancelled(OWNER, a), Err(TaskError::NotQuiescent));
+        assert_eq!(l.retire(OWNER, a), Err(TaskError::NotQuiescent));
+        let stale = TaskWakeTicket { generation: ticket.generation + 1, ..ticket };
+        assert_eq!(l.confirm_suspended_turn_returned(OWNER, a, stale),
+            Err(TaskError::InvalidWake));
+        l.confirm_suspended_turn_returned(OWNER, a, ticket).unwrap();
+        assert_eq!(l.confirm_suspended_turn_returned(OWNER, a, ticket),
+            Err(TaskError::InvalidWake));
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, a, ticket),
+            Err(TaskError::Stopped));
+        l.cleanup_cancelled(OWNER, a).unwrap();
+        l.retire(OWNER, a).unwrap();
+        l.cleanup_cancelled(OWNER, b).unwrap();
+        l.retire(OWNER, b).unwrap();
+        assert!(l.is_physically_quiescent());
+    }
+    #[test]
     fn concurrent_logical_tasks_never_run_mutable_actor_turns_together() {
         let mut l = ledger(2);
         let a = l.admit_in_authenticated_turn(OWNER, None).unwrap();
@@ -372,6 +424,10 @@ mod tests {
         l.start_or_resume(OWNER, a).unwrap();
         assert_eq!(l.start_or_resume(OWNER, b), Err(TaskError::ActorBusy));
         let ticket = l.suspend(OWNER, a).unwrap();
+        assert_eq!(l.start_or_resume(OWNER, b), Err(TaskError::ActorBusy));
+        assert_eq!(l.resume_from_authenticated_wake(OWNER, a, ticket),
+            Err(TaskError::InvalidWake));
+        l.confirm_suspended_turn_returned(OWNER, a, ticket).unwrap();
         l.start_or_resume(OWNER, b).unwrap();
         assert_eq!(l.resume_from_authenticated_wake(OWNER, a, ticket),
             Err(TaskError::ActorBusy));
