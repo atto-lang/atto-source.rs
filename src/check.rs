@@ -38,10 +38,14 @@ pub enum Import {
     ActorSpawn,
     /// `actor_send(ref: i32, value: i64)`: enqueue one message
     ActorSend,
+    /// v3: form a linear actor edge before the tenant begins draining.
+    ActorLink,
+    /// v3: actor-origin outgoing i64 value during the active receive.
+    ActorEmit,
 }
 
 impl Import {
-    pub const ALL: [Import; 7] = [
+    pub const ALL: [Import; 9] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -49,6 +53,8 @@ impl Import {
         Import::PrintF64,
         Import::ActorSpawn,
         Import::ActorSend,
+        Import::ActorLink,
+        Import::ActorEmit,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -59,6 +65,8 @@ impl Import {
             Import::PrintF64 => "print_f64",
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
+            Import::ActorLink => "actor_link",
+            Import::ActorEmit => "actor_emit",
         }
     }
 }
@@ -155,6 +163,11 @@ pub enum TExpr {
     Alloc(u32),
     /// start an actor of the given type
     Spawn(u32),
+    /// Spawn each stage in source order, then link their actor references.
+    /// Each pair contains the actor type index and a fresh i32 local.
+    ActorPipeline(Vec<(u32, u32)>),
+    /// Source-bound outgoing message, admitted only in an actor receive.
+    Emit(Box<TE>),
     /// enqueue `value` (int, or bool widened to i64) on an actor's mailbox
     Send {
         target: Box<TE>,
@@ -280,6 +293,9 @@ struct ActorInfo {
     methods: Vec<MethodInfo>,
     receive_idx: Option<u32>,
     payload: Type,
+    /// Uniform typed output of explicit emit(value), if any.
+    /// None is a terminal sink; it cannot be a nonfinal pipeline stage.
+    emitted: Option<Type>,
 }
 
 /// Program-wide declaration tables shared by every body check.
@@ -333,6 +349,9 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Only receive(ActorMail<T>) may emit.
+    allow_emit: bool,
+    emitted: Vec<(Type, Pos)>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -721,11 +740,12 @@ pub fn check(p: &Program) -> R<TProgram> {
             methods,
             receive_idx,
             payload,
+            emitted: None,
         });
     }
     let total = next as usize;
 
-    let g = Globals {
+    let mut g = Globals {
         sigs,
         names,
         classes,
@@ -733,6 +753,45 @@ pub fn check(p: &Program) -> R<TProgram> {
         actors,
         type_names: tn,
     };
+
+    // Resolve actual emitted types before visiting top-level pipelines.
+    // Reuse the real checker (including nested control flow) and collect typed
+    // emit(value) calls; do not infer output from the receive mail input.
+    for (ai, actor) in p.actors.iter().enumerate() {
+        let Some(receive) = actor.receive.as_ref() else { continue };
+        let named = [("$value", Type::Int, false), ("$sequence", Type::Int, false)];
+        let mut scratch_imports = Vec::new();
+        let mut scratch_data = Vec::new();
+        let (_, _, emissions) = body_check(
+            &g,
+            Owner::Actor { a: ai as u32 },
+            &named,
+            Some((receive.mail.as_str(), g.actors[ai].payload)),
+            Type::Void,
+            &receive.body,
+            &format!("{}.receive", actor.name),
+            receive.pos,
+            &mut scratch_imports,
+            &mut scratch_data,
+        )?;
+        let mut emitted = None;
+        for (ty, at) in emissions {
+            match emitted {
+                Some(previous) if previous != ty => {
+                    return Err(type_err(
+                        at,
+                        format!(
+                            "actor '{}' emits incompatible {} and {}",
+                            actor.name, g.tn(previous), g.tn(ty)
+                        ),
+                    ));
+                }
+                None => emitted = Some(ty),
+                _ => {}
+            }
+        }
+        g.actors[ai].emitted = emitted;
+    }
 
     let main = match g.sigs.get(&("main".to_string(), 0)) {
         Some((i, _, ret)) => {
@@ -1053,9 +1112,10 @@ fn body_check(
     pos: Pos,
     imports: &mut Vec<Import>,
     data: &mut Vec<u8>,
-) -> R<(Vec<TStmt>, Vec<Type>)> {
+) -> R<(Vec<TStmt>, Vec<Type>, Vec<(Type, Pos)>)> {
     let mut cx = FnCx::new(g, owner, ret, imports, data);
     cx.nparams = named.len() as u32;
+    cx.allow_emit = mail.is_some();
     if let Some((mail_name, payload)) = mail {
         cx.scopes[0].push(Local {
             name: mail_name.to_string(),
@@ -1085,7 +1145,7 @@ fn body_check(
             format!("non-void {what} '{label}' must explicitly return on every path"),
         ));
     }
-    Ok((tbody, cx.locals))
+    Ok((tbody, cx.locals, cx.emitted))
 }
 
 /// Definite-return analysis matching the Java reference: an `if` returns
@@ -1123,7 +1183,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
-        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
+        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a)
+        | TExpr::Emit(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
@@ -1183,6 +1244,8 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            allow_emit: false,
+            emitted: Vec::new(),
             imports,
             data,
         }
@@ -2768,6 +2831,22 @@ impl<'a> FnCx<'a> {
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
+        }
+        if name == "emit" {
+            if !self.allow_emit {
+                return Err(Diagnostic::new(
+                    pos, "E_UNSUPPORTED",
+                    "emit is allowed only directly inside receive(ActorMail<T>)",
+                ));
+            }
+            self.arity("emit", 1, args.len(), pos)?;
+            let value = self.value(&args[0])?;
+            if !matches!(value.ty, Type::Int | Type::Bool) {
+                return Err(type_err(pos, "emit supports only int and bool in guest ABI v3"));
+            }
+            self.emitted.push((value.ty, args[0].pos));
+            self.imports.push(Import::ActorEmit);
+            return Ok(TE { e: TExpr::Emit(Box::new(value)), ty: Type::Void });
         }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
