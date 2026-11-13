@@ -1,0 +1,24 @@
+// expect-exit: 21
+// expect-stdout: 8
+// expect-stdout: 21
+// java: not-tested
+// Browser subset: the call under trap must happen once, preserving output
+// before the resulting Some payload is inspected.
+
+fnc checked_value(int v): Result<int, String> {
+  stdio.println(v);
+  return Ok(v + 13);
+}
+
+pub fnc main(): int {
+  val Option<Result<int, String>> outcome = trap checked_value(8);
+  match outcome over
+    on Some(result) -> {
+      match result over
+        on Ok(v) -> { stdio.println(v); return v; }
+        on Err(message) -> { stdio.println(message); return 0; }
+      end
+    }
+    on None -> { return 0; }
+  end
+}
