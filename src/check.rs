@@ -136,6 +136,9 @@ pub enum TExpr {
     AdtIs { obj: Box<TE>, tag: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
     AdtPayload(Box<TE>),
+    /// Evaluate a tagged ADT once. On failure return its original handle from
+    /// the enclosing function; on success leave the i64 payload on the stack.
+    AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
     /// load a field of a class instance
     FieldGet {
         obj: Box<TE>,
@@ -413,7 +416,93 @@ fn const_init(e: &Expr) -> bool {
     }
 }
 
+/// Validate locally decidable generator item/delegation types before the
+/// deliberate guest-Wasm continuation gate. This is not full expression
+/// inference: unresolved/compound expressions remain fail-closed until the
+/// generator IR and ownership-aware checker are implemented.
+fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
+    for stmt in body {
+        match stmt {
+            Stmt::Yield(expr, _) => {
+                if matches!(&expr.kind, ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_)) {
+                    return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                        "Generator<int> can only yield int items"));
+                }
+            }
+            Stmt::YieldFrom(expr, _) => {
+                match &expr.kind {
+                    ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_) => {
+                        return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                            "yield* requires a generator/iterator, not a scalar"));
+                    }
+                    ExprKind::Call(name, args) => {
+                        if let Some(target) = funcs.iter().find(|f|
+                            f.name == *name && f.params.len() == args.len())
+                        {
+                            if !target.is_generator || target.ret != Type::GeneratorInt {
+                                return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                                    format!("yield* target '{name}' is not a Generator<int>")));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Stmt::If { arms, otherwise, .. } => {
+                for (_, branch) in arms {
+                    precheck_generator_body(branch, funcs)?;
+                }
+                if let Some(branch) = otherwise {
+                    precheck_generator_body(branch, funcs)?;
+                }
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::ForIn { body, .. } | Stmt::Block(body) => {
+                precheck_generator_body(body, funcs)?;
+            }
+            Stmt::For { body, .. } => precheck_generator_body(body, funcs)?,
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    precheck_generator_body(&arm.body, funcs)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
+    // The lexer/parser preserve explicit generator AST nodes, but guest ABI v2
+    // has no bounded continuation state, iterator next or close operation.
+    // Fail closed before signature registration and never emit eager iterators.
+    for f in &p.funcs {
+        if f.is_generator {
+            precheck_generator_body(&f.body, &p.funcs)?;
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
+                "generator continuations, yield and yield* are not lowered to guest Wasm yet"));
+        }
+        if f.ret == Type::GeneratorInt || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
+                "Generator<int> requires a compiled generator continuation"));
+        }
+    }
+    for c in &p.classes {
+        if c.methods.iter().any(|m| m.ret == Type::GeneratorInt
+            || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
+            || c.ctor.as_ref().is_some_and(|ctor|
+                ctor.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
+                "generator methods and parameters require a compiled iterator continuation"));
+        }
+    }
+    for a in &p.actors {
+        if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
+            || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
+                "actor generator methods require a compiled iterator continuation"));
+        }
+    }
     let tn = &p.type_names;
     // ---- one namespace for functions, classes, enums and actors
     let mut seen: BTreeMap<&str, Pos> = BTreeMap::new();
@@ -1018,6 +1107,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
         TExpr::TrapSome { payload, .. } => any_in(payload, f),
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
+        TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
@@ -1201,6 +1291,14 @@ impl<'a> FnCx<'a> {
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
+            Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) => {
+                return Err(Diagnostic::new(*pos, "E_YIELD",
+                    "yield and yield* require a compiled generator continuation"));
+            }
+            Stmt::ForIn { pos, .. } => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "for-in iteration requires a compiled iterator continuation"));
+            }
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {
@@ -1791,6 +1889,23 @@ impl<'a> FnCx<'a> {
             ExprKind::Trap(inner) => self.trap_nothrow(inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
+            ExprKind::Propagate(inner) => {
+                let value = self.consume(inner)?;
+                let success_tag = match value.ty {
+                    Type::ResultIntStr => 0,
+                    Type::OptionInt => 1,
+                    _ => return Err(type_err(e.pos,
+                        format!("postfix '?' requires Option<int> or Result<int,string>, found {}", self.tn(value.ty)))),
+                };
+                if self.ret != value.ty {
+                    return Err(type_err(e.pos,
+                        format!("postfix '?' can propagate {} only from a function returning the same type; found {}", self.tn(value.ty), self.tn(self.ret))));
+                }
+                let tmp = self.temp(value.ty, e.pos)?;
+                Ok(TE { e: TExpr::AdtPropagate {
+                    source: Box::new(value), tmp, success_tag
+                }, ty: Type::Int })
+            }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
                 let obj = self.value(base)?;
@@ -2129,7 +2244,8 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..) => unreachable!("handled by expr"),
+            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,

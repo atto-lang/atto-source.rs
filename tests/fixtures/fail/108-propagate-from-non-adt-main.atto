@@ -1,0 +1,3 @@
+// expect-error: E_TYPE
+fnc value(): Option<int> { return Some(5); }
+pub fnc main(): int { return value()?; }

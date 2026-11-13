@@ -79,6 +79,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Float => Some(F64),
         Type::Str => Some(I64),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::GeneratorInt => unreachable!("generator continuations must be rejected before Wasm lowering"),
         Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
     }
 }
@@ -465,6 +466,25 @@ impl Emit<'_> {
             TExpr::AdtPayload(obj) => {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, 8, false);
+            },
+            TExpr::AdtPropagate { source, tmp, success_tag } => {
+                // Source (and all of its effects) is evaluated exactly once.
+                self.expr(source);
+                self.op(0x21); // local.set tagged pointer
+                uleb(&mut self.code, *tmp as u64);
+                self.op(0x20); // local.get
+                uleb(&mut self.code, *tmp as u64);
+                field_op(&mut self.code, Type::Bool, 0, false); // i32 tag
+                self.i32c(*success_tag as i32);
+                self.op(0x47); // i32.ne: failure
+                self.open(0x04, 0x40, Frame::Other); // if (void)
+                self.op(0x20);
+                uleb(&mut self.code, *tmp as u64);
+                self.op(0x0F); // return original Err/None tagged pointer
+                self.close();
+                self.op(0x20);
+                uleb(&mut self.code, *tmp as u64);
+                field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
             },
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
