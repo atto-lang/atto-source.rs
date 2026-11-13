@@ -44,3 +44,9 @@ Current implementation blob: `9394b2ff1fba07dd396aac3482a602dd151a2e5c`. Embedde
 The original Rust model checked whether another task was running before verifying that the incoming TaskId existed. A guessed ID could therefore receive `ActorBusy` instead of `MissingTask`, exposing per-actor scheduling state. Both ordinary task start and wake-resume now validate task presence, lifecycle and wake identity before the single-writer busy check.
 
 Unit tests currently authored: **9**, all **NOT_EXECUTED** without a Rust toolchain/approved CI. Implementation blob `19528a03cf3ff69a349c9cb21e8c3ebe00240bd8`.
+
+## Two-phase physical suspension handshake (2026-11-13)
+
+The bounded Rust host ledger now distinguishes `TaskStage::Suspending` (a guest callback requested suspension but its physical carrier lease has not been confirmed returned) from `TaskStage::Suspended` (the trusted scheduler acknowledged callback exit). A still-`Suspending` task blocks sibling mutable actor turns, cannot receive WAKE, and cannot be cleanup-retired merely because STOP was requested. `confirm_suspended_turn_returned(owner,id,ticket)` transitions the exact incarnation/task/suspension generation once. It is **trusted scheduler-only bookkeeping**, not authenticated by the Rust model itself and not an LLVM/Cranelift guest integration.
+
+Ten embedded Rust unit tests are authored, including a new STOP-before-physical-exit and replay/duplicate-receipt case. **Not executed**: this environment has no Rust compiler; the requested source-local canary rerun `43333733456` was accepted but new job `131585208426` recorded **0 executed steps**. The latest ledger blob is `25fd9d30a44cf6918d45cf928da379f9ad3cd345`. No private-source cross-org mirror is approved.
