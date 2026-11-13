@@ -50,6 +50,7 @@ export function compile(source) {
 // main returns, mailboxes drain FIFO, actor by actor in spawn order: one
 // valid schedule of the concurrent browser runtime.
 const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send']);
+const PIPE_V3_IMPORTS = new Set(['actor_link', 'actor_emit']);
 const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', 'actor_receive']);
 export const MAX_ACTORS = 16;
 export const MAX_MAILBOX = 10_000;
@@ -70,9 +71,14 @@ export function actorNames(module) {
 export function runGuest(wasm) {
   assert.ok(WebAssembly.validate(wasm), 'guest is valid wasm');
   const module = new WebAssembly.Module(wasm);
+  const markers = WebAssembly.Module.customSections(module, 'atto.pipeline.v1');
+  const pipeV3 = markers.length === 1 && markers[0].byteLength === 1 &&
+    new Uint8Array(markers[0])[0] === 1;
+  assert.ok(markers.length === 0 || pipeV3, 'invalid actor pipeline version marker');
   for (const imp of WebAssembly.Module.imports(module)) {
     assert.equal(imp.module, 'atto');
-    assert.ok(ALLOWED_IMPORTS.has(imp.name), `unexpected import ${imp.name}`);
+    assert.ok(ALLOWED_IMPORTS.has(imp.name) || (pipeV3 && PIPE_V3_IMPORTS.has(imp.name)),
+      `unexpected import ${imp.name}`);
   }
   const exportNames = WebAssembly.Module.exports(module).map(e => e.name).sort();
   assert.ok(['main', 'panic_code'].every(n => exportNames.includes(n)), 'guest exports main and panic_code');
@@ -81,8 +87,10 @@ export function runGuest(wasm) {
   assert.equal(exportNames.includes('actor_receive'), names.length > 0, 'actor exports iff actor table');
   let out = '';
   const actors = [];
-  const instantiate = inActor => {
+  let mainDone = false, activeTurn = null;
+  const instantiate = (actorRef = null) => {
     let instance;
+    const inActor = actorRef !== null;
     const atto = {
       print_i64: v => { out += String(v); },
       print_bool: v => { out += v ? 'true' : 'false'; },
@@ -93,10 +101,12 @@ export function runGuest(wasm) {
         if (inActor) throw new Error('spawn inside an actor');
         if (!(type >= 0 && type < names.length)) throw new Error('unknown actor type');
         if (actors.length >= MAX_ACTORS) throw new Error('too many actors');
-        const a = { type, instance: instantiate(true), queue: [] };
-        a.instance.exports.actor_init(type);
+        const ref = actors.length;
+        const a = { type, instance: null, queue: [], previous: null, next: null };
         actors.push(a);
-        return actors.length - 1;
+        a.instance = instantiate(ref); // closures only have the fixed source ref
+        a.instance.exports.actor_init(type);
+        return ref;
       },
       actor_send: (ref, value) => {
         if (inActor) throw new Error('send inside an actor');
@@ -105,23 +115,85 @@ export function runGuest(wasm) {
         if (a.queue.length >= MAX_MAILBOX) throw new Error('mailbox full');
         a.queue.push(value);
       },
+      actor_link: (source, target) => {
+        if (!pipeV3 || inActor || mainDone) throw new Error('actor link outside main topology setup');
+        if (!Number.isInteger(source) || !Number.isInteger(target) || source === target ||
+            !actors[source] || !actors[target]) throw new Error('invalid actor link');
+        const from = actors[source], to = actors[target];
+        if (from.next !== null || to.previous !== null) throw new Error('duplicate actor link');
+        for (let at = target; at !== null; at = actors[at].next) {
+          if (at === source) throw new Error('cyclic actor pipeline');
+        }
+        from.next = target;
+        to.previous = source;
+      },
+      actor_emit: value => {
+        if (!pipeV3 || !inActor || !activeTurn || activeTurn.ref !== actorRef) {
+          throw new Error('unbound actor emit capability');
+        }
+        if (actors[actorRef].next === null) throw new Error('emit from unlinked actor');
+        if (typeof value !== 'bigint') throw new Error('actor emit requires i64');
+        if (activeTurn.values.length >= MAX_MAILBOX) throw new Error('too many emitted values in one turn');
+        activeTurn.values.push(value);
+      },
     };
     instance = new WebAssembly.Instance(module, { atto });
     return instance;
   };
-  const main = instantiate(false);
+  const main = instantiate();
   let value;
   try {
     value = main.exports.main();
+    mainDone = true;
     assert.equal(typeof value, 'bigint');
   } catch (error) {
     return { ok: false, panic: main.exports.panic_code.value, error: String(error), stdout: out };
   }
-  for (const a of actors) {
-    for (let seq = 0; seq < a.queue.length; seq++) {
-      try { a.instance.exports.actor_receive(a.type, a.queue[seq], BigInt(seq)); }
-      catch (error) {
-        return { ok: false, panic: a.instance.exports.panic_code.value, actor: names[a.type], error: String(error), stdout: out };
+  const deliver = (ref, seq) => {
+    const a = actors[ref];
+    activeTurn = { ref, values: [] };
+    try {
+      // This is compiled guest Wasm in an independent instance, never JS
+      // interpretation of Atto source or cross-actor mutable heap sharing.
+      a.instance.exports.actor_receive(a.type, a.queue[seq], BigInt(seq));
+      if (pipeV3 && activeTurn.values.length > 0) {
+        const next = actors[a.next];
+        if (!next) throw new Error('missing downstream actor');
+        if (next.queue.length + activeTurn.values.length > MAX_MAILBOX) {
+          throw new Error('downstream mailbox full');
+        }
+        // All admission checks complete before modifying the target queue.
+        next.queue.push(...activeTurn.values);
+      }
+      return null;
+    } catch (error) {
+      return { ok: false, panic: a.instance.exports.panic_code.value,
+        actor: names[a.type], error: String(error), stdout: out };
+    } finally {
+      activeTurn = null; // rollback any uncommitted emitted values on fault
+    }
+  };
+  if (pipeV3) {
+    // Fair source-order rounds; no global ordering promise for independent
+    // actor chains. The acyclic topology guarantees eventual termination
+    // given finite handlers and finite mail admission.
+    const cursors = actors.map(() => 0);
+    while (true) {
+      let progress = false;
+      for (let ref = 0; ref < actors.length; ref++) {
+        if (cursors[ref] >= actors[ref].queue.length) continue;
+        progress = true;
+        const fault = deliver(ref, cursors[ref]++);
+        if (fault) return fault;
+      }
+      if (!progress) break;
+    }
+  } else {
+    // Preserve v2 fixture ordering and old actor import capability set.
+    for (let ref = 0; ref < actors.length; ref++) {
+      for (let seq = 0; seq < actors[ref].queue.length; seq++) {
+        const fault = deliver(ref, seq);
+        if (fault) return fault;
       }
     }
   }
