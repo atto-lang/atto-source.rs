@@ -1,0 +1,9 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+fnc a(): Option<int> { return Some(1); }
+pub fnc main(): int {
+  val x = a();
+  val y = a();
+  if x == y then return 1; fi
+  return 0;
+}

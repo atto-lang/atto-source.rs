@@ -23,6 +23,10 @@ pub enum Type {
     Enum(u32),
     /// `ActorRef<A>` for `Program::actors[i]`: a copyable mailbox capability.
     ActorRef(u32),
+    /// First executable ADT profiles; their payloads use the checked module heap.
+    /// Other generic instantiations reject without emitting an artifact.
+    OptionInt,
+    ResultIntStr,
 }
 
 impl Type {
@@ -35,6 +39,8 @@ impl Type {
             Type::Void => "void",
             Type::Float => "float",
             Type::Str => "string",
+            Type::OptionInt => "Option<int>",
+            Type::ResultIntStr => "Result<int,string>",
             _ => "object",
         }
     }
@@ -223,6 +229,8 @@ pub enum Pattern {
     Bind(String),
     /// `Enum.Variant` (oreslang-source.llvm v1 enum design spelling)
     Variant(String, String),
+    /// Tagged built-in ADT variant, optionally binding the payload.
+    Adt(String, Option<String>),
 }
 
 #[derive(Clone, Debug)]
