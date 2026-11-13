@@ -1,0 +1,14 @@
+// expect-error: E_TYPE
+// java: rejects
+// The Some/None boundary cannot silently disappear at a function argument.
+fnc checked_id(int id): Result<int, String> {
+  return Ok(id);
+}
+fnc consume(Result<int, String> outcome): void {
+  return;
+}
+pub fnc main(): int {
+  val Option<Result<int, String>> trapped = trap checked_id(5);
+  consume(trapped);
+  return 0;
+}
