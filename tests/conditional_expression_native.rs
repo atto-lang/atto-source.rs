@@ -169,3 +169,16 @@ fn unselected_checked_overflow_must_not_execute() {
     let selected = include_str!("fixtures/conditional_v1/selected_overflow.atto");
     assert_eq!(run_guest(selected, true).signal(), Some(4));
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn unicode_line_comments_preserve_native_ternary_guest_compilation() {
+    for separator in ["\u{0085}", "\u{2028}", "\u{2029}"] {
+        let guest = format!(
+            "// inactive ? branch{separator}/* false ? 7 : 1 */\n\
+             pub fnc main(): int {{ return true ? 42 : 7; }}"
+        );
+        let status = run_guest(&guest, true);
+        assert_eq!(status.code(), Some(42), "line separator {separator:?}");
+    }
+}
