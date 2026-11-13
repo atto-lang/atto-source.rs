@@ -1192,6 +1192,29 @@ impl Parser {
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
             _ => {
                 let e = self.parse_expr()?;
+                // Compound addition is desugared to the existing checked
+                // integer addition operation. Only local names are admitted:
+                // field/index targets need an exactly-once lvalue lowering.
+                if *self.peek() == Tok::PlusAssign {
+                    let at = self.pos();
+                    self.advance();
+                    let value = self.parse_expr()?;
+                    self.terminator()?;
+                    return match e.kind {
+                        ExprKind::Var(name) => Ok(Stmt::Assign {
+                            name: name.clone(),
+                            value: Expr {
+                                kind: ExprKind::Binary(BinOp::Add, Box::new(Expr {
+                                    kind: ExprKind::Var(name), pos,
+                                }), Box::new(value)),
+                                pos: at,
+                            },
+                            pos,
+                        }),
+                        _ => Err(Diagnostic::new(at, "E_ASSIGN_TARGET",
+                            "compound '+=' currently requires a mutable local variable")),
+                    };
+                }
                 if *self.peek() == Tok::Assign {
                     let at = self.pos();
                     self.advance();
@@ -2123,6 +2146,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Ge => ">=",
                 Tok::Plus => "+",
                 Tok::PlusPlus => "++",
+                Tok::PlusAssign => "+=",
                 Tok::Minus => "-",
                 Tok::MinusMinus => "--",
                 Tok::Star => "*",
