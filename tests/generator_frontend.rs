@@ -116,3 +116,30 @@ fn plus_assign_desugars_to_checked_binary_addition_without_disabling_mutability_
             .unwrap_err().code, "E_IMMUTABLE"
     );
 }
+
+#[test]
+fn generator_item_and_delegation_type_checks_precede_wasm_unsupported_gate() {
+    let cases = [
+        // Literal yield item has the wrong element type.
+        "fnc *gen bad(): Generator<int> { yield true; }",
+        "fnc *gen bad(): Generator<int> { yield \"wrong\"; }",
+        // Delegation must not consume a scalar directly.
+        "fnc *gen bad(): Generator<int> { yield* 7; }",
+        "fnc *gen bad(): Generator<int> { yield* false; }",
+        // A known non-generator call cannot be delegated to.
+        "fnc scalar(): int { return 2; }\nfnc *gen bad(): Generator<int> { yield* scalar(); }",
+        // Nested branches must not evade validation.
+        "fnc *gen bad(): Generator<int> { if true then yield* 9; fi }",
+        "fnc *gen bad(): Generator<int> { for (let i = 0; i < 1; i++) do yield false; done }",
+    ];
+    for source in cases {
+        let err = atto_compiler::compile(source).expect_err(source);
+        assert_eq!(err.code, "E_TYPE", "{source}: {err}");
+    }
+    let valid_delegation = r#"
+        fnc *gen inner(): Generator<int> { yield 1; }
+        fnc *gen outer(): Generator<int> { yield* inner(); }
+    "#;
+    let err = atto_compiler::compile(valid_delegation).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED", "valid syntax still needs real Wasm continuation");
+}
