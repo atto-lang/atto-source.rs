@@ -1837,6 +1837,27 @@ impl Parser {
         r
     }
 
+    // A '?' is ternary only when a top-level ':' follows its true arm.
+    // Otherwise it is postfix propagation. Stop at the current expression
+    // boundary and do not accidentally search into the next statement.
+    fn question_opens_ternary(&self) -> bool {
+        let mut depth = 0usize;
+        for t in self.toks.iter().skip(self.i + 1) {
+            match &t.tok {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace if depth == 0 => return false,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
+                Tok::Colon if depth == 0 => return true,
+                Tok::Semi | Tok::Comma | Tok::Eof if depth == 0 => return false,
+                Tok::Ident(w) if depth == 0 && matches!(
+                    w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else"
+                ) => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn parse_postfix_chain(&mut self, chain: &mut u32) -> R<Expr> {
         let pos = self.pos();
         let mut e = self.parse_primary()?;
@@ -1900,10 +1921,15 @@ impl Parser {
                     }
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
-                Tok::Question => {
-                    // ternary is handled by the caller; postfix `?` propagation is not
-                    break;
+                Tok::Question if !self.question_opens_ternary() => {
+                    let question = self.pos();
+                    self.advance();
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = Expr { kind: ExprKind::Propagate(Box::new(e)), pos: question };
                 }
+                Tok::Question => break, // true ternary: parsed by parse_ternary
+
                 _ => break,
             }
         }
