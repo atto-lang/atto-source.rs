@@ -1,0 +1,24 @@
+// && / || skip decisive RHS, ^^ eagerly evaluates both.
+// expect-exit: 42
+// expect-stdout: 3
+// expect-stdout: 4
+// expect-stdout: 5
+// expect-stdout: 6
+// expect-stdout: 7
+// expect-stdout: 8
+// java: llvm-design
+fnc mark(bool value, int n): bool {
+  stdio.println(n);
+  return value;
+}
+pub fnc main(): int {
+  val a = false && mark(true, 1);
+  val b = true || mark(false, 2);
+  val c = mark(true, 3) && mark(true, 4);
+  val d = mark(false, 5) || mark(true, 6);
+  val e = mark(true, 7) ^^ mark(false, 8);
+  if !a && b && c && d && e then
+    return 42;
+  fi
+  return 0;
+}

@@ -1,0 +1,14 @@
+// Skipped RHS cannot print or trigger checked arithmetic.
+// expect-exit: 42
+// java: llvm-design
+fnc crash(): bool {
+  stdio.println("BAD");
+  val biggest = 9223372036854775807;
+  return biggest + 1 eq 0;
+}
+pub fnc main(): int {
+  val a = false && crash();
+  val b = true || crash();
+  if a || !b then return 0; fi
+  return 42;
+}

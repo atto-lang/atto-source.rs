@@ -64,6 +64,10 @@ fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
     for op in [" + ", " * ", " - ", " == ", " < "] {
         assert_eq!(atto_compiler::compile(&chain(3_000, op)).unwrap_err().code, "E_NESTING", "{op}");
     }
+    for op in [" && ", " || ", " ^^ "] {
+        let src = format!("pub fnc main(): int {{ val b = {}; return 0; }}", vec!["true"; 3_000].join(op));
+        assert_eq!(atto_compiler::compile(&src).unwrap_err().code, "E_NESTING", "{op}");
+    }
     let elif = |n: usize| {
         let arms = (1..n)
             .map(|i| format!("elif x eq {i} then return {i};"))

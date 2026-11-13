@@ -1,0 +1,14 @@
+// Precedence: equality > && > ^^ > || > ternary.
+// expect-exit: 42
+// java: llvm-design
+pub fnc main(): int {
+  val a = true || false && false;
+  val b = true ^^ true || true && false;
+  val c = false || true ^^ false && false;
+  val d = (true ^^ true) || (true && false);
+  val e = 7 > 6 && 2 == 2 ^^ 3 < 1;
+  if a && !b && c && !d && e then
+    return 42;
+  fi
+  return 0;
+}
