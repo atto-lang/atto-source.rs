@@ -1,0 +1,23 @@
+// expect-exit: 168
+// java: llvm-design
+// Closing an outer iterator closes its active child; repeated reuse is bounded.
+fnc *gen leaf(): Generator<int> {
+  yield 4;
+  yield 5;
+}
+fnc *gen outer(): Generator<int> {
+  yield* leaf();
+  yield 9;
+}
+pub fnc main(): int {
+  let sum = 0;
+  for (let i = 0; i < 12000; i++) do
+    for value in outer() do
+      if i < 42 then
+        sum += value;
+      fi
+      break;
+    done
+  done
+  return sum;
+}
