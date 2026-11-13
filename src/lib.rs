@@ -10,6 +10,7 @@ pub mod ast;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
+pub mod generator_frame;
 pub mod lexer;
 pub mod parser;
 pub mod wasm;
