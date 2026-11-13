@@ -370,11 +370,12 @@ impl Parser {
                 self.expect(Tok::Lt, "'<' after Option")?;
                 let inner = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Option payload")?;
-                if inner != Type::Int {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Option<int>"));
+                match inner {
+                    Type::Int => Type::OptionInt,
+                    Type::ResultIntStr => Type::OptionResultIntStr,
+                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser ADT admits only Option<int> and Option<Result<int,string>>")),
                 }
-                Type::OptionInt
             }
             "Result" => {
                 self.expect(Tok::Lt, "'<' after Result")?;
@@ -1214,7 +1215,13 @@ impl Parser {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
             (name, Some(self.parse_type()?))
-        } else if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Ident(_)) {
+        } else if matches!(self.peek(), Tok::Ident(_))
+            && (matches!(self.peek_at(1), Tok::Ident(_))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                    && *self.peek_at(1) == Tok::Lt))
+        {
+            // Recognize generic type-first bindings without treating
+            // 'Option' as a variable name and '<' as a comparison.
             let ty = self.parse_type()?;
             let (name, _) = self.ident("a variable name")?;
             (name, Some(ty))
@@ -1794,6 +1801,9 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            Tok::Ident(s) if s == "trap" => return Err(unsupported(
+                pos, "caller-side 'trap expression' needs typed ordinary-throw unwinding; not yet lowered",
+            )),
             _ => return self.parse_postfix(),
         };
         self.advance();

@@ -6,12 +6,14 @@ It compiles a **subset** of AttoLang. Everything outside the subset is rejected 
 
 ## Browser tagged ADT milestone (concrete generic profiles)
 
-The browser Rust-to-Wasm frontend now executes two **specific** generic
-instantiations: `Option<int>` (`Some(int)` / `None`) and
-`Result<int,string>` (`Ok(int)` / `Err(string)`). General-purpose
-`Option<T>`, `Result<T,E>`, nested ADTs, mutable ADT payloads, generic
-classes, and cross-actor ADT transfer remain unsupported and must not
-be advertised as implemented.
+The browser Rust-to-Wasm frontend executes **three concrete ADT profiles**:
+`Option<int>` (`Some(int)` / `None`), `Result<int,string>`
+(`Ok(int)` / `Err(string)`), and `Option<Result<int,string>>`
+(`Some(Result<int,string>)` / `None`). The nested profile preserves
+the inner Result discriminant, including `Some(Err(...))`, without flattening.
+General-purpose `Option<T>` and `Result<T,E>`, other nested ADTs,
+mutable ADT payloads, generic classes, and cross-actor ADT transfer
+remain unsupported and must not be advertised as implemented.
 
 Constructors are contextual: a typed function return, local binding,
 assignment, or argument supplies the exact declared ADT type. For example,
@@ -24,7 +26,10 @@ or wrong-family arms are rejected.
 
 Each value is an immutable 16-byte record in the module's existing
 fixed 1 MiB heap, with an i32 discriminant at byte 0 and a 64-bit
-payload at byte 8. Allocation uses the same quota-checked object
+payload at byte 8. For the nested profile, the outer Some payload is
+an i32 reference to the independently allocated inner Result record;
+None has no payload. Both layers are checked before their payloads
+are read, and both allocations use the existing quota checks. Allocation uses the same quota-checked object
 allocator and panics 3 on exhaustion; values do **not** add capabilities,
 imports, reflection, or a different guest ABI. Reference equality is
 **not** silently used as value equality: `==` / `eq` and `!=` /
@@ -35,6 +40,16 @@ The checked-in `tests/fixtures/pass` and `fail` cases are compiled
 and executed by both native and wasm32 compiler paths in CI. This work
 does not update the pinned public playground compiler or lift the
 syntax-preview labels.
+
+### Caller-side trap remains separately gated
+
+The nested ADT profile is groundwork for `trap checked_id(5)`, but does
+**not** implement expression-level `trap`. The parser deliberately
+rejects that expression with `E_UNSUPPORTED` until the compiler has
+guest-proven ordinary-`throw` unwinding. Catching a Wasm engine trap,
+checked-overflow panic, `raise`, or cancellation as `None` would be
+incorrect. The public playground compiler remains separately pinned
+and unchanged.
 
 ## Where the syntax comes from
 
@@ -77,7 +92,7 @@ The following are rejected, with the code shown:
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|>` is functional composition only: receiver stages, actor pipelines and computed callees remain `E_UNSUPPORTED`; stage call arity and types are checked normally. `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - `int / int` stays `E_UNSUPPORTED` (S-25, below); write a float operand.
-- `f32`, sized integers, unsupported generic ADT instantiations, arrays and collections give `E_UNSUPPORTED_TYPE`. Only `Option<int>` and `Result<int,string>` are admitted in this milestone.
+- `f32`, sized integers, unsupported generic ADT instantiations, arrays and collections give `E_UNSUPPORTED_TYPE`. Admitted profiles are `Option<int>`, `Result<int,string>`, and `Option<Result<int,string>>`.
 - `string + int` is `E_TYPE`, as in Java (no implicit conversion). `string.replace_literal`, `split_literal`, `is_identifier` and `is_route_segment` give `E_UNSUPPORTED`; unknown string members are `E_UNBOUND`.
 - Match patterns other than the admitted scalar/enum patterns and v1 ADT constructor variants (`Some(x)`, `None`, `Ok(x)`, `Err(x)`) give `E_UNSUPPORTED`. Tuple and type patterns remain unsupported; wrong-family or non-exhaustive ADT patterns fail with typed diagnostics. Negative literal patterns, `1 | 4` alternatives and `name when …` remain `E_SYNTAX`.
 - `switch`, value `match<T>`, imports, lambdas, non-v1 generic ADT instantiations, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.

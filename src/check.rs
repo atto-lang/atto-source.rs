@@ -1320,7 +1320,7 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr) {
+        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -1528,6 +1528,8 @@ impl<'a> FnCx<'a> {
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
                         (Type::OptionInt, "None") => (0, None),
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+                        (Type::OptionResultIntStr, "None") => (0, None),
+                        (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
                         _ => return Err(type_err(arm.pos,
                             format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
@@ -1724,12 +1726,16 @@ impl<'a> FnCx<'a> {
             (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
             (Type::OptionInt, "None") => (0, None),
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+            (Type::OptionResultIntStr, "None") => (0, None),
+            (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
             _ => return Err(type_err(e.pos,
                 format!("variant '{variant}' is not valid for {}", self.tn(want)))),
         };
         let payload = match (argument, payload_type) {
             (Some(arg), Some(ty)) => {
-                let value = self.consume(arg)?;
+                // A nested Some(Ok(...)) or Some(Err(...)) carries the
+                // expected inner Result type; constructors are contextual.
+                let value = self.consume_expected(arg, ty)?;
                 if value.ty != ty {
                     return Err(type_err(arg.pos,
                         format!("'{variant}' payload must be {}, found {}", self.tn(ty), self.tn(value.ty))));
@@ -1944,7 +1950,7 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr) {
+                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
