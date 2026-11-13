@@ -1,0 +1,14 @@
+// expect-exit: 0
+// expect-stdout: original
+fnc read(): Result<int,string> { return Err("original"); }
+fnc compute(): Result<int,string> {
+  val x: int = read()?;
+  stdio.println("must not execute");
+  return Ok(x + 2);
+}
+pub fnc main(): int {
+  match compute() over
+    on Ok(value) -> { return value; }
+    on Err(message) -> { stdio.println(message); return 0; }
+  end
+}
