@@ -53,15 +53,38 @@ and executed by both native and wasm32 compiler paths in CI. This work
 does not update the pinned public playground compiler or lift the
 syntax-preview labels.
 
-### Caller-side trap remains separately gated
+### First executable caller-side `trap expr` and ordinary guest throws
 
-The nested ADT profile is groundwork for `trap checked_id(5)`, but does
-**not** implement expression-level `trap`. The parser deliberately
-rejects that expression with `E_UNSUPPORTED` until the compiler has
-guest-proven ordinary-`throw` unwinding. Catching a Wasm engine trap,
-checked-overflow panic, `raise`, or cancellation as `None` would be
-incorrect. The public playground compiler remains separately pinned
-and unchanged.
+The Rust/Wasm browser subset admits synchronous `trap expr` for the two
+**concrete** operand profiles `int` and `Result<int,string>`. The result
+is `Option<int>` or `Option<Result<int,string>>` respectively, without
+flattening `Some(Err(...))`. The operand is evaluated once, before the
+Some allocation. The only ordinary throwable currently admitted is a
+source-level `throw Error(message)` statement in a **top-level free
+function**, where `message: string` can be computed dynamically.
+A raw `throw "text"`, forged `Error` constructor, or non-string Error
+payload fails static checking.
+
+The compiler emits one **private WebAssembly exception tag** whose sole
+payload is the guest Error's i64 string view. It neither imports nor
+exports that tag. The `trap` catch handles only that tag and materializes
+`None`; throws automatically unwind through ordinary Wasm function calls.
+Host exceptions, unknown tags, checked-arithmetic panic, heap exhaustion,
+forced cancellation, and fatal engine traps **bypass** this catch.
+
+This is deliberately **not full language exception parity**: arbitrary
+Error subclasses, first-class Error values, `try/catch`, `recover`,
+`defer` cleanup, async/resumable traps, actor/supervisor exception routing,
+`Option<void>`, `Option<Option<T>>`, and general `Option<T>` remain gated
+by explicit unsupported diagnostics. No existing guest imports/exports or
+`panic_code` meanings change; modules without throws/traps emit no EH
+section. The generated guest needs an engine with WebAssembly exception
+handling enabled.
+
+The checked-in `tests/fixtures/pass/107-playground-trap-expression.atto`
+compiles the actual public playground preview body under the candidate
+compiler and executes it in Wasm CI. The **public playground binary** is
+pinned separately and has not been replaced or relabeled by this change.
 
 ## Where the syntax comes from
 
