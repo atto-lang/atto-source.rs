@@ -6,9 +6,9 @@ It compiles a **subset** of AttoLang. Everything outside the subset is rejected 
 
 ## Where the syntax comes from
 
-The compiler does not define any syntax of its own:
+The compiler tracks the AttoLang language contract, preserving older source spellings only as explicit compatibility syntax:
 
-- **Syntax** follows `docs/grammar.ebnf` and `Parser.java` in `oreslang-source.java`. That includes binding forms, the `const mut` / `let mut` referent qualifier, statement terminators with implicit newline termination, condition `,` / `|`, and arity overloading.
+- **Syntax** follows `docs/grammar.ebnf` and `Parser.java` in `oreslang-source.java`. That includes binding forms, the `const mut` / `let mut` referent qualifier, statement terminators with implicit newline termination, legacy condition `,` / `|`, canonical `&&` / `||` / `^^`, and arity overloading.
 - **`int`** is a signed 64-bit integer with checked arithmetic. Overflow is a panic, never a silent wrap. This matches the LLVM backend's trap and spec chapter 17 (TARGET, decided).
 - **Spec** decisions come from the AttoLang spec chapters 01, 16 and 17.
 
@@ -21,7 +21,7 @@ The compiler does not define any syntax of its own:
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut`; the immutable type-first form `int x = 7;` for exactly `int`, `bool`, `string` and `String` (Java `looksLikePrimitiveTypeFirstImmutableBinding`) |
 | Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }`, `match` (below) |
-| Expressions | `+ - *` on int and float, `/` with at least one float operand (an int operand widens, Java numeric promotion), `+` joining two strings, unary `- + !`, `< <= > >=` on numbers and on strings (Java `String.compareTo` order), `eq neq == != !eq` (strings by content), ternary `? :`, `,` (AND) and `\|` (OR) inside conditions, calls, `And` / `Or` / `Xor` |
+| Expressions | `+ - *` on int and float, `/` with at least one float operand (int widens), string `+`, unary `- + !`, comparisons and equality, ternary `? :`, canonical `&&` (short-circuit AND), `||` (short-circuit OR), `^^` (eager bool XOR), legacy `,` (eager AND) and `\|` (eager OR) inside conditions, `And` / `Or` / `Xor` callable eager functions |
 | Literals | decimal ints; floats exactly as the Java lexer: `1.5`, `1e3`, `2E-3`, `1_000.25` (digits on both sides of `.`) |
 | Strings | members `trim()`, `starts_with(s)`, `ends_with(s)`, `contains_literal(s)` (Java string member table); concatenation allocates on the bounded heap |
 | Match | legacy `match [first] x  P -> { } … end` with `else`, and canonical `match x over on P -> { } … end` / `do match x over …` / `over { on P { } }`. Patterns: `_`, int and bool literals, a lower-case binding, `Enum.Variant` (LLVM design spelling); `when` guards on literals and `_`, evaluated only after the pattern matched. Unreachable arms and non-exhaustive matches are `E_MATCH`; a match whose arms all return is a definite return |
@@ -40,8 +40,8 @@ The compiler does not define any syntax of its own:
 
 The following are rejected, with the code shown:
 
-- Removed `%`, `^` and `^^` give `E_UNSUPPORTED` with no artifact emitted.
-- Condition `,` / `|` evaluate **both** boolean operands left-to-right (eager), including observable side effects.
+- Removed `%` and single `^` give `E_UNSUPPORTED` with no artifact emitted. Double `^^` is canonical Boolean XOR and admits only `bool` operands.
+- Legacy condition `,` / `|` and `And` / `Or` / `Xor` builtins evaluate **both** Boolean operands left-to-right (eager). Canonical `&&` / `||` skip a decisive RHS; `^^` is eager. Precedence is comparison/equality > `&&` > `^^` > `||` > ternary.
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - `int / int` stays `E_UNSUPPORTED` (S-25, below); write a float operand.
