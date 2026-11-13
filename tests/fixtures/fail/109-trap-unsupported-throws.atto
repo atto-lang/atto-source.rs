@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+fnc checked_id(int id): int { return id; }
+pub fnc main(): int { return trap checked_id(5); }

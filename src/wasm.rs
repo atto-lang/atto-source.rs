@@ -443,6 +443,25 @@ impl Emit<'_> {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, 8, false);
             },
+            TExpr::AdtPropagate { source, tmp, success_tag } => {
+                // Source (and all of its effects) is evaluated exactly once.
+                self.expr(source);
+                self.op(0x21); // local.set tagged pointer
+                uleb(&mut self.code, *tmp as u64);
+                self.op(0x20); // local.get
+                uleb(&mut self.code, *tmp as u64);
+                field_op(&mut self.code, Type::Bool, 0, false); // i32 tag
+                self.i32c(*success_tag as i32);
+                self.op(0x47); // i32.ne: failure
+                self.open(0x04, 0x40, Frame::Other); // if (void)
+                self.op(0x20);
+                uleb(&mut self.code, *tmp as u64);
+                self.op(0x0F); // return original Err/None tagged pointer
+                self.close();
+                self.op(0x20);
+                uleb(&mut self.code, *tmp as u64);
+                field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
+            },
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
