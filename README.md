@@ -219,3 +219,15 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+## Integrated Boolean operations (private Rust/Wasm branch)
+
+This is an unreleased compiler branch, **not** the public playground's pinned compiler.
+
+- Canonical infix Boolean operators: `&&` (short-circuit AND), `||` (short-circuit OR) and `^^` (eager XOR). Precedence is `&&` > `^^` > `||` > ternary. Both sides must statically type-check as `bool` even when the right side cannot execute.
+- Named Boolean gates `And`, `Or`, `Xor` admit zero through 32 Boolean positional operands. `And()` is `true`, `Or()` / `Xor()` are `false`. Unary forms return their one Boolean operand.
+- `And([a,b,c])`, `Or([a,b,c])`, and `Xor([a,b,c])` are **gate-only, bracketed literal argument syntax** with the same 32-element bound and empty identities. This is not a general `Array<bool>` type or a first-class value, and mixed list/positional arguments are not admitted.
+- `And`/`Or` evaluate left-to-right and short-circuit; `Xor` evaluates all operands left-to-right and returns odd parity.
+- Legacy `,` and `|` in conditions remain **eager** compatibility spellings, distinct from `&&` and `||`. `|>` remains the functional pipeline operator; bare `^ ` and `% ` remain unsupported arithmetic tokens.
+
+The integrated fixture corpus includes real guest stdout/evaluation-order assertions, positive and type-error cases, limit diagnostics, and native/Wasm output-byte comparisons. Nothing in this branch authorizes publication: promotion requires executed exact-tree CI, independent review, separately approved compiler binary provenance, and the site's secure Pages cutover (atto-lang/atto-lang.github.io#5). Java/LLVM/.NET equivalence is **not** implied.
