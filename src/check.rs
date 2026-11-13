@@ -498,6 +498,39 @@ fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
     Ok(())
 }
 
+/// The first executable for-in profile has no exception unwinder for
+/// arbitrary user calls inside the loop. Restrict the body to effect-free
+/// scalar expressions, local mutations, conditional control-flow, and early
+/// return/break/continue. Checked arithmetic traps terminate the Wasm
+/// instance, and no guest iterator is allowed to escape that instance.
+fn generator_forin_scalar_expr(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+        ExprKind::Str(_) | ExprKind::Var(_) => true,
+        ExprKind::Unary(_, a) => generator_forin_scalar_expr(a),
+        ExprKind::Binary(_, a, b) => generator_forin_scalar_expr(a)
+            && generator_forin_scalar_expr(b),
+        ExprKind::Ternary(a, b, c) => generator_forin_scalar_expr(a)
+            && generator_forin_scalar_expr(b) && generator_forin_scalar_expr(c),
+        _ => false,
+    }
+}
+
+fn generator_forin_safe_body(body: &[Stmt]) -> bool {
+    body.iter().all(|s| match s {
+        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } =>
+            generator_forin_scalar_expr(init),
+        Stmt::If { arms, otherwise, .. } =>
+            arms.iter().all(|(cond, branch)|
+                generator_forin_scalar_expr(cond) && generator_forin_safe_body(branch))
+                && otherwise.as_ref().is_none_or(|b| generator_forin_safe_body(b)),
+        Stmt::Block(b) => generator_forin_safe_body(b),
+        Stmt::Return(Some(e), _) => generator_forin_scalar_expr(e),
+        Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => true,
+        _ => false,
+    })
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     // The lexer/parser preserve explicit generator AST nodes, but guest ABI v2
     // has no bounded continuation state, iterator next or close operation.
@@ -1395,6 +1428,10 @@ impl<'a> FnCx<'a> {
                     "yield and yield* require a compiled generator continuation"));
             }
             Stmt::ForIn { name, source, body, pos } => {
+                if !generator_forin_safe_body(body) {
+                    return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                        "generator for-in body has effects requiring exception/cancellation-safe unwinding"));
+                }
                 let gen = self.consume(source)?;
                 if gen.ty != Type::GeneratorInt {
                     return Err(type_err(source.pos,
