@@ -169,3 +169,15 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+
+### Canonical boolean operators (Rust/Wasm subset feature branch)
+
+Use `&&` for short-circuit AND, `||` for short-circuit OR, and `^^` for
+boolean XOR (evaluates both operands in order). Operands must both be
+`bool`; implicit truthiness and int/bitwise operators are not admitted.
+Precedence is `&&`, then `^^`, then `||` (then ternary). The older
+condition-only comma and single-pipe operators remain accepted as **eager
+legacy compatibility** until Java/LLVM/.NET conformance and migration are
+complete; they are not the recommended syntax. This work does not replace the
+public pinned compiler until independently reviewed and authorized.

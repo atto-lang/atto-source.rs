@@ -1968,7 +1968,7 @@ impl<'a> FnCx<'a> {
                     }
                     Type::Bool
                 }
-                BinOp::And | BinOp::Or => {
+                BinOp::And | BinOp::Or | BinOp::LogicAnd | BinOp::LogicOr | BinOp::LogicXor => {
                     if a.ty != Type::Bool || b.ty != Type::Bool {
                         return Err(type_err(pos, format!("condition operator '{}' needs bool operands", op.symbol())));
                     }

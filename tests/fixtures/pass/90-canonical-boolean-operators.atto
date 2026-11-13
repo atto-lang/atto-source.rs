@@ -1,0 +1,18 @@
+// Browser canonical boolean syntax; do not claim Java parity until proven.
+// expect-exit: 42
+// expect-stdout: xor-rhs
+// java: rejects
+fnc mark(bool b): bool {
+  stdio.println("xor-rhs");
+  return b;
+}
+
+pub fnc main(): int {
+  val and_skipped = false && mark(true);
+  val or_skipped = true || mark(false);
+  val xor_eager = true ^^ mark(false);
+  if !and_skipped && or_skipped && xor_eager then
+    return 42;
+  fi
+  return 0;
+}

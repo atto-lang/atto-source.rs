@@ -1593,13 +1593,13 @@ impl Parser {
 
     fn parse_cond_and(&mut self) -> R<Expr> {
         let mut links = 0;
-        let mut left = self.parse_equality()?;
+        let mut left = self.parse_logic_or()?;
         while *self.peek() == Tok::Comma {
             let pos = self.pos();
             self.advance();
             self.grow(1)?;
             links += 1;
-            let right = self.parse_equality()?;
+            let right = self.parse_logic_or()?;
             left = Expr {
                 kind: ExprKind::Binary(BinOp::And, Box::new(left), Box::new(right)),
                 pos,
@@ -1620,7 +1620,7 @@ impl Parser {
     }
 
     fn parse_ternary(&mut self) -> R<Expr> {
-        let c = self.parse_equality()?;
+        let c = self.parse_logic_or()?;
         match self.peek() {
             Tok::Pipe => {
                 return Err(Diagnostic::new(
@@ -1646,6 +1646,64 @@ impl Parser {
             _ => {}
         }
         Ok(c)
+    }
+
+
+    // Canonical boolean precedence (tightest to loosest): &&, ^^, ||.
+    // The old comma/pipe condition grammar is handled separately for
+    // compatibility; it remains eager until all backends migrate.
+    fn parse_logic_or(&mut self) -> R<Expr> {
+        let mut links = 0;
+        let mut left = self.parse_logic_xor()?;
+        while *self.peek() == Tok::OrOr {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_logic_xor()?;
+            left = Expr {
+                kind: ExprKind::Binary(BinOp::LogicOr, Box::new(left), Box::new(right)),
+                pos,
+            };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_logic_xor(&mut self) -> R<Expr> {
+        let mut links = 0;
+        let mut left = self.parse_logic_and()?;
+        while *self.peek() == Tok::XorXor {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_logic_and()?;
+            left = Expr {
+                kind: ExprKind::Binary(BinOp::LogicXor, Box::new(left), Box::new(right)),
+                pos,
+            };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_logic_and(&mut self) -> R<Expr> {
+        let mut links = 0;
+        let mut left = self.parse_equality()?;
+        while *self.peek() == Tok::AndAnd {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_equality()?;
+            left = Expr {
+                kind: ExprKind::Binary(BinOp::LogicAnd, Box::new(left), Box::new(right)),
+                pos,
+            };
+        }
+        self.height -= links;
+        Ok(left)
     }
 
     fn parse_equality(&mut self) -> R<Expr> {
