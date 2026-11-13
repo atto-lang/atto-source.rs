@@ -2198,7 +2198,7 @@ impl Parser {
                     let body = self.parse_block()?;
                     if self.task_funcs.len() >= MAX_FUNCS {return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many task blocks"));}
                     let name = format!("$atto_task_{}", self.task_funcs.len());
-                    self.task_funcs.push(Func {name: name.clone(), suspends: true, pos, params: Vec::new(), ret: Type::Int, body});
+                    self.task_funcs.push(Func {name: name.clone(), suspends: true, pos, is_generator: false, params: Vec::new(), ret: Type::Int, body});
                     ExprKind::Task(name)
                 }
                 "rt" => { self.advance(); ExprKind::Var(s) }
