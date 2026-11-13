@@ -36,8 +36,10 @@ function viaNativeCompiler(file) {
 }
 
 function runGuest(bytes) {
-  assert.ok(WebAssembly.validate(bytes), 'actual guest module must validate');
+  // Construct before the generic validate assertion: engines provide an
+  // exact byte offset and operand-stack reason on invalid generated code.
   const mod = new WebAssembly.Module(bytes);
+  assert.ok(WebAssembly.validate(bytes), 'actual guest module must validate');
   let stdout = '';
   const atto = {
     print_i64: n => { stdout += String(n); },
@@ -63,6 +65,9 @@ for (const [name, expected, output] of [
   ['129-generator-close-reuse.atto', 42n, ''],
   ['130-generator-early-return-close.atto', 42n, ''],
   ['131-generator-empty.atto', 42n, ''],
+  ['132-generator-yield-star-native.atto', 10n, '10\n'],
+  ['133-generator-nested-empty-yield-star.atto', 8n, ''],
+  ['134-generator-delegate-break-close-reuse.atto', 168n, ''],
 ]) {
   const file = join('tests/fixtures/pass', name);
   const src = readFileSync(file, 'utf8');
@@ -80,6 +85,8 @@ for (const [name, code] of [
   ['129-generator-ownership-no-discard.atto', 'E_GENERATOR_OWNERSHIP'],
   ['130-generator-scalar-iteration.atto', 'E_TYPE'],
   ['131-generator-forin-throw-not-safe.atto', 'E_UNSUPPORTED'],
+  ['132-generator-delegation-cycle.atto', 'E_GENERATOR_CYCLE'],
+  ['133-generator-yield-star-scalar-call.atto', 'E_TYPE'],
 ]) {
   const file = join('tests/fixtures/fail', name);
   const src = readFileSync(file, 'utf8');

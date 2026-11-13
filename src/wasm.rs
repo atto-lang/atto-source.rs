@@ -23,7 +23,7 @@
 //! randomness, so identical input yields byte-identical modules on every host.
 
 use crate::ast::{BinOp, Type};
-use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TProgram, TStmt, TE};
+use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
 

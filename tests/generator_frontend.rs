@@ -139,7 +139,9 @@ fn generator_item_and_delegation_type_checks_precede_wasm_unsupported_gate() {
     let valid_delegation = r#"
         fnc *gen inner(): Generator<int> { yield 1; }
         fnc *gen outer(): Generator<int> { yield* inner(); }
+        pub fnc main(): int { return 0; }
     "#;
-    let err = atto_compiler::compile(valid_delegation).unwrap_err();
-    assert_eq!(err.code, "E_UNSUPPORTED", "valid syntax still needs real Wasm continuation");
+    let bytes = atto_compiler::compile(valid_delegation)
+        .expect("zero-argument finite yield* delegates compile to real guest Wasm");
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
 }
