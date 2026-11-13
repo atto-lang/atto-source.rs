@@ -1,5 +1,5 @@
 // expect-error: E_UNSUPPORTED_TYPE
-// java: rejects
+// java: not-tested
 pub fnc main(): int {
   val got = trap true;
   return 0;
