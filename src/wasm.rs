@@ -5,7 +5,8 @@
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
 //!   1 = integer overflow; 2 is reserved (division/remainder unsupported);
 //!   3 = object heap exhausted
-//! * export `memory` only when string literals are printed or classes exist;
+//! * export `memory` when strings, classes, or actors exist;
+//!   actor-only modules receive one private 64 KiB page per instance;
 //!   with classes it is a fixed, non-growable [`HEAP_PAGES`]-page memory
 //! * imports, only those used, from module `atto`:
 //!   `print_i64(i64)`, `print_bool(i32)`, `print_str(i32 offset, i32 len)`,
@@ -14,8 +15,8 @@
 //! * with actors, also export `actor_init(i32 type)` and
 //!   `actor_receive(i32 type, i64 value, i64 sequence)`, plus a custom section
 //!   `atto.actors` listing actor type names by type index. The host runs each
-//!   spawned actor in its own instance (one Web Worker per actor in the
-//!   playground), calls `actor_init` once, then `actor_receive` per message in
+//!   spawned actor in its own Wasm instance, calls `actor_init` once,
+//!   then `actor_receive` per message in
 //!   FIFO order. Actor state lives in that instance's globals.
 //!
 //! Output is a pure function of the source: no hash-map iteration, clocks or
@@ -919,9 +920,10 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 3, fsec);
 
-    let has_memory = !p.data.is_empty() || p.heap || p.strings;
+    let has_memory = !p.data.is_empty() || p.heap || p.strings || has_actors;
     if has_memory {
-        // fixed and non-growable: string literals, then the object heap
+        // Fixed and non-growable: strings, the object heap, or a private
+        // 64 KiB actor memory even for scalar-only actors.
         let pages = if p.heap { HEAP_PAGES } else { 1 };
         let mut m = vec![1, 0x01];
         uleb(&mut m, pages as u64);
