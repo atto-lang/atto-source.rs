@@ -1620,7 +1620,30 @@ impl Parser {
     }
 
     fn parse_ternary(&mut self) -> R<Expr> {
-        let c = self.parse_equality()?;
+        let mut c = self.parse_equality()?;
+        // Functional pipeline: value |> f |> g(extra) lowers to g(f(value), extra).
+        // Only ordinary named functions are admitted: no computed callees,
+        // receiver calls or actor piping. This preserves argument evaluation
+        // order and leaves arity/type checking to the existing call checker.
+        let mut links = 0;
+        while *self.peek() == Tok::PipeGt {
+            let pos = self.pos();
+            self.advance();
+            let stage = self.parse_postfix()?;
+            let (name, mut args) = match stage.kind {
+                ExprKind::Var(name) => (name, Vec::new()),
+                ExprKind::Call(name, args) => (name, args),
+                _ => return Err(unsupported(pos, "pipeline stages other than named function calls")),
+            };
+            if args.len() >= MAX_PARAMS {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "pipeline exceeds the call argument limit"));
+            }
+            self.grow(1)?;
+            links += 1;
+            args.insert(0, c);
+            c = Expr { kind: ExprKind::Call(name, args), pos };
+        }
+        self.height -= links;
         match self.peek() {
             Tok::Pipe => {
                 return Err(Diagnostic::new(
@@ -1629,7 +1652,6 @@ impl Parser {
                     "'|' is a boolean OR only inside an if/while condition; use Or(a, b) elsewhere",
                 ))
             }
-            Tok::PipeGt => return Err(unsupported(self.pos(), "the '|>' pipeline operator")),
             Tok::Question => {
                 let pos = self.pos();
                 self.advance();
