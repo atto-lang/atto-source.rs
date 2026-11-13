@@ -1428,14 +1428,14 @@ impl<'a> FnCx<'a> {
                     "yield and yield* require a compiled generator continuation"));
             }
             Stmt::ForIn { name, source, body, pos } => {
-                if !generator_forin_safe_body(body) {
-                    return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                        "generator for-in body has effects requiring exception/cancellation-safe unwinding"));
-                }
                 let gen = self.consume(source)?;
                 if gen.ty != Type::GeneratorInt {
                     return Err(type_err(source.pos,
                         format!("for-in expects Generator<int>, found {}", self.tn(gen.ty))));
+                }
+                if !generator_forin_safe_body(body) {
+                    return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                        "generator for-in body has effects requiring exception/cancellation-safe unwinding"));
                 }
                 // This first slice owns a fresh handle produced by a direct
                 // generator call. No aliasing or escaping local handles.
