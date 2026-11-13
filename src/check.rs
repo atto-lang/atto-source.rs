@@ -488,6 +488,9 @@ pub fn check(p: &Program) -> R<TProgram> {
     for f in &p.funcs {
         if f.is_generator {
             precheck_generator_body(&f.body, &p.funcs)?;
+            // Build the exact bounded resume graph before the ABI-v2 gate.
+            // It is a compiler IR only; no generator guest artifact is emitted.
+            let _plan = crate::generator_cfg::lower(&f.body)?;
             return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
                 "generator continuations, yield and yield* are not lowered to guest Wasm yet"));
         }
