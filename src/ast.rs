@@ -298,6 +298,8 @@ pub enum ExprKind {
     Bool(bool),
     Str(String),
     Var(String),
+    /// Caller-side trap expression; only the proven non-throwing browser subset is lowered.
+    Trap(Box<Expr>),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
