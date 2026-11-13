@@ -1230,31 +1230,8 @@ impl<'a> FnCx<'a> {
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => TStmt::Expr(self.expr(e)?),
-            Stmt::Throw(error, pos) => {
-                if self.owner != Owner::TopLevel {
-                    return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                        "ordinary throw in class and actor methods needs supervisor/cleanup integration"));
-                }
-                let args = match &error.kind {
-                    ExprKind::Call(name, args) if name == "Error" => args,
-                    _ => return Err(type_err(error.pos,
-                        "throw requires an Error subclass; this browser slice admits only throw Error(message)")),
-                };
-                if args.len() != 1 {
-                    return Err(Diagnostic::new(error.pos, "E_ARITY",
-                        "Error(message) requires exactly one string argument"));
-                }
-                if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
-                    return Err(Diagnostic::new(error.pos, "E_RESERVED",
-                        "the guest Error constructor cannot be shadowed"));
-                }
-                let msg = self.value(&args[0])?;
-                if msg.ty != Type::Str {
-                    return Err(type_err(args[0].pos, "Error(message) requires a string message"));
-                }
-                TStmt::Throw(msg)
-            }
-            Stmt::Return(v, pos) => match (v, self.ret) {
+            Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
+                        Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
                 (None, t) => {
                     return Err(Diagnostic::new(
@@ -1834,6 +1811,56 @@ impl<'a> FnCx<'a> {
         Ok(v)
     }
 
+    // These non-inlined helpers keep the per-level stack frame of the
+    // recursively invoked expression checker bounded on the browser runner.
+    #[inline(never)]
+    fn trap_value(&mut self, inner: &Expr, pos: Pos) -> R<TE> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "caller-side trap inside class/actor requires lifecycle integration"));
+        }
+        let value = self.consume(inner)?;
+        let option_ty = match value.ty {
+            Type::Int => Type::OptionInt,
+            Type::ResultIntStr => Type::OptionResultIntStr,
+            _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                format!("browser trap supports only int and Result<int,string> operands, found {}", self.tn(value.ty)))),
+        };
+        let value_tmp = self.temp(value.ty, pos)?;
+        let some_tmp = self.temp(option_ty, pos)?;
+        let none_tmp = self.temp(option_ty, pos)?;
+        Ok(TE {
+            e: TExpr::Trap { value: Box::new(value), value_tmp, some_tmp, none_tmp },
+            ty: option_ty,
+        })
+    }
+
+    #[inline(never)]
+    fn guest_throw(&mut self, error: &Expr, pos: Pos) -> R<TStmt> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "ordinary throw in class and actor methods needs supervisor/cleanup integration"));
+        }
+        let args = match &error.kind {
+            ExprKind::Call(name, args) if name == "Error" => args,
+            _ => return Err(type_err(error.pos,
+                "throw requires an Error subclass; this browser slice admits only throw Error(message)")),
+        };
+        if args.len() != 1 {
+            return Err(Diagnostic::new(error.pos, "E_ARITY",
+                "Error(message) requires exactly one string argument"));
+        }
+        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
+            return Err(Diagnostic::new(error.pos, "E_RESERVED",
+                "the guest Error constructor cannot be shadowed"));
+        }
+        let msg = self.value(&args[0])?;
+        if msg.ty != Type::Str {
+            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
+        }
+        Ok(TStmt::Throw(msg))
+    }
+
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
@@ -1841,27 +1868,8 @@ impl<'a> FnCx<'a> {
                 ty: Type::Int,
             }),
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
-            ExprKind::Trap(inner) => {
-                if self.owner != Owner::TopLevel {
-                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
-                        "caller-side trap inside class/actor requires lifecycle integration"));
-                }
-                let value = self.consume(inner)?;
-                let option_ty = match value.ty {
-                    Type::Int => Type::OptionInt,
-                    Type::ResultIntStr => Type::OptionResultIntStr,
-                    _ => return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED_TYPE",
-                        format!("browser trap supports only int and Result<int,string> operands, found {}", self.tn(value.ty)))),
-                };
-                let value_tmp = self.temp(value.ty, e.pos)?;
-                let some_tmp = self.temp(option_ty, e.pos)?;
-                let none_tmp = self.temp(option_ty, e.pos)?;
-                Ok(TE {
-                    e: TExpr::Trap { value: Box::new(value), value_tmp, some_tmp, none_tmp },
-                    ty: option_ty,
-                })
-            }
-            ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
+            ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
+                        ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
