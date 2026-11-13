@@ -412,12 +412,69 @@ fn const_init(e: &Expr) -> bool {
     }
 }
 
+/// Validate locally decidable generator item/delegation types before the
+/// deliberate guest-Wasm continuation gate. This is not full expression
+/// inference: unresolved/compound expressions remain fail-closed until the
+/// generator IR and ownership-aware checker are implemented.
+fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
+    for stmt in body {
+        match stmt {
+            Stmt::Yield(expr, _) => {
+                if matches!(&expr.kind, ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_)) {
+                    return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                        "Generator<int> can only yield int items"));
+                }
+            }
+            Stmt::YieldFrom(expr, _) => {
+                match &expr.kind {
+                    ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_) => {
+                        return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                            "yield* requires a generator/iterator, not a scalar"));
+                    }
+                    ExprKind::Call(name, args) => {
+                        if let Some(target) = funcs.iter().find(|f|
+                            f.name == *name && f.params.len() == args.len())
+                        {
+                            if !target.is_generator || target.ret != Type::GeneratorInt {
+                                return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                                    format!("yield* target '{name}' is not a Generator<int>")));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Stmt::If { arms, otherwise, .. } => {
+                for (_, branch) in arms {
+                    precheck_generator_body(branch, funcs)?;
+                }
+                if let Some(branch) = otherwise {
+                    precheck_generator_body(branch, funcs)?;
+                }
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::ForIn { body, .. } | Stmt::Block(body) => {
+                precheck_generator_body(body, funcs)?;
+            }
+            Stmt::For { body, .. } => precheck_generator_body(body, funcs)?,
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    precheck_generator_body(&arm.body, funcs)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     // The lexer/parser preserve explicit generator AST nodes, but guest ABI v2
     // has no bounded continuation state, iterator next or close operation.
     // Fail closed before signature registration and never emit eager iterators.
     for f in &p.funcs {
         if f.is_generator {
+            precheck_generator_body(&f.body, &p.funcs)?;
             return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
                 "generator continuations, yield and yield* are not lowered to guest Wasm yet"));
         }
