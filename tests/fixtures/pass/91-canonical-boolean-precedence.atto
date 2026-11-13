@@ -1,0 +1,9 @@
+// Explicit precedence: && before ^^ before ||, no implicit truthiness.
+// expect-exit: 17
+// java: rejects
+pub fnc main(): int {
+  val a = true || false ^^ true && false;
+  val b = true ^^ true && false;
+  val c = false || true && true;
+  return a && b && c ? 17 : 0;
+}

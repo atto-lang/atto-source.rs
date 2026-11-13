@@ -321,9 +321,9 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// The arithmetic operators % and ^ remain removed. Double ^^ is now
+// canonical boolean XOR, checked separately by executed pass fixtures.
+for (const op of ['%', '^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
