@@ -238,6 +238,10 @@ impl TypedActorModule {
         let result = match ts.as_slice() {
             [] => Some(TargetType::Void),
             [Token {tok: Tok::Int(Some(_)), ..}] => Some(TargetType::Int),
+            [Token {tok: Tok::Int(None), ..}] => {
+                return Err(Diagnostic::new(ret.pos, "E_INTEGER_RANGE",
+                    "integer literal 9223372036854775808 requires a leading minus"));
+            }
             [Token {tok: Tok::Float(_), ..}] => Some(TargetType::Float),
             [Token {tok: Tok::Str(_), ..}] => Some(TargetType::Str),
             [Token {tok: Tok::Ident(name), ..}] if name == "true" || name == "false" =>
