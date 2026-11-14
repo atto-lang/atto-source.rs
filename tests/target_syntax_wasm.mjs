@@ -93,5 +93,16 @@ rejects(concreteState+' mtd (mut self: Counter) run(): void { self.handle_state(
 rejects(concreteState+' mtd (mut self: Counter) run(): int { return self.handle_state(critical-read |s| -> s.label); }','E_BORROW');
 rejects(concreteState+' mtd (Counter self) run(): int { return self.handle_state(critical-read |s| -> s.count); }','E_UNSUPPORTED');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (39)');
+
+// An untyped/unknown-effect call must not execute while an actor state lease
+// is held; malformed nesting and reserved lifecycle methods fail closed too.
+rejects('declare actor Foo; mtd (Foo self) receive(): void {}','E_SIGNATURE');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-write |s| -> { panic(Error(1)); }); }','E_BORROW');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-write |s| -> { s.count = risky(); }); }','E_BORROW');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-read |s| -> s.count?); }','E_BORROW');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-write |s| -> { s.count[0] = 1; }); }','E_UNSUPPORTED');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-read |s| -> { s.count + [1, 2); }); }','E_SYNTAX');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-write |s| -> { yield* stream; }); }','E_BORROW');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (46)');
 
