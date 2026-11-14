@@ -1641,12 +1641,11 @@ impl Parser {
             let body = self.parse_loop_body()?;
             return Ok(Stmt::Loop { body, pos });
         }
-        if matches!(self.peek(), Tok::Ident(_)) && self.word_at(1) == Some("in") {
-            let (name, _) = self.ident("an iteration variable")?;
-            self.expect_word("in")?;
-            let source = self.parse_expr()?;
-            let body = self.parse_loop_body()?;
-            return Ok(Stmt::ForIn { name, source, body, pos });
+        // Bare Rust/Atto-style for item in/of source.
+        if matches!(self.peek(), Tok::Ident(_))
+            && matches!(self.word_at(1), Some("in" | "of"))
+        {
+            return self.parse_for_iterator(pos, false);
         }
         let paren = self.eat(&Tok::LParen);
         // Commas are allowed only for the entirely empty '(,,)' alias.
@@ -1657,8 +1656,11 @@ impl Parser {
             let body = self.parse_loop_body()?;
             return Ok(Stmt::Loop { body, pos });
         }
-        if matches!(self.word_at(0), Some("const" | "let")) && self.word_at(2) == Some("of") {
-            return Err(unsupported(self.pos(), "'for ... of' loops"));
+        // A parenthesized iterator header is not a counted for-init. Choose
+        // structurally, before parse_type() or parse_binding() can change the
+        // cursor or the user-type table. Counted for (...;...;...) is untouched.
+        if paren && self.looks_like_for_iterator() {
+            return self.parse_for_iterator(pos, true);
         }
         let init = if *self.peek() == Tok::Semi {
             None
@@ -1715,6 +1717,81 @@ impl Parser {
             body,
             pos,
         })
+    }
+
+    /// Disambiguate C-style counted headers from parenthesized iterator
+    /// headers without consuming tokens, registering type names, or scanning
+    /// arbitrary expressions. Invalid raw-pointer headers still route into
+    /// parse_for_iterator for a targeted fail-closed diagnostic.
+    fn looks_like_for_iterator(&self) -> bool {
+        if matches!(self.word_at(0), Some("val" | "let" | "const")) {
+            return matches!(self.word_at(2), Some("in" | "of"))
+                || (*self.peek_at(2) == Tok::Colon
+                    && (matches!(self.word_at(4), Some("in" | "of"))
+                        || (matches!(self.peek_at(4), Tok::Star | Tok::Amp)
+                            && matches!(self.word_at(5), Some("in" | "of")))));
+        }
+        matches!(self.word_at(1), Some("in" | "of"))
+            || (matches!(self.peek_at(1), Tok::Ident(_))
+                && (matches!(self.word_at(2), Some("in" | "of"))
+                    || *self.peek_at(2) == Tok::Colon))
+            || (matches!(self.peek_at(1), Tok::Star | Tok::Amp)
+                && matches!(self.peek_at(2), Tok::Ident(_))
+                && (matches!(self.word_at(3), Some("in" | "of"))
+                    || *self.peek_at(3) == Tok::Colon))
+    }
+
+    /// All three spellings iterate *values*, never property names:
+    ///   for item in source
+    ///   for (val item: Type of source)
+    ///   for (Type item : source)
+    /// The compiler's current executable iterator protocol is Generator<int>
+    /// only. Future arrays and object iterators must use the same typed AST
+    /// and cannot silently bypass ownership or element-type validation.
+    fn parse_for_iterator(&mut self, pos: Pos, parenthesized: bool) -> R<Stmt> {
+        let (name, item_type, mutable, type_first) = if self.is_word("val")
+            || self.is_word("let") || self.is_word("const")
+        {
+            if self.eat_word("const") {
+                return Err(Diagnostic::new(self.pos(), "E_ITER_BINDING",
+                    "iterator values are runtime bindings; use val or let, not const"));
+            }
+            let mutable = self.eat_word("let");
+            if !mutable { self.expect_word("val")?; }
+            let (name, _) = self.ident("an iterator value binding")?;
+            let item_type = if self.eat(&Tok::Colon) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            (name, item_type, mutable, false)
+        } else if matches!(self.word_at(1), Some("in" | "of")) {
+            let (name, _) = self.ident("an iterator value binding")?;
+            (name, None, false, false)
+        } else {
+            let item_type = self.parse_type()?;
+            if matches!(self.peek(), Tok::Star | Tok::Amp) {
+                return Err(Diagnostic::new(self.pos(), "E_UNSUPPORTED_TYPE",
+                    "raw pointer/reference iterator binding is not safe here; use an explicitly checked borrow with lifetime and alias rules"));
+            }
+            let (name, _) = self.ident("an iterator value binding")?;
+            (name, Some(item_type), false, true)
+        };
+        if self.eat_word("in") || self.eat_word("of") {
+            // Both are aliases for value iteration; there are no JS-style
+            // enumerable-property semantics for 'in' in AttoLang.
+        } else if type_first && self.eat(&Tok::Colon) {
+            // C++/Java enhanced-for separator; only after a typed binding.
+        } else {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "iterator header needs 'in' or 'of' (or ':' after a type-first binding)"));
+        }
+        let source = self.parse_expr()?;
+        if parenthesized {
+            self.expect(Tok::RParen, "')' after iterator source")?;
+        }
+        let body = self.parse_loop_body()?;
+        Ok(Stmt::ForIn { name, item_type, mutable, source, body, pos })
     }
 
     fn parse_simple_assign(&mut self) -> R<Stmt> {
