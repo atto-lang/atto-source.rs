@@ -1,0 +1,4 @@
+// Independent Rust/Cranelift compiler source-ID admission fixture.
+pub fnc main(): int {
+    return 42;
+}
