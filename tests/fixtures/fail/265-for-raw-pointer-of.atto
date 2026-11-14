@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// java: target-only
+pub fnc main(): int {
+  for (Particle* p of particles) { }
+  return 0;
+}

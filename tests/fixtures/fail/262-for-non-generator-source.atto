@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+// java: target-only
+pub fnc main(): int {
+  for (int n of 42) { }
+  return 0;
+}
