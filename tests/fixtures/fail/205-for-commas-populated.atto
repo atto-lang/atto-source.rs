@@ -1,5 +1,5 @@
 // expect-error: E_SYNTAX
-// java: rejects
+// java: target-only
 pub fnc main(): int {
   for (let i = 0, i < 4, i++) do
     break;
