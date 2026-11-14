@@ -4,7 +4,7 @@
 
 use crate::ast::{ActorDecl, ActorInterface, ActorInterfaceMethod, FieldMode, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
-use crate::target_syntax::{ReceiverEffects, ReceiverHeader, StateAssignment, StateUse, TargetHeaders};
+use crate::target_syntax::{ReceiverEffects, ReceiverHeader, ReceiverReturn, StateAssignment, StateUse, TargetHeaders};
 use crate::lexer::{Tok, Token};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,12 +64,23 @@ pub struct TypedStateUse {
     pub field_ty: Option<TargetType>,
 }
 
+/// A single syntactically complete return statement in the pre-executable
+/// actor receiver IR. None means its expression needs the real body AST.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedBodyReturn {
+    pub receiver: usize,
+    pub pos: Pos,
+    pub result: Option<TargetType>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TypedActorModule {
     pub namespace: Option<String>,
     pub actors: Vec<TypedActor>,
     pub receivers: Vec<TypedReceiver>,
     pub state_uses: Vec<TypedStateUse>,
+    /// Partial return-type facts, not a complete control-flow or AOT proof.
+    pub body_returns: Vec<TypedBodyReturn>,
 }
 
 fn type_error(pos: Pos, why: impl Into<String>) -> Diagnostic {
@@ -213,6 +224,68 @@ impl TypedActorModule {
                     actor.name, a.field, expected, actual)));
         }
         Ok(())
+    }
+
+    /// Only type expressions whose complete meaning is statically known.
+    /// All other return bodies remain unproved and explicitly non-executable.
+    fn check_receiver_return(&self, headers: &TargetHeaders, ret: &ReceiverReturn)
+        -> Result<TypedBodyReturn, Diagnostic> {
+        let method = self.receivers.get(ret.receiver)
+            .ok_or_else(|| type_error(ret.pos, "invalid return receiver index"))?;
+        let h = headers.receivers.get(ret.receiver)
+            .ok_or_else(|| type_error(ret.pos, "missing source receiver header"))?;
+        let ts = &ret.expr;
+        let result = match ts.as_slice() {
+            [] => Some(TargetType::Void),
+            [Token {tok: Tok::Int(Some(_)), ..}] => Some(TargetType::Int),
+            [Token {tok: Tok::Float(_), ..}] => Some(TargetType::Float),
+            [Token {tok: Tok::Str(_), ..}] => Some(TargetType::Str),
+            [Token {tok: Tok::Ident(name), ..}] if name == "true" || name == "false" =>
+                Some(TargetType::Bool),
+            [Token {tok: Tok::Ident(name), ..}] => {
+                if name == "self" {
+                    return Err(Diagnostic::new(ret.pos, "E_ESCAPE",
+                        "actor receiver cannot escape by return"));
+                }
+                h.params.iter().find(|p| p.name == *name)
+                    .map(|p| self.type_of(&p.type_name, p.pos))
+                    .transpose()?
+            }
+            [Token {tok: Tok::Minus, ..}, Token {tok: Tok::Int(_), ..}] =>
+                Some(TargetType::Int),
+            // A zero-argument nominal self call has a known return signature.
+            [Token {tok: Tok::Ident(owner), ..}, Token {tok: Tok::Dot, ..},
+             Token {tok: Tok::Ident(name), ..}, Token {tok: Tok::LParen, ..},
+             Token {tok: Tok::RParen, ..}] if owner == "self" && name != "handle_state" => {
+                Some(self.resolve(headers.namespace.as_deref(), &h.owner,
+                    name, 0, false, ret.pos)?.returns.clone())
+            }
+            // By-value scalar projection from a concrete actor under a
+            // critical-read lease. No reference/handle is permitted to escape.
+            [Token {tok: Tok::Ident(owner), ..}, Token {tok: Tok::Dot, ..},
+             Token {tok: Tok::Ident(access), ..}, Token {tok: Tok::LParen, ..},
+             Token {tok: Tok::Ident(critical), ..}, Token {tok: Tok::Minus, ..},
+             Token {tok: Tok::Ident(mode), ..}, Token {tok: Tok::Pipe, ..},
+             Token {tok: Tok::Ident(binder), ..}, Token {tok: Tok::Pipe, ..},
+             Token {tok: Tok::Arrow, ..}, Token {tok: Tok::Ident(value), ..},
+             Token {tok: Tok::Dot, ..}, Token {tok: Tok::Ident(field), ..},
+             Token {tok: Tok::RParen, ..}]
+              if owner == "self" && access == "handle_state" && critical == "critical"
+                  && (mode == "read" || mode == "write") && binder == value => {
+                headers.definitions.iter().find(|a| a.name == h.owner)
+                    .map(|a| scalar_field_type(a, field, ret.pos))
+                    .transpose()?
+            }
+            _ => None,
+        };
+        if let Some(actual) = &result {
+            if *actual != method.returns {
+                return Err(type_error(ret.pos, format!(
+                    "receiver '{}.{}' returns {:?}, but return expression has {:?}",
+                    h.owner, h.name, method.returns, actual)));
+            }
+        }
+        Ok(TypedBodyReturn { receiver: ret.receiver, pos: ret.pos, result })
     }
 
     fn lower_one(&self, h: &ReceiverHeader) -> Result<TypedReceiver, Diagnostic> {
@@ -394,6 +467,7 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
         }).collect(),
         receivers: Vec::with_capacity(headers.receivers.len()),
         state_uses: Vec::with_capacity(headers.state_uses.len()),
+        body_returns: Vec::with_capacity(headers.receiver_returns.len()),
     };
     for definition in &headers.definitions {
         if !headers.actors.contains(&definition.name) {
@@ -409,6 +483,9 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     }
     for assignment in &headers.state_assignments {
         module.check_scalar_assignment(headers, assignment)?;
+    }
+    for ret in &headers.receiver_returns {
+        module.body_returns.push(module.check_receiver_return(headers, ret)?);
     }
     if headers.receiver_effects.len() != module.receivers.len() {
         return Err(type_error(Pos::default(),
