@@ -1,0 +1,2 @@
+// expect-error: E_CONST
+pub fnc main(): int { val x = 5; const y = x; return y; }
