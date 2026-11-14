@@ -13,7 +13,9 @@ end
 
 pub fnc main(): int {
   const Symbol ready = #ready;
-  val worker = spawn Worker();
-  worker.send(ready);
+  val first = spawn Worker();
+  val second = spawn Worker();
+  first.send(ready);
+  second.send(ready);
   return 42;
 }
