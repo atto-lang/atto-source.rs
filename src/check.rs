@@ -1662,11 +1662,23 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(*pos, "E_YIELD",
                     "yield and yield* require a compiled generator continuation"));
             }
-            Stmt::ForIn { name, source, body, pos } => {
+            Stmt::ForIn { name, item_type, mutable, source, body, pos } => {
+                // The current browser subset has only Generator<int>. Retain
+                // the declared type in the AST so a future Array<T> / Iter<T>
+                // can be checked against its actual Item; never silently
+                // truncate or reinterpret an object/reference as an int.
+                let wanted = match item_type {
+                    Some(ty) => self.resolve(*ty, *pos)?,
+                    None => Type::Int,
+                };
+                if wanted != Type::Int {
+                    return Err(type_err(*pos,
+                        format!("iterator element type is int, not {}", self.tn(wanted))));
+                }
                 let gen = self.consume(source)?;
                 if gen.ty != Type::GeneratorInt {
                     return Err(type_err(source.pos,
-                        format!("for-in expects Generator<int>, found {}", self.tn(gen.ty))));
+                        format!("for-in expects Generator<int>; arrays/other iterable types are not executable in this browser compiler yet (found {})", self.tn(gen.ty))));
                 }
                 if !generator_forin_safe_body(body) {
                     return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
@@ -1686,7 +1698,7 @@ impl<'a> FnCx<'a> {
                     let value_slot = if name == "_" {
                         self.temp(Type::Int, *pos)?
                     } else {
-                        self.declare(name, Type::Int, false, *pos)?
+                        self.declare(name, Type::Int, *mutable, *pos)?
                     };
                     let body = self.looped(body)?;
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
