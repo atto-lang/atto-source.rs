@@ -85,5 +85,13 @@ rejects('declare actor Foo; mtd (Foo self) foo(int a,int b): void {} mtd (Foo se
 rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-read |s| -> { ++s.n; }); }','E_READONLY');
 rejects('declare actor Foo; mtd (Foo self) run(): void { self.handle_state(critical-read |s| -> { sink(self); }); }','E_BORROW');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (35)');
+
+// Concrete state layouts must be checked in the same Wasm compiler ABI.
+const concreteState = 'declare actor Counter; define actor Counter as let int count = 0; val int limit = 12; let string label = "hello"; end';
+rejects(concreteState+' mtd (Counter self) run(): int { return self.handle_state(critical-read |s| -> s.missing); }','E_UNBOUND');
+rejects(concreteState+' mtd (mut self: Counter) run(): void { self.handle_state(critical-write |s| -> { s.limit = 2; }); }','E_READONLY');
+rejects(concreteState+' mtd (mut self: Counter) run(): int { return self.handle_state(critical-read |s| -> s.label); }','E_BORROW');
+rejects(concreteState+' mtd (Counter self) run(): int { return self.handle_state(critical-read |s| -> s.count); }','E_UNSUPPORTED');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (39)');
 
