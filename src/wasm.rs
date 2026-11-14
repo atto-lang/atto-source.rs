@@ -1255,6 +1255,32 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             name(&mut a, &actor.name);
         }
         section(&mut out, 0, a);
+        // Typed mailbox metadata: 0=no handler, 1=int, 2=bool, 3=Symbol.
+        // The host rejects arbitrary i64 values sent as Symbol identifiers.
+        let mut m = Vec::new();
+        name(&mut m, "atto.actor_mail");
+        uleb(&mut m, p.actors.len() as u64);
+        for actor in &p.actors {
+            m.push(match actor.payload {
+                Type::Void => 0,
+                Type::Int => 1,
+                Type::Bool => 2,
+                Type::Symbol => 3,
+                _ => unreachable!("actor mail type checked"),
+            });
+        }
+        section(&mut out, 0, m);
+    }
+    if !p.symbols.is_empty() {
+        // Canonically sorted manifest; guest Symbol IDs are 1-based ordinal
+        // indices. No runtime symbol allocation in the guest or actor heap.
+        let mut a = Vec::new();
+        name(&mut a, "atto.symbols");
+        uleb(&mut a, p.symbols.len() as u64);
+        for symbol in &p.symbols {
+            name(&mut a, symbol);
+        }
+        section(&mut out, 0, a);
     }
     out
 }
