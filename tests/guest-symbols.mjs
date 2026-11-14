@@ -43,6 +43,8 @@ assert.deepEqual(entries('atto.actor_mail'), [3]);
 let actorType, sent;
 const main = new WebAssembly.Instance(module, {
   atto: {
+    print_i64: () => { throw new Error('supervisor never prints actor output'); },
+    print_newline: () => { throw new Error('supervisor never prints actor output'); },
     actor_spawn: type => { actorType = type; return 0; },
     actor_send: (ref, value) => { assert.equal(ref, 0); sent = value; },
   },
