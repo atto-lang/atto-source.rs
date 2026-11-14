@@ -111,6 +111,17 @@ try{
   assert.equal(await run(infiniteWithBreak, 'E_TIMEOUT'), 'E_TIMEOUT');
   assert.equal(await run(recurSum, 'main() -> 45'), 'main() -> 45');
   console.log('PASS browser: unbounded recur contained and a fresh Worker recovers');
+  const iterableHeader = 'fnc *gen nums(): Generator<int> { yield 1; yield 2; yield 3; }';
+  const colonFor = iterableHeader +
+    'pub fnc main(): int { let total = 0; for (int n : nums()) {' +
+    'total = total + n; } return total; }';
+  assert.equal(await run(colonFor, 'main() -> 6'), 'main() -> 6');
+  console.log('PASS browser: typed colon iterator header consumes generator values');
+  const ofFor = iterableHeader +
+    'pub fnc main(): int { let total = 0; for (let n: int of nums()) {' +
+    'n = n + 1; total = total + n; } return total; }';
+  assert.equal(await run(ofFor, 'main() -> 9'), 'main() -> 9');
+  console.log('PASS browser: of alias and let-per-iteration binding work');
   // Real Chromium: compiler-produced Wasm guest tag catches only ordinary
   // Error(message), preserving all successful Result values and fatal traps.
   const callerTrap =
