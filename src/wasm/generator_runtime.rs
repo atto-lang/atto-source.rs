@@ -3,8 +3,14 @@
 //! code with no host imports or JS generator shims.
 use super::*;
 
+const FRAME_LIVE_SLOTS: usize = crate::check::GENERATOR_MAX_LIVE_I64_LOCALS;
+const GENERATOR_FRAME_BYTES: i32 = 56 + (FRAME_LIVE_SLOTS as i32) * 8;
+const FUEL_LOCAL: u32 = 7 + FRAME_LIVE_SLOTS as u32;
+const MAX_STEPS_PER_PULL: i32 = 65536;
+
 /// Four guest functions after source callables: new, checked_ptr, next, close.
-/// A frame is 56 bytes and always lives inside the instance-owned arena.
+/// Every generator frame has the same bounded size so a recycled frame
+/// cannot be too small for its next owner, even when local counts differ.
 /// All loads from a handle go through the generation/bounds validator.
 pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     assert!(p.heap && !p.generators.is_empty());
@@ -34,12 +40,12 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     e.i32c(-8);
     e.op(0x71);
     e.global_set(1);
-    e.i32c(56);
+    e.i32c(GENERATOR_FRAME_BYTES);
     e.call(l.helper(H_ALLOC));
     e.set(2);
     e.i32c(1);
     e.set(3);
-    e.op(0x05); // reuse a CLOSED 56-byte frame
+    e.op(0x05); // reuse a CLOSED equal-sized generator frame
     e.global_get(free);
     e.set(2);
     e.get(2);
@@ -68,6 +74,10 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     e.get(2); e.get(1); e.store_i64(32); // immutable generator parameter
     e.get(2); e.i64c(0); e.store_i64(40); // persistent counter local
     e.get(2); e.i64c(0); e.store_i64(48); // delegated child handle
+    // Clear all persistent slots on create and reuse (no stale data flow).
+    for n in 0..FRAME_LIVE_SLOTS {
+        e.get(2); e.i64c(0); e.store_i64(56 + 8 * n as u32);
+    }
     for (gen_type, gen) in p.generators.iter().enumerate() {
         if let Some(TGenStep::CountTo { start }) = gen.steps.iter()
             .find(|step| matches!(step, TGenStep::CountTo { .. })) {
@@ -88,7 +98,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     e.get(0); e.op(0xA7); e.set(1); // i32.wrap_i64
     e.get(1); e.i32c(8); e.op(0x49); // ptr < 8
     e.open(0x04, 0x40, Frame::Other); e.invalid_gen(); e.close();
-    e.get(1); e.i32c((HEAP_PAGES * 65536 - 56) as i32);
+    e.get(1); e.i32c(HEAP_PAGES as i32 * 65536 - GENERATOR_FRAME_BYTES);
     e.op(0x4B); // ptr > last complete frame start
     e.open(0x04, 0x40, Frame::Other); e.invalid_gen(); e.close();
     e.get(1); e.i32c(7); e.op(0x71); // alignment
@@ -105,12 +115,15 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
 
     // next(handle: i64) -> i32: 1=YIELDED, 0=DONE.
     // Pull-only progress: one item per invocation, no eager collection.
-    // Locals: 1=frame pointer, 2=PC, 3=generator type,
-    // 4=child handle (i64), 5=child next result (i32).
-    let mut e = make(&[
+    // Locals: 1=frame ptr, 2=PC, 3=type, 4=child i64, 5=child status,
+    // 6=immutable parameter, 7..=22=persistent ints, 23=dispatch budget.
+    let mut next_locals = vec![
         Type::Bool, Type::Bool, Type::Bool,
-        Type::GeneratorInt, Type::Bool,
-    ]);
+        Type::GeneratorInt, Type::Bool, Type::Int,
+    ];
+    next_locals.extend(std::iter::repeat(Type::Int).take(FRAME_LIVE_SLOTS));
+    next_locals.push(Type::Bool); // dispatch fuel i32
+    let mut e = make(&next_locals);
     e.get(0); e.call(first + 1); e.set(1);
     e.get(1); e.load_i32(8); e.i32c(3); e.op(0x46);
     e.open(0x04, 0x40, Frame::Other);
@@ -122,9 +135,22 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     e.open(0x04, 0x40, Frame::Other); e.invalid_gen(); e.close();
     e.get(1); e.i32c(1); e.store_i32(8); // RUNNING
     e.get(1); e.load_i32(0); e.set(3);
+    // Reload scalar locals each pull; each SET writes through immediately.
+    e.get(1); e.load_i64(32); e.set(6);
+    for n in 0..FRAME_LIVE_SLOTS {
+        e.get(1); e.load_i64(56 + 8 * n as u32);
+        e.set(7 + n as u32);
+    }
+    e.i32c(MAX_STEPS_PER_PULL); e.set(FUEL_LOCAL);
     // A completed delegate may be followed by more outer yields. Loop
     // internally until either one item is produced or the outer PC is DONE.
     e.open(0x03, 0x40, Frame::Top);
+    // Every non-yielding CFG edge consumes fuel, including loops.
+    e.get(FUEL_LOCAL); e.op(0x45);
+    e.open(0x04, 0x40, Frame::Other);
+    panic(&mut e.code, PANIC_GENERATOR_BUDGET);
+    e.close();
+    e.get(FUEL_LOCAL); e.i32c(1); e.op(0x6B); e.set(FUEL_LOCAL);
     e.get(1); e.load_i32(4); e.set(2);
     for (gen_id, gen) in p.generators.iter().enumerate() {
         e.get(3); e.i32c(gen_id as i32); e.op(0x46);
@@ -134,10 +160,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
             e.open(0x04, 0x40, Frame::Other);
             match step {
                 TGenStep::Yield(item) => {
-                    let TExpr::I64(value) = &item.e else {
-                        unreachable!("typed generator yield must be int");
-                    };
-                    e.get(1); e.i64c(*value); e.store_i64(16);
+                    e.get(1); e.expr(item); e.store_i64(16);
                     e.get(1); e.i32c(pc as i32 + 1); e.store_i32(4);
                     e.get(1); e.i32c(2); e.store_i32(8); // SUSPENDED
                     e.i32c(1); e.op(0x0F);
@@ -178,6 +201,33 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
                     e.get(1); e.i64c(0); e.store_i64(48);
                     e.get(1); e.i32c(pc as i32 + 1); e.store_i32(4);
                     e.br_to(Frame::Top);
+                }
+                TGenStep::Set { local, value } => {
+                    assert!((*local as usize) < FRAME_LIVE_SLOTS);
+                    let local_idx = 7 + *local;
+                    e.expr(value);
+                    e.set(local_idx);
+                    e.get(1); e.get(local_idx);
+                    e.store_i64(56 + *local * 8);
+                    e.get(1); e.i32c(pc as i32 + 1); e.store_i32(4);
+                    e.br_to(Frame::Top);
+                }
+                TGenStep::Guard { condition, on_false } => {
+                    e.expr(condition);
+                    e.open(0x04, 0x40, Frame::Other);
+                    e.get(1); e.i32c(pc as i32 + 1); e.store_i32(4);
+                    e.op(0x05);
+                    e.get(1); e.i32c(*on_false as i32); e.store_i32(4);
+                    e.close();
+                    e.br_to(Frame::Top);
+                }
+                TGenStep::Jump { to } => {
+                    e.get(1); e.i32c(*to as i32); e.store_i32(4);
+                    e.br_to(Frame::Top);
+                }
+                TGenStep::Done => {
+                    e.get(1); e.i32c(3); e.store_i32(8); // DONE
+                    e.i32c(0); e.op(0x0F);
                 }
                 TGenStep::CountTo { .. } => {
                     // Persistent counter in frame local[0], immutable limit in
