@@ -2,9 +2,10 @@
 //! This is separate from executable check.rs. Forward-declared actors have no
 //! linked implementation, state layout, proven effects or borrow semantics.
 
-use crate::ast::{ActorInterface, ActorInterfaceMethod, FieldMode, Param, Program, Type};
+use crate::ast::{ActorDecl, ActorInterface, ActorInterfaceMethod, FieldMode, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
-use crate::target_syntax::{ReceiverEffects, ReceiverHeader, StateUse, TargetHeaders};
+use crate::target_syntax::{ReceiverEffects, ReceiverHeader, StateAssignment, StateUse, TargetHeaders};
+use crate::lexer::{Tok, Token};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetType {
@@ -58,6 +59,7 @@ pub struct TypedStateUse {
     pub pos: Pos,
     pub mutation: bool,
     pub exclusive: bool,
+    pub numeric_mutation: bool,
     /// None means the actor is only forward-declared; no field proof exists.
     pub field_ty: Option<TargetType>,
 }
@@ -157,6 +159,10 @@ impl TypedActorModule {
                     format!("actor state field '{}.{}' is immutable",
                         actor.name, access.field)));
             }
+            if access.numeric_mutation && !matches!(field.ty, Type::Int | Type::Float) {
+                return Err(type_error(access.pos,
+                    "increment/decrement and compound addition require a numeric state field"));
+            }
             // Only by-value scalar state projections can currently be proved
             // not to leak the actor-owned heap. Strings, handles, containers,
             // and named reference types require a real typed borrow checker.
@@ -175,8 +181,38 @@ impl TypedActorModule {
         };
         Ok(TypedStateUse {
             receiver: access.receiver, field: access.field.clone(), pos: access.pos,
-            mutation: access.mutation, exclusive: access.exclusive, field_ty,
+            mutation: access.mutation, exclusive: access.exclusive,
+            numeric_mutation: access.numeric_mutation, field_ty,
         })
+    }
+
+    fn check_scalar_assignment(&self, headers: &TargetHeaders, a: &StateAssignment)
+        -> Result<(), Diagnostic> {
+        let receiver = headers.receivers.get(a.receiver)
+            .ok_or_else(|| type_error(a.pos, "invalid state assignment receiver"))?;
+        // A forward-only actor has no state layout to verify: keep it
+        // explicitly unverified and unexecutable.
+        let Some(actor) = headers.definitions.iter().find(|a| a.name == receiver.owner)
+            else { return Ok(()); };
+        let expected = scalar_field_type(actor, &a.field, a.pos)?;
+        if a.compound && !matches!(expected, TargetType::Int | TargetType::Float) {
+            return Err(type_error(a.pos, "compound state addition requires a numeric field"));
+        }
+        let mut parser = ScalarParser {
+            tokens: &a.rhs, index: 0, binder: &a.binder,
+            owner: actor, receiver, module: self,
+        };
+        let actual = parser.expr(0, 0)?;
+        if parser.index != parser.tokens.len() {
+            return Err(Diagnostic::new(parser.tokens[parser.index].pos, "E_UNSUPPORTED",
+                "state assignment expression requires fully typed scalar lowering"));
+        }
+        if actual != expected {
+            return Err(type_error(a.pos,
+                format!("state field '{}.{}' expects {:?}, got {:?}",
+                    actor.name, a.field, expected, actual)));
+        }
+        Ok(())
     }
 
     fn lower_one(&self, h: &ReceiverHeader) -> Result<TypedReceiver, Diagnostic> {
@@ -208,6 +244,128 @@ impl TypedActorModule {
     }
 }
 
+/// The scalar-only lease expression checker deliberately admits no calls,
+/// references, arrays, closures or allocation. More complex expressions must
+/// wait for the production borrow/effect checker before executable lowering.
+fn scalar_field_type(actor: &ActorDecl, name: &str, pos: Pos)
+    -> Result<TargetType, Diagnostic> {
+    let field = actor.fields.iter().find(|field| field.name == name)
+        .ok_or_else(|| Diagnostic::new(pos, "E_UNBOUND",
+            format!("actor '{}' has no state field '{}'", actor.name, name)))?;
+    match field.ty {
+        Type::Int => Ok(TargetType::Int),
+        Type::Bool => Ok(TargetType::Bool),
+        Type::Float => Ok(TargetType::Float),
+        _ => Err(Diagnostic::new(pos, "E_BORROW",
+            "non-scalar actor-owned values need typed borrow and lifetime proofs")),
+    }
+}
+
+struct ScalarParser<'a> {
+    tokens: &'a [Token],
+    index: usize,
+    binder: &'a str,
+    owner: &'a ActorDecl,
+    receiver: &'a ReceiverHeader,
+    module: &'a TypedActorModule,
+}
+
+impl ScalarParser<'_> {
+    fn current_pos(&self) -> Pos {
+        self.tokens.get(self.index).map_or(Pos::default(), |token| token.pos)
+    }
+    fn expr(&mut self, min_prec: u8, depth: usize) -> Result<TargetType, Diagnostic> {
+        if depth > 128 {
+            return Err(Diagnostic::new(self.current_pos(), "E_NESTING",
+                "scalar actor expression nesting limit"));
+        }
+        let token = self.tokens.get(self.index)
+            .ok_or_else(|| Diagnostic::new(self.current_pos(), "E_SYNTAX",
+                "expected scalar state expression"))?;
+        let pos = token.pos;
+        let kind = token.tok.clone();
+        self.index += 1;
+        let mut lhs = match kind {
+            Tok::Int(_) => TargetType::Int,
+            Tok::Float(_) => TargetType::Float,
+            Tok::Str(_) => TargetType::Str,
+            Tok::Ident(name) if name == "true" || name == "false" => TargetType::Bool,
+            Tok::Ident(name) if name == self.binder => {
+                if !matches!(self.tokens.get(self.index).map(|t| &t.tok), Some(Tok::Dot)) {
+                    return Err(Diagnostic::new(pos, "E_ESCAPE",
+                        "the state binder cannot escape by value"));
+                }
+                self.index += 1;
+                let member = self.tokens.get(self.index)
+                    .ok_or_else(|| Diagnostic::new(pos, "E_SYNTAX", "missing state field"))?;
+                let Tok::Ident(field) = &member.tok else {
+                    return Err(Diagnostic::new(member.pos, "E_SYNTAX", "expected state field name"));
+                };
+                self.index += 1;
+                scalar_field_type(self.owner, field, member.pos)?
+            }
+            Tok::Ident(name) => {
+                let param = self.receiver.params.iter().find(|p| p.name == name)
+                    .ok_or_else(|| Diagnostic::new(pos, "E_UNBOUND",
+                        format!("unknown scalar expression binding '{name}'")))?;
+                self.module.type_of(&param.type_name, param.pos)?
+            }
+            Tok::Minus => {
+                let inner = self.expr(5, depth + 1)?;
+                if !matches!(inner, TargetType::Int | TargetType::Float) {
+                    return Err(type_error(pos, "unary minus requires a numeric scalar"));
+                }
+                inner
+            }
+            Tok::Bang => {
+                let inner = self.expr(5, depth + 1)?;
+                if inner != TargetType::Bool {
+                    return Err(type_error(pos, "logical negation requires a bool"));
+                }
+                TargetType::Bool
+            }
+            Tok::LParen => {
+                let inner = self.expr(0, depth + 1)?;
+                if !matches!(self.tokens.get(self.index).map(|t| &t.tok), Some(Tok::RParen)) {
+                    return Err(Diagnostic::new(self.current_pos(), "E_SYNTAX",
+                        "unclosed scalar expression group"));
+                }
+                self.index += 1;
+                inner
+            }
+            _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "unproved scalar state expression requires typed lowering")),
+        };
+        loop {
+            let Some(next) = self.tokens.get(self.index) else { break };
+            let (prec, comparison) = match &next.tok {
+                Tok::EqEq | Tok::NotEq => (1, true),
+                Tok::Ident(word) if word == "eq" || word == "neq" => (1, true),
+                Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge => (2, true),
+                Tok::Plus | Tok::Minus => (3, false),
+                Tok::Star | Tok::Slash => (4, false),
+                _ => break,
+            };
+            if prec < min_prec { break; }
+            let op_pos = next.pos;
+            self.index += 1;
+            let rhs = self.expr(prec + 1, depth + 1)?;
+            if lhs != rhs {
+                return Err(type_error(op_pos, "scalar operands have incompatible types"));
+            }
+            if comparison {
+                if !matches!(lhs, TargetType::Int | TargetType::Float | TargetType::Bool) {
+                    return Err(type_error(op_pos, "comparison requires comparable scalars"));
+                }
+                lhs = TargetType::Bool;
+            } else if !matches!(lhs, TargetType::Int | TargetType::Float) {
+                return Err(type_error(op_pos, "arithmetic requires numeric scalars"));
+            }
+        }
+        Ok(lhs)
+    }
+}
+
 /// Resolve the entire declaration set before typing receiver parameters and
 /// result annotations, so forward references within one file are permitted.
 pub fn lower_target_signatures(headers: &TargetHeaders)
@@ -233,6 +391,9 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     }
     for access in &headers.state_uses {
         module.state_uses.push(module.check_state_use(headers, access)?);
+    }
+    for assignment in &headers.state_assignments {
+        module.check_scalar_assignment(headers, assignment)?;
     }
     if headers.receiver_effects.len() != module.receivers.len() {
         return Err(type_error(Pos::default(),
