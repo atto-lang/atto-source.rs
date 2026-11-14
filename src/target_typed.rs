@@ -6,6 +6,7 @@ use crate::ast::{ActorDecl, ActorInterface, ActorInterfaceMethod, FieldMode, Par
 use crate::diag::{Diagnostic, Pos};
 use crate::target_syntax::{ReceiverEffects, ReceiverHeader, ReceiverReturn, StateAssignment, StateUse, TargetHeaders};
 use crate::lexer::{Tok, Token};
+use crate::target_flow::{ReceiverFlow, analyze_receiver_body, check_receiver_arguments};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetType {
@@ -81,6 +82,8 @@ pub struct TypedActorModule {
     pub state_uses: Vec<TypedStateUse>,
     /// Partial return-type facts, not a complete control-flow or AOT proof.
     pub body_returns: Vec<TypedBodyReturn>,
+    /// Structured flow facts; never an executable actor body proof.
+    pub receiver_flows: Vec<ReceiverFlow>,
 }
 
 fn type_error(pos: Pos, why: impl Into<String>) -> Diagnostic {
@@ -472,6 +475,7 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
         receivers: Vec::with_capacity(headers.receivers.len()),
         state_uses: Vec::with_capacity(headers.state_uses.len()),
         body_returns: Vec::with_capacity(headers.receiver_returns.len()),
+        receiver_flows: Vec::with_capacity(headers.receiver_bodies.len()),
     };
     for definition in &headers.definitions {
         if !headers.actors.contains(&definition.name) {
@@ -497,6 +501,16 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     }
     for (receiver, direct) in module.receivers.iter_mut().zip(&headers.receiver_effects) {
         receiver.effects = direct.clone();
+    }
+    // Known argument types are checked even when the caller's body cannot
+    // yet be lowered. Unknown expressions explicitly preserve an unknown
+    // effect obligation rather than silently counting as safe.
+    let unknown_args = check_receiver_arguments(headers, &module)?;
+    for (receiver, unknown) in module.receivers.iter_mut().zip(unknown_args) {
+        receiver.effects.unproved_call |= unknown;
+    }
+    for body in &headers.receiver_bodies {
+        module.receiver_flows.push(analyze_receiver_body(headers, &module, body)?);
     }
     // Bounded monotone fixed point: each effect bit can transition only from
     // false to true. Recursive calls are handled without unbounded DFS.
