@@ -141,3 +141,108 @@ fn source_limits_and_invalid_receiver_forms_remain_fail_closed() {
         (0..33).map(|n| format!("int p{n}")).collect::<Vec<_>>().join(","));
     reject(&long, "E_SOURCE_LIMIT");
 }
+
+#[test]
+fn receiver_header_resolution_is_nominal_and_namespace_scoped() {
+    use atto_compiler::target_syntax::resolve_receiver_header;
+    use atto_compiler::Pos;
+    let p = parse("use namespace workers;
+        declare actor Foo1;
+        declare actor Foo2;
+        mtd (Foo1 self) foo(): int { return 10; }
+        pub mtd (Foo2 self) foo(): int { return 20; }
+        mtd (Foo1 self) foo(int value): int { return value; }");
+    let pos = Pos { line: 1, col: 1 };
+    let left = resolve_receiver_header(&p,Some("workers"),"Foo1","foo",0,false,pos).unwrap();
+    let right = resolve_receiver_header(&p,Some("workers"),"Foo2","foo",0,true,pos).unwrap();
+    assert_eq!(left.owner,"Foo1");
+    assert_eq!(right.owner,"Foo2");
+    assert_eq!(left.arity,0);
+    assert_eq!(right.arity,0);
+    assert_eq!(resolve_receiver_header(&p,Some("workers"),"Foo1","foo",1,false,pos).unwrap().arity,1);
+    let failures = [
+        (Some("other"),"Foo1","foo",0,false,"E_NAMESPACE"),
+        (Some("workers"),"Foo1","foo",0,true,"E_VISIBILITY"),
+        (Some("workers"),"Foo2","foo",1,false,"E_UNBOUND"),
+        (Some("workers"),"Missing","foo",0,false,"E_UNBOUND"),
+    ];
+    for (ns, owner, method, arity, external, code) in failures {
+        let error=resolve_receiver_header(&p,ns,owner,method,arity,external,pos).unwrap_err();
+        assert_eq!(error.code,code,"{error}");
+    }
+}
+
+#[test]
+fn internal_self_calls_bind_only_to_same_nominal_actor() {
+    parse("use namespace workers;
+        declare actor Foo1;
+        declare actor Foo2;
+        mtd (Foo1 self) foo(): int { return 10; }
+        mtd (Foo1 self) other(): int { return self.foo(); }
+        mtd (Foo2 self) foo(): int { return 20; }");
+    reject("declare actor Foo1; declare actor Foo2;
+        mtd (Foo2 self) foo(): void {}
+        mtd (Foo1 self) other(): void { self.foo(); }","E_UNBOUND");
+    reject("declare actor Foo;
+        mtd (Foo self) foo(): void {}
+        mtd (Foo self) other(): void { self.foo(1); }","E_UNBOUND");
+}
+
+#[test]
+fn sealed_state_checks_never_treat_self_fields_as_unsealed() {
+    reject("declare actor Foo; mtd (Foo self) foo(): int { return self.count; }","E_SEALED");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.count = 1; }","E_SEALED");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { handle_state(critical-write |s| -> {s.count = 1;}); }","E_SEALED");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(read |s| -> s.count); }","E_SEALED");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> ); }","E_SEALED");
+}
+
+#[test]
+fn state_callbacks_check_read_write_borrow_and_escape() {
+    reject("declare actor Foo; mtd (self: Foo) foo(): void { self.handle_state(critical-write |s| -> { s.count = 5; }); }","E_MUTABILITY");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> { s.count = 5; }); }","E_READONLY");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> { s.count += 5; }); }","E_READONLY");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> { s.count++; }); }","E_READONLY");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> { return s; }); }","E_ESCAPE");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> { val snapshot = s; }); }","E_ESCAPE");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> await foo()); }","E_BORROW");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-write |s| -> { spawn Foo(); }); }","E_BORROW");
+    reject("declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-write |s| -> { self.handle_state(critical-read |r| -> r.count); }); }","E_BORROW");
+    reject("declare actor Foo; mtd (self: Foo) foo(): int { return self.handle_state(critical-read |s| -> s.map.delete(1)); }","E_UNSUPPORTED");
+}
+#[test]
+fn valid_callback_uses_are_accepted_for_nonexecuting_profile() {
+    let s="declare actor Foo;
+        mtd (mut self: Foo) add(int value): void {
+            self.handle_state(critical-write |s| -> { s.count = s.count + value; });
+        }
+        mtd (self: Foo) count(): int {
+            return self.handle_state(critical-read |s| -> s.count);
+        }";
+    parse(s);
+    assert_eq!(atto_compiler::compile(s).unwrap_err().code,"E_UNSUPPORTED");
+}
+#[test]
+fn local_spawn_capabilities_reject_synchronous_method_calls() {
+    let source="declare actor Foo;
+        mtd (Foo self) foo(): void {}
+        pub fnc main(): int { val first = spawn Foo(); first.foo(); return 0; }";
+    reject(source,"E_ISOLATION");
+    let safe="declare actor Foo;
+        pub fnc main(): int {
+            val first = spawn Foo();
+            first.send(42);
+            return 0;
+        }";
+    parse(safe);
+    assert_eq!(atto_compiler::compile(safe).unwrap_err().code, "E_UNSUPPORTED");
+}
+#[test]
+fn lexical_tokens_prevent_fake_state_reads_from_comments_or_strings() {
+    parse("declare actor Foo;
+        mtd (mut self: Foo) foo(): void {
+            // self.count = 1; await panic();
+            val text = \"self.count; s.count++; handle_state(critical-write)\";
+            self.handle_state(critical-write |s| -> {s.count = 1;});
+        }");
+}

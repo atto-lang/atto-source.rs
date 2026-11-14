@@ -93,7 +93,7 @@ impl Cursor<'_> {
         }
         Ok(())
     }
-    fn receiver(&mut self, pos: Pos, public: bool) -> R<ReceiverHeader> {
+    fn receiver(&mut self, pos: Pos, public: bool) -> R<(ReceiverHeader, usize, usize)> {
         self.expect(&Tok::LParen, "expected '(' before receiver")?;
         // Both the explicit typed spelling and the nominal receiver spelling
         // are accepted: (mut self: Foo), (self: Foo), (Foo self),
@@ -117,14 +117,18 @@ impl Cursor<'_> {
         let name = self.ident()?;
         let arity = self.params()?;
         if self.take(&Tok::Colon) || self.take(&Tok::Arrow) { self.type_name()?; }
+        let start = self.i;
         self.body()?;
-        Ok(ReceiverHeader { owner, name, arity, mutable, public, pos })
+        let end = self.i;
+        Ok((ReceiverHeader { owner, name, arity, mutable, public, pos }, start, end))
     }
-    fn function(&mut self) -> R<()> {
+    fn function(&mut self) -> R<(usize, usize)> {
         self.ident()?;
         self.params()?;
         if self.take(&Tok::Colon) || self.take(&Tok::Arrow) { self.type_name()?; }
-        self.body()
+        let start = self.i;
+        self.body()?;
+        Ok((start, self.i))
     }
 }
 
@@ -137,6 +141,8 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
     }
     let mut c = Cursor { toks, i: 0 };
     let mut out = TargetHeaders::default();
+    let mut spans: Vec<(usize, usize, usize)> = Vec::new();
+    let mut function_spans: Vec<(usize, usize)> = Vec::new();
     let mut decls = 0;
     while *c.tok() != Tok::Eof {
         if decls >= MAX_FUNCS {
@@ -175,15 +181,16 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         } else {
             let public = c.take_word("pub");
             if c.take_word("mtd") {
-                let method = c.receiver(pos, public)?;
+                let (method, start, end) = c.receiver(pos, public)?;
                 if out.receivers.iter().any(|m: &ReceiverHeader| m.owner == method.owner
                     && m.name == method.name && m.arity == method.arity) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE",
                         "duplicate receiver signature (owner/name/arity)"));
                 }
+                spans.push((out.receivers.len(), start, end));
                 out.receivers.push(method);
             } else if c.take_word("fnc") {
-                c.function()?;
+                function_spans.push(c.function()?);
             } else {
                 return Err(c.err("E_SYNTAX",
                     "expected namespace header, module import, declared actor, receiver method, or fnc"));
@@ -198,5 +205,231 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                     receiver.owner)));
         }
     }
+    for (i, start, end) in spans {
+        validate_receiver_body(toks, &out, i, start, end)?;
+    }
+    for (start, end) in function_spans {
+        validate_spawned_actor_calls(toks, &out, start, end)?;
+    }
     Ok(out)
+}
+
+
+/// Resolve a receiver header against nominal, file-scoped symbols. This does
+/// not link a full actor definition or prove that a method is callable through
+/// an ActorRef. The namespace is this file's identity, *not* an open import.
+pub fn resolve_receiver_header<'a>(
+    symbols: &'a TargetHeaders,
+    namespace: Option<&str>,
+    actor: &str,
+    name: &str,
+    arity: usize,
+    external: bool,
+    pos: Pos,
+) -> R<&'a ReceiverHeader> {
+    if symbols.namespace.as_deref() != namespace {
+        return Err(Diagnostic::new(pos, "E_NAMESPACE",
+            "receiver lookup is not in the source namespace"));
+    }
+    if !symbols.actors.iter().any(|a| a == actor) {
+        return Err(Diagnostic::new(pos, "E_UNBOUND",
+            format!("unknown actor receiver type '{actor}'")));
+    }
+    let Some(method) = symbols.receivers.iter().find(|m|
+        m.owner == actor && m.name == name && m.arity == arity) else {
+        return Err(Diagnostic::new(pos, "E_UNBOUND",
+            format!("actor '{actor}' has no receiver method '{name}' with arity {arity}")));
+    };
+    if external && !method.public {
+        return Err(Diagnostic::new(pos, "E_VISIBILITY",
+            format!("receiver '{actor}.{name}' is not public")));
+    }
+    Ok(method)
+}
+
+fn word_at(toks: &[Token], index: usize, word: &str) -> bool {
+    matches!(toks.get(index).map(|t| &t.tok), Some(Tok::Ident(s)) if s == word)
+}
+fn at(toks: &[Token], index: usize, tok: &Tok) -> bool {
+    toks.get(index).is_some_and(|t| &t.tok == tok)
+}
+fn diagnostic(toks: &[Token], index: usize, code: &'static str, why: &str) -> Diagnostic {
+    Diagnostic::new(toks.get(index).map_or(Pos::default(), |t| t.pos), code, why)
+}
+fn close_paren(toks: &[Token], start: usize, limit: usize) -> R<usize> {
+    let mut depth = 0usize;
+    for i in start..limit {
+        if at(toks, i, &Tok::LParen) { depth += 1; }
+        if at(toks, i, &Tok::RParen) {
+            if depth == 0 {
+                return Err(diagnostic(toks, i, "E_SYNTAX", "unexpected ')'"));
+            }
+            depth -= 1;
+            if depth == 0 { return Ok(i); }
+        }
+    }
+    Err(diagnostic(toks, start, "E_EOF", "unterminated argument list"))
+}
+fn count_args(toks: &[Token], open: usize, close: usize) -> usize {
+    if close == open + 1 { return 0; }
+    let (mut n, mut round, mut square, mut braces) = (1, 0, 0, 0);
+    for i in open + 1..close {
+        match toks[i].tok {
+            Tok::LParen => round += 1,
+            Tok::RParen => round -= 1,
+            Tok::LBracket => square += 1,
+            Tok::RBracket => square -= 1,
+            Tok::LBrace => braces += 1,
+            Tok::RBrace => braces -= 1,
+            Tok::Comma if round == 0 && square == 0 && braces == 0 => n += 1,
+            _ => {}
+        }
+    }
+    n
+}
+fn validate_callback(
+    toks: &[Token], symbols: &TargetHeaders, receiver: &ReceiverHeader,
+    open: usize, limit: usize,
+) -> R<usize> {
+    let close = close_paren(toks, open, limit)?;
+    let mut k = open + 1;
+    if !word_at(toks, k, "critical") || !at(toks, k+1, &Tok::Minus) ||
+        !(word_at(toks, k+2, "read") || word_at(toks, k+2, "write")) {
+        return Err(diagnostic(toks, k, "E_SEALED",
+            "handle_state requires 'critical-read' or 'critical-write'"));
+    }
+    let write = word_at(toks, k+2, "write");
+    if write && !receiver.mutable {
+        return Err(diagnostic(toks, k, "E_MUTABILITY",
+            "critical-write requires a mutable actor receiver"));
+    }
+    k += 3;
+    if !at(toks, k, &Tok::Pipe) {
+        return Err(diagnostic(toks, k, "E_SEALED", "expected '|state|' callback"));
+    }
+    let binder_pos = k + 1;
+    let binder = match toks.get(binder_pos).map(|t| &t.tok) {
+        Some(Tok::Ident(name)) if !is_reserved(name) => name.as_str(),
+        _ => return Err(diagnostic(toks, binder_pos, "E_SEALED", "invalid state callback binder")),
+    };
+    if binder == "self" || binder == "_" {
+        return Err(diagnostic(toks, binder_pos, "E_SEALED",
+            "state callback must bind a distinct state variable"));
+    }
+    k += 2;
+    if !at(toks, k, &Tok::Pipe) || !at(toks, k+1, &Tok::Arrow) {
+        return Err(diagnostic(toks, k, "E_SEALED",
+            "state callback must be '|s| -> expression'"));
+    }
+    k += 2;
+    if k == close {
+        return Err(diagnostic(toks, k, "E_SEALED", "missing critical callback body"));
+    }
+    // The v1 gate is conservative. A full borrow checker must subsequently
+    // prove reference lifetimes, effect purity, and field types before codegen.
+    for i in k..close {
+        if ["await", "select", "yield", "suspends", "spawn", "rt", "defer"].iter()
+            .any(|w| word_at(toks, i, w)) {
+            return Err(diagnostic(toks, i, "E_BORROW",
+                "suspension, spawning and deferred effects are forbidden during critical access"));
+        }
+        if word_at(toks, i, "handle_state") ||
+            (word_at(toks, i, "self") && at(toks, i+1, &Tok::Dot)) {
+            return Err(diagnostic(toks, i, "E_BORROW",
+                "nested actor state access or self capture is forbidden in critical callback"));
+        }
+        if word_at(toks, i, binder) {
+            if !at(toks, i+1, &Tok::Dot) {
+                return Err(diagnostic(toks, i, "E_ESCAPE",
+                    "actor state binding cannot be copied, captured, or returned"));
+            }
+            if !matches!(toks.get(i+2).map(|t| &t.tok), Some(Tok::Ident(_))) {
+                return Err(diagnostic(toks, i+2, "E_SEALED",
+                    "state field member access requires a field name"));
+            }
+            if !write {
+                if matches!(toks.get(i+3).map(|t| &t.tok),
+                    Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
+                    return Err(diagnostic(toks, i+3, "E_READONLY",
+                        "critical-read cannot mutate actor state"));
+                }
+                if at(toks, i+3, &Tok::Dot) || at(toks, i+3, &Tok::LParen) {
+                    return Err(diagnostic(toks, i+3, "E_UNSUPPORTED",
+                        "state field method calls need a full effect and borrow checker"));
+                }
+            }
+        }
+    }
+    // Prevent the callback from smuggling a second actor's receiver semantics.
+    let _ = symbols;
+    Ok(close)
+}
+fn validate_receiver_body(
+    toks: &[Token], symbols: &TargetHeaders, which: usize,
+    start: usize, end: usize,
+) -> R<()> {
+    let receiver = &symbols.receivers[which];
+    let mut i = start + 1;
+    while i < end.saturating_sub(1) {
+        if word_at(toks, i, "handle_state") &&
+            !(i >= 2 && word_at(toks, i-2, "self") && at(toks, i-1, &Tok::Dot)) {
+            return Err(diagnostic(toks, i, "E_SEALED",
+                "actor state access must be 'self.handle_state(...)'"));
+        }
+        if word_at(toks, i, "self") && at(toks, i+1, &Tok::Dot) {
+            let member = match toks.get(i+2).map(|t| &t.tok) {
+                Some(Tok::Ident(s)) => s.as_str(),
+                _ => return Err(diagnostic(toks, i+2, "E_SEALED", "invalid actor member access")),
+            };
+            if !at(toks, i+3, &Tok::LParen) {
+                return Err(diagnostic(toks, i, "E_SEALED",
+                    "direct actor fields are sealed; use self.handle_state"));
+            }
+            if member == "handle_state" {
+                let closed = validate_callback(toks, symbols, receiver, i+3, end)?;
+                i = closed + 1;
+                continue;
+            }
+            let close = close_paren(toks, i+3, end)?;
+            resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
+                member, count_args(toks, i+3, close), false, toks[i].pos)?;
+            i = close + 1;
+            continue;
+        }
+        i += 1;
+    }
+    Ok(())
+}
+fn validate_spawned_actor_calls(
+    toks: &[Token], symbols: &TargetHeaders, start: usize, end: usize,
+) -> R<()> {
+    // Narrow, lexical analysis of direct 'val ref = spawn Actor()' bindings.
+    // A later typed checker must handle aliases, parameters and dataflow.
+    let mut actor_refs: Vec<(&str, &str)> = Vec::new();
+    for i in start+1..end.saturating_sub(1) {
+        if (word_at(toks, i, "val") || word_at(toks, i, "let")) &&
+            matches!(toks.get(i+1).map(|t| &t.tok), Some(Tok::Ident(_))) &&
+            at(toks, i+2, &Tok::Assign) && word_at(toks, i+3, "spawn") {
+            if let (Some(Tok::Ident(name)), Some(Tok::Ident(actor))) =
+                (toks.get(i+1).map(|t| &t.tok), toks.get(i+4).map(|t| &t.tok)) {
+                if symbols.actors.contains(actor) && at(toks, i+5, &Tok::LParen) &&
+                    at(toks, i+6, &Tok::RParen) {
+                    actor_refs.push((name, actor));
+                }
+            }
+        }
+    }
+    for i in start+1..end.saturating_sub(1) {
+        if let Some((name, _)) = actor_refs.iter().find(|(n,_)| word_at(toks, i, n)) {
+            if at(toks, i+1, &Tok::Dot) &&
+                matches!(toks.get(i+2).map(|t| &t.tok), Some(Tok::Ident(_))) {
+                if !(word_at(toks, i+2, "send") || word_at(toks, i+2, "get_done")) {
+                    return Err(diagnostic(toks, i, "E_ISOLATION",
+                        "ActorRef cannot call receiver methods synchronously; send a mailbox message"));
+                }
+            }
+            let _ = name;
+        }
+    }
+    Ok(())
 }
