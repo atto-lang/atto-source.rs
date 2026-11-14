@@ -1753,8 +1753,10 @@ impl Parser {
             || self.is_word("let") || self.is_word("const")
         {
             if self.eat_word("const") {
-                return Err(Diagnostic::new(self.pos(), "E_ITER_BINDING",
-                    "iterator values are runtime bindings; use val or let, not const"));
+                // Preserve the existing E_UNSUPPORTED contract for
+                // `for (const x of xs)` rather than reclassifying legacy
+                // negative fixtures merely because `of` is now admitted.
+                return Err(unsupported(self.pos(), "const iterator bindings"));
             }
             let mutable = self.eat_word("let");
             if !mutable { self.expect_word("val")?; }
