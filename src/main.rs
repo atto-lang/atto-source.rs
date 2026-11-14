@@ -67,10 +67,32 @@ fn main() -> ExitCode {
                 if profile_seen || freestanding || checked_i64 {
                     return Err("source-ID object mode currently supports default scalar profile only".into());
                 }
+                // Only real regular source/registry files can enter this mode;
+                // neither FIFOs nor symlink leaf substitutions may park the compiler.
                 let bounded_read = |path: &str| -> Result<String, String> {
+                    let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+                    if !before.is_file() {
+                        return Err("source-ID input must be a regular non-symlink file".into());
+                    }
+                    let mut opts = fs::OpenOptions::new();
+                    opts.read(true);
+                    #[cfg(unix)] {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        opts.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+                    }
+                    let mut file = opts.open(path).map_err(|e| e.to_string())?;
+                    let opened = file.metadata().map_err(|e| e.to_string())?;
+                    if !opened.is_file() {
+                        return Err("source-ID input changed to a nonregular file".into());
+                    }
+                    #[cfg(unix)] {
+                        use std::os::unix::fs::MetadataExt;
+                        if opened.dev() != before.dev() || opened.ino() != before.ino() {
+                            return Err("source-ID input changed before opening".into());
+                        }
+                    }
                     let mut data = String::new();
-                    fs::File::open(path).map_err(|e| e.to_string())?
-                        .take(MAX_SOURCE_BYTES as u64 + 1)
+                    file.take(MAX_SOURCE_BYTES as u64 + 1)
                         .read_to_string(&mut data).map_err(|e| e.to_string())?;
                     if data.len() > MAX_SOURCE_BYTES {
                         return Err("source/registry exceeds 1 MiB admission budget".into());
@@ -79,6 +101,14 @@ fn main() -> ExitCode {
                 };
                 let input_id = fs::canonicalize(input).map_err(|e| e.to_string())?;
                 let registry_id = fs::canonicalize(registry).map_err(|e| e.to_string())?;
+                let package_root = fs::canonicalize(".").map_err(|e| e.to_string())?;
+                // In this scalar candidate, logical units are relative to the
+                // compiler's package-root working directory, not user-provided
+                // arbitrary labels or aliases for a different file.
+                if input_id != package_root.join(source_unit) ||
+                   !registry_id.starts_with(&package_root) {
+                    return Err("source-ID path does not match physical package-root source or registry".into());
+                }
                 let object_id = canonical_destination(object)?;
                 let map_id = canonical_destination(map)?;
                 if input_id == registry_id || input_id == object_id || input_id == map_id
