@@ -1,0 +1,35 @@
+// Real AttoLang source compiled to Wasm; forwarded by actor-origin host ABI v3.
+// expect-exit: 0
+// expect-stdout: 42
+// expect-stdout: 42
+// java: llvm-design
+define actor Parse as
+    receive(ActorMail<int> mail): void {
+        emit(mail.value + 1);
+        return;
+    }
+end
+
+define actor Validate as
+    receive(ActorMail<int> mail): void {
+        if mail.value > 0 then
+            emit(mail.value);
+        fi
+        return;
+    }
+end
+
+define actor Sink as
+    receive(ActorMail<int> mail): void {
+        stdio.println(mail.value);
+        return;
+    }
+end
+
+pub fnc main(): int {
+    val symbolic = spawn Parse() | spawn Validate() | spawn Sink();
+    val keyword = spawn Parse() pipe spawn Validate() pipe spawn Sink();
+    symbolic.send(41);
+    keyword.send(41);
+    return 0;
+}

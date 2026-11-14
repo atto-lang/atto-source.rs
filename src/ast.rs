@@ -331,6 +331,9 @@ pub enum ExprKind {
     New(String, Vec<Expr>),
     /// `spawn Actor()`
     Spawn(String),
+    /// Ordered, statically named actor spawns connected by `pipe` or `|`.
+    /// The compiler types stages before lowering to the Wasm guest ABI.
+    ActorPipeline(Vec<String>),
     /// `base.name`: field read, `Enum.Variant`, or `mail.value`.
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
