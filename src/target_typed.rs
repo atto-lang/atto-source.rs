@@ -286,7 +286,11 @@ impl ScalarParser<'_> {
         let kind = token.tok.clone();
         self.index += 1;
         let mut lhs = match kind {
-            Tok::Int(_) => TargetType::Int,
+            // The lexer represents exactly 2^63 as Int(None). It is only
+            // legal when immediately negated, producing i64::MIN.
+            Tok::Int(Some(_)) => TargetType::Int,
+            Tok::Int(None) => return Err(Diagnostic::new(pos, "E_INTEGER_RANGE",
+                "integer literal 9223372036854775808 requires a leading unary minus")),
             Tok::Float(_) => TargetType::Float,
             Tok::Str(_) => TargetType::Str,
             Tok::Ident(name) if name == "true" || name == "false" => TargetType::Bool,
@@ -311,11 +315,19 @@ impl ScalarParser<'_> {
                 self.module.type_of(&param.type_name, param.pos)?
             }
             Tok::Minus => {
-                let inner = self.expr(5, depth + 1)?;
-                if !matches!(inner, TargetType::Int | TargetType::Float) {
-                    return Err(type_error(pos, "unary minus requires a numeric scalar"));
+                // Parse -9223372036854775808 as a single checked value, not
+                // an out-of-range positive integer followed by negation.
+                if matches!(self.tokens.get(self.index).map(|t| &t.tok),
+                    Some(Tok::Int(None))) {
+                    self.index += 1;
+                    TargetType::Int
+                } else {
+                    let inner = self.expr(5, depth + 1)?;
+                    if !matches!(inner, TargetType::Int | TargetType::Float) {
+                        return Err(type_error(pos, "unary minus requires a numeric scalar"));
+                    }
+                    inner
                 }
-                inner
             }
             Tok::Bang => {
                 let inner = self.expr(5, depth + 1)?;
@@ -338,12 +350,12 @@ impl ScalarParser<'_> {
         };
         loop {
             let Some(next) = self.tokens.get(self.index) else { break };
-            let (prec, comparison) = match &next.tok {
-                Tok::EqEq | Tok::NotEq => (1, true),
-                Tok::Ident(word) if word == "eq" || word == "neq" => (1, true),
-                Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge => (2, true),
-                Tok::Plus | Tok::Minus => (3, false),
-                Tok::Star | Tok::Slash => (4, false),
+            let (prec, equality, relational) = match &next.tok {
+                Tok::EqEq | Tok::NotEq => (1, true, false),
+                Tok::Ident(word) if word == "eq" || word == "neq" => (1, true, false),
+                Tok::Lt | Tok::Le | Tok::Gt | Tok::Ge => (2, false, true),
+                Tok::Plus | Tok::Minus => (3, false, false),
+                Tok::Star | Tok::Slash => (4, false, false),
                 _ => break,
             };
             if prec < min_prec { break; }
@@ -353,9 +365,12 @@ impl ScalarParser<'_> {
             if lhs != rhs {
                 return Err(type_error(op_pos, "scalar operands have incompatible types"));
             }
-            if comparison {
-                if !matches!(lhs, TargetType::Int | TargetType::Float | TargetType::Bool) {
-                    return Err(type_error(op_pos, "comparison requires comparable scalars"));
+            if equality || relational {
+                if relational && !matches!(lhs, TargetType::Int | TargetType::Float) {
+                    return Err(type_error(op_pos, "ordered comparison requires numeric scalars"));
+                }
+                if equality && !matches!(lhs, TargetType::Int | TargetType::Float | TargetType::Bool) {
+                    return Err(type_error(op_pos, "equality requires comparable scalars"));
                 }
                 lhs = TargetType::Bool;
             } else if !matches!(lhs, TargetType::Int | TargetType::Float) {
@@ -422,6 +437,7 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
             caller.effects.writes_state |= transitive.writes_state;
             caller.effects.may_suspend |= transitive.may_suspend;
             caller.effects.may_unwind |= transitive.may_unwind;
+            caller.effects.may_panic |= transitive.may_panic;
             caller.effects.may_spawn |= transitive.may_spawn;
             caller.effects.may_allocate |= transitive.may_allocate;
             caller.effects.unproved_call |= transitive.unproved_call;
