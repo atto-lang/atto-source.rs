@@ -179,7 +179,10 @@ for (const f of await fixtures('pass')) {
       assert.deepEqual(nativeBytes(f.path), r.wasm, 'native and wasm32 compiler hosts emit identical bytes');
       nativeChecked++;
     }
-    if (java) {
+    // The guest result is executed and checked above; syntax not yet
+    // implemented by independent Java/LLVM/.NET frontends is not a claim
+    // of portable differential parity.
+    if (java && header(f.source, 'java')[0] !== 'target-only') {
       const j = runJava(f.path);
       const claim = header(f.source, 'java')[0];
       if (claim === 'llvm-design') {
