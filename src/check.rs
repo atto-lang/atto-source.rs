@@ -271,6 +271,8 @@ pub struct TActor {
     pub inits: Vec<(u32, TE)>,
     /// Function index of `receive(value: i64, sequence: i64)`.
     pub receive: Option<u32>,
+    /// Exact message payload type for the host's mailbox admission gate.
+    pub payload: Type,
 }
 
 #[derive(Clone, Debug)]
@@ -285,6 +287,8 @@ pub struct TProgram {
     /// Types of the actor-state globals, indexed by `TExpr::GlobalGet`.
     pub globals: Vec<Type>,
     pub actors: Vec<TActor>,
+    /// Sorted exported Symbol spellings: guest handle ID = index + 1.
+    pub symbols: Vec<String>,
     /// String values exist: the module carries memory and the string helpers.
     pub strings: bool,
     /// Emit one module-private Wasm EH tag only when ordinary throw/trap exists.
@@ -1204,6 +1208,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             name: a.name.clone(),
             inits,
             receive: info.receive_idx,
+            payload: info.payload,
         });
     }
 
@@ -1229,6 +1234,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         generators,
         globals,
         actors: tactors,
+        symbols: g.symbols.keys().cloned().collect(),
         strings,
         guest_eh,
     })
