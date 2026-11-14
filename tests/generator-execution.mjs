@@ -68,6 +68,10 @@ for (const [name, expected, output] of [
   ['132-generator-yield-star-native.atto', 10n, '10\n'],
   ['133-generator-nested-empty-yield-star.atto', 8n, ''],
   ['134-generator-delegate-break-close-reuse.atto', 168n, ''],
+  ['135-generator-parameterized-original.atto', 10n, '10\\n'],
+  ['136-generator-parameter-bounds.atto', 6n, ''],
+  ['137-generator-param-delegate-early-close.atto', 42n, ''],
+  ['138-generator-max-int-boundary.atto', 42n, ''],
 ]) {
   const file = join('tests/fixtures/pass', name);
   const src = readFileSync(file, 'utf8');
@@ -87,6 +91,8 @@ for (const [name, code] of [
   ['131-generator-forin-throw-not-safe.atto', 'E_UNSUPPORTED'],
   ['132-generator-delegation-cycle.atto', 'E_GENERATOR_CYCLE'],
   ['133-generator-yield-star-scalar-call.atto', 'E_TYPE'],
+  ['134-generator-unsupported-loop-body.atto', 'E_UNSUPPORTED'],
+  ['135-generator-unsupported-delegate-expression.atto', 'E_UNSUPPORTED'],
 ]) {
   const file = join('tests/fixtures/fail', name);
   const src = readFileSync(file, 'utf8');
