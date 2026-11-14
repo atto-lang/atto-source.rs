@@ -2744,8 +2744,12 @@ impl<'a> FnCx<'a> {
                 // the guest language. No actor heap ownership is inferred.
                 let byte_len = items.len().checked_mul(8).ok_or_else(||
                     Diagnostic::new(pos, "E_SOURCE_LIMIT", "array literal too large"))?;
+                // Even [] needs a declared Wasm memory because the generic
+                // indexed loop body contains an i64.load instruction. Keep an
+                // eight-byte sentinel segment for an empty array.
+                let storage_len = byte_len.max(8);
                 let padding = (8 - self.data.len() % 8) % 8;
-                if self.data.len().checked_add(padding + byte_len)
+                if self.data.len().checked_add(padding + storage_len)
                     .is_none_or(|len| len > MAX_STRING_DATA)
                 {
                     return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
@@ -2773,6 +2777,9 @@ impl<'a> FnCx<'a> {
                 self.data.resize(self.data.len() + padding, 0);
                 let offset = self.data.len() as u32;
                 for val in values { self.data.extend_from_slice(&val.to_le_bytes()); }
+                if items.is_empty() {
+                    self.data.extend_from_slice(&0i64.to_le_bytes());
+                }
                 TE { e: TExpr::ArrayConst(offset, items.len() as u32), ty: Type::ArrayInt }
             }
             ExprKind::Str(text) => {
