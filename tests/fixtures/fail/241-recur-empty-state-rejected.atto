@@ -1,0 +1,3 @@
+// expect-error: E_RECUR_ARITY
+// java: target-only
+pub fnc main(): int { return loop () { break 1; }; }

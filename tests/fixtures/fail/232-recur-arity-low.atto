@@ -1,0 +1,8 @@
+// expect-error: E_RECUR_ARITY
+// java: target-only
+pub fnc main(): int {
+  return loop (val a: int = 0, val b: int = 0) {
+    if a eq 2 { break b; }
+    recur(a + 1);
+  };
+}

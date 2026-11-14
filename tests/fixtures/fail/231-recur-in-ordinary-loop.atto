@@ -1,0 +1,3 @@
+// expect-error: E_RECUR
+// java: target-only
+pub fnc main(): int { loop { recur(1); } return 0; }
