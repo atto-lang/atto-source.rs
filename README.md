@@ -78,7 +78,7 @@ canonical on-disk location rather than trusting a user-supplied name.
 `locate` verifies the exact checked scalar MIR and can report a **routine ID
 only**. It refuses `sid_` lookups because there is no compiled log-site lowering
 yet. Its result says `verified_source_only_not_deployed_binary`; it is not an
-artifact attestation. `sync` and the final TOML authoring manifest are **not
+artifact attestation. The final TOML authoring manifest and automatic `sid_` generation are **not
 implemented**: source-controlled JSON remains the bootstrap interchange format.
 
 The source-controlled JSON registry is a bounded candidate interchange form
