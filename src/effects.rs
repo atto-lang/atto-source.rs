@@ -137,6 +137,7 @@ mod tests {
         }
         let module = Module {
             managed_refs: crate::ref_layout::ManagedRefLayout::default(),
+            exports: vec![],
             functions: vec![crate::mir::Function {
                 symbol: "x".into(),
                 exported: false,
