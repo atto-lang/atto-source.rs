@@ -114,6 +114,7 @@ pub enum TExpr {
     /// operand type is the type of `l`
     Bin(BinOp, Box<TE>, Box<TE>),
     Ternary(Box<TE>, Box<TE>, Box<TE>),
+    ValueBlock(Vec<TStmt>, Box<TE>),
     Call(u32, Vec<TE>),
     Builtin(Builtin, Box<TE>, Box<TE>),
     /// `stdio.print` / `stdio.println` of an int or bool value
@@ -464,6 +465,7 @@ fn const_init(e: &Expr) -> bool {
         ExprKind::Unary(_, a) => const_init(a),
         ExprKind::Binary(_, a, b) => const_init(a) && const_init(b),
         ExprKind::Ternary(c, a, b) => const_init(c) && const_init(a) && const_init(b),
+        ExprKind::ValueBlock(body, tail) => body.is_empty() && const_init(tail),
         ExprKind::Member(base, _) => matches!(base.kind, ExprKind::Var(_)),
         _ => false,
     }
@@ -1340,6 +1342,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
+        TExpr::ValueBlock(body, tail) => any_in_stmts(body, f) || any_in(tail, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
         TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
@@ -2225,6 +2228,7 @@ impl<'a> FnCx<'a> {
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
+            ExprKind::ValueBlock(body, tail) => self.value_block(body, tail),
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
                 let success_tag = match value.ty {
@@ -2445,12 +2449,31 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    /// Check each arm in a fresh lexical scope; only the value escapes.
+    #[inline(never)]
+    fn value_block(&mut self, body: &[Stmt], tail: &Expr) -> R<TE> {
+        self.scopes.push(Vec::new());
+        let result = (|| {
+            let stmts = self.stmts(body)?;
+            let last = self.value(tail)?;
+            let ty = last.ty;
+            Ok(TE { e: TExpr::ValueBlock(stmts, Box::new(last)), ty })
+        })();
+        self.scopes.pop();
+        result
+    }
+
     #[inline(never)]
     fn ternary(&mut self, c: &Expr, a: &Expr, b: &Expr, pos: Pos) -> R<TE> {
         Ok({
             let c = self.cond(c, "ternary")?;
+            let before_arms = self.moved.clone();
             let a = self.value(a)?;
+            let moved_true = self.moved.clone();
+            self.moved = before_arms;
             let b = self.value(b)?;
+            // Exclusive branches: check both from the same ownership state.
+            self.moved.extend(moved_true);
             if a.ty != b.ty {
                 return Err(type_err(
                     pos,
@@ -2560,7 +2583,7 @@ impl<'a> FnCx<'a> {
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
             ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
-            | ExprKind::Propagate(..) => unreachable!("handled by expr"),
+            | ExprKind::ValueBlock(..) | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
