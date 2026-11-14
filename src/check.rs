@@ -379,6 +379,8 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Exact slots of compile-time constant bindings (not just immutable names).
+    const_slots: BTreeSet<u32>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -1402,6 +1404,7 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            const_slots: BTreeSet::new(),
             imports,
             data,
         }
@@ -1430,6 +1433,28 @@ impl<'a> FnCx<'a> {
             actor_type_ok(self.g, a, t, pos)?;
         }
         Ok(t)
+    }
+
+    /// Conservative admission: reject runtime values and effects in local
+    /// const initializers. Names qualify only when previously bound as const;
+    /// mutation and reassignment remain independent of this provenance.
+    fn locally_constant(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Int(Some(_)) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
+            ExprKind::Unary(_, inner) => self.locally_constant(inner),
+            ExprKind::Binary(_, lhs, rhs) => self.locally_constant(lhs) && self.locally_constant(rhs),
+            ExprKind::Ternary(cond, lhs, rhs) => self.locally_constant(cond)
+                && self.locally_constant(lhs) && self.locally_constant(rhs),
+            ExprKind::Var(name) => self.lookup(name)
+                .is_some_and(|local| self.const_slots.contains(&local.slot)),
+            ExprKind::Member(base, variant) => {
+                // Only statically declared nominal enum variant ordinals.
+                matches!(&base.kind, ExprKind::Var(name)
+                    if self.lookup(name).is_none() && self.g.enum_(name).is_some_and(|idx|
+                        self.g.enums[idx as usize].variants.iter().any(|(v, _)| v == variant)))
+            }
+            _ => false,
+        }
     }
 
     fn declare(&mut self, name: &str, ty: Type, mutable: bool, referent_mutable: bool, pos: Pos) -> R<u32> {
@@ -1499,6 +1524,10 @@ impl<'a> FnCx<'a> {
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
         Ok(match s {
             Stmt::Bind { kind, referent_mutable, name, ty, init, pos } => {
+                if *kind == BindKind::Const && !self.locally_constant(init) {
+                    return Err(Diagnostic::new(init.pos, "E_CONST",
+                        "const initializer must be compile-time evaluable; use 'val' for immutable runtime values"));
+                }
                 let want = match ty {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
@@ -1525,6 +1554,7 @@ impl<'a> FnCx<'a> {
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *referent_mutable, *pos)?;
+                if *kind == BindKind::Const { self.const_slots.insert(slot); }
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
@@ -2086,7 +2116,9 @@ impl<'a> FnCx<'a> {
                         format!("cannot mutate field '{field}' through read-only binding 'self'"),
                     ));
                 }
-                let v = self.value(value)?;
+                // Object-valued state assignments consume ownership; a local
+                // alias must not survive as a second owner.
+                let v = self.consume_expected(value, fty)?;
                 if v.ty != fty {
                     return Err(type_err(
                         value.pos,
@@ -2126,7 +2158,9 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
-                let v = self.value(value)?;
+                // Object-valued state assignments consume ownership; a local
+                // alias must not survive as a second owner.
+                let v = self.consume_expected(value, fty)?;
                 if v.ty != fty {
                     return Err(type_err(
                         value.pos,
