@@ -94,7 +94,7 @@ fn malformed_or_unsupported_generator_types_reject_without_a_guest_artifact() {
     // supported by the restricted native-Wasm generator profile.
     let executable_original = atto_compiler::compile(SAMPLE)
         .expect("parameterized count_to and delegated limit must compile to guest Wasm");
-    assert!(executable_original.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(executable_original.starts_with(b"\0asm\x01\0\0\0"));
     let executable = atto_compiler::compile(
         "fnc *gen foo(): Generator<int> { yield 1; } pub fnc main(): int { return 0; }"
     ).expect("finite int generator must compile to actual Wasm");
