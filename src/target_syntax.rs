@@ -621,8 +621,12 @@ fn validate_receiver_body(
             }
             let close = close_paren(toks, i+3, end)?;
             let arity = count_args(toks, i+3, close)?;
-            resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
+            let target = resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
                 member, arity, false, toks[i].pos)?;
+            if target.mutable && !receiver.mutable {
+                return Err(diagnostic(toks, i, "E_MUTABILITY",
+                    "immutable actor receiver cannot invoke a mutable receiver method"));
+            }
             let callee = symbols.receivers.iter().position(|m|
                 m.owner == receiver.owner && m.name == member && m.arity == arity)
                 .expect("validated receiver header has a nominal target");
