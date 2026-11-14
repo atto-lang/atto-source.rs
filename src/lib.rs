@@ -102,6 +102,25 @@ mod tests {
         );
     }
     #[test]
+    fn independently_compiles_object_and_verified_source_map() {
+        let source = "pub fnc main(): int { return 42; }";
+        let registry = r#"{
+          "schema":"atto.telemetry.source-ids.v1",
+          "routines":[{"id":"rid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source":"examples/main.atto","symbol":"main():int"}],
+          "sites":[]}"#;
+        let (native, source_map) =
+            compile_with_source_ids(source, "examples/main.atto", registry).unwrap();
+        assert!(!native.is_empty());
+        assert_eq!(source_map["backend"], "oreslang-source.rs");
+        assert_eq!(source_map["functions"][0]["routine_id"],
+                   "rid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(source_map["instrumentation_status"], "not_implemented");
+        // Source identity metadata is not evidence of an emitted runtime probe.
+        assert_eq!(source_map["sites"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
     fn paired_mode_rejects_unverified_actor_syntax() {
         assert!(compile_with_effect_ir("define actor Foo as end").is_err());
     }
