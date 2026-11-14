@@ -13,6 +13,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { formatJavaDouble } from './java-double.mjs';
+import { verify_actor_trace, BROWSER_MAX_ACTORS, BROWSER_MAX_MAILBOX } from './actor-trace-refinement.mjs';
 
 const here = new URL('.', import.meta.url).pathname;
 const compilerPath = process.argv[2] || join(here, '../target/wasm32-unknown-unknown/release/atto_compiler.wasm');
@@ -51,8 +52,8 @@ export function compile(source) {
 // valid schedule of the concurrent browser runtime.
 const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send']);
 const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', 'actor_receive']);
-export const MAX_ACTORS = 16;
-export const MAX_MAILBOX = 10_000;
+export const MAX_ACTORS = BROWSER_MAX_ACTORS;
+export const MAX_MAILBOX = BROWSER_MAX_MAILBOX;
 
 export function actorNames(module) {
   const sections = WebAssembly.Module.customSections(module, 'atto.actors');
@@ -67,7 +68,8 @@ export function actorNames(module) {
   return names;
 }
 
-export function runGuest(wasm) {
+export function runGuest(wasm, { onActorTrace = null } = {}) {
+  const emit = event => { if (onActorTrace) onActorTrace(event); };
   assert.ok(WebAssembly.validate(wasm), 'guest is valid wasm');
   const module = new WebAssembly.Module(wasm);
   for (const imp of WebAssembly.Module.imports(module)) {
@@ -93,9 +95,11 @@ export function runGuest(wasm) {
         if (inActor) throw new Error('spawn inside an actor');
         if (!(type >= 0 && type < names.length)) throw new Error('unknown actor type');
         if (actors.length >= MAX_ACTORS) throw new Error('too many actors');
-        const a = { type, instance: instantiate(true), queue: [] };
+        const a = { type, instance: instantiate(true), queue: [], queueIds: [],
+          id: actors.length, generation: 1, nextMessageId: 1 };
         a.instance.exports.actor_init(type);
         actors.push(a);
+        emit({ kind: 'actor_spawn', actor_id: a.id, generation: a.generation });
         return actors.length - 1;
       },
       actor_send: (ref, value) => {
@@ -103,7 +107,11 @@ export function runGuest(wasm) {
         const a = actors[ref];
         if (!a) throw new Error('bad actor ref');
         if (a.queue.length >= MAX_MAILBOX) throw new Error('mailbox full');
+        const messageId = a.nextMessageId++;
         a.queue.push(value);
+        a.queueIds.push(messageId);
+        emit({ kind: 'send_accept', actor_id: a.id, generation: a.generation,
+          message_id: messageId });
       },
     };
     instance = new WebAssembly.Instance(module, { atto });
@@ -119,11 +127,17 @@ export function runGuest(wasm) {
   }
   for (const a of actors) {
     for (let seq = 0; seq < a.queue.length; seq++) {
+      const messageId = a.queueIds[seq];
+      emit({ kind: 'receive_start', actor_id: a.id, generation: a.generation,
+        message_id: messageId });
       try { a.instance.exports.actor_receive(a.type, a.queue[seq], BigInt(seq)); }
       catch (error) {
         return { ok: false, panic: a.instance.exports.panic_code.value, actor: names[a.type], error: String(error), stdout: out };
       }
+      emit({ kind: 'receive_complete', actor_id: a.id, generation: a.generation,
+        message_id: messageId });
     }
+    emit({ kind: 'actor_close', actor_id: a.id, generation: a.generation });
   }
   return { ok: true, value, stdout: out, actors: actors.length };
 }
@@ -157,6 +171,7 @@ function nativeBytes(path) {
 }
 
 let passed = 0, javaChecked = 0, nativeChecked = 0;
+let tracedActorMessages = 0, tracedActorInstances = 0;
 const failures = [];
 function check(label, fn) {
   try { fn(); passed++; } catch (e) { failures.push(`${label}: ${e.message}`); }
@@ -170,8 +185,13 @@ for (const f of await fixtures('pass')) {
     const again = compile(f.source);
     assert.deepEqual(again.wasm, r.wasm, 'deterministic output');
     digests.push(`${createHash('sha256').update(r.wasm).digest('hex')}  ${f.name}`);
-    const g = runGuest(r.wasm);
+    const actorTrace = [];
+    const g = runGuest(r.wasm, { onActorTrace: event => actorTrace.push(event) });
     assert.ok(g.ok, `guest trapped: ${g.error}`);
+    const verified = verify_actor_trace(actorTrace);
+    assert.equal(verified.actor_count, g.actors, 'compiled guest actors match host trace');
+    tracedActorInstances += verified.actor_count;
+    tracedActorMessages += verified.completed;
     assert.equal(g.value, BigInt(header(f.source, 'expect-exit')[0]), 'main() result');
     const want = header(f.source, 'expect-stdout');
     assert.equal(g.stdout, want.length ? want.join('\n') + '\n' : '', 'stdout');
@@ -464,6 +484,13 @@ check('robustness/random-garbage-never-traps-compiler', () => {
   }
 });
 
+check('formal/compiled-guest-trace-nonvacuous', () => {
+  assert.ok(tracedActorInstances >= 1, 'no compiled actor guest actually executed');
+  assert.ok(tracedActorMessages >= 2, 'no compiled mailbox deliveries actually executed');
+});
+console.log('COMPILED_WASM_GUEST_TRACE actor_instances=' + tracedActorInstances +
+  ' admitted_and_settled=' + tracedActorMessages +
+  ' backend=browser-wasm guest=EXECUTED scheduling=serial-host-only');
 console.log(digests.length ? `artifact digests:\n${digests.join('\n')}` : '');
 console.log(`conformance: ${passed} passed, ${failures.length} failed` +
   (java ? `, ${javaChecked} Java-differential` : ', Java differential skipped (set ATTO_JAVA)') +
