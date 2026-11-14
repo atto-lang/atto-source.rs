@@ -473,6 +473,13 @@ fn validate_callback(
     // prove reference lifetimes and effect purity before codegen.
     let mut uses = Vec::new();
     for i in k..close {
+        // Keep the more precise ownership diagnostic for returning the raw
+        // state binder, even though all other early return paths are denied.
+        if word_at(toks, i, "return") && word_at(toks, i+1, binder)
+            && !at(toks, i+2, &Tok::Dot) {
+            return Err(diagnostic(toks, i+1, "E_ESCAPE",
+                "actor state binding cannot be returned by value"));
+        }
         // Until typed effect proofs are available, no suspension, unwinding,
         // early-exit, reentrancy, or implicit call effects may run under an
         // actor-state lease. These are lexical *denials*, not effect proofs.
