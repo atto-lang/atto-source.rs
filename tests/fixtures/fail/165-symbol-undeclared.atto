@@ -1,0 +1,2 @@
+// expected-code: E_SYMBOL_UNBOUND
+pub fnc main(): int { const Symbol x = #unregistered; return 0; }
