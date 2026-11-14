@@ -41,6 +41,8 @@ pub struct TargetHeaders {
     pub receiver_effects: Vec<ReceiverEffects>,
     /// Statically resolved same-nominal-actor calls for effect propagation.
     pub receiver_calls: Vec<ReceiverCall>,
+    /// Scalar assignment expressions captured for typed validation.
+    pub state_assignments: Vec<StateAssignment>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -62,10 +64,23 @@ pub struct ReceiverCall {
     pub pos: Pos,
 }
 
+/// A concrete state write that must undergo typed RHS checking before any
+/// executable lowering. The source span is bounded by the lexer and callback.
+#[derive(Clone, Debug)]
+pub struct StateAssignment {
+    pub receiver: usize,
+    pub field: String,
+    pub pos: Pos,
+    pub binder: String,
+    pub rhs: Vec<Token>,
+    pub compound: bool,
+}
+
 #[derive(Default)]
 struct BodyAudit {
     uses: Vec<StateUse>,
     calls: Vec<ReceiverCall>,
+    assignments: Vec<StateAssignment>,
     effects: ReceiverEffects,
 }
 
@@ -77,6 +92,8 @@ pub struct StateUse {
     pub pos: Pos,
     pub mutation: bool,
     pub exclusive: bool,
+    /// Increment/decrement or compound addition needs a numeric field.
+    pub numeric_mutation: bool,
 }
 struct Cursor<'a> { toks: &'a [Token], i: usize }
 impl Cursor<'_> {
@@ -337,6 +354,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         out.receiver_effects[i] = audit.effects;
         out.state_uses.extend(audit.uses);
         out.receiver_calls.extend(audit.calls);
+        out.state_assignments.extend(audit.assignments);
     }
     for (start, end) in function_spans {
         validate_spawned_actor_calls(toks, &out, start, end)?;
@@ -467,7 +485,7 @@ fn count_args(toks: &[Token], open: usize, close: usize) -> R<usize> {
 fn validate_callback(
     toks: &[Token], symbols: &TargetHeaders, receiver: &ReceiverHeader,
     receiver_index: usize, open: usize, limit: usize,
-) -> R<(usize, Vec<StateUse>)> {
+) -> R<(usize, Vec<StateUse>, Vec<StateAssignment>)> {
     let close = close_paren(toks, open, limit)?;
     let mut k = open + 1;
     if !word_at(toks, k, "critical") || !at(toks, k+1, &Tok::Minus) ||
@@ -505,6 +523,7 @@ fn validate_callback(
     // The v1 gate is conservative. A full borrow checker must subsequently
     // prove reference lifetimes and effect purity before codegen.
     let mut uses = Vec::new();
+    let mut assignments = Vec::new();
     for i in k..close {
         // Keep the more precise ownership diagnostic for returning the raw
         // state binder, even though all other early return paths are denied.
@@ -518,7 +537,7 @@ fn validate_callback(
         // actor-state lease. These are lexical *denials*, not effect proofs.
         if ["await", "select", "yield", "suspends", "spawn", "rt", "defer",
             "throw", "raise", "panic", "trap", "recover", "try", "catch",
-            "finally", "break", "continue", "return"].iter()
+            "finally", "break", "continue", "return", "new"].iter()
             .any(|w| word_at(toks, i, w))
             || at(toks, i, &Tok::YieldStar)
             || at(toks, i, &Tok::Question) {
@@ -548,15 +567,40 @@ fn validate_callback(
                 Some(Tok::PlusPlus | Tok::MinusMinus));
             let postfix_mutation = matches!(toks.get(i+3).map(|t| &t.tok),
                 Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus));
+            let field_name = match &toks[field_pos].tok {
+                Tok::Ident(name) => name.clone(),
+                _ => unreachable!("field name checked above"),
+            };
+            if at(toks, i+3, &Tok::Assign) || at(toks, i+3, &Tok::PlusAssign) {
+                let first = i + 4;
+                let mut end = first;
+                // Scalar RHS ends at its statement boundary. Nested calls
+                // were already rejected as unproved effects in this callback.
+                while end < close && !at(toks, end, &Tok::Semi)
+                    && !at(toks, end, &Tok::RBrace) {
+                    end += 1;
+                }
+                if end == first {
+                    return Err(diagnostic(toks, first, "E_SYNTAX",
+                        "missing state assignment expression"));
+                }
+                assignments.push(StateAssignment {
+                    receiver: receiver_index, field: field_name.clone(),
+                    pos: toks[field_pos].pos, binder: binder.to_owned(),
+                    rhs: toks[first..end].to_vec(),
+                    compound: at(toks, i+3, &Tok::PlusAssign),
+                });
+            }
             uses.push(StateUse {
                 receiver: receiver_index,
-                field: match &toks[field_pos].tok {
-                    Tok::Ident(name) => name.clone(),
-                    _ => unreachable!("field name checked above"),
-                },
+                field: field_name,
                 pos: toks[field_pos].pos,
                 mutation: prefix_mutation || postfix_mutation,
                 exclusive: write,
+                numeric_mutation: prefix_mutation
+                    || at(toks, i+3, &Tok::PlusAssign)
+                    || at(toks, i+3, &Tok::PlusPlus)
+                    || at(toks, i+3, &Tok::MinusMinus),
             });
             // A scalar field projection is not a general object borrow. Even
             // under a write lease, chained access and method dispatch need an
@@ -585,7 +629,7 @@ fn validate_callback(
     }
     // Prevent the callback from smuggling a second actor's receiver semantics.
     let _ = symbols;
-    Ok((close, uses))
+    Ok((close, uses, assignments))
 }
 fn validate_receiver_body(
     toks: &[Token], symbols: &TargetHeaders, which: usize,
@@ -610,12 +654,13 @@ fn validate_receiver_body(
                     "direct actor fields are sealed; use self.handle_state"));
             }
             if member == "handle_state" {
-                let (closed, accesses) = validate_callback(toks, symbols, receiver, which, i+3, end)?;
+                let (closed, accesses, assignments) = validate_callback(toks, symbols, receiver, which, i+3, end)?;
                 // A lease is an effect even when its callback never names
                 // a state field: the lock still constrains interleavings.
                 audit.effects.reads_state = true;
                 audit.effects.writes_state |= word_at(toks, i+6, "write");
                 audit.uses.extend(accesses);
+                audit.assignments.extend(assignments);
                 i = closed + 1;
                 continue;
             }
