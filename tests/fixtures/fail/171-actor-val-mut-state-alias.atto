@@ -1,0 +1,5 @@
+// expect-error: E_BORROW
+declare actor Counter;
+mtd (mut self: Counter) snapshot(): void {
+  self.handle_state(critical-read |s| -> { val mut leaked = s.count; });
+}
