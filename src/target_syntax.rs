@@ -425,7 +425,7 @@ fn validate_callback(
             // A parse-only gate has no field-type evidence. Copying an actor
             // field into a local could smuggle a live mutable graph out of a
             // critical section, even when the local is written as 'val'.
-            if at(toks, i.saturating_sub(1), &Tok::Assign) {
+            if at(toks, i.saturating_sub(1), &Tok::Assign) && at(toks, i+1, &Tok::Dot) {
                 let begin = (k..i).rev().find(|&j| matches!(toks[j].tok,
                     Tok::Semi | Tok::LBrace | Tok::RBrace)).map_or(k, |j| j + 1);
                 if (begin..i).any(|j| word_at(toks, j, "val") ||
