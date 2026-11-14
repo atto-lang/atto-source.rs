@@ -151,7 +151,7 @@ The compiler does not define any syntax of its own:
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
 | Entry point | zero-argument `main` returning `int` or `void` |
-| Generators (restricted) | Zero-parameter `fnc *gen` with finite int-literal `yield`, one acyclic optional-int-argument `yield*` per generator, and fresh-handle `for ... in`; lazy Wasm resume, checked frame and recursive child close. Arbitrary suspended locals and noncanonical loops are still rejected. |
+| Generators (restricted) | Zero or one immutable `int` parameter; finite literal `yield`, one canonical `for (let i=N; i <= limit; i++) do yield i; done` with persistent counter, one acyclic `yield*` with a literal or forwarded parameter, and fresh-handle `for ... in`; lazy guest-Wasm resume and recursive child close. Other live locals, loop forms, and computed delegation arguments remain rejected. |
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut`; the immutable type-first form `int x = 7;` for exactly `int`, `bool`, `string` and `String` (Java `looksLikePrimitiveTypeFirstImmutableBinding`) |
 | Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }`, `match` (below) |
