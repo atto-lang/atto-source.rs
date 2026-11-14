@@ -1,0 +1,19 @@
+// Four independent binding modes: rebindable name vs writable owned referent.
+// expect-exit: 12
+define class Cell as
+    pub let int value = 1;
+    pub final int fixed = 9;
+end
+
+pub fnc main(): int {
+    val Cell frozen = new Cell();
+    val mut Cell anchored = new Cell();
+    anchored.value = 3;
+    let Cell replaceable = new Cell();
+    replaceable = new Cell();
+    let mut Cell both = new Cell();
+    both.value = 5;
+    both = new Cell();
+    both.value = 7;
+    return frozen.value + anchored.value + replaceable.value + both.value;
+}
