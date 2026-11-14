@@ -51,6 +51,9 @@ pub struct ReceiverEffects {
     pub writes_state: bool,
     pub may_suspend: bool,
     pub may_unwind: bool,
+    /// Checked integer arithmetic or explicit panic can terminate execution.
+    /// Distinct from catchable throw/raise effects.
+    pub may_panic: bool,
     pub may_spawn: bool,
     pub may_allocate: bool,
     /// Free calls and dynamic dispatch have unknown effects until body typing.
@@ -544,6 +547,10 @@ fn validate_callback(
             return Err(diagnostic(toks, i, "E_BORROW",
                 "unproven control flow, unwinding or effects inside critical actor state access"));
         }
+        if at(toks, i, &Tok::Amp) {
+            return Err(diagnostic(toks, i, "E_BORROW",
+                "state references cannot be taken inside critical access"));
+        }
         if matches!(toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_)))
             && at(toks, i+1, &Tok::LParen) {
             return Err(diagnostic(toks, i, "E_BORROW",
@@ -659,6 +666,13 @@ fn validate_receiver_body(
                 // a state field: the lock still constrains interleavings.
                 audit.effects.reads_state = true;
                 audit.effects.writes_state |= word_at(toks, i+6, "write");
+                // Checked arithmetic can trap even when its types match.
+                // Preserve the effect so lowering must prove lease cleanup
+                // before these methods can become executable.
+                audit.effects.may_panic |= toks.get(i+11..closed).unwrap_or(&[])
+                    .iter().any(|t| matches!(t.tok,
+                        Tok::Plus | Tok::Minus | Tok::Star | Tok::Slash |
+                        Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus));
                 audit.uses.extend(accesses);
                 audit.assignments.extend(assignments);
                 i = closed + 1;
@@ -696,8 +710,12 @@ fn validate_receiver_body(
         audit.effects.may_suspend |= ["await", "select", "yield", "suspends"]
             .iter().any(|word| word_at(toks, i, word))
             || at(toks, i, &Tok::YieldStar);
-        audit.effects.may_unwind |= ["throw", "raise", "panic", "trap", "try"]
+        audit.effects.may_unwind |= ["throw", "raise", "trap", "try"]
             .iter().any(|word| word_at(toks, i, word)) || at(toks, i, &Tok::Question);
+        audit.effects.may_panic |= word_at(toks, i, "panic") ||
+            matches!(toks.get(i).map(|t| &t.tok), Some(
+                Tok::Plus | Tok::Minus | Tok::Star | Tok::Slash |
+                Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus));
         audit.effects.may_spawn |= word_at(toks, i, "spawn");
         audit.effects.may_allocate |= word_at(toks, i, "new");
         if matches!(toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_)))
