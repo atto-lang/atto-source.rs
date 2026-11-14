@@ -185,3 +185,33 @@ mtd (Foo2 self) read(): bool {
     assert_eq!(module.state_uses[1].field_ty, Some(TargetType::Bool));
     rejects(&source.replace("s.ready", "s.count"), "E_UNBOUND");
 }
+
+#[test]
+fn sealed_receive_hook_is_rejected_even_when_actor_is_only_forward_declared() {
+    rejects("declare actor Foo; mtd (Foo self) receive(): void {}", "E_SIGNATURE");
+    rejects("use namespace workers; declare actor Foo;
+        mtd (Foo self) receive(int message): void {}", "E_SIGNATURE");
+    // A differently named ordinary receiver remains a syntax-only method.
+    let source = "declare actor Foo; mtd (Foo self) on_message(int message): void {}";
+    assert!(typed(source).is_ok());
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn typed_lowerer_revalidates_critical_lease_invariants_even_for_imported_headers() {
+    let source = "declare actor Counter;
+        define actor Counter as let int count = 0; end
+        mtd (mut self: Counter) run(): int {
+            return self.handle_state(critical-read |s| -> s.count);
+        }";
+    let mut headers = parse_target_declarations(&lex(source).unwrap()).unwrap();
+    assert_eq!(headers.state_uses.len(), 1);
+    assert!(!headers.state_uses[0].mutation);
+    assert!(!headers.state_uses[0].exclusive);
+    headers.state_uses[0].mutation = true;
+    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_READONLY");
+    headers.state_uses[0].mutation = false;
+    headers.state_uses[0].exclusive = true;
+    headers.receivers[0].mutable = false;
+    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_MUTABILITY");
+}
