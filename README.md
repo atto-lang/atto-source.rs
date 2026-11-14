@@ -2,6 +2,47 @@
 
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
+## Namespace and out-of-line receiver syntax (parse-only)
+
+This frontend now has a bounded, parse-only grammar for the proposed use namespace
+header, multiple declare actor statements in one file, and typed mtd receivers
+such as (mut self: Foo1) and (self: Foo2), as well as the nominal
+spelling (Foo1 self), unnamed (Foo1), and (Foo1 _) receivers.
+The parser finds target declarations anywhere at file scope, while the
+namespace header must still occur first. Explicit module imports of the form
+import module math from "./math.atto" can follow that header. The parser rejects duplicate actor
+names, same-owner/name/arity receiver signatures, unknown receiver owners,
+misplaced namespace headers, malformed signatures and excessive body nesting.
+
+These are target declarations only. A new conservative semantic preflight resolves
+receiver headers by namespace, nominal owner, name and arity (and checks public
+visibility for external header lookups). It also rejects direct self field access,
+unqualified handle_state, writes in critical-read, critical-write on immutable
+receivers, escape of a bare state callback binder, suspension inside a critical
+callback, and direct synchronous method calls on obvious local spawn bindings.
+Unknown state field methods fail closed rather than being guessed pure.
+
+## Typed receiver signature IR (not executable)
+
+The signature layer in src/target_typed.rs now resolves all nominal actor
+declarations before typing the receiver parameter and return annotations.
+Known scalar types and ActorRef<Actor> are resolved. Unknown names, void
+parameters and bare actor values fail closed. ActorRef is a capability,
+not permission to synchronously invoke receiver methods. The IR preserves
+namespace, actor index, method name, arity, visibility and mutable receiver
+semantics. A forward declaration alone is never spawnable (E_UNLINKED).
+
+This signature graph is not the executable compiler AST and does not
+typecheck method bodies, link definitions, or prove effect/borrow safety.
+Compile constructs it before returning E_UNSUPPORTED; no guest actor Wasm
+is emitted for these declarations.
+
+This is NOT a full typed borrow checker: opaque field types, alias analysis,
+effect inference, actor body linkage, cross-file symbols and actor runtime dispatch
+remain unimplemented. Positive syntax checks do NOT generate guest Wasm; codegen
+continues to return E_UNSUPPORTED for this profile. The public compile entrypoint still returns E_UNSUPPORTED for
+this syntax, with no generated WebAssembly.
+
 It compiles a **subset** of AttoLang. Everything outside the subset is rejected with a diagnostic, and a rejected program never produces an artifact. The compiler does not approximate unsupported features.
 
 ## First executable synchronous generator profile (bounded guest Wasm)

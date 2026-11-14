@@ -1,0 +1,3 @@
+// expect-error: E_UNBOUND
+declare actor Worker;
+mtd (Worker self) run(ActorRef<Other> peer): void {}

@@ -1,0 +1,3 @@
+// expect-error: E_UNBOUND
+declare actor Foo;
+mtd (Other self) foo(): void {}
