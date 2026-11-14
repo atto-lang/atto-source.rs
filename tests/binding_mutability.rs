@@ -69,3 +69,65 @@ fn legacy_const_mut_is_still_not_rebindable() {
     let src = "pub fnc main(): int { const mut x: int = 1; x = 2; return x; }";
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_IMMUTABLE");
 }
+
+#[test]
+fn mutable_binding_does_not_override_private_visibility() {
+    let source = r#"
+        define class Secret as
+            let int private_value = 1;
+        end
+        pub fnc main(): int {
+            let mut Secret x = new Secret();
+            x.private_value = 4;
+            return 0;
+        }
+    "#;
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_PRIVATE");
+}
+
+#[test]
+fn mutable_binding_does_not_enable_unknown_or_nested_lvalues() {
+    expect_error("let mut Cell x = new Cell(); x.no_field = 3; return 0;", "E_UNBOUND");
+    // The browser subset intentionally refuses arbitrarily nested lvalues
+    // until there is a complete ownership and alias proof for them.
+    let source = r#"
+        define class Child as
+            pub let int value = 0;
+        end
+        define class Parent as
+            pub let Child child = new Child();
+        end
+        pub fnc main(): int {
+            let mut Parent parent = new Parent();
+            parent.child.value = 5;
+            return 0;
+        }
+    "#;
+    assert!(atto_compiler::compile(source).is_err());
+}
+
+#[test]
+fn four_modes_support_name_first_typed_annotations() {
+    expect_ok(&program(r#"
+        val x: Cell = new Cell();
+        val mut y: Cell = new Cell();
+        y.value = 2;
+        let z: Cell = new Cell();
+        z = new Cell();
+        let mut w: Cell = new Cell();
+        w.value = 3;
+        return x.value + y.value + z.value + w.value;
+    "#));
+}
+
+#[test]
+fn mutable_local_cannot_use_an_object_after_take() {
+    expect_error("let mut Cell x = new Cell(); val Cell taken = x; x.value = 3; return 0;", "E_MOVED");
+    expect_error("val mut Cell x = new Cell(); val Cell taken = x; x.value = 3; return 0;", "E_MOVED");
+}
+
+#[test]
+fn mutable_referent_and_rebinding_are_checked_on_each_operation() {
+    expect_error("let Cell x = new Cell(); x = new Cell(); x.value = 3; return 0;", "E_IMMUTABLE");
+    expect_error("val mut Cell x = new Cell(); x.value = 3; x = new Cell(); return 0;", "E_IMMUTABLE");
+}
