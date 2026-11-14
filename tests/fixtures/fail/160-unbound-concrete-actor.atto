@@ -1,0 +1,4 @@
+// expect-error: E_UNBOUND
+use namespace workers;
+declare actor Foo;
+define actor Bar as end

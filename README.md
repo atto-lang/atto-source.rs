@@ -24,6 +24,19 @@ Unknown state field methods fail closed rather than being guessed pure.
 
 ## Typed receiver signature IR (not executable)
 
+### Production AST linking (still deliberately no actor dispatch)
+
+The target declaration parser now admits concrete `define actor Foo as ... end`
+bodies alongside `declare actor Foo;`, and delegates concrete body parsing
+to the existing production actor parser. The typed signature stage builds a
+`Program` with ordinary `ActorDecl` nodes and a distinct, non-executable
+`ActorInterface`. The production checker validates forward-definition
+ownership and rejects duplicate concrete definitions, colliding state fields,
+and duplicate or conflicting in-actor/out-of-line signatures. Forward-only
+actors remain unlinked. Even when a concrete body parses, it is not yet
+fully typechecked for ownership/effects and does not become spawnable in
+this target profile; the browser still returns `E_UNSUPPORTED` with no Wasm.
+
 The signature layer in src/target_typed.rs now resolves all nominal actor
 declarations before typing the receiver parameter and return annotations.
 Known scalar types and ActorRef<Actor> are resolved. Unknown names, void

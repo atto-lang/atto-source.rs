@@ -1,0 +1,7 @@
+// expect-error: E_DUPLICATE
+use namespace workers;
+declare actor Foo;
+define actor Foo as
+    let int count = 0;
+end
+mtd (Foo self) count(): int { return 1; }
