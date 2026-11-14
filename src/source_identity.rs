@@ -364,6 +364,79 @@ mod tests {
     }
 
     #[test]
+    fn sync_preserves_checked_ids_across_formatting_and_orders() {
+        let first = sync_routines(
+            &checked_module(), "src/app.atto", REGISTRY, None,
+            || panic!("a previously checked callable must never reallocate its ID"),
+        ).unwrap();
+        let spaced = SOURCE.replace("fnc add(", "\n// formatting changed\nfnc add(");
+        let checked = mir::lower(frontend::parse(&spaced).unwrap()).unwrap();
+        let again = sync_routines(
+            &checked, "src/app.atto", &first.to_string(), None,
+            || panic!("source formatting is not a new identity"),
+        ).unwrap();
+        assert_eq!(first, again);
+    }
+
+    #[test]
+    fn sync_creates_new_routines_only_from_explicit_generator() {
+        let empty = r#"{"schema":"atto.telemetry.source-ids.v1","routines":[],"sites":[]}"#;
+        let mut generated = 0;
+        let updated = sync_routines(
+            &checked_module(), "src/app.atto", empty, None, || {
+                generated += 1;
+                Ok(if generated == 1 {
+                    "rid_33333333333333333333333333333333".to_string()
+                } else {
+                    "rid_44444444444444444444444444444444".to_string()
+                })
+            },
+        ).unwrap();
+        assert_eq!(generated, 2);
+        assert_eq!(updated["routines"].as_array().unwrap().len(), 2);
+        assert!(verify_routines(&checked_module(), "src/app.atto",
+            &updated.to_string()).is_ok());
+        let denied = sync_routines(&checked_module(), "src/app.atto", empty, None,
+            || Ok("rid_00000000000000000000000000000000".to_string()));
+        assert!(denied.is_err());
+        let duplicate = sync_routines(&checked_module(), "src/app.atto", empty, None,
+            || Ok("rid_33333333333333333333333333333333".to_string()));
+        assert!(duplicate.unwrap_err().contains("duplicate"));
+    }
+
+    #[test]
+    fn explicit_move_requires_exact_inventory_and_retains_id() {
+        let old = REGISTRY.replace("src/app.atto", "lib/old.atto");
+        let relocated = sync_routines(
+            &checked_module(), "lib/new.atto", &old, Some("lib/old.atto"),
+            || panic!("a verified move should not allocate a new identity"),
+        ).unwrap();
+        assert!(relocated["routines"].as_array().unwrap().iter()
+            .all(|entry| entry["source"] == "lib/new.atto"));
+        assert!(verify_routines(&checked_module(), "lib/new.atto",
+            &relocated.to_string()).is_ok());
+        assert!(sync_routines(&checked_module(), "lib/new.atto", &old,
+            Some("lib/other.atto"), || Ok(String::new())).is_err());
+        assert!(sync_routines(&checked_module(), "lib/new.atto", &old,
+            None, || Ok("rid_11111111111111111111111111111111".into())).is_err());
+    }
+
+    #[test]
+    fn sync_rejects_sites_it_cannot_codegen_and_stale_registry() {
+        let unknown_site = REGISTRY.replace(
+            r#""sites":[]"#,
+            r#""sites":[{"id":"sid_55555555555555555555555555555555",
+               "routine_id":"rid_11111111111111111111111111111111",
+               "source":"src/app.atto"}]"#,
+        );
+        assert!(sync_routines(&checked_module(), "src/app.atto",
+            &unknown_site, None, || panic!("site must fail closed")).is_err());
+        let stale = REGISTRY.replace("add(int,int):int", "old_add(int,int):int");
+        assert!(sync_routines(&checked_module(), "src/app.atto",
+            &stale, None, || panic!("stale registry must fail")).is_err());
+    }
+
+    #[test]
     fn does_not_accept_unimplemented_guest_logging_syntax() {
         let unsupported = "pub fnc main():int{log.info(\"hi\");return 42;}";
         assert!(frontend::parse(unsupported).is_err());
