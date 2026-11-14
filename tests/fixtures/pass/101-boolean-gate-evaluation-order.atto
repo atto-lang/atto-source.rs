@@ -1,0 +1,29 @@
+// expect-exit: 0
+// expect-stdout: left
+// expect-stdout: middle
+// expect-stdout: right
+// expect-stdout: false
+// expect-stdout: left
+// expect-stdout: middle
+// expect-stdout: false
+// expect-stdout: middle
+// expect-stdout: left
+// expect-stdout: true
+fnc left(): bool {
+  stdio.println("left");
+  return true;
+}
+fnc middle(): bool {
+  stdio.println("middle");
+  return false;
+}
+fnc right(): bool {
+  stdio.println("right");
+  return true;
+}
+pub fnc main(): int {
+  stdio.println(Xor(left(), middle(), right()));
+  stdio.println(And(left(), middle(), right()));
+  stdio.println(Or(middle(), left(), right()));
+  return 0;
+}
