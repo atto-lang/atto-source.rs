@@ -30,7 +30,7 @@ pub enum Type {
     /// First nested ADT profile: Some(Result<int,string>) or None.
     /// Generic ADT instantiations remain deliberately restricted.
     OptionResultIntStr,
-    /// Frontend-only generator iterator type, not yet lowered to Wasm.
+    /// Bounded, owned guest-Wasm generator handle for the admitted subset.
     GeneratorInt,
 }
 
