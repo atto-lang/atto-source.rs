@@ -1,6 +1,6 @@
 //! Validated scalar MIR. This is intentionally an Oreslang IR, not Cranelift IR.
 use crate::{
-    frontend::{Expr, Program},
+    frontend::{ExportDecl, Expr, Program},
     ref_layout::ManagedRefLayout,
 };
 use std::collections::{HashMap, HashSet};
@@ -9,6 +9,9 @@ use std::fmt;
 #[derive(Clone, Debug)]
 pub struct Module {
     pub functions: Vec<Function>,
+    /// Qualified source export manifest. Kept even for package-only
+    /// names that must never be marked as public native object symbols.
+    pub exports: Vec<ExportDecl>,
     pub managed_refs: ManagedRefLayout,
 }
 #[derive(Clone, Debug)]
@@ -134,6 +137,7 @@ pub fn lower_with_ref_layout(
     }
     Ok(Module {
         functions,
+        exports: program.exports,
         managed_refs,
     })
 }
