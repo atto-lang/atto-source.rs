@@ -235,6 +235,9 @@ pub enum Stmt {
         cond: Expr,
         body: Vec<Stmt>,
         pos: Pos,
+        /// A post-test while evaluates the condition after each iteration,
+        /// including paths through 'continue'.
+        post_test: bool,
     },
     Loop {
         body: Vec<Stmt>,
