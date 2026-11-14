@@ -1,5 +1,5 @@
 // expect-error: E_MOVED
-// java: rejects
+// java: target-only
 define class P as
   pub int x: 1
 end

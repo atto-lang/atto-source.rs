@@ -1,5 +1,5 @@
 // expect-error: E_RETURN
-// java: rejects
+// java: target-only
 fnc invalid(): int {
   loop { let i = 1; } while (false);
 }
