@@ -13,6 +13,7 @@ pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
 pub mod parser;
+pub mod target_syntax;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};
@@ -31,6 +32,18 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
+    // Recognize proposed headers without lowering them to an incomplete actor ABI.
+    let first = toks.first().map(|t| &t.tok);
+    let second = toks.get(1).map(|t| &t.tok);
+    let target = matches!(first, Some(lexer::Tok::Ident(s)) if
+        s == "declare" || s == "mtd" ||
+        (s == "use" && matches!(second, Some(lexer::Tok::Ident(w)) if w == "namespace")) ||
+        (s == "pub" && matches!(second, Some(lexer::Tok::Ident(w)) if w == "mtd")));
+    if target {
+        target_syntax::parse_target_declarations(&toks)?;
+        return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
+            "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
+    }
     let program = parser::Parser::new(toks).parse_program()?;
     let typed = check::check(&program)?;
     let bytes = wasm::emit(&typed);
