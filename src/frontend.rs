@@ -116,8 +116,9 @@ enum Kind {
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
-    #[regex(r"[ \t\n\r\f]+", logos::skip)]
-    #[regex(r"//[^\r\n]*", logos::skip, allow_greedy = true)]
+    // One lexer skip rule avoids duplicated Logos attributes and preserves
+    // both ASCII whitespace and line comments (including CR-only lines).
+    #[regex(r"[ \t\n\r\f]+|//[^\r\n]*", logos::skip)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
