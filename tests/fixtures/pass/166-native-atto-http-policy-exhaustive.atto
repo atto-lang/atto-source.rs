@@ -1,0 +1,105 @@
+// expect-exit: 42
+// Exhaustive 48-row truth table over pure native .atto transport policy gates.
+// AttoLang portable stdlib: HTTP/3 and QUIC policy gates.
+// This is native .atto code, shared byte-for-byte across compiler backends.
+// Scope: pure policy decisions only. Not an HTTP/3, QUIC, TLS or I/O engine.
+// 30 = HTTP/3, 20 = HTTP/2, 11 = HTTP/1.1, 0 = no usable protocol.
+
+pub fnc http3_attempt_allowed(bool udp_permitted, bool quic_available, bool tls13_available, bool h3_endpoint_discovered): bool {
+  if udp_permitted then
+    if quic_available then
+      if tls13_available then
+        return h3_endpoint_discovered;
+      fi
+    fi
+  fi
+  return false;
+}
+
+pub fnc http_version_preference(bool h3_ready, bool h2_ready, bool h11_ready, bool allow_tcp_fallback): int {
+  if h3_ready then
+    return 30;
+  fi
+  if allow_tcp_fallback then
+    if h2_ready then
+      return 20;
+    fi
+    if h11_ready then
+      return 11;
+    fi
+  fi
+  return 0;
+}
+
+// Requires negotiated peer DATAGRAM support; the caller must still check
+// per-peer maximum frame size, path MTU, memory budget, and send permission.
+pub fnc quic_datagram_may_send(bool local_supported, bool peer_limit_nonzero, bool application_allows_unreliable): bool {
+  if local_supported then
+    if peer_limit_nonzero then
+      return application_allows_unreliable;
+    fi
+  fi
+  return false;
+}
+
+// Preflight only: never automatically replay unsafe application requests.
+pub fnc http3_zero_rtt_candidate(bool resumed_session, bool explicitly_enabled, bool request_replay_safe): bool {
+  if resumed_session then
+    if explicitly_enabled then
+      return request_replay_safe;
+    fi
+  fi
+  return false;
+}
+
+pub fnc main(): int {
+  if http3_attempt_allowed(false, false, false, false) != false then return 101; fi
+  if http3_attempt_allowed(false, false, false, true) != false then return 102; fi
+  if http3_attempt_allowed(false, false, true, false) != false then return 103; fi
+  if http3_attempt_allowed(false, false, true, true) != false then return 104; fi
+  if http3_attempt_allowed(false, true, false, false) != false then return 105; fi
+  if http3_attempt_allowed(false, true, false, true) != false then return 106; fi
+  if http3_attempt_allowed(false, true, true, false) != false then return 107; fi
+  if http3_attempt_allowed(false, true, true, true) != false then return 108; fi
+  if http3_attempt_allowed(true, false, false, false) != false then return 109; fi
+  if http3_attempt_allowed(true, false, false, true) != false then return 110; fi
+  if http3_attempt_allowed(true, false, true, false) != false then return 111; fi
+  if http3_attempt_allowed(true, false, true, true) != false then return 112; fi
+  if http3_attempt_allowed(true, true, false, false) != false then return 113; fi
+  if http3_attempt_allowed(true, true, false, true) != false then return 114; fi
+  if http3_attempt_allowed(true, true, true, false) != false then return 115; fi
+  if http3_attempt_allowed(true, true, true, true) != true then return 116; fi
+  if http_version_preference(false, false, false, false) != 0 then return 117; fi
+  if http_version_preference(false, false, false, true) != 0 then return 118; fi
+  if http_version_preference(false, false, true, false) != 0 then return 119; fi
+  if http_version_preference(false, false, true, true) != 11 then return 120; fi
+  if http_version_preference(false, true, false, false) != 0 then return 121; fi
+  if http_version_preference(false, true, false, true) != 20 then return 122; fi
+  if http_version_preference(false, true, true, false) != 0 then return 123; fi
+  if http_version_preference(false, true, true, true) != 20 then return 124; fi
+  if http_version_preference(true, false, false, false) != 30 then return 125; fi
+  if http_version_preference(true, false, false, true) != 30 then return 126; fi
+  if http_version_preference(true, false, true, false) != 30 then return 127; fi
+  if http_version_preference(true, false, true, true) != 30 then return 128; fi
+  if http_version_preference(true, true, false, false) != 30 then return 129; fi
+  if http_version_preference(true, true, false, true) != 30 then return 130; fi
+  if http_version_preference(true, true, true, false) != 30 then return 131; fi
+  if http_version_preference(true, true, true, true) != 30 then return 132; fi
+  if quic_datagram_may_send(false, false, false) != false then return 133; fi
+  if quic_datagram_may_send(false, false, true) != false then return 134; fi
+  if quic_datagram_may_send(false, true, false) != false then return 135; fi
+  if quic_datagram_may_send(false, true, true) != false then return 136; fi
+  if quic_datagram_may_send(true, false, false) != false then return 137; fi
+  if quic_datagram_may_send(true, false, true) != false then return 138; fi
+  if quic_datagram_may_send(true, true, false) != false then return 139; fi
+  if quic_datagram_may_send(true, true, true) != true then return 140; fi
+  if http3_zero_rtt_candidate(false, false, false) != false then return 141; fi
+  if http3_zero_rtt_candidate(false, false, true) != false then return 142; fi
+  if http3_zero_rtt_candidate(false, true, false) != false then return 143; fi
+  if http3_zero_rtt_candidate(false, true, true) != false then return 144; fi
+  if http3_zero_rtt_candidate(true, false, false) != false then return 145; fi
+  if http3_zero_rtt_candidate(true, false, true) != false then return 146; fi
+  if http3_zero_rtt_candidate(true, true, false) != false then return 147; fi
+  if http3_zero_rtt_candidate(true, true, true) != true then return 148; fi
+  return 42;
+}
