@@ -1,8 +1,9 @@
 //! Bounded parse-only grammar for proposed actor declarations and mtd receivers.
 //! This does not lower, link, typecheck method bodies, or emit actor Wasm.
+use crate::ast::ActorDecl;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
-use crate::parser::{is_reserved, MAX_FUNCS, MAX_PARAMS};
+use crate::parser::{is_reserved, Parser, MAX_FUNCS, MAX_PARAMS};
 type R<T> = Result<T, Diagnostic>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,12 +24,15 @@ pub struct ReceiverHeader {
     pub public: bool,
     pub pos: Pos,
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct TargetHeaders {
     pub namespace: Option<String>,
     /// Imported module aliases. Imports are not resolved or linked here.
     pub imports: Vec<String>,
     pub actors: Vec<String>,
+    /// Real concrete actor syntax trees parsed by the production parser.
+    /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
+    pub definitions: Vec<ActorDecl>,
     pub receivers: Vec<ReceiverHeader>,
 }
 struct Cursor<'a> { toks: &'a [Token], i: usize }
@@ -153,6 +157,47 @@ impl Cursor<'_> {
         let end = self.i;
         Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end))
     }
+
+    /// Parse a concrete "define actor Foo as ... end" using the existing
+    /// production parser. The delimiter scan observes braces so an "end"
+    /// inside a method body does not truncate the actor declaration.
+    fn definition(&mut self, start: usize) -> R<ActorDecl> {
+        self.expect_word("actor")?;
+        let name = self.ident()?;
+        self.expect_word("as")?;
+        let mut braces = 0usize;
+        loop {
+            match self.tok() {
+                Tok::Eof => return Err(self.err("E_EOF", "unclosed concrete actor definition")),
+                Tok::LBrace => {
+                    braces += 1;
+                    if braces > 128 {
+                        return Err(self.err("E_NESTING", "actor definition brace nesting limit"));
+                    }
+                }
+                Tok::RBrace => {
+                    if braces == 0 {
+                        return Err(self.err("E_SYNTAX", "unbalanced actor definition brace"));
+                    }
+                    braces -= 1;
+                }
+                Tok::Ident(s) if s == "end" && braces == 0 => {
+                    self.next();
+                    break;
+                }
+                _ => {}
+            }
+            self.next();
+        }
+        let mut actor_tokens = self.toks[start..self.i].to_vec();
+        actor_tokens.push(Token { tok: Tok::Eof, pos: self.pos() });
+        let program = Parser::new(actor_tokens).parse_program()?;
+        if program.actors.len() != 1 || program.actors[0].name != name ||
+            !program.classes.is_empty() || !program.funcs.is_empty() {
+            return Err(self.err("E_SYNTAX", "invalid concrete actor definition"));
+        }
+        Ok(program.actors.into_iter().next().expect("checked one actor"))
+    }
     fn function(&mut self) -> R<(usize, usize)> {
         self.ident()?;
         self.params()?;
@@ -201,6 +246,13 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             }
             c.expect(&Tok::Semi, "expected ';' after module import")?;
             out.imports.push(alias);
+        } else if c.take_word("define") {
+            let actor = c.definition(c.i - 1)?;
+            if out.definitions.iter().any(|other| other.name == actor.name) {
+                return Err(Diagnostic::new(actor.pos, "E_DUPLICATE",
+                    format!("duplicate concrete actor definition '{}'", actor.name)));
+            }
+            out.definitions.push(actor);
         } else if c.take_word("declare") {
             c.expect_word("actor")?;
             let name = c.ident()?;
@@ -224,7 +276,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 function_spans.push(c.function()?);
             } else {
                 return Err(c.err("E_SYNTAX",
-                    "expected namespace header, module import, declared actor, receiver method, or fnc"));
+                    "expected namespace header, module import, declared/concrete actor, receiver method, or fnc"));
             }
         }
         decls += 1;
