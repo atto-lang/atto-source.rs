@@ -14,9 +14,18 @@ import module math from "./math.atto" can follow that header. The parser rejects
 names, same-owner/name/arity receiver signatures, unknown receiver owners,
 misplaced namespace headers, malformed signatures and excessive body nesting.
 
-These are target declarations only. Receiver bodies are only brace-balanced,
-not typechecked; actor linking, sealed-state proofs and runtime dispatch remain
-unimplemented. The public compile entrypoint still returns E_UNSUPPORTED for
+These are target declarations only. A new conservative semantic preflight resolves
+receiver headers by namespace, nominal owner, name and arity (and checks public
+visibility for external header lookups). It also rejects direct self field access,
+unqualified handle_state, writes in critical-read, critical-write on immutable
+receivers, escape of a bare state callback binder, suspension inside a critical
+callback, and direct synchronous method calls on obvious local spawn bindings.
+Unknown state field methods fail closed rather than being guessed pure.
+
+This is NOT a full typed borrow checker: opaque field types, alias analysis,
+effect inference, actor body linkage, cross-file symbols and actor runtime dispatch
+remain unimplemented. Positive syntax checks do NOT generate guest Wasm; codegen
+continues to return E_UNSUPPORTED for this profile. The public compile entrypoint still returns E_UNSUPPORTED for
 this syntax, with no generated WebAssembly.
 
 It compiles a **subset** of AttoLang. Everything outside the subset is rejected with a diagnostic, and a rejected program never produces an artifact. The compiler does not approximate unsupported features.
@@ -321,6 +330,8 @@ first-class `fnc`. The Rust/Wasm checker now rejects direct and indirect
 call cycles containing a `routine` with `E_ROUTINE_RECURSION`. This
 runs against resolved typed calls (including methods and nested call
 expressions) before guest Wasm emission. Ordinary recursive `fnc`
-functions remain permitted. This static gate is not proof of parity with
+functions remain permitted. A bare routine captured in a value
+position fails with `E_ROUTINE_VALUE` instead of being mistaken for a
+first-class function. This static gate is not proof of parity with
 Java/LLVM/.NET/Forge; the shared `.atto` conformance suite in
 `oreslang-platform-conformance` must gather real compiler receipts.

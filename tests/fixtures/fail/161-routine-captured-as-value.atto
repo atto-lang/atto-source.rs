@@ -1,0 +1,6 @@
+// expect-error: E_ROUTINE_VALUE
+routine direct_only(int value): int { return value + 1; }
+pub fnc main(): int {
+  val callable = direct_only;
+  return 0;
+}

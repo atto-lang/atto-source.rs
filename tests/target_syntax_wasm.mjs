@@ -52,4 +52,13 @@ rejects('declare actor Foo; mtd (Foo self) foo(int): void {}','E_SYNTAX');
 rejects('declare actor Foo; use namespace workers;','E_SYNTAX');
 assert.equal(compile('pub fnc main(): int {return 42;}').ok,true);
 assert.equal(compile('pub fnc main(): int {stdio.println("declare actor Foo; mtd (Foo self) foo()"); return 42;}').ok,true);
-console.log('PASS exact browser Wasm ABI fail-closed target syntax tests (10)');
+
+rejects('declare actor Foo; mtd (Foo self) foo(): int { return self.count; }','E_SEALED');
+rejects('declare actor Foo; mtd (self: Foo) foo(): void { self.handle_state(critical-write |s| -> {s.count = 1;}); }','E_MUTABILITY');
+rejects('declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> {s.count = 1;}); }','E_READONLY');
+rejects('declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> {return s;}); }','E_ESCAPE');
+rejects('declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> await something()); }','E_BORROW');
+rejects('declare actor Foo; mtd (Foo self) foo(): void {} pub fnc main(): int {val a = spawn Foo(); a.foo();return 0;}','E_ISOLATION');
+rejects('declare actor Foo; mtd (mut self: Foo) foo(): void {self.handle_state(critical-write |s| -> {s.count = 1;});}','E_UNSUPPORTED');
+console.log('PASS exact browser Wasm ABI fail-closed and state preflight tests (17)');
+

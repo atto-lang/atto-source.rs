@@ -331,6 +331,8 @@ struct ActorInfo {
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
     names: BTreeMap<String, Vec<usize>>,
+    /// Top-level routines cannot be captured or used as first-class values.
+    routine_names: BTreeSet<String>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
     actors: Vec<ActorInfo>,
@@ -901,6 +903,8 @@ pub fn check(p: &Program) -> R<TProgram> {
     let g = Globals {
         sigs,
         names,
+        routine_names: p.funcs.iter().filter(|f| f.is_routine)
+            .map(|f| f.name.clone()).collect(),
         classes,
         enums: &p.enums,
         actors,
@@ -2597,6 +2601,10 @@ impl<'a> FnCx<'a> {
                         e: TExpr::Local(l.slot),
                         ty: l.ty,
                     }
+                }
+                None if self.g.routine_names.contains(name) => {
+                    return Err(Diagnostic::new(pos, "E_ROUTINE_VALUE",
+                        format!("routine '{name}' is direct-call-only and cannot be used as a value")))
                 }
                 None if self.g.names.contains_key(name) => {
                     return Err(Diagnostic::new(
