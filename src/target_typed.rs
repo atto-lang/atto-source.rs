@@ -2,6 +2,7 @@
 //! This is separate from executable check.rs. Forward-declared actors have no
 //! linked implementation, state layout, proven effects or borrow semantics.
 
+use crate::ast::{ActorInterface, ActorInterfaceMethod, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
 use crate::target_syntax::{ReceiverHeader, TargetHeaders};
 
@@ -26,7 +27,9 @@ pub struct TypedParam {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedActor {
     pub name: String,
-    /// Forward declaration is not a concrete, spawnable implementation.
+    /// Concrete syntax definition linked to the forward declaration;
+    /// this alone does NOT make the actor spawnable.
+    pub has_definition: bool,
     pub defined: bool,
 }
 
@@ -142,12 +145,59 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     let mut module = TypedActorModule {
         namespace: headers.namespace.clone(),
         actors: headers.actors.iter().map(|name| TypedActor {
-            name: name.clone(), defined: false,
+            name: name.clone(),
+            has_definition: headers.definitions.iter().any(|a| a.name == *name),
+            defined: false,
         }).collect(),
         receivers: Vec::with_capacity(headers.receivers.len()),
     };
+    for definition in &headers.definitions {
+        if !headers.actors.contains(&definition.name) {
+            return Err(Diagnostic::new(definition.pos, "E_UNBOUND",
+                format!("concrete actor '{}' has no matching declare actor", definition.name)));
+        }
+    }
     for header in &headers.receivers {
         module.receivers.push(module.lower_one(header)?);
     }
     Ok(module)
+}
+
+
+impl TargetType {
+    /// ActorRef indices are into actor_interface.forwards, not runtime actors.
+    pub fn as_ast_type(&self) -> Type {
+        match *self {
+            Self::Int => Type::Int,
+            Self::Bool => Type::Bool,
+            Self::Float => Type::Float,
+            Self::Str => Type::Str,
+            Self::Void => Type::Void,
+            Self::ActorRef(index) => Type::ActorRef(index as u32),
+        }
+    }
+}
+
+/// Preserve real concrete ActorDecls and nominal receiver signatures inside
+/// the production AST, for checking before any actor code generation.
+pub fn build_actor_program(headers: &TargetHeaders, module: &TypedActorModule) -> Program {
+    let interface = ActorInterface {
+        namespace: module.namespace.clone(),
+        forwards: module.actors.iter().map(|a| a.name.clone()).collect(),
+        methods: module.receivers.iter().map(|m| ActorInterfaceMethod {
+            owner: m.actor as u32,
+            name: m.method.clone(),
+            params: m.params.iter().map(|p| Param {
+                name: p.name.clone(), ty: p.ty.as_ast_type(),
+                mutable: false, pos: p.pos,
+            }).collect(),
+            ret: m.returns.as_ast_type(),
+            mutable: m.mutable, public: m.public, pos: m.pos,
+        }).collect(),
+    };
+    Program {
+        actors: headers.definitions.clone(),
+        actor_interface: Some(interface),
+        ..Program::default()
+    }
 }
