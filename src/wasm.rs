@@ -4,7 +4,8 @@
 //! * export `main: () -> i64` (a void `main` returns 0)
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
 //!   1 = integer overflow; 2 is reserved (division/remainder unsupported);
-//!   3 = object heap exhausted
+//!   3 = object heap exhausted; 4 = invalid generator handle/state;
+//!   5 = generator per-pull dispatch budget exhausted
 //! * export `memory` when strings, classes, or actors exist;
 //!   actor-only modules receive one private 64 KiB page per instance;
 //!   with classes it is a fixed, non-growable [`HEAP_PAGES`]-page memory
