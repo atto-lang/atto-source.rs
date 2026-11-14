@@ -1,0 +1,3 @@
+// expect-exit: 9
+// java: target-only
+pub fnc main(): int { val greeting = "hello"; val xs = [2,3,4]; let sum = 0; for (int n : xs) { sum = sum + n; } if greeting eq "hello" { return sum; } return 0; }

@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// java: target-only
+define class Particle as end pub fnc main(): int { val xs: Array<Particle> = []; return 0; }

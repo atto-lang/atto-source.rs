@@ -1,0 +1,3 @@
+// expect-exit: 9
+// java: target-only
+pub fnc main(): int { let sum = 0; for (val n: int of [4,5]) { sum = sum + n; } return sum; }

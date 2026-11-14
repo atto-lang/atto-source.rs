@@ -1,0 +1,3 @@
+// expect-error: E_TYPE
+// java: target-only
+pub fnc main(): int { val xs = [1,2.0]; return 0; }

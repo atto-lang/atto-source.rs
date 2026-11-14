@@ -1,0 +1,3 @@
+// expect-exit: 15
+// java: target-only
+pub fnc main(): int { let sum = 0; for (int x : [1,2]) { for (int y in [4,5]) { sum = sum + x + y; } } return sum - 6; }

@@ -1,0 +1,3 @@
+// expect-exit: 7
+// java: target-only
+pub fnc main(): int { for (int n : [3,7,10]) { if n eq 7 { return n; } } return 0; }
