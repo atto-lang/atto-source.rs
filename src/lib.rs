@@ -61,6 +61,47 @@ pub fn compile_with_source_ids(
     Ok((object, map))
 }
 
+/// Verify routine identities against THIS Rust compiler's checked guest MIR
+/// without generating a native object. No probe/JIT execution is implied.
+pub fn check_source_ids(
+    source: &str,
+    source_unit: &str,
+    registry_json: &str,
+) -> Result<serde_json::Value, String> {
+    let ast = frontend::parse(source).map_err(|e| e.to_string())?;
+    let module = mir::lower(ast).map_err(|e| e.to_string())?;
+    // Maintain the same bounded MIR traversal as object compilation.
+    let _ = effects::export_effect_ir_checked(&module)?;
+    source_identity::verify_routines(&module, source_unit, registry_json)
+}
+
+/// Locate only *compiled, checked* routine IDs. Log-site lookup must continue
+/// to fail closed until the Rust frontend has compiler-owned log lowering.
+/// This does not attest to which binary version is currently deployed.
+pub fn locate_source_routine(
+    source: &str,
+    source_unit: &str,
+    registry_json: &str,
+    requested_id: &str,
+) -> Result<serde_json::Value, String> {
+    if !requested_id.starts_with("rid_") {
+        return Err("only verified routine IDs can be located; site IDs require real guest log lowering".into());
+    }
+    let source_map = check_source_ids(source, source_unit, registry_json)?;
+    for function in source_map["functions"].as_array().ok_or("invalid validated source map")? {
+        if function["routine_id"].as_str() == Some(requested_id) {
+            return Ok(serde_json::json!({
+                "status": "verified_source_only_not_deployed_binary",
+                "source_unit": source_unit,
+                "routine_id": requested_id,
+                "symbol": function["symbol"],
+                "instrumented": false
+            }));
+        }
+    }
+    Err("requested routine ID does not refer to a checked callable in this source unit".into())
+}
+
 /// Generate the object and its conservative effect-IR model from precisely
 /// one parsed + type-checked Oreslang MIR. This is model conformance evidence,
 /// not authenticated compiler provenance or physical hard-RT certification.
