@@ -3,7 +3,7 @@
 //! This stage proves a source-controlled routine registry against THIS compiler's
 //! validated scalar MIR, and produces an object-adjacent map for the same compile.
 use crate::mir;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -36,7 +36,7 @@ fn valid_id(value: &str, prefix: &str) -> bool {
 
 // Typed JSON deserialization rejects duplicate fields and unknown keys by
 // construction. A generic serde_json::Value silently keeps the last duplicate.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Registry {
     schema: String,
@@ -44,7 +44,7 @@ struct Registry {
     sites: Vec<SiteEntry>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RoutineEntry {
     id: String,
@@ -52,12 +52,123 @@ struct RoutineEntry {
     symbol: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SiteEntry {
     id: String,
     source: String,
     routine_id: String,
+}
+
+/// Synchronize checked scalar routine IDs without pretending guest log sites
+/// are compiled. Existing (source,signature) IDs survive formatting changes.
+/// Explicit old_unit permits exact whole-file moves, but not partial renames.
+/// Caller injects OS-CSPRNG fresh IDs; returns a proposed manifest, not a write.
+pub fn sync_routines<F>(
+    module: &mir::Module, source_unit: &str, previous_json: &str,
+    old_unit: Option<&str>, mut fresh_routine_id: F,
+) -> Result<Value, String>
+where F: FnMut() -> Result<String, String>
+{
+    logical_unit(source_unit)?;
+    if let Some(old) = old_unit {
+        logical_unit(old)?;
+        if old == source_unit { return Err("source move must change the logical path".into()); }
+    }
+    if previous_json.len() > 1024 * 1024 {
+        return Err("source-ID registry exceeds 1 MiB".into());
+    }
+    let mut registry: Registry = serde_json::from_str(previous_json)
+        .map_err(|e| format!("invalid registry JSON: {e}"))?;
+    if registry.schema != REGISTRY_SCHEMA {
+        return Err("unsupported source-ID registry schema".into());
+    }
+    if registry.routines.len() > MAX_ROUTINES ||
+        registry.sites.len() > MAX_SITES {
+        return Err("source-ID registry budget exceeded".into());
+    }
+
+    let mut ids = HashSet::new();
+    let mut keys = HashSet::new();
+    let mut owner = HashMap::new();
+    for routine in &registry.routines {
+        logical_unit(&routine.source)?;
+        if routine.symbol.is_empty()
+            || !valid_id(&routine.id, "rid_")
+            || !ids.insert(routine.id.as_str())
+            || !keys.insert((routine.source.as_str(), routine.symbol.as_str())) {
+            return Err("duplicate, malformed or ambiguous source routine registry entry".into());
+        }
+        owner.insert(routine.id.as_str(), routine.source.as_str());
+    }
+    let mut site_ids = HashSet::new();
+    for site in &registry.sites {
+        logical_unit(&site.source)?;
+        if !valid_id(&site.id, "sid_") ||
+           !site_ids.insert(site.id.as_str()) ||
+           owner.get(site.routine_id.as_str()) != Some(&site.source.as_str()) {
+            return Err("duplicate or forged static source site entry".into());
+        }
+        if site.source == source_unit || old_unit == Some(site.source.as_str()) {
+            return Err("cannot sync source logging sites before compiler site lowering".into());
+        }
+    }
+    let mut expected = HashSet::new();
+    for fnc in &module.functions {
+        let signature = format!("{}({}):int", fnc.symbol,
+            vec!["int"; fnc.params.len()].join(","));
+        if !expected.insert(signature) {
+            return Err("duplicate compiled Rust scalar callable signature".into());
+        }
+    }
+    if expected.len() > MAX_ROUTINES {
+        return Err("compiled routine budget exceeded".into());
+    }
+    if let Some(old) = old_unit {
+        let from_old: HashSet<String> = registry.routines.iter()
+            .filter(|e| e.source == old)
+            .map(|e| e.symbol.clone()).collect();
+        if from_old != expected {
+            return Err("explicit move requires exact callable inventory, not partial moves or renames".into());
+        }
+        if registry.routines.iter().any(|e| e.source == source_unit) {
+            return Err("source move target already has source-ID entries".into());
+        }
+        for entry in &mut registry.routines {
+            if entry.source == old { entry.source = source_unit.to_string(); }
+        }
+    }
+    let mut existing: HashSet<String> = registry.routines.iter()
+        .filter(|e| e.source == source_unit)
+        .map(|e| e.symbol.clone()).collect();
+    if !existing.is_subset(&expected) {
+        return Err("stale checked-in routine ID; refuse silent renaming or removal".into());
+    }
+    for fnc in &module.functions {
+        let signature = format!("{}({}):int", fnc.symbol,
+            vec!["int"; fnc.params.len()].join(","));
+        if existing.insert(signature.clone()) {
+            let id = fresh_routine_id()?;
+            if !valid_id(&id, "rid_") || !ids.insert(id.as_str()) {
+                return Err("fresh routine ID allocator returned invalid, zero or duplicate ID".into());
+            }
+            registry.routines.push(RoutineEntry {
+                id, source: source_unit.to_string(), symbol: signature,
+            });
+            if registry.routines.len() > MAX_ROUTINES {
+                return Err("registry exceeds routine budget after synchronization".into());
+            }
+        }
+    }
+    // Revalidate against THIS compiler's independent, checked MIR. This
+    // output is not an instrumented native artifact or an OTLP event.
+    let proposed = serde_json::to_value(&registry).map_err(|e| e.to_string())?;
+    let encoded = serde_json::to_string(&proposed).map_err(|e| e.to_string())?;
+    let verified = verify_routines(module, source_unit, &encoded)?;
+    if verified["instrumentation_status"] != "not_implemented" {
+        return Err("unexpected claimed Rust guest log instrumentation".into());
+    }
+    Ok(proposed)
 }
 
 /// A routine ID can be reused across generations of the same source routine;
