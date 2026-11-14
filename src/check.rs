@@ -4,8 +4,8 @@
 //! * `int` is a signed 64-bit integer (spec 17, LLVM `i64`), arithmetic is
 //!   checked and overflow panics (spec 17 TARGET (decided); LLVM traps).
 //! * conditions must be `bool`; there is no truthiness (spec 17).
-//! * `val`/`const` bindings and parameters are immutable; `let` and
-//!   `type mut name` parameters are reassignable (grammar.ebnf, Java).
+//! * `val`/`const` names cannot be rebound; `let` names can. An independent
+//!   `mut` qualifier grants referent field mutation when ownership permits it.
 //! * top-level overload identity is name + arity (Java reference).
 //! * a non-void function must return on every path (Java reference).
 //! * `int / int` is rejected: its result type is undecided (spec S-25; Java
@@ -361,6 +361,8 @@ struct Local {
     slot: u32,
     ty: Type,
     mutable: bool,
+    /// Field mutation through this binding, independently of name rebinding.
+    referent_mutable: bool,
     /// `Some(payload)` for the `ActorMail<T>` parameter of receive
     mail: Option<Type>,
 }
@@ -1275,6 +1277,7 @@ fn body_check(
             slot: 0,
             ty: Type::Int,
             mutable: false,
+            referent_mutable: false,
             mail: Some(payload),
         });
     } else {
@@ -1284,6 +1287,7 @@ fn body_check(
                 slot: i as u32,
                 ty: *t,
                 mutable: *m,
+                referent_mutable: false,
                 mail: None,
             });
         }
@@ -1428,7 +1432,7 @@ impl<'a> FnCx<'a> {
         Ok(t)
     }
 
-    fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+    fn declare(&mut self, name: &str, ty: Type, mutable: bool, referent_mutable: bool, pos: Pos) -> R<u32> {
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
         }
@@ -1441,6 +1445,7 @@ impl<'a> FnCx<'a> {
             slot,
             ty,
             mutable,
+            referent_mutable,
             mail: None,
         });
         Ok(slot)
@@ -1493,7 +1498,7 @@ impl<'a> FnCx<'a> {
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
         Ok(match s {
-            Stmt::Bind { kind, name, ty, init, pos } => {
+            Stmt::Bind { kind, referent_mutable, name, ty, init, pos } => {
                 let want = match ty {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
@@ -1519,7 +1524,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
-                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *referent_mutable, *pos)?;
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
@@ -1531,7 +1536,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(
                         *pos,
                         "E_IMMUTABLE",
-                        format!("cannot reassign val binding '{name}'"),
+                        format!("cannot reassign non-rebindable binding '{name}' (use 'let' for reassignment)"),
                     ));
                 }
                 let v = self.consume_expected(value, ty)?;
@@ -1578,7 +1583,7 @@ impl<'a> FnCx<'a> {
                 let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
                 self.scopes.push(Vec::new());
                 let checked = (|| {
-                    let value_slot = self.declare(name, Type::Int, false, *pos)?;
+                    let value_slot = self.declare(name, Type::Int, false, false, *pos)?;
                     let body = self.looped(body)?;
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
                 })();
@@ -1823,7 +1828,7 @@ impl<'a> FnCx<'a> {
             let r = (|| -> R<(TE, Vec<TStmt>)> {
                 let mut body = Vec::new();
                 if let Some(n) = bind {
-                    let slot = self.declare(n, sty, false, arm.pos)?;
+                    let slot = self.declare(n, sty, false, false, arm.pos)?;
                     body.push(TStmt::Set(slot, get()));
                 }
                 let guard = match &arm.guard {
@@ -1944,7 +1949,7 @@ impl<'a> FnCx<'a> {
                 let mut body = Vec::new();
                 if let Some(name) = payload_name {
                     let ty = payload_ty.expect("the pattern binds a value");
-                    let slot = self.declare(name, ty, false, arm.pos)?;
+                    let slot = self.declare(name, ty, false, false, arm.pos)?;
                     let value = if key.is_none() {
                         get()
                     } else {
@@ -2002,6 +2007,42 @@ impl<'a> FnCx<'a> {
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
+        // A named local is an owned, non-aliased class handle in this subset.
+        // Only an explicit `mut` binding may write a non-final field through it.
+        // This does NOT grant access to actor state or immutable class fields.
+        if let ExprKind::Var(name) = &target.kind {
+            let (ty, referent_mutable) = match self.lookup(name) {
+                Some(local) => (local.ty, local.referent_mutable),
+                None => return Err(Diagnostic::new(target.pos, "E_UNBOUND", format!("unknown name '{name}'"))),
+            };
+            let Type::Class(c) = ty else {
+                return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                    "field mutation requires an owned local class value; actor state requires sealed access"));
+            };
+            let class = &self.g.classes[c as usize];
+            let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
+                Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
+            if !f.public && self.inside_class() != Some(c) {
+                return Err(Diagnostic::new(pos, "E_PRIVATE",
+                    format!("private field '{}.{field}' is accessible only from its class", class.name)));
+            }
+            if f.mode == FieldMode::Final {
+                return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                    format!("field '{}.{field}' is immutable/final", class.name)));
+            }
+            if !referent_mutable {
+                return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                    format!("binding '{name}' cannot mutate fields without 'mut'")));
+            }
+            let (offset, fty) = (f.slot, f.ty);
+            let obj = self.value(target)?; // Reject use-after-move.
+            let v = self.value(value)?;
+            if v.ty != fty {
+                return Err(type_err(value.pos,
+                    format!("cannot assign {} to field '{field}' of type {}", self.tn(v.ty), self.tn(fty))));
+            }
+            return Ok(TStmt::FieldSet { obj, offset, ty: fty, value: v });
+        }
         if !matches!(target.kind, ExprKind::SelfRef) {
             return Err(Diagnostic::new(
                 pos,
