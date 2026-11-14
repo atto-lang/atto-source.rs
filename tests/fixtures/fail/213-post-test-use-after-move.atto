@@ -1,0 +1,12 @@
+// expect-error: E_MOVED
+// java: rejects
+define class P as
+  pub int x: 1
+end
+fnc take(P p): void {}
+fnc read(P p): bool { return p.x eq 1; }
+pub fnc main(): int {
+  val p = new P();
+  do { take(p); } while (read(p));
+  return 0;
+}
