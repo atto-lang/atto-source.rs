@@ -1,0 +1,17 @@
+// expect-exit: 32
+// java: llvm-design
+// Checked subtraction/multiplication and a computed yield from two live locals.
+fnc *gen computed(int limit): Generator<int> {
+  let count = 0;
+  let base = 10;
+  while count < limit do
+    count += 1;
+    base -= 2;
+    yield base * count;
+  done
+}
+pub fnc main(): int {
+  let sum = 0;
+  for value in computed(3) do sum += value; done
+  return sum; // 8 + 12 + 12 = 32
+}
