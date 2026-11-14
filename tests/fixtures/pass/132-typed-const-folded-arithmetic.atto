@@ -1,0 +1,7 @@
+// expect-exit: 42
+pub fnc main(): int {
+  int base = 5;
+  const next: int = base + 2;
+  const answer: int = next * 6;
+  return answer;
+}
