@@ -6,10 +6,19 @@ use crate::parser::{is_reserved, MAX_FUNCS, MAX_PARAMS};
 type R<T> = Result<T, Diagnostic>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceiverParam {
+    pub name: String,
+    pub type_name: String,
+    pub pos: Pos,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReceiverHeader {
     pub owner: String,
     pub name: String,
     pub arity: usize,
+    pub params: Vec<ReceiverParam>,
+    pub return_type: String,
     pub mutable: bool,
     pub public: bool,
     pub pos: Pos,
@@ -55,24 +64,41 @@ impl Cursor<'_> {
             _ => Err(self.err("E_SYNTAX", "expected an identifier")),
         }
     }
-    fn type_name(&mut self) -> R<()> {
-        match self.tok() {
-            Tok::Ident(_) => { self.next(); Ok(()) }
-            _ => Err(self.err("E_SYNTAX", "expected a type name")),
+    fn type_name(&mut self) -> R<String> {
+        let name = match self.tok().clone() {
+            Tok::Ident(s) => { self.next(); s }
+            _ => return Err(self.err("E_SYNTAX", "expected a type name")),
+        };
+        if self.take(&Tok::Lt) {
+            if name != "ActorRef" {
+                return Err(self.err("E_UNSUPPORTED_TYPE",
+                    "target receiver generics admit only ActorRef<Actor>"));
+            }
+            let actor = self.ident()?;
+            self.expect(&Tok::Gt, "expected '>' in ActorRef<Actor>")?;
+            return Ok(format!("ActorRef<{actor}>"));
         }
+        Ok(name)
     }
-    fn params(&mut self) -> R<usize> {
+    fn params(&mut self) -> R<Vec<ReceiverParam>> {
         self.expect(&Tok::LParen, "expected '(' before parameters")?;
-        let mut n = 0;
-        if self.take(&Tok::RParen) { return Ok(n); }
+        let mut params = Vec::new();
+        if self.take(&Tok::RParen) { return Ok(params); }
         loop {
-            if n >= MAX_PARAMS { return Err(self.err("E_SOURCE_LIMIT", "too many parameters")); }
-            self.type_name()?;
-            self.ident()?;
-            n += 1;
+            if params.len() >= MAX_PARAMS {
+                return Err(self.err("E_SOURCE_LIMIT", "too many parameters"));
+            }
+            let pos = self.pos();
+            let type_name = self.type_name()?;
+            let name = self.ident()?;
+            if params.iter().any(|p: &ReceiverParam| p.name == name) {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                    format!("duplicate method parameter '{name}'")));
+            }
+            params.push(ReceiverParam { name, type_name, pos });
             if !self.take(&Tok::Comma) {
                 self.expect(&Tok::RParen, "expected ')' after parameters")?;
-                return Ok(n);
+                return Ok(params);
             }
         }
     }
@@ -115,12 +141,17 @@ impl Cursor<'_> {
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
         let name = self.ident()?;
-        let arity = self.params()?;
-        if self.take(&Tok::Colon) || self.take(&Tok::Arrow) { self.type_name()?; }
+        let params = self.params()?;
+        let arity = params.len();
+        let return_type = if self.take(&Tok::Colon) || self.take(&Tok::Arrow) {
+            self.type_name()?
+        } else {
+            "void".to_owned()
+        };
         let start = self.i;
         self.body()?;
         let end = self.i;
-        Ok((ReceiverHeader { owner, name, arity, mutable, public, pos }, start, end))
+        Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end))
     }
     fn function(&mut self) -> R<(usize, usize)> {
         self.ident()?;
