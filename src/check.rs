@@ -1312,7 +1312,8 @@ fn returns(body: &[TStmt]) -> bool {
         // break in the update region. Such a break is a fallthrough path.
         // An unconditional loop diverges only if neither body nor update
         // can break its enclosing loop.
-        TStmt::Loop { cond: None, body, update } => !breaks(body) && !breaks(update),
+        TStmt::Loop { cond: None, body, update } =>
+            !breaks(body) && (!breaks(update) || returns(body)),
         TStmt::Block(b) => returns(b),
         _ => false,
     })
@@ -1648,8 +1649,18 @@ impl<'a> FnCx<'a> {
                 TStmt::If(out, other)
             }
             Stmt::While { cond, body, post_test, .. } => {
-                let c = self.cond(cond, "while")?;
-                let body = self.looped(body)?;
+                // In post-test loops the body runs before the condition.
+                // Check ownership/moves after the body so a consumed value
+                // cannot be read from the trailing condition.
+                let (c, body) = if *post_test {
+                    let body = self.looped(body)?;
+                    let c = self.cond(cond, "while")?;
+                    (c, body)
+                } else {
+                    let c = self.cond(cond, "while")?;
+                    let body = self.looped(body)?;
+                    (c, body)
+                };
                 if *post_test {
                     // The update region executes after fallthrough AND continue.
                     // A failed post-test must break, not start another iteration.
