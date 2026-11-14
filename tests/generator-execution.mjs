@@ -30,7 +30,7 @@ function viaWasmCompiler(source) {
 function viaNativeCompiler(file) {
   const result = spawnSync(attoc, [file], { maxBuffer: 1 << 22 });
   if (result.status !== 0) {
-    return { rejected: true, code: String(result.stderr).match(/\bE_[A-Z_]+\b/)?.[0] };
+    return { rejected: true, code: String(result.stderr).match(/\bE_[A-Z_]+\b/)?.[0], diagnostic: String(result.stderr).slice(0, 600) };
   }
   return { rejected: false, wasm: new Uint8Array(result.stdout) };
 }
@@ -82,7 +82,7 @@ for (const [name, expected, output] of [
   const src = readFileSync(file, 'utf8');
   const native = viaNativeCompiler(file);
   const wasmHost = viaWasmCompiler(src);
-  assert.equal(native.rejected, false, name + ': native compiler emitted an error');
+  assert.equal(native.rejected, false, name + ': native compiler emitted an error: ' + (native.diagnostic || ''));
   assert.equal(wasmHost.rejected, false, name + ': wasm-host compiler emitted an error');
   assert.deepEqual(native.wasm, wasmHost.wasm, name + ': native and wasm-host must be byte-identical');
   assert.deepEqual(runGuest(native.wasm), { value: expected, stdout: output });
