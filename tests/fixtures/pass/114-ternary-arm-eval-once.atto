@@ -1,0 +1,6 @@
+// expect-exit: 43
+pub fnc main(): int {
+  let int count = 0;
+  const int v = true ? { count = count + 1; 42 } : { count = count + 100; 7 };
+  return v + count;
+}
