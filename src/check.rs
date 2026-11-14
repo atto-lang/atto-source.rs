@@ -269,11 +269,20 @@ pub struct TActor {
     pub receive: Option<u32>,
 }
 
+/// Export surface for downstream package linkage; declarations stay local.
+#[derive(Clone, Debug)]
+pub struct ResolvedExport {
+    pub name: String,
+    pub visibility: ExportVisibility,
+    pub kind: ExportKind,
+}
+
 #[derive(Clone, Debug)]
 pub struct TProgram {
     pub funcs: Vec<TFunc>,
     pub generators: Vec<TGenerator>,
     pub main: u32,
+    pub exports: Vec<ResolvedExport>,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
     /// Classes exist: the module owns a bounded bump heap.
@@ -764,6 +773,40 @@ pub fn check(p: &Program) -> R<TProgram> {
         names.entry(f.name.clone()).or_default().push(f.params.len());
     }
 
+    // Resolve exports against the complete file, not against prior source
+    // order. A function export names its overload set (all arities).
+    let mut exports = Vec::new();
+    let mut exported_names = BTreeSet::new();
+    for e in &p.exports {
+        if !exported_names.insert(e.name.as_str()) {
+            return Err(Diagnostic::new(e.pos, "E_DUPLICATE",
+                format!("duplicate export for '{}'", e.name)));
+        }
+        let resolved = if p.classes.iter().any(|d| d.name == e.name) {
+            Some(ExportKind::Class)
+        } else if p.funcs.iter().any(|d| d.name == e.name) {
+            Some(ExportKind::Fnc)
+        } else if p.actors.iter().any(|d| d.name == e.name) {
+            Some(ExportKind::Actor)
+        } else if p.enums.iter().any(|d| d.name == e.name) {
+            Some(ExportKind::Enum)
+        } else {
+            None
+        };
+        let Some(kind) = resolved else {
+            return Err(Diagnostic::new(e.pos, "E_UNBOUND",
+                format!("export '{}' does not name a declaration in this file", e.name)));
+        };
+        if e.kind.is_some_and(|declared| declared != kind) {
+            return Err(Diagnostic::new(e.pos, "E_EXPORT_KIND",
+                format!("export '{}' has the wrong declaration kind", e.name)));
+        }
+        exports.push(ResolvedExport { name: e.name.clone(), kind, visibility: e.visibility });
+    }
+    // Stable module metadata independent of whether an export occurs at
+    // the top or bottom of the file.
+    exports.sort_by(|a, b| a.name.cmp(&b.name));
+
     // ---- member function indices follow the top-level functions
     let mut next = p.funcs.len() as u32;
     let mut take = || {
@@ -1195,6 +1238,7 @@ pub fn check(p: &Program) -> R<TProgram> {
     Ok(TProgram {
         funcs,
         main,
+        exports,
         imports,
         data,
         heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
