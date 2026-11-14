@@ -11,6 +11,42 @@ Quick start:
     cc target/answer.o examples/driver.c -o target/answer
     ./target/answer
 
+## Independent source-ID / object sidecar admission (candidate)
+
+This compiler now has a **separate Rust-owned** source-identity verifier using its own
+Logos parser, validated MIR and Cranelift native object generator. It does **not**
+import Java/Graal or LLVM instrumentation code. This is routine metadata only;
+log statements, span syntax, JIT probe insertion, OTLP, and actor context are
+**not implemented** by this scalar subset.
+
+Example (run on a machine with Rust and a native linker):
+
+~~~sh
+cargo test --lib source_identity
+cargo test --lib independently_compiles_object_and_verified_source_map
+cargo run --bin oresc -- --compile-with-source-ids \
+  examples/source-ids-main.atto \
+  examples/source-ids-main.registry.json \
+  examples/source-ids-main.atto \
+  target/source-ids-main.o \
+  target/source-ids-main.map.json
+~~~
+
+The source-controlled JSON registry is a bounded candidate interchange form
+for the proposed \`.atto.telemetry.ids.toml\` authoring surface. It requires
+\`atto.telemetry.source-ids.v1\`, lowercase 128-bit \`rid_\` IDs, a package-relative
+\`.atto\`/explicit legacy \`.ores\` source unit, and an exact callable signature.
+Duplicate IDs, stale names, unsupported site mappings and source aliases are
+rejected before code output. The compiled object and metadata sidecar are
+produced from **one** validated Rust MIR; sidecar publication is not an
+embedded probe or a stable binary ABI. Two output writes are not transactional.
+
+A routine ID identifies source code, not an invocation. OpenTelemetry
+\`trace_id\` (128-bit) and \`span_id\` (64-bit) are runtime identities. A future
+fully instrumented backend must preserve this distinction under inlining,
+ownership/suspension, hot upgrade, and independently governed JIT or AOT paths.
+**No cross-backend parity or executed CI is claimed by adding these files.**
+
 Long-term choices: Rowan lossless CST, Salsa incremental query engine, owned Oreslang HIR/MIR, Cranelift native AOT/JIT. See docs/ARCHITECTURE.md.
 
 The prototype currently accepts both the braced and as/end spellings for a static function. Its grammar and integer-overflow semantics need reconciliation against the Java and LLVM Oreslang language specification before broad use.
