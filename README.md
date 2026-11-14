@@ -228,7 +228,7 @@ The compiler does not define any syntax of its own:
 
 | Area | Admitted |
 | --- | --- |
-| Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
+| Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body or `-> T` and end-delimited free callable body (newline or `::` separator); parameters `int a`, `int mut a`, `a: int`; arity overloads |
 | Entry point | zero-argument `main` returning `int` or `void` |
 | Generators (restricted) | One optional immutable `int` parameter, up to 16 persistent `int` locals and pure typed CFG `if`/`while`/`break`/`continue`, checked scalar arithmetic and computed `yield`; plus earlier canonical `CountTo`/limited lazy `yield*` profile. Owned fresh-handle `for ... in` and bounded guest-Wasm 65,536-step pull budgets. Borrowed objects, arbitrary effects, nested-scope binds and advanced cancellation remain gated. |
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
@@ -350,3 +350,13 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+## End-delimited free functions
+
+The browser Rust/Wasm compiler supports both `fnc f(...) -> T { ... }` and
+`fnc f(...) -> T\n  ...\nend`. Optional `::` explicitly marks the
+header/body boundary; it is required if compacting the signature and first
+statement onto the same source line. Nested `if ... fi` and
+`match ... over ... end` consume their own closing keywords. The
+implementation feeds the same AST/type checker/Wasm emitter as brace bodies,
+and is not a claim of Java, LLVM, .NET or pinned public-playground parity.

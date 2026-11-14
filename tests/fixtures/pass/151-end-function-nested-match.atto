@@ -1,0 +1,33 @@
+// expect-exit: 42
+// expect-stdout: invalid
+fnc checked(int x) -> Result<int, string> ::
+  if x <= 0 then
+    return Err("invalid");
+  fi
+  return Ok(x + 1);
+end
+
+fnc choose(bool present) -> Option<int>
+  if !present then
+    return None;
+  fi
+  return Some(41);
+end
+
+fnc fold_result(Result<int, string> item) -> int
+  match item over
+    on Ok(value) -> { return value; }
+    on Err(message) -> { stdio.println(message); return 0; }
+  end
+end
+
+pub fnc main(): int {
+  val x: Option<int> = choose(true);
+  match x over
+    on Some(value) -> {
+      val ignored = fold_result(checked(0));
+      return fold_result(checked(value));
+    }
+    on None -> { return 0; }
+  end
+}

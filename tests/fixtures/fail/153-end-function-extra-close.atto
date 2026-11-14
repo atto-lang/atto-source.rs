@@ -1,0 +1,6 @@
+// expect-error: E_TOPLEVEL
+fnc value(int x) -> int
+  return x;
+end
+end
+pub fnc main(): int { return value(1); }
