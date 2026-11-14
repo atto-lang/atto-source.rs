@@ -1338,7 +1338,8 @@ impl Parser {
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if *self.peek() == Tok::LBrace {
+        let braced = *self.peek() == Tok::LBrace;
+        if braced {
             arms.push((cond, self.parse_block()?));
             loop {
                 if self.eat_word("elif")
@@ -1390,7 +1391,7 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") {
+        if !self.eat_word("fi") && !braced {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
@@ -1405,6 +1406,57 @@ impl Parser {
         // each elif arm nests one level deeper in the lowered if/else chain
         self.height -= arms.len() as u32 - 1;
         Ok(Stmt::If { arms, otherwise, pos })
+    }
+
+    /// In expression context, braces form a lexical arm and the final expression
+    /// (or final 'return expression') yields its value to the arm, not the fnc.
+    fn parse_value_arm(&mut self) -> R<Expr> {
+        if *self.peek() != Tok::LBrace {
+            return self.parse_expr();
+        }
+        let pos = self.pos();
+        let mut stmts = self.parse_block()?;
+        let tail = stmts.pop().ok_or_else(|| Diagnostic::new(
+            pos, "E_VALUE_ARM", "conditional value block requires a final expression"
+        ))?;
+        let result = match tail {
+            Stmt::Expr(e) | Stmt::Return(Some(e), _) => e,
+            _ => return Err(Diagnostic::new(pos, "E_VALUE_ARM",
+                "conditional value block must end with an expression or 'return expression'")),
+        };
+        if stmts.is_empty() {
+            Ok(result)
+        } else {
+            Ok(Expr { kind: ExprKind::ValueBlock(stmts, Box::new(result)), pos })
+        }
+    }
+
+    /// A value-producing if must have an else. Lower to the existing lazy ternary IR.
+    fn parse_if_expr(&mut self) -> R<Expr> {
+        let pos = self.pos();
+        self.expect_word("if")?;
+        let mut arms = Vec::new();
+        loop {
+            let condition = self.parse_cond_head()?;
+            self.eat(&Tok::Semi);
+            self.expect_word("then")?;
+            let value = self.parse_value_arm()?;
+            arms.push((condition, value));
+            if !(self.eat_word("elif") || self.eat_word("elseif")) {
+                break;
+            }
+        }
+        if !self.eat_word("else") {
+            return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                "value-producing if requires 'else' on every path"));
+        }
+        let mut value = self.parse_value_arm()?;
+        self.expect_word("fi")?;
+        for (condition, when_true) in arms.into_iter().rev() {
+            value = Expr { kind: ExprKind::Ternary(
+                Box::new(condition), Box::new(when_true), Box::new(value)), pos };
+        }
+        Ok(value)
     }
 
     /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
@@ -1757,10 +1809,10 @@ impl Parser {
             Tok::Question => {
                 let pos = self.pos();
                 self.advance();
-                let a = self.parse_expr()?;
+                let a = self.parse_value_arm()?;
                 self.expect(Tok::Colon, "':'")?;
                 self.enter()?;
-                let b = self.parse_ternary();
+                let b = self.parse_value_arm();
                 self.leave();
                 return Ok(Expr {
                     kind: ExprKind::Ternary(Box::new(c), Box::new(a), Box::new(b?)),
@@ -2074,6 +2126,7 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "if" => return self.parse_if_expr(),
                 "true" => {
                     self.advance();
                     ExprKind::Bool(true)
