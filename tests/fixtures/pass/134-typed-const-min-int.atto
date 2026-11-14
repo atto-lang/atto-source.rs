@@ -1,0 +1,6 @@
+// expect-exit: 1
+pub fnc main(): int {
+  const int min = -9223372036854775808;
+  const int almost_zero = min + 9223372036854775807;
+  return almost_zero + 2;
+}
