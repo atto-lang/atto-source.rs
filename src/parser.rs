@@ -1054,12 +1054,27 @@ impl Parser {
         if *self.peek() == Tok::LBrace {
             self.parse_block()
         } else if self.eat_word("do") {
-            let body = self.parse_stmts_until(&["done"])?;
-            self.expect_word("done")?;
+            // A braced body ends at '}', without an extra 'end' / 'done'.
+            if *self.peek() == Tok::LBrace {
+                return self.parse_block();
+            }
+            let body = self.parse_stmts_until(&["done", "end"])?;
+            if !(self.eat_word("done") || self.eat_word("end")) {
+                return Err(self.expected("'done' or 'end'"));
+            }
             Ok(body)
         } else {
             Err(self.expected("'do' or '{'"))
         }
+    }
+
+    fn parse_post_test_cond(&mut self) -> R<Expr> {
+        self.expect_word("while")?;
+        self.expect(Tok::LParen, "'(' after post-test while")?;
+        let cond = self.parse_cond_head()?;
+        self.expect(Tok::RParen, "')' after post-test condition")?;
+        self.expect(Tok::Semi, "';' after post-test while")?;
+        Ok(cond)
     }
 
     /// Java `Parser.consumeStatementTerminator`: a `;`, a safe statement
@@ -1167,12 +1182,17 @@ impl Parser {
                 let cond = self.parse_cond_head()?;
                 self.eat(&Tok::Semi);
                 let body = self.parse_loop_body()?;
-                Ok(Stmt::While { cond, body, pos })
+                Ok(Stmt::While { cond, body, pos, post_test: false })
             }
             Some("loop") => {
                 self.advance();
                 let body = self.parse_loop_body()?;
-                Ok(Stmt::Loop { body, pos })
+                if self.is_word("while") {
+                    let cond = self.parse_post_test_cond()?;
+                    Ok(Stmt::While { cond, body, pos, post_test: true })
+                } else {
+                    Ok(Stmt::Loop { body, pos })
+                }
             }
             Some("for") => self.parse_for(),
             Some("block") => {
@@ -1190,6 +1210,12 @@ impl Parser {
                 Ok(Stmt::Continue(pos))
             }
             Some("match") => self.parse_match(false),
+            Some("do") if *self.peek_at(1) == Tok::LBrace => {
+                self.advance();
+                let body = self.parse_block()?;
+                let cond = self.parse_post_test_cond()?;
+                Ok(Stmt::While { cond, body, pos, post_test: true })
+            }
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
                 self.parse_match(true)
@@ -1575,6 +1601,13 @@ impl Parser {
     fn parse_for(&mut self) -> R<Stmt> {
         let pos = self.pos();
         self.expect_word("for")?;
+        // The wildcard shorthand has no source; '_ in source' remains an iterator.
+        if *self.peek() == Tok::LBrace ||
+            (self.is_word("_") && (self.word_at(1) == Some("do") || *self.peek_at(1) == Tok::LBrace)) {
+            self.eat_word("_");
+            let body = self.parse_loop_body()?;
+            return Ok(Stmt::Loop { body, pos });
+        }
         if matches!(self.peek(), Tok::Ident(_)) && self.word_at(1) == Some("in") {
             let (name, _) = self.ident("an iteration variable")?;
             self.expect_word("in")?;
@@ -1583,6 +1616,14 @@ impl Parser {
             return Ok(Stmt::ForIn { name, source, body, pos });
         }
         let paren = self.eat(&Tok::LParen);
+        // Commas are allowed only for the entirely empty '(,,)' alias.
+        // Populated C-style headers must use ';': ',' also means AND in conditions.
+        if paren && self.eat(&Tok::Comma) {
+            self.expect(Tok::Comma, "second ',' in empty for header")?;
+            self.expect(Tok::RParen, "')' after empty for header")?;
+            let body = self.parse_loop_body()?;
+            return Ok(Stmt::Loop { body, pos });
+        }
         if matches!(self.word_at(0), Some("const" | "let")) && self.word_at(2) == Some("of") {
             return Err(unsupported(self.pos(), "'for ... of' loops"));
         }
