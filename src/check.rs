@@ -2484,6 +2484,14 @@ impl<'a> FnCx<'a> {
                     ),
                 ));
             }
+            // Expression conditions must produce a concrete value. A void
+            // ternary previously reached Wasm emission's vt(Void).expect(),
+            // causing a host compiler panic instead of a guest diagnostic.
+            // Use statement if for conditional void effects.
+            if a.ty == Type::Void {
+                return Err(type_err(pos,
+                    "conditional expression arms cannot both have type void; use statement if for effects"));
+            }
             if matches!(a.ty, Type::Class(_)) {
                 return Err(Diagnostic::new(
                     pos,
