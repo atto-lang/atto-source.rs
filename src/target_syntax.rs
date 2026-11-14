@@ -17,6 +17,8 @@ pub struct ReceiverHeader {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TargetHeaders {
     pub namespace: Option<String>,
+    /// Imported module aliases. Imports are not resolved or linked here.
+    pub imports: Vec<String>,
     pub actors: Vec<String>,
     pub receivers: Vec<ReceiverHeader>,
 }
@@ -93,10 +95,24 @@ impl Cursor<'_> {
     }
     fn receiver(&mut self, pos: Pos, public: bool) -> R<ReceiverHeader> {
         self.expect(&Tok::LParen, "expected '(' before receiver")?;
-        let mutable = self.take_word("mut");
-        self.expect_word("self")?;
-        self.expect(&Tok::Colon, "expected ':' after self")?;
-        let owner = self.ident()?;
+        // Both the explicit typed spelling and the nominal receiver spelling
+        // are accepted: (mut self: Foo), (self: Foo), (Foo self),
+        // (Foo) and (Foo _). All variants have one nominal owner.
+        let (owner, mutable) = if self.take_word("mut") {
+            self.expect_word("self")?;
+            self.expect(&Tok::Colon, "expected ':' after self")?;
+            (self.ident()?, true)
+        } else if self.take_word("self") {
+            self.expect(&Tok::Colon, "expected ':' after self")?;
+            (self.ident()?, false)
+        } else {
+            let owner = self.ident()?;
+            // Explicit name or compiler-owned implicit receiver.
+            if !self.take_word("self") {
+                self.take_word("_");
+            }
+            (owner, false)
+        };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
         let name = self.ident()?;
         let arity = self.params()?;
@@ -113,7 +129,7 @@ impl Cursor<'_> {
 }
 
 /// Validate a target-only source unit: optional flat namespace header,
-/// forward-declared actors, out-of-line typed receiver methods and functions.
+/// module imports, forward-declared actors, nominal or typed receivers and functions.
 /// Body braces are balanced only: there is no semantic/state access proof.
 pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
     if toks.is_empty() {
@@ -132,6 +148,22 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             c.expect_word("namespace")?;
             out.namespace = Some(c.ident()?);
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
+        } else if c.take_word("import") {
+            if !out.actors.is_empty() || !out.receivers.is_empty() {
+                return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
+            }
+            c.expect_word("module")?;
+            let alias = c.ident()?;
+            if out.imports.contains(&alias) {
+                return Err(c.err("E_DUPLICATE", format!("duplicate module import '{alias}'")));
+            }
+            c.expect_word("from")?;
+            match c.tok() {
+                Tok::Str(_) => c.next(),
+                _ => return Err(c.err("E_SYNTAX", "expected a quoted module import path")),
+            }
+            c.expect(&Tok::Semi, "expected ';' after module import")?;
+            out.imports.push(alias);
         } else if c.take_word("declare") {
             c.expect_word("actor")?;
             let name = c.ident()?;
@@ -154,7 +186,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 c.function()?;
             } else {
                 return Err(c.err("E_SYNTAX",
-                    "expected namespace header, declared actor, receiver method, or fnc"));
+                    "expected namespace header, module import, declared actor, receiver method, or fnc"));
             }
         }
         decls += 1;

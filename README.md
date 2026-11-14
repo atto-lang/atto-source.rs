@@ -6,7 +6,11 @@ A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unkn
 
 This frontend now has a bounded, parse-only grammar for the proposed use namespace
 header, multiple declare actor statements in one file, and typed mtd receivers
-such as (mut self: Foo1) and (self: Foo2). The parser rejects duplicate actor
+such as (mut self: Foo1) and (self: Foo2), as well as the nominal
+spelling (Foo1 self), unnamed (Foo1), and (Foo1 _) receivers.
+The parser finds target declarations anywhere at file scope, while the
+namespace header must still occur first. Explicit module imports of the form
+import module math from "./math.atto" can follow that header. The parser rejects duplicate actor
 names, same-owner/name/arity receiver signatures, unknown receiver owners,
 misplaced namespace headers, malformed signatures and excessive body nesting.
 

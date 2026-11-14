@@ -32,13 +32,28 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
-    // Recognize proposed headers without lowering them to an incomplete actor ABI.
-    let first = toks.first().map(|t| &t.tok);
-    let second = toks.get(1).map(|t| &t.tok);
-    let target = matches!(first, Some(lexer::Tok::Ident(s)) if
-        s == "declare" || s == "mtd" ||
-        (s == "use" && matches!(second, Some(lexer::Tok::Ident(w)) if w == "namespace")) ||
-        (s == "pub" && matches!(second, Some(lexer::Tok::Ident(w)) if w == "mtd")));
+    // Detect target declarations at any file-scope position, not only at
+    // source byte zero. Ignore comments/strings (the lexer already tokenizes
+    // them) and ignore nested brace bodies so a string or local expression
+    // cannot accidentally switch the compiler into the target grammar.
+    let mut braces = 0usize;
+    let mut target = false;
+    for i in 0..toks.len() {
+        match &toks[i].tok {
+            lexer::Tok::LBrace => braces = braces.saturating_add(1),
+            lexer::Tok::RBrace => braces = braces.saturating_sub(1),
+            lexer::Tok::Ident(word) if braces == 0 => {
+                let next = toks.get(i + 1).map(|token| &token.tok);
+                if word == "declare" || word == "mtd" ||
+                    (word == "use" && matches!(next,
+                        Some(lexer::Tok::Ident(name)) if name == "namespace")) {
+                    target = true;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
     if target {
         target_syntax::parse_target_declarations(&toks)?;
         return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
