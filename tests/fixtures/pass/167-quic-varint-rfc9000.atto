@@ -1,0 +1,394 @@
+// expect-exit: 42
+// Executable RFC9000 QUIC varint edge and exhaustive width tests (308 cases).
+// QUIC RFC 9000 variable-length integer codec helpers (native AttoLang).
+// Pure, checked arithmetic. Inputs are octets 0..255 represented as int.
+// Returns -1 for malformed inputs; caller MUST reject the sentinel.
+// 1/2/4/8 byte encodings may be non-minimal: this is allowed by RFC 9000.
+// Does not access buffers or replace transport/TLS/QUIC packet processing.
+
+pub fnc quic_valid_octet(int b): bool {
+  if b < 0 then return false; fi
+  if b > 255 then return false; fi
+  return true;
+}
+
+pub fnc quic_varint_width(int first): int {
+  if quic_valid_octet(first) == false then return 0; fi
+  if first < 64 then return 1; fi
+  if first < 128 then return 2; fi
+  if first < 192 then return 4; fi
+  return 8;
+}
+
+pub fnc quic_varint_min_width(int value): int {
+  if value < 0 then return 0; fi
+  if value < 64 then return 1; fi
+  if value < 16384 then return 2; fi
+  if value < 1073741824 then return 4; fi
+  if value < 4611686018427387904 then return 8; fi
+  return 0;
+}
+
+pub fnc quic_varint_decode_1(int b0): int {
+  if quic_varint_width(b0) != 1 then return -1; fi
+  return b0;
+}
+
+pub fnc quic_varint_decode_2(int b0, int b1): int {
+  if quic_varint_width(b0) != 2 then return -1; fi
+  if quic_valid_octet(b1) == false then return -1; fi
+  return (b0 - 64) * 256 + b1;
+}
+
+pub fnc quic_varint_decode_4(int b0, int b1, int b2, int b3): int {
+  if quic_varint_width(b0) != 4 then return -1; fi
+  if quic_valid_octet(b1) == false then return -1; fi
+  if quic_valid_octet(b2) == false then return -1; fi
+  if quic_valid_octet(b3) == false then return -1; fi
+  let value: int = b0 - 128;
+  value = value * 256 + b1;
+  value = value * 256 + b2;
+  value = value * 256 + b3;
+  return value;
+}
+
+pub fnc quic_varint_decode_8(int b0, int b1, int b2, int b3, int b4, int b5, int b6, int b7): int {
+  if quic_varint_width(b0) != 8 then return -1; fi
+  if quic_valid_octet(b1) == false then return -1; fi
+  if quic_valid_octet(b2) == false then return -1; fi
+  if quic_valid_octet(b3) == false then return -1; fi
+  if quic_valid_octet(b4) == false then return -1; fi
+  if quic_valid_octet(b5) == false then return -1; fi
+  if quic_valid_octet(b6) == false then return -1; fi
+  if quic_valid_octet(b7) == false then return -1; fi
+  let value: int = b0 - 192;
+  value = value * 256 + b1;
+  value = value * 256 + b2;
+  value = value * 256 + b3;
+  value = value * 256 + b4;
+  value = value * 256 + b5;
+  value = value * 256 + b6;
+  value = value * 256 + b7;
+  return value;
+}
+
+// Check the octet count before any buffer read; lengths are nonnegative.
+// Never compute offset+width before validating remaining bytes (overflow).
+pub fnc quic_varint_can_read(int first, int available_bytes): bool {
+  if available_bytes < 0 then return false; fi
+  let width: int = quic_varint_width(first);
+  if width == 0 then return false; fi
+  return width <= available_bytes;
+}
+
+pub fnc main(): int {
+  if quic_varint_width(0) != 1 then return 100; fi
+  if quic_varint_width(1) != 1 then return 101; fi
+  if quic_varint_width(2) != 1 then return 102; fi
+  if quic_varint_width(3) != 1 then return 103; fi
+  if quic_varint_width(4) != 1 then return 104; fi
+  if quic_varint_width(5) != 1 then return 105; fi
+  if quic_varint_width(6) != 1 then return 106; fi
+  if quic_varint_width(7) != 1 then return 107; fi
+  if quic_varint_width(8) != 1 then return 108; fi
+  if quic_varint_width(9) != 1 then return 109; fi
+  if quic_varint_width(10) != 1 then return 110; fi
+  if quic_varint_width(11) != 1 then return 111; fi
+  if quic_varint_width(12) != 1 then return 112; fi
+  if quic_varint_width(13) != 1 then return 113; fi
+  if quic_varint_width(14) != 1 then return 114; fi
+  if quic_varint_width(15) != 1 then return 115; fi
+  if quic_varint_width(16) != 1 then return 116; fi
+  if quic_varint_width(17) != 1 then return 117; fi
+  if quic_varint_width(18) != 1 then return 118; fi
+  if quic_varint_width(19) != 1 then return 119; fi
+  if quic_varint_width(20) != 1 then return 120; fi
+  if quic_varint_width(21) != 1 then return 121; fi
+  if quic_varint_width(22) != 1 then return 122; fi
+  if quic_varint_width(23) != 1 then return 123; fi
+  if quic_varint_width(24) != 1 then return 124; fi
+  if quic_varint_width(25) != 1 then return 125; fi
+  if quic_varint_width(26) != 1 then return 126; fi
+  if quic_varint_width(27) != 1 then return 127; fi
+  if quic_varint_width(28) != 1 then return 128; fi
+  if quic_varint_width(29) != 1 then return 129; fi
+  if quic_varint_width(30) != 1 then return 130; fi
+  if quic_varint_width(31) != 1 then return 131; fi
+  if quic_varint_width(32) != 1 then return 132; fi
+  if quic_varint_width(33) != 1 then return 133; fi
+  if quic_varint_width(34) != 1 then return 134; fi
+  if quic_varint_width(35) != 1 then return 135; fi
+  if quic_varint_width(36) != 1 then return 136; fi
+  if quic_varint_width(37) != 1 then return 137; fi
+  if quic_varint_width(38) != 1 then return 138; fi
+  if quic_varint_width(39) != 1 then return 139; fi
+  if quic_varint_width(40) != 1 then return 140; fi
+  if quic_varint_width(41) != 1 then return 141; fi
+  if quic_varint_width(42) != 1 then return 142; fi
+  if quic_varint_width(43) != 1 then return 143; fi
+  if quic_varint_width(44) != 1 then return 144; fi
+  if quic_varint_width(45) != 1 then return 145; fi
+  if quic_varint_width(46) != 1 then return 146; fi
+  if quic_varint_width(47) != 1 then return 147; fi
+  if quic_varint_width(48) != 1 then return 148; fi
+  if quic_varint_width(49) != 1 then return 149; fi
+  if quic_varint_width(50) != 1 then return 150; fi
+  if quic_varint_width(51) != 1 then return 151; fi
+  if quic_varint_width(52) != 1 then return 152; fi
+  if quic_varint_width(53) != 1 then return 153; fi
+  if quic_varint_width(54) != 1 then return 154; fi
+  if quic_varint_width(55) != 1 then return 155; fi
+  if quic_varint_width(56) != 1 then return 156; fi
+  if quic_varint_width(57) != 1 then return 157; fi
+  if quic_varint_width(58) != 1 then return 158; fi
+  if quic_varint_width(59) != 1 then return 159; fi
+  if quic_varint_width(60) != 1 then return 160; fi
+  if quic_varint_width(61) != 1 then return 161; fi
+  if quic_varint_width(62) != 1 then return 162; fi
+  if quic_varint_width(63) != 1 then return 163; fi
+  if quic_varint_width(64) != 2 then return 164; fi
+  if quic_varint_width(65) != 2 then return 165; fi
+  if quic_varint_width(66) != 2 then return 166; fi
+  if quic_varint_width(67) != 2 then return 167; fi
+  if quic_varint_width(68) != 2 then return 168; fi
+  if quic_varint_width(69) != 2 then return 169; fi
+  if quic_varint_width(70) != 2 then return 170; fi
+  if quic_varint_width(71) != 2 then return 171; fi
+  if quic_varint_width(72) != 2 then return 172; fi
+  if quic_varint_width(73) != 2 then return 173; fi
+  if quic_varint_width(74) != 2 then return 174; fi
+  if quic_varint_width(75) != 2 then return 175; fi
+  if quic_varint_width(76) != 2 then return 176; fi
+  if quic_varint_width(77) != 2 then return 177; fi
+  if quic_varint_width(78) != 2 then return 178; fi
+  if quic_varint_width(79) != 2 then return 179; fi
+  if quic_varint_width(80) != 2 then return 180; fi
+  if quic_varint_width(81) != 2 then return 181; fi
+  if quic_varint_width(82) != 2 then return 182; fi
+  if quic_varint_width(83) != 2 then return 183; fi
+  if quic_varint_width(84) != 2 then return 184; fi
+  if quic_varint_width(85) != 2 then return 185; fi
+  if quic_varint_width(86) != 2 then return 186; fi
+  if quic_varint_width(87) != 2 then return 187; fi
+  if quic_varint_width(88) != 2 then return 188; fi
+  if quic_varint_width(89) != 2 then return 189; fi
+  if quic_varint_width(90) != 2 then return 190; fi
+  if quic_varint_width(91) != 2 then return 191; fi
+  if quic_varint_width(92) != 2 then return 192; fi
+  if quic_varint_width(93) != 2 then return 193; fi
+  if quic_varint_width(94) != 2 then return 194; fi
+  if quic_varint_width(95) != 2 then return 195; fi
+  if quic_varint_width(96) != 2 then return 196; fi
+  if quic_varint_width(97) != 2 then return 197; fi
+  if quic_varint_width(98) != 2 then return 198; fi
+  if quic_varint_width(99) != 2 then return 199; fi
+  if quic_varint_width(100) != 2 then return 200; fi
+  if quic_varint_width(101) != 2 then return 201; fi
+  if quic_varint_width(102) != 2 then return 202; fi
+  if quic_varint_width(103) != 2 then return 203; fi
+  if quic_varint_width(104) != 2 then return 204; fi
+  if quic_varint_width(105) != 2 then return 205; fi
+  if quic_varint_width(106) != 2 then return 206; fi
+  if quic_varint_width(107) != 2 then return 207; fi
+  if quic_varint_width(108) != 2 then return 208; fi
+  if quic_varint_width(109) != 2 then return 209; fi
+  if quic_varint_width(110) != 2 then return 210; fi
+  if quic_varint_width(111) != 2 then return 211; fi
+  if quic_varint_width(112) != 2 then return 212; fi
+  if quic_varint_width(113) != 2 then return 213; fi
+  if quic_varint_width(114) != 2 then return 214; fi
+  if quic_varint_width(115) != 2 then return 215; fi
+  if quic_varint_width(116) != 2 then return 216; fi
+  if quic_varint_width(117) != 2 then return 217; fi
+  if quic_varint_width(118) != 2 then return 218; fi
+  if quic_varint_width(119) != 2 then return 219; fi
+  if quic_varint_width(120) != 2 then return 220; fi
+  if quic_varint_width(121) != 2 then return 221; fi
+  if quic_varint_width(122) != 2 then return 222; fi
+  if quic_varint_width(123) != 2 then return 223; fi
+  if quic_varint_width(124) != 2 then return 224; fi
+  if quic_varint_width(125) != 2 then return 225; fi
+  if quic_varint_width(126) != 2 then return 226; fi
+  if quic_varint_width(127) != 2 then return 227; fi
+  if quic_varint_width(128) != 4 then return 228; fi
+  if quic_varint_width(129) != 4 then return 229; fi
+  if quic_varint_width(130) != 4 then return 230; fi
+  if quic_varint_width(131) != 4 then return 231; fi
+  if quic_varint_width(132) != 4 then return 232; fi
+  if quic_varint_width(133) != 4 then return 233; fi
+  if quic_varint_width(134) != 4 then return 234; fi
+  if quic_varint_width(135) != 4 then return 235; fi
+  if quic_varint_width(136) != 4 then return 236; fi
+  if quic_varint_width(137) != 4 then return 237; fi
+  if quic_varint_width(138) != 4 then return 238; fi
+  if quic_varint_width(139) != 4 then return 239; fi
+  if quic_varint_width(140) != 4 then return 240; fi
+  if quic_varint_width(141) != 4 then return 241; fi
+  if quic_varint_width(142) != 4 then return 242; fi
+  if quic_varint_width(143) != 4 then return 243; fi
+  if quic_varint_width(144) != 4 then return 244; fi
+  if quic_varint_width(145) != 4 then return 245; fi
+  if quic_varint_width(146) != 4 then return 246; fi
+  if quic_varint_width(147) != 4 then return 247; fi
+  if quic_varint_width(148) != 4 then return 248; fi
+  if quic_varint_width(149) != 4 then return 249; fi
+  if quic_varint_width(150) != 4 then return 250; fi
+  if quic_varint_width(151) != 4 then return 251; fi
+  if quic_varint_width(152) != 4 then return 252; fi
+  if quic_varint_width(153) != 4 then return 253; fi
+  if quic_varint_width(154) != 4 then return 254; fi
+  if quic_varint_width(155) != 4 then return 255; fi
+  if quic_varint_width(156) != 4 then return 256; fi
+  if quic_varint_width(157) != 4 then return 257; fi
+  if quic_varint_width(158) != 4 then return 258; fi
+  if quic_varint_width(159) != 4 then return 259; fi
+  if quic_varint_width(160) != 4 then return 260; fi
+  if quic_varint_width(161) != 4 then return 261; fi
+  if quic_varint_width(162) != 4 then return 262; fi
+  if quic_varint_width(163) != 4 then return 263; fi
+  if quic_varint_width(164) != 4 then return 264; fi
+  if quic_varint_width(165) != 4 then return 265; fi
+  if quic_varint_width(166) != 4 then return 266; fi
+  if quic_varint_width(167) != 4 then return 267; fi
+  if quic_varint_width(168) != 4 then return 268; fi
+  if quic_varint_width(169) != 4 then return 269; fi
+  if quic_varint_width(170) != 4 then return 270; fi
+  if quic_varint_width(171) != 4 then return 271; fi
+  if quic_varint_width(172) != 4 then return 272; fi
+  if quic_varint_width(173) != 4 then return 273; fi
+  if quic_varint_width(174) != 4 then return 274; fi
+  if quic_varint_width(175) != 4 then return 275; fi
+  if quic_varint_width(176) != 4 then return 276; fi
+  if quic_varint_width(177) != 4 then return 277; fi
+  if quic_varint_width(178) != 4 then return 278; fi
+  if quic_varint_width(179) != 4 then return 279; fi
+  if quic_varint_width(180) != 4 then return 280; fi
+  if quic_varint_width(181) != 4 then return 281; fi
+  if quic_varint_width(182) != 4 then return 282; fi
+  if quic_varint_width(183) != 4 then return 283; fi
+  if quic_varint_width(184) != 4 then return 284; fi
+  if quic_varint_width(185) != 4 then return 285; fi
+  if quic_varint_width(186) != 4 then return 286; fi
+  if quic_varint_width(187) != 4 then return 287; fi
+  if quic_varint_width(188) != 4 then return 288; fi
+  if quic_varint_width(189) != 4 then return 289; fi
+  if quic_varint_width(190) != 4 then return 290; fi
+  if quic_varint_width(191) != 4 then return 291; fi
+  if quic_varint_width(192) != 8 then return 292; fi
+  if quic_varint_width(193) != 8 then return 293; fi
+  if quic_varint_width(194) != 8 then return 294; fi
+  if quic_varint_width(195) != 8 then return 295; fi
+  if quic_varint_width(196) != 8 then return 296; fi
+  if quic_varint_width(197) != 8 then return 297; fi
+  if quic_varint_width(198) != 8 then return 298; fi
+  if quic_varint_width(199) != 8 then return 299; fi
+  if quic_varint_width(200) != 8 then return 300; fi
+  if quic_varint_width(201) != 8 then return 301; fi
+  if quic_varint_width(202) != 8 then return 302; fi
+  if quic_varint_width(203) != 8 then return 303; fi
+  if quic_varint_width(204) != 8 then return 304; fi
+  if quic_varint_width(205) != 8 then return 305; fi
+  if quic_varint_width(206) != 8 then return 306; fi
+  if quic_varint_width(207) != 8 then return 307; fi
+  if quic_varint_width(208) != 8 then return 308; fi
+  if quic_varint_width(209) != 8 then return 309; fi
+  if quic_varint_width(210) != 8 then return 310; fi
+  if quic_varint_width(211) != 8 then return 311; fi
+  if quic_varint_width(212) != 8 then return 312; fi
+  if quic_varint_width(213) != 8 then return 313; fi
+  if quic_varint_width(214) != 8 then return 314; fi
+  if quic_varint_width(215) != 8 then return 315; fi
+  if quic_varint_width(216) != 8 then return 316; fi
+  if quic_varint_width(217) != 8 then return 317; fi
+  if quic_varint_width(218) != 8 then return 318; fi
+  if quic_varint_width(219) != 8 then return 319; fi
+  if quic_varint_width(220) != 8 then return 320; fi
+  if quic_varint_width(221) != 8 then return 321; fi
+  if quic_varint_width(222) != 8 then return 322; fi
+  if quic_varint_width(223) != 8 then return 323; fi
+  if quic_varint_width(224) != 8 then return 324; fi
+  if quic_varint_width(225) != 8 then return 325; fi
+  if quic_varint_width(226) != 8 then return 326; fi
+  if quic_varint_width(227) != 8 then return 327; fi
+  if quic_varint_width(228) != 8 then return 328; fi
+  if quic_varint_width(229) != 8 then return 329; fi
+  if quic_varint_width(230) != 8 then return 330; fi
+  if quic_varint_width(231) != 8 then return 331; fi
+  if quic_varint_width(232) != 8 then return 332; fi
+  if quic_varint_width(233) != 8 then return 333; fi
+  if quic_varint_width(234) != 8 then return 334; fi
+  if quic_varint_width(235) != 8 then return 335; fi
+  if quic_varint_width(236) != 8 then return 336; fi
+  if quic_varint_width(237) != 8 then return 337; fi
+  if quic_varint_width(238) != 8 then return 338; fi
+  if quic_varint_width(239) != 8 then return 339; fi
+  if quic_varint_width(240) != 8 then return 340; fi
+  if quic_varint_width(241) != 8 then return 341; fi
+  if quic_varint_width(242) != 8 then return 342; fi
+  if quic_varint_width(243) != 8 then return 343; fi
+  if quic_varint_width(244) != 8 then return 344; fi
+  if quic_varint_width(245) != 8 then return 345; fi
+  if quic_varint_width(246) != 8 then return 346; fi
+  if quic_varint_width(247) != 8 then return 347; fi
+  if quic_varint_width(248) != 8 then return 348; fi
+  if quic_varint_width(249) != 8 then return 349; fi
+  if quic_varint_width(250) != 8 then return 350; fi
+  if quic_varint_width(251) != 8 then return 351; fi
+  if quic_varint_width(252) != 8 then return 352; fi
+  if quic_varint_width(253) != 8 then return 353; fi
+  if quic_varint_width(254) != 8 then return 354; fi
+  if quic_varint_width(255) != 8 then return 355; fi
+  if quic_varint_min_width(-1) != 0 then return 356; fi
+  if quic_varint_min_width(256) != 0 then return 357; fi
+  if quic_varint_min_width(999) != 0 then return 358; fi
+  if quic_varint_min_width(0) != 1 then return 359; fi
+  if quic_varint_min_width(63) != 1 then return 360; fi
+  if quic_varint_min_width(64) != 2 then return 361; fi
+  if quic_varint_min_width(16383) != 2 then return 362; fi
+  if quic_varint_min_width(16384) != 4 then return 363; fi
+  if quic_varint_min_width(1073741823) != 4 then return 364; fi
+  if quic_varint_min_width(1073741824) != 8 then return 365; fi
+  if quic_varint_min_width(4611686018427387903) != 8 then return 366; fi
+  if quic_varint_min_width(4611686018427387904) != 0 then return 367; fi
+  if quic_valid_octet(-1) != false then return 368; fi
+  if quic_valid_octet(0) != true then return 369; fi
+  if quic_valid_octet(255) != true then return 370; fi
+  if quic_valid_octet(256) != false then return 371; fi
+  if quic_varint_width(-1) != 0 then return 372; fi
+  if quic_varint_width(256) != 0 then return 373; fi
+  if quic_varint_decode_1(0) != 0 then return 374; fi
+  if quic_varint_decode_1(63) != 63 then return 375; fi
+  if quic_varint_decode_1(64) != -1 then return 376; fi
+  if quic_varint_decode_1(-1) != -1 then return 377; fi
+  if quic_varint_decode_2(64,0) != 0 then return 378; fi
+  if quic_varint_decode_2(64,37) != 37 then return 379; fi
+  if quic_varint_decode_2(127,255) != 16383 then return 380; fi
+  if quic_varint_decode_2(63,255) != -1 then return 381; fi
+  if quic_varint_decode_2(64,256) != -1 then return 382; fi
+  if quic_varint_decode_2(64,-1) != -1 then return 383; fi
+  if quic_varint_decode_4(128,0,0,0) != 0 then return 384; fi
+  if quic_varint_decode_4(128,0,0,37) != 37 then return 385; fi
+  if quic_varint_decode_4(191,255,255,255) != 1073741823 then return 386; fi
+  if quic_varint_decode_4(128,-1,0,0) != -1 then return 387; fi
+  if quic_varint_decode_4(128,0,256,0) != -1 then return 388; fi
+  if quic_varint_decode_4(128,0,0,256) != -1 then return 389; fi
+  if quic_varint_decode_4(64,0,0,0) != -1 then return 390; fi
+  if quic_varint_decode_8(192,0,0,0,0,0,0,0) != 0 then return 391; fi
+  if quic_varint_decode_8(192,0,0,0,0,0,0,37) != 37 then return 392; fi
+  if quic_varint_decode_8(255,255,255,255,255,255,255,255) != 4611686018427387903 then return 393; fi
+  if quic_varint_decode_8(192,0,0,0,0,0,0,256) != -1 then return 394; fi
+  if quic_varint_decode_8(192,0,0,-1,0,0,0,0) != -1 then return 395; fi
+  if quic_varint_decode_8(192,0,0,0,256,0,0,0) != -1 then return 396; fi
+  if quic_varint_decode_8(191,0,0,0,0,0,0,0) != -1 then return 397; fi
+  if quic_varint_can_read(0,0) != false then return 398; fi
+  if quic_varint_can_read(0,1) != true then return 399; fi
+  if quic_varint_can_read(64,1) != false then return 400; fi
+  if quic_varint_can_read(64,2) != true then return 401; fi
+  if quic_varint_can_read(128,3) != false then return 402; fi
+  if quic_varint_can_read(128,4) != true then return 403; fi
+  if quic_varint_can_read(192,7) != false then return 404; fi
+  if quic_varint_can_read(192,8) != true then return 405; fi
+  if quic_varint_can_read(192,-1) != false then return 406; fi
+  if quic_varint_can_read(-1,100) != false then return 407; fi
+  return 42;
+}
