@@ -118,7 +118,7 @@ for (const [name, code] of [
 // A noncooperative loop may compile as pure native Wasm, but its first pull
 // must trap with the dedicated deterministic fuel exhaustion code, not hang.
 {
-  const path = 'tests/fixtures/pass/143-generator-dispatch-budget-trap.atto';
+  const path = 'tests/fixtures/panic/143-generator-dispatch-budget-trap.atto';
   const source = readFileSync(path, 'utf8');
   const native = viaNativeCompiler(path);
   const browser = viaWasmCompiler(source);
