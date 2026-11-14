@@ -1,6 +1,6 @@
 //! Suspension CFG regression tests. These prove bounded, stable resume states
-//! for synchronous generators; guest Wasm continuation emission is a separate
-//! milestone and deliberately remains E_UNSUPPORTED until implemented.
+//! for synchronous generators; the admitted typed subset is emitted as
+//! actual guest WebAssembly and unsupported constructs still fail closed.
 
 use atto_compiler::ast::{Expr, ExprKind, Stmt};
 use atto_compiler::diag::Pos;
