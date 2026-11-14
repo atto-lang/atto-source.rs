@@ -215,3 +215,76 @@ fn typed_lowerer_revalidates_critical_lease_invariants_even_for_imported_headers
     headers.receivers[0].mutable = false;
     assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_MUTABILITY");
 }
+
+#[test]
+fn nominal_receiver_effects_propagate_through_indirect_calls() {
+    let src = r#"
+use namespace workers;
+declare actor Alpha;
+declare actor Beta;
+define actor Alpha as let int count = 0; end
+define actor Beta as let bool ready = true; end
+mtd (mut self: Alpha) update(): void {
+    self.handle_state(critical-write |s| -> { s.count = s.count + 1; });
+}
+mtd (mut self: Alpha) dispatch(): void { self.update(); }
+mtd (mut self: Alpha) entry(): void { self.dispatch(); }
+mtd (Beta self) update(): bool {
+    return self.handle_state(critical-read |s| -> s.ready);
+}
+mtd (Beta self) entry(): bool { return self.update(); }
+"#;
+    let m = typed(src).unwrap();
+    let pos = Pos {line: 1,col: 1};
+    let writer = m.resolve(Some("workers"),"Alpha","entry",0,false,pos).unwrap();
+    assert!(writer.effects.reads_state);
+    assert!(writer.effects.writes_state);
+    assert!(!writer.effects.may_suspend);
+    assert!(!writer.effects.unproved_call);
+    assert!(!writer.body_lowered);
+    let reader = m.resolve(Some("workers"),"Beta","entry",0,false,pos).unwrap();
+    assert!(reader.effects.reads_state);
+    assert!(!reader.effects.writes_state,
+        "same-named receiver in another actor must not acquire Alpha's write effects");
+}
+
+#[test]
+fn recursive_actor_call_graph_reaches_a_bounded_effect_fixed_point() {
+    let src = r#"
+declare actor Runner;
+mtd (Runner self) a(): void { self.b(); }
+mtd (Runner self) b(): void { self.a(); self.c(); }
+mtd (Runner self) c(): void { await pending(); }
+"#;
+    let m=typed(src).unwrap();
+    for method in ["a","b","c"] {
+        let effect=&m.resolve(None,"Runner",method,0,false,Pos{line:1,col:1})
+            .unwrap().effects;
+        assert!(effect.may_suspend,"{method} must inherit transitive await effect");
+    }
+    assert!(m.resolve(None,"Runner","a",0,false,Pos{line:1,col:1})
+        .unwrap().effects.unproved_call);
+}
+
+#[test]
+fn actor_receiver_effects_are_conservative_for_unresolved_calls_and_exceptions() {
+    let src=r#"
+declare actor Worker;
+mtd (Worker self) unsafe_work(): void {
+    val x = compute(1);
+    throw Error("bad");
+}
+mtd (Worker self) wrapper(): void { self.unsafe_work(); }
+mtd (Worker self) allocator(): void { val v = new Box(); }
+mtd (Worker self) launcher(): void { spawn Worker(); }
+"#;
+    let m=typed(src).unwrap();
+    let get=|name| &m.resolve(None,"Worker",name,0,false,Pos{line:1,col:1})
+        .unwrap().effects;
+    assert!(get("wrapper").may_unwind);
+    assert!(get("wrapper").unproved_call);
+    assert!(get("allocator").may_allocate);
+    assert!(get("launcher").may_spawn);
+    // No proof of safe code generation is obtained from these facts.
+    assert!(m.receivers.iter().all(|method| !method.body_lowered));
+}
