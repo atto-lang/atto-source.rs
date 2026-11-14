@@ -3,7 +3,7 @@
 use crate::ast::ActorDecl;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
-use crate::parser::{is_reserved, Parser, MAX_FUNCS, MAX_PARAMS};
+use crate::parser::{is_reserved, is_unlowered_ownership_intrinsic, Parser, MAX_FUNCS, MAX_PARAMS};
 type R<T> = Result<T, Diagnostic>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +73,10 @@ impl Cursor<'_> {
             Tok::Ident(s) => { self.next(); s }
             _ => return Err(self.err("E_SYNTAX", "expected a type name")),
         };
+        if is_unlowered_ownership_intrinsic(&name) {
+            return Err(self.err("E_UNSUPPORTED_TYPE",
+                format!("ownership or synchronization intrinsic '{name}' is not lowered")));
+        }
         if self.take(&Tok::Lt) {
             if name != "ActorRef" {
                 return Err(self.err("E_UNSUPPORTED_TYPE",
@@ -256,6 +260,10 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         } else if c.take_word("declare") {
             c.expect_word("actor")?;
             let name = c.ident()?;
+            if is_unlowered_ownership_intrinsic(&name) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    format!("actor name '{name}' is reserved for an ownership or synchronization intrinsic")));
+            }
             if out.actors.contains(&name) {
                 return Err(c.err("E_DUPLICATE", format!("duplicate actor '{name}'")));
             }
