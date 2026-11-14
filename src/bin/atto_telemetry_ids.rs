@@ -7,11 +7,11 @@
 //!
 //! The logical source unit is derived from the actual package-root file, never
 //! accepted as an unverifiable user-supplied alias.
-use oreslang_source_rs::{check_source_ids, locate_source_routine};
+use oreslang_source_rs::{check_source_ids, locate_source_routine, sync_source_ids};
 use std::{
     env,
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -81,15 +81,76 @@ fn rooted_source(source: &Path, registry: &Path) -> Result<(PathBuf, String), St
     Ok((canonical_source, unit))
 }
 
+/// Generate one nonzero 128-bit static routine ID using kernel CSPRNG
+/// bytes. Never derive stable IDs from a hash of source text: moves and
+/// duplicate signatures need explicit checked-in identity assignment.
+fn new_os_routine_id() -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        let mut bytes = [0u8; 16];
+        let mut source = fs::File::open("/dev/urandom")
+            .map_err(|_| "OS CSPRNG unavailable: refusing to synthesize an ID")?;
+        source.read_exact(&mut bytes)
+            .map_err(|_| "OS CSPRNG exhausted: refusing to synthesize an ID")?;
+        if bytes.iter().all(|value| *value == 0) {
+            return Err("OS CSPRNG returned an invalid all-zero ID".into());
+        }
+        let mut result = String::with_capacity(36);
+        result.push_str("rid_");
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in bytes {
+            result.push(HEX[(byte >> 4) as usize] as char);
+            result.push(HEX[(byte & 15) as usize] as char);
+        }
+        return Ok(result);
+    }
+    #[cfg(not(unix))]
+    Err("this CLI requires a native OS CSPRNG adapter; no unsafe fallback".into())
+}
+
+/// Write the reviewed proposal to an unused regular filename. The checked-in
+/// registry is intentionally never modified in-place or through a hardlink.
+fn write_proposal(path: &Path, source: &Path, registry: &Path,
+                  json: &serde_json::Value) -> Result<(), String> {
+    if path.is_absolute() || path.components().any(|part|
+        !matches!(part, std::path::Component::Normal(_))) {
+        return Err("proposal destination must be a canonical package-relative path".into());
+    }
+    let root = fs::canonicalize(".").map_err(|e| e.to_string())?;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let real_parent = fs::canonicalize(parent).map_err(|e| e.to_string())?;
+    if !real_parent.starts_with(&root) || root.join(parent) != real_parent {
+        return Err("proposal parent aliases or escapes the package root".into());
+    }
+    let resolved = real_parent.join(path.file_name().ok_or("proposal filename required")?);
+    if resolved == fs::canonicalize(source).map_err(|e| e.to_string())? ||
+       resolved == fs::canonicalize(registry).map_err(|e| e.to_string())? {
+        return Err("proposal must not alias source or checked-in registry".into());
+    }
+    let bytes = serde_json::to_vec_pretty(json).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_BYTES as usize {
+        return Err("synchronized registry exceeds 1 MiB".into());
+    }
+    let mut output = fs::OpenOptions::new().write(true).create_new(true)
+        .open(path).map_err(|e| format!("proposal must be a new path: {e}"))?;
+    output.write_all(&bytes).map_err(|e| e.to_string())?;
+    output.write_all(b"\n").map_err(|e| e.to_string())?;
+    output.sync_all().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<String, String> {
     let (operation, source_path, registry_path, query) = match args {
         [command, source, registry] if command == "check" =>
             (command.as_str(), source.as_str(), registry.as_str(), None),
         [command, source, registry, id] if command == "locate" =>
             (command.as_str(), source.as_str(), registry.as_str(), Some(id.as_str())),
+        [command, source, registry, destination] if command == "sync" =>
+            (command.as_str(), source.as_str(), registry.as_str(), Some(destination.as_str())),
         _ => return Err(
             "usage: atto_telemetry_ids check <source.atto> <registry.json> | \
-             locate <source.atto> <registry.json> <rid_...>".into()),
+             locate <source.atto> <registry.json> <rid_...> | \
+             sync <source.atto> <registry.json> <new-registry.json>".into()),
     };
     let source_path = Path::new(source_path);
     let registry_path = Path::new(registry_path);
@@ -99,6 +160,12 @@ fn run(args: &[String]) -> Result<String, String> {
     let verified = match (operation, query) {
         ("check", None) => check_source_ids(&source, &unit, &registry)?,
         ("locate", Some(id)) => locate_source_routine(&source, &unit, &registry, id)?,
+        ("sync", Some(destination)) => {
+            let manifest = sync_source_ids(
+                &source, &unit, &registry, None, new_os_routine_id)?;
+            write_proposal(Path::new(destination), source_path, registry_path, &manifest)?;
+            return Ok(format!("proposed_registry_created: {destination}"));
+        }
         _ => return Err("unknown telemetry ID operation".into()),
     };
     serde_json::to_string_pretty(&verified).map_err(|e| e.to_string())
