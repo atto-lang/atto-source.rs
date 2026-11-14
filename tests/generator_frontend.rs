@@ -1,5 +1,5 @@
 //! Generator syntax admission and fail-closed Wasm boundary.
-//! These tests prove parsed AST identity, not guest generator execution.
+//! These tests check AST identity, diagnostics, and restricted guest generator admission.
 //! Do not turn the playground preview runnable until continuation lowering lands.
 use atto_compiler::{ast::{ExprKind, Stmt, Type}, lexer::{lex, Tok}, parser::Parser};
 
@@ -90,10 +90,11 @@ fn malformed_or_unsupported_generator_types_reject_without_a_guest_artifact() {
     ] {
         assert!(atto_compiler::compile(src).is_err(), "{src}");
     }
-    // Delegation still requires typed child continuation ownership and must
-    // fail closed. Pure, finite int generators now have real guest Wasm.
-    let err = atto_compiler::compile(SAMPLE).expect_err("yield* is not executable yet");
-    assert_eq!(err.code, "E_UNSUPPORTED");
+    // Parameterized live-int counter frames and parametric yield* are now
+    // supported by the restricted native-Wasm generator profile.
+    let executable_original = atto_compiler::compile(SAMPLE)
+        .expect("parameterized count_to and delegated limit must compile to guest Wasm");
+    assert!(executable_original.starts_with(b"\0asm\x01\0\0\0"));
     let executable = atto_compiler::compile(
         "fnc *gen foo(): Generator<int> { yield 1; } pub fnc main(): int { return 0; }"
     ).expect("finite int generator must compile to actual Wasm");

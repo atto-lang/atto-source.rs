@@ -23,7 +23,7 @@
 //! randomness, so identical input yields byte-identical modules on every host.
 
 use crate::ast::{BinOp, Type};
-use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenStep, TProgram, TStmt, TE};
+use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
 
@@ -1021,9 +1021,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             active_iterators: Vec::new(),
         };
         if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
-            // Creator is lazy: allocate a 32-byte checked continuation frame
+            // Creator is lazy: allocate a 56-byte checked continuation frame
             // and return its generation-fenced handle. No body runs here.
             e.i32c(gen_id as i32);
+            if f.params.len() == 1 { e.get(0); }
+            else { e.i64c(0); }
             e.call(layout.func(layout.gen_first_func));
             e.op(0x0F); // return the generation-fenced handle; never hit unreachable
         } else {

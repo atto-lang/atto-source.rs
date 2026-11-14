@@ -4,7 +4,7 @@
 use super::*;
 
 /// Four guest functions after source callables: new, checked_ptr, next, close.
-/// A frame is 32 bytes and always lives inside the instance-owned arena.
+/// A frame is 56 bytes and always lives inside the instance-owned arena.
 /// All loads from a handle go through the generation/bounds validator.
 pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     assert!(p.heap && !p.generators.is_empty());
@@ -20,8 +20,8 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         active_iterators: Vec::new(),
     };
 
-    // new(type_id: i32) -> i64 generation-fenced handle.
-    // Local 1=frame pointer, local 2=generation.
+    // new(type_id: i32, arg: i64) -> i64 generation-fenced handle.
+    // Local 2=frame pointer, local 3=generation.
     let mut e = make(&[Type::Bool, Type::Bool]);
     e.global_get(free);
     e.op(0x45); // free list empty
@@ -34,50 +34,61 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     e.i32c(-8);
     e.op(0x71);
     e.global_set(1);
-    e.i32c(40);
+    e.i32c(56);
     e.call(l.helper(H_ALLOC));
-    e.set(1);
-    e.i32c(1);
     e.set(2);
-    e.op(0x05); // reuse a CLOSED 32-byte frame
+    e.i32c(1);
+    e.set(3);
+    e.op(0x05); // reuse a CLOSED 56-byte frame
     e.global_get(free);
-    e.set(1);
-    e.get(1);
-    e.load_i32(24);
-    e.global_set(free);
-    e.get(1);
-    e.load_i32(12);
     e.set(2);
     e.get(2);
+    e.load_i32(24);
+    e.global_set(free);
+    e.get(2);
+    e.load_i32(12);
+    e.set(3);
+    e.get(3);
     e.i32c(-1);
     e.op(0x46);
     e.open(0x04, 0x40, Frame::Other);
     e.invalid_gen(); // generation wrap/ABA prohibited
     e.close();
-    e.get(2);
+    e.get(3);
     e.i32c(1);
     e.op(0x6A);
-    e.set(2);
+    e.set(3);
     e.close();
-    e.get(1); e.get(0); e.store_i32(0); // generator type
-    e.get(1); e.i32c(0); e.store_i32(4); // PC = 0
-    e.get(1); e.i32c(0); e.store_i32(8); // CREATED
-    e.get(1); e.get(2); e.store_i32(12); // generation
-    e.get(1); e.i64c(0); e.store_i64(16); // last value
-    e.get(1); e.i32c(0); e.store_i32(24); // free link
-    e.get(1); e.i64c(0); e.store_i64(32); // delegated child handle
-    e.get(2); e.op(0xAD); // i64.extend_i32_u generation
+    e.get(2); e.get(0); e.store_i32(0); // generator type
+    e.get(2); e.i32c(0); e.store_i32(4); // PC = 0
+    e.get(2); e.i32c(0); e.store_i32(8); // CREATED
+    e.get(2); e.get(3); e.store_i32(12); // generation
+    e.get(2); e.i64c(0); e.store_i64(16); // last value
+    e.get(2); e.i32c(0); e.store_i32(24); // free link
+    e.get(2); e.get(1); e.store_i64(32); // immutable generator parameter
+    e.get(2); e.i64c(0); e.store_i64(40); // persistent counter local
+    e.get(2); e.i64c(0); e.store_i64(48); // delegated child handle
+    for (gen_type, gen) in p.generators.iter().enumerate() {
+        if let Some(TGenStep::CountTo { start }) = gen.steps.iter()
+            .find(|step| matches!(step, TGenStep::CountTo { .. })) {
+            e.get(0); e.i32c(gen_type as i32); e.op(0x46);
+            e.open(0x04, 0x40, Frame::Other);
+            e.get(2); e.i64c(*start); e.store_i64(40);
+            e.close();
+        }
+    }
+    e.get(3); e.op(0xAD); // i64.extend_i32_u generation
     e.i64c(32); e.op(0x86); // shift left 32
-    e.get(1); e.op(0xAD); e.op(0x84); // combine arena offset
+    e.get(2); e.op(0xAD); e.op(0x84); // combine arena offset
     e.op(0x0B);
-    out.push((Sig(vec![I32], vec![I64]), e.code));
+    out.push((Sig(vec![I32, I64], vec![I64]), e.code));
 
     // checked_ptr(handle: i64) -> i32.
     let mut e = make(&[Type::Bool, Type::Bool]);
     e.get(0); e.op(0xA7); e.set(1); // i32.wrap_i64
     e.get(1); e.i32c(8); e.op(0x49); // ptr < 8
     e.open(0x04, 0x40, Frame::Other); e.invalid_gen(); e.close();
-    e.get(1); e.i32c((HEAP_PAGES * 65536 - 40) as i32);
+    e.get(1); e.i32c((HEAP_PAGES * 65536 - 56) as i32);
     e.op(0x4B); // ptr > last complete frame start
     e.open(0x04, 0x40, Frame::Other); e.invalid_gen(); e.close();
     e.get(1); e.i32c(7); e.op(0x71); // alignment
@@ -131,18 +142,25 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
                     e.get(1); e.i32c(2); e.store_i32(8); // SUSPENDED
                     e.i32c(1); e.op(0x0F);
                 }
-                TGenStep::Delegate(function) => {
+                TGenStep::Delegate { function, arg } => {
                     let child_type = p.generators.iter().position(|g|
                         g.function == *function).expect("typed child generator type");
                     // Create child only when first pulled through delegation.
-                    e.get(1); e.load_i64(32); e.op(0x50); // i64.eqz
+                    e.get(1); e.load_i64(48); e.op(0x50); // i64.eqz
                     e.open(0x04, 0x40, Frame::Other);
                     e.get(1);
                     e.i32c(child_type as i32);
+                    match arg {
+                        TGenArg::None => e.i64c(0),
+                        TGenArg::Literal(n) => e.i64c(*n),
+                        TGenArg::Parameter => {
+                            e.get(1); e.load_i64(32);
+                        }
+                    }
                     e.call(first); // lazy child frame creation
-                    e.store_i64(32);
+                    e.store_i64(48);
                     e.close();
-                    e.get(1); e.load_i64(32); e.set(4);
+                    e.get(1); e.load_i64(48); e.set(4);
                     e.get(4); e.call(first + 2); e.set(5); // child next()
                     e.get(5);
                     e.open(0x04, 0x40, Frame::Other);
@@ -157,7 +175,35 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
                     // Child DONE: close exactly once, clear its handle, then
                     // advance the parent PC without consuming an outer pull.
                     e.get(4); e.call(first + 3);
-                    e.get(1); e.i64c(0); e.store_i64(32);
+                    e.get(1); e.i64c(0); e.store_i64(48);
+                    e.get(1); e.i32c(pc as i32 + 1); e.store_i32(4);
+                    e.br_to(Frame::Top);
+                }
+                TGenStep::CountTo { .. } => {
+                    // Persistent counter in frame local[0], immutable limit in
+                    // parameter[0]. Preserve value between next() calls.
+                    e.get(1); e.load_i64(40);
+                    e.get(1); e.load_i64(32);
+                    e.op(0x57); // i64.le_s
+                    e.open(0x04, 0x40, Frame::Other);
+                    e.get(1); e.get(1); e.load_i64(40);
+                    e.store_i64(16);
+                    // Avoid incrementing past i64::MAX at the final element.
+                    e.get(1); e.load_i64(40);
+                    e.get(1); e.load_i64(32);
+                    e.op(0x51); // i64.eq
+                    e.open(0x04, 0x40, Frame::Other);
+                    e.get(1); e.i32c(pc as i32 + 1); e.store_i32(4);
+                    e.op(0x05);
+                    e.get(1);
+                    e.get(1); e.load_i64(40);
+                    e.i64c(1); e.op(0x7C); // safe: counter < limit
+                    e.store_i64(40);
+                    e.close();
+                    e.get(1); e.i32c(2); e.store_i32(8);
+                    e.i32c(1); e.op(0x0F);
+                    e.close();
+                    // Zero-element range (start > limit).
                     e.get(1); e.i32c(pc as i32 + 1); e.store_i32(4);
                     e.br_to(Frame::Top);
                 }
@@ -197,11 +243,11 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     e.close();
     // Closing an outer frame must close its active delegated child first.
     // Acyclic compile-time delegation keeps recursive close depth bounded.
-    e.get(1); e.load_i64(32); e.op(0x50); // no child?
+    e.get(1); e.load_i64(48); e.op(0x50); // no child?
     e.open(0x04, 0x40, Frame::Other);
     e.op(0x05);
-    e.get(1); e.load_i64(32); e.call(first + 3);
-    e.get(1); e.i64c(0); e.store_i64(32);
+    e.get(1); e.load_i64(48); e.call(first + 3);
+    e.get(1); e.i64c(0); e.store_i64(48);
     e.close();
     e.get(1); e.i32c(5); e.store_i32(8);
     e.get(1); e.global_get(free); e.store_i32(24);
