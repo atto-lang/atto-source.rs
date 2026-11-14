@@ -203,6 +203,55 @@ mod tests {
         assert!(verify_routines(&checked_module(), "src/app.atto", &bad).is_err());
     }
     #[test]
+    fn rejects_duplicate_json_keys_and_unknown_fields() {
+        // serde_json::Value alone would silently keep the last value of a
+        // duplicated field; the typed schema must reject this ambiguity.
+        let duplicate_root = REGISTRY.replacen(
+            r#""schema":"atto.telemetry.source-ids.v1""#,
+            r#""schema":"atto.telemetry.source-ids.v1","schema":"atto.telemetry.source-ids.v1""#,
+            1,
+        );
+        assert!(verify_routines(&checked_module(), "src/app.atto", &duplicate_root).is_err());
+        let duplicated_id = REGISTRY.replacen(
+            r#""id":"rid_11111111111111111111111111111111""#,
+            r#""id":"rid_11111111111111111111111111111111","id":"rid_11111111111111111111111111111111""#,
+            1,
+        );
+        assert!(verify_routines(&checked_module(), "src/app.atto", &duplicated_id).is_err());
+        let unknown = REGISTRY.replacen(
+            r#""symbol":"main():int""#,
+            r#""symbol":"main():int","instrumented":true"#,
+            1,
+        );
+        assert!(verify_routines(&checked_module(), "src/app.atto", &unknown).is_err());
+    }
+
+    #[test]
+    fn rejects_cross_source_site_provenance_and_duplicate_site_ids() {
+        // A foreign-source site may be listed in the same manifest but must
+        // reference a routine declared in that SAME source, not this function.
+        let foreign = REGISTRY.replace(
+            r#""sites":[]"#,
+            r#""sites":[{"id":"sid_33333333333333333333333333333333",
+               "routine_id":"rid_11111111111111111111111111111111",
+               "source":"foreign/other.atto"}]"#,
+        );
+        assert!(verify_routines(&checked_module(), "src/app.atto", &foreign)
+            .unwrap_err().contains("another source unit"));
+        let dup = REGISTRY.replace(
+            r#""sites":[]"#,
+            r#""sites":[{"id":"sid_33333333333333333333333333333333",
+               "routine_id":"rid_11111111111111111111111111111111",
+               "source":"src/app.atto"},
+               {"id":"sid_33333333333333333333333333333333",
+               "routine_id":"rid_11111111111111111111111111111111",
+               "source":"src/app.atto"}]"#,
+        );
+        assert!(verify_routines(&checked_module(), "src/app.atto", &dup)
+            .unwrap_err().contains("duplicated"));
+    }
+
+    #[test]
     fn does_not_accept_unimplemented_guest_logging_syntax() {
         let unsupported = "pub fnc main():int{log.info(\"hi\");return 42;}";
         assert!(frontend::parse(unsupported).is_err());
