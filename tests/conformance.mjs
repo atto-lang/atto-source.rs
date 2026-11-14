@@ -236,7 +236,9 @@ for (const f of await fixtures('fail')) {
       assert.equal(nativeBytes(f.path), null, 'native host also rejects');
       nativeChecked++;
     }
-    if (java) {
+    // Target-only syntax diagnostics are not a Java parity assertion.
+    // The Rust/Wasm rejection and native-host checks still run above.
+    if (java && header(f.source, 'java')[0] !== 'target-only') {
       const claim = header(f.source, 'java')[0];
       const j = runJava(f.path);
       if (claim === 'rejects') assert.ok(j.rejected, `Java reference accepted it (exit ${j.status})`);
