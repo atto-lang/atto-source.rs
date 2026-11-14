@@ -246,3 +246,39 @@ fn lexical_tokens_prevent_fake_state_reads_from_comments_or_strings() {
             self.handle_state(critical-write |s| -> {s.count = 1;});
         }");
 }
+
+
+#[test]
+fn critical_state_never_escapes_through_val_or_let_mut_aliases() {
+    for binding in ["val", "val mut", "let", "let mut", "const", "const mut"] {
+        let source = format!(
+            "declare actor A; mtd (mut self: A) inspect(): void {{
+                self.handle_state(critical-read |s| -> {{ {binding} copy = s.count; }});
+            }}"
+        );
+        reject(&source, "E_BORROW");
+    }
+    reject("declare actor A; mtd (mut self: A) inspect(): void {
+        self.handle_state(critical-read |s| -> { val mut copy = s; });
+    }", "E_ESCAPE");
+}
+
+#[test]
+fn critical_read_rejects_compound_and_indexed_mutations() {
+    for write in ["s.count -= 1;", "s.count *= 2;", "s.count /= 2;"] {
+        let source = format!(
+            "declare actor A; mtd (mut self: A) inspect(): void {{
+                self.handle_state(critical-read |s| -> {{ {write} }});
+            }}"
+        );
+        reject(&source, "E_READONLY");
+    }
+    for kind in ["critical-read", "critical-write"] {
+        let source = format!(
+            "declare actor A; mtd (mut self: A) inspect(): void {{
+                self.handle_state({kind} |s| -> {{ s.items[0] = 5; }});
+            }}"
+        );
+        reject(&source, "E_UNSUPPORTED");
+    }
+}
