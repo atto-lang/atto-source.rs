@@ -22,6 +22,21 @@ receivers, escape of a bare state callback binder, suspension inside a critical
 callback, and direct synchronous method calls on obvious local spawn bindings.
 Unknown state field methods fail closed rather than being guessed pure.
 
+## Typed receiver signature IR (not executable)
+
+The signature layer in src/target_typed.rs now resolves all nominal actor
+declarations before typing the receiver parameter and return annotations.
+Known scalar types and ActorRef<Actor> are resolved. Unknown names, void
+parameters and bare actor values fail closed. ActorRef is a capability,
+not permission to synchronously invoke receiver methods. The IR preserves
+namespace, actor index, method name, arity, visibility and mutable receiver
+semantics. A forward declaration alone is never spawnable (E_UNLINKED).
+
+This signature graph is not the executable compiler AST and does not
+typecheck method bodies, link definitions, or prove effect/borrow safety.
+Compile constructs it before returning E_UNSUPPORTED; no guest actor Wasm
+is emitted for these declarations.
+
 This is NOT a full typed borrow checker: opaque field types, alias analysis,
 effect inference, actor body linkage, cross-file symbols and actor runtime dispatch
 remain unimplemented. Positive syntax checks do NOT generate guest Wasm; codegen
@@ -325,8 +340,9 @@ The fixture corpus is in `tests/fixtures/`:
 
 ## Routine nonrecursion admission (Rust/Wasm frontend)
 
-A `routine` remains a direct-call-only declaration, distinct from a
-first-class `fnc`. The Rust/Wasm checker now rejects direct and indirect
+A `routine` remains a direct-call-only declaration. The browser subset
+currently rejects both ordinary functions and routines as captured values;
+this gate provides a dedicated diagnostic for the latter. The Rust/Wasm checker now rejects direct and indirect
 call cycles containing a `routine` with `E_ROUTINE_RECURSION`. This
 runs against resolved typed calls (including methods and nested call
 expressions) before guest Wasm emission. Ordinary recursive `fnc`

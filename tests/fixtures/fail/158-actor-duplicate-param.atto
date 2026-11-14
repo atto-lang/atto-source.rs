@@ -1,0 +1,3 @@
+// expect-error: E_DUPLICATE
+declare actor Worker;
+mtd (Worker self) run(int a, bool a): void {}

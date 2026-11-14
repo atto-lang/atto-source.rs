@@ -11,8 +11,8 @@
 //! * `int / int` is rejected: its result type is undecided (spec S-25; Java
 //!   yields `float`, LLVM rejects).
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
