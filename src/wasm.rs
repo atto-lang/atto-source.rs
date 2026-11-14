@@ -1272,12 +1272,24 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         section(&mut out, 0, m);
     }
     if !p.symbols.is_empty() {
-        // Canonically sorted manifest; guest Symbol IDs are 1-based ordinal
-        // indices. No runtime symbol allocation in the guest or actor heap.
+        // Canonically sorted public manifest. Guest IDs are positive
+        // one-based ordinals, stable even as private symbols are added.
         let mut a = Vec::new();
         name(&mut a, "atto.symbols");
         uleb(&mut a, p.symbols.len() as u64);
         for symbol in &p.symbols {
+            name(&mut a, symbol);
+        }
+        section(&mut out, 0, a);
+    }
+    if !p.private_symbols.is_empty() {
+        // Isolate-local identities are negative one-based ordinals; the host
+        // binds their meaning to the current actor/supervisor instance.
+        // Never put them in atto.symbols, which is public/transportable.
+        let mut a = Vec::new();
+        name(&mut a, "atto.private_symbols");
+        uleb(&mut a, p.private_symbols.len() as u64);
+        for symbol in &p.private_symbols {
             name(&mut a, symbol);
         }
         section(&mut out, 0, a);

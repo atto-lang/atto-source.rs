@@ -33,7 +33,72 @@ fn never_conflate_symbol_string_or_integer() {
 
 #[test]
 fn private_and_undeclared_symbols_fail_closed() {
-    fail("define symbol #secret; pub fnc main(): int { return 0; }", "E_UNSUPPORTED");
+    fail("pub fnc main(): int { if #secret eq #secret then return 1; fi return 0; }", "E_SYMBOL_UNBOUND");
+    fail("define symbol #secret; define pub symbol #secret; pub fnc main(): int { return 0; }", "E_DUPLICATE");
     fail("define pub symbol #ready; define pub symbol #ready; pub fnc main(): int { return 0; }", "E_DUPLICATE");
     fail(&format!("{HEADER}pub fnc main(): int {{ val worker = spawn Worker(); worker.send(1); return 0; }}\n        define actor Worker as receive(ActorMail<Symbol> mail): void {{ return; }} end"), "E_TYPE");
+}
+
+#[test]
+fn isolate_private_symbols_are_typed_and_use_negative_ordinals() {
+    let code = "define symbol #secret; define pub symbol #ready;
+        pub fnc main(): int {
+            const Symbol local_sym = #secret;
+            const Symbol public_sym = #ready;
+            if local_sym eq public_sym then return 0; fi
+            if local_sym eq #secret then return 42; fi
+            return 0;
+        }";
+    let out = pass(code);
+    assert_eq!(out, pass(code), "private identities have deterministic AOT ordinals");
+    assert!(out.windows(b"atto.private_symbols".len())
+        .any(|x| x == b"atto.private_symbols"));
+    assert!(out.windows(b"atto.symbols".len()).any(|x| x == b"atto.symbols"));
+}
+
+#[test]
+fn private_symbol_cannot_be_passed_directly_to_actor_mail() {
+    fail("define symbol #secret;
+        define actor W as
+          receive(ActorMail<Symbol> mail): void { return; }
+        end
+        pub fnc main(): int {
+          val w = spawn W();
+          w.send(#secret);
+          return 0;
+        }", "E_SYMBOL_PRIVATE");
+}
+
+#[test]
+fn private_symbols_can_be_used_in_actor_local_logic() {
+    pass("define symbol #secret;
+        define actor W as
+          receive(ActorMail<int> mail): void {
+            if #secret eq #secret then stdio.println(mail.value); fi
+            return;
+          }
+        end
+        pub fnc main(): int {
+          val w = spawn W();
+          w.send(42);
+          return 0;
+        }");
+}
+
+#[test]
+fn public_ids_are_unaffected_by_private_declaration_order() {
+    let a = pass("define pub symbol #ready; pub fnc main(): int { return 42; }");
+    let b = pass("define symbol #secret; define pub symbol #ready;
+        pub fnc main(): int { return 42; }");
+    assert!(b.len() >= a.len());
+    let program = |src: &str| {
+        let toks = atto_compiler::lexer::lex(src).unwrap();
+        let parsed = atto_compiler::parser::Parser::new(toks).parse_program().unwrap();
+        atto_compiler::check::check(&parsed).unwrap()
+    };
+    let p1 = program("define pub symbol #ready; pub fnc main(): int { return 42; }");
+    let p2 = program("define symbol #secret; define pub symbol #ready;
+        pub fnc main(): int { return 42; }");
+    assert_eq!(p1.symbols, p2.symbols);
+    assert_eq!(p2.private_symbols, vec!["#secret"]);
 }

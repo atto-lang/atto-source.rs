@@ -289,6 +289,8 @@ pub struct TProgram {
     pub actors: Vec<TActor>,
     /// Sorted exported Symbol spellings: guest handle ID = index + 1.
     pub symbols: Vec<String>,
+    /// Sorted isolate-local Symbol spellings: guest handle ID = -(index + 1).
+    pub private_symbols: Vec<String>,
     /// String values exist: the module carries memory and the string helpers.
     pub strings: bool,
     /// Emit one module-private Wasm EH tag only when ordinary throw/trap exists.
@@ -712,21 +714,30 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut declarations = BTreeMap::new();
     let mut symbol_bytes = 0usize;
     for d in &p.symbols {
-        if !d.public {
-            return Err(Diagnostic::new(d.pos, "E_UNSUPPORTED",
-                "private symbols require isolate-local lowering; this guest profile admits only 'define pub symbol'"));
-        }
         let bytes = d.name.len();
         if bytes > 4096 || bytes > MAX_GLOBAL_SYMBOL_BYTES.saturating_sub(symbol_bytes) {
             return Err(Diagnostic::new(d.pos, "E_SYMBOL_LIMIT", "static symbol spelling budget exceeded"));
         }
-        if declarations.insert(d.name.clone(), d.pos).is_some() {
+        // One spelling in one module cannot be both private and public.
+        if declarations.insert(d.name.clone(), (d.pos, d.public)).is_some() {
             return Err(Diagnostic::new(d.pos, "E_DUPLICATE", format!("duplicate symbol declaration {}", d.name)));
         }
         symbol_bytes += bytes;
     }
-    let symbols: BTreeMap<String, i64> = declarations.keys().enumerate()
+    // Two disjoint, deterministically sorted ordinal spaces: public IDs are
+    // positive, private IDs negative. The host binds private ordinals to the
+    // current isolate. Adding a private name cannot renumber exports.
+    let public_symbols: Vec<String> = declarations.iter()
+        .filter(|(_, (_, public))| *public)
+        .map(|(name, _)| name.clone()).collect();
+    let private_symbols: Vec<String> = declarations.iter()
+        .filter(|(_, (_, public))| !*public)
+        .map(|(name, _)| name.clone()).collect();
+    let mut symbols: BTreeMap<String, i64> = public_symbols.iter().enumerate()
         .map(|(i, name)| (name.clone(), (i + 1) as i64)).collect();
+    for (i, name) in private_symbols.iter().enumerate() {
+        symbols.insert(name.clone(), -((i + 1) as i64));
+    }
     // ---- one namespace for functions, classes, enums and actors
     let mut seen: BTreeMap<&str, Pos> = BTreeMap::new();
     let decl_names = p
@@ -1234,7 +1245,8 @@ pub fn check(p: &Program) -> R<TProgram> {
         generators,
         globals,
         actors: tactors,
-        symbols: g.symbols.keys().cloned().collect(),
+        symbols: public_symbols,
+        private_symbols,
         strings,
         guest_eh,
     })
@@ -2564,7 +2576,7 @@ impl<'a> FnCx<'a> {
             ExprKind::Symbol(name) => {
                 let id = *self.g.symbols.get(name).ok_or_else(|| Diagnostic::new(
                     pos, "E_SYMBOL_UNBOUND",
-                    format!("Symbol {name} is not declared 'define pub symbol {name};' in this module")))?;
+                    format!("Symbol {name} is not declared 'define [pub] symbol {name};' in this module")))?;
                 TE { e: TExpr::SymbolVal(id), ty: Type::Symbol }
             }
             ExprKind::Str(text) => {
@@ -3015,6 +3027,13 @@ impl<'a> FnCx<'a> {
                             self.tn(payload)
                         ),
                     ));
+                }
+                // Private Symbol values are isolate-local. A direct literal
+                // is provably untransportable at compile time; derived values
+                // remain subject to the host mailbox admission gate.
+                if payload == Type::Symbol && matches!(&v.e, TExpr::SymbolVal(id) if *id < 0) {
+                    return Err(Diagnostic::new(pos, "E_SYMBOL_PRIVATE",
+                        "private Symbol cannot be sent to another actor"));
                 }
                 self.imports.push(Import::ActorSend);
                 Ok(TE {
