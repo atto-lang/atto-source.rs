@@ -1391,7 +1391,10 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") && !braced {
+        // Only keyword-delimited statement if consumes fi. For a braced if,
+        // leave the next fi untouched: it may close a *surrounding* keyword
+        // if. At top level a stray fi will fail as an invalid statement.
+        if !braced && !self.eat_word("fi") {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
