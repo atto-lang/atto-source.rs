@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+pub fnc main(): int {
+  const int x = if true then 42 else false fi;
+  return x;
+}

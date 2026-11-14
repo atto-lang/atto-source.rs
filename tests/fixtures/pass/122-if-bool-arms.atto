@@ -1,0 +1,5 @@
+// expect-exit: 42
+pub fnc main(): int {
+  const bool ok = if false then false else true fi;
+  return ok ? 42 : 0;
+}

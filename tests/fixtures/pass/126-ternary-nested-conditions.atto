@@ -1,0 +1,4 @@
+// expect-exit: 42
+pub fnc main(): int {
+  return false ? true ? { 1 } : { 2 } : { 42 };
+}

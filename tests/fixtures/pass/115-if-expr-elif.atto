@@ -1,0 +1,12 @@
+// expect-exit: 42
+pub fnc main(): int {
+  int x = 2;
+  const int v = if x eq 1 then
+    1
+  elif x eq 2 then
+    42
+  else
+    3
+  fi;
+  return v;
+}

@@ -1,0 +1,5 @@
+// expect-exit: 42
+pub fnc main(): int {
+  const int v = (if true then 7 else 9 fi) * 6;
+  return v;
+}

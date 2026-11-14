@@ -1,0 +1,9 @@
+// expect-exit: 42
+pub fnc main(): int {
+  const int v = if true then
+    { const int x = 41; return x + 1 }
+  else
+    { 3 }
+  fi;
+  return v;
+}

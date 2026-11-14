@@ -1,0 +1,8 @@
+// expect-exit: 42
+pub fnc main(): int {
+  return if true then
+    if false then 1 else 42 fi
+  else
+    3
+  fi;
+}

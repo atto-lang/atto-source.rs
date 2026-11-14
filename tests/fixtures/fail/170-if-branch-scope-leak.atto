@@ -1,0 +1,5 @@
+// expect-error: E_UNBOUND
+pub fnc main(): int {
+  const int x = if true then { const int hidden = 42; hidden } else 1 fi;
+  return hidden;
+}

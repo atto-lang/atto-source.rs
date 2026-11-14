@@ -1,0 +1,4 @@
+// expect-error: E_UNBOUND
+pub fnc main(): int {
+  return true ? { 42 } : { missing_name };
+}

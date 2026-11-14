@@ -1,0 +1,9 @@
+// expect-exit: 4
+pub fnc main(): int {
+  const int v = if false then
+    5
+  else
+    4
+  fi;
+  return v;
+}
