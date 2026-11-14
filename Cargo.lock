@@ -371,7 +371,9 @@ name = "oreslang-source-rs"
 version = "0.1.0"
 dependencies = [
  "cranelift",
+ "libc",
  "logos",
+ "serde",
  "serde_json",
 ]
 
