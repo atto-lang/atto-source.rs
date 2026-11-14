@@ -122,5 +122,16 @@ rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(
 rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { val leaked = &s.count; }); }','E_BORROW');
 rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { s.count = -9223372036854775808; }); }','E_UNSUPPORTED');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (56)');
+
+// New typed receiver return facts must reject nominal/signature mismatches
+// in the *actual* browser compiler ABI before publishing any guest Wasm.
+rejects('declare actor A; mtd (A self) wrong(): int { return true; }','E_TYPE');
+rejects('declare actor A; mtd (A self) wrong(): bool { return 3; }','E_TYPE');
+rejects('declare actor A; mtd (A self) wrong(): void { return 3; }','E_TYPE');
+rejects('declare actor A; mtd (A self) wrong(bool flag): int { return flag; }','E_TYPE');
+rejects('declare actor A; mtd (A self) good(): bool { return true; } mtd (A self) wrong(): int {return self.good();}','E_TYPE');
+rejects('declare actor A; mtd (A self) bad(): int { return 9223372036854775808; }','E_INTEGER_RANGE');
+rejects('declare actor A; mtd (A self) valid(): int {return 10;}','E_UNSUPPORTED');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (63)');
 
