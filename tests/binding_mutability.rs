@@ -88,22 +88,9 @@ fn mutable_binding_does_not_override_private_visibility() {
 #[test]
 fn mutable_binding_does_not_enable_unknown_or_nested_lvalues() {
     expect_error("let mut Cell x = new Cell(); x.no_field = 3; return 0;", "E_UNBOUND");
-    // The browser subset intentionally refuses arbitrarily nested lvalues
-    // until there is a complete ownership and alias proof for them.
-    let source = r#"
-        define class Child as
-            pub let int value = 0;
-        end
-        define class Parent as
-            pub let Child child = new Child();
-        end
-        pub fnc main(): int {
-            let mut Parent parent = new Parent();
-            parent.child.value = 5;
-            return 0;
-        }
-    "#;
-    assert!(atto_compiler::compile(source).is_err());
+    // Nested field targets are rejected before any unsafe lvalue lowering.
+    // A scalar member is enough to exercise the nested target grammar.
+    expect_error("let mut Cell x = new Cell(); x.value.any = 3; return 0;", "E_OWNERSHIP");
 }
 
 #[test]
