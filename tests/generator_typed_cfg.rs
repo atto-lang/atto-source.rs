@@ -119,3 +119,54 @@ fn fixed_frame_slot_limit_blocks_oversized_live_local_sets() {
     assert_eq!(err.code, "E_UNSUPPORTED");
     assert!(err.message.contains("16 live integer locals"), "{err}");
 }
+
+
+#[test]
+fn loop_carried_values_remain_live_at_suspension() {
+    let typed = program(RUNNING_TOTALS);
+    let generator = &typed.generators[0];
+    assert_eq!(generator.locals, 2);
+    assert_eq!(generator.live_after.len(), generator.steps.len());
+    let suspend = generator.steps.iter().position(|s|
+        matches!(s, TGenStep::Yield(_))).expect("one yield");
+    assert_eq!(generator.live_after[suspend], 0b11,
+        "both count and total must survive the while-loop backedge");
+}
+
+#[test]
+fn dead_scalar_slots_are_not_kept_live_after_yield() {
+    let typed = program(r#"
+        fnc *gen selective(): Generator<int> {
+          let first = 7;
+          let second = 11;
+          yield first;
+          yield second;
+        }
+        pub fnc main(): int {
+          let sum = 0;
+          for n in selective() do sum += n; done
+          return sum;
+        }
+    "#);
+    let gen = &typed.generators[0];
+    assert_eq!(gen.locals, 2);
+    let yields: Vec<_> = gen.steps.iter().enumerate()
+        .filter(|(_, s)| matches!(s, TGenStep::Yield(_)))
+        .map(|(i, _)| gen.live_after[i]).collect();
+    assert_eq!(yields, vec![0b10, 0],
+        "first value is dead after first yield, second survives until consumed");
+}
+
+#[test]
+fn generator_with_no_frame_locals_has_empty_liveness_masks() {
+    let typed = program(r#"
+        fnc *gen values(): Generator<int> {
+          yield 7;
+          yield 11;
+        }
+        pub fnc main(): int { return 0; }
+    "#);
+    let gen = &typed.generators[0];
+    assert_eq!(gen.locals, 0);
+    assert!(gen.live_after.iter().all(|mask| *mask == 0));
+}
