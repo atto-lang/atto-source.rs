@@ -23,7 +23,7 @@
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
-use crate::ast::{BinOp, Type};
+use crate::ast::{BinOp, ExportKind, ExportVisibility, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
@@ -1197,6 +1197,29 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         uleb(&mut d, p.data.len() as u64);
         d.extend_from_slice(&p.data);
         section(&mut out, 11, d);
+    }
+
+    // Versioned language-level module exports. Do not expose package-private
+    // symbols as raw Wasm exports: package linkage must enforce pub[pkg].
+    // The browser executable ABI (main/actor hooks) is unchanged.
+    if !p.exports.is_empty() {
+        let mut metadata = Vec::new();
+        name(&mut metadata, "atto.exports.v1");
+        uleb(&mut metadata, p.exports.len() as u64);
+        for e in &p.exports {
+            name(&mut metadata, &e.name);
+            metadata.push(match e.kind {
+                ExportKind::Class => 1,
+                ExportKind::Fnc => 2,
+                ExportKind::Actor => 3,
+                ExportKind::Enum => 4,
+            });
+            metadata.push(match e.visibility {
+                ExportVisibility::Public => 1,
+                ExportVisibility::Package => 2,
+            });
+        }
+        section(&mut out, 0, metadata);
     }
 
     // custom "name" section: function names for readable traps and stack traces
