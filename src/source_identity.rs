@@ -95,18 +95,18 @@ where F: FnMut() -> Result<String, String>
         logical_unit(&routine.source)?;
         if routine.symbol.is_empty()
             || !valid_id(&routine.id, "rid_")
-            || !ids.insert(routine.id.as_str())
-            || !keys.insert((routine.source.as_str(), routine.symbol.as_str())) {
+            || !ids.insert(routine.id.clone())
+            || !keys.insert((routine.source.clone(), routine.symbol.clone())) {
             return Err("duplicate, malformed or ambiguous source routine registry entry".into());
         }
-        owner.insert(routine.id.as_str(), routine.source.as_str());
+        owner.insert(routine.id.clone(), routine.source.clone());
     }
     let mut site_ids = HashSet::new();
     for site in &registry.sites {
         logical_unit(&site.source)?;
         if !valid_id(&site.id, "sid_") ||
            !site_ids.insert(site.id.as_str()) ||
-           owner.get(site.routine_id.as_str()) != Some(&site.source.as_str()) {
+           owner.get(&site.routine_id) != Some(&site.source) {
             return Err("duplicate or forged static source site entry".into());
         }
         if site.source == source_unit || old_unit == Some(site.source.as_str()) {
@@ -121,6 +121,7 @@ where F: FnMut() -> Result<String, String>
             return Err("duplicate compiled Rust scalar callable signature".into());
         }
     }
+    if expected.is_empty() { return Err("empty source unit cannot receive routine IDs".into()); }
     if expected.len() > MAX_ROUTINES {
         return Err("compiled routine budget exceeded".into());
     }
@@ -149,7 +150,7 @@ where F: FnMut() -> Result<String, String>
             vec!["int"; fnc.params.len()].join(","));
         if existing.insert(signature.clone()) {
             let id = fresh_routine_id()?;
-            if !valid_id(&id, "rid_") || !ids.insert(id.as_str()) {
+            if !valid_id(&id, "rid_") || !ids.insert(id.clone()) {
                 return Err("fresh routine ID allocator returned invalid, zero or duplicate ID".into());
             }
             registry.routines.push(RoutineEntry {
