@@ -14,3 +14,7 @@ libc = "0.2"
 [[bin]]
 name = "oresc"
 path = "src/main.rs"
+
+[[bin]]
+name = "atto_telemetry_ids"
+path = "src/bin/atto_telemetry_ids.rs"
