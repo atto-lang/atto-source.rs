@@ -97,6 +97,20 @@ try{
   console.log('PASS browser: for-braces loop exits normally');
   assert.equal(await run('pub fnc main(): int { let n = 0; do { n = n + 1; continue; } while (n < 3); return n; }', 'main() -> 3'), 'main() -> 3');
   console.log('PASS browser: post-test continue reaches trailing guard');
+  const recurSum =
+    'pub fnc main(): int { val result: int = loop (val i: int = 0, val sum: int = 0) { ' +
+    'if i >= 10 { break sum; } recur(i + 1, sum + i); }; return result; }';
+  assert.equal(await run(recurSum, 'main() -> 45'), 'main() -> 45');
+  console.log('PASS browser: immutable state-loop/recur produces sum 45 without recursive frames');
+  // The source-free browser host must remain responsive even when a compiled
+  // state loop runs forever. Its Worker is terminated, not the whole tab.
+  // This intentionally exercises a dynamically unbounded recur, so the static
+  // checker must admit a result break in another unreachable branch instead.
+  const infiniteWithBreak =
+    'pub fnc main(): int { return loop (val i: int = 0) { if i < 0 { break i; } recur(i + 1); }; }';
+  assert.equal(await run(infiniteWithBreak, 'E_TIMEOUT'), 'E_TIMEOUT');
+  assert.equal(await run(recurSum, 'main() -> 45'), 'main() -> 45');
+  console.log('PASS browser: unbounded recur contained and a fresh Worker recovers');
   // Real Chromium: compiler-produced Wasm guest tag catches only ordinary
   // Error(message), preserving all successful Result values and fatal traps.
   const callerTrap =
