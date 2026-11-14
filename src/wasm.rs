@@ -354,6 +354,19 @@ impl Emit<'_> {
             }
             TStmt::Break => self.br_to(Frame::Break),
             TStmt::Continue => self.br_to(Frame::Continue),
+            TStmt::Recur(values) => {
+                // Clojure recur semantics: evaluate every next-state value
+                // before changing any current carried binding (safe swap).
+                for (_, tmp, value) in values {
+                    self.expr(value);
+                    self.set(*tmp);
+                }
+                for (slot, tmp, _) in values {
+                    self.get(*tmp);
+                    self.set(*slot);
+                }
+                self.br_to(Frame::Top);
+            },
             TStmt::Block(b) => self.stmts(b),
             TStmt::Unreachable => self.op(0x00),
         }
@@ -419,6 +432,18 @@ impl Emit<'_> {
             TExpr::Local(slot) => {
                 self.op(0x20);
                 uleb(&mut self.code, *slot as u64);
+            }
+            TExpr::StateLoop { init, body, result_slot } => {
+                self.stmts(init);
+                self.open(0x02, 0x40, Frame::Break);
+                self.open(0x03, 0x40, Frame::Top);
+                self.stmts(body);
+                // No implicit state-loop fallthrough is valid. Validation
+                // requires break value / recur / return / throw on all paths.
+                self.op(0x00); // unreachable (defensive trap)
+                self.close(); // loop
+                self.close(); // break target
+                self.get(*result_slot);
             }
             TExpr::Neg(a) => {
                 self.expr(a);
