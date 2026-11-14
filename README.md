@@ -7,13 +7,17 @@ It compiles a **subset** of AttoLang. Everything outside the subset is rejected 
 ## First executable synchronous generator profile (bounded guest Wasm)
 
 The compiler now emits **real guest WebAssembly** for a deliberately narrow
-`fnc *gen name(): Generator<int>` profile: zero parameters, finite
-source-ordered `yield` statements containing **signed i64-compatible
-nonnegative integer literals** and at most **one** `yield* child()` per
-function, optionally followed by bare `return;`. Delegation targets are
-zero-argument finite generators with acyclic, statically checked call graphs.
-Generator creation is lazy: it allocates a 40-byte arena-owned continuation
-frame (including one child-handle slot) and returns a generation-fenced handle; only a consumer pull advances
+`fnc *gen name([int limit]): Generator<int>` profile: zero or one
+immutable `int` parameter, finite source-ordered `yield` statements
+containing nonnegative signed-i64-compatible integer literals, **one**
+strictly checked loop form `for (let i = N; i <= limit; i++) do yield i; done`,
+and at most one `yield* child()` or `yield* child(limit)` per
+function. Delegation targets are statically checked and acyclic; their
+arguments may be a signed-i64-compatible nonnegative literal or their
+parent's immutable parameter. Computed delegate arguments remain gated.
+Generator creation is lazy: it allocates a 56-byte arena-owned continuation
+frame (with i64 parameter, persistent loop local, and one child-handle slot)
+and returns a generation-fenced handle; only a consumer pull advances
 its resume PC and yields one item. The typed `for value in values() do ...
 done` loop owns a **fresh** iterator and automatically calls the guest
 close operation on completion, `break`, and early function `return`.
@@ -34,9 +38,10 @@ interpreter, or extra host imports/exports. Frames reside in the fixed
 generator state/handle access panics with `panic_code=4`; heap exhaustion
 continues to use `panic_code=3`.
 
-**Not yet admitted:** generator parameters, live locals and loops across
-suspension, general expression yields, owned generator variables, more than
-one `yield*` per generator, nested for-in, exception-throwing or otherwise effectful
+**Not yet admitted:** multiple generator parameters, mutable
+captured objects/borrows, arbitrary live locals or arbitrary loop forms,
+general expression yields, owned generator variables, more than one
+`yield*` per generator, nested for-in, exception-throwing or otherwise effectful
 for-in bodies, async suspension, cancellation unwinding, and cross-backend
 generator parity. Unsupported programs fail closed; there is no eager
 substitution. Checked arithmetic traps terminate the guest instance rather
@@ -146,7 +151,7 @@ The compiler does not define any syntax of its own:
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
 | Entry point | zero-argument `main` returning `int` or `void` |
-| Generators (restricted) | Zero-parameter `fnc *gen` with finite int-literal `yield`, one acyclic zero-argument `yield*` per generator, and fresh-handle `for ... in`; lazy Wasm resume, checked frame and recursive child close. Captured locals and parameterized generators still rejected. |
+| Generators (restricted) | Zero-parameter `fnc *gen` with finite int-literal `yield`, one acyclic optional-int-argument `yield*` per generator, and fresh-handle `for ... in`; lazy Wasm resume, checked frame and recursive child close. Arbitrary suspended locals and noncanonical loops are still rejected. |
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut`; the immutable type-first form `int x = 7;` for exactly `int`, `bool`, `string` and `String` (Java `looksLikePrimitiveTypeFirstImmutableBinding`) |
 | Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }`, `match` (below) |
