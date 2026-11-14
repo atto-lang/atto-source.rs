@@ -9,11 +9,11 @@ end
 "#;
 
 fn program(body: &str) -> String {
-    format!("{CLASS}\\npub fnc main(): int {{\\n{body}\\n}}")
+    format!("{CLASS}\npub fnc main(): int {{\n{body}\n}}")
 }
 
 fn expect_ok(source: &str) {
-    atto_compiler::compile(source).unwrap_or_else(|e| panic!("unexpected error: {e}\\n{source}"));
+    atto_compiler::compile(source).unwrap_or_else(|e| panic!("unexpected error: {e}\n{source}"));
 }
 
 fn expect_error(body: &str, code: &str) {
