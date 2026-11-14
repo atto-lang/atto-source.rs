@@ -46,6 +46,8 @@ pub struct TargetHeaders {
     /// Bounded return-expression syntax facts for the typed body IR.
     /// This is not yet a complete control-flow graph.
     pub receiver_returns: Vec<ReceiverReturn>,
+    /// Entire bounded, balanced token bodies for structured CFG preflight.
+    pub receiver_bodies: Vec<ReceiverBodyTokens>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -68,6 +70,15 @@ pub struct ReceiverCall {
     pub caller: usize,
     pub callee: usize,
     pub pos: Pos,
+    /// Balanced argument expression spans; typed lowering checks known types.
+    pub arguments: Vec<Vec<Token>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReceiverBodyTokens {
+    pub receiver: usize,
+    /// Includes the outer braces. Never executable without full IR lowering.
+    pub tokens: Vec<Token>,
 }
 
 /// A concrete state write that must undergo typed RHS checking before any
@@ -372,6 +383,10 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         out.receiver_calls.extend(audit.calls);
         out.state_assignments.extend(audit.assignments);
         out.receiver_returns.extend(audit.returns);
+        out.receiver_bodies.push(ReceiverBodyTokens {
+            receiver: i,
+            tokens: toks[start..end].to_vec(),
+        });
     }
     for (start, end) in function_spans {
         validate_spawned_actor_calls(toks, &out, start, end)?;
@@ -452,6 +467,31 @@ fn close_paren(toks: &[Token], start: usize, limit: usize) -> R<usize> {
 /// Count method-call arguments only after validating nested delimiters.
 /// Receiver bodies are syntax-preflighted rather than fully parsed; malformed
 /// user input must produce a Diagnostic, never underflow a nesting counter.
+/// Capture argument spans only after count_args has validated all nesting.
+fn capture_args(toks: &[Token], open: usize, close: usize) -> Vec<Vec<Token>> {
+    if close == open + 1 { return Vec::new(); }
+    let mut args = Vec::new();
+    let mut stack = Vec::<Tok>::new();
+    let mut start = open + 1;
+    for i in start..close {
+        match &toks[i].tok {
+            Tok::LParen => stack.push(Tok::RParen),
+            Tok::LBracket => stack.push(Tok::RBracket),
+            Tok::LBrace => stack.push(Tok::RBrace),
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                stack.pop();
+            }
+            Tok::Comma if stack.is_empty() => {
+                args.push(toks[start..i].to_vec());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(toks[start..close].to_vec());
+    args
+}
+
 fn count_args(toks: &[Token], open: usize, close: usize) -> R<usize> {
     if close == open + 1 { return Ok(0); }
     let mut expected = Vec::<Tok>::new();
@@ -741,7 +781,10 @@ fn validate_receiver_body(
             let callee = symbols.receivers.iter().position(|m|
                 m.owner == receiver.owner && m.name == member && m.arity == arity)
                 .expect("validated receiver header has a nominal target");
-            audit.calls.push(ReceiverCall { caller: which, callee, pos: toks[i].pos });
+            audit.calls.push(ReceiverCall {
+                caller: which, callee, pos: toks[i].pos,
+                arguments: capture_args(toks, i+3, close),
+            });
             // The call header is valid, but its argument expressions may
             // still contain forbidden direct state access, receiver escapes,
             // or nested method calls. Walk them in the outer scan instead of
