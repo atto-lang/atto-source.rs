@@ -1,4 +1,4 @@
-//! Generator syntax admission and fail-closed Wasm boundary.
+//! Generator syntax admission and fail-closed unsupported-feature boundary.
 //! These tests check AST identity, diagnostics, and restricted guest generator admission.
 //! Do not turn the playground preview runnable until continuation lowering lands.
 use atto_compiler::{ast::{ExprKind, Stmt, Type}, lexer::{lex, Tok}, parser::Parser};

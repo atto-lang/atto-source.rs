@@ -30,7 +30,7 @@ function viaWasmCompiler(source) {
 function viaNativeCompiler(file) {
   const result = spawnSync(attoc, [file], { maxBuffer: 1 << 22 });
   if (result.status !== 0) {
-    return { rejected: true, code: String(result.stderr).match(/\bE_[A-Z_]+\b/)?.[0] };
+    return { rejected: true, code: String(result.stderr).match(/\bE_[A-Z_]+\b/)?.[0], diagnostic: String(result.stderr).slice(0, 600) };
   }
   return { rejected: false, wasm: new Uint8Array(result.stdout) };
 }
@@ -72,12 +72,17 @@ for (const [name, expected, output] of [
   ['136-generator-parameter-bounds.atto', 6n, ''],
   ['137-generator-param-delegate-early-close.atto', 42n, ''],
   ['138-generator-max-int-boundary.atto', 42n, ''],
+  ['139-generator-two-live-locals.atto', 10n, ''],
+  ['140-generator-branches-and-live-locals.atto', 16n, ''],
+  ['141-generator-break-continue-live.atto', 8n, ''],
+  ['142-generator-multi-local-frame-reuse.atto', 42n, ''],
+  ['144-generator-typed-arithmetic-yield.atto', 32n, ''],
 ]) {
   const file = join('tests/fixtures/pass', name);
   const src = readFileSync(file, 'utf8');
   const native = viaNativeCompiler(file);
   const wasmHost = viaWasmCompiler(src);
-  assert.equal(native.rejected, false, name + ': native compiler emitted an error');
+  assert.equal(native.rejected, false, name + ': native compiler emitted an error: ' + (native.diagnostic || ''));
   assert.equal(wasmHost.rejected, false, name + ': wasm-host compiler emitted an error');
   assert.deepEqual(native.wasm, wasmHost.wasm, name + ': native and wasm-host must be byte-identical');
   assert.deepEqual(runGuest(native.wasm), { value: expected, stdout: output });
@@ -93,6 +98,12 @@ for (const [name, code] of [
   ['133-generator-yield-star-scalar-call.atto', 'E_TYPE'],
   ['134-generator-unsupported-loop-body.atto', 'E_UNSUPPORTED'],
   ['135-generator-unsupported-delegate-expression.atto', 'E_UNSUPPORTED'],
+  ['136-generator-local-type-mismatch.atto', 'E_TYPE'],
+  ['137-generator-local-reassignment-immutable.atto', 'E_IMMUTABLE'],
+  ['138-generator-branch-scoped-binding.atto', 'E_UNSUPPORTED'],
+  ['139-generator-duplicate-int-local.atto', 'E_DUPLICATE'],
+  ['140-generator-division-effect.atto', 'E_UNSUPPORTED'],
+  ['141-generator-param-immutable.atto', 'E_IMMUTABLE'],
 ]) {
   const file = join('tests/fixtures/fail', name);
   const src = readFileSync(file, 'utf8');
@@ -103,4 +114,25 @@ for (const [name, code] of [
   assert.equal(native.code, code, name);
   assert.equal(wasmHost.code, code, name);
   console.log('PASS expected reject', name, code);
+}
+
+
+// Noncooperative dispatch and checked arithmetic overflow are distinct,
+// deterministic guest traps. Both must pass compiler-host byte parity.
+for (const [path, expectedPanic] of [
+  ['tests/fixtures/panic/143-generator-dispatch-budget-trap.atto', 5],
+  ['tests/fixtures/panic/145-generator-overflow-at-resumption.atto', 1],
+]) {
+  const source = readFileSync(path, 'utf8');
+  const native = viaNativeCompiler(path);
+  const browser = viaWasmCompiler(source);
+  assert.equal(native.rejected, false, 'panic fixture must compile');
+  assert.equal(browser.rejected, false, 'wasm-host must compile the same fixture');
+  assert.deepEqual(native.wasm, browser.wasm, 'panic fixture compiler byte parity');
+  const module = new WebAssembly.Module(native.wasm);
+  const instance = new WebAssembly.Instance(module, { atto: {} });
+  assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
+  assert.equal(instance.exports.panic_code.value, expectedPanic,
+    'guest panic must preserve the expected checked error category');
+  console.log('PASS expected guest Wasm panic', expectedPanic, path);
 }

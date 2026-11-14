@@ -4,7 +4,8 @@
 //! * export `main: () -> i64` (a void `main` returns 0)
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
 //!   1 = integer overflow; 2 is reserved (division/remainder unsupported);
-//!   3 = object heap exhausted
+//!   3 = object heap exhausted; 4 = invalid generator handle/state;
+//!   5 = generator per-pull dispatch budget exhausted
 //! * export `memory` when strings, classes, or actors exist;
 //!   actor-only modules receive one private 64 KiB page per instance;
 //!   with classes it is a fixed, non-growable [`HEAP_PAGES`]-page memory
@@ -33,6 +34,8 @@ pub const PANIC_OVERFLOW: i32 = 1;
 pub const PANIC_DIV_ZERO: i32 = 2;
 pub const PANIC_HEAP: i32 = 3;
 pub const PANIC_GENERATOR: i32 = 4;
+/// Non-yielding generator exceeded its bounded per-pull dispatch budget.
+pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 /// Fixed memory size, in 64 KiB pages, of a module that allocates objects.
 pub const HEAP_PAGES: u32 = 16;
 

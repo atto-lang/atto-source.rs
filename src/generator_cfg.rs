@@ -1,10 +1,9 @@
 //! Bounded generator control-flow lowering.
 //!
 //! Converts a parsed synchronous generator body into explicit resumable steps.
-//! This is the control-flow preparation for a future typed, owned continuation
-//! frame and native Wasm resume functions. **No runtime interpretation or
-//! guest-Wasm execution is provided here.** The compiler still fails closed
-//! before publishing an artifact for generator source.
+//! This CFG feeds the typed integer-local continuation lowering and native
+//! guest-Wasm resume functions for a strictly admitted subset. Unsupported
+//! expressions, bindings, and effects remain fail-closed.
 //!
 //! Each instruction index is a stable resume PC:
 //! - Yield stores the next PC (pc + 1) and returns one item.
@@ -13,7 +12,7 @@
 //! - All normal exit paths reach Done, where the eventual runtime must close
 //!   any live delegated iterators exactly once.
 //!
-//! The CFG is deliberately explicit so runtime implementation cannot equate
+//! The CFG is deliberately explicit so compiled runtime cannot equate
 //! 'yield*' with eagerly collecting or executing a child generator.
 
 use crate::ast::{Expr, Stmt};

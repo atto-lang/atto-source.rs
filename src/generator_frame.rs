@@ -1,6 +1,6 @@
-//! Generator continuation-frame and handle ABI contract for the eventual
-//! guest-Wasm lowering. This module is pure/host-independent and does NOT
-//! make generators runnable; compiled generator programs still fail closed.
+//! Bounded generator continuation-frame and handle ABI contract. This module
+//! is pure/host-independent; native guest-Wasm new/next/close emission lives in
+//! wasm/generator_runtime.rs and enforces a fixed per-instance frame profile.
 //!
 //! Each generator has its own bounded, 8-byte-aligned frame in its actor/
 //! tenant-owned guest arena. A handle is (nonzero generation, 32-bit arena
@@ -14,12 +14,13 @@
 //!   16 i64 last yielded value
 //!   24 u32 free-list next offset (meaningful only after cleanup)
 //!   28 u32 reserved
-//!   32 ... i64 parameters, i64 locals, u64 delegated generator handles
+//!   32 ... per-generator immutable parameter, legacy local, delegated child
+//!   56 ... up to 16 persistent typed i64 slots (184-byte guest frame total)
 //!
-//! The runtime must check generation + arena ownership on EVERY dereference,
-//! must unwind and close each live delegate exactly once, and must not reuse
-//! a frame until cleanup has finished. This contract does not by itself prove
-//! the future runtime meets those requirements.
+//! The runtime checks generation + arena bounds on handle dereference,
+//! recursively closes live delegates on normal/early close, and increments
+//! generations before recycling frames. These pure layout utilities do not
+//! by themselves prove the runtime's unwinding or isolation properties.
 
 use crate::diag::{Diagnostic, Pos};
 
