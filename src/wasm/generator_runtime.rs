@@ -48,6 +48,12 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     e.op(0x05); // reuse a CLOSED equal-sized generator frame
     e.global_get(free);
     e.set(2);
+    // Only a CLOSED frame may be recycled. An invalid free-list node
+    // must trap rather than acquiring a forged or still-live frame.
+    e.get(2); e.load_i32(8); e.i32c(5); e.op(0x47);
+    e.open(0x04, 0x40, Frame::Other);
+    e.invalid_gen();
+    e.close();
     e.get(2);
     e.load_i32(24);
     e.global_set(free);
@@ -102,6 +108,11 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     e.op(0x4B); // ptr > last complete frame start
     e.open(0x04, 0x40, Frame::Other); e.invalid_gen(); e.close();
     e.get(1); e.i32c(7); e.op(0x71); // alignment
+    e.open(0x04, 0x40, Frame::Other); e.invalid_gen(); e.close();
+    // Address must refer to a *completed* allocation, not simply an
+    // in-bounds location within the fixed guest memory.
+    e.get(1); e.i32c(GENERATOR_FRAME_BYTES); e.op(0x6A);
+    e.global_get(1); e.op(0x4B); // frame end > bump pointer?
     e.open(0x04, 0x40, Frame::Other); e.invalid_gen(); e.close();
     e.get(0); e.i64c(32); e.op(0x88); e.op(0xA7); // generation
     e.set(2);
@@ -161,6 +172,18 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
             match step {
                 TGenStep::Yield(item) => {
                     e.get(1); e.expr(item); e.store_i64(16);
+                    // Once the yielded value is copied out, clear scalar
+                    // locals that no successor can read before redefinition.
+                    // This reduces stale frame data while preserving all
+                    // loop-carried variables across suspension.
+                    if let Some(&live) = gen.live_after.get(pc) {
+                        for local in 0..gen.locals {
+                            if live & (1u16 << local) == 0 {
+                                e.get(1); e.i64c(0);
+                                e.store_i64(56 + local * 8);
+                            }
+                        }
+                    }
                     e.get(1); e.i32c(pc as i32 + 1); e.store_i32(4);
                     e.get(1); e.i32c(2); e.store_i32(8); // SUSPENDED
                     e.i32c(1); e.op(0x0F);
@@ -277,29 +300,46 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
     e.op(0x0B);
     out.push((Sig(vec![I64], vec![I32]), e.code));
 
-    // close(handle: i64) -> (): double close is idempotent until frame reuse.
-    // Reuse bumps the generation before handing out a new live handle.
-    let mut e = make(&[Type::Bool]);
+    // close(handle: i64) -> (): duplicate close is idempotent until frame
+    // reuse; stale handles fail generation checks. A temporary child handle
+    // local lets close detach the child before its recursive cleanup.
+    let mut e = make(&[Type::Bool, Type::GeneratorInt]);
     e.get(0); e.call(first + 1); e.set(1);
     e.get(1); e.load_i32(8); e.i32c(5); e.op(0x46);
     e.open(0x04, 0x40, Frame::Other);
     e.op(0x0F);
     e.close();
-    e.get(1); e.load_i32(8); e.i32c(1); e.op(0x46);
-    e.get(1); e.load_i32(8); e.i32c(4); e.op(0x46);
+    // Allowed transitions are CREATED/SUSPENDED/DONE -> CLOSING -> CLOSED.
+    // RUNNING, CLOSING and corrupted state values must never be recycled.
+    e.get(1); e.load_i32(8); e.i32c(0); e.op(0x46);
+    e.get(1); e.load_i32(8); e.i32c(2); e.op(0x46);
     e.op(0x72);
+    e.get(1); e.load_i32(8); e.i32c(3); e.op(0x46);
+    e.op(0x72); e.op(0x45);
     e.open(0x04, 0x40, Frame::Other);
-    e.invalid_gen(); // never recycle a RUNNING/CLOSING frame
+    e.invalid_gen();
     e.close();
-    // Closing an outer frame must close its active delegated child first.
-    // Acyclic compile-time delegation keeps recursive close depth bounded.
-    e.get(1); e.load_i64(48); e.op(0x50); // no child?
+    e.get(1); e.i32c(4); e.store_i32(8); // CLOSING
+    // Detach child *before* invoking recursive close, preventing reuse or
+    // a reentrant cleanup from observing the child as still owned here.
+    e.get(1); e.load_i64(48); e.set(2);
+    e.get(1); e.i64c(0); e.store_i64(48);
+    e.get(2); e.op(0x50); // child handle == 0?
     e.open(0x04, 0x40, Frame::Other);
     e.op(0x05);
-    e.get(1); e.load_i64(48); e.call(first + 3);
-    e.get(1); e.i64c(0); e.store_i64(48);
+    e.get(2); e.call(first + 3);
     e.close();
-    e.get(1); e.i32c(5); e.store_i32(8);
+    // No previously yielded data, captured argument or local value remains
+    // accessible in a CLOSED frame, even before that frame is reused.
+    e.get(1); e.i64c(0); e.store_i64(16);
+    e.get(1); e.i64c(0); e.store_i64(32);
+    e.get(1); e.i64c(0); e.store_i64(40);
+    for local in 0..FRAME_LIVE_SLOTS {
+        e.get(1); e.i64c(0);
+        e.store_i64(56 + local as u32 * 8);
+    }
+    e.get(1); e.i32c(0); e.store_i32(4); // clear resume PC
+    e.get(1); e.i32c(5); e.store_i32(8); // CLOSED, preserve epoch
     e.get(1); e.global_get(free); e.store_i32(24);
     e.get(1); e.global_set(free);
     e.op(0x0B);
