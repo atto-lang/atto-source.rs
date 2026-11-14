@@ -87,10 +87,10 @@ fn nominal_and_typed_receiver_spellings_are_equivalent() {
         declare actor Foo2;
         mtd (Foo1 self) foo(): void {}
         mtd (Foo2 self) foo(): void {}
-        mtd (mut self: Foo1) set(int val): void {}
+        mtd (mut self: Foo1) set(int amount): void {}
         mtd (self: Foo2) get(): int {}
-        mtd (Foo1) done(): void {}
-        mtd (Foo2 _) done(): void {}");
+        mtd (Foo1) get_done(): void {}
+        mtd (Foo2 _) get_done(): void {}");
     assert_eq!(p.receivers.len(), 6);
     assert_eq!(p.receivers[0].owner, "Foo1");
     assert_eq!(p.receivers[1].owner, "Foo2");
@@ -134,6 +134,8 @@ fn module_imports_are_explicit_and_ordered_after_namespace_header() {
 #[test]
 fn source_limits_and_invalid_receiver_forms_remain_fail_closed() {
     reject("declare actor Foo; mtd (Foo self: Foo) foo(): void {}", "E_SYNTAX");
+    reject("declare actor Foo; mtd (Foo self) done(): void {}", "E_SYNTAX");
+    reject("declare actor Foo; mtd (Foo self) test(int val): void {}", "E_SYNTAX");
     reject("declare actor Foo; mtd (Foo mut self) foo(): void {}", "E_SYNTAX");
     let long = format!("declare actor A; mtd (A self) call({}): void {{}}",
         (0..33).map(|n| format!("int p{n}")).collect::<Vec<_>>().join(","));
