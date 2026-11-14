@@ -1424,10 +1424,11 @@ fn validate_recur_tail(body: &[Stmt], tail: bool) -> R<bool> {
                 for (_, arm) in arms {
                     all &= validate_recur_tail(arm, last)?;
                 }
-                all && match otherwise {
+                let other_terminates = match otherwise {
                     Some(other) => validate_recur_tail(other, last)?,
                     None => false,
-                }
+                };
+                all && other_terminates
             }
             Stmt::Block(inner) => validate_recur_tail(inner, last)?,
             Stmt::Loop { pos, .. } | Stmt::While { pos, .. }
@@ -1534,6 +1535,48 @@ impl<'a> FnCx<'a> {
         self.loop_floors.pop();
         self.loops -= 1;
         r
+    }
+
+    /// Typed immutable loop expression. Recur passes state via scratch locals
+    /// so simultaneous swaps and source-order effects are preserved.
+    fn state_loop(&mut self, bindings: &[Stmt], body: &[Stmt], pos: Pos) -> R<TE> {
+        validate_recur_tail(body, true)?;
+        self.scopes.push(Vec::new());
+        let result = (|| {
+            let mut init = Vec::new();
+            let mut state = Vec::new();
+            for binding in bindings {
+                let Stmt::Bind { kind: BindKind::Val, name, pos: bp, .. } = binding else {
+                    return Err(Diagnostic::new(pos, "E_RECUR_BINDING",
+                        "state loop requires explicit immutable val bindings"));
+                };
+                let typed = self.stmt(binding)?;
+                let local = self.lookup(name).ok_or_else(||
+                    Diagnostic::new(*bp, "E_COMPILER", "state loop binding missing"))?;
+                let (slot, ty) = (local.slot, local.ty);
+                if !matches!(ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    return Err(Diagnostic::new(*bp, "E_UNSUPPORTED_TYPE",
+                        "state loop currently admits only copyable int/bool/float/string"));
+                }
+                let staging = self.temp(ty, *bp)?;
+                init.push(typed);
+                state.push((slot, ty, staging));
+            }
+            self.loops += 1;
+            self.loop_floors.push(self.nparams + self.locals.len() as u32);
+            self.recur_stack.push(RecurContext { depth: self.loops, state, result: None });
+            let checked = self.scoped(body);
+            let ctx = self.recur_stack.pop().expect("matching state loop");
+            self.loop_floors.pop();
+            self.loops -= 1;
+            let body = checked?;
+            let (result_slot, ty) = ctx.result.ok_or_else(||
+                Diagnostic::new(pos, "E_LOOP_VALUE",
+                    "value-returning loop requires at least one break value"))?;
+            Ok(TE { e: TExpr::StateLoop { init, body, result_slot }, ty })
+        })();
+        self.scopes.pop();
+        result
     }
 
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
@@ -1765,6 +1808,50 @@ impl<'a> FnCx<'a> {
                 self.scopes.pop();
                 r?
             }
+            Stmt::Recur(values, pos) => {
+                let ctx = self.recur_stack.last().ok_or_else(||
+                    Diagnostic::new(*pos, "E_RECUR", "recur requires immutable loop state"))?;
+                if ctx.depth != self.loops {
+                    return Err(Diagnostic::new(*pos, "E_RECUR",
+                        "recur must target the innermost state loop"));
+                }
+                if values.len() != ctx.state.len() {
+                    return Err(Diagnostic::new(*pos, "E_RECUR_ARITY",
+                        format!("expected {} recur values, found {}", ctx.state.len(), values.len())));
+                }
+                let state = ctx.state.clone();
+                let mut next = Vec::new();
+                for (arg, (slot, ty, staging)) in values.iter().zip(state) {
+                    let v = self.consume_expected(arg, ty)?;
+                    if v.ty != ty {
+                        return Err(type_err(arg.pos,
+                            format!("recur expected {}, found {}", self.tn(ty), self.tn(v.ty))));
+                    }
+                    next.push((slot, staging, v));
+                }
+                TStmt::Recur(next)
+            }
+            Stmt::BreakValue(value, pos) => {
+                let ctx = self.recur_stack.last().ok_or_else(||
+                    Diagnostic::new(*pos, "E_BREAK_VALUE",
+                        "break value requires a value-returning state loop"))?;
+                if ctx.depth != self.loops {
+                    return Err(Diagnostic::new(*pos, "E_BREAK_VALUE",
+                        "break value must exit the innermost state loop"));
+                }
+                let v = self.consume(value)?;
+                let slot = match self.recur_stack.last().unwrap().result {
+                    Some((slot, ty)) if ty == v.ty => slot,
+                    Some((_, ty)) => return Err(type_err(*pos,
+                        format!("break value expected {}, found {}", self.tn(ty), self.tn(v.ty)))),
+                    None => {
+                        let slot = self.temp(v.ty, *pos)?;
+                        self.recur_stack.last_mut().unwrap().result = Some((slot, v.ty));
+                        slot
+                    }
+                };
+                TStmt::Block(vec![TStmt::Set(slot, v), TStmt::Break])
+            }
             Stmt::Break(pos) | Stmt::Continue(pos) => {
                 if self.loops == 0 {
                     let w = if matches!(s, Stmt::Break(_)) { "break" } else { "continue" };
@@ -1773,6 +1860,10 @@ impl<'a> FnCx<'a> {
                         "E_LOOP",
                         format!("'{w}' may only appear inside loop, while or for"),
                     ));
+                }
+                if self.recur_stack.last().is_some_and(|ctx| ctx.depth == self.loops) {
+                    return Err(Diagnostic::new(*pos, "E_RECUR_TAIL",
+                        "a state loop needs break value or recur(...), not bare break/continue"));
                 }
                 if matches!(s, Stmt::Break(_)) {
                     TStmt::Break
@@ -2300,6 +2391,7 @@ impl<'a> FnCx<'a> {
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
+            ExprKind::StateLoop { bindings, body } => self.state_loop(bindings, body, e.pos),
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
                 e: TExpr::I64(i64::MIN),
                 ty: Type::Int,
@@ -2643,7 +2735,7 @@ impl<'a> FnCx<'a> {
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
             ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
-            | ExprKind::Propagate(..) => unreachable!("handled by expr"),
+            | ExprKind::Propagate(..) | ExprKind::StateLoop { .. } => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
