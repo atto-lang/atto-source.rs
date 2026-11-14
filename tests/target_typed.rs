@@ -99,3 +99,89 @@ fn parameter_names_must_be_unique_and_method_arity_stable() {
     assert_eq!(m.receivers[0].arity,1);
     assert_eq!(m.receivers[1].arity,2);
 }
+
+#[test]
+fn concrete_actor_scalar_fields_are_verified_in_typed_state_ir() {
+    let source = r#"
+use namespace workers;
+declare actor Counter;
+define actor Counter as
+    let int count = 0;
+    val int limit = 12;
+end
+mtd (mut self: Counter) increment(): void {
+    self.handle_state(critical-write |state| -> {
+        state.count = state.count + 1;
+    });
+}
+mtd (self: Counter) read(): int {
+    return self.handle_state(critical-read |state| -> state.limit);
+}
+"#;
+    let module = typed(source).unwrap();
+    assert_eq!(module.state_uses.len(), 3);
+    assert_eq!(module.state_uses[0].field, "count");
+    assert_eq!(module.state_uses[0].field_ty, Some(TargetType::Int));
+    assert!(module.state_uses[0].mutation);
+    assert!(module.state_uses[0].exclusive);
+    assert_eq!(module.state_uses[1].field_ty, Some(TargetType::Int));
+    assert!(!module.state_uses[1].mutation);
+    assert_eq!(module.state_uses[2].field, "limit");
+    assert_eq!(module.state_uses[2].field_ty, Some(TargetType::Int));
+    assert!(!module.state_uses[2].exclusive);
+    assert!(!module.actors[0].defined);
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn concrete_state_fields_reject_unbound_immutable_or_unproved_projections() {
+    let prefix = r#"
+declare actor Counter;
+define actor Counter as
+    let int count = 0;
+    val int limit = 12;
+    let string label = "hello";
+end
+"#;
+    for (body, code) in [
+        ("self.handle_state(critical-read |s| -> s.missing);", "E_UNBOUND"),
+        ("self.handle_state(critical-write |s| -> { s.limit = 1; });", "E_READONLY"),
+        ("self.handle_state(critical-write |s| -> { ++s.limit; });", "E_READONLY"),
+        ("self.handle_state(critical-read |s| -> s.label);", "E_BORROW"),
+    ] {
+        rejects(&format!("{prefix} mtd (mut self: Counter) run(): void {{ {body} }}"), code);
+    }
+}
+
+#[test]
+fn forwarded_actor_state_stays_explicitly_unverified_until_linked() {
+    let src = "declare actor Foo;
+        mtd (Foo self) read(): int {
+            return self.handle_state(critical-read |s| -> s.count);
+        }";
+    let module = typed(src).unwrap();
+    assert_eq!(module.state_uses.len(), 1);
+    assert_eq!(module.state_uses[0].field_ty, None);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn state_field_resolution_is_nominal_for_multiple_actors() {
+    let source = r#"
+declare actor Foo1;
+declare actor Foo2;
+define actor Foo1 as let int count = 0; end
+define actor Foo2 as let bool ready = true; end
+mtd (Foo1 self) read(): int {
+    return self.handle_state(critical-read |s| -> s.count);
+}
+mtd (Foo2 self) read(): bool {
+    return self.handle_state(critical-read |s| -> s.ready);
+}
+"#;
+    let module = typed(source).unwrap();
+    assert_eq!(module.state_uses.len(), 2);
+    assert_eq!(module.state_uses[0].field_ty, Some(TargetType::Int));
+    assert_eq!(module.state_uses[1].field_ty, Some(TargetType::Bool));
+    rejects(&source.replace("s.ready", "s.count"), "E_UNBOUND");
+}
