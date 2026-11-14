@@ -1,5 +1,5 @@
 // expect-error: E_UNBOUND
-// java: rejects
+// java: target-only
 fnc *gen values(): Generator<int> {
   yield 20;
 }

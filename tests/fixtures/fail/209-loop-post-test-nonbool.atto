@@ -1,5 +1,5 @@
 // expect-error: E_TYPE
-// java: rejects
+// java: target-only
 pub fnc main(): int {
   loop { break; } while (42);
   return 0;
