@@ -246,3 +246,55 @@ fn lexical_tokens_prevent_fake_state_reads_from_comments_or_strings() {
             self.handle_state(critical-write |s| -> {s.count = 1;});
         }");
 }
+
+#[test]
+fn receiver_values_cannot_escape_or_be_aliased_in_target_profile() {
+    // Each actor's nominal receiver is sealed; a body cannot stash an
+    // untyped `self` and bypass the eventual actor-owned borrow checker.
+    for escaped in [
+        "val alias = self;",
+        "let alias = self;",
+        "return self;",
+        "send(self);",
+    ] {
+        let source = format!(
+            "use namespace workers;
+             declare actor Foo1;
+             declare actor Foo2;
+             mtd (Foo1 self) run(): void {{ {escaped} }}
+             mtd (Foo2 self) run(): void {{}}"
+        );
+        reject(&source, "E_ESCAPE");
+    }
+    // A normal same-actor receiver call is not an escape.
+    parse("use namespace workers;
+        declare actor Foo1;
+        declare actor Foo2;
+        mtd (Foo1 self) ping(): void {}
+        mtd (Foo1 self) run(): void { self.ping(); }
+        mtd (Foo2 self) ping(): void {}
+        mtd (Foo2 self) run(): void { self.ping(); }");
+}
+
+#[test]
+fn critical_read_denies_prefix_state_mutation() {
+    for prefix in ["++", "--"] {
+        let source = format!(
+            "declare actor Foo;
+             mtd (mut self: Foo) run(): void {{
+                self.handle_state(critical-read |s| -> {{ {prefix}s.count; }});
+             }}"
+        );
+        reject(&source, "E_READONLY");
+    }
+    // Mutations are lexically admitted only by an exclusive writer, still
+    // requiring full type/borrow checking before any executable lowering.
+    parse("declare actor Foo;
+        mtd (mut self: Foo) run(): void {
+            self.handle_state(critical-write |s| -> { ++s.count; });
+        }");
+    reject("declare actor Foo;
+        mtd (self: Foo) run(): void {
+            self.handle_state(critical-write |s| -> { ++s.count; });
+        }", "E_MUTABILITY");
+}
