@@ -91,11 +91,11 @@ try{
   // not a simulated JS loop or a source-level timeout annotation.
   assert.match(await run('pub fnc main(): int { loop {} }', 'E_TIMEOUT'), /^E_TIMEOUT$/);
   console.log('PASS browser: unbounded compiled guest loop is isolated and timed out');
-  assert.match(await run('pub fnc main(): int { return 6 * 7; }', 'main() -> 42'), /main\\(\\) -> 42/);
+  assert.equal(await run('pub fnc main(): int { return 6 * 7; }', 'main() -> 42'), 'main() -> 42');
   console.log('PASS browser: fresh Worker recovers after terminating unbounded guest');
-  assert.match(await run('pub fnc main(): int { let n = 0; for { n = n + 1; if n eq 7 then break; fi } return n; }', 'main() -> 7'), /main\\(\\) -> 7/);
+  assert.equal(await run('pub fnc main(): int { let n = 0; for { n = n + 1; if n eq 7 then break; fi } return n; }', 'main() -> 7'), 'main() -> 7');
   console.log('PASS browser: for-braces loop exits normally');
-  assert.match(await run('pub fnc main(): int { let n = 0; do { n = n + 1; continue; } while (n < 3); return n; }', 'main() -> 3'), /main\\(\\) -> 3/);
+  assert.equal(await run('pub fnc main(): int { let n = 0; do { n = n + 1; continue; } while (n < 3); return n; }', 'main() -> 3'), 'main() -> 3');
   console.log('PASS browser: post-test continue reaches trailing guard');
   // Real Chromium: compiler-produced Wasm guest tag catches only ordinary
   // Error(message), preserving all successful Result values and fatal traps.
