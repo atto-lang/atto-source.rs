@@ -117,6 +117,16 @@ export function runGuest(wasm) {
   } catch (error) {
     return { ok: false, panic: main.exports.panic_code.value, error: String(error), stdout: out };
   }
+  // Each compiled actor incarnation must have a distinct Wasm linear memory.
+  // This verifies the browser host's instance-isolation boundary, NOT general
+  // actor-owned logical stack, deterministic heap reclamation, or zero-GC.
+  if (actors.length > 0) {
+    const memories = [main.exports.memory, ...actors.map(a => a.instance.exports.memory)];
+    assert.ok(memories.every(m => m instanceof WebAssembly.Memory),
+      'actor instances must export their own bounded linear memory');
+    assert.equal(new Set(memories).size, memories.length,
+      'separate actors/main must not alias the same Wasm memory');
+  }
   for (const a of actors) {
     for (let seq = 0; seq < a.queue.length; seq++) {
       try { a.instance.exports.actor_receive(a.type, a.queue[seq], BigInt(seq)); }
