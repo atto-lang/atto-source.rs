@@ -1,0 +1,11 @@
+// spec: fnc recursion allowed while routine recursion is not
+// expect-exit: 42
+fnc climb(int n): int {
+  if n eq 42 then
+    return n;
+  fi
+  return climb(n + 1);
+}
+pub fnc main(): int {
+  return climb(40);
+}

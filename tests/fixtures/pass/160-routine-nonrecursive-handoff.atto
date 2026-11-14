@@ -1,0 +1,5 @@
+// expect-exit: 42
+// spec: routine can call ordinary fnc without a cycle.
+fnc twice(int value): int { return value * 2; }
+routine handoff(int value): int { return twice(value); }
+pub fnc main(): int { return handoff(21); }

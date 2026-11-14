@@ -11,6 +11,7 @@
 //! * `int / int` is rejected: its result type is undecided (spec S-25; Java
 //!   yields `float`, LLVM rejects).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::*;
@@ -330,6 +331,8 @@ struct ActorInfo {
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
     names: BTreeMap<String, Vec<usize>>,
+    /// Top-level routines cannot be captured or used as first-class values.
+    routine_names: BTreeSet<String>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
     actors: Vec<ActorInfo>,
@@ -900,6 +903,8 @@ pub fn check(p: &Program) -> R<TProgram> {
     let g = Globals {
         sigs,
         names,
+        routine_names: p.funcs.iter().filter(|f| f.is_routine)
+            .map(|f| f.name.clone()).collect(),
         classes,
         enums: &p.enums,
         actors,
@@ -1183,6 +1188,8 @@ pub fn check(p: &Program) -> R<TProgram> {
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    // Reject a routine in any statically resolved call cycle before Wasm emission.
+    enforce_nonrecursive_routines(&funcs, &generators, p)?;
     let strings = funcs
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
@@ -1204,6 +1211,58 @@ pub fn check(p: &Program) -> R<TProgram> {
         strings,
         guest_eh,
     })
+}
+
+
+/// Routine restrictions are about the static call graph, not tail-call lowering:
+/// `fnc` may recurse, but a `routine` cannot reenter through any combination
+/// of functions, class/actor methods or generator delegation. Typed calls
+/// resolve overloads and member targets to function indices first.
+fn enforce_nonrecursive_routines(
+    funcs: &[TFunc],
+    generators: &[TGenerator],
+    source: &Program,
+) -> R<()> {
+    let mut edges: Vec<Vec<usize>> = Vec::with_capacity(funcs.len());
+    for f in funcs {
+        // Existing expression traversal visits nested calls in arithmetic,
+        // conditions, lambdas emitted as calls, returns and control flow.
+        let discovered = RefCell::new(BTreeSet::new());
+        let _ = any_in_stmts(&f.body, &|e| {
+            if let TExpr::Call(target, _) = &e.e {
+                discovered.borrow_mut().insert(*target as usize);
+            }
+            false // Keep walking the entire expression, including call arguments.
+        });
+        edges.push(discovered.into_inner().into_iter()
+            .filter(|idx| *idx < funcs.len()).collect());
+    }
+    for generator in generators {
+        if let Some(out) = edges.get_mut(generator.function as usize) {
+            for step in &generator.steps {
+                if let TGenStep::Delegate { function, .. } = step {
+                    if (*function as usize) < funcs.len() {
+                        out.push(*function as usize);
+                    }
+                }
+            }
+        }
+    }
+    for (origin, f) in source.funcs.iter().enumerate() {
+        if !f.is_routine { continue; }
+        let mut visited = vec![false; funcs.len()];
+        let mut pending = edges[origin].clone();
+        while let Some(node) = pending.pop() {
+            if node == origin {
+                return Err(Diagnostic::new(f.pos, "E_ROUTINE_RECURSION",
+                    format!("routine '{}' must not recur directly or indirectly; use fnc for recursion", f.name)));
+            }
+            if visited[node] { continue; }
+            visited[node] = true;
+            pending.extend(edges[node].iter().copied());
+        }
+    }
+    Ok(())
 }
 
 fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> String {
@@ -2542,6 +2601,10 @@ impl<'a> FnCx<'a> {
                         e: TExpr::Local(l.slot),
                         ty: l.ty,
                     }
+                }
+                None if self.g.routine_names.contains(name) => {
+                    return Err(Diagnostic::new(pos, "E_ROUTINE_VALUE",
+                        format!("routine '{name}' is direct-call-only and cannot be used as a value")))
                 }
                 None if self.g.names.contains_key(name) => {
                     return Err(Diagnostic::new(

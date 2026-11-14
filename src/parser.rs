@@ -938,7 +938,11 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        if !(self.eat_word("fnc") || self.eat_word("routine")) {
+        let is_routine = if self.eat_word("fnc") {
+            false
+        } else if self.eat_word("routine") {
+            true
+        } else {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
                     return Err(unsupported(self.pos(), &format!("top-level '{w}'")));
@@ -949,7 +953,7 @@ impl Parser {
                 "E_TOPLEVEL",
                 format!("expected a 'fnc' declaration, found {}", describe(self.peek())),
             ));
-        }
+        };
         let is_generator = if *self.peek() == Tok::Star {
             self.advance();
             self.expect_word("gen")?;
@@ -976,6 +980,7 @@ impl Parser {
             name,
             pos,
             is_generator,
+            is_routine,
             params,
             ret,
             body,

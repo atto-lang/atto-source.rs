@@ -1,0 +1,5 @@
+// expect-exit: 42
+// spec: call-graph checks resolve overloads by arity, not names alone.
+routine do_work(int value): int { return value * 2; }
+fnc do_work(): int { return do_work(); }
+pub fnc main(): int { return do_work(21); }

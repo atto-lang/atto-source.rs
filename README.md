@@ -337,3 +337,17 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+## Routine nonrecursion admission (Rust/Wasm frontend)
+
+A `routine` remains a direct-call-only declaration. The browser subset
+currently rejects both ordinary functions and routines as captured values;
+this gate provides a dedicated diagnostic for the latter. The Rust/Wasm checker now rejects direct and indirect
+call cycles containing a `routine` with `E_ROUTINE_RECURSION`. This
+runs against resolved typed calls (including methods and nested call
+expressions) before guest Wasm emission. Ordinary recursive `fnc`
+functions remain permitted. A bare routine captured in a value
+position fails with `E_ROUTINE_VALUE` instead of being mistaken for a
+first-class function. This static gate is not proof of parity with
+Java/LLVM/.NET/Forge; the shared `.atto` conformance suite in
+`oreslang-platform-conformance` must gather real compiler receipts.

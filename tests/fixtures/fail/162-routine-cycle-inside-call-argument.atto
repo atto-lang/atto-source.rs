@@ -1,0 +1,7 @@
+// expect-error: E_ROUTINE_RECURSION
+fnc identity(int value): int { return value; }
+routine nested_cycle(int n): int {
+  if n eq 0 then return 42; fi
+  return identity(nested_cycle(n - 1));
+}
+pub fnc main(): int { return nested_cycle(1); }
