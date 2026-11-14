@@ -288,3 +288,72 @@ fn receiver_arguments_count_only_top_level_commas_and_bound_nesting() {
     );
     reject(&deeply_nested, "E_NESTING");
 }
+
+#[test]
+fn nested_receiver_arguments_are_preflighted_not_skipped() {
+    let prefix = "declare actor Foo;
+        mtd (Foo self) foo(int left, int right): void {}
+        mtd (Foo self) value(): int { return 1; }";
+    for (snippet, code) in [
+        ("self.foo(self.count, 1);", "E_SEALED"),
+        ("self.foo(self, 1);", "E_ESCAPE"),
+        ("self.foo(value(self), 1);", "E_ESCAPE"),
+        ("self.foo(self.missing(), 1);", "E_UNBOUND"),
+        ("self.foo(self.foo(1), 1);", "E_UNBOUND"),
+        ("self.foo(self.handle_state(critical-write |s| -> { s.count = 5; }), 1);", "E_MUTABILITY"),
+    ] {
+        let source = format!("{prefix}
+            mtd (Foo self) run(): void {{ {snippet} }}");
+        let d = parse_target_declarations(&lex(&source).unwrap()).unwrap_err();
+        assert_eq!(d.code, code, "{snippet}: {d}");
+    }
+    parse("declare actor Foo;
+        mtd (Foo self) foo(int left, int right): void {}
+        mtd (Foo self) value(): int { return 1; }
+        mtd (Foo self) run(): void {
+            self.foo(self.value(), 1);
+            self.foo(self.handle_state(critical-read |s| -> s.count), 2);
+        }");
+}
+
+#[test]
+fn receiver_and_read_lease_cannot_escape_through_critical_callbacks() {
+    for snippet in [
+        "val alias = self;",
+        "return self;",
+        "sink(self);",
+    ] {
+        let source = format!("declare actor Foo;
+            mtd (Foo self) run(): void {{
+                self.handle_state(critical-read |s| -> {{ {snippet} }});
+            }}");
+        reject(&source, "E_BORROW");
+    }
+    for op in ["++", "--"] {
+        let source = format!("declare actor Foo;
+            mtd (mut self: Foo) run(): void {{
+                self.handle_state(critical-read |s| -> {{ {op}s.count; }});
+            }}");
+        reject(&source, "E_READONLY");
+    }
+    parse("declare actor Foo;
+        mtd (mut self: Foo) run(): void {
+            self.handle_state(critical-write |s| -> { ++s.count; });
+        }");
+    reject("declare actor Foo;
+        mtd (self: Foo) run(): void {
+            self.handle_state(critical-write |s| -> { ++s.count; });
+        }", "E_MUTABILITY");
+}
+
+#[test]
+fn raw_receiver_values_never_escape_target_only_method_bodies() {
+    for expr in ["val alias = self;", "return self;", "sink(self);"] {
+        let source = format!("declare actor Foo;
+            mtd (Foo self) run(): void {{ {expr} }}");
+        reject(&source, "E_ESCAPE");
+    }
+    parse("declare actor Foo;
+        mtd (Foo self) value(): int { return 1; }
+        mtd (Foo self) run(): int { return self.value(); }");
+}
