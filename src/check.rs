@@ -254,6 +254,9 @@ pub struct TGenerator {
     pub steps: Vec<TGenStep>,
     /// Number of arena-resident i64 locals retained across next() calls.
     pub locals: u32,
+    /// Bitset of locals live after each resume PC for typed CFG plans.
+    /// An empty vector is the legacy CountTo/yield* specialization.
+    pub live_after: Vec<u16>,
 }
 
 /// One actor type: its state initializers and receive handler.
@@ -968,7 +971,7 @@ pub fn check(p: &Program) -> R<TProgram> {
                 }),
                 _ => None,
             }).collect();
-            generators.push(TGenerator { function: i as u32, steps, locals: 0 });
+            generators.push(TGenerator { function: i as u32, steps, locals: 0, live_after: Vec::new() });
             funcs[i] = Some(TFunc {
                 name: f.name.clone(), params, ret,
                 locals: Vec::new(), body: Vec::new(),
