@@ -1,0 +1,13 @@
+// expect-exit: 2
+// java: target-only
+fnc *gen values(): Generator<int> {
+  yield 20;
+  yield 22;
+}
+pub fnc main(): int {
+  let seen = 0;
+  for _ in values() do
+    seen = seen + 1;
+  end
+  return seen;
+}
