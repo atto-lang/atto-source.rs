@@ -65,12 +65,12 @@ assert.ok(imports.every(x => x.module === 'atto'
 let stdout = '';
 const delegatedGuest = new WebAssembly.Instance(delegatedModule, { atto: {
   print_i64: n => { stdout += String(n); },
-  print_newline: () => { stdout += '\\n'; },
+  print_newline: () => { stdout += '\n'; },
 }});
 assert.equal(delegatedGuest.exports.main(), 10n,
   'yield*, iteration and checked summation execute in guest Wasm');
 assert.equal(delegatedGuest.exports.panic_code.value, 0);
-assert.equal(stdout, '10\\n');
+assert.equal(stdout, '10\n');
 console.log('PASS: wasm32 compiler emits an executing generator delegation guest returning 10');
 
 // Unsupported generator profiles still fail closed and publish no guest artifact.
