@@ -7,6 +7,7 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+pub mod actor_stack_bound;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -67,6 +68,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     }
     let program = parser::Parser::new(toks).parse_program()?;
     let typed = check::check(&program)?;
+    // Source-verified AOT call graph before any Wasm bytes are emitted.
+    // This does not replace actor-owned continuation-frame lowering.
+    actor_stack_bound::verify(&typed)?;
     let bytes = wasm::emit(&typed);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
