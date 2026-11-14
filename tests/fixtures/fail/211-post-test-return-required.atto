@@ -1,0 +1,6 @@
+// expect-error: E_RETURN
+// java: rejects
+fnc invalid(): int {
+  do { let i = 1; } while (false);
+}
+pub fnc main(): int { return 0; }
