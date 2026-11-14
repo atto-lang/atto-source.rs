@@ -1,0 +1,11 @@
+{
+  "schema": "atto.telemetry.source-ids.v1",
+  "routines": [
+    {
+      "id": "rid_a458b8330ea5475ba8a0cae2c64b48bc",
+      "source": "examples/source-ids-main.atto",
+      "symbol": "main():int"
+    }
+  ],
+  "sites": []
+}
