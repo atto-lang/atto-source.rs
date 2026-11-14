@@ -229,7 +229,15 @@ pub struct TFunc {
 #[derive(Clone, Debug)]
 pub enum TGenStep {
     Yield(TE),
-    Delegate(u32),
+    Delegate { function: u32, arg: TGenArg },
+    CountTo { start: i64 },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TGenArg {
+    None,
+    Literal(i64),
+    Parameter,
 }
 
 #[derive(Clone, Debug)]
@@ -556,8 +564,8 @@ fn validate_generator_graph(gens: &[TGenerator], p: &Program) -> R<()> {
         colors[node] = 1;
         if let Some(gen) = gens.iter().find(|g| g.function as usize == node) {
             for step in &gen.steps {
-                if let TGenStep::Delegate(child) = step {
-                    visit(*child as usize, depth + 1, colors, gens, p)?;
+                if let TGenStep::Delegate { function, .. } = step {
+                    visit(*function as usize, depth + 1, colors, gens, p)?;
                 }
             }
         }
@@ -569,6 +577,46 @@ fn validate_generator_graph(gens: &[TGenerator], p: &Program) -> R<()> {
         visit(g.function as usize, 1, &mut colors, gens, p)?;
     }
     Ok(())
+}
+
+/// Only one immutable int parameter and one mutable counter are admitted.
+/// A C-style for must use i <= limit, i++, and yield i without side effects.
+fn generator_count_loop(f: &Func, stmt: &Stmt) -> Option<i64> {
+    if f.params.len() != 1 || f.params[0].ty != Type::Int { return None; }
+    let Stmt::For { init: Some(init), cond: Some(cond),
+                    update: Some(update), body, .. } = stmt else { return None; };
+    let Stmt::Bind { kind: BindKind::Let, name, ty, init: initial, .. } =
+        init.as_ref() else { return None; };
+    if ty.is_some_and(|t| t != Type::Int) { return None; }
+    let ExprKind::Int(Some(start)) = &initial.kind else { return None; };
+    if *start > i64::MAX as u64 { return None; }
+    let ExprKind::Binary(BinOp::Le, left, right) = &cond.kind else { return None; };
+    if !matches!(&left.kind, ExprKind::Var(s) if s == name)
+        || !matches!(&right.kind, ExprKind::Var(s) if s == &f.params[0].name) { return None; }
+    let Stmt::Assign { name: update_name, value, .. } = update.as_ref() else { return None; };
+    if update_name != name { return None; }
+    let ExprKind::Binary(BinOp::Add, left, right) = &value.kind else { return None; };
+    if !matches!(&left.kind, ExprKind::Var(s) if s == name)
+        || !matches!(&right.kind, ExprKind::Int(Some(1))) { return None; }
+    if body.len() != 1 || !matches!(&body[0],
+        Stmt::Yield(Expr { kind: ExprKind::Var(s), .. }, _) if s == name) { return None; }
+    Some(*start as i64)
+}
+
+/// Delegate arguments cannot evaluate arbitrary expressions or alias locals.
+fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
+    match (target.params.as_slice(), args) {
+        ([], []) => Some(TGenArg::None),
+        ([p], [arg]) if p.ty == Type::Int => match &arg.kind {
+            ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 =>
+                Some(TGenArg::Literal(*n as i64)),
+            ExprKind::Var(name) if f.params.len() == 1
+                && f.params[0].ty == Type::Int && *name == f.params[0].name =>
+                Some(TGenArg::Parameter),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
@@ -589,17 +637,20 @@ pub fn check(p: &Program) -> R<TProgram> {
             let _frame = crate::generator_frame::GeneratorFrameLayout::new(
                 f.params.len() as u32, declared_locals, plan.delegate_slots, f.pos
             )?;
-            // This second executable profile adds at most one lazy delegate
-            // slot per finite zero-capture generator. Cycles are rejected
-            // after all signatures have been registered.
-            let admitted = f.params.is_empty() && plan.delegate_slots <= 1
+            // Bounded single-int-parameter and live counter profile.
+            let count_loops = f.body.iter().filter(|s| matches!(s, Stmt::For { .. })).count();
+            let admitted = f.params.len() <= 1
+                && f.params.iter().all(|p| p.ty == Type::Int)
+                && count_loops <= 1 && plan.delegate_slots <= 1
                 && f.body.iter().enumerate().all(|(i, stmt)| {
                     match stmt {
                         Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) =>
                             *n <= i64::MAX as u64,
                         Stmt::YieldFrom(Expr { kind: ExprKind::Call(name, args), .. }, _) =>
-                            args.is_empty() && p.funcs.iter().any(|target|
-                                target.is_generator && target.name == *name && target.params.is_empty()),
+                            p.funcs.iter().any(|target| target.is_generator
+                                && target.name == *name
+                                && generator_arg(f, target, args).is_some()),
+                        Stmt::For { .. } => generator_count_loop(f, stmt).is_some(),
                         Stmt::Return(None, _) => i + 1 == f.body.len(),
                         _ => false,
                     }
@@ -886,11 +937,18 @@ pub fn check(p: &Program) -> R<TProgram> {
                         e: TExpr::I64(*n as i64), ty: Type::Int
                     })),
                 Stmt::YieldFrom(Expr { kind: ExprKind::Call(name, args), .. }, _) => {
-                    assert!(args.is_empty());
-                    let idx = g.sigs.get(&(name.clone(), 0))
-                        .expect("preflight requires declared generator target").0;
-                    Some(TGenStep::Delegate(idx))
+                    let target = p.funcs.iter().find(|target| target.is_generator
+                        && target.name == *name && target.params.len() == args.len())
+                        .expect("source validated before declaration lowering");
+                    let arg = generator_arg(f, target, args)
+                        .expect("argument validated before declaration lowering");
+                    let idx = g.sigs.get(&(name.clone(), args.len()))
+                        .expect("declared generator target").0;
+                    Some(TGenStep::Delegate { function: idx, arg })
                 }
+                Stmt::For { .. } => Some(TGenStep::CountTo {
+                    start: generator_count_loop(f, stmt).expect("verified counter loop")
+                }),
                 _ => None,
             }).collect();
             generators.push(TGenerator { function: i as u32, steps });
