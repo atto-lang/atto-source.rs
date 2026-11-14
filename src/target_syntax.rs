@@ -65,7 +65,7 @@ pub struct ReceiverEffects {
     pub unproved_call: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ReceiverCall {
     pub caller: usize,
     pub callee: usize,
