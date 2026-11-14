@@ -117,7 +117,11 @@ fn write_proposal(path: &Path, source: &Path, registry: &Path,
         return Err("proposal destination must be a canonical package-relative path".into());
     }
     let root = fs::canonicalize(".").map_err(|e| e.to_string())?;
-    let parent = path.parent().unwrap_or(Path::new("."));
+    // Path::parent("proposal.json") returns Some("") rather than None.
+    // Canonicalizing "" fails on Unix, incorrectly rejecting a root-level
+    // proposal even when it is a safe package-relative new filename.
+    let parent = path.parent().filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let real_parent = fs::canonicalize(parent).map_err(|e| e.to_string())?;
     if !real_parent.starts_with(&root) || root.join(parent) != real_parent {
         return Err("proposal parent aliases or escapes the package root".into());
@@ -240,6 +244,20 @@ mod tests {
         ]);
         assert!(rejected.is_err());
         assert!(!Path::new(output).exists());
+    }
+
+    #[test]
+    fn permits_new_root_level_proposals_without_overwriting_existing_files() {
+        let destination = format!("__atto_source_ids_proposal_{}.json", std::process::id());
+        let path = Path::new(&destination);
+        assert!(!path.exists());
+        let fixture = serde_json::json!({"schema": "fixture"});
+        write_proposal(path, Path::new("Cargo.toml"), Path::new("Cargo.lock"), &fixture)
+            .expect("a root-level exclusive proposal must be supported");
+        assert_eq!(fs::read_to_string(path).unwrap(), "{\n  \"schema\": \"fixture\"\n}\n");
+        assert!(write_proposal(path, Path::new("Cargo.toml"),
+            Path::new("Cargo.lock"), &fixture).is_err());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
