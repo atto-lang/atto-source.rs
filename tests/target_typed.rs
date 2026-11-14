@@ -288,3 +288,72 @@ mtd (Worker self) launcher(): void { spawn Worker(); }
     // No proof of safe code generation is obtained from these facts.
     assert!(m.receivers.iter().all(|method| !method.body_lowered));
 }
+
+#[test]
+fn scalar_state_assignment_expressions_are_checked_against_concrete_layout() {
+    let src=r#"
+declare actor Counter;
+define actor Counter as
+    let int count = 0;
+    let bool enabled = false;
+end
+mtd (mut self: Counter) tick(int amount): void {
+    self.handle_state(critical-write |s| -> {
+        s.count = (s.count + amount * 2);
+        s.enabled = (s.count == 4);
+    });
+}
+"#;
+    let module=typed(src).expect("well-typed scalar state lease");
+    assert_eq!(module.state_uses.len(), 4);
+    let tick=&module.receivers[0];
+    assert!(tick.effects.reads_state && tick.effects.writes_state);
+    assert!(!tick.body_lowered);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn scalar_state_write_types_and_numeric_mutations_fail_closed() {
+    let prefix=r#"
+declare actor Counter;
+define actor Counter as
+    let int count = 0;
+    let bool enabled = false;
+end
+"#;
+    for (body, code) in [
+        ("s.count = true;", "E_TYPE"),
+        ("s.enabled = 1;", "E_TYPE"),
+        ("s.count += false;", "E_TYPE"),
+        ("++s.enabled;", "E_TYPE"),
+        ("s.enabled += true;", "E_TYPE"),
+        ("s.count = s.enabled;", "E_TYPE"),
+        ("s.count = missing;", "E_UNBOUND"),
+        ("s.count = new Widget();", "E_BORROW"),
+        ("s.count = s.count + false;", "E_TYPE"),
+    ] {
+        let src=format!("{prefix} mtd (mut self: Counter) tick(): void {{
+            self.handle_state(critical-write |s| -> {{ {body} }});
+        }}");
+        rejects(&src, code);
+    }
+}
+
+#[test]
+fn even_empty_critical_callbacks_have_read_or_write_effects() {
+    let src=r#"
+declare actor Foo;
+mtd (Foo self) read(): int {
+    return self.handle_state(critical-read |s| -> 1);
+}
+mtd (mut self: Foo) write(): int {
+    return self.handle_state(critical-write |s| -> 1);
+}
+"#;
+    let module=typed(src).unwrap();
+    assert!(module.receivers[0].effects.reads_state);
+    assert!(!module.receivers[0].effects.writes_state);
+    assert!(module.receivers[1].effects.reads_state);
+    assert!(module.receivers[1].effects.writes_state);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
+}
