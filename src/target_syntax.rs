@@ -431,6 +431,13 @@ fn validate_callback(
                     "state field member access requires a field name"));
             }
             if !write {
+                // Prefix ++/-- also mutate a field; looking only after the
+                // field token would incorrectly admit `++s.count` in a read lock.
+                if i > k && matches!(toks.get(i-1).map(|t| &t.tok),
+                    Some(Tok::PlusPlus | Tok::MinusMinus)) {
+                    return Err(diagnostic(toks, i-1, "E_READONLY",
+                        "critical-read cannot mutate actor state"));
+                }
                 if matches!(toks.get(i+3).map(|t| &t.tok),
                     Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
                     return Err(diagnostic(toks, i+3, "E_READONLY",
@@ -478,6 +485,14 @@ fn validate_receiver_body(
                 member, count_args(toks, i+3, close), false, toks[i].pos)?;
             i = close + 1;
             continue;
+        }
+        // Until the typed borrow checker is wired into this target-only
+        // profile, deny passing, returning, or aliasing the receiver by value.
+        // Internal self.method(...) and self.handle_state(...) were consumed
+        // above, so neither valid form is rejected here.
+        if word_at(toks, i, "self") {
+            return Err(diagnostic(toks, i, "E_ESCAPE",
+                "actor receiver cannot be aliased, passed or returned by value"));
         }
         i += 1;
     }
