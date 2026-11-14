@@ -13,6 +13,7 @@ pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
 pub mod parser;
+pub mod target_syntax;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};
@@ -31,6 +32,33 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
+    // Detect target declarations at any file-scope position, not only at
+    // source byte zero. Ignore comments/strings (the lexer already tokenizes
+    // them) and ignore nested brace bodies so a string or local expression
+    // cannot accidentally switch the compiler into the target grammar.
+    let mut braces = 0usize;
+    let mut target = false;
+    for i in 0..toks.len() {
+        match &toks[i].tok {
+            lexer::Tok::LBrace => braces = braces.saturating_add(1),
+            lexer::Tok::RBrace => braces = braces.saturating_sub(1),
+            lexer::Tok::Ident(word) if braces == 0 => {
+                let next = toks.get(i + 1).map(|token| &token.tok);
+                if word == "declare" || word == "mtd" ||
+                    (word == "use" && matches!(next,
+                        Some(lexer::Tok::Ident(name)) if name == "namespace")) {
+                    target = true;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if target {
+        target_syntax::parse_target_declarations(&toks)?;
+        return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
+            "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
+    }
     let program = parser::Parser::new(toks).parse_program()?;
     let typed = check::check(&program)?;
     let bytes = wasm::emit(&typed);
