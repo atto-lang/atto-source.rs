@@ -422,6 +422,18 @@ fn validate_callback(
                 "nested actor state access or self capture is forbidden in critical callback"));
         }
         if word_at(toks, i, binder) {
+            // A parse-only gate has no field-type evidence. Copying an actor
+            // field into a local could smuggle a live mutable graph out of a
+            // critical section, even when the local is written as 'val'.
+            if at(toks, i.saturating_sub(1), &Tok::Assign) {
+                let begin = (k..i).rev().find(|&j| matches!(toks[j].tok,
+                    Tok::Semi | Tok::LBrace | Tok::RBrace)).map_or(k, |j| j + 1);
+                if (begin..i).any(|j| word_at(toks, j, "val") ||
+                    word_at(toks, j, "let") || word_at(toks, j, "const")) {
+                    return Err(diagnostic(toks, i, "E_BORROW",
+                        "actor state fields cannot be bound to locals without a typed ownership proof"));
+                }
+            }
             if !at(toks, i+1, &Tok::Dot) {
                 return Err(diagnostic(toks, i, "E_ESCAPE",
                     "actor state binding cannot be copied, captured, or returned"));
@@ -430,9 +442,17 @@ fn validate_callback(
                 return Err(diagnostic(toks, i+2, "E_SEALED",
                     "state field member access requires a field name"));
             }
+            // Without typed effect analysis, indexed access can hide a
+            // mutation of a nested value in either critical mode.
+            if at(toks, i+3, &Tok::LBracket) {
+                return Err(diagnostic(toks, i+3, "E_UNSUPPORTED",
+                    "indexed actor state access requires typed borrow/effect checking"));
+            }
             if !write {
                 if matches!(toks.get(i+3).map(|t| &t.tok),
-                    Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
+                    Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) ||
+                    ((at(toks, i+3, &Tok::Minus) || at(toks, i+3, &Tok::Star) ||
+                      at(toks, i+3, &Tok::Slash)) && at(toks, i+4, &Tok::Assign)) {
                     return Err(diagnostic(toks, i+3, "E_READONLY",
                         "critical-read cannot mutate actor state"));
                 }
