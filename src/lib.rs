@@ -162,6 +162,30 @@ mod tests {
     }
 
     #[test]
+    fn checked_routine_lookup_matches_independent_scalar_mir() {
+        let source = "pub fnc main(): int { return 42; }";
+        let registry = r#"{
+          "schema":"atto.telemetry.source-ids.v1",
+          "routines":[{"id":"rid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source":"examples/main.atto","symbol":"main():int"}],
+          "sites":[]}"#;
+        let checked = check_source_ids(source, "examples/main.atto", registry).unwrap();
+        assert_eq!(checked["functions"][0]["routine_id"],
+                   "rid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let located = locate_source_routine(
+            source, "examples/main.atto", registry, "rid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        assert_eq!(located["symbol"], "main():int");
+        assert_eq!(located["status"], "verified_source_only_not_deployed_binary");
+        assert_eq!(located["instrumented"], false);
+        assert!(locate_source_routine(
+            source, "examples/main.atto", registry, "sid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .unwrap_err().contains("site IDs require real guest"));
+        assert!(locate_source_routine(
+            source, "examples/main.atto", registry, "rid_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            .unwrap_err().contains("does not refer"));
+    }
+
+    #[test]
     fn paired_mode_rejects_unverified_actor_syntax() {
         assert!(compile_with_effect_ir("define actor Foo as end").is_err());
     }
