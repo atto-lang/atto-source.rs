@@ -133,6 +133,16 @@ impl TypedActorModule {
         -> Result<TypedStateUse, Diagnostic> {
         let receiver = h.receivers.get(access.receiver)
             .ok_or_else(|| type_error(access.pos, "invalid receiver state access index"))?;
+        // Re-check lease invariants in the typed lowering layer rather than
+        // trusting potentially constructed/imported syntax headers.
+        if access.exclusive && !receiver.mutable {
+            return Err(Diagnostic::new(access.pos, "E_MUTABILITY",
+                "critical-write requires a mutable actor receiver"));
+        }
+        if access.mutation && !access.exclusive {
+            return Err(Diagnostic::new(access.pos, "E_READONLY",
+                "critical-read cannot mutate actor state"));
+        }
         let field_ty = if let Some(actor) = h.definitions.iter()
             .find(|a| a.name == receiver.owner) {
             let field = actor.fields.iter().find(|f| f.name == access.field)
@@ -167,6 +177,12 @@ impl TypedActorModule {
     }
 
     fn lower_one(&self, h: &ReceiverHeader) -> Result<TypedReceiver, Diagnostic> {
+        // Sealed lifecycle hooks belong to the actor runtime. This invariant
+        // applies even to forward-only actors with no concrete definition.
+        if h.name == "receive" {
+            return Err(Diagnostic::new(h.pos, "E_SIGNATURE",
+                "receive is a sealed actor lifecycle handler"));
+        }
         let actor = self.actor_index(&h.owner, h.pos)?;
         let mut params = Vec::with_capacity(h.params.len());
         for p in &h.params {
