@@ -1,0 +1,5 @@
+// expect-exit: 42
+pub fnc main(): int {
+  const int x = 3;
+  if x eq 1 { return 1; } elif x eq 3 { return 42; } else { return 0; }
+}

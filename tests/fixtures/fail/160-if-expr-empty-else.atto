@@ -1,0 +1,4 @@
+// expect-error: E_VALUE_ARM
+pub fnc main(): int {
+  return if true then 42 else fi;
+}

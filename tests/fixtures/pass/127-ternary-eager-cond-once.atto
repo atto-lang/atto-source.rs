@@ -1,0 +1,11 @@
+// expect-exit: 42
+// expect-stdout: condition
+// expect-stdout: selected
+fnc test(): bool {
+  stdio.println("condition");
+  return true;
+}
+pub fnc main(): int {
+  const int v = test() ? { stdio.println("selected"); 42 } : { stdio.println("wrong"); 0 };
+  return v;
+}

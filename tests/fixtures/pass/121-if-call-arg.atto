@@ -1,0 +1,5 @@
+// expect-exit: 42
+fnc inc(int x): int { return x + 1; }
+pub fnc main(): int {
+  return inc(if false then 10 else 41 fi);
+}
