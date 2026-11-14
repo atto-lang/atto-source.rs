@@ -243,6 +243,10 @@ pub enum Stmt {
         body: Vec<Stmt>,
         pos: Pos,
     },
+    /// Immutable loop-carried bindings, consumed by tail-position recur(...).
+    /// Only a value-returning loop-expression admits break value.
+    Recur(Vec<Expr>, Pos),
+    BreakValue(Expr, Pos),
     For {
         init: Option<Box<Stmt>>,
         cond: Option<Expr>,
@@ -344,6 +348,8 @@ pub enum ExprKind {
     Bool(bool),
     Str(String),
     Var(String),
+    /// Value-producing Clojure-style immutable loop/recur expression.
+    StateLoop { bindings: Vec<Stmt>, body: Vec<Stmt> },
     Unary(UnOp, Box<Expr>),
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.

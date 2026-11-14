@@ -76,6 +76,7 @@ const RESERVED: &[&str] = &[
     "block",
     "break",
     "continue",
+    "recur",
     "switch",
     "match",
     "matches",
@@ -1190,6 +1191,11 @@ impl Parser {
                 let body = self.parse_loop_body()?;
                 Ok(Stmt::While { cond, body, pos, post_test: false })
             }
+            Some("loop") if *self.peek_at(1) == Tok::LParen => {
+                let expr = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(expr))
+            }
             Some("loop") => {
                 self.advance();
                 let body = self.parse_loop_body()?;
@@ -1212,8 +1218,20 @@ impl Parser {
             }
             Some("break") => {
                 self.advance();
+                let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Eof)
+                    || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
+                let value = if at_end { None } else { Some(self.parse_expr()?) };
                 self.terminator()?;
-                Ok(Stmt::Break(pos))
+                Ok(match value {
+                    Some(value) => Stmt::BreakValue(value, pos),
+                    None => Stmt::Break(pos),
+                })
+            }
+            Some("recur") => {
+                self.advance();
+                let values = self.parse_args()?;
+                self.terminator()?;
+                Ok(Stmt::Recur(values, pos))
             }
             Some("continue") => {
                 self.advance();
@@ -2126,6 +2144,30 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "loop" => {
+                    self.advance();
+                    self.expect(Tok::LParen, "'(' for immutable loop state")?;
+                    let mut bindings = Vec::new();
+                    if *self.peek() == Tok::RParen {
+                        return Err(Diagnostic::new(pos, "E_RECUR_ARITY",
+                            "immutable loop requires at least one val binding"));
+                    }
+                    loop {
+                        if !self.is_word("val") {
+                            return Err(Diagnostic::new(self.pos(), "E_RECUR_BINDING",
+                                "immutable loop state must use explicit 'val' bindings"));
+                        }
+                        bindings.push(self.parse_binding()?);
+                        if bindings.len() > MAX_PARAMS {
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                                "too many immutable loop state bindings"));
+                        }
+                        if !self.eat(&Tok::Comma) { break; }
+                    }
+                    self.expect(Tok::RParen, "')' after immutable loop bindings")?;
+                    let body = self.parse_loop_body()?;
+                    ExprKind::StateLoop { bindings, body }
+                }
                 "true" => {
                     self.advance();
                     ExprKind::Bool(true)
