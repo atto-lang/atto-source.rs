@@ -1412,6 +1412,14 @@ impl Parser {
     /// (or final 'return expression') yields its value to the arm, not the fnc.
     fn parse_value_arm(&mut self) -> R<Expr> {
         if *self.peek() != Tok::LBrace {
+            // Empty arms fail with a stable value-arm diagnostic instead of
+            // accidentally parsing a following else/fi/colon as a value.
+            if matches!(self.word_at(0), Some("else" | "elif" | "elseif" | "fi"))
+                || *self.peek() == Tok::Colon
+            {
+                return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
+                    "conditional expression arm requires a value"));
+            }
             return self.parse_expr();
         }
         let pos = self.pos();
@@ -1449,6 +1457,14 @@ impl Parser {
             if !(self.eat_word("elif") || self.eat_word("elseif")) {
                 break;
             }
+            // The if-expression lowers into a right-associated ternary tree.
+            // Bound the chain *before* lowering, or a long elif list could
+            // bypass the expression-depth budget and overflow checker/emitter.
+            if arms.len() >= 128 {
+                return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                    "value-producing if exceeds 128 conditional arms"));
+            }
+            self.grow(1)?;
         }
         if !self.eat_word("else") {
             return Err(Diagnostic::new(self.pos(), "E_VALUE_ARM",
@@ -1456,10 +1472,12 @@ impl Parser {
         }
         let mut value = self.parse_value_arm()?;
         self.expect_word("fi")?;
+        let height_links = arms.len() as u32 - 1;
         for (condition, when_true) in arms.into_iter().rev() {
             value = Expr { kind: ExprKind::Ternary(
                 Box::new(condition), Box::new(when_true), Box::new(value)), pos };
         }
+        self.height -= height_links;
         Ok(value)
     }
 
