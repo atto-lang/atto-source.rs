@@ -41,6 +41,22 @@ rejected before code output. The compiled object and metadata sidecar are
 produced from **one** validated Rust MIR; sidecar publication is not an
 embedded probe or a stable binary ABI. Two output writes are not transactional.
 
+**Audit hardening (2026-11-14):** The registry uses strict typed JSON
+admission: duplicate object keys, unknown fields, duplicated IDs and
+cross-source site-to-routine links are rejected. This scalar mode treats the
+current working directory as the package root and requires the declared
+logical `.atto` unit to match the exact physical input file. Source/registry
+inputs must be ordinary regular files; on Unix the reader uses nonblocking,
+no-follow descriptor flags and inode checks. Object and source-map outputs
+use exclusive creation: existing paths, symlinks and hardlinks cannot be
+silently overwritten. A failed second output or write can leave a partial
+file; publication is **not transactional**, so consumers must require both
+finished artifacts and authenticated digests before using a sidecar.
+
+The Rust compiler and tests still need execution on a Rust-capable runner;
+source-format and negative fixtures are authored, not proof of a completed
+Cargo build. No actual `site_id` injection is implemented by this scalar path.
+
 A routine ID identifies source code, not an invocation. OpenTelemetry
 \`trace_id\` (128-bit) and \`span_id\` (64-bit) are runtime identities. A future
 fully instrumented backend must preserve this distinction under inlining,
