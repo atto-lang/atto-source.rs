@@ -69,8 +69,8 @@ fn folded_booleans_floats_and_strings_have_typed_values() {
 
 #[test]
 fn constant_provenance_follows_slots_not_shadowed_names() {
-    valid("pub fnc main(): int { const x = 2; { val x = 7; } const y = x + 3; return y; }");
-    rejects("pub fnc main(): int { const x = 2; { val x = 7; const y = x; } return x; }", "E_CONST");
+    valid("pub fnc main(): int { const x = 2; if true then val x = 7; fi const y = x + 3; return y; }");
+    rejects("pub fnc main(): int { const x = 2; if true then val x = 7; const y = x; fi return x; }", "E_CONST");
 }
 
 #[test]
