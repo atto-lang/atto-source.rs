@@ -2036,7 +2036,9 @@ impl<'a> FnCx<'a> {
             }
             let (offset, fty) = (f.slot, f.ty);
             let obj = self.value(target)?; // Reject use-after-move.
-            let v = self.value(value)?;
+            // The RHS is an ownership-transfer position, just like a binding
+            // initializer. Do not leave a second live owner for class values.
+            let v = self.consume_expected(value, fty)?;
             if v.ty != fty {
                 return Err(type_err(value.pos,
                     format!("cannot assign {} to field '{field}' of type {}", self.tn(v.ty), self.tn(fty))));
