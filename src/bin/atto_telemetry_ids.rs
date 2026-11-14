@@ -140,17 +140,22 @@ fn write_proposal(path: &Path, source: &Path, registry: &Path,
 }
 
 fn run(args: &[String]) -> Result<String, String> {
-    let (operation, source_path, registry_path, query) = match args {
+    let (operation, source_path, registry_path, query, moved_from) = match args {
         [command, source, registry] if command == "check" =>
-            (command.as_str(), source.as_str(), registry.as_str(), None),
+            (command.as_str(), source.as_str(), registry.as_str(), None, None),
         [command, source, registry, id] if command == "locate" =>
-            (command.as_str(), source.as_str(), registry.as_str(), Some(id.as_str())),
+            (command.as_str(), source.as_str(), registry.as_str(), Some(id.as_str()), None),
         [command, source, registry, destination] if command == "sync" =>
-            (command.as_str(), source.as_str(), registry.as_str(), Some(destination.as_str())),
+            (command.as_str(), source.as_str(), registry.as_str(), Some(destination.as_str()), None),
+        [command, source, registry, destination, moved] if command == "sync"
+                && moved.starts_with("--moved-from=") =>
+            (command.as_str(), source.as_str(), registry.as_str(),
+             Some(destination.as_str()), Some(&moved["--moved-from=".len()..])),
         _ => return Err(
             "usage: atto_telemetry_ids check <source.atto> <registry.json> | \
              locate <source.atto> <registry.json> <rid_...> | \
-             sync <source.atto> <registry.json> <new-registry.json>".into()),
+             sync <source.atto> <registry.json> <new-registry.json> \
+             [--moved-from=old/source.atto]".into()),
     };
     let source_path = Path::new(source_path);
     let registry_path = Path::new(registry_path);
@@ -162,7 +167,7 @@ fn run(args: &[String]) -> Result<String, String> {
         ("locate", Some(id)) => locate_source_routine(&source, &unit, &registry, id)?,
         ("sync", Some(destination)) => {
             let manifest = sync_source_ids(
-                &source, &unit, &registry, None, new_os_routine_id)?;
+                &source, &unit, &registry, moved_from, new_os_routine_id)?;
             write_proposal(Path::new(destination), source_path, registry_path, &manifest)?;
             return Ok(format!("proposed_registry_created: {destination}"));
         }
