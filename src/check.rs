@@ -17,6 +17,8 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod const_eval;
+use const_eval::ConstValue;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
@@ -379,8 +381,8 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
-    /// Exact slots of compile-time constant bindings (not just immutable names).
-    const_slots: BTreeSet<u32>,
+    /// Typed, evaluated compile-time constants keyed by lexical local slot.
+    const_values: BTreeMap<u32, ConstValue>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -1404,7 +1406,7 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
-            const_slots: BTreeSet::new(),
+            const_values: BTreeMap::new(),
             imports,
             data,
         }
@@ -1441,12 +1443,13 @@ impl<'a> FnCx<'a> {
     fn locally_constant(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Int(Some(_)) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
+            ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => true,
             ExprKind::Unary(_, inner) => self.locally_constant(inner),
             ExprKind::Binary(_, lhs, rhs) => self.locally_constant(lhs) && self.locally_constant(rhs),
             ExprKind::Ternary(cond, lhs, rhs) => self.locally_constant(cond)
                 && self.locally_constant(lhs) && self.locally_constant(rhs),
             ExprKind::Var(name) => self.lookup(name)
-                .is_some_and(|local| self.const_slots.contains(&local.slot)),
+                .is_some_and(|local| self.const_values.contains_key(&local.slot)),
             ExprKind::Member(base, variant) => {
                 // Only statically declared nominal enum variant ordinals.
                 matches!(&base.kind, ExprKind::Var(name)
@@ -1553,8 +1556,17 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
+                // Typed evaluation, including checked i64 arithmetic, happens
+                // before making the name visible. Replace the entire guest
+                // expression with a deterministic literal/enum value.
+                let constant = if *kind == BindKind::Const {
+                    Some(self.eval_const(&v, init.pos)?)
+                } else { None };
+                let v = if let Some(ref constant) = constant {
+                    self.materialize_const(constant, v.ty, init.pos)?
+                } else { v };
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *referent_mutable, *pos)?;
-                if *kind == BindKind::Const { self.const_slots.insert(slot); }
+                if let Some(value) = constant { self.const_values.insert(slot, value); }
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
