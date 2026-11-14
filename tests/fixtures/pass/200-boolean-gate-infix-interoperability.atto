@@ -1,0 +1,30 @@
+// expect-exit: 42
+// expect-stdout: left
+// expect-stdout: right
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: false
+// java: rejects
+// Integration proof: canonical infix precedence and gate-array calls use
+// the same typed Boolean semantics, source ordering, and short-circuit rules.
+fnc left(): bool {
+  stdio.println("left");
+  return true;
+}
+fnc right(): bool {
+  stdio.println("right");
+  return true;
+}
+fnc never(): bool {
+  stdio.println("WRONG: skipped operand evaluated");
+  return false;
+}
+pub fnc main(): int {
+  val g1 = And(false || left(), Or([true && right(), false ^^ true]), true);
+  val g2 = Or([true && (false || true), false && never()]);
+  val g3 = Xor(true ^^ false, false || false, true && true, false);
+  stdio.println(g1);
+  stdio.println(g2);
+  stdio.println(g3);
+  return (g1 && g2 && !g3) ? 42 : 0;
+}

@@ -1695,13 +1695,13 @@ impl Parser {
 
     fn parse_cond_and(&mut self) -> R<Expr> {
         let mut links = 0;
-        let mut left = self.parse_equality()?;
+        let mut left = self.parse_logic_or()?;
         while *self.peek() == Tok::Comma {
             let pos = self.pos();
             self.advance();
             self.grow(1)?;
             links += 1;
-            let right = self.parse_equality()?;
+            let right = self.parse_logic_or()?;
             left = Expr {
                 kind: ExprKind::Binary(BinOp::And, Box::new(left), Box::new(right)),
                 pos,
@@ -1722,7 +1722,7 @@ impl Parser {
     }
 
     fn parse_ternary(&mut self) -> R<Expr> {
-        let mut c = self.parse_equality()?;
+        let mut c = self.parse_logic_or()?;
         // Functional pipeline: value |> f |> g(extra) lowers to g(f(value), extra).
         // Only ordinary named functions are admitted: no computed callees,
         // receiver calls or actor piping. This preserves argument evaluation
@@ -1770,6 +1770,64 @@ impl Parser {
             _ => {}
         }
         Ok(c)
+    }
+
+
+    // Canonical boolean precedence (tightest to loosest): &&, ^^, ||.
+    // The old comma/pipe condition grammar is handled separately for
+    // compatibility; it remains eager until all backends migrate.
+    fn parse_logic_or(&mut self) -> R<Expr> {
+        let mut links = 0;
+        let mut left = self.parse_logic_xor()?;
+        while *self.peek() == Tok::OrOr {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_logic_xor()?;
+            left = Expr {
+                kind: ExprKind::Binary(BinOp::LogicOr, Box::new(left), Box::new(right)),
+                pos,
+            };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_logic_xor(&mut self) -> R<Expr> {
+        let mut links = 0;
+        let mut left = self.parse_logic_and()?;
+        while *self.peek() == Tok::XorXor {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_logic_and()?;
+            left = Expr {
+                kind: ExprKind::Binary(BinOp::LogicXor, Box::new(left), Box::new(right)),
+                pos,
+            };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_logic_and(&mut self) -> R<Expr> {
+        let mut links = 0;
+        let mut left = self.parse_equality()?;
+        while *self.peek() == Tok::AndAnd {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_equality()?;
+            left = Expr {
+                kind: ExprKind::Binary(BinOp::LogicAnd, Box::new(left), Box::new(right)),
+                pos,
+            };
+        }
+        self.height -= links;
+        Ok(left)
     }
 
     fn parse_equality(&mut self) -> R<Expr> {
@@ -1936,6 +1994,32 @@ impl Parser {
         Ok(args)
     }
 
+    /// A bracketed list is accepted only as the sole argument to a named
+    /// Boolean gate. This is intentional syntax sugar, not a first-class array
+    /// type or a general-purpose list expression.
+    fn parse_gate_args(&mut self) -> R<Vec<Expr>> {
+        if *self.peek_at(1) != Tok::LBracket {
+            return self.parse_args();
+        }
+        self.expect(Tok::LParen, "'('")?;
+        self.expect(Tok::LBracket, "'['")?;
+        let mut args = Vec::new();
+        if *self.peek() != Tok::RBracket {
+            loop {
+                args.push(self.parse_expr()?);
+                if args.len() > MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many Boolean gate elements"));
+                }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Tok::RBracket, "']' to close Boolean gate list")?;
+        self.expect(Tok::RParen, "')' to close Boolean gate call")?;
+        Ok(args)
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
         let mut chain = 0u32;
         let r = self.parse_postfix_chain(&mut chain);
@@ -1975,7 +2059,11 @@ impl Parser {
                         ExprKind::Var(n) => n.clone(),
                         _ => return Err(unsupported(self.pos(), "calling a computed value")),
                     };
-                    let args = self.parse_args()?;
+                    let args = if matches!(name.as_str(), "And" | "Or" | "Xor") {
+                        self.parse_gate_args()?
+                    } else {
+                        self.parse_args()?
+                    };
                     e = Expr {
                         kind: ExprKind::Call(name, args),
                         pos,

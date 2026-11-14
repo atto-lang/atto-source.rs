@@ -1,0 +1,7 @@
+// expect-error: E_TYPE
+// java: rejects
+// Static checking must not be bypassed by an earlier true OR branch.
+pub fnc main(): int {
+  val result = Or([true, false || 1]);
+  return 0;
+}

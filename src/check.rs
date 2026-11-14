@@ -2431,7 +2431,7 @@ impl<'a> FnCx<'a> {
                     }
                     Type::Bool
                 }
-                BinOp::And | BinOp::Or => {
+                BinOp::And | BinOp::Or | BinOp::LogicAnd | BinOp::LogicOr | BinOp::LogicXor => {
                     if a.ty != Type::Bool || b.ty != Type::Bool {
                         return Err(type_err(pos, format!("condition operator '{}' needs bool operands", op.symbol())));
                     }
@@ -3025,22 +3025,38 @@ impl<'a> FnCx<'a> {
             _ => None,
         } {
             if self.lookup(name).is_none() {
-                if args.len() != 2 {
-                    return Err(Diagnostic::new(
-                        pos,
-                        "E_ARITY",
-                        format!("{name} takes 2 arguments, found {}", args.len()),
-                    ));
+                // All operands are checked in source order, even those that
+                // short-circuit at runtime. The gate grammar caps input at
+                // MAX_PARAMS (including the bracketed-list sugar form).
+                let mut typed = Vec::with_capacity(args.len());
+                for arg in args {
+                    let value = self.value(arg)?;
+                    if value.ty != Type::Bool {
+                        return Err(type_err(arg.pos, format!("{name} needs bool arguments")));
+                    }
+                    typed.push(value);
                 }
-                let a = self.value(&args[0])?;
-                let c = self.value(&args[1])?;
-                if a.ty != Type::Bool || c.ty != Type::Bool {
-                    return Err(type_err(pos, format!("{name} needs bool arguments")));
+                let bool_literal = |value| TE { e: TExpr::Bool(value), ty: Type::Bool };
+                // Fold from the right to preserve left-to-right runtime
+                // evaluation. AND/OR use typed Wasm conditionals so the next
+                // operand is skipped; XOR remains eager and parity-based.
+                // The identities also define empty and unary gate calls.
+                let mut result = bool_literal(matches!(b, Builtin::And));
+                for item in typed.into_iter().rev() {
+                    let expr = match b {
+                        Builtin::And => TExpr::Ternary(
+                            Box::new(item), Box::new(result), Box::new(bool_literal(false)),
+                        ),
+                        Builtin::Or => TExpr::Ternary(
+                            Box::new(item), Box::new(bool_literal(true)), Box::new(result),
+                        ),
+                        Builtin::Xor => TExpr::Builtin(
+                            Builtin::Xor, Box::new(item), Box::new(result),
+                        ),
+                    };
+                    result = TE { e: expr, ty: Type::Bool };
                 }
-                return Ok(TE {
-                    e: TExpr::Builtin(b, Box::new(a), Box::new(c)),
-                    ty: Type::Bool,
-                });
+                return Ok(result);
             }
         }
         if name == "stdio.print" || name == "stdio.println" {

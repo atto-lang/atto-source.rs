@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+pub fnc main(): int {
+  stdio.println(And(true, 1, false));
+  return 0;
+}
