@@ -1,0 +1,10 @@
+// expect-exit: 8
+// java: target-only
+pub fnc main(): int {
+  val result = loop (val n: int = 0) {
+    if n eq 4 { break n * 2; }
+    if n > 99 { break 0; }
+    recur(n + 1);
+  };
+  return result;
+}

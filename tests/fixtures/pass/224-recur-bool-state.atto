@@ -1,0 +1,10 @@
+// expect-exit: 0
+// java: target-only
+pub fnc main(): int {
+  return loop (val on: bool = false, val i: int = 0) {
+    if i eq 2 {
+      if on { break 1; } else { break 0; }
+    }
+    recur(!on, i + 1);
+  };
+}
