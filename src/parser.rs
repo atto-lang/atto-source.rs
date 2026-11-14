@@ -197,8 +197,12 @@ const UNLOWERED_OWNERSHIP_TYPES: &[&str] = &[
     "UnsafeCell", "Cell", "RefCell",
 ];
 
+pub fn is_unlowered_ownership_intrinsic(name: &str) -> bool {
+    UNLOWERED_OWNERSHIP_TYPES.contains(&name)
+}
+
 fn reject_intrinsic_type_name(name: &str, pos: Pos) -> R<()> {
-    if UNLOWERED_OWNERSHIP_TYPES.contains(&name) {
+    if is_unlowered_ownership_intrinsic(name) {
         return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
             format!("ownership or synchronization intrinsic '{name}' is not lowered by this compiler")));
     }
