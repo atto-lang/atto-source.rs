@@ -32,6 +32,31 @@ cargo run --bin oresc -- --compile-with-source-ids \
   target/source-ids-main.map.json
 ~~~
 
+### Strict Rust source-ID authoring checks and lookup
+
+The Rust-owned `atto_telemetry_ids` binary provides **compiler-checked**
+validation and routine lookup; it does not require or invoke any other AttoLang
+compiler backend:
+
+~~~sh
+cargo test --locked --bin atto_telemetry_ids
+cargo test --locked --lib checked_routine_lookup_matches_independent_scalar_mir
+cargo run --locked --bin atto_telemetry_ids -- check \
+  examples/source-ids-main.atto examples/source-ids-main.registry.json
+cargo run --locked --bin atto_telemetry_ids -- locate \
+  examples/source-ids-main.atto examples/source-ids-main.registry.json \
+  rid_a458b8330ea5475ba8a0cae2c64b48bc
+~~~
+
+The tool resolves both inputs inside the current package root, rejects
+nonregular/symlinked inputs, and derives the logical source unit from its
+canonical on-disk location rather than trusting a user-supplied name.
+`locate` verifies the exact checked scalar MIR and can report a **routine ID
+only**. It refuses `sid_` lookups because there is no compiled log-site lowering
+yet. Its result says `verified_source_only_not_deployed_binary`; it is not an
+artifact attestation. `sync` and the final TOML authoring manifest are **not
+implemented**: source-controlled JSON remains the bootstrap interchange format.
+
 The source-controlled JSON registry is a bounded candidate interchange form
 for the proposed \`.atto.telemetry.ids.toml\` authoring surface. It requires
 \`atto.telemetry.source-ids.v1\`, lowercase 128-bit \`rid_\` IDs, a package-relative
