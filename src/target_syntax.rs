@@ -449,8 +449,7 @@ fn validate_callback(
             return Err(diagnostic(toks, i, "E_BORROW",
                 "suspension, spawning and deferred effects are forbidden during critical access"));
         }
-        if word_at(toks, i, "handle_state") ||
-            (word_at(toks, i, "self") && at(toks, i+1, &Tok::Dot)) {
+        if word_at(toks, i, "handle_state") || word_at(toks, i, "self") {
             return Err(diagnostic(toks, i, "E_BORROW",
                 "nested actor state access or self capture is forbidden in critical callback"));
         }
@@ -464,6 +463,14 @@ fn validate_callback(
                     "state field member access requires a field name"));
             }
             if !write {
+                // Prefix operators mutate state as surely as postfix operators.
+                // Checking only the tokens after s.field would admit ++s.field
+                // and --s.field under a shared critical-read lease.
+                if i > k && matches!(toks.get(i-1).map(|t| &t.tok),
+                    Some(Tok::PlusPlus | Tok::MinusMinus)) {
+                    return Err(diagnostic(toks, i-1, "E_READONLY",
+                        "critical-read cannot mutate actor state"));
+                }
                 if matches!(toks.get(i+3).map(|t| &t.tok),
                     Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
                     return Err(diagnostic(toks, i+3, "E_READONLY",
@@ -509,8 +516,19 @@ fn validate_receiver_body(
             let close = close_paren(toks, i+3, end)?;
             resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
                 member, count_args(toks, i+3, close)?, false, toks[i].pos)?;
-            i = close + 1;
+            // The call header is valid, but its argument expressions may
+            // still contain forbidden direct state access, receiver escapes,
+            // or nested method calls. Walk them in the outer scan instead of
+            // skipping directly to the closing parenthesis.
+            i += 3;
             continue;
+        }
+        // A raw receiver value is never transferable, returnable or aliasable
+        // in this syntax-only target; only self.method(...) and
+        // self.handle_state(...) are admitted above.
+        if word_at(toks, i, "self") {
+            return Err(diagnostic(toks, i, "E_ESCAPE",
+                "actor receiver cannot be aliased, passed or returned by value"));
         }
         i += 1;
     }
