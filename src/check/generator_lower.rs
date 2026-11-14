@@ -14,6 +14,8 @@
 use super::*;
 use crate::generator_cfg::{self, Instruction};
 
+mod liveness;
+
 // Live slot bound comes from the shared checker/guest frame ABI.
 pub(super) const GENERATOR_TYPED_CFG_LIMIT: usize = 128;
 
@@ -222,5 +224,6 @@ pub(super) fn lower(f: &Func) -> R<Option<TGenerator>> {
         steps.push(step);
     }
 
-    Ok(Some(TGenerator { function: 0, steps, locals }))
+    let live_after = liveness::analyze(f, &steps, locals)?;
+    Ok(Some(TGenerator { function: 0, steps, locals, live_after }))
 }

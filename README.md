@@ -24,7 +24,20 @@ its resume PC and yields one item. The typed `for value in values() do ...
 done` loop owns a **fresh** iterator and automatically calls the guest
 close operation on completion, `break`, and early function `return`.
 Closed frames are recycled with incremented generations, detecting stale
-handles and forbidding a double insertion into the free list.
+handles and forbidding a double insertion into the free list. Before
+entering the free list, close transitions through CLOSING, detaches and closes
+an active child, then wipes the last yielded value, captured scalar parameter,
+counter and all 16 local slots. Header generation survives closure solely
+for stale-handle fencing. The checked handle verifier also checks the actual
+allocated arena high-water mark, not only the fixed Wasm memory limit.
+
+The typed integer continuation CFG now performs fixed-point definite
+initialization (intersection across all predecessor paths) and may-liveness
+(union across every successor, including loop backedges). After each yield,
+guest Wasm clears integer slots proven dead on every future path while
+retaining loop-carried values. Object/borrowed values are still rejected:
+this scalar-only analysis does **not** establish general borrow safety or
+exception/cancellation-safe unwinding.
 
 Delegation creates a child frame only on the first pull through its
 `yield*` state, advances that child by at most one element per outer pull,
@@ -64,8 +77,8 @@ independently gated and must not relabel `yield*` previews as runnable.
 The exact-blob alternate-runner conformance tests in
 `tests/generator-execution.mjs` run real guest Wasm, verify byte-identical
 native and wasm32 compiler output, 12,000-iteration frame reuse, early return and break cleanup, empty
-generators, lazy nested `yield*`, cycle rejection and unsupported
-construct rejection.
+generators, lazy nested `yield*`, cycle rejection, exact closed-frame
+zeroization/generation checks, and unsupported construct rejection.
 
 ## Browser tagged ADT milestone (concrete generic profiles)
 

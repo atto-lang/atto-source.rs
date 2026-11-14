@@ -77,6 +77,8 @@ for (const [name, expected, output] of [
   ['141-generator-break-continue-live.atto', 8n, ''],
   ['142-generator-multi-local-frame-reuse.atto', 42n, ''],
   ['144-generator-typed-arithmetic-yield.atto', 32n, ''],
+  ['146-generator-liveness-after-yield.atto', 18n, ''],
+  ['147-generator-close-scrubs-delegates.atto', 14n, ''],
 ]) {
   const file = join('tests/fixtures/pass', name);
   const src = readFileSync(file, 'utf8');
@@ -135,4 +137,40 @@ for (const [path, expectedPanic] of [
   assert.equal(instance.exports.panic_code.value, expectedPanic,
     'guest panic must preserve the expected checked error category');
   console.log('PASS expected guest Wasm panic', expectedPanic, path);
+}
+
+
+// Inspect the actual native guest Wasm arena after early closure and reuse.
+// The two 184-byte frames start at offsets 8 and 192 (no data strings or
+// other allocations in this fixture). Parent and child close exactly once;
+// reuse advances each generation, and no captured/yielded payload survives.
+{
+  const path = 'tests/fixtures/pass/147-generator-close-scrubs-delegates.atto';
+  const source = readFileSync(path, 'utf8');
+  const native = viaNativeCompiler(path);
+  const wasmHost = viaWasmCompiler(source);
+  assert.equal(native.rejected, false, native.diagnostic || 'native compilation');
+  assert.equal(wasmHost.rejected, false, 'wasm-host compilation');
+  assert.deepEqual(native.wasm, wasmHost.wasm, 'lifecycle guest byte parity');
+  const mod = new WebAssembly.Module(native.wasm);
+  const imports = WebAssembly.Module.imports(mod);
+  assert.deepEqual(imports, [], 'lifecycle test has no external guest imports');
+  const instance = new WebAssembly.Instance(mod, {});
+  assert.equal(instance.exports.main(), 14n);
+  assert.equal(instance.exports.panic_code.value, 0);
+  const view = new DataView(instance.exports.memory.buffer);
+  const frameSize = 184;
+  for (const offset of [8, 8 + frameSize]) {
+    assert.equal(view.getUint32(offset + 8, true), 5, 'CLOSED frame');
+    assert.equal(view.getUint32(offset + 12, true), 2, 'generation bumped upon reuse');
+    assert.equal(view.getUint32(offset + 4, true), 0, 'closed frame cannot resume at stale PC');
+    for (const slot of [16, 32, 40, 48, ...Array.from({ length: 16 }, (_, i) => 56 + 8 * i)]) {
+      assert.equal(view.getBigInt64(offset + slot, true), 0n,
+        'frame must be zeroized at offset ' + (offset + slot));
+    }
+  }
+  assert.equal(view.getUint32(8 + 24, true), 192,
+    'parent free-list next points to child exactly once');
+  assert.equal(view.getUint32(192 + 24, true), 0, 'child next is null');
+  console.log('PASS nested iterator deterministic close, generation bump, and frame scrub');
 }
