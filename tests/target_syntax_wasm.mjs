@@ -60,5 +60,12 @@ rejects('declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(
 rejects('declare actor Foo; mtd (mut self: Foo) foo(): void { self.handle_state(critical-read |s| -> await something()); }','E_BORROW');
 rejects('declare actor Foo; mtd (Foo self) foo(): void {} pub fnc main(): int {val a = spawn Foo(); a.foo();return 0;}','E_ISOLATION');
 rejects('declare actor Foo; mtd (mut self: Foo) foo(): void {self.handle_state(critical-write |s| -> {s.count = 1;});}','E_UNSUPPORTED');
-console.log('PASS exact browser Wasm ABI fail-closed and state preflight tests (17)');
+rejects('declare actor Worker; mtd (Worker self) bad(Mystery value): void {}','E_UNKNOWN_TYPE');
+rejects('declare actor Worker; mtd (Worker self) bad(Worker value): void {}','E_TYPE');
+rejects('declare actor Worker; mtd (Worker self) bad(ActorRef<Missing> value): void {}','E_UNBOUND');
+rejects('declare actor Worker; mtd (Worker self) bad(void value): void {}','E_TYPE');
+rejects('declare actor Worker; mtd (Worker self) bad(int a,bool a): void {}','E_DUPLICATE');
+rejects('declare actor Worker; mtd (Worker self) bad(): Mystery {}','E_UNKNOWN_TYPE');
+rejects('declare actor Worker; mtd (Worker self) good(ActorRef<Worker> value): void {}','E_UNSUPPORTED');
+console.log('PASS exact browser Wasm ABI fail-closed, state and typed signature tests (24)');
 
