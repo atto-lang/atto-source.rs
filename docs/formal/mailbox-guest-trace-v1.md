@@ -27,9 +27,11 @@ its actor is closed. For these successful fixtures no accepted delivery can
 silently disappear or be double-settled.
 
 The oracle rejects unknown actor IDs, stale generations, forged actions,
-duplicate admission, wrong FIFO identity, phantom dispatch, wrong/double
-settlement, close-before-drain, post-close sends, missing terminal events,
-unadmitted messages and malformed IDs. At least one actor and two successful
+duplicate admission, nonconsecutive message IDs, wrong FIFO identity, phantom
+dispatch, wrong/double settlement, close-before-drain, post-close sends,
+missing terminal events, unadmitted messages, unexpected trace fields,
+capacity overflow, late spawns and scheduling histories impossible for this
+serial browser host. Its resource limits are shared with the test host. At least one actor and two successful
 deliveries must actually execute, preventing vacuous green fixtures.
 
 ### Commands
