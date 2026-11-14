@@ -1406,7 +1406,7 @@ fn breaks(body: &[TStmt]) -> bool {
 
 /// Ensure recur appears only at the lexical end of its branch, and the
 /// state-loop expression cannot fall through with an uninitialized value.
-fn validate_recur_tail(body: &[Stmt], tail: bool) -> R<bool> {
+fn validate_recur_tail(body: &[Stmt], tail: bool, origin: Pos) -> R<bool> {
     let mut terminated = false;
     for (i, stmt) in body.iter().enumerate() {
         let last = tail && i + 1 == body.len();
@@ -1419,18 +1419,18 @@ fn validate_recur_tail(body: &[Stmt], tail: bool) -> R<bool> {
                 true
             }
             Stmt::BreakValue(..) | Stmt::Return(..) | Stmt::Throw(..) => true,
-            Stmt::If { arms, otherwise, .. } => {
+            Stmt::If { arms, otherwise, pos } => {
                 let mut all = true;
                 for (_, arm) in arms {
-                    all &= validate_recur_tail(arm, last)?;
+                    all &= validate_recur_tail(arm, last, *pos)?;
                 }
                 let other_terminates = match otherwise {
-                    Some(other) => validate_recur_tail(other, last)?,
+                    Some(other) => validate_recur_tail(other, last, *pos)?,
                     None => false,
                 };
                 all && other_terminates
             }
-            Stmt::Block(inner) => validate_recur_tail(inner, last)?,
+            Stmt::Block(inner) => validate_recur_tail(inner, last, origin)?,
             Stmt::Loop { pos, .. } | Stmt::While { pos, .. }
             | Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } => {
                 return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
@@ -1440,7 +1440,7 @@ fn validate_recur_tail(body: &[Stmt], tail: bool) -> R<bool> {
         };
     }
     if tail && !terminated {
-        return Err(Diagnostic::new(Pos::default(), "E_RECUR_TAIL",
+        return Err(Diagnostic::new(origin, "E_RECUR_TAIL",
             "immutable loop must end in break value, recur(...), return, throw, or exhaustive if"));
     }
     Ok(terminated)
@@ -1540,7 +1540,7 @@ impl<'a> FnCx<'a> {
     /// Typed immutable loop expression. Recur passes state via scratch locals
     /// so simultaneous swaps and source-order effects are preserved.
     fn state_loop(&mut self, bindings: &[Stmt], body: &[Stmt], pos: Pos) -> R<TE> {
-        validate_recur_tail(body, true)?;
+        validate_recur_tail(body, true, pos)?;
         self.scopes.push(Vec::new());
         let result = (|| {
             let mut init = Vec::new();
