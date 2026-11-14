@@ -228,8 +228,8 @@ pub struct TFunc {
     pub body: Vec<TStmt>,
 }
 
-/// Fully resolved literal-yield or zero-argument generator-delegation step.
-/// A delegated child is created only when the outer next() reaches this PC.
+/// Typed, bounded suspension instructions for the admitted guest-Wasm profile.
+/// Each instruction is addressed by a stable generator resume PC.
 #[derive(Clone, Debug)]
 pub enum TGenStep {
     Yield(TE),
@@ -630,9 +630,9 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
-    // The lexer/parser preserve explicit generator AST nodes, but guest ABI v2
-    // has no bounded continuation state, iterator next or close operation.
-    // Fail closed before signature registration and never emit eager iterators.
+    // Validate the bounded CFG and integer-only suspension/lifetime profile
+    // before registering signatures. Reject unsupported generator effects
+    // before emission; never substitute eager iterator materialization.
     for f in &p.funcs {
         if f.is_generator {
             precheck_generator_body(&f.body, &p.funcs)?;
