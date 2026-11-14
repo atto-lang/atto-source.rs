@@ -5,6 +5,8 @@ use crate::diag::Pos;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Type {
     Int,
+    /// Runtime-global immutable identity, represented as a tagged i64 in the guest ABI.
+    Symbol,
     Bool,
     Void,
     /// `float` / `f64`: IEEE-754 binary64 (Java `double`).
@@ -40,6 +42,7 @@ impl Type {
     pub fn name(self) -> &'static str {
         match self {
             Type::Int => "int",
+            Type::Symbol => "Symbol",
             Type::Bool => "bool",
             Type::Void => "void",
             Type::Float => "float",
@@ -59,6 +62,8 @@ pub struct Program {
     pub classes: Vec<ClassDecl>,
     pub enums: Vec<EnumDecl>,
     pub actors: Vec<ActorDecl>,
+    /// Statically declared symbols; only public symbols are admitted for executable guest code.
+    pub symbols: Vec<SymbolDecl>,
     /// Optional non-executable out-of-line actor interface in the production AST.
     /// Executable actor code still uses the normal actors field above.
     pub actor_interface: Option<ActorInterface>,
@@ -66,6 +71,14 @@ pub struct Program {
     pub type_names: Vec<(String, Pos)>,
 }
 
+
+/// Static declaration of an immutable Symbol identity.
+#[derive(Clone, Debug)]
+pub struct SymbolDecl {
+    pub name: String,
+    pub public: bool,
+    pub pos: Pos,
+}
 
 /// Target-only nominal actor interface retained in the production Program AST.
 /// Indices in method ActorRef types refer to forwards, NOT executable actors.
@@ -272,6 +285,7 @@ pub enum Pattern {
     Wild,
     Int(i64),
     Bool(bool),
+    Symbol(String),
     /// lower-case name: binds the subject
     Bind(String),
     /// `Enum.Variant` (oreslang-source.llvm v1 enum design spelling)
@@ -340,6 +354,8 @@ pub enum ExprKind {
     Float(u64),
     Bool(bool),
     Str(String),
+    /// #ready refers to a predeclared global Symbol, not a string or int.
+    Symbol(String),
     Var(String),
     Unary(UnOp, Box<Expr>),
     /// Unary call-site trap: evaluates its operand once and wraps only
