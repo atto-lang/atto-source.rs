@@ -257,6 +257,11 @@ pub enum Stmt {
     /// Pull-driven `for value in generator do ... done` iteration.
     ForIn {
         name: String,
+        /// An explicit element type in 'for (Type item : source)' or
+        /// 'for (val item: Type in source)'. None infers the iterator item.
+        item_type: Option<Type>,
+        /// Per-iteration binding mutability: bare and val are immutable.
+        mutable: bool,
         source: Expr,
         body: Vec<Stmt>,
         pos: Pos,
