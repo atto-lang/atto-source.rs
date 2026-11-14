@@ -16,6 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
+mod generator_lower;
+
 pub const MAX_LOCALS: usize = 1024;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
 
@@ -231,6 +233,10 @@ pub enum TGenStep {
     Yield(TE),
     Delegate { function: u32, arg: TGenArg },
     CountTo { start: i64 },
+    Set { local: u32, value: TE },
+    Guard { condition: TE, on_false: u32 },
+    Jump { to: u32 },
+    Done,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -244,6 +250,8 @@ pub enum TGenArg {
 pub struct TGenerator {
     pub function: u32,
     pub steps: Vec<TGenStep>,
+    /// Number of arena-resident i64 locals retained across next() calls.
+    pub locals: u32,
 }
 
 /// One actor type: its state initializers and receive handler.
@@ -655,9 +663,9 @@ pub fn check(p: &Program) -> R<TProgram> {
                         _ => false,
                     }
                 });
-            if !admitted {
+            if !admitted && generator_lower::lower(f)?.is_none() {
                 return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
-                    "this generator requires typed suspension locals, parameters or multiple delegates"));
+                    "generator source requires typed, owned continuation lowering not yet implemented"));
             }
         }
         if (!f.is_generator && f.ret == Type::GeneratorInt)
@@ -928,9 +936,16 @@ pub fn check(p: &Program) -> R<TProgram> {
     for (i, f) in p.funcs.iter().enumerate() {
         let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
         if f.is_generator {
-            // Resolve child generator function IDs at compile time. The
-            // runtime will materialize a child handle only on the first pull
-            // through its delegated resume PC.
+            if let Some(mut plan) = generator_lower::lower(f)? {
+                plan.function = i as u32;
+                generators.push(plan);
+                funcs[i] = Some(TFunc {
+                    name: f.name.clone(), params, ret,
+                    locals: Vec::new(), body: Vec::new(),
+                });
+                continue;
+            }
+            // Original bounded CountTo/direct yield* fallback.
             let steps = f.body.iter().filter_map(|stmt| match stmt {
                 Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) =>
                     Some(TGenStep::Yield(TE {
@@ -951,7 +966,7 @@ pub fn check(p: &Program) -> R<TProgram> {
                 }),
                 _ => None,
             }).collect();
-            generators.push(TGenerator { function: i as u32, steps });
+            generators.push(TGenerator { function: i as u32, steps, locals: 0 });
             funcs[i] = Some(TFunc {
                 name: f.name.clone(), params, ret,
                 locals: Vec::new(), body: Vec::new(),
