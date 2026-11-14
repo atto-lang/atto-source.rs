@@ -118,7 +118,7 @@ enum Kind {
     Identifier,
     // One lexer skip rule avoids duplicated Logos attributes and preserves
     // both ASCII whitespace and line comments (including CR-only lines).
-    #[regex(r"[ \t\n\r\f]+|//[^\r\n]*", logos::skip)]
+    #[regex(r"[ \t\n\r\f]+|//[^\r\n]*", logos::skip, allow_greedy = true)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
