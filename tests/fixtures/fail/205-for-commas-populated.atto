@@ -1,0 +1,8 @@
+// expect-error: E_SYNTAX
+// java: rejects
+pub fnc main(): int {
+  for (let i = 0, i < 4, i++) do
+    break;
+  end
+  return 0;
+}

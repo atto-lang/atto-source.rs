@@ -1,0 +1,6 @@
+// expect-error: E_SYNTAX
+// java: rejects
+pub fnc main(): int {
+  for (,) do break; end
+  return 0;
+}

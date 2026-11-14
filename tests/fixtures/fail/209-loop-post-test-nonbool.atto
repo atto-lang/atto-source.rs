@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+  loop { break; } while (42);
+  return 0;
+}
