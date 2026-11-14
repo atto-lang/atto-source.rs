@@ -1,7 +1,7 @@
-// Java Parser.parseReferentMutability: 'val mut' is a duplicate qualifier
-// expect-error: E_SYNTAX
-// java: rejects
+// val mut permits field mutation but never rebinding the name.
+// expect-error: E_IMMUTABLE
 pub fnc main(): int {
   val mut x = 1;
+  x = 2;
   return x;
 }
