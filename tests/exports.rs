@@ -92,3 +92,81 @@ fn export_resolves_all_overloads_by_name() {
     let source = "export pub fnc value;\n        fnc value(): int { return 1; }\n        fnc value(int x): int { return x; }\n        pub fnc main(): int { return value() + value(2); }";
     assert!(compile(source).is_ok());
 }
+
+fn read_uleb(bytes: &[u8], offset: &mut usize) -> usize {
+    let mut value = 0usize;
+    for shift in (0..=63).step_by(7) {
+        let byte = *bytes.get(*offset).expect("truncated wasm LEB");
+        *offset += 1;
+        value |= ((byte & 0x7f) as usize).checked_shl(shift).expect("LEB overflow");
+        if byte & 0x80 == 0 { return value; }
+    }
+    panic!("unterminated wasm LEB");
+}
+
+fn read_name(bytes: &[u8], offset: &mut usize) -> String {
+    let len = read_uleb(bytes, offset);
+    let end = offset.checked_add(len).expect("overflow");
+    let value = bytes.get(*offset..end).expect("truncated wasm name");
+    *offset = end;
+    std::str::from_utf8(value).expect("utf8").to_owned()
+}
+
+fn wasm_sections(bytes: &[u8]) -> Vec<(u8, &[u8])> {
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"), "Wasm header");
+    let mut out = vec![];
+    let mut pos = 8;
+    while pos < bytes.len() {
+        let id = bytes[pos];
+        pos += 1;
+        let len = read_uleb(bytes, &mut pos);
+        let end = pos.checked_add(len).expect("section overflow");
+        out.push((id, bytes.get(pos..end).expect("section bounds")));
+        pos = end;
+    }
+    out
+}
+
+#[test]
+fn export_metadata_is_structurally_typed_and_pkg_is_not_a_wasm_export() {
+    let wasm = compile(&format!("{EXPORTS}{DECLS}")).expect("compile");
+    let sections = wasm_sections(&wasm);
+    let mut metadata = vec![];
+    let mut host_exports = vec![];
+    for (id, section) in sections {
+        let mut pos = 0;
+        if id == 0 {
+            let section_name = read_name(section, &mut pos);
+            if section_name == "atto.exports.v1" {
+                let count = read_uleb(section, &mut pos);
+                for _ in 0..count {
+                    let symbol = read_name(section, &mut pos);
+                    let kind = *section.get(pos).expect("missing export kind");
+                    let visibility = *section.get(pos + 1).expect("missing visibility");
+                    pos += 2;
+                    metadata.push((symbol, kind, visibility));
+                }
+                assert_eq!(pos, section.len(), "no trailing metadata bytes");
+            }
+        } else if id == 7 {
+            let count = read_uleb(section, &mut pos);
+            for _ in 0..count {
+                let symbol = read_name(section, &mut pos);
+                pos += 1; // export kind (function/table/memory/global)
+                let _index = read_uleb(section, &mut pos);
+                host_exports.push(symbol);
+            }
+            assert_eq!(pos, section.len(), "host export section must be well-formed");
+        }
+    }
+    assert_eq!(metadata, vec![
+        ("Bar".to_string(), 1, 2),
+        ("Foo".to_string(), 1, 1),
+        ("calculate".to_string(), 2, 1),
+    ]);
+    assert!(host_exports.iter().any(|name| name == "main"));
+    for name in ["Bar", "Foo", "calculate"] {
+        assert!(!host_exports.iter().any(|s| s == name),
+            "language export {name} must not become a host Wasm export");
+    }
+}
