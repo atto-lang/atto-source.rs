@@ -246,3 +246,170 @@ fn lexical_tokens_prevent_fake_state_reads_from_comments_or_strings() {
             self.handle_state(critical-write |s| -> {s.count = 1;});
         }");
 }
+
+#[test]
+fn receiver_arguments_reject_mismatched_delimiters_and_empty_slots_without_panics() {
+    // This parser also handles untrusted editor/browser input. It must never
+    // panic even when the target-only receiver grammar sees broken expressions.
+    let prelude = "declare actor Foo;
+        mtd (Foo self) foo(int a, int b): void {}";
+    for call in [
+        "self.foo(1,]);",
+        "self.foo([1, 2);",
+        "self.foo(, 1);",
+        "self.foo(1, );",
+        "self.foo(1,, 2);",
+        "self.foo([1, 2], );",
+        "self.foo({k: 1], 2});",
+    ] {
+        let source = format!("{prelude}
+            mtd (Foo self) run(): void {{ {call} }}");
+        let result = std::panic::catch_unwind(|| {
+            parse_target_declarations(&lex(&source).unwrap())
+        });
+        assert!(result.is_ok(), "parser panicked for {call}");
+        let diag = result.unwrap().unwrap_err();
+        assert_eq!(diag.code, "E_SYNTAX", "{call}: {diag}");
+    }
+}
+
+#[test]
+fn receiver_arguments_count_only_top_level_commas_and_bound_nesting() {
+    parse("declare actor Foo;
+        mtd (Foo self) foo(int a, int b): void {}
+        mtd (Foo self) run(): void {
+            self.foo((1 + 2), [3, 4]);
+            self.foo({ k: 1, v: 2 }, (3 + 4));
+        }");
+    let deeply_nested = format!(
+        "declare actor Foo; mtd (Foo self) foo(int a, int b): void {{}}
+        mtd (Foo self) run(): void {{ self.foo({}1{}, 2); }}",
+        "(".repeat(129), ")".repeat(129)
+    );
+    reject(&deeply_nested, "E_NESTING");
+}
+
+#[test]
+fn nested_receiver_arguments_are_preflighted_not_skipped() {
+    let prefix = "declare actor Foo;
+        mtd (Foo self) foo(int left, int right): void {}
+        mtd (Foo self) value(): int { return 1; }";
+    for (snippet, code) in [
+        ("self.foo(self.count, 1);", "E_SEALED"),
+        ("self.foo(self, 1);", "E_ESCAPE"),
+        ("self.foo(value(self), 1);", "E_ESCAPE"),
+        ("self.foo(self.missing(), 1);", "E_UNBOUND"),
+        ("self.foo(self.foo(1), 1);", "E_UNBOUND"),
+        ("self.foo(self.handle_state(critical-write |s| -> { s.count = 5; }), 1);", "E_MUTABILITY"),
+    ] {
+        let source = format!("{prefix}
+            mtd (Foo self) run(): void {{ {snippet} }}");
+        let d = parse_target_declarations(&lex(&source).unwrap()).unwrap_err();
+        assert_eq!(d.code, code, "{snippet}: {d}");
+    }
+    parse("declare actor Foo;
+        mtd (Foo self) foo(int left, int right): void {}
+        mtd (Foo self) value(): int { return 1; }
+        mtd (Foo self) run(): void {
+            self.foo(self.value(), 1);
+            self.foo(self.handle_state(critical-read |s| -> s.count), 2);
+        }");
+}
+
+#[test]
+fn receiver_and_read_lease_cannot_escape_through_critical_callbacks() {
+    for snippet in [
+        "val alias = self;",
+        "return self;",
+        "sink(self);",
+    ] {
+        let source = format!("declare actor Foo;
+            mtd (Foo self) run(): void {{
+                self.handle_state(critical-read |s| -> {{ {snippet} }});
+            }}");
+        reject(&source, "E_BORROW");
+    }
+    for op in ["++", "--"] {
+        let source = format!("declare actor Foo;
+            mtd (mut self: Foo) run(): void {{
+                self.handle_state(critical-read |s| -> {{ {op}s.count; }});
+            }}");
+        reject(&source, "E_READONLY");
+    }
+    parse("declare actor Foo;
+        mtd (mut self: Foo) run(): void {
+            self.handle_state(critical-write |s| -> { ++s.count; });
+        }");
+    reject("declare actor Foo;
+        mtd (self: Foo) run(): void {
+            self.handle_state(critical-write |s| -> { ++s.count; });
+        }", "E_MUTABILITY");
+}
+
+#[test]
+fn raw_receiver_values_never_escape_target_only_method_bodies() {
+    for expr in ["val alias = self;", "return self;", "sink(self);"] {
+        let source = format!("declare actor Foo;
+            mtd (Foo self) run(): void {{ {expr} }}");
+        reject(&source, "E_ESCAPE");
+    }
+    parse("declare actor Foo;
+        mtd (Foo self) value(): int { return 1; }
+        mtd (Foo self) run(): int { return self.value(); }");
+}
+
+#[test]
+fn critical_state_callbacks_fail_closed_on_unproved_effects() {
+    let prefix = "declare actor Counter;
+        mtd (mut self: Counter) run(): void {";
+    for body in [
+        "call(s.count);",
+        "s.count = compute();",
+        "throw Error(1);",
+        "raise Error(1);",
+        "panic(Error(1));",
+        "trap risky();",
+        "try { s.count; } catch { }",
+        "yield* other;",
+        "s.count?;",
+        "return s.count;",
+        "break;",
+        "continue;",
+    ] {
+        let source = format!("{prefix}
+            self.handle_state(critical-write |s| -> {{ {body} }});
+        }}");
+        reject(&source, "E_BORROW");
+    }
+    // Pure scalar updates, with no unproved effectful calls, still pass
+    // this syntax-only gate and cannot generate a guest actor artifact.
+    let safe = "declare actor Counter;
+        mtd (mut self: Counter) run(int amount): void {
+            self.handle_state(critical-write |s| -> { s.count = (s.count + amount); });
+        }";
+    parse(safe);
+    assert_eq!(atto_compiler::compile(safe).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn critical_callback_delimiters_and_chained_projections_fail_closed() {
+    for bad in [
+        "self.handle_state(critical-read |s| -> { s.count + [1, 2); });",
+        "self.handle_state(critical-read |s| -> { s.count + ]; });",
+        "self.handle_state(critical-read |s| -> { s.count + (1 + 2]; });",
+        "self.handle_state(critical-write |s| -> { s.count + {a: 1]}; });",
+    ] {
+        let src = format!("declare actor Counter;
+            mtd (mut self: Counter) run(): void {{ {bad} }}");
+        let checked = std::panic::catch_unwind(|| parse_target_declarations(&lex(&src).unwrap()));
+        assert!(checked.is_ok(), "malformed callback panicked: {bad}");
+        assert_eq!(checked.unwrap().unwrap_err().code, "E_SYNTAX", "{bad}");
+    }
+    for body in ["s.count.extra;", "s.count(1);", "s.count[0] = 1;"] {
+        let src = format!("declare actor Counter;
+            mtd (mut self: Counter) run(): void {{
+                self.handle_state(critical-write |s| -> {{ {body} }});
+            }}");
+        reject(&src, "E_UNSUPPORTED");
+    }
+}

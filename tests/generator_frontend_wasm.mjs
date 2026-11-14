@@ -51,8 +51,33 @@ const generators = [
   '  return sum;',
   '}',
 ].join('\n');
-const unsupported = compile(generators);
-assert.equal(unsupported.ok, false, 'generator cannot compile until true Wasm continuation lowering exists');
-assert.match(unsupported.message, /^E_UNSUPPORTED:/);
-assert.match(unsupported.message, /generator continuations/);
-console.log('PASS: wasm32 compiler rejects generator delegation without publishing a guest artifact');
+// Generator delegation is now an admitted, executable bounded profile.
+const delegated = compile(generators);
+assert.equal(delegated.ok, true, delegated.message);
+assert.deepEqual(compile(generators).guestBytes, delegated.guestBytes,
+  'generator output must be deterministic');
+const delegatedModule = new WebAssembly.Module(delegated.guestBytes);
+const imports = WebAssembly.Module.imports(delegatedModule);
+assert.ok(imports.length > 0, 'stdio output requires a declared import');
+assert.ok(imports.every(x => x.module === 'atto'
+  && ['print_i64', 'print_newline'].includes(x.name)
+  && x.kind === 'function'), 'guest uses only approved print imports');
+let stdout = '';
+const delegatedGuest = new WebAssembly.Instance(delegatedModule, { atto: {
+  print_i64: n => { stdout += String(n); },
+  print_newline: () => { stdout += '\n'; },
+}});
+assert.equal(delegatedGuest.exports.main(), 10n,
+  'yield*, iteration and checked summation execute in guest Wasm');
+assert.equal(delegatedGuest.exports.panic_code.value, 0);
+assert.equal(stdout, '10\n');
+console.log('PASS: wasm32 compiler emits an executing generator delegation guest returning 10');
+
+// Unsupported generator profiles still fail closed and publish no guest artifact.
+const unloweredSource = await readFile(
+  new URL('./fixtures/fail/128-generator-delegation-not-yet-lowered.atto', import.meta.url),
+  'utf8');
+const unlowered = compile(unloweredSource);
+assert.equal(unlowered.ok, false, 'unimplemented generator profiles must reject');
+assert.match(unlowered.message, /^E_UNSUPPORTED:/);
+console.log('PASS: unsupported generator profile still fails closed');

@@ -2,9 +2,9 @@
 //! This is separate from executable check.rs. Forward-declared actors have no
 //! linked implementation, state layout, proven effects or borrow semantics.
 
-use crate::ast::{ActorInterface, ActorInterfaceMethod, Param, Program, Type};
+use crate::ast::{ActorInterface, ActorInterfaceMethod, FieldMode, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
-use crate::target_syntax::{ReceiverHeader, TargetHeaders};
+use crate::target_syntax::{ReceiverHeader, StateUse, TargetHeaders};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetType {
@@ -47,11 +47,24 @@ pub struct TypedReceiver {
     pub body_lowered: bool,
 }
 
+/// A state access validated against a concrete actor field declaration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedStateUse {
+    pub receiver: usize,
+    pub field: String,
+    pub pos: Pos,
+    pub mutation: bool,
+    pub exclusive: bool,
+    /// None means the actor is only forward-declared; no field proof exists.
+    pub field_ty: Option<TargetType>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TypedActorModule {
     pub namespace: Option<String>,
     pub actors: Vec<TypedActor>,
     pub receivers: Vec<TypedReceiver>,
+    pub state_uses: Vec<TypedStateUse>,
 }
 
 fn type_error(pos: Pos, why: impl Into<String>) -> Diagnostic {
@@ -116,7 +129,60 @@ impl TypedActorModule {
         })
     }
 
+    fn check_state_use(&self, h: &TargetHeaders, access: &StateUse)
+        -> Result<TypedStateUse, Diagnostic> {
+        let receiver = h.receivers.get(access.receiver)
+            .ok_or_else(|| type_error(access.pos, "invalid receiver state access index"))?;
+        // Re-check lease invariants in the typed lowering layer rather than
+        // trusting potentially constructed/imported syntax headers.
+        if access.exclusive && !receiver.mutable {
+            return Err(Diagnostic::new(access.pos, "E_MUTABILITY",
+                "critical-write requires a mutable actor receiver"));
+        }
+        if access.mutation && !access.exclusive {
+            return Err(Diagnostic::new(access.pos, "E_READONLY",
+                "critical-read cannot mutate actor state"));
+        }
+        let field_ty = if let Some(actor) = h.definitions.iter()
+            .find(|a| a.name == receiver.owner) {
+            let field = actor.fields.iter().find(|f| f.name == access.field)
+                .ok_or_else(|| Diagnostic::new(access.pos, "E_UNBOUND",
+                    format!("actor '{}': unknown state field '{}'",
+                        actor.name, access.field)))?;
+            if access.mutation && field.mode != FieldMode::ActorState {
+                return Err(Diagnostic::new(access.pos, "E_READONLY",
+                    format!("actor state field '{}.{}' is immutable",
+                        actor.name, access.field)));
+            }
+            // Only by-value scalar state projections can currently be proved
+            // not to leak the actor-owned heap. Strings, handles, containers,
+            // and named reference types require a real typed borrow checker.
+            Some(match field.ty {
+                Type::Int => TargetType::Int,
+                Type::Bool => TargetType::Bool,
+                Type::Float => TargetType::Float,
+                _ => return Err(Diagnostic::new(access.pos, "E_BORROW",
+                    format!("state field '{}.{}' requires ownership-safe typed projection",
+                        actor.name, access.field))),
+            })
+        } else {
+            // There is no state layout to prove. Keep an explicit unverified
+            // fact; the target cannot emit actor code in this situation.
+            None
+        };
+        Ok(TypedStateUse {
+            receiver: access.receiver, field: access.field.clone(), pos: access.pos,
+            mutation: access.mutation, exclusive: access.exclusive, field_ty,
+        })
+    }
+
     fn lower_one(&self, h: &ReceiverHeader) -> Result<TypedReceiver, Diagnostic> {
+        // Sealed lifecycle hooks belong to the actor runtime. This invariant
+        // applies even to forward-only actors with no concrete definition.
+        if h.name == "receive" {
+            return Err(Diagnostic::new(h.pos, "E_SIGNATURE",
+                "receive is a sealed actor lifecycle handler"));
+        }
         let actor = self.actor_index(&h.owner, h.pos)?;
         let mut params = Vec::with_capacity(h.params.len());
         for p in &h.params {
@@ -150,6 +216,7 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
             defined: false,
         }).collect(),
         receivers: Vec::with_capacity(headers.receivers.len()),
+        state_uses: Vec::with_capacity(headers.state_uses.len()),
     };
     for definition in &headers.definitions {
         if !headers.actors.contains(&definition.name) {
@@ -159,6 +226,9 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     }
     for header in &headers.receivers {
         module.receivers.push(module.lower_one(header)?);
+    }
+    for access in &headers.state_uses {
+        module.state_uses.push(module.check_state_use(headers, access)?);
     }
     Ok(module)
 }

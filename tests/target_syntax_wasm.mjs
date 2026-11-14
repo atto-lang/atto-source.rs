@@ -75,5 +75,34 @@ rejects('use namespace workers; declare actor Foo; define actor Bar as end','E_U
 rejects('use namespace workers; declare actor Foo; define actor Foo as end define actor Foo as end','E_DUPLICATE');
 rejects('use namespace workers; declare actor Foo; define actor Foo as foo(): int {return 1;} end mtd (Foo self) foo(): int {return 2;}','E_DUPLICATE');
 rejects('use namespace workers; declare actor Foo; define actor Foo as foo(): int {return 1;} end pub mtd (Foo self) foo(): bool {return true;}','E_SIGNATURE');
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (29)');
+
+// Harden the executable browser compiler ABI preflight: malformed nested calls,
+// receiver escapes and readonly mutations fail closed with no guest artifact.
+rejects('declare actor Foo; mtd (Foo self) foo(int a,int b): void {} mtd (Foo self) run(): void { self.foo(self.secret,1); }','E_SEALED');
+rejects('declare actor Foo; mtd (Foo self) foo(int a,int b): void {} mtd (Foo self) run(): void { self.foo(self,1); }','E_ESCAPE');
+rejects('declare actor Foo; mtd (Foo self) foo(int a,int b): void {} mtd (Foo self) run(): void { self.foo(1,]); }','E_SYNTAX');
+rejects('declare actor Foo; mtd (Foo self) foo(int a,int b): void {} mtd (Foo self) run(): void { self.foo(self.handle_state(critical-write |s| -> { s.n = 1; }),1); }','E_MUTABILITY');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-read |s| -> { ++s.n; }); }','E_READONLY');
+rejects('declare actor Foo; mtd (Foo self) run(): void { self.handle_state(critical-read |s| -> { sink(self); }); }','E_BORROW');
+
+
+// Concrete state layouts must be checked in the same Wasm compiler ABI.
+const concreteState = 'declare actor Counter; define actor Counter as let int count = 0; val int limit = 12; let string label = "hello"; end';
+rejects(concreteState+' mtd (Counter self) run(): int { return self.handle_state(critical-read |s| -> s.missing); }','E_UNBOUND');
+rejects(concreteState+' mtd (mut self: Counter) run(): void { self.handle_state(critical-write |s| -> { s.limit = 2; }); }','E_READONLY');
+rejects(concreteState+' mtd (mut self: Counter) run(): int { return self.handle_state(critical-read |s| -> s.label); }','E_BORROW');
+rejects(concreteState+' mtd (Counter self) run(): int { return self.handle_state(critical-read |s| -> s.count); }','E_UNSUPPORTED');
+
+
+// An untyped/unknown-effect call must not execute while an actor state lease
+// is held; malformed nesting and reserved lifecycle methods fail closed too.
+rejects('declare actor Foo; mtd (Foo self) receive(): void {}','E_SIGNATURE');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-write |s| -> { panic(Error(1)); }); }','E_BORROW');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-write |s| -> { s.count = risky(); }); }','E_BORROW');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-read |s| -> s.count?); }','E_BORROW');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-write |s| -> { s.count[0] = 1; }); }','E_UNSUPPORTED');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-read |s| -> { s.count + [1, 2); }); }','E_SYNTAX');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-write |s| -> { yield* stream; }); }','E_BORROW');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (46)');
 

@@ -34,6 +34,19 @@ pub struct TargetHeaders {
     /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
     pub definitions: Vec<ActorDecl>,
     pub receivers: Vec<ReceiverHeader>,
+    /// Lexically located state member uses. These are type checked only if
+    /// the nominal actor has a concrete definition with known field types.
+    pub state_uses: Vec<StateUse>,
+}
+
+/// A syntax fact, not proof of an owned or nonescaping state value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateUse {
+    pub receiver: usize,
+    pub field: String,
+    pub pos: Pos,
+    pub mutation: bool,
+    pub exclusive: bool,
 }
 struct Cursor<'a> { toks: &'a [Token], i: usize }
 impl Cursor<'_> {
@@ -289,7 +302,8 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         }
     }
     for (i, start, end) in spans {
-        validate_receiver_body(toks, &out, i, start, end)?;
+        let uses = validate_receiver_body(toks, &out, i, start, end)?;
+        out.state_uses.extend(uses);
     }
     for (start, end) in function_spans {
         validate_spawned_actor_calls(toks, &out, start, end)?;
@@ -340,40 +354,87 @@ fn diagnostic(toks: &[Token], index: usize, code: &'static str, why: &str) -> Di
     Diagnostic::new(toks.get(index).map_or(Pos::default(), |t| t.pos), code, why)
 }
 fn close_paren(toks: &[Token], start: usize, limit: usize) -> R<usize> {
-    let mut depth = 0usize;
+    if !at(toks, start, &Tok::LParen) {
+        return Err(diagnostic(toks, start, "E_SYNTAX", "expected '('"));
+    }
+    // A state callback body can contain nested groups, arrays, and blocks.
+    // Counting only parentheses would accept malformed '[)' or stray '}'.
+    let mut expected = Vec::<Tok>::new();
     for i in start..limit {
-        if at(toks, i, &Tok::LParen) { depth += 1; }
-        if at(toks, i, &Tok::RParen) {
-            if depth == 0 {
-                return Err(diagnostic(toks, i, "E_SYNTAX", "unexpected ')'"));
+        match &toks[i].tok {
+            Tok::LParen => expected.push(Tok::RParen),
+            Tok::LBracket => expected.push(Tok::RBracket),
+            Tok::LBrace => expected.push(Tok::RBrace),
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                if expected.pop().as_ref() != Some(&toks[i].tok) {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "mismatched method or callback delimiter"));
+                }
+                if expected.is_empty() { return Ok(i); }
             }
-            depth -= 1;
-            if depth == 0 { return Ok(i); }
+            _ => {}
+        }
+        if expected.len() > 128 {
+            return Err(diagnostic(toks, i, "E_NESTING",
+                "method/callback delimiter nesting limit"));
         }
     }
     Err(diagnostic(toks, start, "E_EOF", "unterminated argument list"))
 }
-fn count_args(toks: &[Token], open: usize, close: usize) -> usize {
-    if close == open + 1 { return 0; }
-    let (mut n, mut round, mut square, mut braces) = (1, 0, 0, 0);
+/// Count method-call arguments only after validating nested delimiters.
+/// Receiver bodies are syntax-preflighted rather than fully parsed; malformed
+/// user input must produce a Diagnostic, never underflow a nesting counter.
+fn count_args(toks: &[Token], open: usize, close: usize) -> R<usize> {
+    if close == open + 1 { return Ok(0); }
+    let mut expected = Vec::<Tok>::new();
+    let mut count = 1usize;
+    let mut has_argument = false;
     for i in open + 1..close {
-        match toks[i].tok {
-            Tok::LParen => round += 1,
-            Tok::RParen => round -= 1,
-            Tok::LBracket => square += 1,
-            Tok::RBracket => square -= 1,
-            Tok::LBrace => braces += 1,
-            Tok::RBrace => braces -= 1,
-            Tok::Comma if round == 0 && square == 0 && braces == 0 => n += 1,
+        match &toks[i].tok {
+            Tok::LParen => expected.push(Tok::RParen),
+            Tok::LBracket => expected.push(Tok::RBracket),
+            Tok::LBrace => expected.push(Tok::RBrace),
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                if expected.pop().as_ref() != Some(&toks[i].tok) {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "mismatched method argument delimiter"));
+                }
+            }
+            Tok::Comma if expected.is_empty() => {
+                if !has_argument {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "empty method argument"));
+                }
+                count += 1;
+                if count > MAX_PARAMS {
+                    return Err(diagnostic(toks, i, "E_SOURCE_LIMIT",
+                        "too many method arguments"));
+                }
+                has_argument = false;
+                continue;
+            }
             _ => {}
         }
+        if expected.len() > 128 {
+            return Err(diagnostic(toks, i, "E_NESTING",
+                "method argument nesting limit"));
+        }
+        has_argument = true;
     }
-    n
+    if !expected.is_empty() {
+        return Err(diagnostic(toks, close, "E_SYNTAX",
+            "unclosed method argument delimiter"));
+    }
+    if !has_argument {
+        return Err(diagnostic(toks, close, "E_SYNTAX",
+            "trailing comma in method arguments"));
+    }
+    Ok(count)
 }
 fn validate_callback(
     toks: &[Token], symbols: &TargetHeaders, receiver: &ReceiverHeader,
-    open: usize, limit: usize,
-) -> R<usize> {
+    receiver_index: usize, open: usize, limit: usize,
+) -> R<(usize, Vec<StateUse>)> {
     let close = close_paren(toks, open, limit)?;
     let mut k = open + 1;
     if !word_at(toks, k, "critical") || !at(toks, k+1, &Tok::Minus) ||
@@ -409,15 +470,34 @@ fn validate_callback(
         return Err(diagnostic(toks, k, "E_SEALED", "missing critical callback body"));
     }
     // The v1 gate is conservative. A full borrow checker must subsequently
-    // prove reference lifetimes, effect purity, and field types before codegen.
+    // prove reference lifetimes and effect purity before codegen.
+    let mut uses = Vec::new();
     for i in k..close {
-        if ["await", "select", "yield", "suspends", "spawn", "rt", "defer"].iter()
-            .any(|w| word_at(toks, i, w)) {
-            return Err(diagnostic(toks, i, "E_BORROW",
-                "suspension, spawning and deferred effects are forbidden during critical access"));
+        // Keep the more precise ownership diagnostic for returning the raw
+        // state binder, even though all other early return paths are denied.
+        if word_at(toks, i, "return") && word_at(toks, i+1, binder)
+            && !at(toks, i+2, &Tok::Dot) {
+            return Err(diagnostic(toks, i+1, "E_ESCAPE",
+                "actor state binding cannot be returned by value"));
         }
-        if word_at(toks, i, "handle_state") ||
-            (word_at(toks, i, "self") && at(toks, i+1, &Tok::Dot)) {
+        // Until typed effect proofs are available, no suspension, unwinding,
+        // early-exit, reentrancy, or implicit call effects may run under an
+        // actor-state lease. These are lexical *denials*, not effect proofs.
+        if ["await", "select", "yield", "suspends", "spawn", "rt", "defer",
+            "throw", "raise", "panic", "trap", "recover", "try", "catch",
+            "finally", "break", "continue", "return"].iter()
+            .any(|w| word_at(toks, i, w))
+            || at(toks, i, &Tok::YieldStar)
+            || at(toks, i, &Tok::Question) {
+            return Err(diagnostic(toks, i, "E_BORROW",
+                "unproven control flow, unwinding or effects inside critical actor state access"));
+        }
+        if matches!(toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_)))
+            && at(toks, i+1, &Tok::LParen) {
+            return Err(diagnostic(toks, i, "E_BORROW",
+                "calls inside critical state access require typed non-suspending effect proofs"));
+        }
+        if word_at(toks, i, "handle_state") || word_at(toks, i, "self") {
             return Err(diagnostic(toks, i, "E_BORROW",
                 "nested actor state access or self capture is forbidden in critical callback"));
         }
@@ -430,28 +510,56 @@ fn validate_callback(
                 return Err(diagnostic(toks, i+2, "E_SEALED",
                     "state field member access requires a field name"));
             }
+            let field_pos = i + 2;
+            let prefix_mutation = i > k && matches!(toks.get(i-1).map(|t| &t.tok),
+                Some(Tok::PlusPlus | Tok::MinusMinus));
+            let postfix_mutation = matches!(toks.get(i+3).map(|t| &t.tok),
+                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus));
+            uses.push(StateUse {
+                receiver: receiver_index,
+                field: match &toks[field_pos].tok {
+                    Tok::Ident(name) => name.clone(),
+                    _ => unreachable!("field name checked above"),
+                },
+                pos: toks[field_pos].pos,
+                mutation: prefix_mutation || postfix_mutation,
+                exclusive: write,
+            });
+            // A scalar field projection is not a general object borrow. Even
+            // under a write lease, chained access and method dispatch need an
+            // effect/borrow-checked typed body rather than token preflight.
+            if at(toks, i+3, &Tok::Dot) || at(toks, i+3, &Tok::LParen)
+                || at(toks, i+3, &Tok::LBracket) {
+                return Err(diagnostic(toks, i+3, "E_UNSUPPORTED",
+                    "chained state projections and calls require a typed borrow/effect checker"));
+            }
             if !write {
+                // Prefix operators mutate state as surely as postfix operators.
+                // Checking only the tokens after s.field would admit ++s.field
+                // and --s.field under a shared critical-read lease.
+                if i > k && matches!(toks.get(i-1).map(|t| &t.tok),
+                    Some(Tok::PlusPlus | Tok::MinusMinus)) {
+                    return Err(diagnostic(toks, i-1, "E_READONLY",
+                        "critical-read cannot mutate actor state"));
+                }
                 if matches!(toks.get(i+3).map(|t| &t.tok),
                     Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)) {
                     return Err(diagnostic(toks, i+3, "E_READONLY",
                         "critical-read cannot mutate actor state"));
                 }
-                if at(toks, i+3, &Tok::Dot) || at(toks, i+3, &Tok::LParen) {
-                    return Err(diagnostic(toks, i+3, "E_UNSUPPORTED",
-                        "state field method calls need a full effect and borrow checker"));
-                }
-            }
+             }
         }
     }
     // Prevent the callback from smuggling a second actor's receiver semantics.
     let _ = symbols;
-    Ok(close)
+    Ok((close, uses))
 }
 fn validate_receiver_body(
     toks: &[Token], symbols: &TargetHeaders, which: usize,
     start: usize, end: usize,
-) -> R<()> {
+) -> R<Vec<StateUse>> {
     let receiver = &symbols.receivers[which];
+    let mut uses = Vec::new();
     let mut i = start + 1;
     while i < end.saturating_sub(1) {
         if word_at(toks, i, "handle_state") &&
@@ -469,19 +577,31 @@ fn validate_receiver_body(
                     "direct actor fields are sealed; use self.handle_state"));
             }
             if member == "handle_state" {
-                let closed = validate_callback(toks, symbols, receiver, i+3, end)?;
+                let (closed, accesses) = validate_callback(toks, symbols, receiver, which, i+3, end)?;
+                uses.extend(accesses);
                 i = closed + 1;
                 continue;
             }
             let close = close_paren(toks, i+3, end)?;
             resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
-                member, count_args(toks, i+3, close), false, toks[i].pos)?;
-            i = close + 1;
+                member, count_args(toks, i+3, close)?, false, toks[i].pos)?;
+            // The call header is valid, but its argument expressions may
+            // still contain forbidden direct state access, receiver escapes,
+            // or nested method calls. Walk them in the outer scan instead of
+            // skipping directly to the closing parenthesis.
+            i += 3;
             continue;
+        }
+        // A raw receiver value is never transferable, returnable or aliasable
+        // in this syntax-only target; only self.method(...) and
+        // self.handle_state(...) are admitted above.
+        if word_at(toks, i, "self") {
+            return Err(diagnostic(toks, i, "E_ESCAPE",
+                "actor receiver cannot be aliased, passed or returned by value"));
         }
         i += 1;
     }
-    Ok(())
+    Ok(uses)
 }
 fn validate_spawned_actor_calls(
     toks: &[Token], symbols: &TargetHeaders, start: usize, end: usize,
