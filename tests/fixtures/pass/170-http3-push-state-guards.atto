@@ -1,0 +1,377 @@
+// expect-exit: 42
+// 256 exhaustive RFC9114 push stream message admission cases; pure native Atto.
+// HTTP/3 RFC 9114 frame and stream admission rules in native Atto.
+// Return values are pure validation decisions, not network I/O.
+// Extensions/unknown frame types are eligible to be skipped by length when
+// bounded; HTTP/2-only reserved type IDs MUST be rejected.
+// Transport must additionally validate QPACK/headers, stream state and limits.
+// All HTTP/3 frame type/length and SETTINGS integers are QUIC 62-bit values.
+
+// QUIC varints are unsigned integers in [0, 2^62 - 1].
+// This prevents host i64 values above the wire range from being silently
+// treated as unknown extension frame types or legal field lengths.
+pub fnc http3_valid_wire_integer(int value): bool {
+  if value < 0 then return false; fi
+  return value < 4611686018427387904;
+}
+
+pub fnc http3_http2_reserved_type(int kind): bool {
+  if kind == 2 then return true; fi
+  if kind == 6 then return true; fi
+  if kind == 8 then return true; fi
+  if kind == 9 then return true; fi
+  return false;
+}
+
+// A control stream MUST begin with SETTINGS and MUST NOT repeat it.
+// 0 = DATA, 1 = HEADERS, 3 = CANCEL_PUSH, 4 = SETTINGS,
+// 5 = PUSH_PROMISE, 7 = GOAWAY, 13 = MAX_PUSH_ID.
+pub fnc http3_control_frame_allowed(int kind, bool first_frame): bool {
+  if http3_valid_wire_integer(kind) == false then return false; fi
+  if http3_http2_reserved_type(kind) then return false; fi
+  if first_frame then return kind == 4; fi
+  if kind == 4 then return false; fi
+  if kind == 0 then return false; fi
+  if kind == 1 then return false; fi
+  if kind == 5 then return false; fi
+  return true;
+}
+
+// Request streams allow DATA, HEADERS, PUSH_PROMISE and unknown extensions.
+// Control-only frames and old HTTP/2 frame codes must be rejected.
+pub fnc http3_request_frame_allowed(int kind): bool {
+  if http3_valid_wire_integer(kind) == false then return false; fi
+  if http3_http2_reserved_type(kind) then return false; fi
+  if kind == 3 then return false; fi
+  if kind == 4 then return false; fi
+  if kind == 7 then return false; fi
+  if kind == 13 then return false; fi
+  return true;
+}
+
+// First request/response frame MUST be HEADERS, ignoring extension frames.
+// The framing engine must still reject DATA following trailers.
+pub fnc http3_request_first_known_frame_allowed(int kind): bool {
+  return kind == 1;
+}
+
+// PUSH streams disallow PUSH_PROMISE. Other known frame rules match request.
+pub fnc http3_push_frame_allowed(int kind): bool {
+  if http3_request_frame_allowed(kind) == false then return false; fi
+  if kind == 5 then return false; fi
+  return true;
+}
+
+// Stream types: 0 control, 1 push, 2 QPACK encoder, 3 QPACK decoder.
+// A duplicate control/QPACK critical stream must be rejected by the owner.
+pub fnc http3_critical_stream_can_open(bool already_open): bool {
+  return already_open == false;
+}
+
+pub fnc http3_known_unidirectional_stream(int kind): bool {
+  if http3_valid_wire_integer(kind) == false then return false; fi
+  return kind < 4;
+}
+
+// HTTP/2 settings identifiers reserved in HTTP/3 (RFC 9114 7.2.4.1).
+// Unknown positive identifiers are extension settings, not hard errors.
+pub fnc http3_settings_id_valid(int identifier): bool {
+  if http3_valid_wire_integer(identifier) == false then return false; fi
+  if identifier == 0 then return false; fi
+  if identifier == 2 then return false; fi
+  if identifier == 3 then return false; fi
+  if identifier == 4 then return false; fi
+  if identifier == 5 then return false; fi
+  return true;
+}
+
+// Never add two untrusted offsets or lengths to decide whether to read.
+// The caller has already validated the actual buffer lifetime and ownership.
+pub fnc http3_frame_payload_fits(int payload_length, int buffered_bytes, int frame_limit): bool {
+  if http3_valid_wire_integer(payload_length) == false then return false; fi
+  if http3_valid_wire_integer(buffered_bytes) == false then return false; fi
+  if http3_valid_wire_integer(frame_limit) == false then return false; fi
+  if payload_length > frame_limit then return false; fi
+  return payload_length <= buffered_bytes;
+}
+
+// Per-message admission guard. Unknown extension frames may precede HEADERS
+// (RFC 9114 4.1), but DATA must NOT appear until HEADERS has been received.
+// Once the caller has parsed and marked a trailing HEADERS section, both DATA
+// and subsequent HEADERS are forbidden. The caller must independently detect
+// interim/final response status and QPACK validity and update these flags.
+pub fnc http3_message_frame_allowed(int kind, bool saw_initial_headers, bool saw_trailers, bool is_push_stream): bool {
+  if is_push_stream then
+    if http3_push_frame_allowed(kind) == false then return false; fi
+  else
+    if http3_request_frame_allowed(kind) == false then return false; fi
+  fi
+  if kind == 0 then
+    if saw_initial_headers == false then return false; fi
+    if saw_trailers then return false; fi
+  fi
+  if kind == 1 then
+    if saw_trailers then return false; fi
+  fi
+  return true;
+}
+
+pub fnc main(): int {
+  if http3_message_frame_allowed(0, false, false, true) != false then return 100; fi
+  if http3_message_frame_allowed(0, false, true, true) != false then return 101; fi
+  if http3_message_frame_allowed(0, true, false, true) != true then return 102; fi
+  if http3_message_frame_allowed(0, true, true, true) != false then return 103; fi
+  if http3_message_frame_allowed(1, false, false, true) != true then return 104; fi
+  if http3_message_frame_allowed(1, false, true, true) != false then return 105; fi
+  if http3_message_frame_allowed(1, true, false, true) != true then return 106; fi
+  if http3_message_frame_allowed(1, true, true, true) != false then return 107; fi
+  if http3_message_frame_allowed(2, false, false, true) != false then return 108; fi
+  if http3_message_frame_allowed(2, false, true, true) != false then return 109; fi
+  if http3_message_frame_allowed(2, true, false, true) != false then return 110; fi
+  if http3_message_frame_allowed(2, true, true, true) != false then return 111; fi
+  if http3_message_frame_allowed(3, false, false, true) != false then return 112; fi
+  if http3_message_frame_allowed(3, false, true, true) != false then return 113; fi
+  if http3_message_frame_allowed(3, true, false, true) != false then return 114; fi
+  if http3_message_frame_allowed(3, true, true, true) != false then return 115; fi
+  if http3_message_frame_allowed(4, false, false, true) != false then return 116; fi
+  if http3_message_frame_allowed(4, false, true, true) != false then return 117; fi
+  if http3_message_frame_allowed(4, true, false, true) != false then return 118; fi
+  if http3_message_frame_allowed(4, true, true, true) != false then return 119; fi
+  if http3_message_frame_allowed(5, false, false, true) != false then return 120; fi
+  if http3_message_frame_allowed(5, false, true, true) != false then return 121; fi
+  if http3_message_frame_allowed(5, true, false, true) != false then return 122; fi
+  if http3_message_frame_allowed(5, true, true, true) != false then return 123; fi
+  if http3_message_frame_allowed(6, false, false, true) != false then return 124; fi
+  if http3_message_frame_allowed(6, false, true, true) != false then return 125; fi
+  if http3_message_frame_allowed(6, true, false, true) != false then return 126; fi
+  if http3_message_frame_allowed(6, true, true, true) != false then return 127; fi
+  if http3_message_frame_allowed(7, false, false, true) != false then return 128; fi
+  if http3_message_frame_allowed(7, false, true, true) != false then return 129; fi
+  if http3_message_frame_allowed(7, true, false, true) != false then return 130; fi
+  if http3_message_frame_allowed(7, true, true, true) != false then return 131; fi
+  if http3_message_frame_allowed(8, false, false, true) != false then return 132; fi
+  if http3_message_frame_allowed(8, false, true, true) != false then return 133; fi
+  if http3_message_frame_allowed(8, true, false, true) != false then return 134; fi
+  if http3_message_frame_allowed(8, true, true, true) != false then return 135; fi
+  if http3_message_frame_allowed(9, false, false, true) != false then return 136; fi
+  if http3_message_frame_allowed(9, false, true, true) != false then return 137; fi
+  if http3_message_frame_allowed(9, true, false, true) != false then return 138; fi
+  if http3_message_frame_allowed(9, true, true, true) != false then return 139; fi
+  if http3_message_frame_allowed(10, false, false, true) != true then return 140; fi
+  if http3_message_frame_allowed(10, false, true, true) != true then return 141; fi
+  if http3_message_frame_allowed(10, true, false, true) != true then return 142; fi
+  if http3_message_frame_allowed(10, true, true, true) != true then return 143; fi
+  if http3_message_frame_allowed(11, false, false, true) != true then return 144; fi
+  if http3_message_frame_allowed(11, false, true, true) != true then return 145; fi
+  if http3_message_frame_allowed(11, true, false, true) != true then return 146; fi
+  if http3_message_frame_allowed(11, true, true, true) != true then return 147; fi
+  if http3_message_frame_allowed(12, false, false, true) != true then return 148; fi
+  if http3_message_frame_allowed(12, false, true, true) != true then return 149; fi
+  if http3_message_frame_allowed(12, true, false, true) != true then return 150; fi
+  if http3_message_frame_allowed(12, true, true, true) != true then return 151; fi
+  if http3_message_frame_allowed(13, false, false, true) != false then return 152; fi
+  if http3_message_frame_allowed(13, false, true, true) != false then return 153; fi
+  if http3_message_frame_allowed(13, true, false, true) != false then return 154; fi
+  if http3_message_frame_allowed(13, true, true, true) != false then return 155; fi
+  if http3_message_frame_allowed(14, false, false, true) != true then return 156; fi
+  if http3_message_frame_allowed(14, false, true, true) != true then return 157; fi
+  if http3_message_frame_allowed(14, true, false, true) != true then return 158; fi
+  if http3_message_frame_allowed(14, true, true, true) != true then return 159; fi
+  if http3_message_frame_allowed(15, false, false, true) != true then return 160; fi
+  if http3_message_frame_allowed(15, false, true, true) != true then return 161; fi
+  if http3_message_frame_allowed(15, true, false, true) != true then return 162; fi
+  if http3_message_frame_allowed(15, true, true, true) != true then return 163; fi
+  if http3_message_frame_allowed(16, false, false, true) != true then return 164; fi
+  if http3_message_frame_allowed(16, false, true, true) != true then return 165; fi
+  if http3_message_frame_allowed(16, true, false, true) != true then return 166; fi
+  if http3_message_frame_allowed(16, true, true, true) != true then return 167; fi
+  if http3_message_frame_allowed(17, false, false, true) != true then return 168; fi
+  if http3_message_frame_allowed(17, false, true, true) != true then return 169; fi
+  if http3_message_frame_allowed(17, true, false, true) != true then return 170; fi
+  if http3_message_frame_allowed(17, true, true, true) != true then return 171; fi
+  if http3_message_frame_allowed(18, false, false, true) != true then return 172; fi
+  if http3_message_frame_allowed(18, false, true, true) != true then return 173; fi
+  if http3_message_frame_allowed(18, true, false, true) != true then return 174; fi
+  if http3_message_frame_allowed(18, true, true, true) != true then return 175; fi
+  if http3_message_frame_allowed(19, false, false, true) != true then return 176; fi
+  if http3_message_frame_allowed(19, false, true, true) != true then return 177; fi
+  if http3_message_frame_allowed(19, true, false, true) != true then return 178; fi
+  if http3_message_frame_allowed(19, true, true, true) != true then return 179; fi
+  if http3_message_frame_allowed(20, false, false, true) != true then return 180; fi
+  if http3_message_frame_allowed(20, false, true, true) != true then return 181; fi
+  if http3_message_frame_allowed(20, true, false, true) != true then return 182; fi
+  if http3_message_frame_allowed(20, true, true, true) != true then return 183; fi
+  if http3_message_frame_allowed(21, false, false, true) != true then return 184; fi
+  if http3_message_frame_allowed(21, false, true, true) != true then return 185; fi
+  if http3_message_frame_allowed(21, true, false, true) != true then return 186; fi
+  if http3_message_frame_allowed(21, true, true, true) != true then return 187; fi
+  if http3_message_frame_allowed(22, false, false, true) != true then return 188; fi
+  if http3_message_frame_allowed(22, false, true, true) != true then return 189; fi
+  if http3_message_frame_allowed(22, true, false, true) != true then return 190; fi
+  if http3_message_frame_allowed(22, true, true, true) != true then return 191; fi
+  if http3_message_frame_allowed(23, false, false, true) != true then return 192; fi
+  if http3_message_frame_allowed(23, false, true, true) != true then return 193; fi
+  if http3_message_frame_allowed(23, true, false, true) != true then return 194; fi
+  if http3_message_frame_allowed(23, true, true, true) != true then return 195; fi
+  if http3_message_frame_allowed(24, false, false, true) != true then return 196; fi
+  if http3_message_frame_allowed(24, false, true, true) != true then return 197; fi
+  if http3_message_frame_allowed(24, true, false, true) != true then return 198; fi
+  if http3_message_frame_allowed(24, true, true, true) != true then return 199; fi
+  if http3_message_frame_allowed(25, false, false, true) != true then return 200; fi
+  if http3_message_frame_allowed(25, false, true, true) != true then return 201; fi
+  if http3_message_frame_allowed(25, true, false, true) != true then return 202; fi
+  if http3_message_frame_allowed(25, true, true, true) != true then return 203; fi
+  if http3_message_frame_allowed(26, false, false, true) != true then return 204; fi
+  if http3_message_frame_allowed(26, false, true, true) != true then return 205; fi
+  if http3_message_frame_allowed(26, true, false, true) != true then return 206; fi
+  if http3_message_frame_allowed(26, true, true, true) != true then return 207; fi
+  if http3_message_frame_allowed(27, false, false, true) != true then return 208; fi
+  if http3_message_frame_allowed(27, false, true, true) != true then return 209; fi
+  if http3_message_frame_allowed(27, true, false, true) != true then return 210; fi
+  if http3_message_frame_allowed(27, true, true, true) != true then return 211; fi
+  if http3_message_frame_allowed(28, false, false, true) != true then return 212; fi
+  if http3_message_frame_allowed(28, false, true, true) != true then return 213; fi
+  if http3_message_frame_allowed(28, true, false, true) != true then return 214; fi
+  if http3_message_frame_allowed(28, true, true, true) != true then return 215; fi
+  if http3_message_frame_allowed(29, false, false, true) != true then return 216; fi
+  if http3_message_frame_allowed(29, false, true, true) != true then return 217; fi
+  if http3_message_frame_allowed(29, true, false, true) != true then return 218; fi
+  if http3_message_frame_allowed(29, true, true, true) != true then return 219; fi
+  if http3_message_frame_allowed(30, false, false, true) != true then return 220; fi
+  if http3_message_frame_allowed(30, false, true, true) != true then return 221; fi
+  if http3_message_frame_allowed(30, true, false, true) != true then return 222; fi
+  if http3_message_frame_allowed(30, true, true, true) != true then return 223; fi
+  if http3_message_frame_allowed(31, false, false, true) != true then return 224; fi
+  if http3_message_frame_allowed(31, false, true, true) != true then return 225; fi
+  if http3_message_frame_allowed(31, true, false, true) != true then return 226; fi
+  if http3_message_frame_allowed(31, true, true, true) != true then return 227; fi
+  if http3_message_frame_allowed(32, false, false, true) != true then return 228; fi
+  if http3_message_frame_allowed(32, false, true, true) != true then return 229; fi
+  if http3_message_frame_allowed(32, true, false, true) != true then return 230; fi
+  if http3_message_frame_allowed(32, true, true, true) != true then return 231; fi
+  if http3_message_frame_allowed(33, false, false, true) != true then return 232; fi
+  if http3_message_frame_allowed(33, false, true, true) != true then return 233; fi
+  if http3_message_frame_allowed(33, true, false, true) != true then return 234; fi
+  if http3_message_frame_allowed(33, true, true, true) != true then return 235; fi
+  if http3_message_frame_allowed(34, false, false, true) != true then return 236; fi
+  if http3_message_frame_allowed(34, false, true, true) != true then return 237; fi
+  if http3_message_frame_allowed(34, true, false, true) != true then return 238; fi
+  if http3_message_frame_allowed(34, true, true, true) != true then return 239; fi
+  if http3_message_frame_allowed(35, false, false, true) != true then return 240; fi
+  if http3_message_frame_allowed(35, false, true, true) != true then return 241; fi
+  if http3_message_frame_allowed(35, true, false, true) != true then return 242; fi
+  if http3_message_frame_allowed(35, true, true, true) != true then return 243; fi
+  if http3_message_frame_allowed(36, false, false, true) != true then return 244; fi
+  if http3_message_frame_allowed(36, false, true, true) != true then return 245; fi
+  if http3_message_frame_allowed(36, true, false, true) != true then return 246; fi
+  if http3_message_frame_allowed(36, true, true, true) != true then return 247; fi
+  if http3_message_frame_allowed(37, false, false, true) != true then return 248; fi
+  if http3_message_frame_allowed(37, false, true, true) != true then return 249; fi
+  if http3_message_frame_allowed(37, true, false, true) != true then return 250; fi
+  if http3_message_frame_allowed(37, true, true, true) != true then return 251; fi
+  if http3_message_frame_allowed(38, false, false, true) != true then return 252; fi
+  if http3_message_frame_allowed(38, false, true, true) != true then return 253; fi
+  if http3_message_frame_allowed(38, true, false, true) != true then return 254; fi
+  if http3_message_frame_allowed(38, true, true, true) != true then return 255; fi
+  if http3_message_frame_allowed(39, false, false, true) != true then return 256; fi
+  if http3_message_frame_allowed(39, false, true, true) != true then return 257; fi
+  if http3_message_frame_allowed(39, true, false, true) != true then return 258; fi
+  if http3_message_frame_allowed(39, true, true, true) != true then return 259; fi
+  if http3_message_frame_allowed(40, false, false, true) != true then return 260; fi
+  if http3_message_frame_allowed(40, false, true, true) != true then return 261; fi
+  if http3_message_frame_allowed(40, true, false, true) != true then return 262; fi
+  if http3_message_frame_allowed(40, true, true, true) != true then return 263; fi
+  if http3_message_frame_allowed(41, false, false, true) != true then return 264; fi
+  if http3_message_frame_allowed(41, false, true, true) != true then return 265; fi
+  if http3_message_frame_allowed(41, true, false, true) != true then return 266; fi
+  if http3_message_frame_allowed(41, true, true, true) != true then return 267; fi
+  if http3_message_frame_allowed(42, false, false, true) != true then return 268; fi
+  if http3_message_frame_allowed(42, false, true, true) != true then return 269; fi
+  if http3_message_frame_allowed(42, true, false, true) != true then return 270; fi
+  if http3_message_frame_allowed(42, true, true, true) != true then return 271; fi
+  if http3_message_frame_allowed(43, false, false, true) != true then return 272; fi
+  if http3_message_frame_allowed(43, false, true, true) != true then return 273; fi
+  if http3_message_frame_allowed(43, true, false, true) != true then return 274; fi
+  if http3_message_frame_allowed(43, true, true, true) != true then return 275; fi
+  if http3_message_frame_allowed(44, false, false, true) != true then return 276; fi
+  if http3_message_frame_allowed(44, false, true, true) != true then return 277; fi
+  if http3_message_frame_allowed(44, true, false, true) != true then return 278; fi
+  if http3_message_frame_allowed(44, true, true, true) != true then return 279; fi
+  if http3_message_frame_allowed(45, false, false, true) != true then return 280; fi
+  if http3_message_frame_allowed(45, false, true, true) != true then return 281; fi
+  if http3_message_frame_allowed(45, true, false, true) != true then return 282; fi
+  if http3_message_frame_allowed(45, true, true, true) != true then return 283; fi
+  if http3_message_frame_allowed(46, false, false, true) != true then return 284; fi
+  if http3_message_frame_allowed(46, false, true, true) != true then return 285; fi
+  if http3_message_frame_allowed(46, true, false, true) != true then return 286; fi
+  if http3_message_frame_allowed(46, true, true, true) != true then return 287; fi
+  if http3_message_frame_allowed(47, false, false, true) != true then return 288; fi
+  if http3_message_frame_allowed(47, false, true, true) != true then return 289; fi
+  if http3_message_frame_allowed(47, true, false, true) != true then return 290; fi
+  if http3_message_frame_allowed(47, true, true, true) != true then return 291; fi
+  if http3_message_frame_allowed(48, false, false, true) != true then return 292; fi
+  if http3_message_frame_allowed(48, false, true, true) != true then return 293; fi
+  if http3_message_frame_allowed(48, true, false, true) != true then return 294; fi
+  if http3_message_frame_allowed(48, true, true, true) != true then return 295; fi
+  if http3_message_frame_allowed(49, false, false, true) != true then return 296; fi
+  if http3_message_frame_allowed(49, false, true, true) != true then return 297; fi
+  if http3_message_frame_allowed(49, true, false, true) != true then return 298; fi
+  if http3_message_frame_allowed(49, true, true, true) != true then return 299; fi
+  if http3_message_frame_allowed(50, false, false, true) != true then return 300; fi
+  if http3_message_frame_allowed(50, false, true, true) != true then return 301; fi
+  if http3_message_frame_allowed(50, true, false, true) != true then return 302; fi
+  if http3_message_frame_allowed(50, true, true, true) != true then return 303; fi
+  if http3_message_frame_allowed(51, false, false, true) != true then return 304; fi
+  if http3_message_frame_allowed(51, false, true, true) != true then return 305; fi
+  if http3_message_frame_allowed(51, true, false, true) != true then return 306; fi
+  if http3_message_frame_allowed(51, true, true, true) != true then return 307; fi
+  if http3_message_frame_allowed(52, false, false, true) != true then return 308; fi
+  if http3_message_frame_allowed(52, false, true, true) != true then return 309; fi
+  if http3_message_frame_allowed(52, true, false, true) != true then return 310; fi
+  if http3_message_frame_allowed(52, true, true, true) != true then return 311; fi
+  if http3_message_frame_allowed(53, false, false, true) != true then return 312; fi
+  if http3_message_frame_allowed(53, false, true, true) != true then return 313; fi
+  if http3_message_frame_allowed(53, true, false, true) != true then return 314; fi
+  if http3_message_frame_allowed(53, true, true, true) != true then return 315; fi
+  if http3_message_frame_allowed(54, false, false, true) != true then return 316; fi
+  if http3_message_frame_allowed(54, false, true, true) != true then return 317; fi
+  if http3_message_frame_allowed(54, true, false, true) != true then return 318; fi
+  if http3_message_frame_allowed(54, true, true, true) != true then return 319; fi
+  if http3_message_frame_allowed(55, false, false, true) != true then return 320; fi
+  if http3_message_frame_allowed(55, false, true, true) != true then return 321; fi
+  if http3_message_frame_allowed(55, true, false, true) != true then return 322; fi
+  if http3_message_frame_allowed(55, true, true, true) != true then return 323; fi
+  if http3_message_frame_allowed(56, false, false, true) != true then return 324; fi
+  if http3_message_frame_allowed(56, false, true, true) != true then return 325; fi
+  if http3_message_frame_allowed(56, true, false, true) != true then return 326; fi
+  if http3_message_frame_allowed(56, true, true, true) != true then return 327; fi
+  if http3_message_frame_allowed(57, false, false, true) != true then return 328; fi
+  if http3_message_frame_allowed(57, false, true, true) != true then return 329; fi
+  if http3_message_frame_allowed(57, true, false, true) != true then return 330; fi
+  if http3_message_frame_allowed(57, true, true, true) != true then return 331; fi
+  if http3_message_frame_allowed(58, false, false, true) != true then return 332; fi
+  if http3_message_frame_allowed(58, false, true, true) != true then return 333; fi
+  if http3_message_frame_allowed(58, true, false, true) != true then return 334; fi
+  if http3_message_frame_allowed(58, true, true, true) != true then return 335; fi
+  if http3_message_frame_allowed(59, false, false, true) != true then return 336; fi
+  if http3_message_frame_allowed(59, false, true, true) != true then return 337; fi
+  if http3_message_frame_allowed(59, true, false, true) != true then return 338; fi
+  if http3_message_frame_allowed(59, true, true, true) != true then return 339; fi
+  if http3_message_frame_allowed(60, false, false, true) != true then return 340; fi
+  if http3_message_frame_allowed(60, false, true, true) != true then return 341; fi
+  if http3_message_frame_allowed(60, true, false, true) != true then return 342; fi
+  if http3_message_frame_allowed(60, true, true, true) != true then return 343; fi
+  if http3_message_frame_allowed(61, false, false, true) != true then return 344; fi
+  if http3_message_frame_allowed(61, false, true, true) != true then return 345; fi
+  if http3_message_frame_allowed(61, true, false, true) != true then return 346; fi
+  if http3_message_frame_allowed(61, true, true, true) != true then return 347; fi
+  if http3_message_frame_allowed(62, false, false, true) != true then return 348; fi
+  if http3_message_frame_allowed(62, false, true, true) != true then return 349; fi
+  if http3_message_frame_allowed(62, true, false, true) != true then return 350; fi
+  if http3_message_frame_allowed(62, true, true, true) != true then return 351; fi
+  if http3_message_frame_allowed(63, false, false, true) != true then return 352; fi
+  if http3_message_frame_allowed(63, false, true, true) != true then return 353; fi
+  if http3_message_frame_allowed(63, true, false, true) != true then return 354; fi
+  if http3_message_frame_allowed(63, true, true, true) != true then return 355; fi
+  return 42;
+}
