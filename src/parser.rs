@@ -192,7 +192,10 @@ const UNSUPPORTED_TYPES: &[&str] = &[
 // Until a backend proves the atomic/refcount/unique-owner ABI, rejecting
 // them is safer than inferring thread safety from their spelling.
 const UNLOWERED_OWNERSHIP_TYPES: &[&str] = &[
-    "Atomic", "AtomicRef", "Arc", "Weak", "Box", "Rc",
+    "Atomic", "AtomicRef", "AtomicBool", "AtomicInt", "AtomicLong",
+    "AtomicI8", "AtomicI16", "AtomicI32", "AtomicI64",
+    "AtomicU8", "AtomicU16", "AtomicU32", "AtomicU64",
+    "Arc", "Weak", "Box", "Rc",
     "Mutex", "RwLock", "MutexGuard", "RwLockReadGuard", "RwLockWriteGuard",
     "UnsafeCell", "Cell", "RefCell",
 ];
