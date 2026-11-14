@@ -97,6 +97,8 @@ pub enum TExpr {
     Bool(bool),
     /// string value `offset << 32 | len` into the module's string data
     StrConst(u32, u32),
+    /// Immutable contiguous Array<int> descriptor: data offset and length.
+    ArrayConst(u32, u32),
     /// `int` widened to `float` (Java numeric promotion)
     IntToFloat(Box<TE>),
     FNeg(Box<TE>),
@@ -202,6 +204,15 @@ pub enum TStmt {
     ForIn {
         source: TE,
         handle_slot: u32,
+        value_slot: u32,
+        body: Vec<TStmt>,
+    },
+    /// A read-only contiguous i64 array; the source expression is evaluated
+    /// exactly once and elements are loaded by index, not via virtual next().
+    ForArrayInt {
+        source: TE,
+        array_slot: u32,
+        index_slot: u32,
         value_slot: u32,
         body: Vec<TStmt>,
     },
@@ -1341,7 +1352,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::Loop { cond, body, update } => {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
-        TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
+        TStmt::ForIn { source, body, .. } | TStmt::ForArrayInt { source, body, .. } =>
+            any_in(source, f) || any_in_stmts(body, f),
         TStmt::Block(b) => any_in_stmts(b, f),
         TStmt::Recur(values) => values.iter().any(|(_, _, value)| any_in(value, f)),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
@@ -1378,7 +1390,8 @@ fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
             || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
         TStmt::Loop { body, update, .. } =>
             guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
-        TStmt::ForIn { body, .. } => guest_eh_in_stmts(body),
+        TStmt::ForIn { body, .. } | TStmt::ForArrayInt { body, .. } =>
+            guest_eh_in_stmts(body),
         TStmt::Block(b) => guest_eh_in_stmts(b),
         _ => false,
     })
@@ -2703,6 +2716,43 @@ impl<'a> FnCx<'a> {
                 e: TExpr::F64(f64::from_bits(*bits)),
                 ty: Type::Float,
             },
+            ExprKind::ArrayLit(items) => {
+                // First executable array profile: constant i64 values only.
+                // Static data is contiguous, 8-byte aligned and readonly from
+                // the guest language. No actor heap ownership is inferred.
+                let byte_len = items.len().checked_mul(8).ok_or_else(||
+                    Diagnostic::new(pos, "E_SOURCE_LIMIT", "array literal too large"))?;
+                let padding = (8 - self.data.len() % 8) % 8;
+                if self.data.len().checked_add(padding + byte_len)
+                    .is_none_or(|len| len > MAX_STRING_DATA)
+                {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                        "array literal exceeds the static data budget"));
+                }
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    let value = match &item.kind {
+                        ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 => *n as i64,
+                        ExprKind::Unary(UnOp::Neg, inner) => match inner.kind {
+                            ExprKind::Int(Some(n)) if n <= i64::MAX as u64 => -(n as i64),
+                            ExprKind::Int(None) => i64::MIN,
+                            _ => return Err(Diagnostic::new(item.pos, "E_UNSUPPORTED",
+                                "Array<int> literals currently require compile-time integer elements")),
+                        },
+                        ExprKind::Int(_) => return Err(Diagnostic::new(item.pos, "E_INTEGER_RANGE",
+                            "array integer literal exceeds signed 64-bit range")),
+                        ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) =>
+                            return Err(type_err(item.pos, "Array<int> requires int elements")),
+                        _ => return Err(Diagnostic::new(item.pos, "E_UNSUPPORTED",
+                            "Array<int> literals currently require compile-time integer elements")),
+                    };
+                    values.push(value);
+                }
+                self.data.resize(self.data.len() + padding, 0);
+                let offset = self.data.len() as u32;
+                for val in values { self.data.extend_from_slice(&val.to_le_bytes()); }
+                TE { e: TExpr::ArrayConst(offset, items.len() as u32), ty: Type::ArrayInt }
+            }
             ExprKind::Str(text) => {
                 let (offset, len) = self.string(text, pos)?;
                 TE {
