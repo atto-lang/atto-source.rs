@@ -34,6 +34,19 @@ pub struct TargetHeaders {
     /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
     pub definitions: Vec<ActorDecl>,
     pub receivers: Vec<ReceiverHeader>,
+    /// Lexically located state member uses. These are type checked only if
+    /// the nominal actor has a concrete definition with known field types.
+    pub state_uses: Vec<StateUse>,
+}
+
+/// A syntax fact, not proof of an owned or nonescaping state value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateUse {
+    pub receiver: usize,
+    pub field: String,
+    pub pos: Pos,
+    pub mutation: bool,
+    pub exclusive: bool,
 }
 struct Cursor<'a> { toks: &'a [Token], i: usize }
 impl Cursor<'_> {
@@ -289,7 +302,8 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         }
     }
     for (i, start, end) in spans {
-        validate_receiver_body(toks, &out, i, start, end)?;
+        let uses = validate_receiver_body(toks, &out, i, start, end)?;
+        out.state_uses.extend(uses);
     }
     for (start, end) in function_spans {
         validate_spawned_actor_calls(toks, &out, start, end)?;
@@ -405,8 +419,8 @@ fn count_args(toks: &[Token], open: usize, close: usize) -> R<usize> {
 }
 fn validate_callback(
     toks: &[Token], symbols: &TargetHeaders, receiver: &ReceiverHeader,
-    open: usize, limit: usize,
-) -> R<usize> {
+    receiver_index: usize, open: usize, limit: usize,
+) -> R<(usize, Vec<StateUse>)> {
     let close = close_paren(toks, open, limit)?;
     let mut k = open + 1;
     if !word_at(toks, k, "critical") || !at(toks, k+1, &Tok::Minus) ||
@@ -442,7 +456,8 @@ fn validate_callback(
         return Err(diagnostic(toks, k, "E_SEALED", "missing critical callback body"));
     }
     // The v1 gate is conservative. A full borrow checker must subsequently
-    // prove reference lifetimes, effect purity, and field types before codegen.
+    // prove reference lifetimes and effect purity before codegen.
+    let mut uses = Vec::new();
     for i in k..close {
         if ["await", "select", "yield", "suspends", "spawn", "rt", "defer"].iter()
             .any(|w| word_at(toks, i, w)) {
@@ -462,6 +477,21 @@ fn validate_callback(
                 return Err(diagnostic(toks, i+2, "E_SEALED",
                     "state field member access requires a field name"));
             }
+            let field_pos = i + 2;
+            let prefix_mutation = i > k && matches!(toks.get(i-1).map(|t| &t.tok),
+                Some(Tok::PlusPlus | Tok::MinusMinus));
+            let postfix_mutation = matches!(toks.get(i+3).map(|t| &t.tok),
+                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus));
+            uses.push(StateUse {
+                receiver: receiver_index,
+                field: match &toks[field_pos].tok {
+                    Tok::Ident(name) => name.clone(),
+                    _ => unreachable!("field name checked above"),
+                },
+                pos: toks[field_pos].pos,
+                mutation: prefix_mutation || postfix_mutation,
+                exclusive: write,
+            });
             if !write {
                 // Prefix operators mutate state as surely as postfix operators.
                 // Checking only the tokens after s.field would admit ++s.field
@@ -485,13 +515,14 @@ fn validate_callback(
     }
     // Prevent the callback from smuggling a second actor's receiver semantics.
     let _ = symbols;
-    Ok(close)
+    Ok((close, uses))
 }
 fn validate_receiver_body(
     toks: &[Token], symbols: &TargetHeaders, which: usize,
     start: usize, end: usize,
-) -> R<()> {
+) -> R<Vec<StateUse>> {
     let receiver = &symbols.receivers[which];
+    let mut uses = Vec::new();
     let mut i = start + 1;
     while i < end.saturating_sub(1) {
         if word_at(toks, i, "handle_state") &&
@@ -509,7 +540,8 @@ fn validate_receiver_body(
                     "direct actor fields are sealed; use self.handle_state"));
             }
             if member == "handle_state" {
-                let closed = validate_callback(toks, symbols, receiver, i+3, end)?;
+                let (closed, accesses) = validate_callback(toks, symbols, receiver, which, i+3, end)?;
+                uses.extend(accesses);
                 i = closed + 1;
                 continue;
             }
@@ -532,7 +564,7 @@ fn validate_receiver_body(
         }
         i += 1;
     }
-    Ok(())
+    Ok(uses)
 }
 fn validate_spawned_actor_calls(
     toks: &[Token], symbols: &TargetHeaders, start: usize, end: usize,
