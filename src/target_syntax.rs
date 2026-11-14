@@ -611,10 +611,10 @@ fn validate_receiver_body(
             }
             if member == "handle_state" {
                 let (closed, accesses) = validate_callback(toks, symbols, receiver, which, i+3, end)?;
-                if !accesses.is_empty() {
-                    audit.effects.reads_state = true;
-                    audit.effects.writes_state |= accesses.iter().any(|use_site| use_site.mutation);
-                }
+                // A lease is an effect even when its callback never names
+                // a state field: the lock still constrains interleavings.
+                audit.effects.reads_state = true;
+                audit.effects.writes_state |= word_at(toks, i+6, "write");
                 audit.uses.extend(accesses);
                 i = closed + 1;
                 continue;
