@@ -19,6 +19,8 @@ use crate::diag::{Diagnostic, Pos};
 mod generator_lower;
 
 pub const MAX_LOCALS: usize = 1024;
+/// Fixed-size i64 continuation slots; all guest generator frames use one size.
+pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
