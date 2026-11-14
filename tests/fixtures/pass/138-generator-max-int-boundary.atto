@@ -1,0 +1,14 @@
+// expect-exit: 42
+// java: llvm-design
+fnc *gen last(int limit): Generator<int> {
+  for (let i = 9223372036854775807; i <= limit; i++) do
+    yield i;
+  done
+}
+pub fnc main(): int {
+  let result = 0;
+  for value in last(9223372036854775807) do
+    if value eq 9223372036854775807 then result = 42; fi
+  done
+  return result;
+}
