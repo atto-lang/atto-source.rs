@@ -357,3 +357,67 @@ mtd (mut self: Foo) write(): int {
     assert!(module.receivers[1].effects.writes_state);
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
 }
+
+#[test]
+fn actor_scalar_literal_range_and_numeric_ordering_follow_checked_int_contract() {
+    let prefix = "declare actor Counter;
+        define actor Counter as let int count = 0; let bool enabled = false; end
+        mtd (mut self: Counter) run(): void {
+            self.handle_state(critical-write |s| -> {";
+    for (body, code) in [
+        ("s.count = 9223372036854775808;", "E_INTEGER_RANGE"),
+        ("s.count = (9223372036854775808);", "E_INTEGER_RANGE"),
+        ("s.enabled = true < false;", "E_TYPE"),
+        ("s.enabled = s.enabled >= false;", "E_TYPE"),
+    ] {
+        rejects(&format!("{prefix} {body} }}); }}"), code);
+    }
+    for body in [
+        "s.count = -9223372036854775808;",
+        "s.enabled = true eq false;",
+        "s.enabled = s.count < 12;",
+    ] {
+        let source = format!("{prefix} {body} }}); }}");
+        let module = typed(&source).expect("well-typed checked scalar");
+        assert!(!module.receivers[0].body_lowered);
+        assert_eq!(atto_compiler::compile(&source).unwrap_err().code, "E_UNSUPPORTED");
+    }
+}
+
+#[test]
+fn checked_arithmetic_panic_effects_propagate_without_claiming_runtime_lease_safety() {
+    let source = r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) increment(): void {
+    self.handle_state(critical-write |s| -> { s.count = s.count + 1; });
+}
+mtd (mut self: Counter) outer(): void { self.increment(); }
+mtd (Counter self) literal(): int { return 42; }
+mtd (Counter self) explicit_panic(): void { panic(Error("x")); }
+"#;
+    let module = typed(source).unwrap();
+    let pos = Pos {line:1,col:1};
+    for method in ["increment", "outer", "explicit_panic"] {
+        let effect = &module.resolve(None,"Counter",method,0,false,pos).unwrap().effects;
+        assert!(effect.may_panic, "missing fatal panic effect in {method}");
+    }
+    assert!(!module.resolve(None,"Counter","literal",0,false,pos)
+        .unwrap().effects.may_panic);
+    assert!(!module.resolve(None,"Counter","explicit_panic",0,false,pos)
+        .unwrap().effects.may_unwind,
+        "panic must not be treated as catchable throw/raise");
+}
+
+#[test]
+fn state_projection_address_taking_is_forbidden_under_both_leases() {
+    let prefix = "declare actor Foo;
+        define actor Foo as let int count = 0; end
+        mtd (mut self: Foo) foo(): void {";
+    for lease in ["critical-read", "critical-write"] {
+        let source = format!("{prefix}
+            self.handle_state({lease} |s| -> {{ val leaked = &s.count; }});
+        }}");
+        rejects(&source, "E_BORROW");
+    }
+}
