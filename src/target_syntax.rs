@@ -353,22 +353,55 @@ fn close_paren(toks: &[Token], start: usize, limit: usize) -> R<usize> {
     }
     Err(diagnostic(toks, start, "E_EOF", "unterminated argument list"))
 }
-fn count_args(toks: &[Token], open: usize, close: usize) -> usize {
-    if close == open + 1 { return 0; }
-    let (mut n, mut round, mut square, mut braces) = (1, 0, 0, 0);
+/// Count method-call arguments only after validating nested delimiters.
+/// Receiver bodies are syntax-preflighted rather than fully parsed; malformed
+/// user input must produce a Diagnostic, never underflow a nesting counter.
+fn count_args(toks: &[Token], open: usize, close: usize) -> R<usize> {
+    if close == open + 1 { return Ok(0); }
+    let mut expected = Vec::<Tok>::new();
+    let mut count = 1usize;
+    let mut has_argument = false;
     for i in open + 1..close {
-        match toks[i].tok {
-            Tok::LParen => round += 1,
-            Tok::RParen => round -= 1,
-            Tok::LBracket => square += 1,
-            Tok::RBracket => square -= 1,
-            Tok::LBrace => braces += 1,
-            Tok::RBrace => braces -= 1,
-            Tok::Comma if round == 0 && square == 0 && braces == 0 => n += 1,
+        match &toks[i].tok {
+            Tok::LParen => expected.push(Tok::RParen),
+            Tok::LBracket => expected.push(Tok::RBracket),
+            Tok::LBrace => expected.push(Tok::RBrace),
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                if expected.pop().as_ref() != Some(&toks[i].tok) {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "mismatched method argument delimiter"));
+                }
+            }
+            Tok::Comma if expected.is_empty() => {
+                if !has_argument {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "empty method argument"));
+                }
+                count += 1;
+                if count > MAX_PARAMS {
+                    return Err(diagnostic(toks, i, "E_SOURCE_LIMIT",
+                        "too many method arguments"));
+                }
+                has_argument = false;
+                continue;
+            }
             _ => {}
         }
+        if expected.len() > 128 {
+            return Err(diagnostic(toks, i, "E_NESTING",
+                "method argument nesting limit"));
+        }
+        has_argument = true;
     }
-    n
+    if !expected.is_empty() {
+        return Err(diagnostic(toks, close, "E_SYNTAX",
+            "unclosed method argument delimiter"));
+    }
+    if !has_argument {
+        return Err(diagnostic(toks, close, "E_SYNTAX",
+            "trailing comma in method arguments"));
+    }
+    Ok(count)
 }
 fn validate_callback(
     toks: &[Token], symbols: &TargetHeaders, receiver: &ReceiverHeader,
@@ -475,7 +508,7 @@ fn validate_receiver_body(
             }
             let close = close_paren(toks, i+3, end)?;
             resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
-                member, count_args(toks, i+3, close), false, toks[i].pos)?;
+                member, count_args(toks, i+3, close)?, false, toks[i].pos)?;
             i = close + 1;
             continue;
         }
