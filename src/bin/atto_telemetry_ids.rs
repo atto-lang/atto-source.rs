@@ -136,6 +136,26 @@ mod tests {
     }
 
     #[test]
+    fn checks_and_locates_real_atto_fixture_without_native_codegen() {
+        let source = "examples/source-ids-main.atto".to_string();
+        let registry = "examples/source-ids-main.registry.json".to_string();
+        let checked: serde_json::Value = serde_json::from_str(
+            &run(&["check".to_owned(), source.clone(), registry.clone()]).unwrap()
+        ).unwrap();
+        assert_eq!(checked["instrumentation_status"], "not_implemented");
+        assert_eq!(checked["functions"][0]["routine_id"],
+                   "rid_a458b8330ea5475ba8a0cae2c64b48bc");
+        let located: serde_json::Value = serde_json::from_str(
+            &run(&["locate".to_owned(), source.clone(), registry.clone(),
+                   "rid_a458b8330ea5475ba8a0cae2c64b48bc".into()]).unwrap()
+        ).unwrap();
+        assert_eq!(located["symbol"], "main():int");
+        assert_eq!(located["status"], "verified_source_only_not_deployed_binary");
+        assert!(run(&["locate".to_owned(), source, registry,
+                     "sid_a458b8330ea5475ba8a0cae2c64b48bc".into()]).is_err());
+    }
+
+    #[test]
     fn rejects_missing_source_without_creating_files() {
         let missing = Path::new("__atto_identity_missing_source_test.atto");
         let result = read_regular_bounded(missing).unwrap_err();
