@@ -354,15 +354,29 @@ fn diagnostic(toks: &[Token], index: usize, code: &'static str, why: &str) -> Di
     Diagnostic::new(toks.get(index).map_or(Pos::default(), |t| t.pos), code, why)
 }
 fn close_paren(toks: &[Token], start: usize, limit: usize) -> R<usize> {
-    let mut depth = 0usize;
+    if !at(toks, start, &Tok::LParen) {
+        return Err(diagnostic(toks, start, "E_SYNTAX", "expected '('"));
+    }
+    // A state callback body can contain nested groups, arrays, and blocks.
+    // Counting only parentheses would accept malformed '[)' or stray '}'.
+    let mut expected = Vec::<Tok>::new();
     for i in start..limit {
-        if at(toks, i, &Tok::LParen) { depth += 1; }
-        if at(toks, i, &Tok::RParen) {
-            if depth == 0 {
-                return Err(diagnostic(toks, i, "E_SYNTAX", "unexpected ')'"));
+        match &toks[i].tok {
+            Tok::LParen => expected.push(Tok::RParen),
+            Tok::LBracket => expected.push(Tok::RBracket),
+            Tok::LBrace => expected.push(Tok::RBrace),
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                if expected.pop().as_ref() != Some(&toks[i].tok) {
+                    return Err(diagnostic(toks, i, "E_SYNTAX",
+                        "mismatched method or callback delimiter"));
+                }
+                if expected.is_empty() { return Ok(i); }
             }
-            depth -= 1;
-            if depth == 0 { return Ok(i); }
+            _ => {}
+        }
+        if expected.len() > 128 {
+            return Err(diagnostic(toks, i, "E_NESTING",
+                "method/callback delimiter nesting limit"));
         }
     }
     Err(diagnostic(toks, start, "E_EOF", "unterminated argument list"))
@@ -459,10 +473,22 @@ fn validate_callback(
     // prove reference lifetimes and effect purity before codegen.
     let mut uses = Vec::new();
     for i in k..close {
-        if ["await", "select", "yield", "suspends", "spawn", "rt", "defer"].iter()
-            .any(|w| word_at(toks, i, w)) {
+        // Until typed effect proofs are available, no suspension, unwinding,
+        // early-exit, reentrancy, or implicit call effects may run under an
+        // actor-state lease. These are lexical *denials*, not effect proofs.
+        if ["await", "select", "yield", "suspends", "spawn", "rt", "defer",
+            "throw", "raise", "panic", "trap", "recover", "try", "catch",
+            "finally", "break", "continue", "return"].iter()
+            .any(|w| word_at(toks, i, w))
+            || at(toks, i, &Tok::YieldStar)
+            || at(toks, i, &Tok::Question) {
             return Err(diagnostic(toks, i, "E_BORROW",
-                "suspension, spawning and deferred effects are forbidden during critical access"));
+                "unproven control flow, unwinding or effects inside critical actor state access"));
+        }
+        if matches!(toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_)))
+            && at(toks, i+1, &Tok::LParen) {
+            return Err(diagnostic(toks, i, "E_BORROW",
+                "calls inside critical state access require typed non-suspending effect proofs"));
         }
         if word_at(toks, i, "handle_state") || word_at(toks, i, "self") {
             return Err(diagnostic(toks, i, "E_BORROW",
@@ -492,6 +518,14 @@ fn validate_callback(
                 mutation: prefix_mutation || postfix_mutation,
                 exclusive: write,
             });
+            // A scalar field projection is not a general object borrow. Even
+            // under a write lease, chained access and method dispatch need an
+            // effect/borrow-checked typed body rather than token preflight.
+            if at(toks, i+3, &Tok::Dot) || at(toks, i+3, &Tok::LParen)
+                || at(toks, i+3, &Tok::LBracket) {
+                return Err(diagnostic(toks, i+3, "E_UNSUPPORTED",
+                    "chained state projections and calls require a typed borrow/effect checker"));
+            }
             if !write {
                 // Prefix operators mutate state as surely as postfix operators.
                 // Checking only the tokens after s.field would admit ++s.field
@@ -506,11 +540,7 @@ fn validate_callback(
                     return Err(diagnostic(toks, i+3, "E_READONLY",
                         "critical-read cannot mutate actor state"));
                 }
-                if at(toks, i+3, &Tok::Dot) || at(toks, i+3, &Tok::LParen) {
-                    return Err(diagnostic(toks, i+3, "E_UNSUPPORTED",
-                        "state field method calls need a full effect and borrow checker"));
-                }
-            }
+             }
         }
     }
     // Prevent the callback from smuggling a second actor's receiver semantics.
