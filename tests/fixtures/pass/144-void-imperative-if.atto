@@ -1,0 +1,10 @@
+// expect-exit: 42
+// expect-stdout: selected
+pub fnc main(): int {
+  if true {
+    stdio.println("selected");
+  } else {
+    stdio.println("wrong");
+  }
+  return 42;
+}

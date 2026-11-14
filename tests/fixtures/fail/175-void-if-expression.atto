@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+pub fnc main(): int {
+  if true then stdio.println("yes") else stdio.println("no") fi;
+  return 42;
+}
