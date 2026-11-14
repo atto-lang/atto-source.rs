@@ -486,3 +486,114 @@ fn unknown_return_expressions_remain_unproved_not_executable() {
     assert!(!m.receivers[0].body_lowered);
     assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
 }
+
+#[test]
+fn receiver_cfg_proves_all_branches_return_and_preserves_aot_gate() {
+    let source = r#"
+use namespace workers;
+declare actor Alpha;
+declare actor Beta;
+mtd (Alpha self) choice(bool flag): int {
+    if flag {
+        return 10;
+    } else {
+        return 20;
+    }
+}
+mtd (Beta self) choice(bool flag): bool {
+    if !flag { return true; } else { return false; }
+}
+"#;
+    let m=typed(source).unwrap();
+    assert_eq!(m.receiver_flows.len(),2);
+    for flow in &m.receiver_flows {
+        assert_eq!(flow.branches,1);
+        assert_eq!(flow.returns,2);
+        assert!(flow.fully_structured);
+        assert_eq!(flow.normal_fallthrough,Some(false));
+    }
+    assert!(m.receivers.iter().all(|r| !r.body_lowered));
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn receiver_cfg_rejects_partially_returning_branches() {
+    for source in [
+        "declare actor Foo;
+         mtd (Foo self) choose(bool flag): int {
+             if flag { return 1; } else {}
+         }",
+        "declare actor Foo;
+         mtd (Foo self) choose(bool flag): int {
+             if flag { return 1; }
+         }",
+        "declare actor Foo;
+         mtd (Foo self) choose(bool flag): int {
+             if flag { return 1; } else if false { return 2; }
+         }",
+    ] {
+        rejects(source,"E_MISSING_RETURN");
+    }
+    rejects("declare actor Foo;
+        mtd (Foo self) choose(int n): int {
+            if n { return 1; } else { return 2; }
+        }", "E_TYPE");
+}
+
+#[test]
+fn receiver_cfg_does_not_invent_proofs_for_unlowered_loops() {
+    let source="declare actor Foo;
+        mtd (Foo self) choose(bool flag): int {
+            while flag { return 1; }
+        }";
+    let m=typed(source).unwrap();
+    assert_eq!(m.receiver_flows[0].normal_fallthrough,None);
+    assert!(!m.receiver_flows[0].fully_structured);
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn receiver_nominal_argument_types_are_checked_for_known_scalars() {
+    let base="declare actor Foo;
+        mtd (Foo self) use_value(int n,bool enabled): void {}
+        mtd (Foo self) caller(int n,bool enabled): void {";
+    for args in ["true,enabled", "n,12", "enabled,n"] {
+        rejects(&format!("{base} self.use_value({args}); }}"),"E_TYPE");
+    }
+    let valid=format!("{base} self.use_value(n,(enabled)); }}");
+    let m=typed(&valid).unwrap();
+    assert!(!m.receivers[1].effects.unproved_call);
+    assert_eq!(atto_compiler::compile(&valid).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn actor_ref_call_arguments_keep_nominal_actor_identity() {
+    let base=r#"
+use namespace workers;
+declare actor Foo1;
+declare actor Foo2;
+mtd (Foo1 self) send_to(ActorRef<Foo1> peer): void {}
+"#;
+    let invalid=format!("{base}
+        mtd (Foo1 self) caller(ActorRef<Foo2> peer): void {{
+            self.send_to(peer);
+        }}");
+    rejects(&invalid,"E_TYPE");
+    let valid=format!("{base}
+        mtd (Foo1 self) caller(ActorRef<Foo1> peer): void {{
+            self.send_to(peer);
+        }}");
+    assert!(typed(&valid).is_ok());
+}
+
+#[test]
+fn unknown_call_arguments_remain_unproved_and_not_executable() {
+    let source="declare actor Foo;
+        mtd (Foo self) use_value(int n): void {}
+        mtd (Foo self) caller(): void { self.use_value(calculate()); }";
+    let m=typed(source).unwrap();
+    assert!(m.receivers[1].effects.unproved_call);
+    assert_eq!(m.receiver_flows[1].normal_fallthrough,None);
+    assert!(m.receivers.iter().all(|r| !r.body_lowered));
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
+}
