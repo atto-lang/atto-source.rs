@@ -1,0 +1,7 @@
+// expect-error: E_TYPE
+// java: rejects
+fnc *gen wrong(): Generator<int> {
+  let flag = true;
+  yield flag;
+}
+pub fnc main(): int { return 0; }
