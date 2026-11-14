@@ -32,6 +32,30 @@ cargo run --bin oresc -- --compile-with-source-ids \
   target/source-ids-main.map.json
 ~~~
 
+### Review-only scalar routine registry sync
+
+The Rust CLI additionally supports:
+
+~~~sh
+cargo run --locked --bin atto_telemetry_ids -- sync \
+  examples/source-ids-main.atto \
+  examples/source-ids-main.registry.json \
+  examples/source-ids-main.proposed.json
+~~~
+
+The proposal must be a **new** canonical package-relative file. Neither the
+original source nor the checked-in manifest is overwritten, and hardlink or
+symlink destination aliases are rejected through exclusive creation. A kernel
+CSPRNG supplies fresh nonzero 128-bit `rid_` identities on Unix platforms;
+other platforms fail closed until an audited native CSPRNG adapter is added.
+Existing identities remain unchanged across formatting and statement order;
+the checked MIR verifier must accept every emitted proposal. The Rust library
+also supports an *explicit whole-file move* with exact old/new callable
+inventories, but the CLI does not expose moves yet. Renaming a function,
+partially moving a module or inventing `sid_` sites must never silently
+re-identify existing IDs. Do not confuse this experimental JSON interchange
+with the final TOML manifest or a real compiled guest log site.
+
 ### Strict Rust source-ID authoring checks and lookup
 
 The Rust-owned `atto_telemetry_ids` binary provides **compiler-checked**
