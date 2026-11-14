@@ -68,7 +68,7 @@ for (const [name, expected, output] of [
   ['132-generator-yield-star-native.atto', 10n, '10\n'],
   ['133-generator-nested-empty-yield-star.atto', 8n, ''],
   ['134-generator-delegate-break-close-reuse.atto', 168n, ''],
-  ['135-generator-parameterized-original.atto', 10n, '10\\n'],
+  ['135-generator-parameterized-original.atto', 10n, '10\n'],
   ['136-generator-parameter-bounds.atto', 6n, ''],
   ['137-generator-param-delegate-early-close.atto', 42n, ''],
   ['138-generator-max-int-boundary.atto', 42n, ''],
