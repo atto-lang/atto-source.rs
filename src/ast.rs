@@ -59,8 +59,36 @@ pub struct Program {
     pub classes: Vec<ClassDecl>,
     pub enums: Vec<EnumDecl>,
     pub actors: Vec<ActorDecl>,
+    /// Explicit file-level exports (resolved after all declarations are parsed).
+    pub exports: Vec<ExportDecl>,
     /// Spellings referenced by `Type::Named` / `Type::NamedRef`.
     pub type_names: Vec<(String, Pos)>,
+}
+
+/// Visibility of a file-level export, independent of declaration order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportVisibility {
+    Public,
+    Package,
+}
+
+/// Kind of declaration referred to by an export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportKind {
+    Class,
+    Fnc,
+    Actor,
+    Enum,
+}
+
+/// `export pub Name;` or `export pub[pkg] class Name;`.
+#[derive(Clone, Debug)]
+pub struct ExportDecl {
+    pub name: String,
+    pub pos: Pos,
+    pub visibility: ExportVisibility,
+    /// Optional when the symbol kind is inferred from the file's declarations.
+    pub kind: Option<ExportKind>,
 }
 
 /// Who may assign a field after its initializer ran.
