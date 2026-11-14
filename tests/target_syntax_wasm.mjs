@@ -133,5 +133,16 @@ rejects('declare actor A; mtd (A self) good(): bool { return true; } mtd (A self
 rejects('declare actor A; mtd (A self) bad(): int { return 9223372036854775808; }','E_INTEGER_RANGE');
 rejects('declare actor A; mtd (A self) valid(): int {return 10;}','E_UNSUPPORTED');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (63)');
+
+// Conservative structured CFG and nominal receiver call argument checks.
+rejects('declare actor A; mtd (A self) choose(bool flag): int { if flag {return 1;} else {} }','E_MISSING_RETURN');
+rejects('declare actor A; mtd (A self) choose(bool flag): int { if flag {return 1;} }','E_MISSING_RETURN');
+rejects('declare actor A; mtd (A self) choose(int count): int { if count {return 1;} else {return 2;} }','E_TYPE');
+rejects('declare actor A; mtd (A self) consume(int n): void {} mtd (A self) run(): void {self.consume(true);}','E_TYPE');
+rejects('declare actor A; mtd (A self) consume(bool flag): void {} mtd (A self) run(int n): void {self.consume(n);}','E_TYPE');
+rejects('declare actor A; declare actor B; mtd (A self) consume(ActorRef<A> a): void {} mtd (A self) run(ActorRef<B> b): void {self.consume(b);}','E_TYPE');
+rejects('declare actor A; mtd (A self) choose(bool flag): int { if flag {return 1;} else {return 2;} }','E_UNSUPPORTED');
+rejects('declare actor A; mtd (A self) consume(int n): void {} mtd (A self) run(int n): void {self.consume(n);}','E_UNSUPPORTED');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (71)');
 
