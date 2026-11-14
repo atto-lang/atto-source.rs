@@ -13,7 +13,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { formatJavaDouble } from './java-double.mjs';
-import { verify_actor_trace } from './actor-trace-refinement.mjs';
+import { verify_actor_trace, BROWSER_MAX_ACTORS, BROWSER_MAX_MAILBOX } from './actor-trace-refinement.mjs';
 
 const here = new URL('.', import.meta.url).pathname;
 const compilerPath = process.argv[2] || join(here, '../target/wasm32-unknown-unknown/release/atto_compiler.wasm');
@@ -52,8 +52,8 @@ export function compile(source) {
 // valid schedule of the concurrent browser runtime.
 const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send']);
 const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', 'actor_receive']);
-export const MAX_ACTORS = 16;
-export const MAX_MAILBOX = 10_000;
+export const MAX_ACTORS = BROWSER_MAX_ACTORS;
+export const MAX_MAILBOX = BROWSER_MAX_MAILBOX;
 
 export function actorNames(module) {
   const sections = WebAssembly.Module.customSections(module, 'atto.actors');
