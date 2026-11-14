@@ -34,7 +34,7 @@ jobs:
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
           sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
-      - name: Reject fourteen malformed mailbox histories before compiled guest tests
+      - name: Reject adversarial mailbox histories before compiled guest tests
         run: node --test tests/actor-trace-refinement.test.mjs
       - name: Conformance - wasm32 compiler, guest execution, native-vs-wasm byte parity
         env:
