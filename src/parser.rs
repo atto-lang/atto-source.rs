@@ -176,7 +176,6 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "Symbol",
     "Option",
     "Result",
-    "Array",
     "List",
     "Vector",
     "Slice",
@@ -380,6 +379,16 @@ impl Parser {
                     _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "browser ADT admits only Option<int> and Option<Result<int,string>>")),
                 }
+            }
+            "Array" => {
+                self.expect(Tok::Lt, "'<' after Array")?;
+                let inner = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Array item type")?;
+                if inner != Type::Int {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "this compiler's first array iteration profile supports only immutable Array<int>"));
+                }
+                Type::ArrayInt
             }
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
@@ -2311,7 +2320,21 @@ impl Parser {
                 }
             },
             Tok::Pipe => return Err(unsupported(pos, "lambdas")),
-            Tok::LBracket => return Err(unsupported(pos, "sequence literals")),
+            Tok::LBracket => {
+                self.advance();
+                let mut items = Vec::new();
+                while *self.peek() != Tok::RBracket {
+                    if items.len() >= 1024 {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                            "an array literal may contain at most 1024 elements"));
+                    }
+                    items.push(self.parse_expr()?);
+                    if !self.eat(&Tok::Comma) { break; }
+                    if *self.peek() == Tok::RBracket { break; }
+                }
+                self.expect(Tok::RBracket, "']' after array elements")?;
+                ExprKind::ArrayLit(items)
+            },
             Tok::LBrace => return Err(unsupported(pos, "record literals")),
             _ => return Err(self.expected("an expression")),
         };
