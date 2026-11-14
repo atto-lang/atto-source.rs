@@ -473,6 +473,10 @@ impl Emit<'_> {
                 self.expr(b);
                 self.close();
             }
+            TExpr::ValueBlock(body, tail) => {
+                self.stmts(body);
+                self.expr(tail);
+            }
             TExpr::Call(f, args) => {
                 for a in args {
                     self.expr(a);
