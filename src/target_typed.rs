@@ -4,7 +4,7 @@
 
 use crate::ast::{ActorInterface, ActorInterfaceMethod, FieldMode, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
-use crate::target_syntax::{ReceiverHeader, StateUse, TargetHeaders};
+use crate::target_syntax::{ReceiverEffects, ReceiverHeader, StateUse, TargetHeaders};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetType {
@@ -45,6 +45,9 @@ pub struct TypedReceiver {
     pub pos: Pos,
     /// Signatures only: method bodies are not lowered or executable.
     pub body_lowered: bool,
+    /// Conservative transitive effects, inferred over nominal receiver calls.
+    /// This is not an executable effect proof.
+    pub effects: ReceiverEffects,
 }
 
 /// A state access validated against a concrete actor field declaration.
@@ -200,6 +203,7 @@ impl TypedActorModule {
             actor, method: h.name.clone(), arity: params.len(), params, returns,
             mutable: h.mutable, public: h.public, pos: h.pos,
             body_lowered: false,
+            effects: ReceiverEffects::default(),
         })
     }
 }
@@ -229,6 +233,40 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     }
     for access in &headers.state_uses {
         module.state_uses.push(module.check_state_use(headers, access)?);
+    }
+    if headers.receiver_effects.len() != module.receivers.len() {
+        return Err(type_error(Pos::default(),
+            "missing receiver effect facts; typed lowering requires full body preflight"));
+    }
+    for (receiver, direct) in module.receivers.iter_mut().zip(&headers.receiver_effects) {
+        receiver.effects = direct.clone();
+    }
+    // Bounded monotone fixed point: each effect bit can transition only from
+    // false to true. Recursive calls are handled without unbounded DFS.
+    for _ in 0..module.receivers.len() {
+        let mut changed = false;
+        for call in &headers.receiver_calls {
+            let callee = module.receivers.get(call.callee)
+                .ok_or_else(|| type_error(call.pos, "invalid receiver call target"))?;
+            let target_actor = callee.actor;
+            let transitive = callee.effects.clone();
+            let caller = module.receivers.get_mut(call.caller)
+                .ok_or_else(|| type_error(call.pos, "invalid receiver caller"))?;
+            if caller.actor != target_actor {
+                return Err(Diagnostic::new(call.pos, "E_ISOLATION",
+                    "receiver calls cannot cross nominal actor boundaries"));
+            }
+            let before = caller.effects.clone();
+            caller.effects.reads_state |= transitive.reads_state;
+            caller.effects.writes_state |= transitive.writes_state;
+            caller.effects.may_suspend |= transitive.may_suspend;
+            caller.effects.may_unwind |= transitive.may_unwind;
+            caller.effects.may_spawn |= transitive.may_spawn;
+            caller.effects.may_allocate |= transitive.may_allocate;
+            caller.effects.unproved_call |= transitive.unproved_call;
+            changed |= caller.effects != before;
+        }
+        if !changed { break; }
     }
     Ok(module)
 }
