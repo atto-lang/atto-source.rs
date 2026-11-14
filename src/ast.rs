@@ -202,6 +202,9 @@ pub enum BindKind {
 pub enum Stmt {
     Bind {
         kind: BindKind,
+        /// Permission to mutate fields through this local binding; independent
+        /// of whether the local name can be rebound (val/const vs let).
+        referent_mutable: bool,
         name: String,
         ty: Option<Type>,
         init: Expr,

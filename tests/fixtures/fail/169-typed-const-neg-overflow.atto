@@ -1,0 +1,2 @@
+// expect-error: E_CONST_OVERFLOW
+pub fnc main(): int { const x = -(-9223372036854775808); return x; }

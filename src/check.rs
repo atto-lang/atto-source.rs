@@ -4,8 +4,8 @@
 //! * `int` is a signed 64-bit integer (spec 17, LLVM `i64`), arithmetic is
 //!   checked and overflow panics (spec 17 TARGET (decided); LLVM traps).
 //! * conditions must be `bool`; there is no truthiness (spec 17).
-//! * `val`/`const` bindings and parameters are immutable; `let` and
-//!   `type mut name` parameters are reassignable (grammar.ebnf, Java).
+//! * `val`/`const` names cannot be rebound; `let` names can. An independent
+//!   `mut` qualifier grants referent field mutation when ownership permits it.
 //! * top-level overload identity is name + arity (Java reference).
 //! * a non-void function must return on every path (Java reference).
 //! * `int / int` is rejected: its result type is undecided (spec S-25; Java
@@ -17,6 +17,8 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod const_eval;
+use const_eval::ConstValue;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
@@ -361,6 +363,8 @@ struct Local {
     slot: u32,
     ty: Type,
     mutable: bool,
+    /// Field mutation through this binding, independently of name rebinding.
+    referent_mutable: bool,
     /// `Some(payload)` for the `ActorMail<T>` parameter of receive
     mail: Option<Type>,
 }
@@ -377,6 +381,8 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Typed, evaluated compile-time constants keyed by lexical local slot.
+    const_values: BTreeMap<u32, ConstValue>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -1275,6 +1281,7 @@ fn body_check(
             slot: 0,
             ty: Type::Int,
             mutable: false,
+            referent_mutable: false,
             mail: Some(payload),
         });
     } else {
@@ -1284,6 +1291,7 @@ fn body_check(
                 slot: i as u32,
                 ty: *t,
                 mutable: *m,
+                referent_mutable: false,
                 mail: None,
             });
         }
@@ -1398,6 +1406,7 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            const_values: BTreeMap::new(),
             imports,
             data,
         }
@@ -1428,7 +1437,30 @@ impl<'a> FnCx<'a> {
         Ok(t)
     }
 
-    fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+    /// Conservative admission: reject runtime values and effects in local
+    /// const initializers. Names qualify only when previously bound as const;
+    /// mutation and reassignment remain independent of this provenance.
+    fn locally_constant(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Int(Some(_)) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
+            ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => true,
+            ExprKind::Unary(_, inner) => self.locally_constant(inner),
+            ExprKind::Binary(_, lhs, rhs) => self.locally_constant(lhs) && self.locally_constant(rhs),
+            ExprKind::Ternary(cond, lhs, rhs) => self.locally_constant(cond)
+                && self.locally_constant(lhs) && self.locally_constant(rhs),
+            ExprKind::Var(name) => self.lookup(name)
+                .is_some_and(|local| self.const_values.contains_key(&local.slot)),
+            ExprKind::Member(base, variant) => {
+                // Only statically declared nominal enum variant ordinals.
+                matches!(&base.kind, ExprKind::Var(name)
+                    if self.lookup(name).is_none() && self.g.enum_(name).is_some_and(|idx|
+                        self.g.enums[idx as usize].variants.iter().any(|(v, _)| v == variant)))
+            }
+            _ => false,
+        }
+    }
+
+    fn declare(&mut self, name: &str, ty: Type, mutable: bool, referent_mutable: bool, pos: Pos) -> R<u32> {
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
         }
@@ -1441,6 +1473,7 @@ impl<'a> FnCx<'a> {
             slot,
             ty,
             mutable,
+            referent_mutable,
             mail: None,
         });
         Ok(slot)
@@ -1493,7 +1526,11 @@ impl<'a> FnCx<'a> {
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
         Ok(match s {
-            Stmt::Bind { kind, name, ty, init, pos } => {
+            Stmt::Bind { kind, referent_mutable, name, ty, init, pos } => {
+                if *kind == BindKind::Const && !self.locally_constant(init) {
+                    return Err(Diagnostic::new(init.pos, "E_CONST",
+                        "const initializer must be compile-time evaluable; use 'val' for immutable runtime values"));
+                }
                 let want = match ty {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
@@ -1519,7 +1556,17 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
-                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                // Typed evaluation, including checked i64 arithmetic, happens
+                // before making the name visible. Replace the entire guest
+                // expression with a deterministic literal/enum value.
+                let constant = if *kind == BindKind::Const {
+                    Some(self.eval_const(&v, init.pos)?)
+                } else { None };
+                let v = if let Some(ref constant) = constant {
+                    self.materialize_const(constant, v.ty, init.pos)?
+                } else { v };
+                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *referent_mutable, *pos)?;
+                if let Some(value) = constant { self.const_values.insert(slot, value); }
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
@@ -1531,7 +1578,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(
                         *pos,
                         "E_IMMUTABLE",
-                        format!("cannot reassign val binding '{name}'"),
+                        format!("cannot reassign non-rebindable binding '{name}' (use 'let' for reassignment)"),
                     ));
                 }
                 let v = self.consume_expected(value, ty)?;
@@ -1578,7 +1625,7 @@ impl<'a> FnCx<'a> {
                 let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
                 self.scopes.push(Vec::new());
                 let checked = (|| {
-                    let value_slot = self.declare(name, Type::Int, false, *pos)?;
+                    let value_slot = self.declare(name, Type::Int, false, false, *pos)?;
                     let body = self.looped(body)?;
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
                 })();
@@ -1823,7 +1870,7 @@ impl<'a> FnCx<'a> {
             let r = (|| -> R<(TE, Vec<TStmt>)> {
                 let mut body = Vec::new();
                 if let Some(n) = bind {
-                    let slot = self.declare(n, sty, false, arm.pos)?;
+                    let slot = self.declare(n, sty, false, false, arm.pos)?;
                     body.push(TStmt::Set(slot, get()));
                 }
                 let guard = match &arm.guard {
@@ -1944,7 +1991,7 @@ impl<'a> FnCx<'a> {
                 let mut body = Vec::new();
                 if let Some(name) = payload_name {
                     let ty = payload_ty.expect("the pattern binds a value");
-                    let slot = self.declare(name, ty, false, arm.pos)?;
+                    let slot = self.declare(name, ty, false, false, arm.pos)?;
                     let value = if key.is_none() {
                         get()
                     } else {
@@ -2002,6 +2049,44 @@ impl<'a> FnCx<'a> {
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
+        // A named local is an owned, non-aliased class handle in this subset.
+        // Only an explicit `mut` binding may write a non-final field through it.
+        // This does NOT grant access to actor state or immutable class fields.
+        if let ExprKind::Var(name) = &target.kind {
+            let (ty, referent_mutable) = match self.lookup(name) {
+                Some(local) => (local.ty, local.referent_mutable),
+                None => return Err(Diagnostic::new(target.pos, "E_UNBOUND", format!("unknown name '{name}'"))),
+            };
+            let Type::Class(c) = ty else {
+                return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                    "field mutation requires an owned local class value; actor state requires sealed access"));
+            };
+            let class = &self.g.classes[c as usize];
+            let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
+                Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
+            if !f.public && self.inside_class() != Some(c) {
+                return Err(Diagnostic::new(pos, "E_PRIVATE",
+                    format!("private field '{}.{field}' is accessible only from its class", class.name)));
+            }
+            if f.mode == FieldMode::Final {
+                return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                    format!("field '{}.{field}' is immutable/final", class.name)));
+            }
+            if !referent_mutable {
+                return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                    format!("binding '{name}' cannot mutate fields without 'mut'")));
+            }
+            let (offset, fty) = (f.slot, f.ty);
+            let obj = self.value(target)?; // Reject use-after-move.
+            // The RHS is an ownership-transfer position, just like a binding
+            // initializer. Do not leave a second live owner for class values.
+            let v = self.consume_expected(value, fty)?;
+            if v.ty != fty {
+                return Err(type_err(value.pos,
+                    format!("cannot assign {} to field '{field}' of type {}", self.tn(v.ty), self.tn(fty))));
+            }
+            return Ok(TStmt::FieldSet { obj, offset, ty: fty, value: v });
+        }
         if !matches!(target.kind, ExprKind::SelfRef) {
             return Err(Diagnostic::new(
                 pos,
@@ -2043,7 +2128,9 @@ impl<'a> FnCx<'a> {
                         format!("cannot mutate field '{field}' through read-only binding 'self'"),
                     ));
                 }
-                let v = self.value(value)?;
+                // Object-valued state assignments consume ownership; a local
+                // alias must not survive as a second owner.
+                let v = self.consume_expected(value, fty)?;
                 if v.ty != fty {
                     return Err(type_err(
                         value.pos,
@@ -2083,7 +2170,9 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
-                let v = self.value(value)?;
+                // Object-valued state assignments consume ownership; a local
+                // alias must not survive as a second owner.
+                let v = self.consume_expected(value, fty)?;
                 if v.ty != fty {
                     return Err(type_err(
                         value.pos,

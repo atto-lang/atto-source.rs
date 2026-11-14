@@ -1,0 +1,7 @@
+// expect-exit: 14
+pub fnc main(): int {
+  int base = 5;
+  const int middle = base + 2;
+  const final_value: int = middle * 2;
+  return final_value;
+}

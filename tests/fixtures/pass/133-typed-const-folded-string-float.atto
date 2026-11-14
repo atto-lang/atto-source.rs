@@ -1,0 +1,9 @@
+// expect-exit: 9
+pub fnc main(): int {
+  const x = 1.5 + 2.5;
+  const y = x * 2.0;
+  const s = "hello" + " world";
+  const same = s eq "hello world";
+  if same, y eq 8.0 then return 9; fi
+  return 0;
+}
