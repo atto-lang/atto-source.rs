@@ -1120,6 +1120,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Bind {
                     kind: BindKind::Const,
+                    referent_mutable: false,
                     name,
                     ty: Some(ty),
                     init,
@@ -1274,7 +1275,9 @@ impl Parser {
         }
     }
 
-    /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
+    /// Binding kind controls rebinding; the optional `mut` controls
+    /// writable access to the referent. `val mut` and `let mut` are distinct.
+    /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") ["mut"] (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
     fn parse_binding(&mut self) -> R<Stmt> {
         let pos = self.pos();
         let kind = if self.eat_word("val") {
@@ -1286,19 +1289,8 @@ impl Parser {
         } else {
             return Err(self.expected("'val', 'const' or 'let'"));
         };
-        // Java Parser.parseReferentMutability: `const mut` / `let mut` request a
-        // mutable referent (no effect on scalar values); `val` already means
-        // `const mut`, so `val mut` is a duplicate qualifier.
-        if self.is_word("mut") {
-            if kind == BindKind::Val {
-                return Err(Diagnostic::new(
-                    self.pos(),
-                    "E_SYNTAX",
-                    "'val' already means 'const mut'; 'val mut' is a duplicate mutability qualifier",
-                ));
-            }
-            self.advance();
-        }
+        // Rebinding and referent mutation are independent capabilities.
+        let referent_mutable = self.eat_word("mut");
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
@@ -1329,7 +1321,7 @@ impl Parser {
         }
         self.advance();
         let init = self.parse_expr()?;
-        Ok(Stmt::Bind { kind, name, ty, init, pos })
+        Ok(Stmt::Bind { kind, referent_mutable, name, ty, init, pos })
     }
 
     fn parse_if(&mut self) -> R<Stmt> {
@@ -1599,6 +1591,7 @@ impl Parser {
             let init = self.parse_expr()?;
             Some(Box::new(Stmt::Bind {
                 kind: BindKind::Let,
+                referent_mutable: false,
                 name,
                 ty: Some(ty),
                 init,
