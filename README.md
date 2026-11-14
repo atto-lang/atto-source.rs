@@ -143,3 +143,14 @@ Hard-RT admission is intentionally fail-closed: the compiler now proves a bounde
 acyclic call graph as a precondition, but rejects the final `--hard-rt` request until
 target-specific WCET/deadline evidence is implemented. It does not relabel “native AOT”
 as a hard-real-time proof.
+
+
+### 2026-11-14 proposal-path audit
+
+The experimental routine-ID `sync` command previously failed for a
+safe basename-only output such as `new-registry.json` because
+`Path::parent` returns an empty component. The directory-boundary
+validation now canonicalizes `.` for that case. An explicit regression
+exercises new root-level proposal creation and exclusive no-clobber
+behavior. **Rust toolchain and Cargo tests are not available locally,
+so this regression is authored but not executed.**
