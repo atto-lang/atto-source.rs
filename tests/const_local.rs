@@ -40,3 +40,41 @@ fn compile_time_provenance_does_not_grant_rebinding() {
     rejects("pub fnc main(): int { const int x = 5; x = 6; return x; }", "E_IMMUTABLE");
     rejects("pub fnc main(): int { const mut int x = 5; x = 6; return x; }", "E_IMMUTABLE");
 }
+
+#[test]
+fn checked_i64_constant_folding_rejects_overflow() {
+    rejects("pub fnc main(): int { const x = 9223372036854775807 + 1; return x; }", "E_CONST_OVERFLOW");
+    rejects("pub fnc main(): int { const x = -(-9223372036854775808); return x; }", "E_CONST_OVERFLOW");
+    rejects("pub fnc main(): int { const x = 3037000500 * 3037000500; return x; }", "E_CONST_OVERFLOW");
+}
+
+#[test]
+fn negative_i64_min_and_bounded_arithmetic_are_constant() {
+    valid("pub fnc main(): int { const int min = -9223372036854775808; const int seven = 2 + 5; return seven; }");
+    valid("pub fnc main(): int { const x = 100 - 99; const y = x * 7; return y; }");
+}
+
+#[test]
+fn folded_booleans_floats_and_strings_have_typed_values() {
+    valid(r#"pub fnc main(): int {
+        const x = 1.5 + 2.5;
+        const y = x * 2.0;
+        const is_eight = y eq 8.0;
+        const text = "hello" + " world";
+        const same = text eq "hello world";
+        if is_eight, same then return 1; fi
+        return 0;
+    }"#);
+}
+
+#[test]
+fn constant_provenance_follows_slots_not_shadowed_names() {
+    valid("pub fnc main(): int { const x = 2; { val x = 7; } const y = x + 3; return y; }");
+    rejects("pub fnc main(): int { const x = 2; { val x = 7; const y = x; } return x; }", "E_CONST");
+}
+
+#[test]
+fn const_cannot_call_functions_or_reach_mutable_aliases() {
+    rejects("pub fnc main(): int { let mut x = 1; const y = x; return y; }", "E_CONST");
+    rejects("pub fnc main(): int { const x = stdio.println(1); return 0; }", "E_CONST");
+}
