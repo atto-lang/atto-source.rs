@@ -72,6 +72,10 @@ for (const [name, expected, output] of [
   ['136-generator-parameter-bounds.atto', 6n, ''],
   ['137-generator-param-delegate-early-close.atto', 42n, ''],
   ['138-generator-max-int-boundary.atto', 42n, ''],
+  ['139-generator-two-live-locals.atto', 10n, ''],
+  ['140-generator-branches-and-live-locals.atto', 16n, ''],
+  ['141-generator-break-continue-live.atto', 8n, ''],
+  ['142-generator-multi-local-frame-reuse.atto', 42n, ''],
 ]) {
   const file = join('tests/fixtures/pass', name);
   const src = readFileSync(file, 'utf8');
@@ -93,6 +97,11 @@ for (const [name, code] of [
   ['133-generator-yield-star-scalar-call.atto', 'E_TYPE'],
   ['134-generator-unsupported-loop-body.atto', 'E_UNSUPPORTED'],
   ['135-generator-unsupported-delegate-expression.atto', 'E_UNSUPPORTED'],
+  ['136-generator-local-type-mismatch.atto', 'E_TYPE'],
+  ['137-generator-local-reassignment-immutable.atto', 'E_IMMUTABLE'],
+  ['138-generator-branch-scoped-binding.atto', 'E_UNSUPPORTED'],
+  ['139-generator-duplicate-int-local.atto', 'E_DUPLICATE'],
+  ['140-generator-division-effect.atto', 'E_UNSUPPORTED'],
 ]) {
   const file = join('tests/fixtures/fail', name);
   const src = readFileSync(file, 'utf8');
@@ -103,4 +112,23 @@ for (const [name, code] of [
   assert.equal(native.code, code, name);
   assert.equal(wasmHost.code, code, name);
   console.log('PASS expected reject', name, code);
+}
+
+
+// A noncooperative loop may compile as pure native Wasm, but its first pull
+// must trap with the dedicated deterministic fuel exhaustion code, not hang.
+{
+  const path = 'tests/fixtures/pass/143-generator-dispatch-budget-trap.atto';
+  const source = readFileSync(path, 'utf8');
+  const native = viaNativeCompiler(path);
+  const browser = viaWasmCompiler(source);
+  assert.equal(native.rejected, false, 'bounded non-yielding loop must compile');
+  assert.equal(browser.rejected, false, 'wasm-host must compile the same loop');
+  assert.deepEqual(native.wasm, browser.wasm, 'budget fixture compiler byte parity');
+  const mod = new WebAssembly.Module(native.wasm);
+  const instance = new WebAssembly.Instance(mod, { atto: {} });
+  assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
+  assert.equal(instance.exports.panic_code.value, 5,
+    'budget exhaustion must be distinguishable from invalid generator handles');
+  console.log('PASS guest Wasm bounded nonyielding loop panic 5');
 }
