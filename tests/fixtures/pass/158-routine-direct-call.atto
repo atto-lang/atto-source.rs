@@ -1,0 +1,8 @@
+// spec: routine direct-only, no recursion
+// expect-exit: 42
+pub routine twice(int value): int {
+  return value * 2;
+}
+pub fnc main(): int {
+  return twice(21);
+}

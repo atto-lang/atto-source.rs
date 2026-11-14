@@ -149,6 +149,8 @@ pub struct Func {
     pub pos: Pos,
     /// Explicit `fnc *gen` modifier; not inferred from `yield`.
     pub is_generator: bool,
+    /// `routine` is direct-call-only and must never participate in a call cycle.
+    pub is_routine: bool,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
