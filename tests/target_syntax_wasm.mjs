@@ -75,5 +75,15 @@ rejects('use namespace workers; declare actor Foo; define actor Bar as end','E_U
 rejects('use namespace workers; declare actor Foo; define actor Foo as end define actor Foo as end','E_DUPLICATE');
 rejects('use namespace workers; declare actor Foo; define actor Foo as foo(): int {return 1;} end mtd (Foo self) foo(): int {return 2;}','E_DUPLICATE');
 rejects('use namespace workers; declare actor Foo; define actor Foo as foo(): int {return 1;} end pub mtd (Foo self) foo(): bool {return true;}','E_SIGNATURE');
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (29)');
+
+// Harden the executable browser compiler ABI preflight: malformed nested calls,
+// receiver escapes and readonly mutations fail closed with no guest artifact.
+rejects('declare actor Foo; mtd (Foo self) foo(int a,int b): void {} mtd (Foo self) run(): void { self.foo(self.secret,1); }','E_SEALED');
+rejects('declare actor Foo; mtd (Foo self) foo(int a,int b): void {} mtd (Foo self) run(): void { self.foo(self,1); }','E_ESCAPE');
+rejects('declare actor Foo; mtd (Foo self) foo(int a,int b): void {} mtd (Foo self) run(): void { self.foo(1,]); }','E_SYNTAX');
+rejects('declare actor Foo; mtd (Foo self) foo(int a,int b): void {} mtd (Foo self) run(): void { self.foo(self.handle_state(critical-write |s| -> { s.n = 1; }),1); }','E_MUTABILITY');
+rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-read |s| -> { ++s.n; }); }','E_READONLY');
+rejects('declare actor Foo; mtd (Foo self) run(): void { self.handle_state(critical-read |s| -> { sink(self); }); }','E_BORROW');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (35)');
 
