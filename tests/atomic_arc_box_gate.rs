@@ -42,5 +42,5 @@ fn parse_only_target_signatures_do_not_launder_intrinsic_names() {
 fn ordinary_scalar_guest_remains_executable() {
     let wasm = compile("pub fnc main(): int { return 17; }")
         .expect("safe scalar subset must remain enabled");
-    assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
 }
