@@ -1416,13 +1416,17 @@ impl Parser {
         }
         let pos = self.pos();
         let mut stmts = self.parse_block()?;
+        // A terminated tail expression is a statement, not a value.
+        // The explicit 'return e;' spelling is the arm-local result exception.
+        let has_trailing_semicolon = self.i >= 2 && self.toks[self.i - 2].tok == Tok::Semi;
         let tail = stmts.pop().ok_or_else(|| Diagnostic::new(
             pos, "E_VALUE_ARM", "conditional value block requires a final expression"
         ))?;
         let result = match tail {
-            Stmt::Expr(e) | Stmt::Return(Some(e), _) => e,
+            Stmt::Expr(e) if !has_trailing_semicolon => e,
+            Stmt::Return(Some(e), _) => e,
             _ => return Err(Diagnostic::new(pos, "E_VALUE_ARM",
-                "conditional value block must end with an expression or 'return expression'")),
+                "conditional value block must end with an unterminated expression or 'return expression'")),
         };
         if stmts.is_empty() {
             Ok(result)
