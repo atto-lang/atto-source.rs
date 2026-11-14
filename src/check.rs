@@ -1689,9 +1689,31 @@ impl<'a> FnCx<'a> {
                         format!("iterator element type is int, not {}", self.tn(wanted))));
                 }
                 let gen = self.consume(source)?;
+                // Arrays are immutable module-data views, not generator
+                // handles. The source expression is evaluated once and each
+                // element is copied from its own contiguous 8-byte slot.
+                // Unlike owned generators, there is no close/unwind operation.
+                if gen.ty == Type::ArrayInt {
+                    let array_slot = self.temp(Type::ArrayInt, *pos)?;
+                    let index_slot = self.temp(Type::Bool, *pos)?; // i32 scratch index
+                    self.scopes.push(Vec::new());
+                    let checked = (|| {
+                        let value_slot = if name == "_" {
+                            self.temp(Type::Int, *pos)?
+                        } else {
+                            self.declare(name, Type::Int, *mutable, *pos)?
+                        };
+                        let body = self.looped(body)?;
+                        Ok(TStmt::ForArrayInt {
+                            source: gen, array_slot, index_slot, value_slot, body,
+                        })
+                    })();
+                    self.scopes.pop();
+                    return checked;
+                }
                 if gen.ty != Type::GeneratorInt {
                     return Err(type_err(source.pos,
-                        format!("for-in expects Generator<int>; arrays/other iterable types are not executable in this browser compiler yet (found {})", self.tn(gen.ty))));
+                        format!("for-in expects Array<int> or Generator<int>; other iterable item types are not yet executable (found {})", self.tn(gen.ty))));
                 }
                 if !generator_forin_safe_body(body) {
                     return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
