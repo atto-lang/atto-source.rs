@@ -43,3 +43,13 @@ fn invalid_visibility_and_nested_export_are_rejected() {
     assert!(parse(&format!("export pub[world] helper;\n{DECL}")).is_err());
     assert!(parse("fnc main(): int { export pub main; return 0; }").is_err());
 }
+
+#[test]
+fn mir_preserves_package_manifest_without_public_linkage() {
+    let ast = parse(&format!("export pub[pkg] fnc helper;\n{DECL}")).unwrap();
+    let typed = oreslang_source_rs::mir::lower(ast).expect("validated MIR");
+    assert_eq!(typed.exports.len(), 1, "pkg visibility must survive lower");
+    assert_eq!(typed.exports[0].name, "helper");
+    assert_eq!(typed.exports[0].scope, ExportScope::Package);
+    assert!(!typed.functions.iter().find(|f| f.symbol == "helper").unwrap().exported);
+}
