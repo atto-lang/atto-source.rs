@@ -58,6 +58,35 @@ this syntax, with no generated WebAssembly.
 
 It compiles a **subset** of AttoLang. Everything outside the subset is rejected with a diagnostic, and a rejected program never produces an artifact. The compiler does not approximate unsupported features.
 
+## First executable global Symbol profile (bounded, single module)
+
+The browser compiler now accepts `define pub symbol #ready;` followed by
+typed `Symbol` values and `#identifier` references. Symbol identity is not a
+string or integer: `eq`/`neq`, guards, and `match ... over on #ready` use
+canonical, 1-based immutable IDs assigned to lexicographically sorted static
+declarations. A supervisor `main` and actors compiled from the same module
+share those IDs despite independent Wasm memories. `ActorMail<Symbol>` and
+`worker.send(#ready)` are admitted; mail values are carried as i64 handles.
+
+The guest emits additive `atto.symbols` and `atto.actor_mail` metadata so
+a host can preload public entries and reject unknown/non-public handles on
+Symbol mailbox admission. The [Atto playground runtime](https://github.com/atto-lang/atto-playground)
+implements the host-side gate. Native Rust tests and a Node WebAssembly
+execution fixture are in `tests/symbols.rs`, `tests/guest-symbols.mjs` and
+`tests/fixtures/symbols/global_actor.atto`.
+
+This profile is deliberately limited:
+- `define symbol #private;` is rejected until isolate-local runtime identity
+  and transport semantics are lowered; do not alias it with a global ID.
+- The bare `#with spaces` spelling, cross-file symbol imports, dynamically
+  interned names, and user-provided global registration are not yet admitted.
+- IDs are meaningful only inside the current compiled module and its tenant
+  registry. They are not a process-wide ABI, an authorization capability or
+  a cross-process serialization format.
+- Actor-to-supervisor CONTROL messaging and full AOT/JIT backend parity remain
+  separate implementation gates. The shipped playground browser compiler
+  must be rebuilt/re-pinned before its editor can compile this feature.
+
 ## First executable synchronous generator profile (bounded guest Wasm)
 
 The compiler now emits **real guest WebAssembly** for a deliberately narrow
