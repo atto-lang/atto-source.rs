@@ -80,7 +80,7 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 
 fn vt(t: Type) -> Option<u8> {
     match t {
-        Type::Int => Some(I64),
+        Type::Int | Type::Symbol => Some(I64),
         Type::Bool => Some(I32),
         Type::Void => None,
         Type::Float => Some(F64),
@@ -156,8 +156,8 @@ impl Layout {
 /// Load (`store = false`) or store a field slot of type `t` at `offset`.
 fn field_op(code: &mut Vec<u8>, t: Type, offset: u32, store: bool) {
     let (op, align) = match (t, store) {
-        (Type::Int | Type::Str, false) => (0x29, 3),
-        (Type::Int | Type::Str, true) => (0x37, 3),
+        (Type::Int | Type::Str | Type::Symbol, false) => (0x29, 3),
+        (Type::Int | Type::Str | Type::Symbol, true) => (0x37, 3),
         (Type::Float, false) => (0x2B, 3),
         (Type::Float, true) => (0x39, 3),
         (_, false) => (0x28, 2),
@@ -376,7 +376,7 @@ impl Emit<'_> {
 
     fn expr(&mut self, v: &TE) {
         match &v.e {
-            TExpr::I64(n) => self.i64c(*n),
+            TExpr::I64(n) | TExpr::SymbolVal(n) => self.i64c(*n),
             TExpr::F64(x) => {
                 self.op(0x44);
                 self.code.extend_from_slice(&x.to_le_bytes());
@@ -433,7 +433,7 @@ impl Emit<'_> {
                 // execute in source order even when the left decides truth.
                 self.expr(a);
                 self.expr(b);
-                let int = a.ty == Type::Int;
+                let int = a.ty == Type::Int || a.ty == Type::Symbol;
                 if a.ty == Type::Float {
                     self.op(match op {
                         BinOp::Add => 0xA0,
