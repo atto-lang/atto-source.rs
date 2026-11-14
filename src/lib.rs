@@ -10,6 +10,7 @@ pub mod safety;
 pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;
+pub mod source_identity;
 
 /// Compile the current scalar grammar with opt-in signed i64 overflow traps.
 /// No safety/effect certificate is emitted: those IR schemas cannot yet
@@ -41,6 +42,25 @@ pub fn compile_with_ref_layout(
     effects::export_effect_ir_checked(&module)?;
     codegen::emit_object(&module)
 }
+
+/// Compile the native object AND verify a checked-in routine source registry
+/// against the same independently parsed/validated Rust MIR.
+///
+/// This is a source-map-only admission slice. No log/span sites are instrumented,
+/// no OpenTelemetry runtime is linked and no JIT generation is performed.
+pub fn compile_with_source_ids(
+    source: &str,
+    source_unit: &str,
+    registry_json: &str,
+) -> Result<(Vec<u8>, serde_json::Value), String> {
+    let ast = frontend::parse(source).map_err(|e| e.to_string())?;
+    let module = mir::lower(ast).map_err(|e| e.to_string())?;
+    let map = source_identity::verify_routines(&module, source_unit, registry_json)?;
+    let _ = effects::export_effect_ir_checked(&module)?;
+    let object = codegen::emit_object(&module)?;
+    Ok((object, map))
+}
+
 /// Generate the object and its conservative effect-IR model from precisely
 /// one parsed + type-checked Oreslang MIR. This is model conformance evidence,
 /// not authenticated compiler provenance or physical hard-RT certification.
