@@ -11,7 +11,7 @@ use oreslang_source_rs::{check_source_ids, locate_source_routine};
 use std::{
     env,
     fs,
-    io::{Read, ErrorKind},
+    io::Read,
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -58,6 +58,12 @@ fn rooted_source(source: &Path, registry: &Path) -> Result<(PathBuf, String), St
     let canonical_registry = fs::canonicalize(registry).map_err(|e| e.to_string())?;
     if !canonical_source.starts_with(&root) || !canonical_registry.starts_with(&root) {
         return Err("source and registry must be inside current package root".into());
+    }
+    if source.is_absolute() || registry.is_absolute()
+        || root.join(source) != canonical_source
+        || root.join(registry) != canonical_registry
+    {
+        return Err("input paths must be canonical package-relative paths without symlink aliases".into());
     }
     if canonical_source == canonical_registry {
         return Err("source and registry must be distinct files".into());
