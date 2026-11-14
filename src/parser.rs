@@ -1187,6 +1187,11 @@ impl Parser {
             Some("loop") => {
                 self.advance();
                 let body = self.parse_loop_body()?;
+                // An explicit semicolon closes a standalone loop and prevents
+                // a following independent while from being parsed as a tail.
+                if self.eat(&Tok::Semi) {
+                    return Ok(Stmt::Loop { body, pos });
+                }
                 if self.is_word("while") {
                     let cond = self.parse_post_test_cond()?;
                     Ok(Stmt::While { cond, body, pos, post_test: true })
