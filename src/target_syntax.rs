@@ -37,6 +37,36 @@ pub struct TargetHeaders {
     /// Lexically located state member uses. These are type checked only if
     /// the nominal actor has a concrete definition with known field types.
     pub state_uses: Vec<StateUse>,
+    /// Direct, pre-lowering effects from each receiver body, same index order.
+    pub receiver_effects: Vec<ReceiverEffects>,
+    /// Statically resolved same-nominal-actor calls for effect propagation.
+    pub receiver_calls: Vec<ReceiverCall>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReceiverEffects {
+    pub reads_state: bool,
+    pub writes_state: bool,
+    pub may_suspend: bool,
+    pub may_unwind: bool,
+    pub may_spawn: bool,
+    pub may_allocate: bool,
+    /// Free calls and dynamic dispatch have unknown effects until body typing.
+    pub unproved_call: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceiverCall {
+    pub caller: usize,
+    pub callee: usize,
+    pub pos: Pos,
+}
+
+#[derive(Default)]
+struct BodyAudit {
+    uses: Vec<StateUse>,
+    calls: Vec<ReceiverCall>,
+    effects: ReceiverEffects,
 }
 
 /// A syntax fact, not proof of an owned or nonescaping state value.
@@ -301,9 +331,12 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                     receiver.owner)));
         }
     }
+    out.receiver_effects = vec![ReceiverEffects::default(); out.receivers.len()];
     for (i, start, end) in spans {
-        let uses = validate_receiver_body(toks, &out, i, start, end)?;
-        out.state_uses.extend(uses);
+        let audit = validate_receiver_body(toks, &out, i, start, end)?;
+        out.receiver_effects[i] = audit.effects;
+        out.state_uses.extend(audit.uses);
+        out.receiver_calls.extend(audit.calls);
     }
     for (start, end) in function_spans {
         validate_spawned_actor_calls(toks, &out, start, end)?;
@@ -557,9 +590,9 @@ fn validate_callback(
 fn validate_receiver_body(
     toks: &[Token], symbols: &TargetHeaders, which: usize,
     start: usize, end: usize,
-) -> R<Vec<StateUse>> {
+) -> R<BodyAudit> {
     let receiver = &symbols.receivers[which];
-    let mut uses = Vec::new();
+    let mut audit = BodyAudit::default();
     let mut i = start + 1;
     while i < end.saturating_sub(1) {
         if word_at(toks, i, "handle_state") &&
@@ -578,13 +611,22 @@ fn validate_receiver_body(
             }
             if member == "handle_state" {
                 let (closed, accesses) = validate_callback(toks, symbols, receiver, which, i+3, end)?;
-                uses.extend(accesses);
+                if !accesses.is_empty() {
+                    audit.effects.reads_state = true;
+                    audit.effects.writes_state |= accesses.iter().any(|use_site| use_site.mutation);
+                }
+                audit.uses.extend(accesses);
                 i = closed + 1;
                 continue;
             }
             let close = close_paren(toks, i+3, end)?;
+            let arity = count_args(toks, i+3, close)?;
             resolve_receiver_header(symbols, symbols.namespace.as_deref(), &receiver.owner,
-                member, count_args(toks, i+3, close)?, false, toks[i].pos)?;
+                member, arity, false, toks[i].pos)?;
+            let callee = symbols.receivers.iter().position(|m|
+                m.owner == receiver.owner && m.name == member && m.arity == arity)
+                .expect("validated receiver header has a nominal target");
+            audit.calls.push(ReceiverCall { caller: which, callee, pos: toks[i].pos });
             // The call header is valid, but its argument expressions may
             // still contain forbidden direct state access, receiver escapes,
             // or nested method calls. Walk them in the outer scan instead of
@@ -599,9 +641,24 @@ fn validate_receiver_body(
             return Err(diagnostic(toks, i, "E_ESCAPE",
                 "actor receiver cannot be aliased, passed or returned by value"));
         }
+        // Effects outside a critical lease must be tracked, not silently
+        // approximated as pure. These are conservative facts pending typed
+        // body lowering; they never authorize execution by themselves.
+        audit.effects.may_suspend |= ["await", "select", "yield", "suspends"]
+            .iter().any(|word| word_at(toks, i, word))
+            || at(toks, i, &Tok::YieldStar);
+        audit.effects.may_unwind |= ["throw", "raise", "panic", "trap", "try"]
+            .iter().any(|word| word_at(toks, i, word)) || at(toks, i, &Tok::Question);
+        audit.effects.may_spawn |= word_at(toks, i, "spawn");
+        audit.effects.may_allocate |= word_at(toks, i, "new");
+        if matches!(toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_)))
+            && at(toks, i+1, &Tok::LParen)
+            && !(i >= 2 && at(toks, i-1, &Tok::Dot) && word_at(toks, i-2, "self")) {
+            audit.effects.unproved_call = true;
+        }
         i += 1;
     }
-    Ok(uses)
+    Ok(audit)
 }
 fn validate_spawned_actor_calls(
     toks: &[Token], symbols: &TargetHeaders, start: usize, end: usize,
