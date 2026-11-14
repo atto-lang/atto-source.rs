@@ -3,8 +3,8 @@
 //! Follows spec chapter 16 lexical rules: case-sensitive identifiers that start
 //! with a letter or `_`, `//` line comments, nesting `/* */` block comments,
 //! decimal integers with `_` separators, `"..."`/`'...'` strings.
-//! Floats, imaginary literals, templates and Symbols are recognised so that
-//! they can be rejected with a precise diagnostic instead of a generic error.
+//! Statically declared #identifier symbols are parsed in this bounded guest profile;
+//! dynamic and spaced symbol spellings remain explicitly unsupported.
 
 use crate::diag::{Diagnostic, Pos};
 
@@ -17,6 +17,7 @@ pub enum Tok {
     /// Float literal, stored as `f64::to_bits` so `Tok` stays `Eq`.
     Float(u64),
     Str(String),
+    Symbol(String),
     LParen,
     RParen,
     LBrace,
@@ -277,6 +278,22 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             out.push(Token { tok: Tok::Str(s), pos });
             continue;
         }
+        if c == '#' {
+            bump!();
+            if !chars.get(i).is_some_and(|ch| ch.is_alphabetic() || *ch == '_') {
+                return Err(Diagnostic::new(pos, "E_SYMBOL", "a symbol requires a nonempty identifier after '#'"));
+            }
+            let mut name = String::from("#");
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                name.push(chars[i]);
+                if name.len() > MAX_STRING_BYTES {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "symbol spelling exceeds 4096 UTF-8 bytes"));
+                }
+                bump!();
+            }
+            out.push(Token { tok: Tok::Symbol(name), pos });
+            continue;
+        }
         let next = chars.get(i + 1).copied();
         let (tok, len) = match (c, next) {
             ('(', _) => (Tok::LParen, 1),
@@ -323,13 +340,6 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     pos,
                     "E_UNSUPPORTED",
                     "template strings are not supported by the browser compiler yet",
-                ))
-            }
-            ('#', _) => {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED",
-                    "Symbols are not supported by the browser compiler yet",
                 ))
             }
             _ => return Err(Diagnostic::new(pos, "E_TOKEN", "unexpected character")),

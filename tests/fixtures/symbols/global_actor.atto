@@ -1,0 +1,21 @@
+define pub symbol #ready;
+define pub symbol #stopped;
+
+define actor Worker as
+  receive(ActorMail<Symbol> mail): void {
+    do match mail.value over
+      on #ready -> { stdio.println(7); }
+      on #stopped -> { stdio.println(8); }
+    end
+    return;
+  }
+end
+
+pub fnc main(): int {
+  const Symbol ready = #ready;
+  val first = spawn Worker();
+  val second = spawn Worker();
+  first.send(ready);
+  second.send(ready);
+  return 42;
+}

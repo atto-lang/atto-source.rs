@@ -22,6 +22,8 @@ pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
+pub const MAX_GLOBAL_SYMBOLS: usize = 16_384;
+pub const MAX_GLOBAL_SYMBOL_BYTES: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
@@ -93,6 +95,8 @@ pub enum StrOp {
 #[derive(Clone, Debug)]
 pub enum TExpr {
     I64(i64),
+    /// Link-time global Symbol identity; not an int at the language level.
+    SymbolVal(i64),
     F64(f64),
     Bool(bool),
     /// string value `offset << 32 | len` into the module's string data
@@ -267,6 +271,8 @@ pub struct TActor {
     pub inits: Vec<(u32, TE)>,
     /// Function index of `receive(value: i64, sequence: i64)`.
     pub receive: Option<u32>,
+    /// Exact message payload type for the host's mailbox admission gate.
+    pub payload: Type,
 }
 
 #[derive(Clone, Debug)]
@@ -281,6 +287,10 @@ pub struct TProgram {
     /// Types of the actor-state globals, indexed by `TExpr::GlobalGet`.
     pub globals: Vec<Type>,
     pub actors: Vec<TActor>,
+    /// Sorted exported Symbol spellings: guest handle ID = index + 1.
+    pub symbols: Vec<String>,
+    /// Sorted isolate-local Symbol spellings: guest handle ID = -(index + 1).
+    pub private_symbols: Vec<String>,
     /// String values exist: the module carries memory and the string helpers.
     pub strings: bool,
     /// Emit one module-private Wasm EH tag only when ordinary throw/trap exists.
@@ -333,6 +343,7 @@ struct Globals<'a> {
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
     actors: Vec<ActorInfo>,
+    symbols: BTreeMap<String, i64>,
     type_names: &'a [(String, Pos)],
 }
 
@@ -460,7 +471,7 @@ fn isolation(pos: Pos, actor: &str, what: &str, name: &str) -> Diagnostic {
 /// reference forbids calls there, and this compiler admits only constants.
 fn const_init(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
+        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Symbol(_) => true,
         ExprKind::Unary(_, a) => const_init(a),
         ExprKind::Binary(_, a, b) => const_init(a) && const_init(b),
         ExprKind::Ternary(c, a, b) => const_init(c) && const_init(a) && const_init(b),
@@ -696,6 +707,37 @@ pub fn check(p: &Program) -> R<TProgram> {
         }
     }
     let tn = &p.type_names;
+    if p.symbols.len() > MAX_GLOBAL_SYMBOLS {
+        return Err(Diagnostic::new(crate::diag::Pos { line: 1, col: 1 }, "E_SYMBOL_LIMIT",
+            "more than 16384 static global symbols"));
+    }
+    let mut declarations = BTreeMap::new();
+    let mut symbol_bytes = 0usize;
+    for d in &p.symbols {
+        let bytes = d.name.len();
+        if bytes > 4096 || bytes > MAX_GLOBAL_SYMBOL_BYTES.saturating_sub(symbol_bytes) {
+            return Err(Diagnostic::new(d.pos, "E_SYMBOL_LIMIT", "static symbol spelling budget exceeded"));
+        }
+        // One spelling in one module cannot be both private and public.
+        if declarations.insert(d.name.clone(), (d.pos, d.public)).is_some() {
+            return Err(Diagnostic::new(d.pos, "E_DUPLICATE", format!("duplicate symbol declaration {}", d.name)));
+        }
+        symbol_bytes += bytes;
+    }
+    // Two disjoint, deterministically sorted ordinal spaces: public IDs are
+    // positive, private IDs negative. The host binds private ordinals to the
+    // current isolate. Adding a private name cannot renumber exports.
+    let public_symbols: Vec<String> = declarations.iter()
+        .filter(|(_, (_, public))| *public)
+        .map(|(name, _)| name.clone()).collect();
+    let private_symbols: Vec<String> = declarations.iter()
+        .filter(|(_, (_, public))| !*public)
+        .map(|(name, _)| name.clone()).collect();
+    let mut symbols: BTreeMap<String, i64> = public_symbols.iter().enumerate()
+        .map(|(i, name)| (name.clone(), (i + 1) as i64)).collect();
+    for (i, name) in private_symbols.iter().enumerate() {
+        symbols.insert(name.clone(), -((i + 1) as i64));
+    }
     // ---- one namespace for functions, classes, enums and actors
     let mut seen: BTreeMap<&str, Pos> = BTreeMap::new();
     let decl_names = p
@@ -803,7 +845,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             }
             let ty = res(f.ty)?;
             let ok = match ty {
-                Type::Int | Type::Bool => true,
+                Type::Int | Type::Bool | Type::Symbol => true,
                 Type::Float | Type::Str | Type::Enum(_) => !actor,
                 _ => false,
             };
@@ -873,12 +915,12 @@ pub fn check(p: &Program) -> R<TProgram> {
         let payload = match &a.receive {
             Some(r) => {
                 let t = res(r.payload)?;
-                if !matches!(t, Type::Int | Type::Bool) {
+                if !matches!(t, Type::Int | Type::Bool | Type::Symbol) {
                     return Err(Diagnostic::new(
                         r.pos,
                         "E_UNSUPPORTED_TYPE",
                         format!(
-                            "ActorMail<{}> is not supported by the browser compiler yet; mail payloads may be int or bool",
+                            "ActorMail<{}> is not supported by the browser compiler yet; mail payloads may be int, bool or Symbol",
                             tn_plain(t, tn, &class_names, &p.enums, &actor_names)
                         ),
                     ));
@@ -903,6 +945,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         classes,
         enums: &p.enums,
         actors,
+        symbols,
         type_names: tn,
     };
 
@@ -1176,6 +1219,7 @@ pub fn check(p: &Program) -> R<TProgram> {
             name: a.name.clone(),
             inits,
             receive: info.receive_idx,
+            payload: info.payload,
         });
     }
 
@@ -1201,6 +1245,8 @@ pub fn check(p: &Program) -> R<TProgram> {
         generators,
         globals,
         actors: tactors,
+        symbols: public_symbols,
+        private_symbols,
         strings,
         guest_eh,
     })
@@ -1712,7 +1758,7 @@ impl<'a> FnCx<'a> {
         if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
             return self.match_adt(subj, arms, pos);
         }
-        if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
+        if !matches!(sty, Type::Int | Type::Bool | Type::Symbol | Type::Enum(_) | Type::Float | Type::Str) {
             return Err(Diagnostic::new(
                 subject.pos,
                 "E_UNSUPPORTED",
@@ -1727,6 +1773,7 @@ impl<'a> FnCx<'a> {
         let variants = match sty {
             Type::Enum(e) => self.g.enums[e as usize].variants.len(),
             Type::Bool => 2,
+            Type::Symbol => self.g.symbols.len(),
             _ => usize::MAX,
         };
         let mut seen: BTreeSet<i64> = BTreeSet::new();
@@ -1761,6 +1808,16 @@ impl<'a> FnCx<'a> {
                         Some(*v),
                         None,
                     )
+                }
+                Pattern::Symbol(name) => {
+                    if sty != Type::Symbol {
+                        return Err(type_err(arm.pos, format!("symbol pattern cannot match a {} value", self.tn(sty))));
+                    }
+                    let id = *self.g.symbols.get(name).ok_or_else(|| Diagnostic::new(
+                        arm.pos, "E_SYMBOL_UNBOUND", format!("undeclared Symbol {name}")))?;
+                    let lit = TE { e: TExpr::SymbolVal(id), ty: Type::Symbol };
+                    (Some(TE { e: TExpr::Bin(BinOp::Eq, Box::new(get()), Box::new(lit)),
+                        ty: Type::Bool }), Some(id), None)
                 }
                 Pattern::Bool(b) => {
                     if sty != Type::Bool {
@@ -2516,6 +2573,12 @@ impl<'a> FnCx<'a> {
                 e: TExpr::F64(f64::from_bits(*bits)),
                 ty: Type::Float,
             },
+            ExprKind::Symbol(name) => {
+                let id = *self.g.symbols.get(name).ok_or_else(|| Diagnostic::new(
+                    pos, "E_SYMBOL_UNBOUND",
+                    format!("Symbol {name} is not declared 'define [pub] symbol {name};' in this module")))?;
+                TE { e: TExpr::SymbolVal(id), ty: Type::Symbol }
+            }
             ExprKind::Str(text) => {
                 let (offset, len) = self.string(text, pos)?;
                 TE {
@@ -2727,7 +2790,7 @@ impl<'a> FnCx<'a> {
                         }),
                         "value" => Ok(TE {
                             e: TExpr::Local(0),
-                            ty: Type::Int,
+                            ty: payload,
                         }),
                         "sequence" => Ok(TE {
                             e: TExpr::Local(1),
@@ -2964,6 +3027,13 @@ impl<'a> FnCx<'a> {
                             self.tn(payload)
                         ),
                     ));
+                }
+                // Private Symbol values are isolate-local. A direct literal
+                // is provably untransportable at compile time; derived values
+                // remain subject to the host mailbox admission gate.
+                if payload == Type::Symbol && matches!(&v.e, TExpr::SymbolVal(id) if *id < 0) {
+                    return Err(Diagnostic::new(pos, "E_SYMBOL_PRIVATE",
+                        "private Symbol cannot be sent to another actor"));
                 }
                 self.imports.push(Import::ActorSend);
                 Ok(TE {

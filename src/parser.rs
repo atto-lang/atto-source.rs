@@ -172,7 +172,6 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "u32",
     "u64",
     "uint",
-    "Symbol",
     "Option",
     "Result",
     "Array",
@@ -356,7 +355,7 @@ impl Parser {
     fn is_type_word(&self, n: usize) -> bool {
         matches!(
             self.word_at(n),
-            Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String")
+            Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "Symbol")
         ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
     }
 
@@ -369,6 +368,7 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "Symbol" => Type::Symbol,
             "Option" => {
                 self.expect(Tok::Lt, "'<' after Option")?;
                 let inner = self.parse_type()?;
@@ -459,6 +459,14 @@ impl Parser {
             let at = usize::from(public);
             let start = self.pos();
             match (self.word_at(at), self.word_at(at + 1)) {
+                (Some("define"), Some("pub")) if !public && self.word_at(2) == Some("symbol") => {
+                    self.i += 3;
+                    prog.symbols.push(self.parse_symbol_declaration(true)?);
+                }
+                (Some("define"), Some("symbol")) => {
+                    self.i += at + 2;
+                    prog.symbols.push(self.parse_symbol_declaration(public)?);
+                }
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
                     prog.classes.push(self.parse_class(public)?);
@@ -501,6 +509,18 @@ impl Parser {
         }
         prog.type_names = std::mem::take(&mut self.type_names);
         Ok(prog)
+    }
+
+    /// Executable Symbol declarations must resolve statically at compile time.
+    fn parse_symbol_declaration(&mut self, public: bool) -> R<SymbolDecl> {
+        let pos = self.pos();
+        let name = match self.peek().clone() {
+            Tok::Symbol(name) => name,
+            _ => return Err(self.expected("a #symbol name")),
+        };
+        self.advance();
+        self.expect(Tok::Semi, "';' after symbol declaration")?;
+        Ok(SymbolDecl { name, public, pos })
     }
 
     /// After `define class`: `Name as { class_member } end`.
@@ -1500,6 +1520,7 @@ impl Parser {
                 "integer literal does not fit in a signed 64-bit int",
             )),
             Tok::Float(_) => Err(unsupported(pos, "float literal patterns")),
+            Tok::Symbol(name) => { self.advance(); Ok(Pattern::Symbol(name)) },
             Tok::Str(_) => Err(unsupported(pos, "string literal patterns")),
             Tok::LParen => Err(unsupported(pos, "tuple patterns")),
             Tok::LBracket => Err(Diagnostic::new(
@@ -2060,6 +2081,7 @@ impl Parser {
                 self.advance();
                 ExprKind::Str(s)
             }
+            Tok::Symbol(name) => { self.advance(); ExprKind::Symbol(name) }
             Tok::Float(bits) => {
                 self.advance();
                 ExprKind::Float(bits)

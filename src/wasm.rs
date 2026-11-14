@@ -80,7 +80,7 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 
 fn vt(t: Type) -> Option<u8> {
     match t {
-        Type::Int => Some(I64),
+        Type::Int | Type::Symbol => Some(I64),
         Type::Bool => Some(I32),
         Type::Void => None,
         Type::Float => Some(F64),
@@ -156,8 +156,8 @@ impl Layout {
 /// Load (`store = false`) or store a field slot of type `t` at `offset`.
 fn field_op(code: &mut Vec<u8>, t: Type, offset: u32, store: bool) {
     let (op, align) = match (t, store) {
-        (Type::Int | Type::Str, false) => (0x29, 3),
-        (Type::Int | Type::Str, true) => (0x37, 3),
+        (Type::Int | Type::Str | Type::Symbol, false) => (0x29, 3),
+        (Type::Int | Type::Str | Type::Symbol, true) => (0x37, 3),
         (Type::Float, false) => (0x2B, 3),
         (Type::Float, true) => (0x39, 3),
         (_, false) => (0x28, 2),
@@ -376,7 +376,7 @@ impl Emit<'_> {
 
     fn expr(&mut self, v: &TE) {
         match &v.e {
-            TExpr::I64(n) => self.i64c(*n),
+            TExpr::I64(n) | TExpr::SymbolVal(n) => self.i64c(*n),
             TExpr::F64(x) => {
                 self.op(0x44);
                 self.code.extend_from_slice(&x.to_le_bytes());
@@ -433,7 +433,7 @@ impl Emit<'_> {
                 // execute in source order even when the left decides truth.
                 self.expr(a);
                 self.expr(b);
-                let int = a.ty == Type::Int;
+                let int = a.ty == Type::Int || a.ty == Type::Symbol;
                 if a.ty == Type::Float {
                     self.op(match op {
                         BinOp::Add => 0xA0,
@@ -1253,6 +1253,44 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         uleb(&mut a, p.actors.len() as u64);
         for actor in &p.actors {
             name(&mut a, &actor.name);
+        }
+        section(&mut out, 0, a);
+        // Typed mailbox metadata: 0=no handler, 1=int, 2=bool, 3=Symbol.
+        // The host rejects arbitrary i64 values sent as Symbol identifiers.
+        let mut m = Vec::new();
+        name(&mut m, "atto.actor_mail");
+        uleb(&mut m, p.actors.len() as u64);
+        for actor in &p.actors {
+            m.push(match actor.payload {
+                Type::Void => 0,
+                Type::Int => 1,
+                Type::Bool => 2,
+                Type::Symbol => 3,
+                _ => unreachable!("actor mail type checked"),
+            });
+        }
+        section(&mut out, 0, m);
+    }
+    if !p.symbols.is_empty() {
+        // Canonically sorted public manifest. Guest IDs are positive
+        // one-based ordinals, stable even as private symbols are added.
+        let mut a = Vec::new();
+        name(&mut a, "atto.symbols");
+        uleb(&mut a, p.symbols.len() as u64);
+        for symbol in &p.symbols {
+            name(&mut a, symbol);
+        }
+        section(&mut out, 0, a);
+    }
+    if !p.private_symbols.is_empty() {
+        // Isolate-local identities are negative one-based ordinals; the host
+        // binds their meaning to the current actor/supervisor instance.
+        // Never put them in atto.symbols, which is public/transportable.
+        let mut a = Vec::new();
+        name(&mut a, "atto.private_symbols");
+        uleb(&mut a, p.private_symbols.len() as u64);
+        for symbol in &p.private_symbols {
+            name(&mut a, symbol);
         }
         section(&mut out, 0, a);
     }
