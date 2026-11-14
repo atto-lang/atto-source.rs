@@ -113,5 +113,14 @@ rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(
 rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { ++s.enabled; }); }','E_TYPE');
 rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { s.count = new Widget(); }); }','E_BORROW');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (51)');
+
+// Boundary and effect regressions must be observable from the actual browser
+// Wasm compiler ABI, with zero guest bytes published on rejection.
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { s.count = 9223372036854775808; }); }','E_INTEGER_RANGE');
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { s.enabled = true < false; }); }','E_TYPE');
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-read |s| -> { val leaked = &s.count; }); }','E_BORROW');
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { val leaked = &s.count; }); }','E_BORROW');
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { s.count = -9223372036854775808; }); }','E_UNSUPPORTED');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (56)');
 
