@@ -228,6 +228,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_bad_move_without_publishing_a_registry() {
+        let output = "examples/__atte_source_id_invalid_move_proposal.json";
+        assert!(!Path::new(output).exists());
+        let rejected = run(&[
+            "sync".into(),
+            "examples/source-ids-main.atto".into(),
+            "examples/source-ids-main.registry.json".into(),
+            output.into(),
+            "--moved-from=../escape.atto".into(),
+        ]);
+        assert!(rejected.is_err());
+        assert!(!Path::new(output).exists());
+    }
+
+    #[test]
     fn rejects_missing_source_without_creating_files() {
         let missing = Path::new("__atto_identity_missing_source_test.atto");
         let result = read_regular_bounded(missing).unwrap_err();
