@@ -1,0 +1,10 @@
+// expect-exit: 2
+// java: target-only
+pub fnc main(): int {
+  let i = 0;
+  for _ do
+    i = i + 1;
+    if i eq 2 then break; fi
+  end
+  return i;
+}

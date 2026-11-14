@@ -142,6 +142,26 @@ impl Builder {
         Ok(())
     }
 
+    /// The post-test guard is reached even from a 'continue', and is a
+    /// resumable CFG instruction rather than an eager one-time expression.
+    fn post_test_loop_body(&mut self, cond: &Expr, body: &[Stmt],
+                           pos: Pos) -> Result<(), Diagnostic> {
+        let head = self.pc();
+        self.loops.push(LoopEdges::default());
+        self.nested(body, pos)?;
+        let continue_target = self.pc();
+        let guard = self.push(Instruction::Guard {
+            condition: cond.clone(), on_false: 0,
+        }, cond.pos)?;
+        self.push(Instruction::Jump { to: head }, pos)?;
+        let exit = self.pc();
+        self.patch_guard(guard, exit);
+        let edges = self.loops.pop().expect("matching post-test loop");
+        for site in edges.breaks { self.patch_jump(site, exit); }
+        for site in edges.continues { self.patch_jump(site, continue_target); }
+        Ok(())
+    }
+
     fn stmt(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
         match stmt {
             Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } => {
@@ -190,8 +210,12 @@ impl Builder {
                     self.patch_jump(jump, end);
                 }
             }
-            Stmt::While { cond, body, pos } => {
-                self.loop_body(Some(cond), body, None, *pos)?;
+            Stmt::While { cond, body, pos, post_test } => {
+                if *post_test {
+                    self.post_test_loop_body(cond, body, *pos)?;
+                } else {
+                    self.loop_body(Some(cond), body, None, *pos)?;
+                }
             }
             Stmt::Loop { body, pos } => {
                 self.loop_body(None, body, None, *pos)?;

@@ -1,0 +1,6 @@
+// expect-exit: 3
+// java: target-only
+fnc valid(): int {
+  do { return 3; } while (false);
+}
+pub fnc main(): int { return valid(); }

@@ -1,0 +1,6 @@
+// expect-error: E_SYNTAX
+// java: target-only
+pub fnc main(): int {
+  while true do { break; } end
+  return 0;
+}

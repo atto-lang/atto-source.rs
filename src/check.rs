@@ -1308,7 +1308,12 @@ fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
-        TStmt::Loop { cond: None, body, .. } => !breaks(body),
+        // Post-test loops lower the trailing boolean guard to a conditional
+        // break in the update region. Such a break is a fallthrough path.
+        // An unconditional loop diverges only if neither body nor update
+        // can break its enclosing loop.
+        TStmt::Loop { cond: None, body, update } =>
+            !breaks(body) && (!breaks(update) || returns(body)),
         TStmt::Block(b) => returns(b),
         _ => false,
     })
@@ -1578,7 +1583,13 @@ impl<'a> FnCx<'a> {
                 let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
                 self.scopes.push(Vec::new());
                 let checked = (|| {
-                    let value_slot = self.declare(name, Type::Int, false, *pos)?;
+                    // '_' intentionally discards each yielded value. Allocate
+                    // its runtime slot without putting '_' into the source scope.
+                    let value_slot = if name == "_" {
+                        self.temp(Type::Int, *pos)?
+                    } else {
+                        self.declare(name, Type::Int, false, *pos)?
+                    };
                     let body = self.looped(body)?;
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
                 })();
@@ -1637,13 +1648,30 @@ impl<'a> FnCx<'a> {
                 self.moved = after;
                 TStmt::If(out, other)
             }
-            Stmt::While { cond, body, .. } => {
-                let c = self.cond(cond, "while")?;
-                let body = self.looped(body)?;
-                TStmt::Loop {
-                    cond: Some(c),
-                    body,
-                    update: Vec::new(),
+            Stmt::While { cond, body, post_test, .. } => {
+                // In post-test loops the body runs before the condition.
+                // Check ownership/moves after the body so a consumed value
+                // cannot be read from the trailing condition.
+                let (c, body) = if *post_test {
+                    let body = self.looped(body)?;
+                    let c = self.cond(cond, "while")?;
+                    (c, body)
+                } else {
+                    let c = self.cond(cond, "while")?;
+                    let body = self.looped(body)?;
+                    (c, body)
+                };
+                if *post_test {
+                    // The update region executes after fallthrough AND continue.
+                    // A failed post-test must break, not start another iteration.
+                    let not_c = TE { e: TExpr::Not(Box::new(c)), ty: Type::Bool };
+                    TStmt::Loop {
+                        cond: None,
+                        body,
+                        update: vec![TStmt::If(vec![(not_c, vec![TStmt::Break])], None)],
+                    }
+                } else {
+                    TStmt::Loop { cond: Some(c), body, update: Vec::new() }
                 }
             }
             Stmt::Loop { body, .. } => {

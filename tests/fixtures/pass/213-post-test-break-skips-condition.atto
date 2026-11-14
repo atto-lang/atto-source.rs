@@ -1,0 +1,10 @@
+// expect-exit: 5
+// java: target-only
+fnc observed(): bool {
+  stdio.println(9);
+  return false;
+}
+pub fnc main(): int {
+  do { break; } while (observed());
+  return 5;
+}

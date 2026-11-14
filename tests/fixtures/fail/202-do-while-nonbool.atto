@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+// java: target-only
+pub fnc main(): int {
+  do { } while (1);
+  return 0;
+}

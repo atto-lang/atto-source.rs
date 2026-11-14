@@ -1,0 +1,13 @@
+// expect-exit: 3
+// java: target-only
+pub fnc main(): int {
+  let i = 0;
+  loop {
+    i = i + 1;
+    if i eq 2 then break; fi
+  };
+  while i < 3 do
+    i = i + 1;
+  done
+  return i;
+}
