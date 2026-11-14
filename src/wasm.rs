@@ -33,6 +33,8 @@ pub const PANIC_OVERFLOW: i32 = 1;
 pub const PANIC_DIV_ZERO: i32 = 2;
 pub const PANIC_HEAP: i32 = 3;
 pub const PANIC_GENERATOR: i32 = 4;
+/// Non-yielding generator exceeded its bounded per-pull dispatch budget.
+pub const PANIC_GENERATOR_BUDGET: i32 = 5;
 /// Fixed memory size, in 64 KiB pages, of a module that allocates objects.
 pub const HEAP_PAGES: u32 = 16;
 
