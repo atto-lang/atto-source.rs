@@ -51,7 +51,7 @@ fn parameters_and_actor_capabilities_have_nominal_types() {
         declare actor Foo2;
         pub mtd (mut self: Foo1) combine(
             ActorRef<Foo2> peer, int count, string label
-        ): ActorRef<Foo1> { return peer; }").unwrap();
+        ): ActorRef<Foo2> { return peer; }").unwrap();
     assert_eq!(m.receivers.len(),1);
     let f=&m.receivers[0];
     assert_eq!(f.actor,0);
@@ -61,7 +61,7 @@ fn parameters_and_actor_capabilities_have_nominal_types() {
     assert_eq!(f.params[0].name,"peer");
     assert_eq!(f.params[1].ty,TargetType::Int);
     assert_eq!(f.params[2].ty,TargetType::Str);
-    assert_eq!(f.returns,TargetType::ActorRef(0));
+    assert_eq!(f.returns,TargetType::ActorRef(1));
 }
 
 #[test]
@@ -420,4 +420,69 @@ fn state_projection_address_taking_is_forbidden_under_both_leases() {
         }}");
         rejects(&source, "E_BORROW");
     }
+}
+
+#[test]
+fn typed_receiver_returns_are_nominal_and_never_claim_executable_lowering() {
+    let src = r#"
+use namespace workers;
+declare actor Foo1;
+declare actor Foo2;
+define actor Foo1 as let int count = 1; end
+define actor Foo2 as let bool ready = true; end
+mtd (Foo1 self) value(): int { return 10; }
+mtd (Foo1 self) forwarded(): int { return self.value(); }
+mtd (Foo1 self) load(): int {
+    return self.handle_state(critical-read |s| -> s.count);
+}
+mtd (Foo2 self) value(): bool { return true; }
+mtd (Foo2 self) load(): bool {
+    return self.handle_state(critical-read |s| -> s.ready);
+}
+"#;
+    let m = typed(src).unwrap();
+    assert_eq!(m.body_returns.len(), 5);
+    for return_fact in &m.body_returns {
+        assert!(return_fact.result.is_some(), "simple return should have a typed fact");
+    }
+    assert_eq!(m.body_returns[0].result,Some(TargetType::Int));
+    assert_eq!(m.body_returns[1].result,Some(TargetType::Int));
+    assert_eq!(m.body_returns[2].result,Some(TargetType::Int));
+    assert_eq!(m.body_returns[3].result,Some(TargetType::Bool));
+    assert_eq!(m.body_returns[4].result,Some(TargetType::Bool));
+    assert!(m.receivers.iter().all(|r| !r.body_lowered),
+        "partial typed body IR is not executable receiver lowering");
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn known_mismatched_receiver_returns_reject_before_wasm_emission() {
+    for source in [
+        "declare actor Foo; mtd (Foo self) value(): int { return true; }",
+        "declare actor Foo; mtd (Foo self) value(): bool { return 123; }",
+        "declare actor Foo; mtd (Foo self) value(): void { return 123; }",
+        "declare actor Foo; mtd (Foo self) value(): int { return; }",
+        "declare actor Foo; mtd (Foo self) value(bool flag): int { return flag; }",
+        "declare actor Foo; mtd (Foo self) one(): bool { return true; }
+         mtd (Foo self) two(): int { return self.one(); }",
+        "declare actor Foo; declare actor Other;
+         mtd (Foo self) other(ActorRef<Other> peer): ActorRef<Foo> { return peer; }",
+        "declare actor Foo; define actor Foo as let int count = 1; end
+         mtd (Foo self) value(): bool {
+             return self.handle_state(critical-read |s| -> s.count);
+         }",
+    ] {
+        rejects(source,"E_TYPE");
+    }
+}
+
+#[test]
+fn unknown_return_expressions_remain_unproved_not_executable() {
+    let source = "declare actor Foo;
+        mtd (Foo self) complex(int n): int { return n + 1; }";
+    let m=typed(source).unwrap();
+    assert_eq!(m.body_returns.len(),1);
+    assert_eq!(m.body_returns[0].result,None);
+    assert!(!m.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
 }
