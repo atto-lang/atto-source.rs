@@ -1637,13 +1637,20 @@ impl<'a> FnCx<'a> {
                 self.moved = after;
                 TStmt::If(out, other)
             }
-            Stmt::While { cond, body, .. } => {
+            Stmt::While { cond, body, post_test, .. } => {
                 let c = self.cond(cond, "while")?;
                 let body = self.looped(body)?;
-                TStmt::Loop {
-                    cond: Some(c),
-                    body,
-                    update: Vec::new(),
+                if *post_test {
+                    // The update region executes after fallthrough AND continue.
+                    // A failed post-test must break, not start another iteration.
+                    let not_c = TE { e: TExpr::Not(Box::new(c)), ty: Type::Bool };
+                    TStmt::Loop {
+                        cond: None,
+                        body,
+                        update: vec![TStmt::If(vec![(not_c, vec![TStmt::Break])], None)],
+                    }
+                } else {
+                    TStmt::Loop { cond: Some(c), body, update: Vec::new() }
                 }
             }
             Stmt::Loop { body, .. } => {
