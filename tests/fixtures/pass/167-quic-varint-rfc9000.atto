@@ -339,8 +339,8 @@ pub fnc main(): int {
   if quic_varint_width(254) != 8 then return 354; fi
   if quic_varint_width(255) != 8 then return 355; fi
   if quic_varint_min_width(-1) != 0 then return 356; fi
-  if quic_varint_min_width(256) != 0 then return 357; fi
-  if quic_varint_min_width(999) != 0 then return 358; fi
+  if quic_varint_min_width(256) != 2 then return 357; fi
+  if quic_varint_min_width(999) != 2 then return 358; fi
   if quic_varint_min_width(0) != 1 then return 359; fi
   if quic_varint_min_width(63) != 1 then return 360; fi
   if quic_varint_min_width(64) != 2 then return 361; fi
