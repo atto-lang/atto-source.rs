@@ -397,7 +397,7 @@ fn critical_callback_delimiters_and_chained_projections_fail_closed() {
         "self.handle_state(critical-read |s| -> { s.count + [1, 2); });",
         "self.handle_state(critical-read |s| -> { s.count + ]; });",
         "self.handle_state(critical-read |s| -> { s.count + (1 + 2]; });",
-        "self.handle_state(critical-write |s| -> { s.count + {a: 1]; });",
+        "self.handle_state(critical-write |s| -> { s.count + {a: 1]}; });",
     ] {
         let src = format!("declare actor Counter;
             mtd (mut self: Counter) run(): void {{ {bad} }}");
