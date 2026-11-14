@@ -246,3 +246,45 @@ fn lexical_tokens_prevent_fake_state_reads_from_comments_or_strings() {
             self.handle_state(critical-write |s| -> {s.count = 1;});
         }");
 }
+
+#[test]
+fn receiver_arguments_reject_mismatched_delimiters_and_empty_slots_without_panics() {
+    // This parser also handles untrusted editor/browser input. It must never
+    // panic even when the target-only receiver grammar sees broken expressions.
+    let prelude = "declare actor Foo;
+        mtd (Foo self) foo(int a, int b): void {}";
+    for call in [
+        "self.foo(1,]);",
+        "self.foo([1, 2);",
+        "self.foo(, 1);",
+        "self.foo(1, );",
+        "self.foo(1,, 2);",
+        "self.foo([1, 2], );",
+        "self.foo({k: 1], 2});",
+    ] {
+        let source = format!("{prelude}
+            mtd (Foo self) run(): void {{ {call} }}");
+        let result = std::panic::catch_unwind(|| {
+            parse_target_declarations(&lex(&source).unwrap())
+        });
+        assert!(result.is_ok(), "parser panicked for {call}");
+        let diag = result.unwrap().unwrap_err();
+        assert_eq!(diag.code, "E_SYNTAX", "{call}: {diag}");
+    }
+}
+
+#[test]
+fn receiver_arguments_count_only_top_level_commas_and_bound_nesting() {
+    parse("declare actor Foo;
+        mtd (Foo self) foo(int a, int b): void {}
+        mtd (Foo self) run(): void {
+            self.foo((1 + 2), [3, 4]);
+            self.foo({ k: 1, v: 2 }, (3 + 4));
+        }");
+    let deeply_nested = format!(
+        "declare actor Foo; mtd (Foo self) foo(int a, int b): void {{}}
+        mtd (Foo self) run(): void {{ self.foo({}1{}, 2); }}",
+        "(".repeat(129), ")".repeat(129)
+    );
+    reject(&deeply_nested, "E_NESTING");
+}
