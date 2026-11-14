@@ -1578,7 +1578,13 @@ impl<'a> FnCx<'a> {
                 let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
                 self.scopes.push(Vec::new());
                 let checked = (|| {
-                    let value_slot = self.declare(name, Type::Int, false, *pos)?;
+                    // '_' intentionally discards each yielded value. Allocate
+                    // its runtime slot without putting '_' into the source scope.
+                    let value_slot = if name == "_" {
+                        self.temp(Type::Int, *pos)?
+                    } else {
+                        self.declare(name, Type::Int, false, *pos)?
+                    };
                     let body = self.looped(body)?;
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
                 })();
