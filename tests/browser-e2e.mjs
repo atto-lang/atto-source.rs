@@ -122,6 +122,21 @@ try{
     'n = n + 1; total = total + n; } return total; }';
   assert.equal(await run(ofFor, 'main() -> 9'), 'main() -> 9');
   console.log('PASS browser: of alias and let-per-iteration binding work');
+  const arrayFor =
+    'pub fnc main(): int { val particles: Array<int> = [1,2,3]; ' +
+    'let sum = 0; for (int n : particles) { sum = sum + n; } return sum; }';
+  assert.equal(await run(arrayFor, 'main() -> 6'), 'main() -> 6');
+  console.log('PASS browser: immutable contiguous Array<int> iterates by typed colon');
+  const arraySnapshot =
+    'pub fnc main(): int { let xs: Array<int> = [1,2,3]; let sum = 0; ' +
+    'for (int n of xs) { xs = [9,9,9]; sum = sum + n; } return sum; }';
+  assert.equal(await run(arraySnapshot, 'main() -> 6'), 'main() -> 6');
+  console.log('PASS browser: Array<int> source evaluated only once before iteration');
+  const emptyArray =
+    'pub fnc main(): int { let sum = 0; for (val n: int in []) {' +
+    ' sum = sum + 1; } return sum; }';
+  assert.equal(await run(emptyArray, 'main() -> 0'), 'main() -> 0');
+  console.log('PASS browser: zero-length Array<int> has no body evaluations');
   // Real Chromium: compiler-produced Wasm guest tag catches only ordinary
   // Error(message), preserving all successful Result values and fatal traps.
   const callerTrap =
