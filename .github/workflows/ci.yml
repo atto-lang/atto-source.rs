@@ -39,6 +39,13 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
 
+      - name: Execute generator frame ownership, delegate closure and native/Wasm byte parity
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/generator-execution.mjs
+      - name: Test supported generator execution and unsupported profiles in browser compiler
+        run: node tests/generator_frontend_wasm.mjs
+
       - name: Target-only actor receiver Wasm ABI rejects unsupported code
         run: node tests/target_syntax_wasm.mjs
 
