@@ -86,7 +86,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Float => Some(F64),
         Type::Str => Some(I64),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
-        Type::GeneratorInt => Some(I64),
+        Type::GeneratorInt | Type::ArrayInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
     }
 }
@@ -156,8 +156,8 @@ impl Layout {
 /// Load (`store = false`) or store a field slot of type `t` at `offset`.
 fn field_op(code: &mut Vec<u8>, t: Type, offset: u32, store: bool) {
     let (op, align) = match (t, store) {
-        (Type::Int | Type::Str, false) => (0x29, 3),
-        (Type::Int | Type::Str, true) => (0x37, 3),
+        (Type::Int | Type::Str | Type::ArrayInt, false) => (0x29, 3),
+        (Type::Int | Type::Str | Type::ArrayInt, true) => (0x37, 3),
         (Type::Float, false) => (0x2B, 3),
         (Type::Float, true) => (0x39, 3),
         (_, false) => (0x28, 2),
@@ -309,6 +309,44 @@ impl Emit<'_> {
                 }
                 self.op(0x0F);
             }
+            TStmt::ForArrayInt { source, array_slot, index_slot, value_slot, body } => {
+                // A readonly packed Array<int> view: i64 = data_offset:32 |
+                // element_count:32. The source is evaluated once, arrays live
+                // in 8-byte aligned module data, so no iterator heap object
+                // or virtual next() call is required.
+                self.expr(source);
+                self.set(*array_slot);
+                self.i32c(0);
+                self.set(*index_slot);
+                self.open(0x02, 0x40, Frame::Break);
+                self.open(0x03, 0x40, Frame::Top);
+                self.get(*index_slot);
+                self.get(*array_slot);
+                self.op(0xA7); // i32.wrap_i64 -> count
+                self.op(0x4F); // i32.ge_u -> exhausted
+                self.op(0x0D); // br_if break
+                uleb(&mut self.code, 1);
+                self.get(*array_slot);
+                self.i64c(32);
+                self.op(0x88); // i64.shr_u -> static data address
+                self.op(0xA7); // i32.wrap_i64
+                self.get(*index_slot);
+                self.i32c(8);
+                self.op(0x6C); // i32.mul: index * sizeof(int)
+                self.op(0x6A); // i32.add: base + offset
+                self.load_i64(0);
+                self.set(*value_slot);
+                self.open(0x02, 0x40, Frame::Continue);
+                self.stmts(body);
+                self.close();
+                self.get(*index_slot);
+                self.i32c(1);
+                self.op(0x6A); // i32.add, bounded by count <= 1024
+                self.set(*index_slot);
+                self.br_to(Frame::Top);
+                self.close();
+                self.close();
+            }
             TStmt::ForIn { source, handle_slot, value_slot, body } => {
                 self.expr(source);
                 self.set(*handle_slot);
@@ -394,7 +432,8 @@ impl Emit<'_> {
                 self.op(0x44);
                 self.code.extend_from_slice(&x.to_le_bytes());
             }
-            TExpr::StrConst(offset, len) => self.i64c(((*offset as i64) << 32) | *len as i64),
+            TExpr::StrConst(offset, len) | TExpr::ArrayConst(offset, len) =>
+                self.i64c(((*offset as i64) << 32) | *len as i64),
             TExpr::IntToFloat(a) => {
                 self.expr(a);
                 self.op(0xB9); // f64.convert_i64_s
