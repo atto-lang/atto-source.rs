@@ -1308,7 +1308,11 @@ fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
-        TStmt::Loop { cond: None, body, .. } => !breaks(body),
+        // Post-test loops lower the trailing boolean guard to a conditional
+        // break in the update region. Such a break is a fallthrough path.
+        // An unconditional loop diverges only if neither body nor update
+        // can break its enclosing loop.
+        TStmt::Loop { cond: None, body, update } => !breaks(body) && !breaks(update),
         TStmt::Block(b) => returns(b),
         _ => false,
     })
