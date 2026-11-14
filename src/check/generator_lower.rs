@@ -14,7 +14,7 @@
 use super::*;
 use crate::generator_cfg::{self, Instruction};
 
-pub(super) const LIVE_INT_LOCAL_LIMIT: usize = 16;
+// Live slot bound comes from the shared checker/guest frame ABI.
 pub(super) const GENERATOR_TYPED_CFG_LIMIT: usize = 128;
 
 /// Indices in the native guest Wasm next() function, not source-level locals.
@@ -165,7 +165,7 @@ pub(super) fn lower(f: &Func) -> R<Option<TGenerator>> {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE",
                         format!("generator local '{name}' is already bound")));
                 }
-                if locals as usize >= LIVE_INT_LOCAL_LIMIT {
+                if locals as usize >= GENERATOR_MAX_LIVE_I64_LOCALS {
                     return Err(blocked(pos, "generator exceeds 16 live integer locals"));
                 }
                 let assigned = value(&init, &bindings)?;
