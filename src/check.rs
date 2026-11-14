@@ -109,6 +109,8 @@ pub enum TExpr {
         newline: bool,
     },
     Local(u32),
+    /// The body may only exit via break value, recur, return or throw.
+    StateLoop { init: Vec<TStmt>, body: Vec<TStmt>, result_slot: u32 },
     Neg(Box<TE>),
     Not(Box<TE>),
     /// operand type is the type of `l`
@@ -213,6 +215,8 @@ pub enum TStmt {
     },
     Break,
     Continue,
+    /// (state slot, staging slot, next value), evaluated atomically as a group.
+    Recur(Vec<(u32, u32, TE)>),
     Block(Vec<TStmt>),
     /// a path the checker proved impossible (after an exhaustive match)
     Unreachable,
@@ -365,6 +369,12 @@ struct Local {
     mail: Option<Type>,
 }
 
+struct RecurContext {
+    depth: u32,
+    state: Vec<(u32, Type, u32)>,
+    result: Option<(u32, Type)>,
+}
+
 struct FnCx<'a> {
     g: &'a Globals<'a>,
     owner: Owner,
@@ -375,6 +385,7 @@ struct FnCx<'a> {
     loops: u32,
     /// First slot declared inside each enclosing loop body.
     loop_floors: Vec<u32>,
+    recur_stack: Vec<RecurContext>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
     imports: &'a mut Vec<Import>,
@@ -1332,6 +1343,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
         TStmt::Block(b) => any_in_stmts(b, f),
+        TStmt::Recur(values) => values.iter().any(|(_, _, value)| any_in(value, f)),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
     })
 }
@@ -1341,6 +1353,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         return true;
     }
     match &e.e {
+        TExpr::StateLoop { init, body, .. } => any_in_stmts(init, f) || any_in_stmts(body, f),
         TExpr::Trap { value, .. } => any_in(value, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
@@ -1391,6 +1404,47 @@ fn breaks(body: &[TStmt]) -> bool {
     })
 }
 
+/// Ensure recur appears only at the lexical end of its branch, and the
+/// state-loop expression cannot fall through with an uninitialized value.
+fn validate_recur_tail(body: &[Stmt], tail: bool) -> R<bool> {
+    let mut terminated = false;
+    for (i, stmt) in body.iter().enumerate() {
+        let last = tail && i + 1 == body.len();
+        terminated = match stmt {
+            Stmt::Recur(_, pos) => {
+                if !last {
+                    return Err(Diagnostic::new(*pos, "E_RECUR_TAIL",
+                        "recur must be in tail position of the immutable loop"));
+                }
+                true
+            }
+            Stmt::BreakValue(..) | Stmt::Return(..) | Stmt::Throw(..) => true,
+            Stmt::If { arms, otherwise, .. } => {
+                let mut all = true;
+                for (_, arm) in arms {
+                    all &= validate_recur_tail(arm, last)?;
+                }
+                all && match otherwise {
+                    Some(other) => validate_recur_tail(other, last)?,
+                    None => false,
+                }
+            }
+            Stmt::Block(inner) => validate_recur_tail(inner, last)?,
+            Stmt::Loop { pos, .. } | Stmt::While { pos, .. }
+            | Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "nested ordinary loops in an immutable state loop are not admitted yet"));
+            }
+            _ => false,
+        };
+    }
+    if tail && !terminated {
+        return Err(Diagnostic::new(Pos::default(), "E_RECUR_TAIL",
+            "immutable loop must end in break value, recur(...), return, throw, or exhaustive if"));
+    }
+    Ok(terminated)
+}
+
 impl<'a> FnCx<'a> {
     fn new(g: &'a Globals<'a>, owner: Owner, ret: Type, imports: &'a mut Vec<Import>, data: &'a mut Vec<u8>) -> Self {
         FnCx {
@@ -1402,6 +1456,7 @@ impl<'a> FnCx<'a> {
             nparams: 0,
             loops: 0,
             loop_floors: Vec::new(),
+            recur_stack: Vec::new(),
             moved: BTreeSet::new(),
             imports,
             data,
