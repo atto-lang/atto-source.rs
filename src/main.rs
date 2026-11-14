@@ -59,6 +59,44 @@ fn main() -> ExitCode {
             }
         }
 
+        // Independent Rust source-ID verification runs on THIS compiler's parsed
+        // and type-checked MIR and emits a paired native object plus sidecar.
+        // It deliberately does not claim logging syntax, probe insertion or JIT.
+        if let [_, flag, input, registry, source_unit, object, map] = args.as_slice() {
+            if flag == "--compile-with-source-ids" {
+                if profile_seen || freestanding || checked_i64 {
+                    return Err("source-ID object mode currently supports default scalar profile only".into());
+                }
+                let bounded_read = |path: &str| -> Result<String, String> {
+                    let mut data = String::new();
+                    fs::File::open(path).map_err(|e| e.to_string())?
+                        .take(MAX_SOURCE_BYTES as u64 + 1)
+                        .read_to_string(&mut data).map_err(|e| e.to_string())?;
+                    if data.len() > MAX_SOURCE_BYTES {
+                        return Err("source/registry exceeds 1 MiB admission budget".into());
+                    }
+                    Ok(data)
+                };
+                let input_id = fs::canonicalize(input).map_err(|e| e.to_string())?;
+                let registry_id = fs::canonicalize(registry).map_err(|e| e.to_string())?;
+                let object_id = canonical_destination(object)?;
+                let map_id = canonical_destination(map)?;
+                if input_id == registry_id || input_id == object_id || input_id == map_id
+                    || registry_id == object_id || registry_id == map_id
+                    || object_id == map_id {
+                    return Err("source, registry, object and source map must be distinct files".into());
+                }
+                let source = bounded_read(input)?;
+                let registry_json = bounded_read(registry)?;
+                let (bytes, source_map) = oreslang_source_rs::compile_with_source_ids(
+                    &source, source_unit, &registry_json)?;
+                let map_bytes = serde_json::to_vec_pretty(&source_map).map_err(|e| e.to_string())?;
+                fs::write(object, bytes).map_err(|e| e.to_string())?;
+                fs::write(map, map_bytes).map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+        }
+
         let (mode, input, output, effects_output, budget) = match args.as_slice() {
             [_, flag, input] if flag == "--safety-ir" => ("safety", input.as_str(), None, None, None),
             [_, flag, input, units] if flag == "--safety-ir" => ("safety", input.as_str(), None, None,
@@ -74,7 +112,7 @@ fn main() -> ExitCode {
                 Some(units.parse::<u64>().map_err(|_| "invalid abstract compute budget")?)),
             [_, input, output] if !input.starts_with("--") =>
                 ("object", input.as_str(), Some(output.as_str()), None, None),
-            _ => return Err("usage: oresc [--release|--strict-aot|--hard-rt] [--freestanding] [--checked-i64] --safety-ir <source.ores> [abstract-budget] | --flow <max-uninterrupted-units> <source.ores> | --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
+            _ => return Err("usage: oresc --compile-with-source-ids <input.atto> <registry.json> <logical/source.atto> <out.o> <out.map.json> | oresc [--release|--strict-aot|--hard-rt] [--freestanding] [--checked-i64] --safety-ir <source.ores> [abstract-budget] | --flow <max-uninterrupted-units> <source.ores> | --check <source.ores> | --effects <source.ores> | --static-facts <source.ores> | --cfg-ir <source.ores> [abstract-budget] | --compile-with-effects <source.ores> <out.o> <out.json> | <source.ores> <out.o>".into()),
         };
         // Current analysis exporters model only linear scalar computations.
         // Refuse to issue falsely complete facts for checked overflow traps.
