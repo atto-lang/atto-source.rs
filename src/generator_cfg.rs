@@ -226,6 +226,10 @@ impl Builder {
                 }
                 self.loop_body(cond.as_ref(), body, update.as_deref(), *pos)?;
             }
+            Stmt::BreakValue(_, pos) | Stmt::Recur(_, pos) => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "state loop break value / recur in a generator needs dedicated frame lowering"));
+            }
             Stmt::Break(pos) => {
                 if self.loops.is_empty() {
                     return Err(Diagnostic::new(*pos, "E_LOOP",
