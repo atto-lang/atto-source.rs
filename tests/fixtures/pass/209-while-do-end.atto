@@ -1,0 +1,9 @@
+// expect-exit: 4
+// java: target-only
+pub fnc main(): int {
+  let i = 0;
+  while i < 4 do
+    i = i + 1;
+  end
+  return i;
+}

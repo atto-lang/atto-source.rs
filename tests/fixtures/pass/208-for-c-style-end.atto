@@ -1,0 +1,9 @@
+// expect-exit: 6
+// java: target-only
+pub fnc main(): int {
+  let sum = 0;
+  for (let i = 0; i < 4; i++) do
+    sum = sum + i;
+  end
+  return sum;
+}

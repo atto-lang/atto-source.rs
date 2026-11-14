@@ -1,0 +1,12 @@
+// expect-exit: 7
+// java: target-only
+pub fnc main(): int {
+  let i = 0;
+  let sum = 0;
+  do {
+    i = i + 1;
+    if i < 3 then continue; fi
+    sum = sum + i;
+  } while (i < 4);
+  return sum;
+}

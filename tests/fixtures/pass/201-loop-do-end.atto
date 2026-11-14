@@ -1,0 +1,10 @@
+// expect-exit: 4
+// java: target-only
+pub fnc main(): int {
+  let i = 0;
+  loop do
+    i = i + 1;
+    if i eq 4 then break; fi
+  end
+  return i;
+}
