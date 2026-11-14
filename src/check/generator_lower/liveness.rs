@@ -126,3 +126,95 @@ pub(super) fn analyze(f: &Func, steps: &[TGenStep], locals: u32) -> R<Vec<u16>> 
     }
     Ok(live_out)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake() -> Func {
+        Func {
+            name: "test_generator".into(),
+            pos: Pos { line: 1, col: 1 },
+            is_generator: true,
+            params: vec![],
+            ret: Type::GeneratorInt,
+            body: vec![],
+        }
+    }
+
+    fn int(value: i64) -> TE {
+        TE { e: TExpr::I64(value), ty: Type::Int }
+    }
+
+    fn local(index: u32) -> TE {
+        TE { e: TExpr::Local(7 + index), ty: Type::Int }
+    }
+
+    #[test]
+    fn branch_that_skips_initializer_cannot_read_uninitialized_slot() {
+        let steps = vec![
+            TGenStep::Guard {
+                condition: TE { e: TExpr::Bool(true), ty: Type::Bool },
+                on_false: 2,
+            },
+            TGenStep::Set { local: 0, value: int(8) },
+            TGenStep::Yield(local(0)),
+            TGenStep::Done,
+        ];
+        let e = analyze(&fake(), &steps, 1).unwrap_err();
+        assert_eq!(e.code, "E_GENERATOR_LIVENESS");
+        assert!(e.message.contains("before initialization"));
+    }
+
+    #[test]
+    fn fixed_point_keeps_loop_carried_value_live() {
+        let steps = vec![
+            TGenStep::Set { local: 0, value: int(0) },
+            TGenStep::Guard {
+                condition: TE { e: TExpr::Bool(true), ty: Type::Bool },
+                on_false: 5,
+            },
+            TGenStep::Set {
+                local: 0,
+                value: TE {
+                    e: TExpr::Bin(
+                        BinOp::Add, Box::new(local(0)), Box::new(int(1))
+                    ),
+                    ty: Type::Int,
+                },
+            },
+            TGenStep::Yield(local(0)),
+            TGenStep::Jump { to: 1 },
+            TGenStep::Done,
+        ];
+        let live = analyze(&fake(), &steps, 1).unwrap();
+        assert_eq!(live[3], 1, "counter survives the backedge");
+    }
+
+    #[test]
+    fn dead_at_yield_slot_can_be_scrubbed_without_losing_output() {
+        let steps = vec![
+            TGenStep::Set { local: 0, value: int(7) },
+            TGenStep::Set { local: 1, value: int(11) },
+            TGenStep::Yield(local(0)),
+            TGenStep::Yield(local(1)),
+            TGenStep::Done,
+        ];
+        let live = analyze(&fake(), &steps, 2).unwrap();
+        assert_eq!(live[2], 0b10);
+        assert_eq!(live[3], 0);
+    }
+
+    #[test]
+    fn malformed_edges_and_physical_slots_reject_without_issuing_wasm() {
+        let bad_jump = vec![TGenStep::Jump { to: 4 }, TGenStep::Done];
+        assert_eq!(analyze(&fake(), &bad_jump, 1).unwrap_err().code,
+                   "E_GENERATOR_LIVENESS");
+        let bad_slot = vec![TGenStep::Yield(TE {
+            e: TExpr::Local(99), ty: Type::Int,
+        }), TGenStep::Done];
+        assert_eq!(analyze(&fake(), &bad_slot, 1).unwrap_err().code,
+                   "E_GENERATOR_LIVENESS");
+    }
+}
