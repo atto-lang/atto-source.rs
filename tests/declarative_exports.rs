@@ -1,4 +1,4 @@
-use oreslang_source::frontend::{parse, ExportScope};
+use oreslang_source_rs::frontend::{parse, ExportScope};
 
 // Native scalar scope: class/actor exports must fail rather than be treated
 // as function exports or accidentally exposed through object linkage.
