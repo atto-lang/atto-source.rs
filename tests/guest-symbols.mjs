@@ -40,30 +40,36 @@ function entries(section) {
 assert.deepEqual(entries('atto.symbols'), ['#ready', '#stopped']);
 assert.deepEqual(entries('atto.actor_mail'), [3]);
 
-let actorType, sent;
+const types = [], sent = [];
 const main = new WebAssembly.Instance(module, {
   atto: {
     print_i64: () => { throw new Error('supervisor never prints actor output'); },
     print_newline: () => { throw new Error('supervisor never prints actor output'); },
-    actor_spawn: type => { actorType = type; return 0; },
-    actor_send: (ref, value) => { assert.equal(ref, 0); sent = value; },
+    actor_spawn: type => { types.push(type); return types.length - 1; },
+    actor_send: (ref, value) => { sent.push({ref, value}); },
   },
 });
 assert.equal(main.exports.main(), 42n);
-assert.equal(actorType, 0);
-assert.equal(sent, 1n, 'sorted static #ready identity must be the first handle');
+assert.deepEqual(types, [0, 0]);
+assert.deepEqual(sent, [{ref:0,value:1n},{ref:1,value:1n}],
+  'both actors receive the exact same statically linked #ready ID');
 
 let output = '';
-const actor = new WebAssembly.Instance(module, {
-  atto: {
-    print_i64: value => { output += String(value); },
-    print_newline: () => { output += '\n'; },
-    actor_spawn: () => { throw new Error('actor cannot spawn'); },
-    actor_send: () => { throw new Error('actor cannot send'); },
-  },
-});
-assert.notStrictEqual(main.exports.memory, actor.exports.memory);
-actor.exports.actor_init(actorType);
-actor.exports.actor_receive(actorType, sent, 0n);
-assert.equal(output, '7\n');
-console.log('PASS: supervisor and isolated actor execute the exact global Symbol identity');
+const instances = [];
+for (let i = 0; i < 2; i++) {
+  const actor = new WebAssembly.Instance(module, {
+    atto: {
+      print_i64: value => { output += String(value); },
+      print_newline: () => { output += '\n'; },
+      actor_spawn: () => { throw new Error('actor cannot spawn'); },
+      actor_send: () => { throw new Error('actor cannot send'); },
+    },
+  });
+  assert.notStrictEqual(main.exports.memory, actor.exports.memory);
+  if (instances.length) assert.notStrictEqual(instances[0].exports.memory, actor.exports.memory);
+  instances.push(actor);
+  actor.exports.actor_init(types[i]);
+  actor.exports.actor_receive(types[i], sent[i].value, 0n);
+}
+assert.equal(output, '7\n7\n');
+console.log('PASS: supervisor and two isolated actor instances share one global #ready identity');
