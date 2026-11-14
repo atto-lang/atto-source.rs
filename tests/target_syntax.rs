@@ -357,3 +357,59 @@ fn raw_receiver_values_never_escape_target_only_method_bodies() {
         mtd (Foo self) value(): int { return 1; }
         mtd (Foo self) run(): int { return self.value(); }");
 }
+
+#[test]
+fn critical_state_callbacks_fail_closed_on_unproved_effects() {
+    let prefix = "declare actor Counter;
+        mtd (mut self: Counter) run(): void {";
+    for body in [
+        "call(s.count);",
+        "s.count = compute();",
+        "throw Error(1);",
+        "raise Error(1);",
+        "panic(Error(1));",
+        "trap risky();",
+        "try { s.count; } catch { }",
+        "yield* other;",
+        "s.count?;",
+        "return s.count;",
+        "break;",
+        "continue;",
+    ] {
+        let source = format!("{prefix}
+            self.handle_state(critical-write |s| -> {{ {body} }});
+        }}");
+        reject(&source, "E_BORROW");
+    }
+    // Pure scalar updates, with no unproved effectful calls, still pass
+    // this syntax-only gate and cannot generate a guest actor artifact.
+    let safe = "declare actor Counter;
+        mtd (mut self: Counter) run(int amount): void {
+            self.handle_state(critical-write |s| -> { s.count = (s.count + amount); });
+        }";
+    parse(safe);
+    assert_eq!(atto_compiler::compile(safe).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn critical_callback_delimiters_and_chained_projections_fail_closed() {
+    for bad in [
+        "self.handle_state(critical-read |s| -> { s.count + [1, 2); });",
+        "self.handle_state(critical-read |s| -> { s.count + ]; });",
+        "self.handle_state(critical-read |s| -> { s.count + (1 + 2]; });",
+        "self.handle_state(critical-write |s| -> { s.count + {a: 1]; });",
+    ] {
+        let src = format!("declare actor Counter;
+            mtd (mut self: Counter) run(): void {{ {bad} }}");
+        let checked = std::panic::catch_unwind(|| parse_target_declarations(&lex(&src).unwrap()));
+        assert!(checked.is_ok(), "malformed callback panicked: {bad}");
+        assert_eq!(checked.unwrap().unwrap_err().code, "E_SYNTAX", "{bad}");
+    }
+    for body in ["s.count.extra;", "s.count(1);", "s.count[0] = 1;"] {
+        let src = format!("declare actor Counter;
+            mtd (mut self: Counter) run(): void {{
+                self.handle_state(critical-write |s| -> {{ {body} }});
+            }}");
+        reject(&src, "E_UNSUPPORTED");
+    }
+}
