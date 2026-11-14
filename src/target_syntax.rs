@@ -43,6 +43,9 @@ pub struct TargetHeaders {
     pub receiver_calls: Vec<ReceiverCall>,
     /// Scalar assignment expressions captured for typed validation.
     pub state_assignments: Vec<StateAssignment>,
+    /// Bounded return-expression syntax facts for the typed body IR.
+    /// This is not yet a complete control-flow graph.
+    pub receiver_returns: Vec<ReceiverReturn>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -79,11 +82,21 @@ pub struct StateAssignment {
     pub compound: bool,
 }
 
+/// Explicit return in a receiver body. Unrecognized expressions remain
+/// unproved; typed lowering must not invent a result type.
+#[derive(Clone, Debug)]
+pub struct ReceiverReturn {
+    pub receiver: usize,
+    pub pos: Pos,
+    pub expr: Vec<Token>,
+}
+
 #[derive(Default)]
 struct BodyAudit {
     uses: Vec<StateUse>,
     calls: Vec<ReceiverCall>,
     assignments: Vec<StateAssignment>,
+    returns: Vec<ReceiverReturn>,
     effects: ReceiverEffects,
 }
 
@@ -358,6 +371,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         out.state_uses.extend(audit.uses);
         out.receiver_calls.extend(audit.calls);
         out.state_assignments.extend(audit.assignments);
+        out.receiver_returns.extend(audit.returns);
     }
     for (start, end) in function_spans {
         validate_spawned_actor_calls(toks, &out, start, end)?;
@@ -646,6 +660,44 @@ fn validate_receiver_body(
     let mut audit = BodyAudit::default();
     let mut i = start + 1;
     while i < end.saturating_sub(1) {
+        // Capture only a complete semicolon-terminated return expression.
+        // Nested groups are matched first, so an embedded semicolon never
+        // truncates an argument. Other forms remain opaque until AST lowering.
+        if word_at(toks, i, "return") {
+            let mut expected = Vec::<Tok>::new();
+            let mut stop = i + 1;
+            let mut complete = false;
+            while stop < end.saturating_sub(1) {
+                match &toks[stop].tok {
+                    Tok::Semi if expected.is_empty() => {
+                        complete = true;
+                        break;
+                    }
+                    Tok::RBrace if expected.is_empty() => break,
+                    Tok::LParen => expected.push(Tok::RParen),
+                    Tok::LBracket => expected.push(Tok::RBracket),
+                    Tok::LBrace => expected.push(Tok::RBrace),
+                    Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                        if expected.pop().as_ref() != Some(&toks[stop].tok) {
+                            return Err(diagnostic(toks, stop, "E_SYNTAX",
+                                "mismatched receiver return expression delimiter"));
+                        }
+                    }
+                    _ => {}
+                }
+                if expected.len() > 128 {
+                    return Err(diagnostic(toks, stop, "E_NESTING",
+                        "receiver return expression nesting limit"));
+                }
+                stop += 1;
+            }
+            if complete {
+                audit.returns.push(ReceiverReturn {
+                    receiver: which, pos: toks[i].pos,
+                    expr: toks[i+1..stop].to_vec(),
+                });
+            }
+        }
         if word_at(toks, i, "handle_state") &&
             !(i >= 2 && word_at(toks, i-2, "self") && at(toks, i-1, &Tok::Dot)) {
             return Err(diagnostic(toks, i, "E_SEALED",
