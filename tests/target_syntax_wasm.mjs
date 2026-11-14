@@ -104,5 +104,14 @@ rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(
 rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-read |s| -> { s.count + [1, 2); }); }','E_SYNTAX');
 rejects('declare actor Foo; mtd (mut self: Foo) run(): void { self.handle_state(critical-write |s| -> { yield* stream; }); }','E_BORROW');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (46)');
+
+// Typed scalar actor-state assignment proofs run in the real Wasm compiler ABI.
+const typedCounter = 'declare actor Counter; define actor Counter as let int count = 0; let bool enabled = false; end';
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { s.count = true; }); }','E_TYPE');
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { s.count = s.enabled; }); }','E_TYPE');
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { s.count = nowhere; }); }','E_UNBOUND');
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { ++s.enabled; }); }','E_TYPE');
+rejects(typedCounter+' mtd (mut self: Counter) tick(): void { self.handle_state(critical-write |s| -> { s.count = new Widget(); }); }','E_BORROW');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (51)');
 
