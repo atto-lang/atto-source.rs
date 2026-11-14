@@ -1177,6 +1177,12 @@ impl Parser {
                 Ok(Stmt::Throw(error, pos))
             }
             Some("if") => self.parse_if(),
+            // These tokens only close an enclosing construct. Encountering
+            // them as a fresh statement (for instance after 'loop do {}')
+            // must be a syntax error, never a variable lookup or expression.
+            Some("end" | "done" | "fi" | "else" | "elseif" | "elif" | "catch" | "finally") =>
+                Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "unexpected block terminator outside its matching construct")),
             Some("while") => {
                 self.advance();
                 let cond = self.parse_cond_head()?;
