@@ -3,7 +3,7 @@ use oreslang_source_rs::{
     profile::{self, BuildProfile},
     safety,
 };
-use std::{env, fs, io::Read, path::Path, process::ExitCode};
+use std::{env, fs, io::{Read, Write}, path::Path, process::ExitCode};
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
@@ -121,8 +121,16 @@ fn main() -> ExitCode {
                 let (bytes, source_map) = oreslang_source_rs::compile_with_source_ids(
                     &source, source_unit, &registry_json)?;
                 let map_bytes = serde_json::to_vec_pretty(&source_map).map_err(|e| e.to_string())?;
-                fs::write(object, bytes).map_err(|e| e.to_string())?;
-                fs::write(map, map_bytes).map_err(|e| e.to_string())?;
+                // Never replace an existing output (including hardlinks or
+                // symlinks to a source). create_new makes the leaf check and
+                // open one operation, unlike fs::write after canonicalize.
+                // The two output files are deliberately not transactional.
+                let mut object_file = fs::OpenOptions::new().write(true).create_new(true)
+                    .open(object).map_err(|e| format!("source-ID object output: {e}"))?;
+                let mut map_file = fs::OpenOptions::new().write(true).create_new(true)
+                    .open(map).map_err(|e| format!("source-ID map output: {e}"))?;
+                object_file.write_all(&bytes).map_err(|e| e.to_string())?;
+                map_file.write_all(&map_bytes).map_err(|e| e.to_string())?;
                 return Ok(());
             }
         }
