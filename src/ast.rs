@@ -59,8 +59,34 @@ pub struct Program {
     pub classes: Vec<ClassDecl>,
     pub enums: Vec<EnumDecl>,
     pub actors: Vec<ActorDecl>,
+    /// Optional non-executable out-of-line actor interface in the production AST.
+    /// Executable actor code still uses the normal actors field above.
+    pub actor_interface: Option<ActorInterface>,
     /// Spellings referenced by `Type::Named` / `Type::NamedRef`.
     pub type_names: Vec<(String, Pos)>,
+}
+
+
+/// Target-only nominal actor interface retained in the production Program AST.
+/// Indices in method ActorRef types refer to forwards, NOT executable actors.
+/// The backend must not emit this partial interface.
+#[derive(Clone, Debug)]
+pub struct ActorInterface {
+    pub namespace: Option<String>,
+    pub forwards: Vec<String>,
+    pub methods: Vec<ActorInterfaceMethod>,
+}
+
+/// Typed out-of-line receiver signature; its body is not lowered.
+#[derive(Clone, Debug)]
+pub struct ActorInterfaceMethod {
+    pub owner: u32,
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret: Type,
+    pub mutable: bool,
+    pub public: bool,
+    pub pos: Pos,
 }
 
 /// Who may assign a field after its initializer ran.

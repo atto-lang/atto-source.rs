@@ -1,0 +1,7 @@
+// expect-error: E_DUPLICATE
+use namespace workers;
+declare actor Foo;
+define actor Foo as
+    foo(): int { return 1; }
+end
+mtd (Foo self) foo(): int { return 2; }

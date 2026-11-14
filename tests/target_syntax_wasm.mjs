@@ -67,5 +67,13 @@ rejects('declare actor Worker; mtd (Worker self) bad(void value): void {}','E_TY
 rejects('declare actor Worker; mtd (Worker self) bad(int a,bool a): void {}','E_DUPLICATE');
 rejects('declare actor Worker; mtd (Worker self) bad(): Mystery {}','E_UNKNOWN_TYPE');
 rejects('declare actor Worker; mtd (Worker self) good(ActorRef<Worker> value): void {}','E_UNSUPPORTED');
-console.log('PASS exact browser Wasm ABI fail-closed, state and typed signature tests (24)');
+rejects(`use namespace workers;
+declare actor Foo;
+define actor Foo as receive(ActorMail<int> mail): void { return; } end
+mtd (Foo self) ping(): int { return 1; }`,'E_UNSUPPORTED');
+rejects('use namespace workers; declare actor Foo; define actor Bar as end','E_UNBOUND');
+rejects('use namespace workers; declare actor Foo; define actor Foo as end define actor Foo as end','E_DUPLICATE');
+rejects('use namespace workers; declare actor Foo; define actor Foo as foo(): int {return 1;} end mtd (Foo self) foo(): int {return 2;}','E_DUPLICATE');
+rejects('use namespace workers; declare actor Foo; define actor Foo as foo(): int {return 1;} end pub mtd (Foo self) foo(): bool {return true;}','E_SIGNATURE');
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (29)');
 

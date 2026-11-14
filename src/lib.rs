@@ -59,7 +59,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         // Type the declared method signatures without handing unlinked actor
         // declarations to the executable check / Wasm backend.
-        let _typed = target_typed::lower_target_signatures(&headers)?;
+        let typed = target_typed::lower_target_signatures(&headers)?;
+        let actor_ast = target_typed::build_actor_program(&headers, &typed);
+        check::check_target_actor_interface(&actor_ast)?;
         return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
             "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
     }

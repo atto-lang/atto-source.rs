@@ -3233,3 +3233,51 @@ impl<'a> FnCx<'a> {
         })
     }
 }
+
+
+/// Check proposed nominal actor interfaces *inside the production AST*.
+/// This does not typecheck the concrete method bodies or enable codegen.
+/// It prevents duplicate or incompatible in-actor/out-of-line declarations.
+pub fn check_target_actor_interface(program: &Program) -> R<()> {
+    let Some(interface) = &program.actor_interface else { return Ok(()); };
+    for (i, name) in interface.forwards.iter().enumerate() {
+        if interface.forwards[..i].contains(name) {
+            return Err(Diagnostic::new(Pos::default(), "E_DUPLICATE",
+                format!("duplicate forward actor '{name}'")));
+        }
+    }
+    for (i, actor) in program.actors.iter().enumerate() {
+        if !interface.forwards.contains(&actor.name) {
+            return Err(Diagnostic::new(actor.pos, "E_UNBOUND",
+                format!("actor definition '{}' has no matching declaration", actor.name)));
+        }
+        if program.actors[..i].iter().any(|a| a.name == actor.name) {
+            return Err(Diagnostic::new(actor.pos, "E_DUPLICATE",
+                format!("duplicate concrete actor '{}'", actor.name)));
+        }
+        let owner = interface.forwards.iter().position(|n| n == &actor.name)
+            .expect("validated actor declaration");
+        for method in interface.methods.iter().filter(|m| m.owner as usize == owner) {
+            if method.name == "receive" {
+                return Err(Diagnostic::new(method.pos, "E_SIGNATURE",
+                    "receive is a sealed actor lifecycle handler"));
+            }
+            if actor.fields.iter().any(|f| f.name == method.name) {
+                return Err(Diagnostic::new(method.pos, "E_DUPLICATE",
+                    format!("receiver '{}.{}' collides with actor state", actor.name, method.name)));
+            }
+            for inside in &actor.methods {
+                if inside.name == method.name && inside.params.len() == method.params.len() {
+                    let equal = inside.ret == method.ret &&
+                        inside.public == method.public &&
+                        inside.params.iter().zip(&method.params).all(|(a,b)| a.ty == b.ty);
+                    return Err(Diagnostic::new(method.pos,
+                        if equal { "E_DUPLICATE" } else { "E_SIGNATURE" },
+                        format!("receiver '{}.{}' collides with in-actor method",
+                            actor.name, method.name)));
+                }
+            }
+        }
+    }
+    Ok(())
+}
