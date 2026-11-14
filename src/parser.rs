@@ -1393,7 +1393,8 @@ impl Parser {
         let cond = self.parse_cond_head()?;
         let mut arms = Vec::new();
         let mut otherwise = None;
-        if *self.peek() == Tok::LBrace {
+        let braced = *self.peek() == Tok::LBrace;
+        if braced {
             arms.push((cond, self.parse_block()?));
             loop {
                 if self.eat_word("elif")
@@ -1445,7 +1446,10 @@ impl Parser {
                 }
             }
         }
-        if !self.eat_word("fi") {
+        // Braces close a braced if; 'fi' is optional for compatibility.
+        // Unbraced 'then/do' arms still require their explicit 'fi'.
+        let closed = self.eat_word("fi");
+        if !braced && !closed {
             return Err(Diagnostic::new(
                 self.pos(),
                 if *self.peek() == Tok::Eof { "E_EOF" } else { "E_FI" },
