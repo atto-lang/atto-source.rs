@@ -1,0 +1,3 @@
+// expect-error: E_CONST
+fnc compute(): int { return 9; }
+pub fnc main(): int { const x = compute(); return x; }
