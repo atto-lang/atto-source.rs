@@ -15,9 +15,11 @@ and at most one `yield* child()` or `yield* child(limit)` per
 function. Delegation targets are statically checked and acyclic; their
 arguments may be a signed-i64-compatible nonnegative literal or their
 parent's immutable parameter. Computed delegate arguments remain gated.
-Generator creation is lazy: it allocates a 56-byte arena-owned continuation
-frame (with i64 parameter, persistent loop local, and one child-handle slot)
-and returns a generation-fenced handle; only a consumer pull advances
+Generator creation is lazy: it allocates a uniform 184-byte arena-owned
+continuation frame (immutable i64 parameter, legacy counter, one child handle,
+and up to 16 isolated i64 live-local slots). Every generator uses the same
+frame size to make recycling safe across generator types. Only a consumer
+pull advances
 its resume PC and yields one item. The typed `for value in values() do ...
 done` loop owns a **fresh** iterator and automatically calls the guest
 close operation on completion, `break`, and early function `return`.
@@ -38,10 +40,20 @@ interpreter, or extra host imports/exports. Frames reside in the fixed
 generator state/handle access panics with `panic_code=4`; heap exhaustion
 continues to use `panic_code=3`.
 
-**Not yet admitted:** multiple generator parameters, mutable
-captured objects/borrows, arbitrary live locals or arbitrary loop forms,
-general expression yields, owned generator variables, more than one
-`yield*` per generator, nested for-in, exception-throwing or otherwise effectful
+**Now additionally admitted:** bounded typed control-flow generators
+with up to 16 persistent mutable/immutable `int` locals, one immutable
+`int` parameter, pure checked addition/subtraction/multiplication,
+integer comparisons, boolean conditions, `if`, `while`, and
+`break`/`continue`. Their CFG state advances through each expression and
+branch, with locals restored on every `next()`. Declarations must be
+top-level before control flow, cannot shadow other bindings, and must be
+definitely initialized. Each pull has a 65,536-instruction dispatch budget;
+a non-yielding loop traps deterministically with `panic_code=5`.
+
+**Not yet admitted:** multiple generator parameters, object or borrowed
+live locals, general calls/effects across suspension, nested-scope
+declarations, nested generator-owned iterator loops, more than one
+`yield*` per generator, exception-throwing or otherwise effectful
 for-in bodies, async suspension, cancellation unwinding, and cross-backend
 generator parity. Unsupported programs fail closed; there is no eager
 substitution. Checked arithmetic traps terminate the guest instance rather
@@ -151,7 +163,7 @@ The compiler does not define any syntax of its own:
 | --- | --- |
 | Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
 | Entry point | zero-argument `main` returning `int` or `void` |
-| Generators (restricted) | Zero or one immutable `int` parameter; finite literal `yield`, one canonical `for (let i=N; i <= limit; i++) do yield i; done` with persistent counter, one acyclic `yield*` with a literal or forwarded parameter, and fresh-handle `for ... in`; lazy guest-Wasm resume and recursive child close. Other live locals, loop forms, and computed delegation arguments remain rejected. |
+| Generators (restricted) | One optional immutable `int` parameter, up to 16 persistent `int` locals and pure typed CFG `if`/`while`/`break`/`continue`, checked scalar arithmetic and computed `yield`; plus earlier canonical `CountTo`/limited lazy `yield*` profile. Owned fresh-handle `for ... in` and bounded guest-Wasm 65,536-step pull budgets. Borrowed objects, arbitrary effects, nested-scope binds and advanced cancellation remain gated. |
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
 | Bindings | `val` / `const` / `let`, with `name: T`, `T name` or inferred; `const mut` / `let mut`; the immutable type-first form `int x = 7;` for exactly `int`, `bool`, `string` and `String` (Java `looksLikePrimitiveTypeFirstImmutableBinding`) |
 | Statements | assignment, `return`, `if … then … elif/elseif/else if … else … fi` and the brace form closed by `fi`, `while … do … done` / `while … { }`, `loop { }`, C-style `for (…; …; i++)`, `break`, `continue`, `block { }`, `match` (below) |
