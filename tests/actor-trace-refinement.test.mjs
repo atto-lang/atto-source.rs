@@ -42,6 +42,17 @@ const mutations = [
   ['unadmitted message', events => { events.splice(2, 1); }],
   ['invalid message identity', events => { events[2].message_id = -1; }],
   ['invalid event', events => { events[2].kind = 'forged_host_receipt'; }],
+  ['message ID gap', events => { events[2].message_id = 4; }],
+  ['message ID non-consecutive for second send', events => { events[3].message_id = 7; }],
+  ['unknown trace field', events => { events[2].payload = 'forged'; }],
+  ['missing required trace field', events => { delete events[5].generation; }],
+  ['close carrying message ID', events => { events[9].message_id = 1; }],
+  ['send during drain', events => { events.splice(6, 0, event('send_accept', 1, 2)); }],
+  ['spawn after drain', events => { events.push(event('actor_spawn', 2)); }],
+  ['wrong actor drain order', events => { events[5].actor_id = 1; }],
+  ['wrong actor close order', events => { events[9].actor_id = 1; }],
+  ['non-integer actor ID', events => { events[2].actor_id = 0.5; }],
+  ['non-safe message ID', events => { events[2].message_id = Number.MAX_SAFE_INTEGER + 1; }],
 ];
 for (const [name, modify] of mutations) {
   test('refinement rejects mutation: ' + name, () => {
@@ -50,3 +61,13 @@ for (const [name, modify] of mutations) {
     assert.throws(() => verify_actor_trace(events), /./, 'mutation must be rejected: ' + name);
   });
 }
+
+test('browser-specific limits reject 17 actors', () => {
+  const events = Array.from({ length: 17 }, (_, i) => event('actor_spawn', i));
+  assert.throws(() => verify_actor_trace(events), /actor admission exceeds browser limit/);
+});
+test('browser-specific limits reject 10001 outstanding sends', () => {
+  const events = [event('actor_spawn', 0)];
+  for (let id = 1; id <= 10_001; id++) events.push(event('send_accept', 0, id));
+  assert.throws(() => verify_actor_trace(events), /mailbox capacity exceeded/);
+});
