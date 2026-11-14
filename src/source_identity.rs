@@ -3,6 +3,7 @@
 //! This stage proves a source-controlled routine registry against THIS compiler's
 //! validated scalar MIR, and produces an object-adjacent map for the same compile.
 use crate::mir;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -33,11 +34,30 @@ fn valid_id(value: &str, prefix: &str) -> bool {
         && hex.bytes().any(|c| c != b'0')
 }
 
-fn required_string<'a>(obj: &'a Value, field: &str) -> Result<&'a str, String> {
-    obj.get(field)
-        .and_then(Value::as_str)
-        .filter(|x| !x.is_empty())
-        .ok_or_else(|| format!("source-ID registry requires nonempty string '{field}'"))
+// Typed JSON deserialization rejects duplicate fields and unknown keys by
+// construction. A generic serde_json::Value silently keeps the last duplicate.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Registry {
+    schema: String,
+    routines: Vec<RoutineEntry>,
+    sites: Vec<SiteEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoutineEntry {
+    id: String,
+    source: String,
+    symbol: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SiteEntry {
+    id: String,
+    source: String,
+    routine_id: String,
 }
 
 /// A routine ID can be reused across generations of the same source routine;
@@ -54,27 +74,26 @@ pub fn verify_routines(
     if registry_json.len() > 1024 * 1024 {
         return Err("source-ID registry exceeds 1 MiB".into());
     }
-    let root: Value = serde_json::from_str(registry_json).map_err(|e| format!("invalid source-ID registry JSON: {e}"))?;
-    if required_string(&root, "schema")? != REGISTRY_SCHEMA {
+    let root: Registry = serde_json::from_str(registry_json)
+        .map_err(|e| format!("invalid source-ID registry JSON: {e}"))?;
+    if root.schema != REGISTRY_SCHEMA {
         return Err("unsupported source-ID registry schema".into());
     }
-    let entries = root.get("routines").and_then(Value::as_array)
-        .ok_or("source-ID registry requires 'routines' array")?;
-    if entries.len() > MAX_ROUTINES {
+    if root.routines.len() > MAX_ROUTINES {
         return Err("source-ID registry routine budget exceeded".into());
     }
-    let sites = root.get("sites").and_then(Value::as_array)
-        .ok_or("source-ID registry requires 'sites' array")?;
-    if sites.len() > MAX_SITES {
+    if root.sites.len() > MAX_SITES {
         return Err("source-ID registry site budget exceeded".into());
     }
     let mut seen_ids = HashSet::new();
     let mut seen_symbols = HashSet::new();
     let mut by_symbol = HashMap::new();
-    for entry in entries {
-        let id = required_string(entry, "id")?;
-        let source = required_string(entry, "source")?;
-        let symbol = required_string(entry, "symbol")?;
+    let mut routine_sources = HashMap::new();
+    for entry in &root.routines {
+        let id = entry.id.as_str();
+        let source = entry.source.as_str();
+        let symbol = entry.symbol.as_str();
+        if symbol.is_empty() { return Err("empty source routine symbol".into()); }
         logical_unit(source)?;
         if !valid_id(id, "rid_") {
             return Err(format!("invalid 128-bit lowercase routine ID '{id}'"));
@@ -85,21 +104,25 @@ pub fn verify_routines(
         if !seen_symbols.insert((source, symbol)) {
             return Err(format!("duplicate source routine identity '{source}:{symbol}'"));
         }
+        routine_sources.insert(id, source);
         if source == source_unit {
             by_symbol.insert(symbol, id);
         }
     }
     let mut site_ids = HashSet::new();
-    for site in sites {
-        let id = required_string(site, "id")?;
-        let source = required_string(site, "source")?;
-        let routine_id = required_string(site, "routine_id")?;
+    for site in &root.sites {
+        let id = site.id.as_str();
+        let source = site.source.as_str();
+        let routine_id = site.routine_id.as_str();
         logical_unit(source)?;
         if !valid_id(id, "sid_") || !site_ids.insert(id) {
             return Err(format!("invalid or duplicated 128-bit source site ID '{id}'"));
         }
-        if !seen_ids.contains(routine_id) {
+        let Some(routine_source) = routine_sources.get(routine_id) else {
             return Err(format!("site references unknown routine ID '{routine_id}'"));
+        };
+        if source != *routine_source {
+            return Err(format!("source site '{id}' points to a routine in another source unit"));
         }
         if source == source_unit {
             return Err("Rust scalar backend cannot verify log/span sites yet: fail closed".into());
