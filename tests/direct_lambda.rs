@@ -63,7 +63,7 @@ fn mutable_and_nonscalar_captures_still_fail_closed() {
 fn scalar_escaping_closure_factory_is_real_guest_wasm() {
     let src = "fnc make_adder(int offset): fnc(int)=>int { return |n| : int -> n + offset; } pub fnc main(): int { return 0; }";
     let bytes = atto_compiler::compile(src).expect("owned closure factory is now admitted");
-    assert!(bytes.starts_with(b"\\0asm"));
+    assert!(bytes.starts_with(b"\0asm"));
 }
 #[test]
 fn lambda_escape_does_not_silently_create_callable() {
