@@ -1,0 +1,8 @@
+// expect-error: E_OVERRIDE
+define class Parent as
+  pub ping(): int { return 1; }
+end
+define class Child extends Parent as
+  pub override static fnc ping(): int { return 2; }
+end
+pub fnc main(): int { return 0; }
