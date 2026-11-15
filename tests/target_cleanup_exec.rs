@@ -136,6 +136,8 @@ fn native_shared_readers_coexist_and_exclude_writer() {
             .expect("both readers must enter concurrently");
     }
     assert!(!cell.try_write_available(),"writer must be excluded by both reads");
+    assert_eq!(cell.release_count(),0,
+        "release count must not advance while either lease is still locked");
     gate.wait();
     for handle in handles { handle.join().unwrap(); }
     assert!(cell.try_write_available(),"both read leases must be released");
