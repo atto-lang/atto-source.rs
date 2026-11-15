@@ -6,13 +6,15 @@
 // (definite-return, typing) or the emitter.
 //
 // usage: node tests/fuzz-exec.mjs [mutants-per-fixture=300] [seed=99]
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 
 const here = new URL('.', import.meta.url).pathname;
 const perFixture = Number(process.argv[2] || 300);
 let seed = Number(process.argv[3] || 99);
+const initialSeed = seed;
 const api = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(join(here, '../target/wasm32-unknown-unknown/release/atto_compiler.wasm'))), {}).exports;
 const enc = new TextEncoder();
 function compile(src) {
@@ -47,10 +49,14 @@ const inserts = ['break', 'continue', 'return', 'return 0', 'loop {', '}', 'fi',
 const punct = ['(', ')', '{', '}', ';', ',', '|', '-', '0', 'true', '"', '*', '/', '->', 'end'];
 let total = 0, accepted = 0, timeouts = 0, panics = 0;
 const bad = [];
+// Preserve exact accepted mutant sources and their RNG state when a worker
+// exceeds its deadline. A timeout is *not* a soundness or liveness pass.
+const timeoutRepros = [];
 const dir = join(here, 'fixtures/pass');
 for (const name of readdirSync(dir).filter(n => n.endsWith('.atto')).sort()) {
   const toks = tokenize(readFileSync(join(dir, name), 'utf8'));
   for (let k = 0; k < perFixture; k++) {
+    const mutantSeed = seed;
     const t = toks.slice();
     for (let e = 1 + rnd(3); e > 0; e--) {
       const i = rnd(t.length), j = rnd(t.length);
@@ -70,11 +76,30 @@ for (const name of readdirSync(dir).filter(n => n.endsWith('.atto')).sort()) {
     accepted++;
     if (!WebAssembly.validate(w)) { bad.push(['INVALID_WASM', '', src]); continue; }
     const r = await run(w);
-    if (r.timeout) timeouts++;
-    else if (!r.ok) {
+    if (r.timeout) {
+      timeouts++;
+      timeoutRepros.push({
+        fixture: name, case_index: k, initial_seed: initialSeed,
+        rng_before_mutation: mutantSeed,
+        source_sha256: createHash('sha256').update(src).digest('hex'),
+        wasm_sha256: createHash('sha256').update(w).digest('hex'),
+        source: src,
+      });
+    } else if (!r.ok) {
       if (r.pc === 1 || r.pc === 3 || r.range) panics++;
       else bad.push(['UNSOUND_TRAP', r.msg, src]);
     }
+  }
+}
+if (timeouts) {
+  const outDir = join(here, '../dist');
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, 'mutation-timeout-repros.json'),
+    JSON.stringify({ initial_seed: initialSeed, per_fixture: perFixture,
+      timeout_ms: 300, cases: timeoutRepros }, null, 2) + '\n');
+  console.log('TIMEOUT_REPROS dist/mutation-timeout-repros.json');
+  for (const c of timeoutRepros.slice(0, 5)) {
+    console.log('TIMEOUT_CASE', c.fixture, c.case_index, c.source_sha256);
   }
 }
 console.log(JSON.stringify({ total, accepted, timeouts, panics, bad: bad.length }));
