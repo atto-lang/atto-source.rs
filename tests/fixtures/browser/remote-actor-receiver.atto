@@ -1,0 +1,14 @@
+// Compiled browser destination for native source-level remote_actor sends.
+// The browser host starts this tenant first, then routes 40 and 2 to Counter.
+define actor Counter as
+    let int total = 0;
+    receive(ActorMail<int> mail): void {
+        self.total = self.total + mail.value;
+        stdio.println(self.total);
+        return;
+    }
+end
+pub fnc main(): int {
+    val counter = spawn Counter();
+    return 0;
+}
