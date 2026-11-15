@@ -85,7 +85,7 @@ impl Resolver<'_> {
     }
 
     fn expand_unchecked(&mut self, index: usize, depth: usize) -> R<Expanded> {
-        let class = &self.program.classes[index];
+        let class = self.program.classes[index].clone();
         let mut fields: BTreeMap<String, Vec<Pick<Field>>> = BTreeMap::new();
         let mut methods: BTreeMap<String, Vec<Pick<Method>>> = BTreeMap::new();
         let mut interfaces = BTreeSet::new();
