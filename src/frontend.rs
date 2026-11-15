@@ -215,6 +215,27 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+/// Reject controls that can make source appear to contain different token
+/// boundaries or order. Inspect the original UTF-8 text before removing any
+/// comment content so no lexical entry point silently accepts them.
+fn reject_visual_unicode_controls(source: &str) -> Result<(), ParseError> {
+    for (offset, character) in source.char_indices() {
+        let codepoint = character as u32;
+        let forbidden = matches!(codepoint,
+            0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029)
+            || (0x202a..=0x202e).contains(&codepoint)
+            || (0x2066..=0x2069).contains(&codepoint);
+        if forbidden {
+            return Err(ParseError {
+                offset,
+                class: "source_unicode_control",
+                message: format!("forbidden source Unicode control U+{codepoint:04X}"),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -223,6 +244,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "Oreslang source exceeds 256 KiB prototype limit".into(),
         });
     }
+    reject_visual_unicode_controls(source)?;
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
