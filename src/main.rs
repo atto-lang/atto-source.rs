@@ -3,17 +3,12 @@ use oreslang_source_rs::{
     profile::{self, BuildProfile},
     safety,
 };
-use std::{env, fs, io::Read, path::Path, process::ExitCode};
+use std::{env, fs, io::{Read, Write}, path::Path, process::ExitCode};
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
 fn canonical_destination(path: &str) -> Result<std::path::PathBuf, String> {
     let destination = Path::new(path);
-    // Existing symlinks, including dangling ones, cannot impersonate a new
-    // output path. Canonicalization must succeed for a present directory entry.
-    if fs::symlink_metadata(destination).is_ok() {
-        return fs::canonicalize(destination).map_err(|e| e.to_string());
-    }
     let parent = destination
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -22,7 +17,61 @@ fn canonical_destination(path: &str) -> Result<std::path::PathBuf, String> {
     let basename = destination
         .file_name()
         .ok_or("output requires a filename")?;
-    Ok(directory.join(basename))
+    let resolved = directory.join(basename);
+    // Never follow the final output component, even for an existing path.
+    // A symlink (including a dangling one) must not redirect compiler writes.
+    match fs::symlink_metadata(&resolved) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("refusing symlinked compiler output".into())
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            Err("compiler output must be a regular file".into())
+        }
+        Ok(_) => Ok(resolved),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(resolved),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Publish a complete artifact with create-new staging and same-directory
+/// rename. In particular, replacing a hardlinked destination must never
+/// truncate its other link (which could be the source file).
+fn publish_artifact(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let destination = canonical_destination(path)?;
+    let parent = destination.parent().ok_or("output requires a parent")?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    for attempt in 0..64_u8 {
+        let temporary = parent.join(format!(
+            ".oresc-{}-{nonce}-{attempt}.tmp",
+            std::process::id()
+        ));
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        let result = (|| {
+            file.write_all(bytes).map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            drop(file);
+            // Recheck for a clear diagnostic. rename() replaces the final
+            // directory entry without following its symlink in any case.
+            canonical_destination(path)?;
+            fs::rename(&temporary, &destination).map_err(|e| e.to_string())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        return result;
+    }
+    Err("unable to allocate unique compiler artifact staging file".into())
 }
 
 fn main() -> ExitCode {
@@ -116,10 +165,9 @@ fn main() -> ExitCode {
             let facts = effects::export_effect_ir_checked(&checked)?;
             let serialized = serde_json::to_vec(&facts).map_err(|e| e.to_string())?;
             // All compilation completes before writing either artifact. These
-            // two file writes are not a transactional/atomic commit.
-            fs::write(output.ok_or("missing native output")?, object).map_err(|e| e.to_string())?;
-            fs::write(effects_output.ok_or("missing effect output")?, serialized)
-                .map_err(|e| e.to_string())?;
+            // two individually atomic file publishes are not a joint transaction.
+            publish_artifact(output.ok_or("missing native output")?, &object)?;
+            publish_artifact(effects_output.ok_or("missing effect output")?, &serialized)?;
         } else {
             match mode {
                 "--check" => println!("OK: {} function(s)", checked.functions.len()),
@@ -163,8 +211,7 @@ fn main() -> ExitCode {
                         effects::export_effect_ir_checked(&checked)?;
                         codegen::emit_object(&checked)?
                     };
-                    fs::write(output.ok_or("missing output path")?, bytes)
-                        .map_err(|e| e.to_string())?;
+                    publish_artifact(output.ok_or("missing output path")?, &bytes)?;
                 }
             }
         }
