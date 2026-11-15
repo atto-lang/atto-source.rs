@@ -1,0 +1,9 @@
+// expect-error: E_MOVED
+fnc make_adder(int offset): fnc(int) => int {
+    return |n| : int -> n + offset;
+}
+pub fnc main(): int {
+    val original = make_adder(1);
+    val replacement = original;
+    return original(41);
+}
