@@ -27,6 +27,14 @@ use crate::ast::{BinOp, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
+mod receiver_instance;
+
+/// Restricted instance-bound scalar receiver preview; ordinary compilation stays closed.
+pub(crate) fn emit_scalar_receiver_instance_preview(
+    methods:&[crate::target_scalar::ScalarMethod],
+) -> Result<Vec<u8>,crate::diag::Diagnostic> {
+    receiver_instance::emit(methods)
+}
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
