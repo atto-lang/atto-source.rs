@@ -1,4 +1,4 @@
-// expect-error: E_SYNTAX
+// expect-error: E_STATE_BORROW
 define state Counter as
   state { let int count: 0; }
   pub change(): void {
