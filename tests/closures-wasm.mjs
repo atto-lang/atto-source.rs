@@ -56,7 +56,8 @@ for (const name of passes) {
 for (const [name, code] of [
   ['lambda-direct-capture-mutable', 'E_CAPTURE'],
   ['lambda-direct-capture-shadow', 'E_CAPTURE'],
-  ['lambda-direct-capture-escape', 'E_UNSUPPORTED']
+  ['lambda-direct-capture-escape', 'E_UNSUPPORTED'],
+  ['callable-old-skinny-arrow-type', 'E_SYNTAX']
 ]) {
   const source = readFileSync('tests/fixtures/fail/' + name + '.atto', 'utf8');
   const got = compile(source);
