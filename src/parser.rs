@@ -1226,6 +1226,11 @@ impl Parser {
             if self.eat(&Tok::Comma) || self.is_word("end") {
                 return Ok(());
             }
+            // An unterminated comma/end callable must report the missing
+            // block delimiter, not a misleading separator error at EOF.
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected("'end'"));
+            }
             return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                 "Erlang-style callable body items require ',' or 'end', not ';' or newline"));
         }
