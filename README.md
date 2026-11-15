@@ -351,6 +351,17 @@ The fixture corpus is in `tests/fixtures/`:
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
 
+## Repository ownership and contribution routing
+
+**Belongs in this repository:** The Rust-authored compiler frontend/backend, its documented .atto subset, source-to-Wasm generation, native Rust tests, and wasm32-unknown-unknown compiler artifact for the playground.
+
+**Belongs elsewhere:** The JavaScript transpiler (atto-source.js), the host-independent Wasm backend/runtime contract (atto-source.wasm), or the website/deployment (atto-playground / atto-lang.github.io).
+
+**Safety and verification boundary:** A compiler compiled to browser Wasm is not proof that its emitted guests use Wasmtime in a browser. Browser guests use WebAssembly APIs/Workers; native Wasmtime claims require separate native execution receipts.
+
+Keep canonical AttoLang (.atto) semantics consistent with the language specification, while treating Oreslang-named tooling and .ores as compatibility surfaces.
+
+Changes asserting compiler/runtime support must identify the exact source head, target, toolchain, executed positive and negative guest tests, and failure/unsupported status; an empty CI step list is **not executed**. Documentation records responsibility, **not** a claim of feature completion.
 ## Browser tenant worker artifact (experimental)
 
 `atto_compiler::browser_worker::compile_browser_tenant(source)` compiles the existing AttoLang subset to real Wasm and reads the compiler-produced `atto.actors` custom section into a bounded actor-name list. It exposes `atto.browser.guest.v2` plus the `atto.browser.tenants.v1` worker envelope contract for bundlers targeting [atto-browser](https://github.com/atto-lang/atto-browser). The original `compile` ABI remains unchanged.
