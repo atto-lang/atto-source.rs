@@ -1,0 +1,34 @@
+// expect-exit: 42
+// Browser-compatible bounded callable profile:
+// a direct lambda, a direct immutable scalar capture, and an explicit functor.
+// This is NOT a general escaping closure or first-class callable ABI.
+define class Multiplier as
+  int factor: 0;
+
+  constructor(int factor) {
+    self.factor = factor;
+  }
+
+  pub call(int n): int {
+    return n * self.factor;
+  }
+end
+
+fnc twice_21(): int {
+  val twice = |n| : int -> n * 2;
+  return twice(21);
+}
+
+fnc add_with_capture(int offset): int {
+  val plus = |n| : int -> n + offset;
+  return plus(41);
+}
+
+fnc functor_42(): int {
+  val triple = new Multiplier(3);
+  return triple.call(14);
+}
+
+pub fnc main(): int {
+  return twice_21() + add_with_capture(1) + functor_42() - 84;
+}
