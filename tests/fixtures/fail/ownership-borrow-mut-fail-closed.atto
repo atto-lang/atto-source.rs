@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+pub fnc main(): int {
+  let number = 42;
+  val loan = borrow! mut number;
+  return loan;
+}
