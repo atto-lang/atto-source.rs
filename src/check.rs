@@ -314,6 +314,8 @@ struct MethodInfo {
 
 struct ClassInfo {
     name: String,
+    /// Distinct protected-state nominal declaration (single Worker-local profile).
+    state_container: bool,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
@@ -380,6 +382,8 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Active, compiler-admitted exclusive state write loan.
+    state_write_scope: bool,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -867,6 +871,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         };
         classes.push(ClassInfo {
             name: c.name.clone(),
+            state_container: c.state_container,
             fields,
             methods,
             new_idx,
@@ -1419,6 +1424,7 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            state_write_scope: false,
             imports,
             data,
         }
@@ -1565,6 +1571,19 @@ impl<'a> FnCx<'a> {
                 // a reassigned object binding owns a value again
                 self.moved.remove(&slot);
                 TStmt::Set(slot, v)
+            }
+            Stmt::StateWrite { body, pos } => {
+                let allowed = matches!(self.owner,
+                    Owner::Class { c, ctor: false, is_static: false }
+                    if self.g.classes[c as usize].state_container);
+                if !allowed || self.state_write_scope {
+                    return Err(Diagnostic::new(*pos, "E_STATE_BORROW",
+                        "critical-write requires a non-nested protected state container method"));
+                }
+                self.state_write_scope = true;
+                let checked = self.scoped(body);
+                self.state_write_scope = false;
+                TStmt::Block(checked?)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => {
@@ -2057,15 +2076,17 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
-                // Only define state declares ActorState-mode class fields.
-                // Its parser admits writes solely inside checked, synchronous
-                // critical scopes; ordinary class self remains read-only.
-                if !ctor && mode != FieldMode::ActorState {
-                    return Err(Diagnostic::new(
-                        pos,
-                        "E_OWNERSHIP",
-                        format!("cannot mutate field '{field}' through read-only binding 'self'"),
-                    ));
+                // Never grant mutable state authority from a field mode alone.
+                // The declaration must be a protected state container AND the
+                // typed checker must be inside the lexical critical-write AST.
+                if mode == FieldMode::ActorState {
+                    if !class.state_container || !self.state_write_scope {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                            "mutable state requires a checked critical-write scope"));
+                    }
+                } else if !ctor {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                        format!("cannot mutate field '{field}' through read-only binding 'self'")));
                 }
                 let v = self.value(value)?;
                 if v.ty != fty {
