@@ -1,0 +1,45 @@
+name: M8 canonical Rust compiler cooperative actor Wasm proof
+on:
+  push:
+    branches: [audit/m8-compiler-safepoint-wasm-20261115]
+  pull_request:
+    paths:
+      - 'src/actor_cooperate.rs'
+      - 'src/lib.rs'
+      - 'tests/m8*'
+      - 'tests/fixtures/m8/**'
+      - '.github/workflows/m8-cooperative-wasm.yml'
+permissions:
+  contents: read
+jobs:
+  m8-real-browser-compiler-and-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Confirm source tree and actual Rust toolchain
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD^{tree}
+          rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.85.1
+          rustc --version
+      - name: Execute real native Rust compiler tests
+        run: cargo test --locked --test m8_cooperate -- --nocapture
+      - name: Compile native attoc and wasm32 browser compiler
+        run: |
+          cargo build --locked --release --bin attoc
+          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+          file target/wasm32-unknown-unknown/release/atto_compiler.wasm
+          sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
+      - name: Execute wasm32 compiler + generated guest and byte-parity
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/m8-cooperate.mjs
+      - name: Evidence scope
+        run: echo 'M8 admitted single-frame restricted actor loop, not full actor scheduler or hard RT'
