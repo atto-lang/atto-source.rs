@@ -228,7 +228,7 @@ The compiler does not define any syntax of its own:
 
 | Area | Admitted |
 | --- | --- |
-| Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
+| Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`; C brace bodies (`: T {}`, `: T -> {}`, `-> T {}`) or comma/`end` bodies (`-> T … end`, `-> T :: … end`); parameters `int a`, `int mut a`, `a: int`; arity overloads |
 | Entry point | zero-argument `main` returning `int` or `void` |
 | Generators (restricted) | One optional immutable `int` parameter, up to 16 persistent `int` locals and pure typed CFG `if`/`while`/`break`/`continue`, checked scalar arithmetic and computed `yield`; plus earlier canonical `CountTo`/limited lazy `yield*` profile. Owned fresh-handle `for ... in` and bounded guest-Wasm 65,536-step pull budgets. Borrowed objects, arbitrary effects, nested-scope binds and advanced cancellation remain gated. |
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
@@ -242,6 +242,37 @@ The compiler does not define any syntax of its own:
 | Classes | `[pub] define class Name as … end`. Fields of type int, bool, float, string or an enum: `T name: e`, `mut T name = e`, `let T name = e` (assignable in the constructor) and `name: T = e`, `final …`, `val`/`const` (fixed). One `constructor(…)`; instance methods `[pub] [fnc] name(…)`; `[pub] static fnc name(…)`, always called qualified as `Name.f(…)`. Construction is `new Name(…)` |
 | Actors | `define actor Name as … end` or `actor Name … end`. State `let T name = e` (mutable) and `val`/`const`/`final` (fixed), one `receive(ActorMail<int\|bool> mail): void` reading `mail.value` and `mail.sequence`, and helper methods called as `self.f(…)`. `val r = spawn Name();` gives a copyable `ActorRef<Name>`, and `r.send(v)` enqueues mail |
 | Enums | `define enum Name as A B C end` and `Name.A` values compared with `eq`/`neq`. This spelling comes from the oreslang-source.llvm v1 design contract (`contracts/v1/design/enum_pattern_cases.json`). The Java parser does not admit it yet, and the fixtures record that |
+
+### Confirmed callable body syntax (accepted by atto-spec #19)
+
+The five declaration-body forms below apply to `fnc`, direct-call-only `routine`,
+and inline instance methods (bare `method_name`, legacy `fnc method_name`
+or `method method_name`). These are alternatives, not simultaneous overloads:
+
+```atto
+fnc five(): int { return 5; }
+fnc five(): int -> { return 5; }
+fnc five() -> int { return 5; }
+fnc five() -> int let int x = 3, x + 2 end
+fnc five() -> int :: let int x = 3, x + 2 end
+```
+
+C bodies retain explicit returns; outer Erlang-like bodies use commas between
+statements and return their final expression, subject to the normal type,
+ownership and control-flow checks. Neither style changes the other style's
+terminators. A `->` after `: T` requires `{`. The `=>` fat arrow remains
+for *callable type* declarations, not these function body headers.
+
+Out-of-line `mtd` supports named receiver headers `(self: T)`,
+`(T self)`, implicit `(T)`, `(T _)`, and explicit `(mut self: T)`
+in the **syntax-only target preflight**. The formatter contract prefers
+`(self: T)` for named receivers, `(T)` for implicit receivers and
+bare method names for inline instance methods. Out-of-line class/actor
+receiver methods are not linked or executable in guest Wasm: normal
+`compile()` fails with `E_UNSUPPORTED`. Classes may have no static
+receiver dispatch and actor sealed-state restrictions remain unchanged.
+Parser acceptance and host fixture compilation must never be reported
+as verified guest receiver execution.
 
 ### Class and actor rules (checked against the Java reference)
 
