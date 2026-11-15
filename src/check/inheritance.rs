@@ -11,6 +11,13 @@ type R<T> = Result<T, Diagnostic>;
 const MAX_ANCESTRY_DEPTH: usize = 32;
 const MAX_EXPANDED_MEMBERS: usize = 256;
 
+// Method identity matches Java and LLVM: nominal owner plus name,
+// source-visible arity and member kind. Parameter types do not overload.
+type MethodSlot = (String, usize, bool);
+fn method_slot(m: &Method) -> MethodSlot {
+    (m.name.clone(), m.params.len(), m.is_static)
+}
+
 #[derive(Clone)]
 struct Pick<T> {
     origin: String,
@@ -44,10 +51,10 @@ fn compatible(a: &Method, b: &Method, program: &Program) -> bool {
             type_name(x.ty, program) == type_name(y.ty, program))
 }
 
-fn merge_pick<T: Clone>(
-    into: &mut BTreeMap<String, Vec<Pick<T>>>, name: &str, picked: Pick<T>,
-) {
-    into.entry(name.to_owned()).or_default().push(picked);
+fn merge_pick<T: Clone, K: Ord>(
+    into: &mut BTreeMap<K, Vec<Pick<T>>>, key: K, picked: Pick<T>,
+) where K: Ord {
+    into.entry(key).or_default().push(picked);
 }
 
 fn distinct<T: Clone>(list: Vec<Pick<T>>) -> Vec<Pick<T>> {
@@ -87,7 +94,7 @@ impl Resolver<'_> {
     fn expand_unchecked(&mut self, index: usize, depth: usize) -> R<Expanded> {
         let class = self.program.classes[index].clone();
         let mut fields: BTreeMap<String, Vec<Pick<Field>>> = BTreeMap::new();
-        let mut methods: BTreeMap<String, Vec<Pick<Method>>> = BTreeMap::new();
+        let mut methods: BTreeMap<MethodSlot, Vec<Pick<Method>>> = BTreeMap::new();
         let mut interfaces = BTreeSet::new();
         for (base, pos) in &class.bases {
             let Some(&parent_index) = self.classes.get(base) else {
@@ -109,19 +116,16 @@ impl Resolver<'_> {
                             f.origin, f.value.name)));
                 }
                 let name = f.value.name.clone();
-                merge_pick(&mut fields, &name, f);
+                merge_pick(&mut fields, name, f);
             }
             for m in inherited.methods {
-                // Static methods belong to the declaring class; do not synthesize
-                // inherited static entries in the child's instance method table.
-                if m.value.is_static { continue; }
-                if !m.value.public {
+                 if !m.value.public {
                     return Err(fail(*pos, "E_UNSUPPORTED",
                         format!("inheriting private method '{}.{}' is not yet supported",
                             m.origin, m.value.name)));
                 }
                 let name = m.value.name.clone();
-                merge_pick(&mut methods, &name, m);
+                merge_pick(&mut methods, method_slot(&m.value), m);
             }
         }
         // Both contracts and class bases are resolved nominally. A trait
@@ -135,7 +139,7 @@ impl Resolver<'_> {
                 interfaces.insert(name.clone());
             } else {
                 for method in &contract.methods {
-                    merge_pick(&mut methods, &method.name, Pick {
+                    merge_pick(&mut methods, method_slot(method), Pick {
                         origin: contract.name.clone(), value: method.clone(),
                     });
                 }
@@ -161,24 +165,30 @@ impl Resolver<'_> {
         }
         let mut declared = BTreeSet::new();
         for method in &class.methods {
-            if !declared.insert(method.name.clone()) {
+            let slot = method_slot(method);
+            if !declared.insert(slot.clone()) {
                 return Err(fail(method.pos, "E_DUPLICATE",
-                    format!("duplicate method '{}.{}'", class.name, method.name)));
+                    format!("duplicate method slot '{}.{}' at arity {}",
+                        class.name, method.name, method.params.len())));
             }
             if method.is_static {
                 if method.override_member {
                     return Err(fail(method.pos, "E_OVERRIDE",
                         "static methods cannot override instance methods"));
                 }
-                if methods.contains_key(&method.name) {
-                    return Err(fail(method.pos, "E_STATIC_INHERIT_CONFLICT",
-                        format!("static function '{}' cannot hide an inherited instance method",
-                            method.name)));
+                // Static hiding is nonvirtual, but an explicit child static
+                // definition resolves the matching inherited static slot.
+                let inherited = methods.remove(&slot).unwrap_or_default();
+                for candidate in distinct(inherited) {
+                    if candidate.value.public && !method.public {
+                        return Err(fail(method.pos, "E_OVERRIDE_VISIBILITY",
+                            "a child static function cannot hide an inherited public static function as private"));
+                    }
                 }
                 out.methods.push(Pick { origin: class.name.clone(), value: method.clone() });
                 continue;
             }
-            let inherited = methods.remove(&method.name).unwrap_or_default();
+            let inherited = methods.remove(&slot).unwrap_or_default();
             if inherited.is_empty() && method.override_member {
                 return Err(fail(method.pos, "E_OVERRIDE",
                     format!("'{}' has no inherited method to override", method.name)));
@@ -199,11 +209,13 @@ impl Resolver<'_> {
             }
             out.methods.push(Pick { origin: class.name.clone(), value: method.clone() });
         }
-        for (name, bucket) in methods {
+        for ((name, arity, is_static), bucket) in methods {
             let unique = distinct(bucket);
             if unique.len() != 1 {
                 return Err(fail(class.pos, "E_AMBIGUOUS_MEMBER",
-                    format!("ambiguous method '{name}' inherited from multiple origins; add an explicit override")));
+                    format!("ambiguous {} '{name}' with arity {arity} inherited from multiple origins; add an explicit {}",
+                        if is_static { "static function" } else { "method" },
+                        if is_static { "child static declaration" } else { "override" })));
             }
             out.methods.push(unique.into_iter().next().unwrap());
         }
@@ -214,7 +226,8 @@ impl Resolver<'_> {
             let contract = self.contracts[interface];
             for required in &contract.methods {
                 let Some(found) = out.methods.iter().find(|m|
-                    !m.value.is_static && m.value.name == required.name) else {
+                    !m.value.is_static && m.value.name == required.name &&
+                    m.value.params.len() == required.params.len()) else {
                     return Err(fail(class.pos, "E_INTERFACE",
                         format!("class '{}' does not implement '{}.{}'",
                             class.name, interface, required.name)));
