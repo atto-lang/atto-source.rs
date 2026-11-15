@@ -1,0 +1,6 @@
+// expect-error: E_CAPTURE
+fnc make_adder(int offset): fnc(int) => int {
+    let variable = offset;
+    return |n| : int -> n + variable;
+}
+pub fnc main(): int { return make_adder(1)(41); }
