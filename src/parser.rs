@@ -1205,6 +1205,12 @@ impl Parser {
             if self.eat(&Tok::Comma) || self.is_word("end") {
                 return Ok(());
             }
+            // An omitted closing 'end' is a truncated callable, not an
+            // illegal statement separator. Keep the diagnostic stable for
+            // both a final tail expression and an explicit return.
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected("'end'"));
+            }
             return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                 "Erlang-style callable body items require ',' or 'end', not ';' or newline"));
         }
