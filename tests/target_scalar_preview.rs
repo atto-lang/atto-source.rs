@@ -46,6 +46,8 @@ fn scalar_preview_rejects_actor_state_and_unproved_control_flow() {
         "declare actor A; mtd (mut self: A) mutate(int n): int { return n; }",
         "declare actor A; mtd (A self) f(): int { return 9223372036854775808; }",
         "declare actor A; mtd (A self) f(): int { return true; }",
+        "declare actor A; mtd (A self) f(int n): int { return n(n); }",
+        "declare actor A; mtd (A self) f(int n): int { return (n)(); }",
         "declare actor A; mtd (A self) call(int n): int { return self.other(); }",
         "declare actor A; mtd (A self) f(int n): int { return (n + 2; }",
         "declare actor A; pub fnc main(): int { return 1; }
