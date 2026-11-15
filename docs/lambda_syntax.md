@@ -99,17 +99,19 @@ Example: `val double = |n| : int -> n * 2; return double(21);`
 executes with result `42`. An explicitly terminated lambda return must
 be parenthesized, as in `val double = (|n| -> return n * 2;);`.
 
-The local lambda is a compile-time declaration, not a runtime handle.
-Only direct calls are supported: callable values, aliases, escaped closures,
+In the **legacy direct-call profile**, a local lambda is a compile-time
+declaration, not a runtime handle. That profile only allows direct calls:
+callable aliases, escaped closures,
 mutable / non-scalar captures, reassignments, multiple lambdas per source function,
 contextual inference from nonliteral first arguments, and Rx pipelines still
 fail closed. The limited direct-call path now supports immutable scalar captures
 from top-level locals or immutable parameters; their values become hidden typed
 arguments to the lifted function. Captures are restricted to expression-bodied
 lambdas and the compiler never creates a first-class callable or heap environment.
-Factory-returned closures remain unsupported. The caller's scalar captures are
-immutable, so invocation-time passing preserves creation-time capture semantics.
-This milestone uses ordinary typed Wasm direct calls, not indirect-call tables
+Factory-returned closures are instead supported by the **separate,
+bounded class-backed owned profile** below. For legacy direct calls, captured
+scalars are immutable, so passing them at invocation time preserves their
+creation-time values. This older profile uses typed direct Wasm calls, not tables
 or a general first-class function type. Positive/negative guest fixtures and
 native-vs-Wasm byte parity protect the admitted subset.
 
@@ -167,7 +169,7 @@ still fail closed; this is **not** the final general callable-handle ABI.
 
 The earlier direct-lambda profile (private direct Wasm calls) continues to
 work unchanged. The next milestone is **general** per-instance function
-table entries, owned reclaimable capture frames, generation-fenced handles,
+table entries, generalized capture types, stable generational handle ABI,
 actor/domain validation, and cleanup on all exceptional exits.
 
 When a lambda is explicitly annotated with a callable type, the
@@ -228,7 +230,7 @@ released through the protected Pages gate.
 The source compiler currently desugars `fnc(int) => int` to an internal,
 unnameable class with one dispatch selector and four integer capture slots.
 Closure creation takes **value snapshots** of immutable `int` bindings into
-a module-private bump heap. A generated `.call(int)` method dispatches among
+a private, bounded, per-instance arena. A generated `.call(int)` method dispatches among
 a bounded set of expression-bodied targets. The Wasm emitter installs that
 method in an unexported `funcref` table and uses **typed `call_indirect`**
 at the invocation site. This is an executable closed-world adapter, **not**
@@ -237,9 +239,28 @@ the production generational `CallableHandle` ABI.
 The initial caps are one `int` input, one `int` result, at most four
 immutable `int` captures per lambda, at most 32 lambda sites, and simple
 expression bodies. Source functions with unrelated control flow continue
-through the ordinary checker. The guest heap currently has bounded bump
-allocation **without reclaiming closed closure environments**; do not rely
-on this prototype for unbounded allocation or hard-real-time lifetimes.
+through the ordinary checker. The arena reserves **256 fixed 48-byte
+frames** lazily from the module's existing bump heap and reuses released
+slots. An opaque i32 handle encodes a one-based slot (9 bits) and generation
+(23 bits); every selector/capture field access validates the handle's
+generation and live state before dereferencing the frame. A closed frame is
+scrubbed and recycled with an incremented generation; exhausted generations
+retire their slots instead of wrapping.
+
+**Explicit `.close()` is required** to recycle a captured environment.
+Calling it on a named closure consumes that source binding, so subsequent
+`.call()` or `.close()` produces `E_MOVED` before guest emission.
+Stale, double-closed or malformed handles still trap at runtime with
+`panic_code = 6`; a corrupted selector also traps instead of returning
+zero. Arena capacity exhaustion traps with `panic_code = 3` and never
+reuses a live slot. No Wasm table, memory, or callable handle can be
+transported across actors through the source language.
+
+**This remains an experimental fixed-capacity ownership slice.**
+Closing a capture releases its arena slot, **not** the module's reserved
+arena memory. There is no automatic RAII/drop on scope exit, guest
+`defer`/`recover`/exception-unwind cleanup, full generic callable ABI,
+or proof of hard-real-time allocation. Unclosed closures exhaust the arena.
 
 Exact-source CI acceptance fixtures:
 - `callable-owned-make-adder.atto` returns 42 after its factory returned
@@ -247,8 +268,15 @@ Exact-source CI acceptance fixtures:
 - `callable-owned-independent-captures.atto` returns 43
 - `callable-owned-multiple-targets.atto` returns 41
 - `callable-owned-unrelated-control-flow.atto` returns 42
-- malformed type arrows, mutable captures, unsupported bodies and use-after-move
-  reject before emitting a guest module
+- `callable-owned-explicit-close.atto` returns 42 for 1,025 sequential
+  executions in the same guest instance, proving live slot reclamation
+- `callable-owned-close-independent.atto` returns 42 after one sibling closes
+- `callable-owned-recycle-after-call.atto` returns 42 with generation reuse
+- `callable-owned-capacity-guard.atto` tests the 256-slot exhaustion trap
+- `callable-owned-tamper-checkpoint.atto` traps on corrupted selector,
+  generation and live-state fields under controlled malicious-host writes
+- invalid arrows, mutable captures, unsupported bodies, use-after-move,
+  use-after-close and double-close reject before publishing guest bytes
 
 The remaining release gates are the entire exact Git source tree and test
 corpus, real Chromium Worker execution, sanitizer evidence, production capture
