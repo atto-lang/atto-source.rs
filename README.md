@@ -356,3 +356,9 @@ The fixture corpus is in `tests/fixtures/`:
 `atto_compiler::browser_worker::compile_browser_tenant(source)` compiles the existing AttoLang subset to real Wasm and reads the compiler-produced `atto.actors` custom section into a bounded actor-name list. It exposes `atto.browser.guest.v2` plus the `atto.browser.tenants.v1` worker envelope contract for bundlers targeting [atto-browser](https://github.com/atto-lang/atto-browser). The original `compile` ABI remains unchanged.
 
 The browser host runs one Web Worker per tenant and may instantiate several actor-specific Wasm instances within it. This helper does not bundle workers or provide a security boundary; actual Wasm admission, capability grants, worker termination, and runtime conformance remain responsibilities of the host. Run `cargo test` for the manifest tests; no Rust execution proof is claimed until CI verifies the branch.
+
+### Cross-tenant browser route v1 ABI
+
+The browser host can deliver a tenant-authorized signed `i64` message to a live compiled actor. The **external** route payload is 8 little-endian bytes, decoded in the destination Web Worker and passed to the compiler-emitted `actor_receive(i32 type, i64 value, i64 sequence)` export. The broker, not the Wasm guest, controls target actor ID, generation, and capability validation. The Rust contract test `tests/browser_route_wire.rs` verifies the actual emitted Wasm receiver signature and signed wire representation.
+
+This is **not yet compiler lowering for cross-tenant AttoLang `actor.send` expressions**: routing is initiated via the application-controlled `BrowserTenantClient.grant_route/send_route` API in `atto-browser`. `rt take` and `rt copy` in the host are `ArrayBuffer` transfer/copy modes and do not yet extend the compiler's ownership analysis across Web Worker boundaries.
