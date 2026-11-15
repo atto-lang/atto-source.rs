@@ -7,6 +7,78 @@ use std::collections::HashSet;
 
 pub const TENANT_PROTOCOL: &str = "atto.browser.tenants.v1";
 pub const GUEST_ABI: &str = "atto.browser.guest.v2";
+/// Versioned host-side completion and uncertainty contract. Not a Wasm import.
+pub const SEND_RECEIPT_PROTOCOL: &str = "atto.browser.send-receipt.v1";
+
+/// A recipient's processing acknowledgement is distinct from admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteReceiptOutcome { Processed, Rejected, Unknown }
+impl RemoteReceiptOutcome {
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Processed => "processed",
+            Self::Rejected => "rejected",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Stable error codes; arbitrary guest error strings are never wire codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteReceiptCode {
+    Ok, RouteStale, RouteBackpressure, RouteTimeout, RouteUnavailable,
+    RouteCrash, RouteRevoked, RouteReceiver, RouteProtocol, RouteUnknown,
+}
+impl RemoteReceiptCode {
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::RouteStale => "E_ROUTE_STALE",
+            Self::RouteBackpressure => "E_ROUTE_BACKPRESSURE",
+            Self::RouteTimeout => "E_ROUTE_TIMEOUT",
+            Self::RouteUnavailable => "E_ROUTE_UNAVAILABLE",
+            Self::RouteCrash => "E_ROUTE_CRASH",
+            Self::RouteRevoked => "E_ROUTE_REVOKED",
+            Self::RouteReceiver => "E_ROUTE_RECEIVER",
+            Self::RouteProtocol => "E_ROUTE_PROTOCOL",
+            Self::RouteUnknown => "E_ROUTE_UNKNOWN",
+        }
+    }
+}
+/// Host-issued correlation metadata, with no tenant or route capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteReceiptHeader {
+    pub receipt_id: u64,
+    pub route_id: u64,
+    pub source_generation: u64,
+    pub target_generation: u64,
+    pub actor_id: u32,
+    pub outcome: RemoteReceiptOutcome,
+    pub code: RemoteReceiptCode,
+}
+impl RemoteReceiptHeader {
+    pub const fn is_valid(self) -> bool {
+        self.receipt_id > 0 && self.route_id > 0 &&
+        self.source_generation > 0 && self.target_generation > 0 &&
+        self.actor_id <= 64 &&
+        matches!((self.outcome, self.code),
+            (RemoteReceiptOutcome::Processed,RemoteReceiptCode::Ok) |
+            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteStale) |
+            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteBackpressure) |
+            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteUnavailable) |
+            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteRevoked) |
+            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteProtocol) |
+            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteUnknown) |
+            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteStale) |
+            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteBackpressure) |
+            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteTimeout) |
+            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteUnavailable) |
+            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteCrash) |
+            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteReceiver) |
+            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteProtocol) |
+            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteUnknown))
+    }
+}
 pub const MAX_ACTOR_TYPES_PER_TENANT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +86,8 @@ pub struct BrowserTenantArtifact {
     pub wasm: Vec<u8>,
     pub wire_protocol: &'static str,
     pub guest_abi: &'static str,
+    /// Receipt/error schema consumed by the browser host; no async guest ABI.
+    pub send_receipt_protocol: &'static str,
     pub actor_names: Vec<String>,
 }
 
@@ -33,6 +107,7 @@ pub fn compile_browser_tenant(source: &str) -> Result<BrowserTenantArtifact, Dia
         wasm,
         wire_protocol: TENANT_PROTOCOL,
         guest_abi: GUEST_ABI,
+        send_receipt_protocol: SEND_RECEIPT_PROTOCOL,
         actor_names,
     })
 }
