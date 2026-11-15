@@ -1,0 +1,7 @@
+// expect-error: E_MATCH
+fnc quorum(int voters, int acknowledgements): bool {
+  return match<bool> (voters, acknowledgements) over
+    on acknowledgements > voters / 2 -> true
+  end;
+}
+pub fnc main(): int { return 0; }
