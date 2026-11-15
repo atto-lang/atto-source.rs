@@ -223,6 +223,15 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "Oreslang source exceeds 256 KiB prototype limit".into(),
         });
     }
+    // Raw ESC/DEL must fail before comments are stripped: diagnostics and
+    // source review must not be influenced by terminal-control bytes.
+    if let Some((offset, _)) = source.char_indices().find(|(_, c)| *c == '\u{001b}' || *c == '\u{007f}') {
+        return Err(ParseError {
+            offset,
+            class: "invalid_source_control",
+            message: "source contains terminal control byte".into(),
+        });
+    }
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
