@@ -2295,6 +2295,16 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "Pointer" => {
+                    // Fail before any generic-call, static-member or value
+                    // lowering can treat a capability type as a plain scalar
+                    // or user-defined class. Never emit a fake pointer.
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "Pointer<T> expression requires typed provenance-aware AOT lowering",
+                    ));
+                }
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }
@@ -2314,6 +2324,13 @@ impl Parser {
                 "new" => {
                     self.advance();
                     let (class, _) = self.ident("a class name after 'new'")?;
+                    if class == "Pointer" {
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_UNSUPPORTED_TYPE",
+                            "Pointer<T> allocation needs checked region, generation and AOT lowering",
+                        ));
+                    }
                     if *self.peek() == Tok::Lt {
                         return Err(unsupported(self.pos(), "generic class instantiation"));
                     }
