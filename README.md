@@ -37,3 +37,16 @@ Hard-RT admission is intentionally fail-closed: the compiler now proves a bounde
 acyclic call graph as a precondition, but rejects the final `--hard-rt` request until
 target-specific WCET/deadline evidence is implemented. It does not relabel “native AOT”
 as a hard-real-time proof.
+
+## AOT-first optimization planning (experimental)
+
+`src/tiering.rs` provides target-specific *policy*, not a JIT compiler:
+AOT is always the baseline; runtime JIT requests are rejected for browser
+Wasm, WASI, embedded, strict-AOT, hard-RT, untrusted native hosts and native
+hosts without executable-memory permission. Fixed-capacity trace counters
+provide allocation-free hotness signals; a deterministic layout planner
+recommends AoS, SoA or AoSoA for the next compiled representation, including
+inverted-class layout hints. These primitives do not emit WebAssembly,
+rewrite live object layouts or implement actor heap ownership. See
+[docs/RS_AOT_TIERING.md](docs/RS_AOT_TIERING.md) and
+`tests/tiering_policy.rs` for capabilities and negative-test boundaries.
