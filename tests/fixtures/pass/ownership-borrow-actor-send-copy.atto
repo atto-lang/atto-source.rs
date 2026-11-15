@@ -1,0 +1,17 @@
+// expect-exit: 0
+// expect-stdout: 42
+define actor Echo as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+    return;
+  }
+end
+pub fnc main(): int {
+  val worker = spawn Echo();
+  val number = 42;
+  block {
+    val reader = borrow! number;
+    worker.send(copy! reader);
+  }
+  return 0;
+}
