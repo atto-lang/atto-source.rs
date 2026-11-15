@@ -1,0 +1,8 @@
+// expect-error: E_INTERFACE
+define interface Named as
+  describe(int n): string;
+end
+define class Bad implements Named as
+  pub describe(bool flag): string { return "wrong"; }
+end
+pub fnc main(): int { return 0; }
