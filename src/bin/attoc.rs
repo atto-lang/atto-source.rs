@@ -4,14 +4,18 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (input, output, scalar_preview) = match args.as_slice() {
-        [i] => (i.clone(), None,false),
-        [i, o, out] if o == "-o" => (i.clone(), Some(out.clone()),false),
-        [flag, i] if flag == "--scalar-preview" => (i.clone(),None,true),
+    // 0: production, 1: stateless preview, 2: bound actor-instance preview.
+    let (input, output, preview_mode) = match args.as_slice() {
+        [i] => (i.clone(), None,0),
+        [i, o, out] if o == "-o" => (i.clone(),Some(out.clone()),0),
+        [flag, i] if flag == "--scalar-preview" => (i.clone(),None,1),
         [flag, i, o, out] if flag == "--scalar-preview" && o == "-o" =>
-            (i.clone(),Some(out.clone()),true),
+            (i.clone(),Some(out.clone()),1),
+        [flag, i] if flag == "--receiver-instance-preview" => (i.clone(),None,2),
+        [flag, i, o, out] if flag == "--receiver-instance-preview" && o == "-o" =>
+            (i.clone(),Some(out.clone()),2),
         _ => {
-            eprintln!("usage: attoc [--scalar-preview] <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc [--scalar-preview | --receiver-instance-preview] <input.atto> [-o out.wasm]");
             return ExitCode::from(2);
         }
     };
@@ -22,10 +26,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let built=if scalar_preview {
-        atto_compiler::target_scalar::compile_scalar_receiver_preview(&source)
-    } else {
-        atto_compiler::compile(&source)
+    let built=match preview_mode {
+        1 => atto_compiler::target_scalar::compile_scalar_receiver_preview(&source),
+        2 => atto_compiler::target_scalar::compile_scalar_receiver_instance_preview(&source),
+        _ => atto_compiler::compile(&source),
     };
     match built {
         Ok(bytes) => {
