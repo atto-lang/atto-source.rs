@@ -362,3 +362,28 @@ The fixture corpus is in `tests/fixtures/`:
 Keep canonical AttoLang (.atto) semantics consistent with the language specification, while treating Oreslang-named tooling and .ores as compatibility surfaces.
 
 Changes asserting compiler/runtime support must identify the exact source head, target, toolchain, executed positive and negative guest tests, and failure/unsupported status; an empty CI step list is **not executed**. Documentation records responsibility, **not** a claim of feature completion.
+## Browser tenant worker artifact (experimental)
+
+`atto_compiler::browser_worker::compile_browser_tenant(source)` compiles the existing AttoLang subset to real Wasm and reads the compiler-produced `atto.actors` custom section into a bounded actor-name list. It exposes `atto.browser.guest.v2` plus the `atto.browser.tenants.v1` worker envelope contract for bundlers targeting [atto-browser](https://github.com/atto-lang/atto-browser). The original `compile` ABI remains unchanged.
+
+The browser host runs one Web Worker per tenant and may instantiate several actor-specific Wasm instances within it. This helper does not bundle workers or provide a security boundary; actual Wasm admission, capability grants, worker termination, and runtime conformance remain responsibilities of the host. Run `cargo test` for the manifest tests; no Rust execution proof is claimed until CI verifies the branch.
+
+### Cross-tenant browser route v1 ABI
+
+The browser host can deliver a tenant-authorized signed `i64` message to a live compiled actor. The **external** route payload is 8 little-endian bytes, decoded in the destination Web Worker and passed to the compiler-emitted `actor_receive(i32 type, i64 value, i64 sequence)` export. The broker, not the Wasm guest, controls target actor ID, generation, and capability validation. The Rust contract test `tests/browser_route_wire.rs` verifies the actual emitted Wasm receiver signature and signed wire representation.
+
+This is **not yet compiler lowering for cross-tenant AttoLang `actor.send` expressions**: routing is initiated via the application-controlled `BrowserTenantClient.grant_route/send_route` API in `atto-browser`. `rt take` and `rt copy` in the host are `ArrayBuffer` transfer/copy modes and do not yet extend the compiler's ownership analysis across Web Worker boundaries.
+
+### Native AttoLang source-level remote actor sending (experimental browser profile)
+
+A narrow, typed `remote_actor(ActorType, slot)` expression yields an `ActorRef<ActorType>` without embedding any tenant token or browser route capability into Wasm. The actor type must be declared with a `receive(ActorMail<int>)` handler, and the slot must be a literal integer 1–16. Normal `.send(int)` compiles through the existing `atto.actor_send(i32 ref, i64 value)` guest import. The browser host interprets negative actor references as opaque, supervisor-bound remote slots; positive actor references remain local actors.
+
+`tests/fixtures/browser/remote-actor-source-send.atto` defines a real `Sender` actor whose receive method calls `remote_actor(Counter, 1).send(mail.value)`. The application must explicitly grant and bind slot 1 using `BrowserTenantClient.grant_route()` and `bind_route()` before invoking the sender guest. `tests/fixtures/browser/remote-actor-receiver.atto` supplies an isolated receiver.
+
+This v1 integration **does not yet provide per-send `Result<T,E>`, guest suspension, guaranteed delivery after crash, dynamic route acquisition, or compiler-checked cross-worker `rt take`/`rt copy`**. The supervisor returns a batch-level completion acknowledgement only after the destination handler finishes each send; failures restart the source tenant. This is an intentional, limited bridge, not full remote actor semantics.
+
+### Typed host send receipts (not guest async yet)
+
+`browser_worker::SEND_RECEIPT_PROTOCOL` identifies `atto.browser.send-receipt.v1`. `RemoteReceiptOutcome`, `RemoteReceiptCode`, and `RemoteReceiptHeader` give the Rust compiler/build tools typed metadata matching the JS host and Wasm admission contracts. `BrowserTenantArtifact.send_receipt_protocol` advertises the version. `processed` means handler completion; `rejected` means no delivery was dispatched; `unknown` indicates uncertain processing after dispatch. The final case must never be treated as a safe implicit retry.
+
+**The emitted `actor_send` guest ABI still returns `void`, and `await remote.send_async(...)` is intentionally rejected.** Compiler-owned suspension frames, guest-visible `Result<int,string>`, per-send completion propagation and ownership checking across `await` are separate next milestones. The new tests enforce this limitation rather than pretending the feature exists.

@@ -16,6 +16,7 @@ pub mod parser;
 pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;
+pub mod browser_worker;
 
 pub use diag::{Diagnostic, Pos};
 

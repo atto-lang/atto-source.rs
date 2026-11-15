@@ -162,6 +162,9 @@ pub enum TExpr {
     Alloc(u32),
     /// start an actor of the given type
     Spawn(u32),
+    /// Authenticated browser host slot, lowered to a negative i32 actor ref.
+    /// The Wasm guest never receives the actual route capability.
+    RemoteActor(u32),
     /// enqueue `value` (int, or bool widened to i64) on an actor's mailbox
     Send {
         target: Box<TE>,
@@ -3042,6 +3045,29 @@ impl<'a> FnCx<'a> {
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
+        }
+        if name == "remote_actor" && self.lookup(name).is_none() {
+            // First remote-send profile: only signed int actors and explicit,
+            // constant, host-bound route slots. No dynamic tokens in Wasm.
+            self.arity("remote_actor", 2, args.len(), pos)?;
+            let actor_name=match &args[0].kind {
+                ExprKind::Var(s) => s,
+                _ => return Err(Diagnostic::new(args[0].pos,"E_ROUTE_ACTOR",
+                    "remote_actor first argument must be an actor type name")),
+            };
+            let actor_idx=self.g.actor(actor_name).ok_or_else(||Diagnostic::new(
+                args[0].pos,"E_ROUTE_ACTOR",format!("unknown actor type '{actor_name}'")))?;
+            let actor=&self.g.actors[actor_idx as usize];
+            if actor.receive_idx.is_none() || actor.payload != Type::Int {
+                return Err(Diagnostic::new(pos,"E_ROUTE_TYPE",
+                    "remote_actor v1 requires an actor receiving ActorMail<int>"));
+            }
+            let slot=match &args[1].kind {
+                ExprKind::Int(Some(x)) if (1..=16).contains(x) => *x as u32,
+                _ => return Err(Diagnostic::new(args[1].pos,"E_ROUTE_SLOT",
+                    "remote_actor requires a literal route slot from 1 to 16")),
+            };
+            return Ok(TE{e:TExpr::RemoteActor(slot),ty:Type::ActorRef(actor_idx)});
         }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
