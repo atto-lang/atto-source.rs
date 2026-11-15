@@ -1215,6 +1215,8 @@ impl Parser {
         }
         let word = self.word_at(0).map(str::to_owned);
         match word.as_deref() {
+            Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
+                self.parse_state_critical_stmt(),
             Some("val" | "const" | "let") => {
                 let s = self.parse_binding()?;
                 self.terminator()?;
@@ -1384,6 +1386,79 @@ impl Parser {
                 Ok(Stmt::Expr(e))
             }
         }
+    }
+
+
+    /// A lexical, non-suspending state loan. Syntactic admission is deliberately
+    /// narrower than arbitrary closures: mutation only, pure scalar RHS, no
+    /// early return, IO, allocations, calls, loops or nested state access.
+    fn parse_state_critical_stmt(&mut self) -> R<Stmt> {
+        let pos = self.pos();
+        self.expect_word("handle_state")?;
+        self.expect(Tok::LParen, "'('")?;
+        self.expect_word("critical")?;
+        let write = if self.eat(&Tok::Minus) {
+            if self.eat_word("write") { true }
+            else if self.eat_word("read") { false }
+            else { return Err(self.expected("'read' or 'write' after critical-")); }
+        } else { true };
+        self.expect(Tok::Pipe, "'|' before lease binder")?;
+        let (binder, _) = self.ident("state lease binder")?;
+        if binder != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+            "this browser profile uses the binder s")); }
+        self.expect(Tok::Pipe, "'|' after lease binder")?;
+        self.expect(Tok::Arrow, "'->' after lease binder")?;
+        self.state_binder = Some(binder);
+        let result = self.parse_block();
+        self.state_binder = None;
+        let body = result?;
+        for stmt in &body {
+            match stmt {
+                Stmt::FieldAssign { target, value, .. }
+                    if write && matches!(target.kind, ExprKind::SelfRef)
+                        && Self::pure_state_value(value) => {}
+                _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                    "critical block permits only pure state assignments (no calls, return, await or escapes)")),
+            }
+        }
+        self.expect(Tok::RParen, "')' after critical scope")?;
+        self.terminator()?;
+        Ok(Stmt::Block(body))
+    }
+
+    fn pure_state_value(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) => true,
+            ExprKind::Var(name) => name != "s",
+            ExprKind::Member(base, _) => matches!(base.kind, ExprKind::SelfRef),
+            ExprKind::Unary(_, v) => Self::pure_state_value(v),
+            ExprKind::Binary(_, a, b) => Self::pure_state_value(a) && Self::pure_state_value(b),
+            _ => false,
+        }
+    }
+
+    /// A single by-value immutable state projection, not a reference loan.
+    fn parse_state_critical_read(&mut self) -> R<ExprKind> {
+        self.expect_word("handle_state")?;
+        self.expect(Tok::LParen, "'('")?;
+        self.expect_word("critical")?;
+        self.expect(Tok::Minus, "'-' before read")?;
+        self.expect_word("read")?;
+        self.expect(Tok::Pipe, "'|' before lease binder")?;
+        let (binder, _) = self.ident("state lease binder")?;
+        if binder != "s" { return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
+            "this browser profile uses the binder s")); }
+        self.expect(Tok::Pipe, "'|' after lease binder")?;
+        self.expect(Tok::Arrow, "'->' after lease binder")?;
+        let (projector, pos) = self.ident("s.field state projection")?;
+        if projector != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+            "critical-read requires s.field")); }
+        self.expect(Tok::Dot, "'.' in s.field")?;
+        let (field, field_pos) = self.ident("state field")?;
+        self.expect(Tok::RParen, "')' after critical-read")?;
+        Ok(ExprKind::Member(Box::new(Expr {
+            kind: ExprKind::SelfRef, pos: field_pos
+        }), field))
     }
 
     /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
@@ -2332,9 +2407,14 @@ impl Parser {
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
                 "self" => {
+                    if self.state_method {
+                        return Err(Diagnostic::new(pos, "E_STATE_ACCESS",
+                            "state fields are sealed; use a critical state lease"));
+                    }
                     self.advance();
                     ExprKind::SelfRef
                 }
+                "handle_state" if self.state_method => self.parse_state_critical_read(),
                 "new" => {
                     self.advance();
                     let (class, _) = self.ident("a class name after 'new'")?;
@@ -2372,6 +2452,14 @@ impl Parser {
                         "E_SYNTAX",
                         format!("expected an expression, found keyword '{w}'"),
                     ))
+                }
+                _ if self.state_binder.as_deref() == Some(s.as_str()) => {
+                    if *self.peek_at(1) != Tok::Dot {
+                        return Err(Diagnostic::new(pos, "E_ESCAPE",
+                            "state borrow cannot escape or be passed by value"));
+                    }
+                    self.advance();
+                    ExprKind::SelfRef
                 }
                 _ => {
                     self.advance();
