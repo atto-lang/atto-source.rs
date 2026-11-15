@@ -4,19 +4,19 @@ define class Calculator as
   final int seed: 3;
 end
 
-mtd (self: Calculator) one(): int {
+pub mtd (self: Calculator) one(): int {
   return self.seed + 2;
 }
 
-mtd (Calculator self) two(): int -> {
+pub mtd (Calculator self) two(): int -> {
   return self.seed + 2;
 }
 
-mtd (Calculator) three() -> int {
+pub mtd (Calculator) three() -> int {
   return self.seed + 2;
 }
 
-mtd (Calculator _) four() -> int
+pub mtd (Calculator _) four() -> int
   let int x = self.seed,
   x + 2
 end
