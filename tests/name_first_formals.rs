@@ -20,7 +20,10 @@ fn mixed_formals_preserve_parameter_order_and_mir_names() {
 #[test]
 fn name_first_forward_calls_and_multiple_parameters_are_admitted() {
     let source = "pub fnc main(): int { return f(20, 22); }\nfnc f(a: int, b: int): int { return a + b; }";
-    assert!(compile(source).is_ok(), "forward calls must preserve the same ABI");
+    assert!(
+        compile(source).is_ok(),
+        "forward calls must preserve the same ABI"
+    );
 }
 
 #[test]
@@ -31,6 +34,10 @@ fn types_must_remain_explicit_and_duplicate_names_are_rejected() {
         "fnc f(value: value): int { return value; }",
         "fnc f(int): int { return 42; }",
         "fnc f(value: int, other): int { return value; }",
+        "fnc f(value?: int): int { return value; }",
+        "fnc f(value: int?): int { return value; }",
+        "fnc f(int value?): int { return value; }",
+        "fnc f(value: int = 10): int { return value; }",
     ] {
         let err = frontend::parse(source).expect_err("untyped parameter admitted");
         assert_eq!(err.class, "syntax_error", "{source}: {err}");
@@ -55,7 +62,11 @@ fn call_arity_is_identical_for_both_parameter_spellings() {
 #[cfg(target_os = "linux")]
 #[test]
 fn mixed_formals_link_and_execute_real_native_object() {
-    use std::{fs, process::Command, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     struct Scratch(std::path::PathBuf);
     impl Drop for Scratch {
