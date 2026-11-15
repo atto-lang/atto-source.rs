@@ -61,18 +61,25 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
         name + ': native/wasm32 byte parity');
       outcome.nativeCompared++;
     }
-    // This exact published sample uses only an already-admitted functional
-    // pipeline; execute it and assert observable behavior, not just Wasm validity.
-    if (name === 'function-pipeline') {
+    // Only source examples with a fixed, independently reviewed output oracle
+    // count as executed. Admission without execution remains unverified.
+    const expected = {
+      'function-pipeline': { value: 121n, stdout: '121\n' },
+      'generators': { value: 10n, stdout: '10\n' },
+      'result-option': { value: 0n, stdout: '8080\n' },
+      'trap': { value: 7n, stdout: '5\nid must be nonnegative\n' },
+    }[name];
+    if (expected) {
       const guest = runGuest(result.wasm);
       assert.ok(guest.ok, name + ': guest trap ' + guest.error);
-      assert.equal(guest.value, 121n, name + ': exit value');
-      assert.equal(guest.stdout, '121\n', name + ': stdout');
+      assert.equal(guest.value, expected.value, name + ': exit value');
+      assert.equal(guest.stdout, expected.stdout, name + ': stdout');
       outcome.guestExecuted.push(name);
     }
   }
   assert.equal(outcome.admitted.length + outcome.unsupported.length, 35);
-  assert.ok(outcome.guestExecuted.includes('function-pipeline'),
-    'the exact published functional pipeline must really run');
+  assert.deepEqual(outcome.guestExecuted.slice().sort(),
+    ['function-pipeline', 'generators', 'result-option', 'trap'].sort(),
+    'all four currently accepted public previews must execute');
   return outcome;
 }
