@@ -74,5 +74,5 @@ fn lexer_tokens_ignore_comment_and_string_pretending_to_access_self() {
         pub fnc main(): int { val c = new C(); return c.answer(); }
     "#;
     let wasm = compile(src).expect("comments and string literals cannot forge receiver tokens");
-    assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
 }
