@@ -2061,6 +2061,12 @@ impl<'a> FnCx<'a> {
                         return Err(Diagnostic::new(pos, "E_IMMUTABLE", "cannot mutate final field through borrow! mut"));
                     }
                     let (slot, offset, fty) = (local.slot, f.slot, f.ty);
+                    // A class-valued field write would install an untracked owned
+                    // handle through an alias. Lower only copyable field storage.
+                    if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            "borrow! mut does not yet admit fields requiring owned-handle transfer"));
+                    }
                     let checked = self.consume_expected(value, fty)?;
                     if checked.ty != fty { return Err(type_err(value.pos, "borrowed field assignment type mismatch")); }
                     return Ok(TStmt::FieldSet { obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
@@ -2991,6 +2997,15 @@ impl<'a> FnCx<'a> {
                 ),
             ));
         }
+        // A borrowed aggregate cannot yield an independently owned handle.
+        // Without a nested-loan provenance IR, such a field could escape
+        // the original owner's lifetime by ordinary binding or return.
+        if matches!(&obj.e, TExpr::Local(slot) if self.loans.contains_key(slot))
+            && matches!(f.ty, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt)
+        {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "borrowed object field cannot yield an owned handle without nested-loan provenance"));
+        }
         Ok(TE {
             e: TExpr::FieldGet {
                 obj: Box::new(obj),
@@ -3092,7 +3107,19 @@ impl<'a> FnCx<'a> {
             return self.string_method(recv, name, args, pos);
         }
         match recv.ty {
-            Type::Class(c) => self.instance_call(recv, c, name, args, pos),
+            Type::Class(c) => {
+                // Calls on a loan may only return copyable, lifetime-independent
+                // values. Owned object returns need result-lifetime provenance.
+                if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot)) {
+                    if let Some(m) = self.g.classes[c as usize].methods.iter().find(|m| m.name == name) {
+                        if matches!(m.ret, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt) {
+                            return Err(Diagnostic::new(pos, "E_BORROW",
+                                "borrowed receiver cannot return an owned handle without result provenance"));
+                        }
+                    }
+                }
+                self.instance_call(recv, c, name, args, pos)
+            }
             Type::ActorRef(a) => {
                 let actor = &self.g.actors[a as usize];
                 if name != "send" {
