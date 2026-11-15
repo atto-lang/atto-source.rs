@@ -826,8 +826,8 @@ fn receiver_borrow_region_close_is_explicit_and_not_runtime_cleanup() {
 fn receiver_exit_records_unproved_unwind_and_cancel_obligations() {
     use atto_compiler::target_borrow::BorrowExitKind;
     let src="declare actor A;
-        mtd (A self) stop(): void { panic(Error(\"stop\")); }
-        mtd (A self) suspend(): void { await pending(); }";
+        mtd (A self) fail_now(): void { panic(Error(\"stop\")); }
+        mtd (A self) wait_for_result(): void { await pending(); }";
     let m=typed(src).unwrap();
     assert_eq!(m.receiver_borrows.len(),2);
     assert!(m.receiver_borrows[0].exit_edges.iter()
