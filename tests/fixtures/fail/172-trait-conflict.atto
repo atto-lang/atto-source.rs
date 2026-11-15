@@ -1,0 +1,5 @@
+// expect-error: E_AMBIGUOUS_MEMBER
+define trait A as pub say(): int { return 1; } end
+define trait B as pub say(): int { return 2; } end
+define class Both implements A, B as end
+pub fnc main(): int { return 0; }
