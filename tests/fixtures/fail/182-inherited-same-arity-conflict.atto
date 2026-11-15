@@ -1,0 +1,9 @@
+// expect-error: E_AMBIGUOUS_MEMBER
+define class Left as
+  pub score(int n): int { return n; }
+end
+define class Right as
+  pub score(bool b): int { return 5; }
+end
+define class Bad extends Left, Right as end
+pub fnc main(): int { return 0; }
