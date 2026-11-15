@@ -9,7 +9,7 @@ fn source(body:&str)->String {
 fn typed_remote_actor_send_lowers_to_an_executable_wasm_guest() {
     let src=source("val remote = remote_actor(Counter, 1); remote.send(40); remote.send(2);");
     let wasm=compile(&src).expect("remote actor send should compile");
-    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
 #[test]
 fn remote_actor_send_rejects_wrong_actor_type_and_unbound_or_dynamic_slot() {
