@@ -1,0 +1,9 @@
+// expect-error: E_TYPE
+define class Base as
+  pub read(): int { return 1; }
+end
+define class Child extends Base as
+  pub override read(): int { return 42; }
+end
+fnc take_base(Base value): int { return value.read(); }
+pub fnc main(): int { return take_base(new Child()); }
