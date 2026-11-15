@@ -7,6 +7,7 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+pub mod actor_cooperate;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -33,6 +34,19 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
+    // Admitted M8 cooperative receive profile uses the canonical Rust lexer
+    // and the same compile(source) entry point as other browser guest modules.
+    // This emits a SEPARATE, single-frame M8 Wasm API, not the normal actor
+    // host ABI; everything beyond the narrow verified profile fails closed.
+    if actor_cooperate::is_candidate(&toks) {
+        let plan = actor_cooperate::lower(&toks)?;
+        let bytes = actor_cooperate::emit(&plan);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(toks[0].pos, "E_OUTPUT_LIMIT",
+                "M8 compiled actor exceeds guest output budget"));
+        }
+        return Ok(bytes);
+    }
     // Detect target declarations at any file-scope position, not only at
     // source byte zero. Ignore comments/strings (the lexer already tokenizes
     // them) and ignore nested brace bodies so a string or local expression
