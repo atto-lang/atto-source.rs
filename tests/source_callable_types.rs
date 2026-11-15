@@ -76,7 +76,7 @@ fn callable_value_source_signatures_fail_closed_before_guest_emission() {
 #[test]
 fn invalid_parameter_profiles_are_not_silently_accepted() {
     for t in ["fnc(void)=>int", "fnc(Option<int>)=>int",
-        "fnc(fnc(int)=>int)->int", "fnc(int)=>Option<int>",
+        "fnc(fnc(int)=>int)=>int", "fnc(int)=>Option<int>",
         "fnc(int)=>fnc(int)=>int"] {
         let src = format!("pub fnc apply({t} cbx): int {{ return 0; }} {MAIN}");
         let d = err(&src);
@@ -90,6 +90,31 @@ fn callable_parameter_limit_fails_closed() {
     let src = format!("pub fnc apply(fnc({args})=>int callback): int {{ return 0; }} {MAIN}");
     let d = err(&src);
     assert_eq!(d.code, "E_SOURCE_LIMIT", "{d}");
+}
+
+
+#[test]
+fn callable_fat_arrow_is_required_in_parameter_return_and_local_type_positions() {
+    // Source annotations are type declarations; lambda bodies are runnables.
+    for source in [
+        "pub fnc use_it(fnc(int) -> int callback): int { return 0; }",
+        "pub fnc factory(): fnc(int) -> int { return 0; }",
+        "pub fnc main(): int { val cb: fnc(int) -> int = |n| : int -> n; return 0; }",
+    ] {
+        let e = atto_compiler::compile(source).expect_err("old callable type arrow is invalid");
+        assert_eq!(e.code, "E_SYNTAX", "{source}: {e}");
+        assert!(e.pos.line > 0 && e.pos.col > 0);
+    }
+    // Typed lambda runnable arrows retain their original meaning.
+    let source = "pub fnc main(): int { val cb = |n| : int -> n * 2; return cb(21); }";
+    assert!(atto_compiler::compile(source).is_ok());
+}
+
+#[test]
+fn canonical_callable_type_with_typed_lambda_is_checked_before_emission() {
+    let source = "fnc make_adder(int offset): fnc(int) => int { return |n| : int -> n + offset; } pub fnc main(): int { return 0; }";
+    let diagnostic = atto_compiler::compile(source).expect_err("first-class callable still gated");
+    assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{diagnostic}");
 }
 
 #[test]
