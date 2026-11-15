@@ -1,6 +1,6 @@
 //! Bounded parse-only grammar for proposed actor declarations and mtd receivers.
 //! This does not lower, link, typecheck method bodies, or emit actor Wasm.
-use crate::ast::{ActorDecl, ClassDecl};
+use crate::ast::{ActorDecl, ClassDecl, Program, Type};
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 use crate::parser::{is_reserved, Parser, MAX_FUNCS, MAX_PARAMS};
@@ -38,6 +38,11 @@ pub struct TargetHeaders {
     /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
     pub definitions: Vec<ActorDecl>,
     pub receivers: Vec<ReceiverHeader>,
+    /// Token offsets of each receiver method name through the closing body.
+    /// Needed to reparse executable class methods with the production AST.
+    pub receiver_method_spans: Vec<(usize, usize)>,
+    /// Complete top-level fnc/routine spans, including pub and fnc tokens.
+    pub function_declaration_spans: Vec<(usize, usize)>,
 }
 struct Cursor<'a> { toks: &'a [Token], i: usize }
 impl Cursor<'_> {
@@ -179,7 +184,7 @@ impl Cursor<'_> {
             self.next();
         }
     }
-    fn receiver(&mut self, pos: Pos, public: bool) -> R<(ReceiverHeader, usize, usize)> {
+    fn receiver(&mut self, pos: Pos, public: bool) -> R<(ReceiverHeader, usize, usize, usize)> {
         self.expect(&Tok::LParen, "expected '(' before receiver")?;
         // Both the explicit typed spelling and the nominal receiver spelling
         // are accepted: (mut self: Foo), (self: Foo), (Foo self),
@@ -200,6 +205,7 @@ impl Cursor<'_> {
             (owner, false)
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
+        let name_start = self.i;
         let name = self.ident()?;
         let params = self.params()?;
         let arity = params.len();
@@ -213,7 +219,7 @@ impl Cursor<'_> {
         let start = self.i;
         self.body(arrow_type, colon_type)?;
         let end = self.i;
-        Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end))
+        Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end, name_start))
     }
 
     /// Use production parsing for one declaration; unlike a token-only scan,
@@ -309,18 +315,21 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             out.actors.push(name);
             c.expect(&Tok::Semi, "expected ';' after actor")?;
         } else {
+            let declaration_start = c.i;
             let public = c.take_word("pub");
             if c.take_word("mtd") {
-                let (method, start, end) = c.receiver(pos, public)?;
+                let (method, start, end, name_start) = c.receiver(pos, public)?;
                 if out.receivers.iter().any(|m: &ReceiverHeader| m.owner == method.owner
                     && m.name == method.name && m.arity == method.arity) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE",
                         "duplicate receiver signature (owner/name/arity)"));
                 }
                 spans.push((out.receivers.len(), start, end));
+                out.receiver_method_spans.push((name_start, end));
                 out.receivers.push(method);
             } else if c.take_word("fnc") || c.take_word("routine") {
                 function_spans.push(c.function()?);
+                out.function_declaration_spans.push((declaration_start, c.i));
             } else {
                 return Err(c.err("E_SYNTAX",
                     "expected namespace header, module import, declared/concrete actor, receiver method, or fnc"));
@@ -587,4 +596,64 @@ fn validate_spawned_actor_calls(
         }
     }
     Ok(())
+}
+
+/// A deliberately narrow executable class-mtd lowering profile. Actor
+/// references, namespaces/imports, mutable receivers and unsupported types
+/// never reach guest codegen. The method and function bodies are reparsed by
+/// the SAME production parser used by inline class methods, then checked by
+/// the normal ownership/type/return checker before Wasm emission.
+pub fn link_executable_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Program> {
+    if headers.namespace.is_some() || !headers.imports.is_empty() ||
+        !headers.actors.is_empty() || !headers.definitions.is_empty() ||
+        headers.class_definitions.is_empty() || headers.receivers.is_empty() ||
+        headers.receivers.iter().any(|r| !headers.classes.contains(&r.owner)) {
+        return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
+            "executable mtd is limited to local concrete classes without actor or namespace declarations"));
+    }
+    if headers.receiver_method_spans.len() != headers.receivers.len() {
+        return Err(Diagnostic::new(toks[0].pos, "E_SYNTAX", "incomplete receiver span ledger"));
+    }
+    let mut program = Program {
+        classes: headers.class_definitions.clone(),
+        ..Program::default()
+    };
+    for (header, (start, limit)) in headers.receivers.iter()
+        .zip(&headers.receiver_method_spans) {
+        if header.mutable {
+            return Err(Diagnostic::new(header.pos, "E_UNSUPPORTED",
+                "mutable out-of-line class receivers require a checked exclusive loan"));
+        }
+        let (method, end) = Parser::parse_target_method_at(toks, *start, header.public)?;
+        if end != *limit || method.name != header.name ||
+            method.params.len() != header.arity {
+            return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                "receiver method source span or signature changed during semantic parsing"));
+        }
+        if !matches!(method.ret, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) ||
+            method.params.iter().any(|p|
+                !matches!(p.ty, Type::Int | Type::Bool | Type::Float | Type::Str)) {
+            return Err(Diagnostic::new(header.pos, "E_UNSUPPORTED_TYPE",
+                "out-of-line class mtd currently admits only scalar parameter/return types"));
+        }
+        let class = program.classes.iter_mut().find(|c| c.name == header.owner)
+            .ok_or_else(|| Diagnostic::new(header.pos, "E_UNBOUND",
+                "receiver owner must be defined in this compilation unit"))?;
+        if class.fields.iter().any(|f| f.name == method.name) ||
+            class.methods.iter().any(|m| m.name == method.name &&
+                                    m.params.len() == method.params.len()) {
+            return Err(Diagnostic::new(header.pos, "E_DUPLICATE",
+                "receiver conflicts with a class field or inline method"));
+        }
+        class.methods.push(method);
+    }
+    for (start, limit) in &headers.function_declaration_spans {
+        let (func, end) = Parser::parse_target_func_at(toks, *start)?;
+        if end != *limit {
+            return Err(Diagnostic::new(toks[*start].pos, "E_SYNTAX",
+                "top-level function span does not match checked target grammar"));
+        }
+        program.funcs.push(func);
+    }
+    Ok(program)
 }
