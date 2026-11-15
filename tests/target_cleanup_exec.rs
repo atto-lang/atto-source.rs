@@ -36,6 +36,14 @@ mtd (Counter self) next_count(): int {
     return self.handle_state(critical-read |s| -> s.count + 1);
 }
 "#;
+const TWO_LEASES: &str = r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) inspect_and_set(): void {
+    self.handle_state(critical-read |s| -> s.count);
+    self.handle_state(critical-write |t| -> { t.count = 1; });
+}
+"#;
 
 fn plan(src:&str) -> ReceiverCleanupPlan {
     let headers=parse_target_declarations(&lex(src).unwrap()).unwrap();
@@ -195,4 +203,32 @@ fn native_simple_read_requires_only_normal_exit_but_callback_requires_unwind() {
     assert_eq!(cell.release_count(),2);
     assert!(cell.try_write_available());
     assert_eq!(atto_compiler::compile(READ).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn cleanup_cfg_rejects_forged_source_positions_and_overlapping_lease_regions() {
+    use atto_compiler::Pos;
+    let good=plan(INCREMENT);
+    let mut broken=good.clone();
+    broken.leases[0].cleanup[0].pos=broken.leases[0].acquire_pos;
+    assert_eq!(lower_verified_cleanup_cfg(&broken).unwrap_err().code,"E_CLEANUP");
+    let mut broken=good.clone();
+    broken.leases[0].cleanup[1].pos=Pos{line:0,col:0};
+    assert_eq!(lower_verified_cleanup_cfg(&broken).unwrap_err().code,"E_CLEANUP");
+    let mut broken=good.clone();
+    broken.leases[0].normal_end_pos=broken.leases[0].acquire_pos;
+    assert_eq!(lower_verified_cleanup_cfg(&broken).unwrap_err().code,"E_CLEANUP");
+
+    let two=plan(TWO_LEASES);
+    assert_eq!(two.leases.len(),2);
+    assert_eq!(lower_verified_cleanup_cfg(&two).unwrap().paths().len(),4);
+    let mut broken=two.clone();
+    broken.leases[1].acquire_pos=broken.leases[0].acquire_pos;
+    assert_eq!(lower_verified_cleanup_cfg(&broken).unwrap_err().code,"E_CLEANUP");
+    let mut broken=two.clone();
+    broken.leases[1].acquire_pos=broken.leases[0].normal_end_pos;
+    assert_eq!(lower_verified_cleanup_cfg(&broken).unwrap_err().code,"E_CLEANUP");
+    let mut broken=two;
+    broken.leases.swap(0,1);
+    assert_eq!(lower_verified_cleanup_cfg(&broken).unwrap_err().code,"E_CLEANUP");
 }
