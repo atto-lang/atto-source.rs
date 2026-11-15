@@ -160,6 +160,25 @@ fn export(out:&mut Vec<u8>,name_str:&str,kind:u8,index:u32) {
 /// plan lowered through VerifiedCleanupCfg. This is NOT production stateful
 /// receiver compilation; no real state field is referenced by this module.
 pub(crate) fn emit(cfg:&VerifiedCleanupCfg)->Result<Vec<u8>,Diagnostic>{
+    emit_profile(cfg,41,["run_cleanup_witness","lease_active",
+        "release_count","acquire_count","state_value","close_witness"])
+}
+
+/// Actual source-checked one-field callback. Uses the SAME independently
+/// audited Wasm instruction graph as the synthetic witness but initializes the
+/// real field from its AST declaration and exports its nominal method name.
+/// No other statement or expression can enter this emitter.
+pub(crate) fn emit_stateful(
+    cfg:&VerifiedCleanupCfg,shape:&crate::target_stateful::StatefulShape
+)->Result<Vec<u8>,Diagnostic>{
+    let method=format!("atto.state.{}.{}.1",shape.owner,shape.method);
+    let field=format!("atto.state.{}.{}",shape.owner,shape.field);
+    emit_profile(cfg,shape.initial,[method.as_str(),"lease_active",
+        "release_count","acquire_count",field.as_str(),"close_witness"])
+}
+
+fn emit_profile(cfg:&VerifiedCleanupCfg,initial:i64,
+    export_names:[&str;6])->Result<Vec<u8>,Diagnostic>{
     let run=emit_run(cfg)?;
     let mut types=Types(Vec::new());
     let funcs=[
@@ -185,7 +204,7 @@ pub(crate) fn emit(cfg:&VerifiedCleanupCfg)->Result<Vec<u8>,Diagnostic>{
     // 0 panic_code, 1 active lease, 2 synthetic value (initial 41),
     // 3 releases, 4 closed, 5 acquisitions. All are private, mutable globals.
     let mut globals=vec![6];
-    for (ty,value) in [(I32,0),(I32,0),(I64,41),(I32,0),(I32,0),(I32,0)] {
+    for (ty,value) in [(I32,0),(I32,0),(I64,initial),(I32,0),(I32,0),(I32,0)] {
         globals.extend_from_slice(&[ty,1,if ty==I64{0x42}else{0x41}]);
         sleb(&mut globals,value);
         globals.push(0x0b);
@@ -193,8 +212,7 @@ pub(crate) fn emit(cfg:&VerifiedCleanupCfg)->Result<Vec<u8>,Diagnostic>{
     section(&mut out,6,globals);
     let mut exports=Vec::new();uleb(&mut exports,7);
     export(&mut exports,"panic_code",3,0);
-    for (index,name_str) in ["run_cleanup_witness","lease_active",
-        "release_count","acquire_count","state_value","close_witness"].iter().enumerate(){
+    for (index,name_str) in export_names.iter().enumerate(){
         export(&mut exports,name_str,0,index as u32);
     }
     section(&mut out,7,exports);
