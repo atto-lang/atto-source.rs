@@ -39,7 +39,11 @@ block              = "{", {statement}, "}" ;
 The `:` annotation belongs to the parameter-pipe pair. The following `->`
 marks the body boundary. `|` remains boolean OR in conditional-expression
 contexts; a `|` in primary-expression position opens a lambda parameter list.
-Qualified and nested generic return-type syntax is preserved. Names and type
+Qualified and nested generic return-type syntax is preserved, including
+keyword-like module path segments such as `my.types.Response`. Speculative
+recognition of the legacy braced form restores parser state and propagates
+nesting/security-limit errors instead of silently retrying an expression.
+Names and type
 resolution are separate from parsing. Repeated parameter names fail closed.
 
 ## Implementation status
