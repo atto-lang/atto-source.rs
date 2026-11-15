@@ -1,0 +1,5 @@
+// expect-error: E_STATE
+define state Counter as
+  pub change(): void { return; }
+end
+pub fnc main(): int { return 0; }
