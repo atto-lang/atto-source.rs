@@ -64,8 +64,9 @@ fn scalar_preview_accepts_nested_pure_checked_math_and_boundary_literals() {
         "declare actor A; mtd (A self) f(int n): int { return -(-n); }",
         "declare actor A; mtd (A self) f(): int { return 9223372036854775807; }",
     ] {
-        assert!(compile_scalar_receiver_preview(source).is_ok(),
-            "valid subset not accepted: {source}");
+        let result=compile_scalar_receiver_preview(source);
+        assert!(result.is_ok(),
+            "valid subset not accepted: {source}; diagnostic: {:?}",result.err());
     }
 }
 
@@ -73,7 +74,8 @@ fn scalar_preview_accepts_nested_pure_checked_math_and_boundary_literals() {
 fn scalar_preview_enforces_depth_and_source_budgets() {
     let expression=format!("{}n{}","(".repeat(40),")".repeat(40));
     let nested=format!("declare actor A; mtd (A self) f(int n): int {{ return {expression}; }}");
-    assert_eq!(compile_scalar_receiver_preview(&nested).unwrap_err().code,"E_NESTING");
+    let deep_error=compile_scalar_receiver_preview(&nested).unwrap_err();
+    assert_eq!(deep_error.code,"E_NESTING","full diagnostic: {deep_error:?}");
     let huge=format!("declare actor A; mtd (A self) f(int n): int {{ return n; }}\n{}",
         " ".repeat(atto_compiler::SOURCE_CAP));
     assert_eq!(compile_scalar_receiver_preview(&huge).unwrap_err().code,"E_SOURCE_LIMIT");
