@@ -4,7 +4,7 @@
 //! Does NOT certify actors, platform ABI, stdlib, Wasm, or cross-backend parity.
 //! Full-width output is observed through a generated C driver after changing
 //! only the exported entrypoint name; exact original source is compiled too.
-use oreslang_source_rs::{compile, compile_checked_i64};
+use oreslang_source_rs::compile;
 use serde_json::Value;
 
 const POSITIVE: [(&str, &str); 7] = [
