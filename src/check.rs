@@ -477,6 +477,7 @@ fn isolation(pos: Pos, actor: &str, what: &str, name: &str) -> Diagnostic {
 fn const_init(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
+        ExprKind::Unary(UnOp::Copy | UnOp::Take, _) => false,
         ExprKind::Unary(_, a) => const_init(a),
         ExprKind::Binary(_, a, b) => const_init(a) && const_init(b),
         ExprKind::Ternary(c, a, b) => const_init(c) && const_init(a) && const_init(b),
@@ -2238,6 +2239,35 @@ impl<'a> FnCx<'a> {
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
+            ExprKind::Unary(UnOp::Copy, inner) => {
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    return Err(Diagnostic::new(e.pos, "E_COPY",
+                        "copy! requires an admitted Copy-capable scalar; it cannot duplicate owned objects"));
+                }
+                Ok(value)
+            }
+            ExprKind::Unary(UnOp::Take, inner) => {
+                let ExprKind::Var(name) = &inner.kind else {
+                    return Err(Diagnostic::new(e.pos, "E_MOVE",
+                        "take! requires a named local binding, not an expression"));
+                };
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+                        "take! of owned objects requires verified destructor and transfer semantics"));
+                }
+                let TExpr::Local(slot) = &value.e else {
+                    return Err(Diagnostic::new(e.pos, "E_MOVE",
+                        format!("take! requires a local binding, found '{name}'")));
+                };
+                if self.loop_floors.last().is_some_and(|floor| *slot < *floor) {
+                    return Err(Diagnostic::new(e.pos, "E_MOVED",
+                        format!("cannot take! '{name}' inside a loop: it is declared outside the loop")));
+                }
+                self.moved.insert(*slot);
+                Ok(value)
+            }
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
                 e: TExpr::I64(i64::MIN),
                 ty: Type::Int,
@@ -2311,6 +2341,9 @@ impl<'a> FnCx<'a> {
                             ty: Type::Int,
                         }
                     }
+                }
+                UnOp::Copy | UnOp::Take => {
+                    unreachable!("explicit scalar ownership handled before generic unary lowering")
                 }
                 UnOp::Not => {
                     if v.ty != Type::Bool {
