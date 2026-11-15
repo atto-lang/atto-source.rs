@@ -155,3 +155,11 @@ does not yet allocate a function table or make lambdas first-class.
 The earlier direct-lambda profile (private, noncapturing direct Wasm calls)
 continues to work unchanged. The next milestone is verified per-instance
 Wasm table entries and a typed indirect-call ABI with ownership checks.
+
+When a lambda is explicitly annotated with a callable type, the
+compiler performs contextual arity, return-type, and capture analysis
+before returning the runtime `E_UNSUPPORTED` gate. For example, an
+annotated `fnc(int)->bool` lambda returning an integer produces
+`E_TYPE`, while referring to an outer variable produces `E_CAPTURE`.
+A correctly typed annotation still cannot execute or escape without the
+indirect-table ABI.

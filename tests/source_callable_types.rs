@@ -132,3 +132,26 @@ fn established_direct_wasm_lambda_execution_is_unchanged() {
     assert_eq!(wasm, atto_compiler::compile(src).unwrap());
     assert!(wasm.starts_with(b"\0asm"));
 }
+
+#[test]
+fn annotated_lambda_binding_checks_result_before_wasm_gate() {
+    let src = "pub fnc main(): int { val callback: fnc(int)->bool = |n| -> n * 2; return 0; }";
+    assert_eq!(err(src).code, "E_TYPE");
+}
+#[test]
+fn annotated_lambda_binding_checks_outer_captures_before_wasm_gate() {
+    let src = "pub fnc main(): int { val outer = 7; val callback: fnc(int)->int = |n| -> n + outer; return 0; }";
+    assert_eq!(err(src).code, "E_CAPTURE");
+}
+#[test]
+fn annotated_lambda_binding_checks_arity_before_wasm_gate() {
+    let src = "pub fnc main(): int { val callback: fnc(int,int)->int = |n| -> n * 2; return 0; }";
+    assert_eq!(err(src).code, "E_ARITY");
+}
+#[test]
+fn valid_annotated_lambda_binding_is_type_checked_but_not_yet_executable() {
+    let src = "pub fnc main(): int { val callback: fnc(int)->bool = |n| -> n < 4; return 0; }";
+    let d = err(src);
+    assert_eq!(d.code, "E_UNSUPPORTED");
+    assert!(d.message.contains("indirect dispatch"), "{d}");
+}
