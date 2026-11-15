@@ -63,6 +63,8 @@ impl Type {
 pub struct Program {
     pub funcs: Vec<Func>,
     pub classes: Vec<ClassDecl>,
+    /// Interface requirements and trait methods; lowered before the typed backend.
+    pub contracts: Vec<ContractDecl>,
     pub enums: Vec<EnumDecl>,
     pub actors: Vec<ActorDecl>,
     /// Optional non-executable out-of-line actor interface in the production AST.
@@ -124,6 +126,8 @@ pub struct Method {
     pub pos: Pos,
     pub public: bool,
     pub is_static: bool,
+    /// An explicit override of an inherited concrete method.
+    pub override_member: bool,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
@@ -136,12 +140,26 @@ pub struct Constructor {
     pub body: Vec<Stmt>,
 }
 
-/// `[pub] define class Name as { member } end` (grammar.ebnf `class_decl`).
+/// A trait provides reusable method bodies; an interface requires signatures.
+#[derive(Clone, Debug)]
+pub struct ContractDecl {
+    pub name: String,
+    pub pos: Pos,
+    pub public: bool,
+    pub interface: bool,
+    pub methods: Vec<Method>,
+}
+
+/// `[pub] define class Name [extends Bases] [implements Contracts] as ... end`.
 #[derive(Clone, Debug)]
 pub struct ClassDecl {
     pub name: String,
     pub pos: Pos,
     pub public: bool,
+    /// Nominal class bases; checked, cycle-rejected and flattened before codegen.
+    pub bases: Vec<(String, Pos)>,
+    /// Explicit interface and trait implementations.
+    pub implements: Vec<(String, Pos)>,
     pub fields: Vec<Field>,
     pub ctor: Option<Constructor>,
     pub methods: Vec<Method>,
