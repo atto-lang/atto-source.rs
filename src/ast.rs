@@ -383,6 +383,9 @@ pub enum ExprKind {
     /// callable values until closure capture and runtime types are implemented.
     Lambda {
         params: Vec<String>,
+        /// Standalone '_' matches any contextual arity and discards every argument.
+        /// Explicit pipe lambdas (including '|_|') always have fixed arity.
+        variadic: bool,
         return_type: Option<String>,
         body: LambdaBody,
     },
