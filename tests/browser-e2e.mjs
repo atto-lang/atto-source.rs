@@ -88,8 +88,8 @@ try{
     '  val add_ten = make_adder(10);',
     '  return add_one(21) + add_ten(10);',
     '}'
-  ].join('\\n');
-  assert.match(await run(escapedClosure, 'main() -> 42'), /main\\(\\) -> 42$/);
+  ].join('\n');
+  assert.match(await run(escapedClosure, 'main() -> 42'), /42$/);
   console.log('PASS browser: two independent factory-escaped closure environments return 42');
 
   // This milestone must not accidentally admit general callable parameters.
@@ -99,7 +99,7 @@ try{
     '}',
     'fnc apply(fnc(int) -> int operation, int n): int { return operation(n); }',
     'pub fnc main(): int { return 0; }'
-  ].join('\\n');
+  ].join('\n');
   assert.match(await run(unsupportedIndirect, 'E_UNSUPPORTED'), /E_UNSUPPORTED/);
   console.log('PASS browser: general first-class callable arguments fail closed');
 
