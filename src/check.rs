@@ -1534,8 +1534,12 @@ impl<'a> FnCx<'a> {
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND",
                 format!("unknown borrow owner '{owner_name}'"))),
         };
-        let (slot, ty, mutable, existing_loan) =
-            (owner.slot, owner.ty, owner.mutable, owner.borrow);
+        let (slot, ty, mutable, existing_loan, mail) =
+            (owner.slot, owner.ty, owner.mutable, owner.borrow, owner.mail);
+        if mail.is_some() {
+            return Err(Diagnostic::new(inner.pos, "E_UNSUPPORTED",
+                "ActorMail envelopes cannot be borrowed as scalar locals; read the message payload explicitly"));
+        }
         if existing_loan.is_some() {
             return Err(Diagnostic::new(inner.pos, "E_BORROW",
                 "reborrowing an alias requires explicit lifetime/provenance lowering"));
@@ -1562,6 +1566,12 @@ impl<'a> FnCx<'a> {
         }
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
+        }
+        // A borrow uses no guest-local slot, so enforce the same bounded
+        // live-name budget explicitly (MAX_LOCALS) to avoid quadratic scans.
+        if self.scopes.iter().map(Vec::len).sum::<usize>() >= MAX_LOCALS {
+            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                "too many simultaneously live local names and borrow aliases"));
         }
         self.scopes.last_mut().unwrap().push(Local {
             name: name.to_string(), slot, ty, mutable: false, mail: None,
