@@ -1512,6 +1512,18 @@ impl<'a> FnCx<'a> {
         r
     }
 
+    /// A loop condition is evaluated before EACH iteration, not once.
+    /// Reject ownership moves from already-live locals even if a conditional
+    /// branch, break, or early return would make the second evaluation rare.
+    /// Evaluating it without a loop floor would silently permit repeated
+    /// take! owner and repeated implicit class transfers.
+    fn repeated_cond(&mut self, e: &Expr, what: &str) -> R<TE> {
+        self.loop_floors.push(self.nparams + self.locals.len() as u32);
+        let checked = self.cond(e, what);
+        self.loop_floors.pop();
+        checked
+    }
+
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         body.iter().map(|s| self.stmt(s)).collect()
     }
@@ -1680,7 +1692,7 @@ impl<'a> FnCx<'a> {
                 TStmt::If(out, other)
             }
             Stmt::While { cond, body, .. } => {
-                let c = self.cond(cond, "while")?;
+                let c = self.repeated_cond(cond, "while")?;
                 let body = self.looped(body)?;
                 TStmt::Loop {
                     cond: Some(c),
@@ -1705,15 +1717,23 @@ impl<'a> FnCx<'a> {
                     if let Some(i) = init {
                         out.push(self.stmt(i)?);
                     }
+                    // The initializer executes once. By contrast the
+                    // condition and update are re-evaluated every iteration,
+                    // including after continue; they must not transfer
+                    // locals allocated before the loop's repeated region.
+                    let repeated_floor = self.nparams + self.locals.len() as u32;
                     let c = match cond {
-                        Some(c) => Some(self.cond(c, "for")?),
+                        Some(c) => Some(self.repeated_cond(c, "for")?),
                         None => None,
                     };
                     let b = self.looped(body)?;
-                    let u = match update {
-                        Some(u) => vec![self.stmt(u)?],
-                        None => Vec::new(),
+                    self.loop_floors.push(repeated_floor);
+                    let update_result = match update {
+                        Some(u) => self.stmt(u).map(|u| vec![u]),
+                        None => Ok(Vec::new()),
                     };
+                    self.loop_floors.pop();
+                    let u = update_result?;
                     out.push(TStmt::Loop {
                         cond: c,
                         body: b,
