@@ -215,6 +215,31 @@ bounded direct-call fixture.** The currently pinned public compiler predates
 this branch and must be separately rebuilt, independently reviewed, and
 released through the protected Pages gate.
 
+## Canonical callable type arrow (type only)
+
+A callable **type declaration** uses the fat arrow `=>`:
+
+```atto
+fnc make_adder(int offset): fnc(int) => int {
+  return |n| : int -> n + offset;
+}
+```
+
+The thin arrow `->` remains the **executable lambda body** separator.
+Callable types in parameters (`fnc(int) => int operation`), returns
+(`: fnc(int) => int`) and local annotations
+(`val callback: fnc(int) => int = ...`) use `=>`. The parser rejects
+`fnc(int) -> int` in those type positions with `E_SYNTAX` rather
+than accepting a legacy alias. Signature interning and metadata validation
+also use canonical `fnc(int)=>int`, preserving `bool`/`boolean` and
+`string`/`String` scalar aliases.
+
+The first owned factory-return profile below is a narrow exception to the
+otherwise unsupported first-class callable-value paths. General
+higher-order callable parameters and typed indirect Wasm dispatch remain
+gated. Ordinary callable **body declarations** with `->` are a
+separate grammatical form and must not be changed by type-syntax audits.
+
 ## First executable factory-escaped closure (owned int environment only)
 
 The Rust compiler now implements one **bounded** callable factory profile:
