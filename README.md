@@ -169,3 +169,15 @@ These are **authored only**, not executed Cargo tests; there is no
 installed Rust toolchain in the current execution environment. File
 metadata checks are best-effort and not a proof against a malicious
 privileged writer or post-read source mutation.
+
+
+### 2026-11-14 proposal byte-budget regression
+
+The Rust `sync` JSON proposal writer now includes the final newline
+in its on-disk **1 MiB** file budget. Previously a JSON payload of
+exactly 1 MiB could create a proposed registry that the same CLI
+would reject as too large on its next bounded read. The added test
+builds that exact-size JSON and requires rejection **before creating**
+the proposal file. `cargo` / `rustc` remain unavailable in the
+local environment: this test and Rust compiler validation are
+**authored, not executed**.
