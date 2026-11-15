@@ -215,6 +215,30 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+// The scalar MIR has no typed Copy/Take/BorrowMut/Share operations. Classify
+// contextual ownership syntax at the lexical failure boundary, after comments
+// have been skipped by Logos, rather than laundering it into a generic token.
+fn is_ownership_bang(source: &str, offset: usize) -> bool {
+    let bytes = source.as_bytes();
+    if bytes.get(offset) != Some(&b'!') { return false; }
+    let mut start = offset;
+    while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+        start -= 1;
+    }
+    if !matches!(&source[start..offset], "copy" | "take" | "borrow" | "share") {
+        return false;
+    }
+    let suffix = &source[offset + 1..];
+    // Keep the distinct legacy inequality spellings out of this classifier.
+    if suffix.starts_with('=') { return false; }
+    if let Some(tail) = suffix.strip_prefix("eq") {
+        if !tail.as_bytes().first().is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_') {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -227,10 +251,17 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
     for (kind, range) in Kind::lexer(&prepared).spanned() {
-        let kind = kind.map_err(|_| ParseError {
-            offset: range.start,
-            class: "syntax_error",
-            message: "unsupported token".into(),
+        let kind = kind.map_err(|_| {
+            let ownership = is_ownership_bang(&prepared, range.start);
+            ParseError {
+                offset: range.start,
+                class: if ownership { "ownership_bang_unsupported" } else { "syntax_error" },
+                message: if ownership {
+                    "OWNERSHIP_BANG_BACKEND_UNSUPPORTED: checked native ownership MIR required".into()
+                } else {
+                    "unsupported token".into()
+                },
+            }
         })?;
         if tokens.len() >= MAX_TOKENS {
             return Err(ParseError {
