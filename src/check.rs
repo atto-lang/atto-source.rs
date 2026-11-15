@@ -1211,19 +1211,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .filter_map(|(idx, f)| f.is_pure.then_some(idx as u32)).collect();
     for (idx, f) in p.funcs.iter().enumerate() {
         if !f.is_pure { continue; }
-        if f.is_generator ||
-            has_external_state_write(&funcs[idx].body) ||
-            any_in_stmts(&funcs[idx].body, &|value| match &value.e {
-                TExpr::Call(target, _) => !pure_indices.contains(target),
-                TExpr::Print { .. } | TExpr::PrintStr { .. } |
-                TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
-                TExpr::GlobalGet(_) | TExpr::FieldGet { .. } |
-                TExpr::Spawn(_) | TExpr::Send { .. } |
-                TExpr::Alloc(_) | TExpr::AdtNew { .. } |
-                TExpr::Trap { .. } | TExpr::AdtPropagate { .. } |
-                TExpr::Str(StrOp::Concat, _, _) => true,
-                _ => false,
-            }) {
+        if f.is_generator || !pure_stmts(&funcs[idx].body, &pure_indices) {
             return Err(Diagnostic::new(f.pos, "E_PURE",
                 format!("pure fnc '{}' cannot perform I/O, use shared state, or call an impure function", f.name)));
         }
@@ -1359,19 +1347,60 @@ fn returns(body: &[TStmt]) -> bool {
     })
 }
 
-/// Writes to object/actor state and guest throws are effects even if there
-/// are no expression nodes (e.g. field assignment). Scan every control path.
-fn has_external_state_write(body: &[TStmt]) -> bool {
-    body.iter().any(|stmt| match stmt {
+/// Exhaustive, allowlisted purity verification over the fully typed tree.
+///
+/// Unlike a denylist, these matches intentionally have NO wildcard arm:
+/// extending either TExpr or TStmt requires explicitly reviewing the new
+/// operation's effects before the Rust compiler can build. A benign-looking
+/// wrapper must not hide an impure child expression or branch.
+fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
+    match &value.e {
+        TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
+        TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
+        TExpr::IntToFloat(a) | TExpr::FNeg(a) |
+        TExpr::Neg(a) | TExpr::Not(a) |
+        TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
+            pure_expr(a, pure_indices),
+        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) =>
+            pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
+        TExpr::Ternary(c, a, b) =>
+            pure_expr(c, pure_indices) &&
+            pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
+        TExpr::Call(target, args) =>
+            pure_indices.contains(target) &&
+            args.iter().all(|arg| pure_expr(arg, pure_indices)),
+        TExpr::Str(op, a, b) =>
+            *op != StrOp::Concat && pure_expr(a, pure_indices) &&
+            b.as_ref().is_none_or(|b| pure_expr(b, pure_indices)),
+        // Disallowed effects include heap mutation/allocations, object/actor
+        // state reads, I/O, actor operations, guest exception handling and
+        // propagation. Keep these explicit when evolving the language.
+        TExpr::Print { .. } | TExpr::PrintStr { .. } |
+        TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
+        TExpr::FieldGet { .. } | TExpr::GlobalGet(_) |
+        TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
+        TExpr::AdtNew { .. } | TExpr::Trap { .. } |
+        TExpr::AdtPropagate { .. } => false,
+    }
+}
+
+fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
+    body.iter().all(|stmt| match stmt {
+        TStmt::Set(_, value) | TStmt::Expr(value) =>
+            pure_expr(value, pure_indices),
+        TStmt::Return(value) =>
+            value.as_ref().is_none_or(|value| pure_expr(value, pure_indices)),
+        TStmt::If(arms, otherwise) =>
+            arms.iter().all(|(cond, block)|
+                pure_expr(cond, pure_indices) && pure_stmts(block, pure_indices)) &&
+            otherwise.as_ref().is_none_or(|block| pure_stmts(block, pure_indices)),
+        TStmt::Loop { cond, body, update } =>
+            cond.as_ref().is_none_or(|cond| pure_expr(cond, pure_indices)) &&
+            pure_stmts(body, pure_indices) && pure_stmts(update, pure_indices),
+        TStmt::Block(body) => pure_stmts(body, pure_indices),
+        TStmt::Break | TStmt::Continue | TStmt::Unreachable => true,
         TStmt::FieldSet { .. } | TStmt::GlobalSet(_, _) |
-        TStmt::Throw(_) | TStmt::ForIn { .. } => true,
-        TStmt::If(arms, other) =>
-            arms.iter().any(|(_, b)| has_external_state_write(b)) ||
-            other.as_ref().is_some_and(|b| has_external_state_write(b)),
-        TStmt::Loop { body, update, .. } =>
-            has_external_state_write(body) || has_external_state_write(update),
-        TStmt::Block(body) => has_external_state_write(body),
-        _ => false,
+        TStmt::Throw(_) | TStmt::ForIn { .. } => false,
     })
 }
 
