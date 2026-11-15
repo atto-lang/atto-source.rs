@@ -171,5 +171,17 @@ rejects(movePrelude+' if rt borrow mut peer { } else { } }','E_BORROW');
 rejects(movePrelude+' if compute(peer) { } else { } }','E_UNSUPPORTED');
 rejects(movePrelude+' { val a = rt borrow peer; val b = rt borrow peer; } rt take peer; }','E_UNSUPPORTED');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (89)');
+
+// Exit-edge obligations: checked arithmetic may panic and must not run while
+// a lexical loan is live. No receiver lowering is enabled by the exit facts.
+rejects(movePrelude+' val borrowed = rt borrow peer; 1+2; }','E_BORROW');
+rejects(movePrelude+' val borrowed = rt borrow peer; 10-3; }','E_BORROW');
+rejects(movePrelude+' val borrowed = rt borrow peer; 10*3; }','E_BORROW');
+rejects(movePrelude+' val borrowed = rt borrow peer; 10/3; }','E_BORROW');
+rejects(movePrelude+' { val borrowed = rt borrow peer; } 1+2; }','E_UNSUPPORTED');
+rejects(movePrelude+' { val borrowed = rt borrow peer; } return; }','E_UNSUPPORTED');
+rejects('declare actor M; mtd (M self) choose(bool flag): int { if flag { return 1; } else { return 2; } }','E_UNSUPPORTED');
+rejects('declare actor M; mtd (M self) read(): int { return risky(); }','E_UNSUPPORTED');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (97)');
 
