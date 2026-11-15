@@ -69,7 +69,8 @@ const passes = [
   ['callable-owned-unrelated-control-flow', 42n],
   ['callable-owned-explicit-close', 42n],
   ['callable-owned-close-independent', 42n],
-  ['callable-owned-recycle-after-call', 42n]
+  ['callable-owned-recycle-after-call', 42n],
+  ['callable-owned-unrelated-throw', 42n]
 ];
 for (const [name, expected] of passes) {
   const path = 'tests/fixtures/pass/' + name + '.atto';
@@ -117,7 +118,9 @@ for (const [name, code] of [
   ['callable-owned-mutable-capture', 'E_CAPTURE'],
   ['callable-owned-use-after-move', 'E_MOVED'],
   ['callable-owned-stale-after-reuse', 'E_MOVED'],
-  ['callable-owned-double-close', 'E_MOVED']
+  ['callable-owned-double-close', 'E_MOVED'],
+  ['callable-owned-throw-owner', 'E_UNSUPPORTED'],
+  ['callable-owned-throw-nested', 'E_UNSUPPORTED']
 ]) {
   const source = readFileSync('tests/fixtures/fail/' + name + '.atto', 'utf8');
   const got = compile(source);
