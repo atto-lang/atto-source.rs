@@ -42,7 +42,7 @@ fn typed_receipt_schema_matches_browser_and_wasm_contract() {
 fn manifest_advertises_receipt_version_without_new_guest_import() {
     let artifact=compile_browser_tenant("pub fnc main(): int { return 42; }").unwrap();
     assert_eq!(artifact.send_receipt_protocol,SEND_RECEIPT_PROTOCOL);
-    assert!(artifact.wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(artifact.wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
 #[test]
 fn await_remote_send_is_still_rejected_until_real_guest_continuations_exist() {
