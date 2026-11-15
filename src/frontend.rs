@@ -223,14 +223,21 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "Oreslang source exceeds 256 KiB prototype limit".into(),
         });
     }
-    // Reject raw NUL before preprocessing. Otherwise an ignored /* ... */
-    // or // comment could erase it and produce a valid executable AST.
-    // The source is already a valid UTF-8 &str; report its byte offset.
-    if let Some(offset) = source.bytes().position(|byte| byte == 0) {
+    // Source is valid UTF-8; detect the FIRST forbidden raw source byte
+    // before preprocessing. Comments, strings and templates cannot hide
+    // binary NUL or terminal ESC/DEL. Never echo raw control characters.
+    if let Some((offset, byte)) = source.bytes().enumerate().find(|(_, byte)| {
+        matches!(byte, 0 | 0x1b | 0x7f)
+    }) {
         return Err(ParseError {
             offset,
             class: "source_admission",
-            message: "source contains NUL byte".into(),
+            message: if byte == 0 {
+                "source contains NUL byte"
+            } else {
+                "source contains terminal control"
+            }
+            .into(),
         });
     }
     let prepared = without_block_comments(source)?;
@@ -595,6 +602,41 @@ mod tests {
             parse("fnc owned(int owned): int { const local: int = owned; return local; }").unwrap();
         assert_eq!(ast.functions[0].locals.len(), 1);
     }
+    #[test]
+    fn raw_terminal_controls_are_denied_before_comment_stripping() {
+        for control in ['\u{001b}', '\u{007f}'] {
+            for source in [
+                format!("/* hidden{control} */ pub fnc main(): int {{ return 42; }}"),
+                format!("// hidden{control}\npub fnc main(): int {{ return 42; }}"),
+                format!("pub fnc main(): int {{ return 42; }} // {control}"),
+                format!("\"quoted{control}\""),
+                format!("/* café 😀 */{control}"),
+            ] {
+                let expected = source.find(control).expect("injected control");
+                let error = parse(&source).expect_err("terminal control was admitted");
+                assert_eq!(error.class, "source_admission");
+                assert_eq!(error.offset, expected, "exact UTF-8 byte offset");
+                assert_eq!(error.message, "source contains terminal control");
+            }
+        }
+    }
+
+    #[test]
+    fn raw_terminal_controls_and_nul_report_first_offender() {
+        for (source, category, offset) in [
+            ("\u{001b}\0", "source contains terminal control", 0),
+            ("\0\u{007f}", "source contains NUL byte", 0),
+            ("x\r\n\u{007f}\0", "source contains terminal control", 3),
+            ("/* café 😀 */\u{001b}", "source contains terminal control", 16),
+        ] {
+            let error = parse(source).expect_err("invalid source admitted");
+            assert_eq!(error.class, "source_admission");
+            assert_eq!(error.message, category);
+            assert_eq!(error.offset, offset);
+        }
+        assert!(parse("/* café 😀 */ pub fnc main(): int { return 42; }").is_ok());
+    }
+
     #[test]
     fn raw_nul_is_denied_before_opaque_block_comment_preprocessing() {
         let source = "/* hidden\0text */ pub fnc main(): int { return 42; }";
