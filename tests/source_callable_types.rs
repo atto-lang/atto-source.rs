@@ -99,14 +99,14 @@ fn callable_fat_arrow_is_required_in_parameter_return_and_local_type_positions()
     for source in [
         "pub fnc use_it(fnc(int) -> int callback): int { return 0; }",
         "pub fnc factory(): fnc(int) -> int { return 0; }",
-        "pub fnc main(): int { val cb: fnc(int) -> int = |n| : int -> n; return 0; }",
+        "pub fnc main(): int { val callback: fnc(int) -> int = |n| : int -> n; return 0; }",
     ] {
         let e = atto_compiler::compile(source).expect_err("old callable type arrow is invalid");
         assert_eq!(e.code, "E_SYNTAX", "{source}: {e}");
         assert!(e.pos.line > 0 && e.pos.col > 0);
     }
     // Typed lambda runnable arrows retain their original meaning.
-    let source = "pub fnc main(): int { val cb = |n| : int -> n * 2; return cb(21); }";
+    let source = "pub fnc main(): int { val callback = |n| : int -> n * 2; return callback(21); }";
     assert!(atto_compiler::compile(source).is_ok());
 }
 
