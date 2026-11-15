@@ -27,6 +27,7 @@ use crate::ast::{BinOp, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
+mod closure_runtime;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
@@ -36,6 +37,8 @@ pub const PANIC_HEAP: i32 = 3;
 pub const PANIC_GENERATOR: i32 = 4;
 /// Non-yielding generator exceeded its bounded per-pull dispatch budget.
 pub const PANIC_GENERATOR_BUDGET: i32 = 5;
+/// Invalid, closed, stale, forged or retired closure handle.
+pub const PANIC_CALLABLE: i32 = closure_runtime::PANIC_CALLABLE;
 /// Fixed memory size, in 64 KiB pages, of a module that allocates objects.
 pub const HEAP_PAGES: u32 = 16;
 
@@ -138,7 +141,12 @@ struct Layout {
     gen_first_func: u32,
     /// Closed-world typed indirection for the private first-class int closure.
     /// The table contains only the checker-verified generated receiver method.
-    owned_call: Option<(u32, u32)>, // (source function index, canonical Wasm type index)
+    owned_call: Option<(u32, u32)>, // (source function index, Wasm type index)
+    /// Compiler-private generated closure class; its i32 values are opaque
+    /// generation-fenced handles, never unvalidated memory pointers.
+    owned_class: Option<u32>,
+    closure_globals: Option<(u32, u32, u32)>, // arena base, next slot, free head
+    closure_first_func: u32, // new, checked_ptr, close after generators
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -277,6 +285,9 @@ impl Emit<'_> {
             }
             TStmt::FieldSet { obj, offset, ty, value } => {
                 self.expr(obj);
+                if matches!(obj.ty, Type::Class(c) if Some(c) == self.l.owned_class) {
+                    self.call(self.l.func(self.l.closure_first_func + 1));
+                }
                 self.expr(value);
                 field_op(&mut self.code, *ty, *offset, true);
             }
@@ -602,6 +613,9 @@ impl Emit<'_> {
             },
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
+                if matches!(obj.ty, Type::Class(c) if Some(c) == self.l.owned_class) {
+                    self.call(self.l.func(self.l.closure_first_func + 1));
+                }
                 field_op(&mut self.code, v.ty, *offset, false);
             }
             TExpr::GlobalGet(g) => {
@@ -609,8 +623,13 @@ impl Emit<'_> {
                 uleb(&mut self.code, (self.l.state_base + g) as u64);
             }
             TExpr::Alloc(n) => {
-                self.i32c(*n as i32);
-                self.call(self.l.helper(H_ALLOC));
+                if matches!(v.ty, Type::Class(c) if Some(c) == self.l.owned_class) {
+                    debug_assert_eq!(*n, 40);
+                    self.call(self.l.func(self.l.closure_first_func));
+                } else {
+                    self.i32c(*n as i32);
+                    self.call(self.l.helper(H_ALLOC));
+                }
             }
             TExpr::Spawn(a) => {
                 self.i32c(*a as i32);
@@ -975,6 +994,10 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
     let heap_global = 1;
+    let owned_class = p.funcs.iter().find(|f| f.name == "$owned_lambda_int_int.new")
+        .and_then(|f| match f.ret { Type::Class(c) => Some(c), _ => None });
+    let closure_start_global = 1 + u32::from(p.heap) + p.globals.len() as u32
+        + u32::from(!p.generators.is_empty());
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let mut layout = Layout {
         imports: p.imports.clone(),
@@ -986,6 +1009,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         ),
         gen_first_func: p.funcs.len() as u32,
         owned_call: None,
+        owned_class,
+        closure_globals: owned_class.map(|_| (
+            closure_start_global, closure_start_global + 1, closure_start_global + 2)),
+        closure_first_func: p.funcs.len() as u32
+            + if p.generators.is_empty() { 0 } else { 4 },
     };
     let mut types = Types(Vec::new());
     // The generated private receiver is the only initial table entry.
@@ -1046,7 +1074,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             void_main: is_void_main,
             active_iterators: Vec::new(),
         };
-        if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
+        if f.name == "$owned_lambda_int_int.close" {
+            // This compiler-only method releases its receiver exactly once.
+            e.get(0);
+            e.call(layout.func(layout.closure_first_func + 2));
+            e.op(0x0F);
+        } else if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
             // Creator is lazy: allocate a 56-byte checked continuation frame
             // and return its generation-fenced handle. No body runs here.
             e.i32c(gen_id as i32);
@@ -1074,10 +1107,19 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         }
     }
 
+    // Closure operations come after optional generator runtime functions.
+    // This preserves every existing index for unaffected guest modules.
+    if layout.owned_class.is_some() {
+        for (sig, code) in closure_runtime::bodies(&layout) {
+            func_types.push(types.idx(sig));
+            bodies.push(code);
+        }
+    }
+
     // actor_init(type) / actor_receive(type, value, sequence) dispatchers
     let has_actors = !p.actors.is_empty();
-    let actor_init_idx = layout.func(p.funcs.len() as u32
-        + if p.generators.is_empty() { 0 } else { 4 });
+    let actor_init_idx = layout.func(layout.closure_first_func
+        + if layout.owned_class.is_some() { 3 } else { 0 });
     if has_actors {
         func_types.push(types.idx(Sig(vec![I32], vec![])));
         let mut e = Emit {
@@ -1172,11 +1214,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
     let mut gsec = Vec::new();
     uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
-        + u64::from(!p.generators.is_empty()));
+        + u64::from(!p.generators.is_empty())
+        + if layout.owned_class.is_some() { 3 } else { 0 });
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
         let heap_start = ((p.data.len() as i64 + 7) & !7)
-            .max(if p.generators.is_empty() { 0 } else { 8 });
+            .max(if p.generators.is_empty() && layout.owned_class.is_none() { 0 } else { 8 });
         gsec.extend_from_slice(&[I32, 0x01, 0x41]);
         sleb(&mut gsec, heap_start);
         gsec.push(0x0B);
@@ -1187,6 +1230,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     if !p.generators.is_empty() {
         gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // frame freelist head
+    }
+    if layout.owned_class.is_some() {
+        // arena_base=0 (lazy init), next_slot=1, free_head=0.
+        for n in [0u8, 1, 0] {
+            gsec.extend_from_slice(&[I32, 0x01, 0x41, n, 0x0B]);
+        }
     }
     section(&mut out, 6, gsec);
 
@@ -1263,6 +1312,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         all.extend([
             "atto.generator_new", "atto.generator_check_ptr",
             "atto.generator_next", "atto.generator_close",
+        ].into_iter().map(String::from));
+    }
+    if layout.owned_class.is_some() {
+        all.extend([
+            "atto.closure_new", "atto.closure_checked_ptr", "atto.closure_close",
         ].into_iter().map(String::from));
     }
     if has_actors {
