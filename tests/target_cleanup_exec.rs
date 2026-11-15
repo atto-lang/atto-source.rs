@@ -106,13 +106,14 @@ fn native_executable_lease_is_released_once_on_normal_panic_and_cancel() {
     assert_eq!(cell.release_count(),3);
     assert!(cell.try_write_available(),"cooperative cancellation must release");
     assert_eq!(cell.with_shared(&cfg,0,|_|()).unwrap_err(),
-        "unverified shared-read cleanup path");
+        "shared callback requires verified normal and panic cleanup paths");
 }
 
 #[test]
 fn native_shared_readers_coexist_and_exclude_writer() {
-    let cfg=Arc::new(cfg(READ));
-    assert_eq!(cfg.paths().len(),2);
+    // A Rust callback may panic, so it requires an explicit panic edge.
+    let cfg=Arc::new(cfg(READ_PANIC));
+    assert_eq!(cfg.paths().len(),3);
     let cell=Arc::new(LeaseCell::new(41));
     let gate=Arc::new(Barrier::new(3));
     let (tx,rx)=mpsc::channel();
@@ -168,4 +169,30 @@ fn native_lease_free_receiver_has_no_cleanup_paths_or_aot_permission() {
     assert!(require_backend_cleanup_proof(&p).is_ok());
     assert_eq!(atto_compiler::compile(src).unwrap_err().code,
         "E_UNSUPPORTED");
+}
+
+#[test]
+fn native_simple_read_requires_only_normal_exit_but_callback_requires_unwind() {
+    let read=cfg(READ);
+    assert_eq!(read.paths().len(),2);
+    let cell=LeaseCell::new(9);
+    assert_eq!(cell.read_snapshot(&read,0),Ok(9));
+    assert_eq!(cell.release_count(),1);
+    assert!(cell.try_write_available());
+    assert_eq!(cell.with_shared(&read,0,|_| ()).unwrap_err(),
+        "shared callback requires verified normal and panic cleanup paths");
+    assert_eq!(cell.release_count(),1,
+        "the unproved callback must not acquire or release a lease");
+    // The panic-aware path admits an arbitrary callback, including one
+    // that actually panics. Rust must drop the lock before propagating it.
+    let panic_aware=cfg(READ_PANIC);
+    let unwind=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+        let _=cell.with_shared(&panic_aware,0,|_|->() {
+            panic!("native callback unwind after acquiring shared lease");
+        });
+    }));
+    assert!(unwind.is_err());
+    assert_eq!(cell.release_count(),2);
+    assert!(cell.try_write_available());
+    assert_eq!(atto_compiler::compile(READ).unwrap_err().code,"E_UNSUPPORTED");
 }
