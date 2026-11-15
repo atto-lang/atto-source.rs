@@ -181,6 +181,8 @@ fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
+// Recursive MIR validation and native object lowering require their own AST bound.
+pub const MAX_AST_DEPTH: usize = 128;
 
 /// Execution-domain words reserved by every Oreslang backend (Java and LLVM
 /// reject them as identifiers too).
@@ -278,8 +280,49 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "expected a function declaration".into(),
         });
     }
+    // Token and parenthesis quotas do not bound left-associated AST chains.
+    // Check every body and local before recursive MIR/AOT traversals.
+    for function in &functions {
+        for local in &function.locals {
+            check_ast_depth(&local.value, source.len())?;
+        }
+        check_ast_depth(&function.expression, source.len())?;
+    }
     Ok(Program { functions })
 }
+
+fn check_ast_depth(root: &Expr, source_len: usize) -> Result<(), ParseError> {
+    // Stack-based walk keeps the guard itself safe for a deep, left-biased AST.
+    let mut pending: Vec<(&Expr, usize)> = vec![(root, 1)];
+    while let Some((expr, depth)) = pending.pop() {
+        if depth > MAX_AST_DEPTH {
+            return Err(ParseError {
+                // Prototype AST nodes have no source spans; report the source
+                // boundary instead of inventing a per-node byte location.
+                offset: source_len,
+                class: "resource_limit",
+                message: "expression AST depth exceeds prototype limit".into(),
+            });
+        }
+        match expr {
+            Expr::Integer(_) | Expr::Name(_) => {}
+            Expr::Negate(inner) => pending.push((inner.as_ref(), depth + 1)),
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    pending.push((arg, depth + 1));
+                }
+            }
+            Expr::Add(left, right)
+            | Expr::Subtract(left, right)
+            | Expr::Multiply(left, right) => {
+                pending.push((left.as_ref(), depth + 1));
+                pending.push((right.as_ref(), depth + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
