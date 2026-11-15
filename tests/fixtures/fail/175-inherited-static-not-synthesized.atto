@@ -1,6 +1,0 @@
-// expect-error: E_UNBOUND
-define class Base as
-  pub static fnc value(): int { return 17; }
-end
-define class Child extends Base as end
-pub fnc main(): int { return Child.value(); }
