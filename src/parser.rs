@@ -358,7 +358,7 @@ impl Parser {
     fn is_type_word(&self, n: usize) -> bool {
         matches!(
             self.word_at(n),
-            Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String")
+            Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
         ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
     }
 
@@ -371,6 +371,48 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "fnc" => {
+                // Canonical source type form: fnc(int, bool) -> float.
+                // The first profile admits scalar callback contracts only,
+                // without silently treating callable types as runtime values.
+                self.expect(Tok::LParen, "'(' after fnc callable type")?;
+                let mut params = Vec::<Type>::new();
+                if *self.peek() != Tok::RParen {
+                    loop {
+                        if params.len() >= MAX_PARAMS {
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                                "callable signature exceeds maximum parameter count"));
+                        }
+                        let arg_pos = self.pos();
+                        let arg = self.parse_type()?;
+                        if !matches!(arg, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                            return Err(Diagnostic::new(arg_pos, "E_UNSUPPORTED_TYPE",
+                                "callable parameter must be a non-void scalar type"));
+                        }
+                        params.push(arg);
+                        if !self.eat(&Tok::Comma) { break; }
+                    }
+                }
+                self.expect(Tok::RParen, "')' after callable parameters")?;
+                self.expect(Tok::Arrow, "'->' before callable result type")?;
+                let result_pos = self.pos();
+                let result = self.parse_type()?;
+                if !matches!(result,
+                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
+                    return Err(Diagnostic::new(result_pos, "E_UNSUPPORTED_TYPE",
+                        "callable return type must be scalar or void"));
+                }
+                let spelling = format!("fnc({})->{}",
+                    params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
+                    result.name());
+                // Identical contracts have identical Type identity across
+                // declarations, regardless of whitespace and type aliases.
+                let id = match self.type_names.iter().position(|(n, _)| *n == spelling) {
+                    Some(existing) => existing as u32,
+                    None => self.type_name(spelling, pos),
+                };
+                Type::Callable(id)
+            }
             "Option" => {
                 self.expect(Tok::Lt, "'<' after Option")?;
                 let inner = self.parse_type()?;
@@ -2085,6 +2127,142 @@ impl Parser {
         Ok(e)
     }
 
+    /// Lambda annotations use a full type spelling before the slim arrow:
+    /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
+    /// this syntax-only annotation admits generic and qualified names.
+    fn parse_lambda_type(&mut self) -> R<String> {
+        self.enter()?;
+        let result = (|| {
+            let mut name = match self.peek().clone() {
+                Tok::Ident(s) if !is_reserved(&s) || s == "void" => {
+                    self.advance();
+                    s
+                }
+                _ => return Err(self.expected("a lambda return type")),
+            };
+            while self.eat(&Tok::Dot) {
+                // Namespace/module segments may be spelled like keywords
+                // (e.g. my.types.Response). After '.', the token is never
+                // parsed as a control-flow keyword.
+                let part = match self.peek().clone() {
+                    Tok::Ident(part) => { self.advance(); part }
+                    _ => return Err(self.expected("a qualified type name")),
+                };
+                name.push('.');
+                name.push_str(&part);
+            }
+            if self.eat(&Tok::Lt) {
+                name.push('<');
+                loop {
+                    name.push_str(&self.parse_lambda_type()?);
+                    if !self.eat(&Tok::Comma) { break; }
+                    name.push(',');
+                }
+                self.expect(Tok::Gt, "'>' after lambda type arguments")?;
+                name.push('>');
+            }
+            Ok(name)
+        })();
+        self.leave();
+        result
+    }
+
+    fn parse_lambda(&mut self) -> R<ExprKind> {
+        self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
+        let mut params = Vec::new();
+        if !self.eat(&Tok::Pipe) {
+            loop {
+                if params.len() >= MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
+                }
+                let (name, pos) = self.ident("a lambda parameter")?;
+                if params.contains(&name) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
+                }
+                params.push(name);
+                if self.eat(&Tok::Pipe) { break; }
+                self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
+            }
+        }
+        let mut return_type = if self.eat(&Tok::Colon) {
+            Some(self.parse_lambda_type()?)
+        } else { None };
+        if self.eat(&Tok::FatArrow) {
+            if return_type.is_some() {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "use ':' rather than combining a return annotation with '=>'"));
+            }
+            return_type = Some(self.parse_lambda_type()?);
+            self.expect(Tok::Arrow, "'->' after legacy '=>' return type")?;
+        } else {
+            self.expect(Tok::Arrow, "'->' after lambda parameters and optional return type")?;
+            if return_type.is_none() && matches!(self.peek(), Tok::Ident(_)) {
+                // Legacy braced form: |n| -> int { return n; }.
+                // Roll back for an ordinary expression body, e.g. |n| -> n * 2.
+                let checkpoint = (self.i, self.depth, self.height);
+                let candidate = self.parse_lambda_type();
+                match candidate {
+                    Ok(candidate) if *self.peek() == Tok::LBrace => {
+                        return_type = Some(candidate);
+                    }
+                    result => {
+                        // Speculative type recognition must never change the
+                        // parser state when the tokens actually start an
+                        // expression. In particular, an interrupted recursive
+                        // type parse can leave the nesting counters elevated.
+                        (self.i, self.depth, self.height) = checkpoint;
+                        if let Err(err) = result {
+                            // Resource/recursion limits are security gates;
+                            // never downgrade them to a different expression.
+                            if err.code == "E_NESTING" || err.code == "E_SOURCE_LIMIT" {
+                                return Err(err);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let body = if *self.peek() == Tok::LBrace {
+            LambdaBody::Block(self.parse_block()?)
+        } else if self.is_word("return") {
+            // Unlike ordinary statements, a braceless lambda's return must
+            // have a literal semicolon. A newline before the closing ')' does
+            // not terminate this lambda body.
+            let pos = self.pos();
+            self.advance();
+            let value = if *self.peek() == Tok::Semi {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
+            if !self.eat(&Tok::Semi) {
+                return Err(Diagnostic::new(self.pos(), "E_SEMICOLON",
+                    "a braceless lambda return requires ';' before its closing delimiter"));
+            }
+            LambdaBody::Statement(Box::new(Stmt::Return(value, pos)))
+        } else {
+            LambdaBody::Expression(Box::new(self.parse_expr()?))
+        };
+        Ok(ExprKind::Lambda { params, return_type, body })
+    }
+
+    fn parse_array_literal(&mut self) -> R<ExprKind> {
+        self.expect(Tok::LBracket, "'['")?;
+        let mut items = Vec::new();
+        if !self.eat(&Tok::RBracket) {
+            loop {
+                if items.len() >= 1024 {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "array literal exceeds 1024 elements"));
+                }
+                items.push(self.parse_expr()?);
+                if !self.eat(&Tok::Comma) { break; }
+                if *self.peek() == Tok::RBracket { break; }
+            }
+            self.expect(Tok::RBracket, "']' after array items")?;
+        }
+        Ok(ExprKind::Array(items))
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -2170,8 +2348,8 @@ impl Parser {
                     ExprKind::Var(s)
                 }
             },
-            Tok::Pipe => return Err(unsupported(pos, "lambdas")),
-            Tok::LBracket => return Err(unsupported(pos, "sequence literals")),
+            Tok::Pipe => self.parse_lambda()?,
+            Tok::LBracket => self.parse_array_literal()?,
             Tok::LBrace => return Err(unsupported(pos, "record literals")),
             _ => return Err(self.expected("an expression")),
         };
@@ -2222,6 +2400,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Colon => ":",
                 Tok::ColonColon => "::",
                 Tok::Arrow => "->",
+                Tok::FatArrow => "=>",
                 Tok::Dot => ".",
                 Tok::Assign => "=",
                 Tok::EqEq => "==",
