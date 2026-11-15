@@ -154,3 +154,18 @@ validation now canonicalizes `.` for that case. An explicit regression
 exercises new root-level proposal creation and exclusive no-clobber
 behavior. **Rust toolchain and Cargo tests are not available locally,
 so this regression is authored but not executed.**
+
+### Source/manifest input snapshot audit
+
+The experimental Rust source-ID CLI now checks file metadata **before
+open, immediately after open, and after its bounded read**. The Unix
+path uses device/inode, length, mtime and ctime (with nanoseconds), and
+denies ordinary in-place mutation or replacement during reading.
+`rooted_source` additionally rejects a source and registry that share
+a hardlink inode; canonical paths alone would not detect this alias.
+Negative tests cover a hardlink and an in-place modified snapshot.
+
+These are **authored only**, not executed Cargo tests; there is no
+installed Rust toolchain in the current execution environment. File
+metadata checks are best-effort and not a proof against a malicious
+privileged writer or post-read source mutation.
