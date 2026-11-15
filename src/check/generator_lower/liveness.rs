@@ -137,6 +137,7 @@ mod tests {
             name: "test_generator".into(),
             pos: Pos { line: 1, col: 1 },
             is_generator: true,
+            is_pure: false,
             params: vec![],
             ret: Type::GeneratorInt,
             body: vec![],
