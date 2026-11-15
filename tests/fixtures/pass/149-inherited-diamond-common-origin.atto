@@ -1,0 +1,12 @@
+// expect-exit: 17
+define class Root as
+  pub int count: 17;
+  pub get_count(): int { return self.count; }
+end
+define class L extends Root as end
+define class R extends Root as end
+define class D extends L, R as end
+pub fnc main(): int {
+  val d = new D();
+  return d.get_count();
+}
