@@ -15,6 +15,7 @@ pub mod lexer;
 pub mod parser;
 pub mod target_syntax;
 pub mod target_flow;
+pub mod target_borrow;
 pub mod target_typed;
 pub mod wasm;
 
