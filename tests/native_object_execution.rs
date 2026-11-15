@@ -19,10 +19,8 @@ impl TemporaryBuild {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "oresc-compiler-e2e-{}-{nonce}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("oresc-compiler-e2e-{}-{nonce}", std::process::id()));
         fs::create_dir(&path).expect("cannot create isolated compiler test dir");
         Self(path)
     }
@@ -38,8 +36,8 @@ fn run_guest(source: &str, expected_exit: i32) {
     let build = TemporaryBuild::new();
     let object = build.0.join("guest.o");
     let executable = build.0.join("guest");
-    let bytes = compile(source)
-        .unwrap_or_else(|error| panic!("native object compilation failed: {error}"));
+    let bytes =
+        compile(source).unwrap_or_else(|error| panic!("native object compilation failed: {error}"));
     assert!(bytes.starts_with(b"\x7fELF"), "expected ELF machine object");
     fs::write(&object, bytes).expect("cannot persist compiled object");
     let link = Command::new("cc")
@@ -166,10 +164,7 @@ fn native_guest_exact_high_precision_subtraction_with_underscores() {
 
 #[test]
 fn native_guest_nested_negative_signs_preserve_meaning() {
-    run_guest(
-        "pub fnc main(): int { return -(-((6*7))); }",
-        42,
-    );
+    run_guest("pub fnc main(): int { return -(-((6*7))); }", 42);
 }
 
 #[test]
