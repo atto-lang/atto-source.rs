@@ -136,6 +136,9 @@ struct Layout {
     /// Function index within source funcs+runtime helpers: first appended
     /// generator operation is new(); then checked_ptr, next, close.
     gen_first_func: u32,
+    /// Closed-world typed indirection for the private first-class int closure.
+    /// The table contains only the checker-verified generated receiver method.
+    owned_call: Option<(u32, u32)>, // (source function index, canonical Wasm type index)
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -476,6 +479,15 @@ impl Emit<'_> {
             TExpr::Call(f, args) => {
                 for a in args {
                     self.expr(a);
+                }
+                if let Some((method, ty)) = self.l.owned_call {
+                    if *f == method {
+                        self.i32c(0); // fixed private table slot
+                        self.op(0x11); // call_indirect, checked by Wasm type section
+                        uleb(&mut self.code, ty as u64);
+                        self.op(0x00); // table 0
+                        return;
+                    }
                 }
                 self.call(self.l.func(*f));
             }
@@ -964,7 +976,7 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 pub fn emit(p: &TProgram) -> Vec<u8> {
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
-    let layout = Layout {
+    let mut layout = Layout {
         imports: p.imports.clone(),
         helpers: str_base + if p.strings { STRING_HELPERS } else { 0 },
         str_base,
@@ -973,8 +985,19 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             1 + u32::from(p.heap) + p.globals.len() as u32
         ),
         gen_first_func: p.funcs.len() as u32,
+        owned_call: None,
     };
     let mut types = Types(Vec::new());
+    // The generated private receiver is the only initial table entry.
+    // All direct and unrelated modules retain their original section layout.
+    if let Some((i, method)) = p.funcs.iter().enumerate().find(|(_, f)|
+        f.name == "$owned_lambda_int_int.call") {
+        let params: Vec<u8> = method.params.iter()
+            .map(|t| vt(*t).expect("generated closure parameters are checked")).collect();
+        let result: Vec<u8> = vt(method.ret).into_iter().collect();
+        let type_index = types.idx(Sig(params, result));
+        layout.owned_call = Some((i as u32, type_index));
+    }
 
     let mut import_sec = Vec::new();
     uleb(&mut import_sec, p.imports.len() as u64);
@@ -1121,6 +1144,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 3, fsec);
 
+    if layout.owned_call.is_some() {
+        // One sealed funcref slot. Guest code cannot mutate the table:
+        // there are no table imports, exports, or table.set opcodes.
+        section(&mut out, 4, vec![1, 0x70, 0x00, 1]);
+    }
+
     let has_memory = !p.data.is_empty() || p.heap || p.strings || has_actors;
     if has_memory {
         // Fixed and non-growable: strings, the object heap, or a private
@@ -1183,6 +1212,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         uleb(&mut exp, actor_init_idx as u64 + 1);
     }
     section(&mut out, 7, exp);
+
+    if let Some((method_idx, _)) = layout.owned_call {
+        let mut elem = vec![1, 0, 0x41, 0, 0x0B, 1];
+        uleb(&mut elem, layout.func(method_idx) as u64);
+        section(&mut out, 9, elem);
+    }
 
     let mut code_sec = Vec::new();
     uleb(&mut code_sec, bodies.len() as u64);
