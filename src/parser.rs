@@ -205,6 +205,8 @@ pub struct Parser {
     type_names: Vec<(String, Pos)>,
     /// Scope of an explicit generator function body.
     in_generator: bool,
+    /// Commas terminate statements only inside a callable's end-style body.
+    in_end_callable: bool,
 }
 
 struct TypeFirstField {
@@ -238,6 +240,7 @@ impl Parser {
             cond: 0,
             type_names: Vec::new(),
             in_generator: false,
+            in_end_callable: false,
         }
     }
 
@@ -860,10 +863,7 @@ impl Parser {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
         let ret = self.parse_return_spec()?;
-        if *self.peek() != Tok::LBrace {
-            return Err(unsupported(self.pos(), "methods without a body"));
-        }
-        let body = self.parse_block()?;
+        let body = self.parse_callable_body(ret)?;
         Ok(Method {
             name,
             pos,
@@ -918,9 +918,14 @@ impl Parser {
         Ok(Receive { pos, mail, payload, body })
     }
 
-    /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.
+    /// Accept `: T`, `: T ->`, or `-> T`; the second arrow after
+    /// a colon type is an optional brace-body introducer, not another type.
     fn parse_return_spec(&mut self) -> R<Type> {
-        if self.eat(&Tok::Colon) || self.eat(&Tok::Arrow) {
+        if self.eat(&Tok::Colon) {
+            let ty = self.parse_type()?;
+            self.eat(&Tok::Arrow);
+            Ok(ty)
+        } else if self.eat(&Tok::Arrow) {
             self.parse_type()
         } else {
             Ok(Type::Void)
@@ -1010,9 +1015,13 @@ impl Parser {
             return Err(Diagnostic::new(pos, "E_TYPE",
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
         }
+        if is_generator && *self.peek() != Tok::LBrace {
+            return Err(unsupported(self.pos(), "end-style generator bodies"));
+        }
         self.in_generator = is_generator;
-        let body = self.parse_block()?;
+        let result = self.parse_callable_body(ret);
         self.in_generator = false;
+        let body = result?;
         let _ = start;
         Ok(Func {
             name,
@@ -1070,6 +1079,32 @@ impl Parser {
         Ok(out)
     }
 
+    /// End-style callable body: comma sequencing and an optional implicit
+    /// return of the final expression. This does not change brace-block rules.
+    fn parse_callable_body(&mut self, ret: Type) -> R<Vec<Stmt>> {
+        if *self.peek() == Tok::LBrace {
+            return self.parse_block();
+        }
+        let delimited = self.eat(&Tok::ColonColon);
+        if delimited && *self.peek() == Tok::LBrace {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "'::' introduces an end-style callable body, not a brace block"));
+        }
+        let previous = self.in_end_callable;
+        self.in_end_callable = true;
+        let parsed = self.parse_stmts_until(&["end"]);
+        self.in_end_callable = previous;
+        let mut body = parsed?;
+        self.expect_word("end")?;
+        if ret != Type::Void {
+            if let Some(Stmt::Expr(expr)) = body.last().cloned() {
+                body.pop();
+                body.push(Stmt::Return(Some(expr.clone()), expr.pos));
+            }
+        }
+        Ok(body)
+    }
+
     fn parse_stmts_until(&mut self, stops: &[&str]) -> R<Vec<Stmt>> {
         self.enter()?;
         let mut out = Vec::new();
@@ -1108,6 +1143,14 @@ impl Parser {
     /// boundary (`}` `fi` `end` `else` `elseif` `done` or end of input), or an
     /// implicit newline terminator (the next token starts on a later line).
     fn terminator(&mut self) -> R<()> {
+        if self.in_end_callable && self.eat(&Tok::Comma) {
+            if matches!(self.peek(), Tok::Eof | Tok::RBrace)
+                || matches!(self.word_at(0), Some("end" | "fi" | "done" | "else" | "elif" | "elseif")) {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "trailing comma before the end of an end-style body"));
+            }
+            return Ok(());
+        }
         if self.eat(&Tok::Semi) {
             return Ok(());
         }
