@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+define class Parent as
+  private int secret: 3;
+end
+define class Child extends Parent as end
+pub fnc main(): int { return 0; }
