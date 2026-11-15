@@ -320,4 +320,38 @@ mod tests {
         let extra = ADD.replace("});", "}); self.handle_state(critical-read |s| -> s.count);");
         assert_eq!(emit_experimental_receiver(&extra).unwrap_err().code, "E_CLEANUP");
     }
+
+    #[test]
+    fn native_last_owner_teardown_waits_for_inflight_read_lease() {
+        use std::sync::{Arc, Barrier};
+        let generated = emit_experimental_receiver(READ_CHECKED).unwrap();
+        let state = Arc::new(LeaseCell::new(19));
+        let weak = Arc::downgrade(&state);
+        let entered = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let worker_state = Arc::clone(&state);
+        let worker_entered = Arc::clone(&entered);
+        let worker_resume = Arc::clone(&resume);
+        let worker = std::thread::spawn(move || {
+            let value = worker_state.with_shared(&generated.cfg, 0, |value| {
+                worker_entered.wait();
+                worker_resume.wait();
+                value
+            }).unwrap();
+            (value, worker_state.release_count(), worker_state.try_write_available())
+        });
+        entered.wait();
+        assert!(!state.try_write_available(), "active lease excludes writer");
+        drop(state);
+        assert!(weak.upgrade().is_some(),
+            "an in-flight receiver must retain state while its lease is active");
+        resume.wait();
+        let (value, releases, unlocked) = worker.join().unwrap();
+        assert_eq!(value, 19);
+        assert_eq!(releases, 1, "native guard releases exactly once");
+        assert!(unlocked, "lease must unlock before owner destruction");
+        assert!(weak.upgrade().is_none(),
+            "state is reclaimed after the final in-flight owner exits");
+    }
+
 }
