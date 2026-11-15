@@ -197,7 +197,7 @@ export class M9SupervisorHost {
       a.failed++;a.busy=false;a.active=null;
       const fault=Number.isSafeInteger(msg.fault_code)&&[1,2,101].includes(msg.fault_code)?
         msg.fault_code:101;
-      this.#fence(a,fault,fault===1?'checked add overflow':
+      this.#fence(a,fault,fault===1?'checked arithmetic':
         fault===2?'checked index overflow':'guest protocol violation',msg.message_id);
       return;
     }
