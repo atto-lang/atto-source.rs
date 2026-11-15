@@ -72,10 +72,10 @@ pub fn lower(input: &Program) -> R<Program> {
                     // collisions instead of letting a forged declaration
                     // impersonate the compiled callback.
                     let hidden = format!("$lambda_{}", idx);
-                    if source.funcs.iter().any(|f| f.name == hidden)
-                        || source.classes.iter().any(|c| c.name == hidden)
-                        || source.enums.iter().any(|e| e.name == hidden)
-                        || source.actors.iter().any(|a| a.name == hidden) {
+                    if input.funcs.iter().any(|f| f.name == hidden)
+                        || input.classes.iter().any(|c| c.name == hidden)
+                        || input.enums.iter().any(|e| e.name == hidden)
+                        || input.actors.iter().any(|a| a.name == hidden) {
                         return Err(error(*pos, "E_DUPLICATE",
                             "compiler-generated lambda name collides with a declaration"));
                     }
