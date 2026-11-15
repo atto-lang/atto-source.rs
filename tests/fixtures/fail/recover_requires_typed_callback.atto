@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+// A registered recover is neither an eager call nor ordinary catch.
+pub fnc main(): int {
+  recover (|string label| -> |err, c| -> { return 42; })("context");
+  return 0;
+}
