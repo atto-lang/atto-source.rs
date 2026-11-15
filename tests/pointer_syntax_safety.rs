@@ -39,6 +39,33 @@ fn pointer_builtin_requires_real_typed_aot_lowering() {
 }
 
 #[test]
+fn pointer_factory_and_construction_fail_closed_before_guest_codegen() {
+    // A future native implementation must not accidentally accept these as
+    // ordinary class/static calls while leaving Pointer<T> type unsupported.
+    for source in [
+        "pub fnc main(): int { val p = Pointer.alloc<int>(4); return 0; }",
+        "pub fnc main(): int { val p = new Pointer(); return 0; }",
+        "pub fnc main(): int { return Pointer(0); }",
+        "pub fnc main(): int { return Pointer; }",
+        "pub fnc main(): int { return 6 * *7; }",
+    ] {
+        let expected = if source.contains("* *") {
+            "E_POINTER_SYNTAX"
+        } else {
+            "E_UNSUPPORTED_TYPE"
+        };
+        diagnostic(source, expected);
+    }
+}
+
+#[test]
+fn pointer_spelling_in_comments_is_not_executable() {
+    let source = "/* Pointer.alloc<int>(4); &x; *p; */\n// Pointer<int>\npub fnc main(): int { return 6 * 7; }";
+    let bytes = atto_compiler::compile(source).expect("comments must not become pointer tokens");
+    assert_eq!(&bytes[..8], b"\\0asm\\x01\\0\\0\\0");
+}
+
+#[test]
 fn ordinary_multiplication_still_compiles_as_wasm() {
     let bytes = atto_compiler::compile("pub fnc main(): int { return 6 * 7; }")
         .expect("binary * must remain multiplication");
