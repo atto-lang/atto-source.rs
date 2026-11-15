@@ -6,7 +6,7 @@ use atto_compiler::target_syntax::{parse_target_declarations,lower_class_receive
 const SOURCE: &str = r#"
     define class Calculator as
       final int seed: 3;
-      fnc six() -> int :: 5 end
+      pub fnc six() -> int :: 5 end
     end
     pub mtd (self: Calculator) one(): int { return self.seed + 2; }
     pub mtd (Calculator self) two(): int -> { return self.seed + 2; }
