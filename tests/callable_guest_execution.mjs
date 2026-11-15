@@ -13,6 +13,7 @@ const fixtures = [
   '166-callable-five-routine-forms.atto',
   '167-callable-five-inline-method-forms.atto',
   '168-callable-end-nested-arg-commas.atto',
+  '173-class-mtd-executable.atto',
 ];
 const negative = [
   '39-end-form-body.atto',
