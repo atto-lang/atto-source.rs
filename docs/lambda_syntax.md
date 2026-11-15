@@ -142,10 +142,14 @@ still unsupported. The types cannot be interpreted as runtime handles.
 
 ## Source callable types: parsed, validated, and gated
 
+Use `=>` for callable **type declarations**, such as `fnc(int) => int`.
+Use `->` for lambda **body boundaries**, such as `|n| : int -> n * 2`.
+The former `fnc(int) -> int` type spelling is rejected, not silently accepted as an alias.
+
 The browser frontend now recognizes scalar callable type syntax such as
-`fnc(int) -> int`, `fnc(int, bool) -> string`, and `fnc() -> void`.
-For example, a declaration may use `fnc(int) -> int callback` as a
-parameter type, or `val callback: fnc(int) -> int = ...` as an
+`fnc(int) => int`, `fnc(int, bool) => string`, and `fnc() => void`.
+For example, a declaration may use `fnc(int) => int callback` as a
+parameter type, or `val callback: fnc(int) => int = ...` as an
 annotated binding. Identical scalar signatures are interned by canonical
 shape (including aliases such as `boolean` / `bool` and
 `String` / `string`), not by source position.
@@ -155,7 +159,7 @@ resolves canonical signatures into `CallableSignature`, and rejects
 forged or malformed signature metadata. **Executable callable parameters,
 values, returns and indirect dispatch remain unsupported:** a program
 that needs those runtime features fails with `E_UNSUPPORTED` and produces
-no guest Wasm. `fnc(int) -> int` describes a callable contract; it
+no guest Wasm. `fnc(int) => int` describes a callable contract; it
 does not yet allocate a function table or make lambdas first-class.
 
 The earlier direct-lambda profile (private, noncapturing direct Wasm calls)
@@ -165,7 +169,7 @@ Wasm table entries and a typed indirect-call ABI with ownership checks.
 When a lambda is explicitly annotated with a callable type, the
 compiler performs contextual arity, return-type, and capture analysis
 before returning the runtime `E_UNSUPPORTED` gate. For example, an
-annotated `fnc(int)->bool` lambda returning an integer produces
+annotated `fnc(int) =>bool` lambda returning an integer produces
 `E_TYPE`, while referring to an outer variable produces `E_CAPTURE`.
 A correctly typed annotation still cannot execute or escape without the
 indirect-table ABI.
@@ -199,11 +203,11 @@ Reference comparisons:
   experimental functor type and runtime components, not a proven
   native guest implementation of the full escaping closure/functor ABI.
 - In AttoLang, the canonical authored lambda return annotation uses
-  `|n| : int -> ...`. `fnc(int) -> int` names a callable **source type**
+  `|n| : int -> ...`. `fnc(int) => int` names a callable **source type**
   but does not automatically authorize indirect Wasm calls.
 
 The website's broader **Closures, functors and lambdas** preview also uses
-`make_adder(...) -> fnc(int) -> int` and a higher-order
+`make_adder(...): fnc(int) => int` and a higher-order
 `apply_twice(callback, ...)`. These require first-class callable values,
 owned closure environments, a verified typed indirect-call/table contract,
 and native/wasm32/browsers guest execution receipts. **Do not enable the
