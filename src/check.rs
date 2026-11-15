@@ -19,6 +19,7 @@ use crate::diag::{Diagnostic, Pos};
 mod generator_lower;
 pub mod lambda_types;
 mod direct_lambda;
+mod escaping_closure;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
@@ -649,7 +650,11 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
-    let lowered = direct_lambda::lower(p)?;
+    // First lower the tightly bounded factory-escaped closure class into a
+    // guest-owned, class-typed environment. All other indirect callables still
+    // fail closed in resolve() before any Wasm bytes are emitted.
+    let escaping = escaping_closure::lower(p)?;
+    let lowered = direct_lambda::lower(&escaping)?;
     check_lowered(&lowered)
 }
 
