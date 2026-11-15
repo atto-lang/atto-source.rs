@@ -486,6 +486,12 @@ impl Parser {
                 self.expect(Kind::RParen)?;
                 Ok(Expr::Call { name, args })
             }
+            Some(Kind::Plus) => {
+                // Unary plus is a typed i64 identity, not an arithmetic
+                // addition or coercion. Reuse the operand exactly once.
+                self.expect(Kind::Plus)?;
+                self.primary()
+            }
             Some(Kind::Minus) => {
                 let minus = self.expect(Kind::Minus)?;
                 // The signed i64 minimum is valid even though its positive
