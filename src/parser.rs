@@ -2048,6 +2048,108 @@ impl Parser {
         Ok(e)
     }
 
+    /// Lambda annotations use a full type spelling before the slim arrow:
+    /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
+    /// this syntax-only annotation admits generic and qualified names.
+    fn parse_lambda_type(&mut self) -> R<String> {
+        self.enter()?;
+        let result = (|| {
+            let mut name = match self.peek().clone() {
+                Tok::Ident(s) if !is_reserved(&s) || s == "void" => {
+                    self.advance();
+                    s
+                }
+                _ => return Err(self.expected("a lambda return type")),
+            };
+            while self.eat(&Tok::Dot) {
+                let (part, _) = self.ident("a qualified type name")?;
+                name.push('.');
+                name.push_str(&part);
+            }
+            if self.eat(&Tok::Lt) {
+                name.push('<');
+                loop {
+                    name.push_str(&self.parse_lambda_type()?);
+                    if !self.eat(&Tok::Comma) { break; }
+                    name.push(',');
+                }
+                self.expect(Tok::Gt, "'>' after lambda type arguments")?;
+                name.push('>');
+            }
+            Ok(name)
+        })();
+        self.leave();
+        result
+    }
+
+    fn parse_lambda(&mut self) -> R<ExprKind> {
+        self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
+        let mut params = Vec::new();
+        if !self.eat(&Tok::Pipe) {
+            loop {
+                if params.len() >= MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
+                }
+                let (name, pos) = self.ident("a lambda parameter")?;
+                if params.contains(&name) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
+                }
+                params.push(name);
+                if self.eat(&Tok::Pipe) { break; }
+                self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
+            }
+        }
+        let mut return_type = if self.eat(&Tok::Colon) {
+            Some(self.parse_lambda_type()?)
+        } else { None };
+        if self.eat(&Tok::FatArrow) {
+            if return_type.is_some() {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "use ':' rather than combining a return annotation with '=>'"));
+            }
+            return_type = Some(self.parse_lambda_type()?);
+            self.expect(Tok::Arrow, "'->' after legacy '=>' return type")?;
+        } else {
+            self.expect(Tok::Arrow, "'->' after lambda parameters and optional return type")?;
+            if return_type.is_none() && matches!(self.peek(), Tok::Ident(_)) {
+                // Legacy braced form: |n| -> int { return n; }.
+                // Roll back for an ordinary expression body, e.g. |n| -> n * 2.
+                let start = self.i;
+                if let Ok(candidate) = self.parse_lambda_type() {
+                    if *self.peek() == Tok::LBrace { return_type = Some(candidate); }
+                    else { self.i = start; }
+                } else { self.i = start; }
+            }
+        }
+        let body = if *self.peek() == Tok::LBrace {
+            LambdaBody::Block(self.parse_block()?)
+        } else if self.is_word("return") {
+            // A statement-bodied lambda requires its own semicolon even when
+            // nested inside a call: .map(|n| : int -> return n * 2;).
+            LambdaBody::Statement(Box::new(self.parse_stmt()?))
+        } else {
+            LambdaBody::Expression(Box::new(self.parse_expr()?))
+        };
+        Ok(ExprKind::Lambda { params, return_type, body })
+    }
+
+    fn parse_array_literal(&mut self) -> R<ExprKind> {
+        self.expect(Tok::LBracket, "'['")?;
+        let mut items = Vec::new();
+        if !self.eat(&Tok::RBracket) {
+            loop {
+                if items.len() >= 1024 {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "array literal exceeds 1024 elements"));
+                }
+                items.push(self.parse_expr()?);
+                if !self.eat(&Tok::Comma) { break; }
+                if *self.peek() == Tok::RBracket { break; }
+            }
+            self.expect(Tok::RBracket, "']' after array items")?;
+        }
+        Ok(ExprKind::Array(items))
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -2133,8 +2235,8 @@ impl Parser {
                     ExprKind::Var(s)
                 }
             },
-            Tok::Pipe => return Err(unsupported(pos, "lambdas")),
-            Tok::LBracket => return Err(unsupported(pos, "sequence literals")),
+            Tok::Pipe => self.parse_lambda()?,
+            Tok::LBracket => self.parse_array_literal()?,
             Tok::LBrace => return Err(unsupported(pos, "record literals")),
             _ => return Err(self.expected("an expression")),
         };
@@ -2185,6 +2287,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Colon => ":",
                 Tok::ColonColon => "::",
                 Tok::Arrow => "->",
+                Tok::FatArrow => "=>",
                 Tok::Dot => ".",
                 Tok::Assign => "=",
                 Tok::EqEq => "==",

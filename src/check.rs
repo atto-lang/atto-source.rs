@@ -2604,6 +2604,10 @@ impl<'a> FnCx<'a> {
             }
             ExprKind::Member(base, name) => self.member(base, name, pos)?,
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
+            ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "array literals are parsed but not yet lowered to browser Wasm")),
+            ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented")),
         })
     }
 

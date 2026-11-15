@@ -332,6 +332,15 @@ impl BinOp {
     }
 }
 
+/// Lambda bodies distinguish an implicit-return expression, a single
+/// terminated statement, and a braced multi-statement block.
+#[derive(Clone, Debug)]
+pub enum LambdaBody {
+    Expression(Box<Expr>),
+    Statement(Box<Stmt>),
+    Block(Vec<Stmt>),
+}
+
 #[derive(Clone, Debug)]
 pub enum ExprKind {
     /// Integer literal. `None` is 2^63, only legal as the operand of unary minus.
@@ -361,6 +370,15 @@ pub enum ExprKind {
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
     MethodCall(Box<Expr>, String, Vec<Expr>),
+    /// Syntax-only sequence literal. Browser guest allocation is not lowered.
+    Array(Vec<Expr>),
+    /// Parsed lambda signature/body. The browser backend deliberately rejects
+    /// callable values until closure capture and runtime types are implemented.
+    Lambda {
+        params: Vec<String>,
+        return_type: Option<String>,
+        body: LambdaBody,
+    },
 }
 
 #[derive(Clone, Debug)]
