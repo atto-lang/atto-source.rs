@@ -563,6 +563,7 @@ impl Parser {
             name,
             pos,
             public,
+            state_container: false,
             fields: m.fields,
             ctor: m.ctor,
             methods: m.methods,
@@ -573,7 +574,7 @@ impl Parser {
     /// Browser-only single-worker state profile; class instances cannot cross
     /// guest Wasm memories. This does not provide a cross-worker RW lock.
     fn parse_state_container(&mut self, public: bool) -> R<ClassDecl> {
-        self.eat_word("container"); // optional long spelling
+        self.eat_word("container"); // Java-canonical long spelling; short form is an Atto alias
         let (name, pos) = self.ident("a state container name")?;
         self.decl_head("state container")?;
         self.expect_word("as")?;
@@ -583,8 +584,8 @@ impl Parser {
             if *self.peek() == Tok::Eof {
                 return Err(self.expected("'end' to close state container"));
             }
-            if fields.len() + methods.len() >= MAX_MEMBERS {
-                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many state members"));
+            if fields.len() >= 128 || methods.len() >= 64 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "protected state fields (128) or methods (64) exceed Java reference budget"));
             }
             if self.eat_word("state") {
                 if seen { return Err(Diagnostic::new(self.pos(), "E_DUPLICATE", "duplicate state {} block")); }
@@ -592,14 +593,18 @@ impl Parser {
                 self.expect(Tok::LBrace, "'{' after state")?;
                 while !self.eat(&Tok::RBrace) {
                     if *self.peek() == Tok::Eof { return Err(self.expected("'}' after state fields")); }
-                    if fields.len() >= MAX_MEMBERS {
-                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many state fields"));
+                    if fields.len() >= 128 {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "protected state field budget exceeded (128)"));
                     }
-                    let mode = if self.eat_word("let") { FieldMode::ActorState }
-                        else if self.eat_word("val") || self.eat_word("const") { FieldMode::Final }
-                        else { return Err(Diagnostic::new(self.pos(), "E_STATE",
-                            "state {} fields require let, val or const")); };
-                    let parsed = self.parse_type_first_field(false, mode)?;
+                    if !self.eat_word("let") {
+                        return Err(Diagnostic::new(self.pos(), "E_STATE",
+                            "protected state fields must start with let, as in Java"));
+                    }
+                    let parsed = self.parse_type_first_field(false, FieldMode::ActorState)?;
+                    if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
+                        return Err(Diagnostic::new(parsed.field.pos, "E_UNSUPPORTED_TYPE",
+                            "Worker-local state container admits only owned int/bool fields"));
+                    }
                     if fields.iter().any(|f: &Field| f.name == parsed.field.name) {
                         return Err(Diagnostic::new(parsed.field.pos, "E_DUPLICATE", "duplicate state field"));
                     }
@@ -607,9 +612,17 @@ impl Parser {
                 }
                 continue;
             }
+            if !seen {
+                return Err(Diagnostic::new(self.pos(), "E_STATE",
+                    "protected state {} schema must precede instance methods"));
+            }
             let method_public = self.eat_word("pub");
             self.eat_word("fnc");
             self.eat_word("method");
+            if self.is_word("handle_state") {
+                return Err(Diagnostic::new(self.pos(), "E_STATE",
+                    "handle_state is compiler-owned and cannot be overridden"));
+            }
             if *self.peek_at(1) != Tok::LParen {
                 return Err(Diagnostic::new(self.pos(), "E_STATE",
                     "state container supports only a state {} block and instance methods"));
@@ -628,7 +641,11 @@ impl Parser {
             methods.push(method);
         }
         if !seen { return Err(Diagnostic::new(pos, "E_STATE", "define state requires state {}")); }
-        Ok(ClassDecl { name, pos, public, fields, ctor: None, methods })
+        if fields.is_empty() {
+            return Err(Diagnostic::new(pos, "E_STATE", "protected state requires at least one scalar field"));
+        }
+        Ok(ClassDecl { name, pos, public, state_container: true,
+            fields, ctor: None, methods })
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
@@ -1423,7 +1440,7 @@ impl Parser {
         }
         self.expect(Tok::RParen, "')' after critical scope")?;
         self.terminator()?;
-        Ok(Stmt::Block(body))
+        Ok(Stmt::StateWrite { body, pos })
     }
 
     fn pure_state_value(e: &Expr) -> bool {
