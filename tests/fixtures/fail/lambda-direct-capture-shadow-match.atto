@@ -1,0 +1,11 @@
+// expect-error: E_CAPTURE
+// A match-arm binding must not retarget an immutable lexical capture.
+pub fnc main(): int {
+  val offset = 7;
+  val add = |n| : int -> n + offset;
+  match 1 over
+    on offset -> { return add(35); }
+    on _ -> { return 0; }
+  end
+  return 0;
+}

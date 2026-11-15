@@ -1,6 +1,8 @@
+// Immutable scalar captures now compile; mutable captures remain prohibited.
 // expect-error: E_CAPTURE
 pub fnc main(): int {
-    val extra = 5;
+    let extra = 5;
     val plus = |n| -> n + extra;
+    extra = 6;
     return plus(1);
 }

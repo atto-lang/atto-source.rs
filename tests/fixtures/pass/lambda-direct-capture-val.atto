@@ -1,0 +1,6 @@
+// expect-exit: 42
+pub fnc main(): int {
+  val offset = 21;
+  val plus_offset = |n| : int -> n + offset;
+  return plus_offset(21);
+}

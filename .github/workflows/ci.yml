@@ -41,6 +41,9 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
 
+      - name: Direct closure/lambda/functor Rust-Wasm executable parity
+        run: node tests/closures-wasm.mjs
+
       - name: Target-only actor receiver Wasm ABI rejects unsupported code
         run: node tests/target_syntax_wasm.mjs
 

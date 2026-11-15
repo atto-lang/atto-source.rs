@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Capture order is deterministic; definition-site immutable values are preserved.
+pub fnc main(): int {
+  val left = 10;
+  val right = 11;
+  val add = |n| : int -> n + right + left;
+  return add(21);
+}

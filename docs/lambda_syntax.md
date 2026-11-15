@@ -98,8 +98,14 @@ be parenthesized, as in `val double = (|n| -> return n * 2;);`.
 
 The local lambda is a compile-time declaration, not a runtime handle.
 Only direct calls are supported: callable values, aliases, escaped closures,
-captures, reassignments, multiple lambdas per source function, contextual
-inference from nonliteral first arguments, and Rx pipelines still fail closed.
+mutable / non-scalar captures, reassignments, multiple lambdas per source function,
+contextual inference from nonliteral first arguments, and Rx pipelines still
+fail closed. The limited direct-call path now supports immutable scalar captures
+from top-level locals or immutable parameters; their values become hidden typed
+arguments to the lifted function. Captures are restricted to expression-bodied
+lambdas and the compiler never creates a first-class callable or heap environment.
+Factory-returned closures remain unsupported. The caller's scalar captures are
+immutable, so invocation-time passing preserves creation-time capture semantics.
 This milestone uses ordinary typed Wasm direct calls, not indirect-call tables
 or a general first-class function type. Positive/negative guest fixtures and
 native-vs-Wasm byte parity protect the admitted subset.
@@ -136,10 +142,14 @@ still unsupported. The types cannot be interpreted as runtime handles.
 
 ## Source callable types: parsed, validated, and gated
 
+Use `=>` for callable **type declarations**, such as `fnc(int) => int`.
+Use `->` for lambda **body boundaries**, such as `|n| : int -> n * 2`.
+The former `fnc(int) -> int` type spelling is rejected, not silently accepted as an alias.
+
 The browser frontend now recognizes scalar callable type syntax such as
-`fnc(int) -> int`, `fnc(int, bool) -> string`, and `fnc() -> void`.
-For example, a declaration may use `fnc(int) -> int callback` as a
-parameter type, or `val callback: fnc(int) -> int = ...` as an
+`fnc(int) => int`, `fnc(int, bool) => string`, and `fnc() => void`.
+For example, a declaration may use `fnc(int) => int callback` as a
+parameter type, or `val callback: fnc(int) => int = ...` as an
 annotated binding. Identical scalar signatures are interned by canonical
 shape (including aliases such as `boolean` / `bool` and
 `String` / `string`), not by source position.
@@ -149,7 +159,7 @@ resolves canonical signatures into `CallableSignature`, and rejects
 forged or malformed signature metadata. **Executable callable parameters,
 values, returns and indirect dispatch remain unsupported:** a program
 that needs those runtime features fails with `E_UNSUPPORTED` and produces
-no guest Wasm. `fnc(int) -> int` describes a callable contract; it
+no guest Wasm. `fnc(int) => int` describes a callable contract; it
 does not yet allocate a function table or make lambdas first-class.
 
 The earlier direct-lambda profile (private, noncapturing direct Wasm calls)
@@ -159,7 +169,49 @@ Wasm table entries and a typed indirect-call ABI with ownership checks.
 When a lambda is explicitly annotated with a callable type, the
 compiler performs contextual arity, return-type, and capture analysis
 before returning the runtime `E_UNSUPPORTED` gate. For example, an
-annotated `fnc(int)->bool` lambda returning an integer produces
+annotated `fnc(int) =>bool` lambda returning an integer produces
 `E_TYPE`, while referring to an outer variable produces `E_CAPTURE`.
 A correctly typed annotation still cannot execute or escape without the
 indirect-table ABI.
+
+## Playground direct-lambda / functor compatibility profile (candidate)
+
+The browser-oriented `closure-lambda-functor-direct-profile.atto` guest
+fixture composes three **independently compiled direct** paths: a capture-free
+scalar lambda, one expression-bodied lambda capturing an immutable scalar
+parameter, and an ordinary class with an explicit `.call(int)` method. It
+returns 42 if all three behave correctly. `tests/closures-wasm.mjs` must
+compile that same source via both the native Rust compiler and the actual
+`wasm32-unknown-unknown` compiler, compare guest module bytes, and execute
+the generated guest to observe `main() == 42`. The fixture is not a claim
+that callable objects are generally executable.
+
+A lifted captured name must retain **definition-site lexical identity**.
+Until the compiler has an owned closure environment, nested bindings,
+for-in binders, and match-arm binders that shadow a lifted capture are
+rejected with `E_CAPTURE`, rather than silently redirecting the read to
+the inner binding. The corresponding negative source fixture is
+`lambda-direct-capture-shadow.atto`. Mutable captures and escaping factory
+closures are separate negative tests.
+
+Reference comparisons:
+
+- `oreslang-source.java/examples/callables.ores` demonstrates lexical
+  closure capture versus explicit `nlex` noncapturing lambdas; its
+  `OwnershipAndClosureTest` also exercises escaping mutable captures.
+- `oreslang-source.llvm` currently contains scalar frontend/IR and
+  experimental functor type and runtime components, not a proven
+  native guest implementation of the full escaping closure/functor ABI.
+- In AttoLang, the canonical authored lambda return annotation uses
+  `|n| : int -> ...`. `fnc(int) => int` names a callable **source type**
+  but does not automatically authorize indirect Wasm calls.
+
+The website's broader **Closures, functors and lambdas** preview also uses
+`make_adder(...): fnc(int) => int` and a higher-order
+`apply_twice(callback, ...)`. These require first-class callable values,
+owned closure environments, a verified typed indirect-call/table contract,
+and native/wasm32/browsers guest execution receipts. **Do not enable the
+preview's Run/Format actions or promote compiler bytes based only on this
+bounded direct-call fixture.** The currently pinned public compiler predates
+this branch and must be separately rebuilt, independently reviewed, and
+released through the protected Pages gate.

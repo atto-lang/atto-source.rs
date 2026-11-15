@@ -1,0 +1,7 @@
+// expect-error: E_CAPTURE
+pub fnc main(): int {
+  let counter = 2;
+  val multiply = |n| : int -> n * counter;
+  counter = 3;
+  return multiply(14);
+}

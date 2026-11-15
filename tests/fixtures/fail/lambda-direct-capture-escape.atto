@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED
+fnc make_multiplier(int factor): fnc(int)=>int {
+  return |n| : int -> n * factor;
+}
+pub fnc main(): int { return 0; }

@@ -1,0 +1,7 @@
+// expect-error: E_CAPTURE
+// A variable introduced after the lambda must not be captured retroactively.
+pub fnc main(): int {
+  val add = |n| : int -> n + offset;
+  val offset = 7;
+  return add(35);
+}

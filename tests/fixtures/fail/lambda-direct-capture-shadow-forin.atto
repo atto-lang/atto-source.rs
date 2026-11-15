@@ -1,0 +1,13 @@
+// expect-error: E_CAPTURE
+// A for-in binder must not retarget a closure's definition-site capture.
+fnc *gen one(): Generator<int> {
+  yield 1;
+}
+pub fnc main(): int {
+  val offset = 7;
+  val add = |n| : int -> n + offset;
+  for offset in one() do
+    return add(35);
+  done
+  return 0;
+}
