@@ -116,7 +116,7 @@ fn canonical_callable_type_factory_compiles_bounded_owned_environment() {
     // This bounded factory escape is now compiled to a private, owned class;
     // general first-class callable parameters remain gated separately.
     let guest = atto_compiler::compile(source).expect("bounded owned closure factory");
-    assert!(guest.starts_with(b"\\0asm"));
+    assert!(guest.starts_with(b"\0asm"));
 }
 
 #[test]
