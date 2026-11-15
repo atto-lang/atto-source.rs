@@ -1,0 +1,9 @@
+// expect-error: E_TYPE
+// The declared <bool> result must be checked even if the outer fnc is int.
+fnc wrong(int voters, int acknowledgements): int {
+  return match<bool> (voters, acknowledgements) over
+    on voters < 1 -> 1,
+    default -> 0
+  end;
+}
+pub fnc main(): int { return 0; }

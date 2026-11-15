@@ -1,0 +1,8 @@
+// expect-error: E_TYPE
+fnc quorum(bool voters, int acknowledgements): bool {
+  return match<bool> (voters, acknowledgements) over
+    on acknowledgements > 1 -> true,
+    default -> false
+  end;
+}
+pub fnc main(): int { return 0; }
