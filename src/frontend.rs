@@ -223,6 +223,16 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "Oreslang source exceeds 256 KiB prototype limit".into(),
         });
     }
+    // Reject raw NUL before preprocessing. Otherwise an ignored /* ... */
+    // or // comment could erase it and produce a valid executable AST.
+    // The source is already a valid UTF-8 &str; report its byte offset.
+    if let Some(offset) = source.bytes().position(|byte| byte == 0) {
+        return Err(ParseError {
+            offset,
+            class: "source_admission",
+            message: "source contains NUL byte".into(),
+        });
+    }
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
@@ -585,6 +595,36 @@ mod tests {
             parse("fnc owned(int owned): int { const local: int = owned; return local; }").unwrap();
         assert_eq!(ast.functions[0].locals.len(), 1);
     }
+    #[test]
+    fn raw_nul_is_denied_before_opaque_block_comment_preprocessing() {
+        let source = "/* hidden\0text */ pub fnc main(): int { return 42; }";
+        let error = parse(source).expect_err("a block comment must not conceal raw NUL");
+        assert_eq!(error.class, "source_admission");
+        assert_eq!(error.offset, source.find('\0').unwrap());
+        assert_eq!(error.message, "source contains NUL byte");
+    }
+
+    #[test]
+    fn raw_nul_is_denied_in_line_comments_and_between_tokens() {
+        for source in [
+            "// hidden\0text\npub fnc main(): int { return 42; }",
+            "pub fnc main(): int { return\0 42; }",
+        ] {
+            let error = parse(source).expect_err("raw NUL must fail closed");
+            assert_eq!(error.class, "source_admission");
+            assert_eq!(error.offset, source.find('\0').unwrap());
+        }
+    }
+
+    #[test]
+    fn valid_utf8_comments_continue_to_compile() {
+        let source = "/* café 😀 */ pub fnc main(): int { return 42; }";
+        assert_eq!(
+            parse(source).unwrap().functions[0].expression,
+            Expr::Integer(42)
+        );
+    }
+
     #[test]
     fn ignores_double_slash_comment() {
         assert!(parse("// first\npub fnc main(): int { return 40+2; }").is_ok());
