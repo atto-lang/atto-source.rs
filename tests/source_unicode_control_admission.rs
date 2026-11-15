@@ -16,7 +16,7 @@ fn forbidden_controls_are_rejected_before_both_comment_forms() {
         let cases = [
             format!("{GOOD} // hidden{character}return 0;"),
             format!("/* hidden{character} */ {GOOD}"),
-            format!("// hidden{character}\\n{GOOD}"),
+            format!("// hidden{character}\n{GOOD}"),
         ];
         for source in cases {
             let position = source.find(character).expect("control exists");
