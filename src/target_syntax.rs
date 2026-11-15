@@ -334,11 +334,11 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 format!("receiver owner '{}' is not declared in this source namespace",
                     receiver.owner)));
         }
+        // Class-only target signatures have no typed class receiver linker.
+        // Reject duplicate owners early; actor collisions must instead flow
+        // through check_target_actor_interface, which distinguishes identical
+        // duplicates (E_DUPLICATE) from incompatible types (E_SIGNATURE).
         let duplicate_inline = out.class_definitions.iter()
-            .filter(|d| d.name == receiver.owner)
-            .any(|d| d.methods.iter().any(|m| m.name == receiver.name &&
-                 m.params.len() == receiver.arity)) ||
-            out.definitions.iter()
             .filter(|d| d.name == receiver.owner)
             .any(|d| d.methods.iter().any(|m| m.name == receiver.name &&
                  m.params.len() == receiver.arity));
