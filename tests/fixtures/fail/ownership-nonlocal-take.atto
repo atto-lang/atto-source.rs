@@ -1,0 +1,2 @@
+// expect-error: E_MOVE
+pub fnc main(): int { return take! (40 + 2); }
