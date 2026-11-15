@@ -17,6 +17,11 @@ pub enum Type {
     Named(u32),
     /// Unresolved `ActorRef<Name>`: index into [`Program::type_names`].
     NamedRef(u32),
+    /// Source-level `fnc(T1, T2) -> R` signature. The index refers to a
+    /// canonical, compiler-interned signature in `Program::type_names`.
+    /// This type is recognized and checked, but cannot yet be represented
+    /// as a runtime value or Wasm function-table entry.
+    Callable(u32),
     /// Instance of `Program::classes[i]` (a heap reference).
     Class(u32),
     /// Value of `Program::enums[i]`.
@@ -48,6 +53,7 @@ impl Type {
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
+            Type::Callable(_) => "fnc(...)->...",
             _ => "object",
         }
     }
@@ -61,9 +67,14 @@ pub struct Program {
     pub actors: Vec<ActorDecl>,
     /// Explicit file-level exports (resolved after all declarations are parsed).
     pub exports: Vec<ExportDecl>,
-    /// Spellings referenced by `Type::Named` / `Type::NamedRef`.
+    /// Optional non-executable out-of-line actor interface in the production AST.
+    /// Executable actor code still uses the normal actors field above.
+    pub actor_interface: Option<ActorInterface>,
+    /// Spellings referenced by `Type::Named` / `Type::NamedRef`, plus
+    /// canonical compiler-interned source callable signatures.
     pub type_names: Vec<(String, Pos)>,
 }
+
 
 /// Visibility of a file-level export, independent of declaration order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +100,28 @@ pub struct ExportDecl {
     pub visibility: ExportVisibility,
     /// Optional when the symbol kind is inferred from the file's declarations.
     pub kind: Option<ExportKind>,
+}
+
+/// Target-only nominal actor interface retained in the production Program AST.
+/// Indices in method ActorRef types refer to forwards, NOT executable actors.
+/// The backend must not emit this partial interface.
+#[derive(Clone, Debug)]
+pub struct ActorInterface {
+    pub namespace: Option<String>,
+    pub forwards: Vec<String>,
+    pub methods: Vec<ActorInterfaceMethod>,
+}
+
+/// Typed out-of-line receiver signature; its body is not lowered.
+#[derive(Clone, Debug)]
+pub struct ActorInterfaceMethod {
+    pub owner: u32,
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret: Type,
+    pub mutable: bool,
+    pub public: bool,
+    pub pos: Pos,
 }
 
 /// Who may assign a field after its initializer ran.
@@ -334,6 +367,15 @@ impl BinOp {
     }
 }
 
+/// Lambda bodies distinguish an implicit-return expression, a single
+/// terminated statement, and a braced multi-statement block.
+#[derive(Clone, Debug)]
+pub enum LambdaBody {
+    Expression(Box<Expr>),
+    Statement(Box<Stmt>),
+    Block(Vec<Stmt>),
+}
+
 #[derive(Clone, Debug)]
 pub enum ExprKind {
     /// Integer literal. `None` is 2^63, only legal as the operand of unary minus.
@@ -363,6 +405,15 @@ pub enum ExprKind {
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
     MethodCall(Box<Expr>, String, Vec<Expr>),
+    /// Syntax-only sequence literal. Browser guest allocation is not lowered.
+    Array(Vec<Expr>),
+    /// Parsed lambda signature/body. The browser backend deliberately rejects
+    /// callable values until closure capture and runtime types are implemented.
+    Lambda {
+        params: Vec<String>,
+        return_type: Option<String>,
+        body: LambdaBody,
+    },
 }
 
 #[derive(Clone, Debug)]
