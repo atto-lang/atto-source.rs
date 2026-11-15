@@ -3155,7 +3155,10 @@ impl<'a> FnCx<'a> {
                 }
                 let (payload, actor_name) = (actor.payload, actor.name.clone());
                 self.arity("ActorRef.send", 1, args.len(), pos)?;
-                let v = self.value(&args[0])?;
+                // Mail admission transfers an owned, Send-capable scalar value.
+                // A lexical borrow alias must be copied explicitly; sending
+                // the alias itself must not silently escape its owner scope.
+                let v = self.consume(&args[0])?;
                 if v.ty != payload {
                     return Err(type_err(
                         args[0].pos,
