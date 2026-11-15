@@ -5,7 +5,7 @@ use oreslang_source_rs::frontend::parse;
 fn ownership_bangs_fail_closed_before_native_ir() {
     for expression in [
         "copy!42", "take!42", "borrow! item", "borrow!item",
-        "borrow! mut item", "borrow!mut item", "share!item",
+        "borrow! mut item", "borrow!mut item", "mut borrow! item", "mut borrow!item", "share!item",
     ] {
         let source = format!("pub fnc main(): int {{ return {expression}; }}");
         let error = parse(&source).expect_err(&source);
