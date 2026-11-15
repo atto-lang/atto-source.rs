@@ -275,3 +275,58 @@ pub mod native_experiment {
         }
     }
 }
+
+#[cfg(test)]
+mod verifier_tests {
+    use super::*;
+
+    fn valid_paths() -> (Vec<CleanupPath>, Vec<(StateLeaseMode,bool)>) {
+        let mode=StateLeaseMode::ExclusiveWrite;
+        let make=|exit:CleanupExit| CleanupPath {
+            lease:0,exit,pos:Pos{line:1,col:1},
+            ops:vec![
+                CleanupOp::Acquire{lease:0,mode:mode.clone()},
+                CleanupOp::Release{lease:0},
+                CleanupOp::Exit(exit),
+            ],
+        };
+        (vec![make(CleanupExit::Normal),make(CleanupExit::CheckedPanic),
+              make(CleanupExit::CooperativeCancel)],vec![(mode,true)])
+    }
+
+    #[test]
+    fn cleanup_path_verifier_rejects_missing_double_and_wrong_unlocks() {
+        let (good,types)=valid_paths();
+        verify_paths(&good,&types).unwrap();
+        let mut broken=good.clone();
+        broken[0].ops.remove(1);
+        assert_eq!(verify_paths(&broken,&types).unwrap_err().code,"E_CLEANUP");
+        let mut broken=good.clone();
+        broken[0].ops.insert(2,CleanupOp::Release{lease:0});
+        assert_eq!(verify_paths(&broken,&types).unwrap_err().code,"E_CLEANUP");
+        let mut broken=good.clone();
+        broken[0].ops[1]=CleanupOp::Release{lease:1};
+        assert_eq!(verify_paths(&broken,&types).unwrap_err().code,"E_CLEANUP");
+        let mut broken=good.clone();
+        broken[0].ops[0]=CleanupOp::Acquire{
+            lease:0,mode:StateLeaseMode::SharedRead
+        };
+        assert_eq!(verify_paths(&broken,&types).unwrap_err().code,"E_CLEANUP");
+    }
+
+    #[test]
+    fn cleanup_path_verifier_requires_all_relevant_exit_edges() {
+        let (good,types)=valid_paths();
+        for exit in [CleanupExit::Normal,CleanupExit::CheckedPanic,
+            CleanupExit::CooperativeCancel] {
+            let broken:Vec<_>=good.iter().filter(|p|p.exit!=exit).cloned().collect();
+            assert_eq!(verify_paths(&broken,&types).unwrap_err().code,"E_CLEANUP");
+        }
+        let mut broken=good.clone();
+        broken.push(good[0].clone());
+        assert_eq!(verify_paths(&broken,&types).unwrap_err().code,"E_CLEANUP");
+        let mut broken=good;
+        broken[0].lease=5;
+        assert_eq!(verify_paths(&broken,&types).unwrap_err().code,"E_CLEANUP");
+    }
+}
