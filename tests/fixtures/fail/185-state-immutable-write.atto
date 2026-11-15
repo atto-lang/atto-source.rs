@@ -1,4 +1,4 @@
-// expect-error: E_IMMUTABLE
+// expect-error: E_STATE
 define state Counter as
   state { val int count: 0; }
   pub change(): void {
