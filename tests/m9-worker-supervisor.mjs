@@ -110,5 +110,27 @@ try {
   assert.equal(notices.filter(x=>x.actor_id===c.actor_id&&x.kind==='PANIC').length,1);
   assert.equal(host.try_send(c,1),'STALE');
   console.log('M9_SUSPENDED_WORKER_CANCEL_AND_QUIESCENCE=PASS');
+  // A STOP delivered while a real continuation is in flight must carry
+  // message_id=0, not the active DATA sequence, in both backends.
+  const draining=host.spawn(make_worker(),healthy,21);
+  assert.equal(host.try_send(draining,100000),'ACCEPTED');
+  const drainDeadline=Date.now()+15000;
+  while(host.snapshot(draining).yielded<3 && Date.now()<drainDeadline)
+    await new Promise(resolve=>setTimeout(resolve,1));
+  const mid=host.check_conservation(draining);
+  assert.ok(mid.inFlight===1 && mid.yielded>=3,
+    'STOP case must observe an actually suspended in-flight turn');
+  assert.equal(host.request_stop(draining),true);
+  assert.equal(host.try_send(draining,1),'CLOSED');
+  assert.ok(await host.await_terminal(draining,30000),'STOP failed to drain active frame');
+  const drained=host.check_conservation(draining);
+  assert.equal(drained.completed,1);
+  assert.equal(drained.failed+drained.abandoned,0);
+  assert.equal(drained.resultSum,4999950000n);
+  const stops=notices.filter(x=>x.actor_id===draining.actor_id);
+  assert.deepEqual(stops.map(x=>x.kind),['STOP']);
+  assert.equal(stops[0].message_id,0,'STOP must not expose active DATA ID');
+  assert.equal(JSON.parse(notice_to_wire_json(stops[0])).message_id,0);
+  console.log('M9_STOP_ACTIVE_TURN_WIRE_ZERO_MESSAGE_ID=PASS');
 } finally {await host.close();}
 console.log('M9_SCOPE=DEDICATED_WORKERS_RESTRICTED_COMPILED_ATTO_NOT_POOLED_OR_FULL_ACTOR_HOST');
