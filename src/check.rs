@@ -1696,7 +1696,11 @@ impl<'a> FnCx<'a> {
                     Some(ty) => Some(self.resolve(*ty, *pos)?),
                     None => None,
                 };
-                let gen = self.consume(source)?;
+                let gen = match (wanted, &source.kind) {
+                    (Some(Type::Class(c)), ExprKind::ArrayLit(items)) if items.is_empty() =>
+                        self.consume_expected(source, Type::ArrayClass(c))?,
+                    _ => self.consume(source)?,
+                };
                 let actual_item = match gen.ty {
                     Type::GeneratorInt | Type::ArrayInt => Type::Int,
                     Type::ArrayClass(c) => Type::Class(c),
@@ -2336,6 +2340,15 @@ impl<'a> FnCx<'a> {
     /// Construct an ADT only where the full expected type is unambiguous.
     /// Neither Null nor a bare payload implicitly converts to an ADT.
     fn consume_expected(&mut self, e: &Expr, want: Type) -> R<TE> {
+        // A genuinely empty class-array literal has no element to infer its
+        // type from. Require a contextual Array<Class>; never create an
+        // untyped/nullable object array or a hidden heap allocation.
+        if let (Type::ArrayClass(_), ExprKind::ArrayLit(items)) = (want, &e.kind) {
+            if items.is_empty() {
+                let tmp = self.temp(Type::Bool, e.pos)?;
+                return Ok(TE { e: TExpr::ArrayNew { elements: Vec::new(), tmp }, ty: want });
+            }
+        }
         let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
             ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
                 if args.len() != 1 {
