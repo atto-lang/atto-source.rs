@@ -19,6 +19,8 @@ const negative = [
   '165-callable-trailing-comma.atto',
   '166-callable-colon-colon-brace.atto',
   '167-callable-brace-comma.atto',
+  '168-callable-nested-brace-comma.atto',
+  '169-callable-colon-arrow-end.atto',
 ];
 const allowed = new Set(['print_i64','print_bool','print_str','print_newline','print_f64','actor_spawn','actor_send']);
 const imports = {
