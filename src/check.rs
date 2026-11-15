@@ -799,6 +799,18 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut exports = Vec::new();
     let mut exported_names = BTreeSet::new();
     for e in &p.exports {
+        // atto.exports.v1 is a portable, canonical cross-backend ABI. The
+        // source lexer permits Unicode identifiers, but Wasm host admission
+        // requires ASCII identifier names of at most 256 UTF-8 bytes.
+        // Fail in the compiler rather than emitting unreadable metadata.
+        if !e.name.is_ascii() {
+            return Err(Diagnostic::new(e.pos, "E_EXPORT_NAME",
+                "export names must use canonical ASCII identifiers"));
+        }
+        if e.name.len() > 256 {
+            return Err(Diagnostic::new(e.pos, "E_EXPORT_NAME_TOO_LONG",
+                "export names may not exceed 256 bytes"));
+        }
         if !exported_names.insert(e.name.as_str()) {
             return Err(Diagnostic::new(e.pos, "E_DUPLICATE",
                 format!("duplicate export for '{}'", e.name)));
