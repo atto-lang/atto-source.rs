@@ -1,0 +1,4 @@
+// expect-error: E_INHERITANCE_CYCLE
+define class Left extends Right as end
+define class Right extends Left as end
+pub fnc main(): int { return 0; }

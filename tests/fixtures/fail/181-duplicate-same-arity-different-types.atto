@@ -1,0 +1,6 @@
+// expect-error: E_DUPLICATE
+define class C as
+  pub score(int n): int { return n; }
+  pub score(bool flag): int { return 42; }
+end
+pub fnc main(): int { return 0; }

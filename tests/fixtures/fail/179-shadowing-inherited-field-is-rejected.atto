@@ -1,0 +1,8 @@
+// expect-error: E_AMBIGUOUS_MEMBER
+define class Parent as
+  pub int value: 3;
+end
+define class Child extends Parent as
+  pub int value: 5;
+end
+pub fnc main(): int { return 0; }

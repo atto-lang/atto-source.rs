@@ -1,0 +1,12 @@
+// expect-exit: 42
+define trait Alpha as
+  a(): int { return 40; }
+end
+define trait Beta as
+  b(): int { return 2; }
+end
+define class C implements Alpha, Beta as end
+pub fnc main(): int {
+  val c = new C();
+  return c.a() + c.b();
+}

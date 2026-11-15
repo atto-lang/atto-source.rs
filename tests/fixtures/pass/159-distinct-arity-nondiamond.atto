@@ -1,0 +1,12 @@
+// expect-exit: 42
+define class Left as
+  pub score(): int { return 1; }
+end
+define class Right as
+  pub score(int n): int { return n + 40; }
+end
+define class Combined extends Left, Right as end
+pub fnc main(): int {
+  val c = new Combined();
+  return c.score() + c.score(1);
+}

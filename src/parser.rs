@@ -501,6 +501,17 @@ impl Parser {
             let at = usize::from(public);
             let start = self.pos();
             match (self.word_at(at), self.word_at(at + 1)) {
+                (Some("define"), Some("pub")) if !public
+                    && matches!(self.word_at(2), Some("trait" | "interface")) => {
+                    let interface = self.word_at(2) == Some("interface");
+                    self.i += 3;
+                    prog.contracts.push(self.parse_contract(true, interface)?);
+                }
+                (Some("define"), Some("trait" | "interface")) => {
+                    let interface = self.word_at(at + 1) == Some("interface");
+                    self.i += at + 2;
+                    prog.contracts.push(self.parse_contract(public, interface)?);
+                }
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
                     prog.classes.push(self.parse_class(public)?);
@@ -548,17 +559,85 @@ impl Parser {
     /// After `define class`: `Name as { class_member } end`.
     fn parse_class(&mut self, public: bool) -> R<ClassDecl> {
         let (name, pos) = self.ident("a class name")?;
-        self.decl_head("class")?;
+        if *self.peek() == Tok::Lt {
+            return Err(unsupported(self.pos(), "generic classes"));
+        }
+        let bases = if self.eat_word("extends") {
+            self.parse_parent_names("class base")?
+        } else { Vec::new() };
+        let implements = if self.eat_word("implements") {
+            self.parse_parent_names("trait or interface")?
+        } else { Vec::new() };
         self.expect_word("as")?;
         let m = self.parse_members(&name, false, "end")?;
         Ok(ClassDecl {
-            name,
-            pos,
-            public,
-            fields: m.fields,
-            ctor: m.ctor,
-            methods: m.methods,
+            name, pos, public, bases, implements,
+            fields: m.fields, ctor: m.ctor, methods: m.methods,
         })
+    }
+
+    fn parse_parent_names(&mut self, context: &str) -> R<Vec<(String, Pos)>> {
+        let mut names = Vec::new();
+        loop {
+            if names.len() >= MAX_MEMBERS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "too many inherited types"));
+            }
+            let (name, pos) = self.ident(context)?;
+            if names.iter().any(|(n, _): &(String, Pos)| n == &name) {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                    format!("duplicate {context} '{name}'")));
+            }
+            names.push((name, pos));
+            if !self.eat(&Tok::Comma) { break; }
+        }
+        Ok(names)
+    }
+
+    /// A trait may supply methods; an interface contains only requirements.
+    fn parse_contract(&mut self, public: bool, interface: bool) -> R<ContractDecl> {
+        let (name, pos) = self.ident("a trait or interface name")?;
+        self.expect_word("as")?;
+        let mut methods: Vec<Method> = Vec::new();
+        while !self.eat_word("end") {
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected("'end' to close trait or interface"));
+            }
+            if methods.len() >= MAX_MEMBERS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "too many trait/interface members"));
+            }
+            self.eat_word("pub");
+            if self.eat_word("private") || self.is_word("static") || self.is_word("override") {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "trait/interface members cannot be private, static or override"));
+            }
+            self.eat_word("fnc");
+            self.eat_word("method");
+            let (method_name, mpos) = self.ident("a trait/interface method")?;
+            self.expect(Tok::LParen, "'('")?;
+            let params = self.parse_params()?;
+            let ret = self.parse_return_spec()?;
+            let body = if interface {
+                if *self.peek() == Tok::LBrace {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "interface methods require signatures without bodies"));
+                }
+                self.terminator()?;
+                Vec::new()
+            } else {
+                self.parse_block()?
+            };
+            if methods.iter().any(|m| m.name == method_name && m.params.len() == params.len()) {
+                return Err(Diagnostic::new(mpos, "E_DUPLICATE",
+                    format!("duplicate member '{method_name}' with arity {} in '{name}'", params.len())));
+            }
+            methods.push(Method {
+                name: method_name, pos: mpos, public: true,
+                is_static: false, override_member: false, params, ret, body,
+            });
+        }
+        Ok(ContractDecl { name, pos, public, interface, methods })
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
@@ -673,6 +752,13 @@ impl Parser {
                 self.eat_word("private");
                 false
             };
+            let override_member = self.eat_word("override");
+            if override_member && (actor ||
+                !matches!(self.word_at(0), Some("fnc" | "method")) &&
+                *self.peek_at(1) != Tok::LParen) {
+                return Err(Diagnostic::new(mpos, "E_OVERRIDE",
+                    "override requires a class instance method declaration"));
+            }
             let word = self.word_at(0).map(str::to_owned);
             match word.as_deref() {
                 Some("static") => {
@@ -684,7 +770,7 @@ impl Parser {
                         return Err(unsupported(self.pos(), &format!("'{w}' static functions")));
                     }
                     self.expect_word("fnc")?;
-                    let method = self.parse_method(public, true)?;
+                    let method = self.parse_method(public, true, false)?;
                     m.methods.push(method);
                 }
                 Some("constructor") => {
@@ -751,7 +837,7 @@ impl Parser {
                 }
                 Some("fnc" | "method") => {
                     self.advance();
-                    let method = self.parse_method(public, false)?;
+                    let method = self.parse_method(public, false, override_member)?;
                     m.methods.push(method);
                 }
                 Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
@@ -776,7 +862,7 @@ impl Parser {
                     m.receive = Some(r);
                 }
                 Some(_) if *self.peek_at(1) == Tok::LParen => {
-                    let method = self.parse_method(public, false)?;
+                    let method = self.parse_method(public, false, override_member)?;
                     m.methods.push(method);
                 }
                 Some(_) if *self.peek_at(1) == Tok::Colon && !actor => {
@@ -846,7 +932,7 @@ impl Parser {
     }
 
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
-    fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
+    fn parse_method(&mut self, public: bool, is_static: bool, override_member: bool) -> R<Method> {
         let (name, pos) = self.ident("a method name")?;
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic methods"));
@@ -869,6 +955,7 @@ impl Parser {
             pos,
             public,
             is_static,
+            override_member,
             params,
             ret,
             body,

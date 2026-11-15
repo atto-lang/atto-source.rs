@@ -1,0 +1,3 @@
+// expect-error: E_UNKNOWN_TYPE
+define class Child extends Invisible as end
+pub fnc main(): int { return 0; }

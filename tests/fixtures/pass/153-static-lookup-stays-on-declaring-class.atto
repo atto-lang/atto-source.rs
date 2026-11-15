@@ -1,0 +1,11 @@
+// expect-exit: 42
+define class Base as
+  pub static fnc base_answer(): int { return 40; }
+end
+define class Child extends Base as
+  pub answer(): int { return 2; }
+end
+pub fnc main(): int {
+  val child = new Child();
+  return Base.base_answer() + child.answer();
+}

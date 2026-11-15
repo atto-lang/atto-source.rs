@@ -1,0 +1,12 @@
+// expect-exit: 21
+define class Base as
+  pub value(): int { return 7; }
+  pub read(): int { return self.value(); }
+end
+define class Child extends Base as
+  pub override value(): int { return 21; }
+end
+pub fnc main(): int {
+  val instance = new Child();
+  return instance.read();
+}

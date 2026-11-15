@@ -1,0 +1,11 @@
+// expect-exit: 3
+define class Base as
+  pub value(): int { return 1; }
+end
+define class Child extends Base as
+  pub static fnc value(): int { return 2; }
+end
+pub fnc main(): int {
+  val child = new Child();
+  return child.value() + Child.value();
+}
