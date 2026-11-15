@@ -1,0 +1,8 @@
+// expect-exit: 40
+fnc apply_twice(fnc(int) => int operation, int value): int {
+    return operation(operation(value));
+}
+pub fnc main(): int {
+    val double_it = |n| : int -> n * 2;
+    return apply_twice(double_it, 10);
+}
