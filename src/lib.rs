@@ -18,6 +18,7 @@ pub mod target_flow;
 pub mod target_borrow;
 pub mod target_cleanup;
 pub mod target_cleanup_cfg;
+pub mod target_cleanup_wasm;
 pub mod target_scalar;
 mod target_scalar_cfg;
 pub mod target_typed;
@@ -182,6 +183,7 @@ mod abi {
             let built = match preview {
                 1 => super::target_scalar::compile_scalar_receiver_preview(source),
                 2 => super::target_scalar::compile_scalar_receiver_instance_preview(source),
+                3 => super::target_cleanup_wasm::compile_cleanup_wasm_witness(source),
                 _ => super::compile(source),
             };
             match built {
@@ -208,5 +210,11 @@ mod abi {
     #[no_mangle]
     pub extern "C" fn compile_receiver_instance_preview(length: i32) -> i32 {
         compile_inner(length,2)
+    }
+
+    /// Experimental synthetic cleanup witness, not source callback execution.
+    #[no_mangle]
+    pub extern "C" fn compile_cleanup_wasm_witness(length: i32) -> i32 {
+        compile_inner(length,3)
     }
 }
