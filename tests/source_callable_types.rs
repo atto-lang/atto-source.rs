@@ -130,6 +130,7 @@ fn direct_ast_cannot_forge_callable_metadata_or_indices() {
     let p = parse(&format!("pub fnc apply(fnc(int)=>int callback): int {{ return 0; }} {MAIN}"));
     let t = p.funcs[0].params[0].ty;
     for forged in ["fnc(bool)=>int", "fnc(void)=>int", "fnc(int)=>nope",
+        "fnc(int)->int",
         "fnc(int,)=>int", "fnc(int)=>int trailing"] {
         let mut names = p.type_names.clone();
         names[0].0 = forged.into();
