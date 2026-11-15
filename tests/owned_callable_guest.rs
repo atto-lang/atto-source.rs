@@ -5,13 +5,13 @@ const TWICE: &str = "fnc apply_twice(fnc(int) => int operation, int value): int 
 #[test]
 fn escaping_integer_capture_emits_deterministic_guest_wasm() {
     let first = atto_compiler::compile(ADDER).expect("class-backed owned capture");
-    assert!(first.starts_with(b"\\0asm"), "must emit real guest Wasm");
+    assert!(first.starts_with(b"\0asm"), "must emit real guest Wasm");
     assert_eq!(first, atto_compiler::compile(ADDER).unwrap());
 }
 #[test]
 fn higher_order_callable_executes_through_emitted_receiver_method() {
     let first = atto_compiler::compile(TWICE).expect("typed higher-order closure");
-    assert!(first.starts_with(b"\\0asm"));
+    assert!(first.starts_with(b"\0asm"));
     assert_eq!(first, atto_compiler::compile(TWICE).unwrap());
 }
 #[test]
