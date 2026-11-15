@@ -183,6 +183,32 @@ and executed by both native and wasm32 compiler paths in CI. This work
 does not update the pinned public playground compiler or lift the
 syntax-preview labels.
 
+### Deferred cleanup and recovery: explicit unsupported boundary
+
+The proposed v1 contract is
+[atto-spec defer/recover unwind](https://github.com/atto-lang/atto-spec/blob/main/language/defer-recover-unwind-v1.md).
+An explicit `raise Error` bypasses typed `catch` and `trap` but must be
+delivered to an eligible registered `recover` callback after unwind cleanup.
+An ordinary `throw Error` can reach that recovery boundary **only after**
+escaping the matching local/caller `try/catch` chain; an ordinary matching
+catch wins. Neither `recover` nor `catch` may consume `panic`, authenticated
+cancellation, host errors or VM traps. Synchronous `defer` executes LIFO
+exactly once on every permitted exit and cannot rewrite the pending return
+value or silently suppress a stronger failure.
+
+**The current Rust/native and wasm32 compiler paths do not yet implement
+source `defer`, `recover`, `raise` or `try/catch/finally`.** Both paths
+reject these constructs with an `E_UNSUPPORTED` diagnostic, **not a guest
+Wasm artifact**. Dedicated negative fixtures in
+`tests/fixtures/fail/{defer_unwind_requires_codegen,raise_requires_recovery_effect,
+recover_requires_typed_callback,try_catch_chain_not_recover}.atto` run in
+the existing native/wasm32 conformance corpus. These are enforcement gates,
+not positive parity evidence. Implementing true execution requires typed
+unwind frames, separate EH channels, cleanup edge lowering, one-shot recovery
+cursors and executed cross-backend guest tests. Do not enable the public
+playground preview until that proof exists and the published binary is
+reviewed and repinned.
+
 ### First executable caller-side `trap expr` and ordinary guest throws
 
 The Rust/Wasm browser subset admits synchronous `trap expr` for the two
