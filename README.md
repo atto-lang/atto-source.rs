@@ -23,6 +23,15 @@ Implement tooling previously written in Python in **Rust** instead. Preserve beh
 
 This rule applies across all repositories, including compiler backends, examples, benchmarks, workflows, and documentation. Language implementations written in Java, LLVM/other native languages, .NET, etc. remain in their existing implementation languages; **the Python-to-Rust mandate applies to Python tooling and Python implementations**.
 
+## Scalar compiler structural resource bounds
+
+In addition to the 256 KiB parser source limit, 2,048-token budget and
+64-level parenthesis limit, the frontend now rejects any constructed
+expression AST deeper than 128 nodes, including long left-associated
+operator chains, function-call arguments and local initializers. This
+guard executes before recursive MIR validation or native Cranelift AOT
+object emission; it does not certify hard real-time execution.
+
 ## Build profiles
 
 The compiler accepts `--release`, `--strict-aot`, and `--hard-rt` as mutually
