@@ -2131,20 +2131,27 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
-        self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
+        // An unpiped standalone '_' is an arity-polymorphic discard lambda.
+        // Pipe-delimited '|_|' always discards exactly one argument.
+        let variadic = matches!(self.peek(), Tok::Ident(name) if name == "_");
         let mut params = Vec::new();
-        if !self.eat(&Tok::Pipe) {
-            loop {
-                if params.len() >= MAX_PARAMS {
-                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
+        if variadic {
+            self.advance();
+        } else {
+            self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
+            if !self.eat(&Tok::Pipe) {
+                loop {
+                    if params.len() >= MAX_PARAMS {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
+                    }
+                    let (name, pos) = self.ident("a lambda parameter")?;
+                    if name != "_" && params.contains(&name) {
+                        return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
+                    }
+                    params.push(name);
+                    if self.eat(&Tok::Pipe) { break; }
+                    self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
                 }
-                let (name, pos) = self.ident("a lambda parameter")?;
-                if params.contains(&name) {
-                    return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
-                }
-                params.push(name);
-                if self.eat(&Tok::Pipe) { break; }
-                self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
             }
         }
         let mut return_type = if self.eat(&Tok::Colon) {
@@ -2206,7 +2213,7 @@ impl Parser {
         } else {
             LambdaBody::Expression(Box::new(self.parse_expr()?))
         };
-        Ok(ExprKind::Lambda { params, return_type, body })
+        Ok(ExprKind::Lambda { params, variadic, return_type, body })
     }
 
     fn parse_array_literal(&mut self) -> R<ExprKind> {
@@ -2252,6 +2259,8 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "_" if matches!(self.peek_at(1), Tok::Colon | Tok::Arrow | Tok::FatArrow) =>
+                    self.parse_lambda()?,
                 "true" => {
                     self.advance();
                     ExprKind::Bool(true)
