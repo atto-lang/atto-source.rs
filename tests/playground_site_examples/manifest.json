@@ -1,0 +1,83 @@
+{
+  "schema": "atto.compiler.playground-exact-source.v1",
+  "site_repository": "atto-lang/atto-lang.github.io",
+  "site_commit": "c5ce2324d6277e91817ac2fb4b4e12f7b838afa7",
+  "compiler_scope": "browser guest v2 subset, not Java/LLVM semantic parity",
+  "cases": [
+    {
+      "name": "hello",
+      "path": "hello.atto",
+      "site_blob": "c47e66424a708f1735677a8436e70f8aaabe80a5",
+      "kind": "execute",
+      "exit": "42",
+      "stdout": "Hello from WebAssembly!\n42\n"
+    },
+    {
+      "name": "fib",
+      "path": "fib.atto",
+      "site_blob": "c92d095feb60c480590dd181dc182f53ce6032eb",
+      "kind": "execute",
+      "exit": "144",
+      "stdout": "0 1 1 2 3 5 8 13 21 34 \n"
+    },
+    {
+      "name": "primes",
+      "path": "primes.atto",
+      "site_blob": "44feefd86acc13039d0536b473e8bef9e67a9ef2",
+      "kind": "execute",
+      "exit": "10",
+      "stdout": "2\n3\n5\n7\n11\n13\n17\n19\n23\n29\n"
+    },
+    {
+      "name": "conditions",
+      "path": "conditions.atto",
+      "site_blob": "955ba34f565ca762bb1e47ca57f6a09a25681013",
+      "kind": "execute",
+      "exit": "11",
+      "stdout": "both positive\nat least one even\n"
+    },
+    {
+      "name": "classes",
+      "path": "classes.atto",
+      "site_blob": "bfe87cd97e6b5d1354ccf2d5253e1ecd75c37623",
+      "kind": "execute",
+      "exit": "42",
+      "stdout": "Account{id=7, balance=100}\n125\n"
+    },
+    {
+      "name": "actors",
+      "path": "actors.atto",
+      "site_blob": "141e1c42f4d37bfe8bb4a78b99a7ff718f0d9675",
+      "kind": "execute",
+      "exit": "0",
+      "stdout": "main sent 5 messages\n1\n3\n6\n10\n15\n",
+      "actor_count": 1,
+      "actor_messages": 5,
+      "compatibility": "browser-v2-legacy"
+    },
+    {
+      "name": "enums",
+      "path": "enums.atto",
+      "site_blob": "2beb5f850fde538d9e634e3a4f4d25dd755344db",
+      "kind": "execute",
+      "exit": "7",
+      "stdout": "green after 7 changes\n",
+      "compatibility": "llvm-design-spelling"
+    },
+    {
+      "name": "overflow",
+      "path": "overflow.atto",
+      "site_blob": "e2ec3bb25ed02e47645946c1db221eed05579ee3",
+      "kind": "panic",
+      "panic_code": 1,
+      "stdout_suffix": "4611686018427387904\n"
+    },
+    {
+      "name": "error",
+      "path": "error.atto",
+      "site_blob": "7c7f1673024e607cb4d0599048c346324854d2e5",
+      "kind": "reject",
+      "error_code": "E_IMMUTABLE"
+    }
+  ]
+}
