@@ -51,9 +51,11 @@ resolution are separate from parsing. Repeated parameter names fail closed.
 ## Implementation status
 
 `atto-source.rs` recognizes these lambda expressions as AST nodes, including
-those nested inside method-call arguments. This is **syntax-only**: the Rust
-browser compiler does not yet implement callable value types, capture/borrow
-checking, callback invocation, Rx Observable methods or Wasm closure lowering.
+those nested inside method-call arguments. Parsing these forms **does not** imply general callable value support. The
+browser compiler now admits tightly bounded direct lambdas and one owned
+escaping `fnc(int)->int` factory profile, described below. General callable
+values, typed indirect Wasm dispatch, mutable captured state, Rx Observable
+methods and cross-actor transports remain unsupported.
 It reports `E_UNSUPPORTED` rather than emitting an invalid Wasm artifact.
 The formatter project must still implement canonical rendering and round trips.
 
@@ -104,7 +106,8 @@ fail closed. The limited direct-call path now supports immutable scalar captures
 from top-level locals or immutable parameters; their values become hidden typed
 arguments to the lifted function. Captures are restricted to expression-bodied
 lambdas and the compiler never creates a first-class callable or heap environment.
-Factory-returned closures remain unsupported. The caller's scalar captures are
+The direct-only path itself does not produce escaped callable environments;
+a separate, restricted factory-return path is documented below. The caller's scalar captures are
 immutable, so invocation-time passing preserves creation-time capture semantics.
 This milestone uses ordinary typed Wasm direct calls, not indirect-call tables
 or a general first-class function type. Positive/negative guest fixtures and
@@ -211,3 +214,62 @@ preview's Run/Format actions or promote compiler bytes based only on this
 bounded direct-call fixture.** The currently pinned public compiler predates
 this branch and must be separately rebuilt, independently reviewed, and
 released through the protected Pages gate.
+
+## First executable factory-escaped closure (owned int environment only)
+
+The Rust compiler now implements one **bounded** callable factory profile:
+an ordinary `fnc` returns the source type `fnc(int)->int`, and its **only**
+statement returns an expression-bodied lambda `|n| : int -> ...`.
+The lambda may capture up to sixteen **immutable `int` factory parameters**
+and use scalar pure operators; nested lambdas, mutable/borrowed/object captures,
+unknown or subsequently declared bindings, effects and arbitrary lambda
+statements remain unsupported.
+
+```atto
+fnc make_adder(int offset): fnc(int) -> int {
+  return |n| : int -> n + offset;
+}
+pub fnc main(): int {
+  val add_one = make_adder(1);
+  val add_ten = make_adder(10);
+  return add_one(21) + add_ten(10); // 42
+}
+```
+
+The compiler lowers the callable into a **non-source-spellable, nominal
+private class** (`$atto_escaping_closure_0`) with copied `int` capture
+fields. Each factory invocation uses the existing bounded guest Wasm heap
+allocator and checked class constructor, so its environment survives
+the factory's stack frame and has a separate identity from other invocations.
+`f(n)` on a directly bound immutable local of that factory becomes a
+statically resolved and signature-checked `f.call(n)`. No unvalidated Wasm
+function-table indices, host pointers or foreign `funcref` values are exposed.
+The class's private capture fields are inaccessible from ordinary source.
+
+The environment has **guest-instance lifetime** in the current
+fixed-size bump heap: allocation is bounded and traps on exhaustion, but
+there is **no individual closure destructor or heap reclamation**. This is
+not a claim of real-time bounded-allocation latency, independent-closure
+release, arbitrary first-class callable values, portable `call_indirect`,
+generics, ownership-qualified callable transport, mutable captured state
+or Wasm/LLVM/Java complete parity.
+
+**Fail-closed boundary:** only one escaped factory per module is admitted;
+only local immutable `val` bindings directly initialized from that
+factory may use `f(n)`. Passing functions as arguments or returning a
+different callable, aliasing callable values, synthetic-class construction
+from source, cross-actor transport and unsupported signatures remain rejected
+by the parser/checker before guest Wasm emission. The generated class name
+begins with `$`, which cannot be a source identifier. Invocation uses the
+normal class ownership checker and forbids access to private fields, use
+after move, mutable-capture escapes, shadowing and wrong-typed arguments.
+
+**Execution gate:** `tests/fixtures/pass/closure-escape-*.atto`,
+the exact native Rust/Wasm compiler comparison in
+`tests/closures-wasm.mjs`, the complete guest conformance suite and real
+Chromium/Web Worker E2E must pass against an exact Git source tree before
+considering this profile verified. In particular, the full website
+`apply_twice(fnc(int)->int, ...)` example stays **non-executable** until a
+separate owned first-class callable and typed Wasm indirect-dispatch ABI is
+implemented, reviewed and published. Compiler bytes and release receipts
+must not be silently updated by this draft.
