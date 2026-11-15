@@ -1,0 +1,12 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+// Await is not lowered in the current browser ownership profile.
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val reader = borrow! parcel;
+  await reader.value;
+  return reader.value;
+}

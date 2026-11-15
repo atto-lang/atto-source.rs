@@ -1,0 +1,8 @@
+// expect-exit: 42
+// java: rejects
+// The two mutually exclusive arms may consume the same scalar once.
+pub fnc main(): int {
+  val item = 41;
+  val chosen = true ? take! item : take! item;
+  return chosen + 1;
+}
