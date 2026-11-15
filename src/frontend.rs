@@ -126,6 +126,16 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
             if depth == 0 {
                 open = i;
             }
+            // Cap nesting before increment: source is byte-bounded, but deeply
+            // nested comments must not consume unbounded lexer work or wrap
+            // the depth counter in other compilation profiles.
+            if depth >= 64 {
+                return Err(ParseError {
+                    offset: i,
+                    class: "resource_limit",
+                    message: "block comment nesting exceeds 64".into(),
+                });
+            }
             depth += 1;
             bytes[i] = b' ';
             bytes[i + 1] = b' ';
