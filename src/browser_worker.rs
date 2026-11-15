@@ -3,6 +3,7 @@
 //! the browser host must still validate the module and enforce capabilities.
 
 use crate::{compile, Diagnostic, Pos};
+use std::collections::HashSet;
 
 pub const TENANT_PROTOCOL: &str = "atto.browser.tenants.v1";
 pub const GUEST_ABI: &str = "atto.browser.guest.v2";
@@ -73,11 +74,12 @@ fn read_actor_names(wasm: &[u8]) -> Result<Vec<String>, ()> {
     let count = read_uleb(payload, &mut index).ok_or(())? as usize;
     if count > MAX_ACTOR_TYPES_PER_TENANT { return Err(()); }
     let mut names = Vec::with_capacity(count);
+    let mut seen = HashSet::with_capacity(count);
     for _ in 0..count {
         let len = read_uleb(payload, &mut index).ok_or(())? as usize;
         let end = index.checked_add(len).filter(|end| *end <= payload.len()).ok_or(())?;
         let name = std::str::from_utf8(&payload[index..end]).map_err(|_| ())?;
-        if name.is_empty() || name.len() > 256 { return Err(()); }
+        if name.is_empty() || name.len() > 256 || !seen.insert(name.to_owned()) { return Err(()); }
         names.push(name.to_owned());
         index = end;
     }
@@ -92,6 +94,17 @@ mod tests {
     fn truncated_sections_fail_closed() {
         assert!(read_actor_names(b"not wasm").is_err());
         assert!(read_actor_names(b"\0asm\x01\0\0\0\0\x7f").is_err());
+    }
+    #[test]
+    fn duplicate_actor_metadata_is_rejected() {
+        let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+        let mut custom = vec![11u8];
+        custom.extend_from_slice(b"atto.actors");
+        custom.extend_from_slice(&[2, 1, b'A', 1, b'A']);
+        wasm.push(0);
+        wasm.push(custom.len() as u8);
+        wasm.extend_from_slice(&custom);
+        assert!(read_actor_names(&wasm).is_err());
     }
     #[test]
     fn scalar_has_no_actor_section() {
