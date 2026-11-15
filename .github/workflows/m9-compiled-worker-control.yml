@@ -31,8 +31,13 @@ jobs:
       - name: Compile native Rust host and wasm32 browser compiler
         run: |
           cargo test --locked --test m8_cooperate
+          cargo test --locked --test m9_notice_wire
           cargo build --locked --release --bin attoc
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+      - name: Rust M9 numeric supervisor notice wire conformance
+        run: |
+          cargo test --locked --test m9_notice_wire -- --nocapture
+          echo M9_RUST_WASM_NOTICE_WIRE_CONFORMANCE=PASS
       - name: Execute compiled Atto in Node Workers, mailbox and supervisor PANIC
         run: node tests/m9-worker-supervisor.mjs
       - name: Execute compiled Atto in real Chromium browser Workers
