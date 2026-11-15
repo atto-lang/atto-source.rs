@@ -5,7 +5,8 @@ use oreslang_source_rs::{
 };
 use std::{env, fs, io::Read, path::Path, process::ExitCode};
 
-const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+// Keep file reading and frontend parsing on exactly the same source-byte budget.
+const MAX_SOURCE_BYTES: usize = frontend::MAX_SOURCE_BYTES;
 
 fn canonical_destination(path: &str) -> Result<std::path::PathBuf, String> {
     let destination = Path::new(path);
@@ -105,7 +106,9 @@ fn main() -> ExitCode {
             .read_to_string(&mut source)
             .map_err(|e| e.to_string())?;
         if source.len() > MAX_SOURCE_BYTES {
-            return Err("source too large: exceeds 1 MiB admission budget".into());
+            return Err(format!(
+                "source too large: exceeds {MAX_SOURCE_BYTES}-byte admission budget"
+            ));
         }
         let parsed = frontend::parse(&source).map_err(|e| e.to_string())?;
         let checked = mir::lower(parsed).map_err(|e| e.to_string())?;
