@@ -1,0 +1,12 @@
+// expect-exit: 42
+// expect-stdout: 80
+pub fnc main(): int {
+  let number = 40;
+  block {
+    val reader = borrow! number;
+    val second = borrow! number;
+    stdio.println(copy! reader + copy! second);
+  }
+  number = 42;
+  return number;
+}
