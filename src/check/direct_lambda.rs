@@ -5,7 +5,7 @@
 //! without claiming callable values, captured environments or indirect tables.
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
-use super::lambda_types::check_noncapturing;
+use super::callable_ir::{CallableSignature, CallableTarget, TypedCallable};
 use std::collections::BTreeSet;
 type R<T> = Result<T, Diagnostic>;
 
@@ -102,7 +102,15 @@ pub fn lower(input: &Program) -> R<Program> {
             }
             let types = d.inferred.ok_or_else(|| error(d.lambda.pos, "E_INFER",
                 "lambda parameter types need a direct invocation"))?;
-            let signature = check_noncapturing(&d.lambda, Some(&types), None)?;
+            let signature = CallableSignature::from_noncapturing(&d.lambda, Some(&types), None)?;
+            let callable = TypedCallable::checked(
+                signature,
+                CallableTarget::Direct {
+                    function_index: (input.funcs.len() + generated.len()) as u32,
+                },
+                d.lambda.pos,
+            )?;
+            callable.check_arguments(&types, d.lambda.pos)?;
             let inner = match d.lambda.kind {
                 ExprKind::Lambda { body, .. } => body,
                 _ => unreachable!(),
@@ -122,7 +130,7 @@ pub fn lower(input: &Program) -> R<Program> {
                 params: d.params.into_iter().zip(types).map(|(name, ty)| Param {
                     name, ty, mutable: false, pos: d.lambda.pos,
                 }).collect(),
-                ret: signature.result,
+                ret: callable.signature().result,
                 body: lambda_body,
             });
         }

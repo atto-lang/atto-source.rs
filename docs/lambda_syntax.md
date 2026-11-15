@@ -115,3 +115,21 @@ claim generated private function names, and recursive AST rewrite walks have
 independent expression and statement nesting limits. These protections apply
 to the direct-call-only subset; callable values and capture semantics remain
 separate milestones.
+
+## Typed callable-signature IR (pre-indirect dispatch)
+
+The Rust checker now exposes a bounded scalar `CallableSignature` and a
+validated `TypedCallable` descriptor in `check::callable_ir`. The existing
+direct-lambda desugaring now constructs that descriptor for a private
+function index and checks its invocation signature before handing the
+desugared function to the normal checker and Wasm backend. Argument arity,
+parameter types, supported scalar profiles and module-function bounds are
+validated centrally. This does not add observable changes to guest Wasm
+function indexing or the existing direct-call contract.
+
+The `CallableTarget::Indirect` variant is a **reserved IR intent**, not an
+implemented feature: construction fails with `E_UNSUPPORTED` until a
+per-instance Wasm table ABI, stale handle checks, ownership and type-index
+validation are implemented. Callable parameters/returns in source syntax,
+first-class local function values, closure captures and Rx callbacks are
+still unsupported. The types cannot be interpreted as runtime handles.
