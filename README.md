@@ -265,14 +265,19 @@ for *callable type* declarations, not these function body headers.
 
 Out-of-line `mtd` supports named receiver headers `(self: T)`,
 `(T self)`, implicit `(T)`, `(T _)`, and explicit `(mut self: T)`
-in the **syntax-only target preflight**. The formatter contract prefers
+in the **target preflight**. The formatter contract prefers
 `(self: T)` for named receivers, `(T)` for implicit receivers and
-bare method names for inline instance methods. Out-of-line class/actor
-receiver methods are not linked or executable in guest Wasm: normal
-`compile()` fails with `E_UNSUPPORTED`. Classes may have no static
-receiver dispatch and actor sealed-state restrictions remain unchanged.
-Parser acceptance and host fixture compilation must never be reported
-as verified guest receiver execution.
+bare method names for inline instance methods.
+
+For a file containing only local classes and functions, **immutable class
+`mtd` receivers are executable**. The lowering reuses the full production
+class parser, typechecker, and guest Wasm emitter; each method has the same
+ABI and visibility as an equivalent inline method. `(mut self: T)` is
+recognized but **fails with `E_UNSUPPORTED`** until mutable-self ownership
+rules are implemented. Actor/namespace/import-linked receivers remain
+syntax-only and must not acquire unverified synchronous dispatch.
+Actor sealed-state restrictions remain unchanged. Executable support must
+be backed by actual Rust/Wasm guest tests rather than syntax acceptance.
 
 ### Class and actor rules (checked against the Java reference)
 
