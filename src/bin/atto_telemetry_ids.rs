@@ -170,8 +170,11 @@ fn write_proposal(path: &Path, source: &Path, registry: &Path,
         return Err("proposal must not alias source or checked-in registry".into());
     }
     let bytes = serde_json::to_vec_pretty(json).map_err(|e| e.to_string())?;
-    if bytes.len() > MAX_BYTES as usize {
-        return Err("synchronized registry exceeds 1 MiB".into());
+    // The on-disk proposal contains a final newline in addition to the
+    // serialized JSON. Enforce the input reader's full 1 MiB file budget,
+    // not a budget on the JSON bytes before appending the newline.
+    if bytes.len() >= MAX_BYTES as usize {
+        return Err("synchronized registry plus newline exceeds 1 MiB".into());
     }
     let mut output = fs::OpenOptions::new().write(true).create_new(true)
         .open(path).map_err(|e| format!("proposal must be a new path: {e}"))?;
