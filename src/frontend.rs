@@ -223,6 +223,17 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "Oreslang source exceeds 256 KiB prototype limit".into(),
         });
     }
+    // Trojan Source controls can reorder displayed text even when hidden in
+    // ignored comments or string literals. Reject prior to trivia stripping.
+    if let Some((offset, _)) = source.char_indices().find(|(_, c)|
+        matches!(*c, '\u{061c}' | '\u{200e}' | '\u{200f}' |
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')) {
+        return Err(ParseError {
+            offset,
+            class: "unsafe_unicode",
+            message: "bidirectional Unicode formatting controls are forbidden".into(),
+        });
+    }
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
