@@ -62,7 +62,12 @@ The browser compiler resolves and type-checks these entries, then writes a
 deterministic **`atto.exports.v1`** WebAssembly custom section. This is
 language-level module metadata: a sequence of length-prefixed names followed
 by one kind byte (class=1, fnc=2, actor=3, enum=4) and one visibility byte
-(pub=1, pub[pkg]=2). Entries are sorted by name.
+(pub=1, pub[pkg]=2). Entries are sorted by name. Export names are
+restricted to **canonical ASCII identifiers of 1–256 bytes** at the compiler
+boundary, even though unexported source identifiers may contain Unicode.
+The compiler diagnoses non-ASCII names as `E_EXPORT_NAME` and overlong names
+as `E_EXPORT_NAME_TOO_LONG`, rather than emitting a Wasm manifest the host
+would reject.
 
 The single-file browser executable retains its existing Wasm exports and
 `main()` requirement. This metadata **does not yet implement multi-file
