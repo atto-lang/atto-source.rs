@@ -15,6 +15,8 @@ Long-term choices: Rowan lossless CST, Salsa incremental query engine, owned Ore
 
 The prototype currently accepts both the braced and as/end spellings for a static function. Its grammar and integer-overflow semantics need reconciliation against the Java and LLVM Oreslang language specification before broad use.
 
+Unary `+expr` is a scalar signed-`i64` identity for literals, variables and direct calls; it evaluates its operand once and accepts no implicit floating-point cast or overflow bypass. The opt-in `compile_checked_i64` path uses the same parser. The Linux regression in `tests/unary_plus_parity.rs` requires real C-linked Cranelift execution, including the complete `i64::MIN` value (not merely an 8-bit process exit code).
+
 ## Rust-only tooling policy (no Python)
 
 **Python is prohibited in this organization.** Do not add, maintain, invoke, generate, or require Python code or Python-based scripts, helpers, tests, code generators, build utilities, automation, CI steps, notebooks, or runtime dependencies. This includes `.py`, `.pyi`, `.ipynb`, `python` / `python3` commands, `pip`, `uv`, `poetry`, `pytest`, and Python GitHub Actions setup steps.
