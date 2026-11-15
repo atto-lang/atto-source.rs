@@ -18,12 +18,12 @@ Run on a supported Linux x86-64 host with Rust/C toolchains:
 
 ```sh
 cargo fmt --all -- --check
-cargo test --locked --test platform_core_v1_native -- --nocapture
+cargo test --locked --test platform_core_v1 -- --nocapture
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-`tests/platform_core_v1_native.rs` checks canonical manifest coverage, keeps
+`tests/platform_core_v1.rs` checks canonical manifest coverage, keeps
 unsupported actor/state/ownership/async/stdio syntax fail-closed, compiles the
 seven exact canonical positive files with checked i64 semantics, and then
 compiles the **same expressions** under a renamed export so a real native C
