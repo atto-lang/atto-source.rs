@@ -93,6 +93,38 @@ fn export_resolves_all_overloads_by_name() {
     assert!(compile(source).is_ok());
 }
 
+#[test]
+fn export_name_abi_rejects_non_ascii_and_over_256_bytes() {
+    // Forge's accepted boundary and the Wasm admission contract are 256
+    // bytes of canonical ASCII, even though the source lexer accepts Unicode.
+    let max_name = format!("A{}", "z".repeat(255));
+    assert_eq!(max_name.len(), 256);
+    let accepted = format!(
+        "export pub fnc {max_name};\\nfnc {max_name}(): int {{ return 7; }}\\npub fnc main(): int {{ return 0; }}"
+    );
+    assert!(compile(&accepted).is_ok(), "256-byte ASCII export should compile");
+
+    let overlong = format!("A{}", "z".repeat(256));
+    assert_eq!(overlong.len(), 257);
+    for visibility in ["pub", "pub[pkg]"] {
+        let source = format!(
+            "export {visibility} fnc {overlong};\\nfnc {overlong}(): int {{ return 7; }}\\npub fnc main(): int {{ return 0; }}"
+        );
+        let diagnostic = compile(&source).expect_err("257-byte export must fail");
+        assert_eq!(diagnostic.code, "E_EXPORT_NAME_TOO_LONG");
+    }
+
+    // Unicode declaration names remain a lexer feature, but may not become
+    // language-export names until the shared metadata ABI supports them.
+    for name in ["Éclair", "Ωmega"] {
+        let source = format!(
+            "export pub fnc {name};\\nfnc {name}(): int {{ return 7; }}\\npub fnc main(): int {{ return 0; }}"
+        );
+        let diagnostic = compile(&source).expect_err("non-ASCII export must fail");
+        assert_eq!(diagnostic.code, "E_EXPORT_NAME");
+    }
+}
+
 fn read_uleb(bytes: &[u8], offset: &mut usize) -> usize {
     let mut value = 0usize;
     for shift in (0..=63).step_by(7) {
