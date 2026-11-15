@@ -5,6 +5,6 @@ define class Parcel as
 end
 pub fnc main(): int {
  val parcel = new Parcel();
- val shared = share!(parcel);
- return shared.value;
+ val shared_value = share!(parcel);
+ return shared_value.value;
 }
