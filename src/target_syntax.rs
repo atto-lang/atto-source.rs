@@ -413,6 +413,44 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
             return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
                 "invalid out-of-line receiver source span"));
         }
+        // Keep this v1 profile *conservative* until effect/borrow lowering is
+        // available: an immutable receiver may observe scalar fields and call
+        // another immutable class mtd, but may not escape or invoke arbitrary
+        // inline methods with unproven effects. This check runs on original
+        // lexer tokens, so comments and strings cannot forge receiver syntax.
+        // The production parser/checker still validates the emitted AST.
+        if headers.class_definitions[owner].fields.iter().any(|field|
+            !matches!(field.ty, crate::ast::Type::Int | crate::ast::Type::Bool |
+                crate::ast::Type::Float | crate::ast::Type::Str)) {
+            return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED_TYPE",
+                "immutable mtd query mode requires scalar instance fields"));
+        }
+        for i in site.method_start..site.end {
+            if !word_at(toks, i, "self") { continue; }
+            if !at(toks, i + 1, &Tok::Dot) {
+                return Err(diagnostic(toks, i, "E_OWNERSHIP",
+                    "immutable class receiver cannot escape, alias or be reborrowed"));
+            }
+            let method = match toks.get(i + 2).map(|t| &t.tok) {
+                Some(Tok::Ident(name)) => name.as_str(),
+                _ => return Err(diagnostic(toks, i, "E_OWNERSHIP",
+                    "invalid immutable class member access")),
+            };
+            match toks.get(i + 3).map(|t| &t.tok) {
+                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus) =>
+                    return Err(diagnostic(toks, i, "E_OWNERSHIP",
+                        "immutable class mtd cannot mutate instance fields")),
+                Some(Tok::LParen) => {
+                    if !headers.receivers.iter().any(|other|
+                        other.owner == receiver.owner && other.name == method &&
+                        !other.mutable) {
+                        return Err(diagnostic(toks, i, "E_UNSUPPORTED",
+                            "immutable mtd may call only checked immutable class mtd"));
+                    }
+                }
+                _ => {}
+            }
+        }
         if receiver.public {
             // pub mtd (self: Type) method(...) becomes a public inline method.
             if !matches!(&toks[site.declaration_start].tok, Tok::Ident(s) if s == "pub") {
