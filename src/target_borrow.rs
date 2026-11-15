@@ -20,6 +20,43 @@ pub struct ReceiverBorrowFacts {
     /// Even true does not establish correct runtime unwinding/lease cleanup.
     pub ownership_preflight_complete: bool,
     pub normal_fallthrough: bool,
+    /// Explicit, source-located CFG exit/suspension obligations. Neither
+    /// frontend lexical analysis nor an empty borrow set proves runtime
+    /// state-lock cleanup, destructor execution or supervisor delivery.
+    pub exit_edges: Vec<BorrowExitEdge>,
+    /// Region-local borrow endings on supported ordinary scope exits.
+    pub closed_regions: Vec<BorrowRegionClose>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BorrowExitKind {
+    Return,
+    Throw,
+    Raise,
+    Panic,
+    Suspend,
+    Cancel,
+    Fallthrough,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BorrowExitEdge {
+    pub kind: BorrowExitKind,
+    pub pos: Pos,
+    pub active_loans: usize,
+    pub lexical_exit_checked: bool,
+    /// Always false until the executable backend proves unwind, cancellation
+    /// and actor lease cleanup across this control-flow edge.
+    pub runtime_cleanup_proven: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BorrowRegionClose {
+    pub region: usize,
+    pub alias: String,
+    pub source: String,
+    pub scope: usize,
+    pub pos: Pos,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +70,7 @@ struct Loan {
     source: String,
     exclusive: bool,
     scope: usize,
+    region: usize,
 }
 
 #[derive(Clone, Default)]
@@ -56,6 +94,9 @@ struct Reader<'a> {
     loans: usize,
     joins: usize,
     releases: usize,
+    next_region: usize,
+    edges: Vec<BorrowExitEdge>,
+    closed: Vec<BorrowRegionClose>,
 }
 
 fn named(t: &Token, name: &str) -> bool {
@@ -72,6 +113,24 @@ fn is_call(toks: &[Token], i: usize) -> bool {
 /// Only these bounded, side-effect-free boolean conditions can participate in
 /// an ownership-complete branch proof. Arbitrary conditions may move, borrow,
 /// call or suspend; parsing their braces does not prove their effects.
+/// A return expression is only considered ownership-pure if every token is
+/// included in this tiny proven grammar; calls and checked arithmetic are
+/// opaque because they can unwind, allocate or acquire another actor lease.
+fn pure_exit_expr(toks: &[Token], receiver: &TypedReceiver, depth: usize) -> bool {
+    if depth > 128 { return false; }
+    match toks {
+        [] => true,
+        [Token {tok:Tok::Int(Some(_)) | Tok::Float(_) | Tok::Str(_), ..}] => true,
+        [Token {tok:Tok::Ident(s), ..}] if s == "true" || s == "false" => true,
+        [Token {tok:Tok::Ident(s), ..}] =>
+            receiver.params.iter().any(|p| p.name == *s),
+        [Token {tok:Tok::LParen, ..}, inner @ ..,
+         Token {tok:Tok::RParen, ..}] =>
+            pure_exit_expr(inner,receiver,depth+1),
+        _ => false,
+    }
+}
+
 fn pure_bool_condition(toks: &[Token], receiver: &TypedReceiver, depth: usize) -> bool {
     if depth > 128 { return false; }
     match toks {
@@ -135,8 +194,10 @@ impl Reader<'_> {
         if state.loans.is_empty() { return Ok(()); }
         let unsafe_effect = toks.iter().enumerate().any(|(i,t)|
             ["await","yield","select","spawn","throw","raise","panic",
-             "trap","recover","defer","break","continue"].iter().any(|s| named(t,s))
-            || matches!(t.tok, Tok::YieldStar | Tok::Question)
+             "trap","recover","defer","break","continue","cancel"].iter().any(|s| named(t,s))
+            || matches!(t.tok, Tok::YieldStar | Tok::Question |
+                Tok::Plus | Tok::Minus | Tok::Star | Tok::Slash |
+                Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus)
             || (named(t,"rt") && (word(toks,i+1,"take")
                 || word(toks,i+1,"borrow")))
             || is_call(toks,i));
@@ -182,7 +243,9 @@ impl Reader<'_> {
                 "borrow alias shadows an existing receiver binding"));
         }
         state.locals.insert(dest.clone(),Local{scope,mutable:false});
-        state.loans.insert(dest,Loan{source,exclusive,scope});
+        let region = self.next_region;
+        self.next_region += 1;
+        state.loans.insert(dest,Loan{source,exclusive,scope,region});
         self.loans += 1;
         Ok(())
     }
@@ -232,6 +295,31 @@ impl Reader<'_> {
         let slice=self.toks[start..self.i].to_vec();
         self.check_reads(&slice,state)?;
         self.check_safepoint(&slice,state)?;
+        // A suspend point introduces a potential cancellation edge as well
+        // as the suspension edge; this is a *runtime obligation*, not proof.
+        if slice.iter().any(|t| named(t,"await") || named(t,"yield") ||
+            named(t,"select") || matches!(t.tok,Tok::YieldStar)) {
+            let pos = slice.first().map_or(Pos::default(),|t|t.pos);
+            self.edges.push(BorrowExitEdge {
+                kind:BorrowExitKind::Suspend,pos,active_loans:state.loans.len(),
+                lexical_exit_checked:state.loans.is_empty(),
+                runtime_cleanup_proven:false,
+            });
+            self.edges.push(BorrowExitEdge {
+                kind:BorrowExitKind::Cancel,pos,active_loans:state.loans.len(),
+                lexical_exit_checked:state.loans.is_empty(),
+                runtime_cleanup_proven:false,
+            });
+        }
+        if slice.iter().any(|t| named(t,"cancel")) {
+            self.edges.push(BorrowExitEdge {
+                kind:BorrowExitKind::Cancel,
+                pos:slice.first().map_or(Pos::default(),|t|t.pos),
+                active_loans:state.loans.len(),
+                lexical_exit_checked:state.loans.is_empty(),
+                runtime_cleanup_proven:false,
+            });
+        }
         Ok(slice)
     }
     fn statement(&mut self, state: &mut State, scope: usize)
@@ -276,8 +364,25 @@ impl Reader<'_> {
                 return Err(Diagnostic::new(self.toks[start].pos,"E_BORROW",
                     "receiver exits with active borrows before cleanup is proven"));
             }
+            let kind = if word(self.toks,start,"throw") {
+                BorrowExitKind::Throw
+            } else if word(self.toks,start,"raise") {
+                BorrowExitKind::Raise
+            } else if word(self.toks,start,"panic") {
+                BorrowExitKind::Panic
+            } else { BorrowExitKind::Return };
+            self.edges.push(BorrowExitEdge {
+                kind:kind.clone(), pos:self.toks[start].pos,
+                active_loans:state.loans.len(),
+                lexical_exit_checked:state.loans.is_empty(),
+                runtime_cleanup_proven:false,
+            });
             self.i+=1;
-            return Ok(Flow {falls_through:false,complete:true});
+            // Panic/raise/throw semantics and effectful return expressions
+            // require backend unwind and lifetime proofs, not a lexical CFG.
+            let complete = kind == BorrowExitKind::Return
+                && pure_exit_expr(args,self.receiver,0);
+            return Ok(Flow {falls_through:false,complete});
         }
         // Supported explicit ownership statement:
         // val/let alias = rt borrow [mut] source;
@@ -453,10 +558,19 @@ impl Reader<'_> {
         if !matches!(self.toks.get(self.i).map(|t|&t.tok),Some(Tok::RBrace)) {
             return Err(self.err("E_SYNTAX","unclosed ownership CFG block"));
         }
+        let closing_pos=self.pos();
         self.i+=1;
-        let old=state.loans.len();
+        let endings:Vec<(String,Loan)>=state.loans.iter()
+            .filter(|(_,l)|l.scope==scope)
+            .map(|(alias,loan)|(alias.clone(),loan.clone())).collect();
+        for (alias,loan) in &endings {
+            self.closed.push(BorrowRegionClose {
+                region:loan.region,alias:alias.clone(),source:loan.source.clone(),
+                scope,pos:closing_pos,
+            });
+        }
         state.loans.retain(|_,l|l.scope!=scope);
-        self.releases+=old-state.loans.len();
+        self.releases+=endings.len();
         let removed:Vec<String>=state.locals.iter()
             .filter(|(_,local)|local.scope==scope).map(|(n,_)|n.clone()).collect();
         for name in removed {
@@ -477,6 +591,7 @@ pub fn check_receiver_borrows(module:&TypedActorModule,body:&ReceiverBodyTokens)
     let mut reader=Reader {
         toks:&body.tokens,i:0,receiver,
         moves:0,loans:0,joins:0,releases:0,
+        next_region:0,edges:Vec::new(),closed:Vec::new(),
     };
     let mut state=State::default();
     let flow=reader.block(&mut state,0,0)?;
@@ -487,10 +602,19 @@ pub fn check_receiver_borrows(module:&TypedActorModule,body:&ReceiverBodyTokens)
         return Err(Diagnostic::new(receiver.pos,"E_BORROW",
             "receiver exit with an active borrowed alias"));
     }
+    if flow.falls_through {
+        reader.edges.push(BorrowExitEdge {
+            kind:BorrowExitKind::Fallthrough,
+            pos:body.tokens.last().map_or(receiver.pos,|t|t.pos),
+            active_loans:0,lexical_exit_checked:true,
+            runtime_cleanup_proven:false,
+        });
+    }
     Ok(ReceiverBorrowFacts {
         receiver:body.receiver,moves:reader.moves,loans:reader.loans,
         branch_joins:reader.joins,lexical_loan_releases:reader.releases,
         ownership_preflight_complete:flow.complete,
         normal_fallthrough:flow.falls_through,
+        exit_edges:reader.edges,closed_regions:reader.closed,
     })
 }
