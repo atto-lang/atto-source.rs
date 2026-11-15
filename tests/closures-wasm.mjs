@@ -65,7 +65,8 @@ const passes = [
   ['callable-owned-make-adder', 42n],
   ['callable-owned-apply-twice', 40n],
   ['callable-owned-independent-captures', 43n],
-  ['callable-owned-multiple-targets', 41n]
+  ['callable-owned-multiple-targets', 41n],
+  ['callable-owned-unrelated-control-flow', 42n]
 ];
 for (const [name, expected] of passes) {
   const path = 'tests/fixtures/pass/' + name + '.atto';
