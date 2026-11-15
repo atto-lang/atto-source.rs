@@ -1,0 +1,10 @@
+// expect-exit: 42
+define trait Counter as
+  count(): int { return 1; }
+  count(int n): int { return n + 40; }
+end
+define class C implements Counter as end
+pub fnc main(): int {
+  val c = new C();
+  return c.count() + c.count(1);
+}
