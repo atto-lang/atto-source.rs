@@ -1,0 +1,9 @@
+// expect-exit: 42
+// Calling the same guest-owned captured environment twice must not move it.
+fnc make_adder(int offset): fnc(int) -> int {
+  return |n| : int -> n + offset;
+}
+pub fnc main(): int {
+  val add_one = make_adder(1);
+  return add_one(20) + add_one(20);
+}
