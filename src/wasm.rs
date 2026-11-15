@@ -604,6 +604,11 @@ impl Emit<'_> {
                 self.i32c(*a as i32);
                 self.call(self.l.import(Import::ActorSpawn));
             }
+            TExpr::RemoteActor(slot) => {
+                // Negative refs are host-owned route slots, never local actors.
+                // A missing/revoked binding traps in the browser host.
+                self.i32c(-(*slot as i32));
+            }
             TExpr::Send { target, value } => {
                 self.expr(target);
                 self.expr(value);
