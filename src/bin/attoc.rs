@@ -14,8 +14,11 @@ fn main() -> ExitCode {
         [flag, i] if flag == "--receiver-instance-preview" => (i.clone(),None,2),
         [flag, i, o, out] if flag == "--receiver-instance-preview" && o == "-o" =>
             (i.clone(),Some(out.clone()),2),
+        [flag, i] if flag == "--cleanup-wasm-witness" => (i.clone(),None,3),
+        [flag, i, o, out] if flag == "--cleanup-wasm-witness" && o == "-o" =>
+            (i.clone(),Some(out.clone()),3),
         _ => {
-            eprintln!("usage: attoc [--scalar-preview | --receiver-instance-preview] <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc [--scalar-preview | --receiver-instance-preview | --cleanup-wasm-witness] <input.atto> [-o out.wasm]");
             return ExitCode::from(2);
         }
     };
@@ -29,6 +32,7 @@ fn main() -> ExitCode {
     let built=match preview_mode {
         1 => atto_compiler::target_scalar::compile_scalar_receiver_preview(&source),
         2 => atto_compiler::target_scalar::compile_scalar_receiver_instance_preview(&source),
+        3 => atto_compiler::target_cleanup_wasm::compile_cleanup_wasm_witness(&source),
         _ => atto_compiler::compile(&source),
     };
     match built {
