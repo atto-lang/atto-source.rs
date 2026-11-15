@@ -19,6 +19,7 @@ pub mod target_borrow;
 pub mod target_cleanup;
 pub mod target_cleanup_cfg;
 pub mod target_cleanup_wasm;
+pub mod target_stateful;
 pub mod target_scalar;
 mod target_scalar_cfg;
 pub mod target_typed;
@@ -184,6 +185,7 @@ mod abi {
                 1 => super::target_scalar::compile_scalar_receiver_preview(source),
                 2 => super::target_scalar::compile_scalar_receiver_instance_preview(source),
                 3 => super::target_cleanup_wasm::compile_cleanup_wasm_witness(source),
+                4 => super::target_stateful::compile_stateful_method_preview(source),
                 _ => super::compile(source),
             };
             match built {
@@ -216,5 +218,12 @@ mod abi {
     #[no_mangle]
     pub extern "C" fn compile_cleanup_wasm_witness(length: i32) -> i32 {
         compile_inner(length,3)
+    }
+
+    /// One fully typed state field and one exact critical-write update only.
+    /// This preview does not enable ordinary production mtd compilation.
+    #[no_mangle]
+    pub extern "C" fn compile_stateful_method_preview(length: i32) -> i32 {
+        compile_inner(length,4)
     }
 }
