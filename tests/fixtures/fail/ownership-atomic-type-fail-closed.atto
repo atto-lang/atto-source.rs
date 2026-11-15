@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED_TYPE
+pub fnc main(): int {
+  val counter: Atomic<int> = Atomic<int>(0);
+  return 0;
+}
