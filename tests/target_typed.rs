@@ -597,3 +597,115 @@ fn unknown_call_arguments_remain_unproved_and_not_executable() {
     assert!(m.receivers.iter().all(|r| !r.body_lowered));
     assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
 }
+
+#[test]
+fn actor_ownership_rejects_double_take_and_use_after_move() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) consume(ActorRef<Foo> peer): void {}
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    for body in [
+        "rt take peer; rt take peer;",
+        "rt take peer; self.consume(peer);",
+        "val owned = rt take peer; self.consume(peer);",
+        "rt take peer; val previous = peer;",
+    ] {
+        rejects(&format!("{prefix} {body} }}"),"E_MOVE");
+    }
+}
+
+#[test]
+fn actor_ownership_joins_branch_moves_and_respects_abrupt_exit_paths() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) consume(ActorRef<Foo> peer): void {}
+        mtd (Foo self) run(bool flag,ActorRef<Foo> peer): void {";
+    rejects(&format!("{prefix}
+        if flag {{ rt take peer; }} else {{}}
+        self.consume(peer); }}"),"E_MOVE");
+    let safe=format!("{prefix}
+        if flag {{ rt take peer; return; }} else {{}}
+        self.consume(peer); }}");
+    let m=typed(&safe).expect("a terminating moved branch cannot poison a live path");
+    assert_eq!(m.receiver_borrows[1].branch_joins,1);
+    assert_eq!(m.receiver_borrows[1].moves,1);
+    assert!(!m.receivers[1].body_lowered);
+    assert_eq!(atto_compiler::compile(&safe).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn actor_ownership_denies_shared_mutable_conflicts_and_moves_under_loan() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    rejects(&format!("{prefix} val a = rt borrow peer; rt take peer; }}"),"E_BORROW");
+    rejects(&format!("{prefix}
+        let value = 10;
+        val read_alias = rt borrow value;
+        val write_alias = rt borrow mut value; }}"),"E_BORROW");
+    rejects(&format!("{prefix}
+        let value = 10;
+        val write_alias = rt borrow mut value;
+        val read_alias = rt borrow value; }}"),"E_BORROW");
+    rejects(&format!("{prefix}
+        let value = 10;
+        val write_alias = rt borrow mut value;
+        val copy_value = value; }}"),"E_BORROW");
+    rejects(&format!("{prefix}
+        val write_alias = rt borrow mut peer; }}"),"E_MUTABILITY");
+}
+
+#[test]
+fn actor_ownership_denies_suspend_unwind_and_unproved_calls_while_borrowed() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) consume(ActorRef<Foo> peer): void {}
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    for body in [
+        "val ref_one = rt borrow peer; await pending();",
+        "val ref_one = rt borrow peer; self.consume(peer);",
+        "val ref_one = rt borrow peer; panic(Error(\"bad\"));",
+        "val ref_one = rt borrow peer; throw Error(\"bad\");",
+        "val ref_one = rt borrow peer; return;",
+    ] {
+        rejects(&format!("{prefix} {body} }}"),"E_BORROW");
+    }
+}
+
+#[test]
+fn actor_ownership_prevents_return_and_call_escape_of_borrow_alias() {
+    let prefix="declare actor Foo;
+        mtd (Foo self) consume(ActorRef<Foo> peer): void {}
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    rejects(&format!("{prefix}
+        val borrowed = rt borrow peer; self.consume(borrowed); }}"),"E_ESCAPE");
+    rejects(&format!("{prefix}
+        val borrowed = rt borrow peer; return borrowed; }}"),"E_ESCAPE");
+}
+
+#[test]
+fn actor_ownership_releases_lexical_borrow_on_inner_scope_exit() {
+    let source="declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {
+            { val alias = rt borrow peer; }
+            rt take peer;
+        }";
+    let m=typed(source).expect("inner scope exit releases the lexical loan");
+    let facts=&m.receiver_borrows[0];
+    assert_eq!(facts.loans,1);
+    assert_eq!(facts.moves,1);
+    assert_eq!(facts.lexical_loan_releases,1);
+    assert_eq!(facts.branch_joins,0);
+    assert!(!facts.ownership_preflight_complete,
+        "nested block ownership does not prove all expression semantics");
+    assert!(!m.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn actor_ownership_opaque_loops_never_contribute_an_executable_proof() {
+    let src="declare actor Foo;
+        mtd (Foo self) run(bool flag,ActorRef<Foo> peer): void {
+            while flag { rt take peer; }
+        }";
+    let m=typed(src).expect("unsupported flow is explicitly unproved");
+    assert!(!m.receiver_borrows[0].ownership_preflight_complete);
+    assert!(!m.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
