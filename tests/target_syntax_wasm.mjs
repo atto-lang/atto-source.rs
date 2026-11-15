@@ -144,5 +144,19 @@ rejects('declare actor A; declare actor B; mtd (A self) consume(ActorRef<A> a): 
 rejects('declare actor A; mtd (A self) choose(bool flag): int { if flag {return 1;} else {return 2;} }','E_UNSUPPORTED');
 rejects('declare actor A; mtd (A self) consume(int n): void {} mtd (A self) run(int n): void {self.consume(n);}','E_UNSUPPORTED');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (71)');
+
+// Path-sensitive ownership preflight executes inside the actual Wasm compiler.
+// Rejection must leave no emitted guest bytes (enforced by rejects()).
+const movePrelude = 'declare actor M; mtd (M self) consume(ActorRef<M> peer): void {} mtd (M self) run(ActorRef<M> peer): void {';
+rejects(movePrelude+' rt take peer; rt take peer; }','E_MOVE');
+rejects(movePrelude+' rt take peer; self.consume(peer); }','E_MOVE');
+rejects(movePrelude+' val a = rt borrow peer; rt take peer; }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; await pending(); }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; self.consume(a); }','E_ESCAPE');
+rejects(movePrelude+' val a = rt borrow peer; return a; }','E_ESCAPE');
+rejects(movePrelude+' let value = 1; val a = rt borrow mut value; val b = rt borrow value; }','E_BORROW');
+rejects(movePrelude+' if true { rt take peer; } else {} self.consume(peer); }','E_MOVE');
+rejects(movePrelude+' { val a = rt borrow peer; } rt take peer; }','E_UNSUPPORTED');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (80)');
 
