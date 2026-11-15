@@ -1,0 +1,18 @@
+// critical is an exclusive-write alias for a mutable state container.
+// expect-exit: 0
+// expect-stdout: 8
+define state Counter as
+  state { let int count: 3; }
+  pub bump(): void {
+    handle_state(critical |s| -> { s.count = s.count + 5; });
+  }
+  pub value(): int {
+    return handle_state(critical-read |s| -> s.count);
+  }
+end
+pub fnc main(): int {
+  val c = new Counter();
+  c.bump();
+  stdio.println(c.value());
+  return 0;
+}

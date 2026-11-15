@@ -1455,6 +1455,14 @@ impl Parser {
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
         let write = self.parse_state_critical_mode(false)?;
+        // A read-only block would be represented as StateWrite and would
+        // incorrectly request an exclusive host ticket, even when empty.
+        // In this bounded profile, reads are ONLY immutable by-value s.field
+        // expressions. Never escalate a critical-read block to a write loan.
+        if !write {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "critical-read is by-value s.field only; block scopes cannot request a write lease"));
+        }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, _) = self.ident("state lease binder")?;
         if binder != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",

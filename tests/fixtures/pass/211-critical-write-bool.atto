@@ -1,0 +1,20 @@
+// Explicit critical-write mutates a protected bool field.
+// expect-exit: 0
+// expect-stdout: true
+// expect-stdout: false
+define state container Switch as
+  state { let bool enabled: true; }
+  pub disable(): void {
+    handle_state(critical-write |s| -> { s.enabled = false; });
+  }
+  pub read_enabled(): bool {
+    return handle_state(critical-read |s| -> s.enabled);
+  }
+end
+pub fnc main(): int {
+  val item = new Switch();
+  stdio.println(item.read_enabled());
+  item.disable();
+  stdio.println(item.read_enabled());
+  return 0;
+}
