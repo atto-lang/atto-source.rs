@@ -205,6 +205,8 @@ pub struct Parser {
     type_names: Vec<(String, Pos)>,
     /// Scope of an explicit generator function body.
     in_generator: bool,
+    state_method: bool,
+    state_binder: Option<String>,
 }
 
 struct TypeFirstField {
@@ -238,6 +240,8 @@ impl Parser {
             cond: 0,
             type_names: Vec::new(),
             in_generator: false,
+            state_method: false,
+            state_binder: None,
         }
     }
 
@@ -505,6 +509,10 @@ impl Parser {
                     self.i += at + 2;
                     prog.classes.push(self.parse_class(public)?);
                 }
+                (Some("define"), Some("state")) => {
+                    self.i += at + 2;
+                    prog.classes.push(self.parse_state_container(public)?);
+                }
                 (Some("define"), Some("actor")) => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
@@ -559,6 +567,68 @@ impl Parser {
             ctor: m.ctor,
             methods: m.methods,
         })
+    }
+
+
+    /// Browser-only single-worker state profile; class instances cannot cross
+    /// guest Wasm memories. This does not provide a cross-worker RW lock.
+    fn parse_state_container(&mut self, public: bool) -> R<ClassDecl> {
+        self.eat_word("container"); // optional long spelling
+        let (name, pos) = self.ident("a state container name")?;
+        self.decl_head("state container")?;
+        self.expect_word("as")?;
+        let (mut fields, mut methods) = (Vec::new(), Vec::new());
+        let mut seen = false;
+        while !self.eat_word("end") {
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected("'end' to close state container"));
+            }
+            if fields.len() + methods.len() >= MAX_MEMBERS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many state members"));
+            }
+            if self.eat_word("state") {
+                if seen { return Err(Diagnostic::new(self.pos(), "E_DUPLICATE", "duplicate state {} block")); }
+                seen = true;
+                self.expect(Tok::LBrace, "'{' after state")?;
+                while !self.eat(&Tok::RBrace) {
+                    if *self.peek() == Tok::Eof { return Err(self.expected("'}' after state fields")); }
+                    if fields.len() >= MAX_MEMBERS {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many state fields"));
+                    }
+                    let mode = if self.eat_word("let") { FieldMode::ActorState }
+                        else if self.eat_word("val") || self.eat_word("const") { FieldMode::Final }
+                        else { return Err(Diagnostic::new(self.pos(), "E_STATE",
+                            "state {} fields require let, val or const")); };
+                    let parsed = self.parse_type_first_field(false, mode)?;
+                    if fields.iter().any(|f: &Field| f.name == parsed.field.name) {
+                        return Err(Diagnostic::new(parsed.field.pos, "E_DUPLICATE", "duplicate state field"));
+                    }
+                    fields.push(parsed.field);
+                }
+                continue;
+            }
+            let method_public = self.eat_word("pub");
+            self.eat_word("fnc");
+            self.eat_word("method");
+            if *self.peek_at(1) != Tok::LParen {
+                return Err(Diagnostic::new(self.pos(), "E_STATE",
+                    "state container supports only a state {} block and instance methods"));
+            }
+            self.state_method = true;
+            let result = self.parse_method(method_public, false);
+            self.state_method = false;
+            let method = result?;
+            if method.params.iter().any(|p| p.name == "s") {
+                return Err(Diagnostic::new(method.pos, "E_STATE_BORROW",
+                    "parameter s would shadow the critical lease binder"));
+            }
+            if methods.iter().any(|m: &Method| m.name == method.name) {
+                return Err(Diagnostic::new(method.pos, "E_DUPLICATE", "duplicate state method"));
+            }
+            methods.push(method);
+        }
+        if !seen { return Err(Diagnostic::new(pos, "E_STATE", "define state requires state {}")); }
+        Ok(ClassDecl { name, pos, public, fields, ctor: None, methods })
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
