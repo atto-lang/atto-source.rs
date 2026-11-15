@@ -158,5 +158,18 @@ rejects(movePrelude+' let value = 1; val a = rt borrow mut value; val b = rt bor
 rejects(movePrelude+' if true { rt take peer; } else {} self.consume(peer); }','E_MOVE');
 rejects(movePrelude+' { val a = rt borrow peer; } rt take peer; }','E_UNSUPPORTED');
 
-console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (80)');
+
+// Ownership preflight soundness regressions: shared-loan mutation and
+// effectful conditions must not emit runnable actor code.
+rejects(movePrelude+' val a = rt borrow peer; peer = spawn M(); }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; peer += 1; }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; peer++; }','E_BORROW');
+rejects(movePrelude+' val a = rt borrow peer; ++peer; }','E_BORROW');
+rejects(movePrelude+' if rt take peer { } else { } }','E_BORROW');
+rejects(movePrelude+' if rt borrow peer { } else { } }','E_BORROW');
+rejects(movePrelude+' if rt borrow mut peer { } else { } }','E_BORROW');
+rejects(movePrelude+' if compute(peer) { } else { } }','E_UNSUPPORTED');
+rejects(movePrelude+' { val a = rt borrow peer; val b = rt borrow peer; } rt take peer; }','E_UNSUPPORTED');
+
+console.log('PASS exact browser Wasm ABI actor linking and fail-closed checks (89)');
 
