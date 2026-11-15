@@ -11,6 +11,7 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/state-runtime.mjs',[new URL('./browser/state-runtime.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -168,6 +169,8 @@ try{
     'invalid code must not poison the next Worker or leave stale guest bytes');
   console.log('PASS browser: state capability bypass and malformed keyword fail closed; recovery executes');
 
+  assert.ok(requests.some(x=>x.path==='/state-runtime.mjs'),
+    'the browser Worker must load the protected-state host admission module');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
