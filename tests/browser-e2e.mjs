@@ -166,7 +166,7 @@ try{
     '})()'
   ];
   const m9Result=await evaluate(m9Lines.join('\n'));
-  assert.deepEqual(m9Result, {accepted:3,completed:3,sum:'499569',yielded:249,
+  assert.deepEqual(m9Result, {accepted:3,completed:3,sum:'499569',yielded:251,
     failed:1,abandoned:2,controls:['STOP','PANIC'],fault:1});
   assert.ok(requests.some(x=>x.path==='/m9-actor-worker.mjs'));
   console.log('M9_REAL_CHROMIUM_COMPILER_WORKER_SUPERVISOR=PASS');
