@@ -674,6 +674,21 @@ impl Parser {
                 false
             };
             let word = self.word_at(0).map(str::to_owned);
+            // These are lifecycle hooks, not ordinary actor methods.  In
+            // particular, running on_panic in the failed actor would permit
+            // it to swallow its own panic and violate supervisor CONTROL
+            // priority.  Reject both bare and keyword-prefixed spellings
+            // until supervisor-owned, generation-fenced dispatch is compiled.
+            let lifecycle_hook = matches!(word.as_deref(),
+                Some("on_panic" | "on_raise" | "on_throw"));
+            let prefixed_hook = matches!(word.as_deref(), Some("fnc" | "method"))
+                && matches!(self.word_at(1),
+                    Some("on_panic" | "on_raise" | "on_throw"));
+            if actor && (lifecycle_hook || prefixed_hook) {
+                return Err(unsupported(self.pos(),
+                    "actor failure hooks require supervisor CONTROL dispatch; \
+                     on_panic/on_raise/on_throw are not executable guest methods"));
+            }
             match word.as_deref() {
                 Some("static") => {
                     if actor {
