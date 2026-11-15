@@ -1,5 +1,5 @@
 // expect-error: E_UNSUPPORTED_TYPE
 pub fnc main(): int {
-  val shared: Arc<int> = Arc<int>(42);
+  val handle: Arc<int> = Arc<int>(42);
   return 0;
 }
