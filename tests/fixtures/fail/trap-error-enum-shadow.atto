@@ -1,0 +1,7 @@
+// expect-error: E_RESERVED
+// User-declared enum types cannot impersonate built-in Error in a throw.
+define enum Error as
+  Status
+end
+fnc fail(): int { throw Error("forged"); }
+pub fnc main(): int { return fail(); }
