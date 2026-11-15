@@ -86,6 +86,31 @@ fn contains_call(expr: &Expr, named: &BTreeSet<String>, depth: usize) -> bool {
         _ => false,
     }
 }
+// Do not silently accept an ordinary guest throw through an owning closure
+// frame until guest unwind/drop semantics are implemented. The check recurses
+// through nested source statements; unrelated functions remain unaffected.
+fn contains_guest_throw(body: &[Stmt], depth: usize) -> bool {
+    if depth > DEPTH { return true; } // reject unbounded ownership analysis
+    body.iter().any(|stmt| match stmt {
+        Stmt::Throw(_, _) => true,
+        Stmt::Block(block) | Stmt::Loop { body: block, .. }
+            | Stmt::While { body: block, .. } | Stmt::ForIn { body: block, .. } =>
+            contains_guest_throw(block, depth + 1),
+        Stmt::If { arms, otherwise, .. } => arms.iter().any(|(_, b)|
+                contains_guest_throw(b, depth + 1))
+            || otherwise.as_ref().is_some_and(|b| contains_guest_throw(b, depth + 1)),
+        Stmt::For { init, update, body, .. } =>
+            init.as_ref().is_some_and(|x|
+                contains_guest_throw(std::slice::from_ref(x.as_ref()), depth + 1))
+            || update.as_ref().is_some_and(|x|
+                contains_guest_throw(std::slice::from_ref(x.as_ref()), depth + 1))
+            || contains_guest_throw(body, depth + 1),
+        Stmt::Match { arms, .. } => arms.iter().any(|arm|
+            contains_guest_throw(&arm.body, depth + 1)),
+        _ => false,
+    })
+}
+
 fn should_lower(p: &Program) -> bool {
     p.funcs.iter().any(|f| {
         let named: BTreeSet<String> = f.params.iter()
@@ -263,6 +288,19 @@ pub fn lower(input: &Program) -> R<Program> {
     let function_returns: BTreeSet<String> = input.funcs.iter()
         .filter(|f| matches!(f.ret, Type::Callable(_))).map(|f| f.name.clone()).collect();
     for f in &mut p.funcs {
+        let owns_callable = f.ret == Type::Named(new_type)
+            || f.params.iter().any(|q| q.ty == Type::Named(new_type))
+            || f.body.iter().any(|stmt| match stmt {
+                Stmt::Bind { ty: Some(Type::Callable(_)), .. } => true,
+                Stmt::Bind { init: Expr { kind: ExprKind::Lambda { .. }, .. }, .. } => true,
+                Stmt::Bind { init: Expr { kind: ExprKind::Call(callee, _), .. }, .. } =>
+                    function_returns.contains(callee),
+                _ => false,
+            });
+        if owns_callable && contains_guest_throw(&f.body, 0) {
+            return Err(fail(f.pos, "E_UNSUPPORTED",
+                "owned closures cannot cross guest throw until exception-safe cleanup is implemented"));
+        }
         let mut available: BTreeMap<String, (Type, bool)> = f.params.iter().map(|param|
             (param.name.clone(), (param.ty, !param.mutable))).collect();
         let mut callables: BTreeSet<String> = f.params.iter()
