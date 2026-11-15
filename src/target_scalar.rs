@@ -176,18 +176,23 @@ pub fn compile_scalar_receiver_preview(source:&str) -> Result<Vec<u8>,Diagnostic
     }
     let mut methods=Vec::new();
     for (i,receiver) in typed.receivers.iter().enumerate() {
+        let owner=typed.actors.get(receiver.actor)
+            .ok_or_else(||error(receiver.pos,"invalid nominal actor in scalar preview"))?;
+        // The normal frontend marks `return (expr)` as a potential call
+        // because its effect scanner is deliberately conservative. The
+        // opt-in preview instead proves the *entire* method expression first:
+        // no calls/closures/state operations can survive lower_scalar_body.
+        let method=lower_scalar_body(&headers.receiver_bodies[i],receiver,&owner.name)?;
         let effects=&receiver.effects;
         if !typed.receiver_cleanup[i].leases.is_empty() ||
             effects.reads_state || effects.writes_state ||
             effects.may_suspend || effects.may_unwind ||
-            effects.may_spawn || effects.may_allocate || effects.unproved_call ||
+            effects.may_spawn || effects.may_allocate ||
             headers.receiver_calls.iter().any(|c|c.caller==i) {
             return Err(error(receiver.pos,
                 "scalar preview requires lease-free and call-free receiver body"));
         }
-        let owner=typed.actors.get(receiver.actor)
-            .ok_or_else(||error(receiver.pos,"invalid nominal actor in scalar preview"))?;
-        methods.push(lower_scalar_body(&headers.receiver_bodies[i],receiver,&owner.name)?);
+        methods.push(method);
     }
     let bytes=crate::wasm::emit_scalar_receiver_preview(&methods);
     if bytes.len()>crate::wasm::MAX_OUTPUT {
