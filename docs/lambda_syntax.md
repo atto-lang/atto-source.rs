@@ -98,8 +98,14 @@ be parenthesized, as in `val double = (|n| -> return n * 2;);`.
 
 The local lambda is a compile-time declaration, not a runtime handle.
 Only direct calls are supported: callable values, aliases, escaped closures,
-captures, reassignments, multiple lambdas per source function, contextual
-inference from nonliteral first arguments, and Rx pipelines still fail closed.
+mutable / non-scalar captures, reassignments, multiple lambdas per source function,
+contextual inference from nonliteral first arguments, and Rx pipelines still
+fail closed. The limited direct-call path now supports immutable scalar captures
+from top-level locals or immutable parameters; their values become hidden typed
+arguments to the lifted function. Captures are restricted to expression-bodied
+lambdas and the compiler never creates a first-class callable or heap environment.
+Factory-returned closures remain unsupported. The caller's scalar captures are
+immutable, so invocation-time passing preserves creation-time capture semantics.
 This milestone uses ordinary typed Wasm direct calls, not indirect-call tables
 or a general first-class function type. Positive/negative guest fixtures and
 native-vs-Wasm byte parity protect the admitted subset.

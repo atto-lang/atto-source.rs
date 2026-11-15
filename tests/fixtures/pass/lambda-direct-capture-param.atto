@@ -1,0 +1,9 @@
+// expect-exit: 42
+fnc multiply(int factor): int {
+  val captured_factor = factor;
+  val times = |value| : int -> value * captured_factor;
+  return times(14);
+}
+pub fnc main(): int {
+  return multiply(3);
+}

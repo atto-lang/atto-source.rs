@@ -1,12 +1,15 @@
-//! Conservative direct-call lowering of capture-free lambdas to typed functions.
+//! Conservative direct-call lowering of lambdas to typed functions.
 //!
-//! One immutable local lambda per source function is supported. Direct calls
-//! become named private Wasm function calls. This provides real execution
-//! without claiming callable values, captured environments or indirect tables.
+//! A single immutable directly-called lambda may capture immutable scalar
+//! locals and parameters by value. The compiler lifts those captures into
+//! hidden ordinary function arguments: no heap environment, callable handle,
+//! escape, actor transport, or indirect dispatch is introduced.
+//! Lambda creation is pure and captured scalar bindings cannot change; passing
+//! their value at a later call is equivalent to the creation-time snapshot.
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use super::callable_ir::{CallableSignature, CallableTarget, TypedCallable};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 type R<T> = Result<T, Diagnostic>;
 
 struct Direct {
@@ -14,6 +17,8 @@ struct Direct {
     hidden: String,
     lambda: Expr,
     params: Vec<String>,
+    explicit_arity: usize,
+    captures: Vec<(String, Type)>,
     inferred: Option<Vec<Type>>,
     calls: usize,
     expression_depth: usize,
@@ -34,6 +39,49 @@ fn literal_type(e: &Expr) -> Option<Type> {
         _ => None,
     }
 }
+
+// Capture collection is deliberately restricted to expression bodies. Braced
+// closure bodies have lexical-local scopes that must be handled by a separate
+// ownership-aware lowering pass; the current checker still rejects them.
+fn captured_in_expression(
+    e: &Expr, bound: &BTreeSet<String>, names: &mut BTreeSet<String>, depth: usize
+) -> R<()> {
+    if depth >= MAX_REWRITE_DEPTH {
+        return Err(error(e.pos, "E_NESTING", "closure capture analysis depth exceeded"));
+    }
+    match &e.kind {
+        ExprKind::Var(n) => { if !bound.contains(n) { names.insert(n.clone()); } }
+        ExprKind::Unary(_, inner) | ExprKind::Trap(inner) | ExprKind::Propagate(inner) =>
+            captured_in_expression(inner, bound, names, depth + 1)?,
+        ExprKind::Binary(_, a, b) => {
+            captured_in_expression(a, bound, names, depth + 1)?;
+            captured_in_expression(b, bound, names, depth + 1)?;
+        }
+        ExprKind::Ternary(c, a, b) => {
+            captured_in_expression(c, bound, names, depth + 1)?;
+            captured_in_expression(a, bound, names, depth + 1)?;
+            captured_in_expression(b, bound, names, depth + 1)?;
+        }
+        ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) => {
+            for a in args { captured_in_expression(a, bound, names, depth + 1)?; }
+        }
+        ExprKind::Member(base, _) => captured_in_expression(base, bound, names, depth + 1)?,
+        ExprKind::MethodCall(base, _, args) => {
+            captured_in_expression(base, bound, names, depth + 1)?;
+            for a in args { captured_in_expression(a, bound, names, depth + 1)?; }
+        }
+        ExprKind::Lambda { .. } => return Err(error(e.pos, "E_UNSUPPORTED",
+            "nested closure values require owned environments and verified dispatch")),
+        _ => {},
+    }
+    Ok(())
+}
+fn simple_scalar_type(e: &Expr, available: &BTreeMap<String, (Type, bool)>) -> Option<Type> {
+    literal_type(e).or_else(|| match &e.kind {
+        ExprKind::Var(n) => available.get(n).map(|(t, _)| *t),
+        _ => None,
+    }).filter(|t| matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str))
+}
 pub fn lower(input: &Program) -> R<Program> {
     let mut program = input.clone();
     let mut generated = Vec::new();
@@ -44,6 +92,10 @@ pub fn lower(input: &Program) -> R<Program> {
         // the lambda declaration. The ordinary checker would otherwise miss
         // an earlier same-scope declaration with the identical name.
         let mut bindings_before_lambda = BTreeSet::<String>::new();
+        // Only top-level lexical bindings and immutable scalar parameters are
+        // available as direct-call captures. Nested scopes cannot escape.
+        let mut available: BTreeMap<String, (Type, bool)> = f.params.iter()
+            .map(|p| (p.name.clone(), (p.ty, !p.mutable))).collect();
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
             if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
@@ -91,19 +143,51 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_DUPLICATE",
                             "compiler-generated lambda name collides with a declaration"));
                     }
+                    let explicit_arity = params.len();
+                    let mut lifted = init.clone();
+                    let mut captures = Vec::new();
+                    if let ExprKind::Lambda {
+                        params: lifted_params, body: LambdaBody::Expression(expr), ..
+                    } = &mut lifted.kind {
+                        let bound: BTreeSet<String> = params.iter().cloned().collect();
+                        let mut referenced = BTreeSet::new();
+                        captured_in_expression(expr, &bound, &mut referenced, 0)?;
+                        for name in referenced {
+                            if let Some(&(ty, immutable)) = available.get(&name) {
+                                if !immutable || !matches!(ty,
+                                    Type::Int | Type::Bool | Type::Float | Type::Str)
+                                {
+                                    return Err(error(init.pos, "E_CAPTURE",
+                                        format!("closure cannot capture mutable or non-scalar binding '{name}'")));
+                                }
+                                if lifted_params.len() >= crate::parser::MAX_PARAMS {
+                                    return Err(error(init.pos, "E_SOURCE_LIMIT",
+                                        "closure parameters and captures exceed the function limit"));
+                                }
+                                lifted_params.push(name.clone());
+                                captures.push((name, ty));
+                            }
+                        }
+                    }
+                    let mut lowered_params = params.clone();
+                    lowered_params.extend(captures.iter().map(|(name, _)| name.clone()));
                     direct = Some(Direct {
                         source: name.clone(),
                         hidden,
-                        lambda: init.clone(),
-                        params: params.clone(), inferred: None, calls: 0,
+                        lambda: lifted,
+                        params: lowered_params,
+                        explicit_arity, captures, inferred: None, calls: 0,
                         expression_depth: 0, statement_depth: 0,
                     });
                     continue;
                 }
             }
             if let Some(d) = &mut direct { rewrite_stmt(&mut stmt, d)?; }
-            if let Stmt::Bind { name, .. } = &stmt {
+            if let Stmt::Bind { kind, name, ty, init, .. } = &stmt {
                 bindings_before_lambda.insert(name.clone());
+                if let Some(t) = (*ty).or_else(|| simple_scalar_type(init, &available)) {
+                    available.insert(name.clone(), (t, *kind != BindKind::Let));
+                }
             }
             body.push(stmt);
         }
@@ -256,16 +340,22 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         ExprKind::Call(name, args) => {
             for a in args.iter_mut() { rewrite_expr(a, d)?; }
             if *name == d.source {
-                if args.len() != d.params.len() {
+                if args.len() != d.explicit_arity {
                     return Err(error(e.pos, "E_ARITY", format!(
                         "lambda expects {} arguments, got {}",
-                        d.params.len(), args.len())));
+                        d.explicit_arity, args.len())));
                 }
                 if d.inferred.is_none() {
-                    let types = args.iter().map(literal_type).collect::<Option<Vec<_>>>()
+                    let mut types = args.iter().map(literal_type).collect::<Option<Vec<_>>>()
                         .ok_or_else(|| error(e.pos, "E_INFER",
                             "first direct call must have scalar literal arguments"))?;
+                    types.extend(d.captures.iter().map(|(_, ty)| *ty));
                     d.inferred = Some(types);
+                }
+                // Captures are immutable scalars, so their value is unchanged
+                // between closure creation and the direct invocation.
+                for (capture, _) in &d.captures {
+                    args.push(Expr { kind: ExprKind::Var(capture.clone()), pos: e.pos });
                 }
                 *name = d.hidden.clone();
                 d.calls += 1;
