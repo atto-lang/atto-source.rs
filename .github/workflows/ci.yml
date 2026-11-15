@@ -48,6 +48,12 @@ jobs:
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
           node tests/browser-e2e.mjs
+      - name: Install pinned Firefox and WebKit browser harness
+        run: |
+          npm install --no-save --no-package-lock --ignore-scripts playwright@1.65.1
+          npx --no-install playwright install --with-deps firefox webkit
+      - name: Real Firefox and WebKit compiler + guest worker E2E
+        run: node tests/browser-cross-engine.mjs
       - name: Build immutable compiler artifact receipt
         run: |
           mkdir -p dist

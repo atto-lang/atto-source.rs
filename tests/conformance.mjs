@@ -178,6 +178,56 @@ function check(label, fn) {
 }
 const digests = [];
 
+// Trap must catch only the compiler's own private Wasm EH tag. Host import
+// exceptions (including a foreign Wasm tag) must escape unchanged.
+check('trap/host-exceptions-and-foreign-wasm-tag-bypass-catch', () => {
+  const source = [
+    'fnc emit(): int {',
+    '  stdio.println("host boundary");',
+    '  return 12;',
+    '}',
+    'pub fnc main(): int {',
+    '  match trap emit() over',
+    '    on Some(v) -> { return v; }',
+    '    on None -> { return 99; }',
+    '  end',
+    '}',
+  ].join('\n');
+  const built = compile(source);
+  assert.ok(built.ok, built.message);
+  assert.equal(runGuest(built.wasm).value, 12n, 'normal host import path');
+  const guest = new WebAssembly.Module(built.wasm);
+  const imports = WebAssembly.Module.imports(guest);
+  assert.ok(imports.some(x => x.module === 'atto' && x.name === 'print_str'));
+  assert.ok(WebAssembly.Module.exports(guest).every(x => x.kind !== 'tag'),
+    'private Error tag must not be exported');
+  assert.ok(imports.every(x => x.module === 'atto' && x.kind === 'function'),
+    'private Error tag must not be imported');
+  const foreignTag = new WebAssembly.Tag({ parameters: ['i64'] });
+  const foreignError = new WebAssembly.Exception(foreignTag, [13n]);
+  const cases = [
+    ['host-javascript-error', new Error('host import failure')],
+    ['host-runtime-error', new WebAssembly.RuntimeError('fatal host failure')],
+    ['foreign-wasm-exception-tag', foreignError],
+  ];
+  for (const [name, thrown] of cases) {
+    let called = 0;
+    const atto = {};
+    for (const imp of imports) {
+      atto[imp.name] = () => {
+        if (imp.name === 'print_str') {
+          called++;
+          throw thrown;
+        }
+      };
+    }
+    const instance = new WebAssembly.Instance(guest, { atto });
+    assert.throws(() => instance.exports.main(), error => error === thrown,
+      name + ': trap must not convert host/foreign exception to None');
+    assert.equal(called, 1, name + ': failing import called exactly once');
+  }
+});
+
 for (const f of await fixtures('pass')) {
   check(`pass/${f.name}`, () => {
     const r = compile(f.source);

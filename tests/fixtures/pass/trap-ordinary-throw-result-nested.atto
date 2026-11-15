@@ -1,0 +1,31 @@
+// expect-exit: 7
+// expect-stdout: caught ordinary throw
+// expect-stdout: soft failure
+// An ordinary guest Error escapes a callee and is caught only by caller-side trap.
+// A returned Err is ordinary data and must stay inside Some(Result<...>).
+fnc maybe_throw(int id): Result<int, String> {
+  if id < 0 then
+    throw Error("ordinary throw");
+  fi
+  return Err("soft failure");
+}
+
+pub fnc main(): int {
+  val Option<Result<int, String>> thrown = trap maybe_throw(-1);
+  val Option<Result<int, String>> returned = trap maybe_throw(1);
+
+  match thrown over
+    on Some(result) -> { return 1; }
+    on None -> { stdio.println("caught ordinary throw"); }
+  end
+  match returned over
+    on Some(result) -> {
+      match result over
+        on Ok(id) -> { return 2; }
+        on Err(message) -> { stdio.println(message); }
+      end
+    }
+    on None -> { return 3; }
+  end
+  return 7;
+}
