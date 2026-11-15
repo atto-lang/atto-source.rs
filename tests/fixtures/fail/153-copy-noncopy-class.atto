@@ -1,0 +1,10 @@
+// expect-error: E_COPY
+// java: rejects
+define class Parcel as
+ pub let int value = 42;
+end
+pub fnc main(): int {
+ val parcel = new Parcel();
+ val clone = copy!(parcel);
+ return clone.value;
+}
