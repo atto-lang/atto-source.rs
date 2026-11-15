@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 
-const source=\`
+const source=`
 use namespace workers;
 declare actor Worker;
 mtd (Worker self) double(int n): int { return n * 2; }
@@ -14,7 +14,7 @@ mtd (Worker self) add(int n, int b): int { return n + b; }
 mtd (Worker self) subtract(int n): int { return n - 1; }
 mtd (Worker self) minus(int n): int { return -n; }
 mtd (Worker self) minimum(): int { return -9223372036854775808; }
-\`;
+`;
 const hostCompiler=process.env.ATTOC || 'target/release/attoc';
 const browserCompiler=process.argv[2] || 'target/wasm32-unknown-unknown/release/atto_compiler.wasm';
 const browser=new WebAssembly.Instance(new WebAssembly.Module(readFileSync(browserCompiler)),{});
