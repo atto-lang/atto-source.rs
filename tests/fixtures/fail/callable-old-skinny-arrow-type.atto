@@ -1,0 +1,6 @@
+// expect-error: E_SYNTAX
+// Legacy skinny arrow is invalid in callable TYPE declarations.
+fnc use_it(fnc(int) -> int operation, int value): int {
+  return value;
+}
+pub fnc main(): int { return 42; }
