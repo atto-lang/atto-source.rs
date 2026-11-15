@@ -451,7 +451,7 @@ impl Emit<'_> {
                 // handles. Constructors execute once left-to-right after
                 // allocation. An interrupted construction is reclaimable
                 // with its owning arena, never by a shared GC.
-                self.i32c((elements.len() as u32).saturating_mul(8));
+                self.i32c((elements.len() as i32).saturating_mul(8));
                 self.call(self.l.helper(H_ALLOC));
                 self.set(*tmp);
                 for (i, value) in elements.iter().enumerate() {
