@@ -41,7 +41,8 @@ const passes = [
   'lambda-direct-capture-param',
   'closure-lambda-functor-direct-profile',
   'closure-escape-independent-factories',
-  'closure-escape-two-captures'
+  'closure-escape-two-captures',
+  'closure-escape-reuse-instance'
 ];
 for (const name of passes) {
   const path = 'tests/fixtures/pass/' + name + '.atto';
@@ -63,7 +64,11 @@ for (const [name, code] of [
   ['closure-escape-unknown-capture', 'E_CAPTURE'],
   ['closure-escape-indirect-parameter', 'E_UNSUPPORTED'],
   ['closure-escape-two-factories', 'E_UNSUPPORTED'],
-  ['closure-escape-forged-reserved-class', 'E_DUPLICATE']
+  ['closure-escape-forged-reserved-class', 'E_TOKEN'],
+  ['closure-escape-field-private', 'E_PRIVATE'],
+  ['closure-escape-arg-type', 'E_TYPE'],
+  ['closure-escape-use-after-move', 'E_MOVED'],
+  ['closure-escape-callable-shadow', 'E_CAPTURE']
 ]) {
   const source = readFileSync('tests/fixtures/fail/' + name + '.atto', 'utf8');
   const got = compile(source);
