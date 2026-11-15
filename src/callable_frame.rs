@@ -152,6 +152,7 @@ impl CallableArena {
 
     fn index(&self, bits: u128, caller_owner: u64) -> Result<usize, CallableFault> {
         self.check_owner(caller_owner)?;
+        if bits == 0 { return Err(CallableFault::InvalidHandle); }
         if (bits >> 64) as u64 != self.owner {
             return Err(CallableFault::InvalidOwner);
         }
