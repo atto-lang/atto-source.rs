@@ -103,3 +103,15 @@ inference from nonliteral first arguments, and Rx pipelines still fail closed.
 This milestone uses ordinary typed Wasm direct calls, not indirect-call tables
 or a general first-class function type. Positive/negative guest fixtures and
 native-vs-Wasm byte parity protect the admitted subset.
+
+## Direct-call scope audit
+
+Direct-call desugaring now preserves the same-scope local-name history before
+removing the callable declaration, preventing duplicate bindings from being
+laundered through a compiler-private generated function. An existing lexical
+binding in an earlier *nested* block remains independent. Shadowing the
+callable after declaration remains unsupported. Forged direct ASTs cannot
+claim generated private function names, and recursive AST rewrite walks have
+independent expression and statement nesting limits. These protections apply
+to the direct-call-only subset; callable values and capture semantics remain
+separate milestones.
