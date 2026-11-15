@@ -1,0 +1,7 @@
+// expect-error: E_MOVED
+pub fnc main(): int {
+  val number = 1;
+  val first = take! number;
+  val again = take! number;
+  return first + again;
+}
