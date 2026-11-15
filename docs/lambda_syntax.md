@@ -72,3 +72,14 @@ closure objects, Rx method integration, ownership transport, callback
 invocation or Wasm closure lowering are implemented. The normal `compile()`
 path continues to reject lambda values with `E_UNSUPPORTED` until those
 capabilities have been tested independently.
+
+## Audit hardening: unreachable tails and nested statements
+
+The signature-only lambda analyzer now rejects any statement after a
+provably terminating return or an `if` whose every arm returns, using
+`E_UNREACHABLE`. It does not silently ignore captures, mismatched returns,
+or unimplemented effects in such tails. A bounded statement-depth budget
+applies independently of expression-depth limits, including ASTs constructed
+directly by tooling rather than via the parser. The `self` binding is also
+prohibited at the type-checker boundary. These are intentionally conservative
+checks: they do not grant executable closures or a Wasm callable ABI.
