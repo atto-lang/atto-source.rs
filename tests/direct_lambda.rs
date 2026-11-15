@@ -49,6 +49,38 @@ fn mutable_outer_capture_still_rejected() {
     let src = "pub fnc main(): int { let extra = 1; val f = |n| -> n + extra; return f(1); }";
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_CAPTURE");
 }
+
+#[test]
+fn two_immutable_captures_preserve_lexical_values_under_nested_shadowing() {
+    let source = "pub fnc main(): int { val a = 2; val b = 4; val f = |n| : int -> n * a + b; block { val a = 100; block { val b = 200; return f(19); } } }";
+    let p = checked(source);
+    assert_eq!(p.funcs[1].params, [Type::Int, Type::Int, Type::Int]);
+    let TStmt::Block(ref outer) = p.funcs[0].body[4] else {
+        panic!("expected lexical shadow block")
+    };
+    let TStmt::Block(ref inner) = outer[1] else {
+        panic!("expected nested lexical shadow block")
+    };
+    assert!(matches!(&inner[1], TStmt::Return(Some(value))
+        if matches!(&value.e, TExpr::Call(1, args) if args.len() == 3)));
+    assert!(atto_compiler::compile(source).is_ok());
+}
+
+#[test]
+fn lowered_lambda_helper_is_not_implicitly_effect_exempt() {
+    // The generated $lambda_* is synthetically marked pure, so the fully
+    // typed effect checker must still reject its heap-allocating string concat.
+    let source = "pub fnc main(): int { val f = |s| : string -> s + \"x\"; stdio.println(f(\"a\")); return 0; }";
+    let d = atto_compiler::compile(source).unwrap_err();
+    assert_eq!(d.code, "E_PURE", "{d}");
+}
+
+#[test]
+fn direct_lambda_cannot_read_an_out_of_scope_block_binding() {
+    let source = "pub fnc main(): int { block { val extra = 2; } val f = |n| : int -> n + extra; return f(40); }";
+    let d = atto_compiler::compile(source).unwrap_err();
+    assert_eq!(d.code, "E_CAPTURE", "{d}");
+}
 #[test]
 fn lambda_escape_does_not_silently_create_callable() {
     let src = "pub fnc main(): int { val f = |n| -> n + 1; val alias = f; return f(1); }";

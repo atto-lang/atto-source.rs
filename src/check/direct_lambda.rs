@@ -1,8 +1,9 @@
-//! Conservative direct-call lowering of capture-free lambdas to typed functions.
+//! Conservative direct-call lowering of bounded, immutable scalar-capturing lambdas.
 //!
 //! One immutable local lambda per source function is supported. Direct calls
-//! become named private Wasm function calls. This provides real execution
-//! without claiming callable values, captured environments or indirect tables.
+//! become named private Wasm function calls with frozen scalar capture parameters.
+//! Callable values, escaping closures, mutable captures and indirect tables
+//! remain unsupported.
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use super::callable_ir::{CallableSignature, CallableTarget, TypedCallable};
@@ -373,7 +374,25 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
             free_names(a, names, depth + 1)?;
             free_names(b, names, depth + 1)?;
         }
-        _ => {} // unsafe/unsupported forms still fail during lambda typecheck
+        // Keep this match exhaustive. Newly introduced AST expression forms
+        // must be reviewed here before direct closure conversion is enabled;
+        // otherwise a missed free-variable use could escape capture analysis.
+        ExprKind::Int(_) | ExprKind::Float(_) |
+        ExprKind::Bool(_) | ExprKind::Str(_) => {},
+        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) =>
+            free_names(a, names, depth + 1)?,
+        ExprKind::Call(_, args) | ExprKind::New(_, args) |
+        ExprKind::Array(args) => {
+            for arg in args { free_names(arg, names, depth + 1)?; }
+        }
+        ExprKind::MethodCall(recv, _, args) => {
+            free_names(recv, names, depth + 1)?;
+            for arg in args { free_names(arg, names, depth + 1)?; }
+        }
+        // A receiver and a nested lambda are outside the direct-call scalar
+        // capture profile. The noncapturing typechecker retains the precise
+        // E_CAPTURE/E_UNSUPPORTED failure classification for these forms.
+        ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Lambda { .. } => {},
     }
     Ok(())
 }
