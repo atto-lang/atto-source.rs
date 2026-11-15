@@ -628,9 +628,9 @@ impl Parser {
             } else {
                 self.parse_block()?
             };
-            if methods.iter().any(|m| m.name == method_name) {
+            if methods.iter().any(|m| m.name == method_name && m.params.len() == params.len()) {
                 return Err(Diagnostic::new(mpos, "E_DUPLICATE",
-                    format!("duplicate member '{method_name}' in '{name}'")));
+                    format!("duplicate member '{method_name}' with arity {} in '{name}'", params.len())));
             }
             methods.push(Method {
                 name: method_name, pos: mpos, public: true,
