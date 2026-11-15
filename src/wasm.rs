@@ -1258,3 +1258,93 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     out
 }
+
+
+/// Explicit, opt-in stateless receiver Wasm *preview*. This shares the
+/// production checked i64 arithmetic helpers and panic_code convention, but
+/// exports only pure scalar callables. No actor instance, mailbox, state
+/// memory, scheduler or generated lease cleanup is provided here.
+pub fn emit_scalar_receiver_preview(methods: &[crate::target_scalar::ScalarMethod]) -> Vec<u8> {
+    use crate::target_scalar::{ScalarExpr,ScalarMethod};
+
+    fn emit_expr(expr:&ScalarExpr,code:&mut Vec<u8>) {
+        match expr {
+            ScalarExpr::Param(i) => {code.push(0x20);uleb(code,*i as u64);}
+            ScalarExpr::Const(n) => {code.push(0x42);sleb(code,*n);}
+            ScalarExpr::Neg(x) => {
+                emit_expr(x,code);code.push(0x10);uleb(code,H_NEG as u64);
+            }
+            ScalarExpr::Add(a,b) | ScalarExpr::Sub(a,b) |
+            ScalarExpr::Mul(a,b) => {
+                emit_expr(a,code);emit_expr(b,code);
+                let helper=match expr {
+                    ScalarExpr::Add(..)=>H_ADD,
+                    ScalarExpr::Sub(..)=>H_SUB,
+                    _=>H_MUL,
+                };
+                code.push(0x10);uleb(code,helper as u64);
+            }
+        }
+    }
+    let helpers=helper_bodies();
+    debug_assert_eq!(helpers.len(),4);
+    let mut types=Types(Vec::new());
+    let mut function_types=Vec::new();
+    let mut bodies=Vec::new();
+    for (sig,locals,code) in helpers {
+        function_types.push(types.idx(sig));
+        let mut body=locals;
+        body.extend(code);
+        bodies.push(body);
+    }
+    let helper_count=function_types.len();
+    for ScalarMethod {arity,expr,..} in methods {
+        function_types.push(types.idx(Sig(vec![I64;*arity],vec![I64])));
+        let mut body=vec![0]; // no extra locals
+        emit_expr(expr,&mut body);
+        body.push(0x0B); // end function
+        bodies.push(body);
+    }
+    let mut result=b"\0asm\x01\0\0\0".to_vec();
+
+    let mut type_section=Vec::new();
+    uleb(&mut type_section,types.0.len() as u64);
+    for Sig(params,returns) in &types.0 {
+        type_section.push(0x60);
+        uleb(&mut type_section,params.len() as u64);
+        type_section.extend(params);
+        uleb(&mut type_section,returns.len() as u64);
+        type_section.extend(returns);
+    }
+    section(&mut result,1,type_section);
+
+    let mut function_section=Vec::new();
+    uleb(&mut function_section,function_types.len() as u64);
+    for idx in function_types {uleb(&mut function_section,idx as u64);}
+    section(&mut result,3,function_section);
+
+    // Mutable global used by the *existing* checked helper bodies.
+    let mut global_section=vec![1, I32, 1, 0x41,0,0x0B];
+    section(&mut result,6,std::mem::take(&mut global_section));
+
+    let mut exports=Vec::new();
+    uleb(&mut exports,(methods.len()+1) as u64);
+    name(&mut exports,"panic_code");
+    exports.push(0x03);uleb(&mut exports,0);
+    for (i,method) in methods.iter().enumerate() {
+        name(&mut exports,&format!("atto.preview.{}.{}.{}",
+            method.owner,method.name,method.arity));
+        exports.push(0x00); // function export, deliberately not actor method
+        uleb(&mut exports,(helper_count+i) as u64);
+    }
+    section(&mut result,7,exports);
+
+    let mut code_section=Vec::new();
+    uleb(&mut code_section,bodies.len() as u64);
+    for body in bodies {
+        uleb(&mut code_section,body.len() as u64);
+        code_section.extend(body);
+    }
+    section(&mut result,10,code_section);
+    result
+}
