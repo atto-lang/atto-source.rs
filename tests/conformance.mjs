@@ -8,6 +8,7 @@
 //
 // usage: node tests/conformance.mjs [compiler.wasm]
 import assert from 'node:assert/strict';
+import { auditPlaygroundPreviews } from './playground-preview-audit.mjs';
 import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -492,6 +493,19 @@ console.log('COMPILED_WASM_GUEST_TRACE actor_instances=' + tracedActorInstances 
   ' admitted_and_settled=' + tracedActorMessages +
   ' backend=browser-wasm guest=EXECUTED scheduling=serial-host-only');
 console.log(digests.length ? `artifact digests:\n${digests.join('\n')}` : '');
+// Executable admission check against the EXACT 35 site preview source files.
+// Report accepted-but-unexecuted guests separately; never equate admission
+// or positional E_* rejection with feature parity.
+try {
+  const previewAudit = await auditPlaygroundPreviews({
+    compile, runGuest, nativeBytes: attoc ? nativeBytes : null
+  });
+  console.log('PLAYGROUND_PREVIEW_AUDIT ' + JSON.stringify(previewAudit));
+  passed++;
+} catch (error) {
+  failures.push('playground-preview-corpus: ' + error.message);
+}
+
 console.log(`conformance: ${passed} passed, ${failures.length} failed` +
   (java ? `, ${javaChecked} Java-differential` : ', Java differential skipped (set ATTO_JAVA)') +
   (attoc ? `, ${nativeChecked} native-vs-wasm` : ', native parity skipped (set ATTOC)'));
