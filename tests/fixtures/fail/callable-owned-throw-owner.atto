@@ -1,0 +1,9 @@
+// expect-error: E_UNSUPPORTED
+fnc make_adder(int offset): fnc(int) => int {
+    return |n| : int -> n + offset;
+}
+fnc unsafe_scope(): int {
+    val adder = make_adder(1);
+    throw Error("no cleanup contract");
+}
+pub fnc main(): int { return 42; }
