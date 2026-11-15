@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+fnc make_adder(int offset): fnc(int) -> int {
+  return |n| : int -> n + offset;
+}
+fnc apply_twice(fnc(int) -> int operation, int n): int {
+  return operation(operation(n));
+}
+pub fnc main(): int { return 0; }
