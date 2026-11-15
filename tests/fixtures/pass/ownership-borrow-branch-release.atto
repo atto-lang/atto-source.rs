@@ -1,4 +1,5 @@
 // expect-exit: 42
+// expect-stdout: 40
 pub fnc main(): int {
   let number = 40;
   if number > 0 then
