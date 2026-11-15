@@ -2062,7 +2062,13 @@ impl Parser {
                 _ => return Err(self.expected("a lambda return type")),
             };
             while self.eat(&Tok::Dot) {
-                let (part, _) = self.ident("a qualified type name")?;
+                // Namespace/module segments may be spelled like keywords
+                // (e.g. my.types.Response). After '.', the token is never
+                // parsed as a control-flow keyword.
+                let part = match self.peek().clone() {
+                    Tok::Ident(part) => { self.advance(); part }
+                    _ => return Err(self.expected("a qualified type name")),
+                };
                 name.push('.');
                 name.push_str(&part);
             }
@@ -2114,11 +2120,27 @@ impl Parser {
             if return_type.is_none() && matches!(self.peek(), Tok::Ident(_)) {
                 // Legacy braced form: |n| -> int { return n; }.
                 // Roll back for an ordinary expression body, e.g. |n| -> n * 2.
-                let start = self.i;
-                if let Ok(candidate) = self.parse_lambda_type() {
-                    if *self.peek() == Tok::LBrace { return_type = Some(candidate); }
-                    else { self.i = start; }
-                } else { self.i = start; }
+                let checkpoint = (self.i, self.depth, self.height);
+                let candidate = self.parse_lambda_type();
+                match candidate {
+                    Ok(candidate) if *self.peek() == Tok::LBrace => {
+                        return_type = Some(candidate);
+                    }
+                    result => {
+                        // Speculative type recognition must never change the
+                        // parser state when the tokens actually start an
+                        // expression. In particular, an interrupted recursive
+                        // type parse can leave the nesting counters elevated.
+                        (self.i, self.depth, self.height) = checkpoint;
+                        if let Err(err) = result {
+                            // Resource/recursion limits are security gates;
+                            // never downgrade them to a different expression.
+                            if err.code == "E_NESTING" || err.code == "E_SOURCE_LIMIT" {
+                                return Err(err);
+                            }
+                        }
+                    }
+                }
             }
         }
         let body = if *self.peek() == Tok::LBrace {

@@ -23,7 +23,9 @@ Accepted forms (syntax):
 - Legacy typed braceless: `|n| => int -> return n * 2;` (accepted for compatibility, not preferred)
 
 The semicolon is part of a braceless `return` statement. It is required
-inside a call argument before the closing `)`. Expression bodies do not need
+inside a call argument before the closing `)`. For a same-line standalone
+binding such as `val cb = (|n| -> return n;);`, the inner `return;` and
+outer `val;` have distinct statement terminators. Expression bodies do not need
 an inner semicolon. Multiple statements require `{ ... }`.
 
 ## Grammar and disambiguation
@@ -39,7 +41,11 @@ block              = "{", {statement}, "}" ;
 The `:` annotation belongs to the parameter-pipe pair. The following `->`
 marks the body boundary. `|` remains boolean OR in conditional-expression
 contexts; a `|` in primary-expression position opens a lambda parameter list.
-Qualified and nested generic return-type syntax is preserved. Names and type
+Qualified and nested generic return-type syntax is preserved, including
+keyword-like module path segments such as `my.types.Response`. Speculative
+recognition of the legacy braced form restores parser state and propagates
+nesting/security-limit errors instead of silently retrying an expression.
+Names and type
 resolution are separate from parsing. Repeated parameter names fail closed.
 
 ## Implementation status
