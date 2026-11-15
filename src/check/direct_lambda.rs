@@ -6,6 +6,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use super::lambda_types::check_noncapturing;
+use std::collections::BTreeSet;
 type R<T> = Result<T, Diagnostic>;
 
 struct Direct {
@@ -15,7 +16,10 @@ struct Direct {
     params: Vec<String>,
     inferred: Option<Vec<Type>>,
     calls: usize,
+    expression_depth: usize,
+    statement_depth: usize,
 }
+const MAX_REWRITE_DEPTH: usize = 128;
 fn error(p: Pos, code: &'static str, m: impl Into<String>) -> Diagnostic {
     Diagnostic::new(p, code, m)
 }
@@ -36,6 +40,10 @@ pub fn lower(input: &Program) -> R<Program> {
     for (idx, f) in program.funcs.iter_mut().enumerate() {
         if f.is_generator { continue; }
         let mut direct: Option<Direct> = None;
+        // Keep the top-level lexical binding ledger before desugaring removes
+        // the lambda declaration. The ordinary checker would otherwise miss
+        // an earlier same-scope declaration with the identical name.
+        let mut bindings_before_lambda = BTreeSet::<String>::new();
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
             if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
@@ -48,6 +56,10 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "direct lambdas need an unannotated immutable val binding"));
                     }
+                    if bindings_before_lambda.contains(name) {
+                        return Err(error(*pos, "E_DUPLICATE",
+                            "direct lambda duplicates an existing local binding"));
+                    }
                     if f.params.iter().any(|p| p.name == *name) {
                         return Err(error(*pos, "E_DUPLICATE",
                             "lambda name duplicates a function parameter"));
@@ -55,17 +67,32 @@ pub fn lower(input: &Program) -> R<Program> {
                     if generated.len() >= 64 {
                         return Err(error(*pos, "E_SOURCE_LIMIT", "too many direct lambdas"));
                     }
-                    // Dollar prefix cannot be spelled in user identifiers.
+                    // The private name is reserved by source grammar but a
+                    // checker caller may construct a Program directly. Reject
+                    // collisions instead of letting a forged declaration
+                    // impersonate the compiled callback.
+                    let hidden = format!("$lambda_{}", idx);
+                    if source.funcs.iter().any(|f| f.name == hidden)
+                        || source.classes.iter().any(|c| c.name == hidden)
+                        || source.enums.iter().any(|e| e.name == hidden)
+                        || source.actors.iter().any(|a| a.name == hidden) {
+                        return Err(error(*pos, "E_DUPLICATE",
+                            "compiler-generated lambda name collides with a declaration"));
+                    }
                     direct = Some(Direct {
                         source: name.clone(),
-                        hidden: format!("$lambda_{}", idx),
+                        hidden,
                         lambda: init.clone(),
                         params: params.clone(), inferred: None, calls: 0,
+                        expression_depth: 0, statement_depth: 0,
                     });
                     continue;
                 }
             }
             if let Some(d) = &mut direct { rewrite_stmt(&mut stmt, d)?; }
+            if let Stmt::Bind { name, .. } = &stmt {
+                bindings_before_lambda.insert(name.clone());
+            }
             body.push(stmt);
         }
         if let Some(d) = direct {
@@ -113,6 +140,16 @@ fn rewrite_statements(body: &mut [Stmt], d: &mut Direct) -> R<()> {
     Ok(())
 }
 fn rewrite_stmt(s: &mut Stmt, d: &mut Direct) -> R<()> {
+    if d.statement_depth >= MAX_REWRITE_DEPTH {
+        return Err(error(stmt_pos(s), "E_NESTING",
+            "direct lambda statement rewrite nesting limit exceeded"));
+    }
+    d.statement_depth += 1;
+    let result = rewrite_stmt_inner(s, d);
+    d.statement_depth -= 1;
+    result
+}
+fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
     match s {
         Stmt::Bind { name, init, pos, .. } => {
             if *name == d.source {
@@ -182,6 +219,16 @@ fn rewrite_stmt(s: &mut Stmt, d: &mut Direct) -> R<()> {
     }
 }
 fn rewrite_expr(e: &mut Expr, d: &mut Direct) -> R<()> {
+    if d.expression_depth >= MAX_REWRITE_DEPTH {
+        return Err(error(e.pos, "E_NESTING",
+            "direct lambda expression rewrite nesting limit exceeded"));
+    }
+    d.expression_depth += 1;
+    let result = rewrite_expr_inner(e, d);
+    d.expression_depth -= 1;
+    result
+}
+fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
     match &mut e.kind {
         ExprKind::Var(n) if *n == d.source =>
             Err(error(e.pos, "E_UNSUPPORTED",
@@ -229,5 +276,20 @@ fn rewrite_expr(e: &mut Expr, d: &mut Direct) -> R<()> {
         ExprKind::Lambda { .. } => Err(error(e.pos, "E_UNSUPPORTED",
             "nested or escaping lambda needs closure lowering")),
         _ => Ok(()),
+    }
+}
+
+fn stmt_pos(s: &Stmt) -> Pos {
+    match s {
+        Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } |
+        Stmt::FieldAssign { pos, .. } | Stmt::If { pos, .. } |
+        Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
+        Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
+        Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
+        Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) |
+        Stmt::Return(_, pos) | Stmt::Break(pos) |
+        Stmt::Continue(pos) => *pos,
+        Stmt::Block(body) => body.first().map_or(Pos { line: 1, col: 1 }, stmt_pos),
+        Stmt::Expr(e) => e.pos,
     }
 }
