@@ -1504,6 +1504,10 @@ impl Parser {
             let (name, _) = self.ident("a variable name")?;
             (name, None)
         };
+        if self.state_method && name == "s" {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "a local named s would shadow the critical lease binder"));
+        }
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
         }
