@@ -17,6 +17,7 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+pub mod lambda_types;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
