@@ -137,6 +137,15 @@ impl Body{
     fn loop_(&mut self){self.op(0x03);self.op(0x40);}
     fn end(&mut self){self.op(0x0b);}
     fn trap_if(&mut self){self.if_();self.op(0x00);self.end();}
+    fn fault_if(&mut self, code: i32){
+        // Wasm traps do not roll back already committed globals. Persist a
+        // terminal FAILED state first so the host can inspect and close it.
+        self.if_();
+        self.i32(4);self.gs(1); // FAILED (not resumable)
+        self.i32(code);self.gs(6); // stable failure reason
+        self.op(0x00); // unreachable: preserve language-level trap
+        self.end();
+    }
     fn handle(&mut self){
         self.get(0);self.gg(0);self.op(0x52);self.trap_if(); // invalid epoch
         self.gg(0);self.i64(0);self.op(0x51);self.trap_if(); // zero never live
@@ -145,8 +154,10 @@ impl Body{
 }
 pub fn emit(plan:&Plan)->Vec<u8>{
     // Each Wasm instance owns one frame: epoch i64, status i32, amount i64,
-    // total i64, index i64, resume_pc i32. No imports or host callbacks.
-    // status: EMPTY=0, SUSPENDED=1, DONE=2, RUNNING=3.
+    // total i64, index i64, resume_pc i32, failure_code i32.
+    // No imports or host callbacks. A failed frame must remain inspectable
+    // until explicit CLOSE and must never resume.
+    // status: EMPTY=0, SUSPENDED=1, DONE=2, RUNNING=3, FAILED=4.
     let mut funcs=Vec::new();
     // m8_new(amount) -> generation handle
     let mut b=Body::new();
@@ -155,7 +166,8 @@ pub fn emit(plan:&Plan)->Vec<u8>{
     b.gg(0);b.i64(1);b.op(0x7c);b.gs(0);
     b.get(0);b.gs(2);b.i64(plan.initial_total);b.gs(3);
     b.i64(plan.initial_index);b.gs(4);b.i32(1);b.gs(1);
-    b.i32(0);b.gs(5);b.gg(0);funcs.push(b.done());
+    b.i32(0);b.gs(5);b.i32(0);b.gs(6); // reset prior fault on reincarnation
+    b.gg(0);funcs.push(b.done());
     // m8_resume(epoch,budget) -> YIELD=1 DONE=0.
     let mut b=Body::new();
     b.handle();
@@ -174,8 +186,8 @@ pub fn emit(plan:&Plan)->Vec<u8>{
     b.i32(1);b.op(0x0f);b.end();
     // Validate both arithmetic operations BEFORE mutating persistent slots.
     // Nonnegative index and i64_MAX-index cannot underflow.
-    b.gg(3);b.i64(i64::MAX);b.gg(4);b.op(0x7d);b.op(0x55);b.trap_if();
-    b.gg(4);b.i64(i64::MAX);b.op(0x51);b.trap_if();
+    b.gg(3);b.i64(i64::MAX);b.gg(4);b.op(0x7d);b.op(0x55);b.fault_if(1);
+    b.gg(4);b.i64(i64::MAX);b.op(0x51);b.fault_if(2);
     b.gg(3);b.gg(4);b.op(0x7c);b.gs(3);
     b.gg(4);b.i64(1);b.op(0x7c);b.gs(4);
     b.get(1);b.i32(1);b.op(0x6b);b.set(1);
@@ -190,18 +202,27 @@ pub fn emit(plan:&Plan)->Vec<u8>{
     b.gg(1);b.i32(1);b.op(0x46);b.gg(1);b.i32(2);
     b.op(0x46);b.op(0x72);b.op(0x45);b.trap_if();
     b.gg(5);funcs.push(b.done());
-    // m8_close(handle)->void, no double close or running-frame reclaim.
+    // m8_close(handle)->void. A FAILED frame must be closeable for
+    // reclamation, but a RUNNING frame can never be reclaimed.
     let mut b=Body::new();b.handle();
     b.gg(1);b.i32(1);b.op(0x46);b.gg(1);b.i32(2);
-    b.op(0x46);b.op(0x72);b.op(0x45);b.trap_if();
+    b.op(0x46);b.op(0x72);
+    b.gg(1);b.i32(4);b.op(0x46);b.op(0x72);
+    b.op(0x45);b.trap_if();
     b.i32(0);b.gs(1);b.i32(0);b.gs(5);
     b.i64(0);b.gs(2);b.i64(0);b.gs(3);b.i64(0);b.gs(4);
+    b.i32(0);b.gs(6); // clear error after explicit host acknowledgment
     funcs.push(b.done());
     // m8_index(handle)->i64, deterministic no-replay evidence.
     let mut b=Body::new();b.handle();
     b.gg(1);b.i32(1);b.op(0x46);b.gg(1);b.i32(2);
     b.op(0x46);b.op(0x72);b.op(0x45);b.trap_if();
     b.gg(4);funcs.push(b.done());
+    // m8_fault(handle)->i32; 0=none, 1=checked add overflow,
+    // 2=checked index increment overflow. Works after a trap, before CLOSE.
+    let mut b=Body::new();b.handle();
+    b.gg(1);b.op(0x45);b.trap_if(); // CLOSED must not expose stale failure
+    b.gg(6);funcs.push(b.done());
 
     let mut out=b"\0asm\x01\0\0\0".to_vec();
     let sigs:&[(&[u8],&[u8])]=&[
@@ -214,22 +235,22 @@ pub fn emit(plan:&Plan)->Vec<u8>{
         uleb(&mut types,rets.len()as u64);types.extend(rets);
     }
     section(&mut out,1,types);
-    let mut functions=Vec::new();uleb(&mut functions,6);
-    for i in [0_u32,1,0,2,3,0]{uleb(&mut functions,i as u64);}
+    let mut functions=Vec::new();uleb(&mut functions,7);
+    for i in [0_u32,1,0,2,3,0,2]{uleb(&mut functions,i as u64);}
     section(&mut out,3,functions);
-    let mut globals=Vec::new();uleb(&mut globals,6);
-    for t in [0x7e_u8,0x7f,0x7e,0x7e,0x7e,0x7f]{
+    let mut globals=Vec::new();uleb(&mut globals,7);
+    for t in [0x7e_u8,0x7f,0x7e,0x7e,0x7e,0x7f,0x7f]{
         globals.push(t);globals.push(1);
         if t==0x7e{globals.push(0x42);}else{globals.push(0x41);}
         sleb(&mut globals,0);globals.push(0x0b);
     }
     section(&mut out,6,globals);
-    let mut exports=Vec::new();uleb(&mut exports,6);
-    for (i,s) in ["m8_new","m8_resume","m8_result","m8_pc","m8_close","m8_index"].iter().enumerate(){
+    let mut exports=Vec::new();uleb(&mut exports,7);
+    for (i,s) in ["m8_new","m8_resume","m8_result","m8_pc","m8_close","m8_index","m8_fault"].iter().enumerate(){
         name(&mut exports,s);exports.push(0);uleb(&mut exports,i as u64);
     }
     section(&mut out,7,exports);
-    let mut bodies=Vec::new();uleb(&mut bodies,6);
+    let mut bodies=Vec::new();uleb(&mut bodies,7);
     for f in funcs{uleb(&mut bodies,f.len()as u64);bodies.extend(f);}
     section(&mut out,10,bodies);
     let mut meta=Vec::new();name(&mut meta,"atto.m8.cooperate");
