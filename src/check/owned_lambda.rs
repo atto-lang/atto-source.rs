@@ -219,9 +219,16 @@ fn closure_class(sites: &[Site], pos: Pos) -> R<ClassDecl> {
         ret: Type::Int,
         body: vec![Stmt::If { arms, otherwise: Some(fallback), pos }],
     };
+    // Explicit close is the only release path in this first guest-owned
+    // lifecycle slice. The emitter provides its checked generational body.
+    // Automatic unwind cleanup remains a separate required release gate.
+    let close = Method {
+        name: "close".to_string(), pos, public: true, is_static: false,
+        params: Vec::new(), ret: Type::Void, body: Vec::new(),
+    };
     Ok(ClassDecl {
         name: CLASS.to_string(), pos, public: false,
-        fields: fields_decl, ctor: Some(ctor), methods: vec![method],
+        fields: fields_decl, ctor: Some(ctor), methods: vec![method, close],
     })
 }
 pub fn lower(input: &Program) -> R<Program> {
