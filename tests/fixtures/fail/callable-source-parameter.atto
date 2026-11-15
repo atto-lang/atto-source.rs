@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+pub fnc apply(fnc(int)->int callback, int n): int { return n; }
+pub fnc main(): int { return 0; }
