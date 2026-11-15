@@ -19,6 +19,7 @@ use crate::diag::{Diagnostic, Pos};
 mod generator_lower;
 pub mod lambda_types;
 mod direct_lambda;
+mod owned_lambda;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
@@ -649,7 +650,8 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
-    let lowered = direct_lambda::lower(p)?;
+    let owned = owned_lambda::lower(p)?;
+    let lowered = direct_lambda::lower(&owned)?;
     check_lowered(&lowered)
 }
 
