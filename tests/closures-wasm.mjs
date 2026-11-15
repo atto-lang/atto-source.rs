@@ -37,11 +37,13 @@ function compile(src) {
 }
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const passes = [
-  'lambda-direct-capture-val',
-  'lambda-direct-capture-param',
-  'closure-lambda-functor-direct-profile'
+  ['lambda-direct-capture-val', 42n],
+  ['lambda-direct-capture-param', 42n],
+  ['closure-lambda-functor-direct-profile', 42n],
+  ['callable-owned-make-adder', 42n],
+  ['callable-owned-apply-twice', 40n]
 ];
-for (const name of passes) {
+for (const [name, expected] of passes) {
   const path = 'tests/fixtures/pass/' + name + '.atto';
   const source = readFileSync(path, 'utf8');
   const got = compile(source);
@@ -50,14 +52,15 @@ for (const name of passes) {
   assert.equal(hash(got.guest), hash(native), name + ': exact native / wasm32 compiler byte parity');
   const guestModule = new WebAssembly.Module(got.guest);
   assert.deepEqual(WebAssembly.Module.imports(guestModule), [], 'no guest host imports');
-  assert.equal(new WebAssembly.Instance(guestModule, {}).exports.main(), 42n, name);
-  console.log('PASS ' + name + ' actual guest 42, native/wasm artifact SHA ' + hash(got.guest));
+  assert.equal(new WebAssembly.Instance(guestModule, {}).exports.main(), expected, name);
+  console.log('PASS ' + name + ' actual guest ' + expected + ', native/wasm artifact SHA ' + hash(got.guest));
 }
 for (const [name, code] of [
   ['lambda-direct-capture-mutable', 'E_CAPTURE'],
   ['lambda-direct-capture-shadow', 'E_CAPTURE'],
   ['lambda-direct-capture-escape', 'E_UNSUPPORTED'],
-  ['callable-old-skinny-arrow-type', 'E_SYNTAX']
+  ['callable-old-skinny-arrow-type', 'E_SYNTAX'],
+  ['callable-owned-mutable-capture', 'E_CAPTURE']
 ]) {
   const source = readFileSync('tests/fixtures/fail/' + name + '.atto', 'utf8');
   const got = compile(source);
