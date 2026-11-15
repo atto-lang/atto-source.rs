@@ -1481,6 +1481,20 @@ impl Parser {
         self.expect(Tok::RParen, "')' closing the pair subject")?;
         self.expect_word("over")?;
 
+        // Type-check the declared <bool> result independently of the
+        // enclosing function's return type, even before returning the arm.
+        let bool_result = |value: Expr, arm_pos: Pos| {
+            let name = "$match_bool_arm".to_string();
+            vec![
+                Stmt::Bind {
+                    kind: BindKind::Val, name: name.clone(),
+                    ty: Some(Type::Bool), init: value, pos: arm_pos,
+                },
+                Stmt::Return(Some(Expr {
+                    kind: ExprKind::Var(name), pos: arm_pos,
+                }), arm_pos),
+            ]
+        };
         let mut arms = Vec::new();
         let mut otherwise = None;
         let mut count = 0;
@@ -1495,7 +1509,7 @@ impl Parser {
                 }
                 self.expect(Tok::Arrow, "'->' after default")?;
                 let value = self.parse_expr()?;
-                otherwise = Some(vec![Stmt::Return(Some(value), arm_pos)]);
+                otherwise = Some(bool_result(value, arm_pos));
             } else {
                 if otherwise.is_some() {
                     return Err(Diagnostic::new(arm_pos, "E_MATCH",
@@ -1505,7 +1519,7 @@ impl Parser {
                 let guard = self.parse_expr()?;
                 self.expect(Tok::Arrow, "'->' after match guard")?;
                 let value = self.parse_expr()?;
-                arms.push((guard, vec![Stmt::Return(Some(value), arm_pos)]));
+                arms.push((guard, bool_result(value, arm_pos)));
             }
             if !self.is_word("end") {
                 self.expect(Tok::Comma, "',' between match arms")?;
