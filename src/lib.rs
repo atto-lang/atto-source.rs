@@ -138,9 +138,9 @@ mod abi {
         STATE.with(|s| s.borrow().col)
     }
 
-    /// Both compiler endpoints share the same input/result buffers; the
+    /// All compiler endpoints share the same input/result buffers; the
     /// scalar preview is opt-in and never changes the normal ABI behavior.
-    fn compile_inner(length: i32, preview: bool) -> i32 {
+    fn compile_inner(length: i32, preview: u8) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -179,10 +179,10 @@ mod abi {
                     )
                 }
             };
-            let built = if preview {
-                super::target_scalar::compile_scalar_receiver_preview(source)
-            } else {
-                super::compile(source)
+            let built = match preview {
+                1 => super::target_scalar::compile_scalar_receiver_preview(source),
+                2 => super::target_scalar::compile_scalar_receiver_instance_preview(source),
+                _ => super::compile(source),
             };
             match built {
                 Ok(bytes) => {
@@ -196,11 +196,17 @@ mod abi {
 
     /// Original browser compiler contract: unchanged and fail-closed for mtd.
     #[no_mangle]
-    pub extern "C" fn compile(length: i32) -> i32 { compile_inner(length,false) }
+    pub extern "C" fn compile(length: i32) -> i32 { compile_inner(length,0) }
 
     /// Preview-only stateless scalar receiver compiler; not actor runtime ABI.
     #[no_mangle]
     pub extern "C" fn compile_scalar_preview(length: i32) -> i32 {
-        compile_inner(length,true)
+        compile_inner(length,1)
+    }
+
+    /// Opt-in instance-bound scalar receiver preview; ordinary compile unchanged.
+    #[no_mangle]
+    pub extern "C" fn compile_receiver_instance_preview(length: i32) -> i32 {
+        compile_inner(length,2)
     }
 }
