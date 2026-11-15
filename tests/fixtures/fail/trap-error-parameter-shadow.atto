@@ -1,0 +1,6 @@
+// expect-error: E_RESERVED
+// A parameter named Error must not forge a guest ordinary exception.
+fnc fail(int Error): int {
+  throw Error("forged");
+}
+pub fnc main(): int { return fail(42); }
