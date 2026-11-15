@@ -184,6 +184,10 @@ pub fn plan_receiver_cleanup(body:&ReceiverBodyTokens)
 /// each cleanup edge and verifies its emitted release on all relevant exits.
 pub fn require_backend_cleanup_proof(plan:&ReceiverCleanupPlan)
     -> Result<(),Diagnostic> {
+    // A receiver with no state leases has no state-lease unlock obligations.
+    // The independent typed body, ownership and AOT runtime gates remain
+    // mandatory; this does not grant executable permission by itself.
+    if plan.leases.is_empty() { return Ok(()); }
     if !plan.backend_cleanup_proven ||
         plan.leases.iter().flat_map(|l|&l.cleanup)
             .any(|edge|!edge.backend_release_proven) {
