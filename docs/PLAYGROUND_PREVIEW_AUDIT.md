@@ -11,8 +11,11 @@ sample and requires deterministic guest output or a positioned diagnostic.
 `ATTOC=<native-attoc> node tests/conformance.mjs` runs the same exact sources
 through the **real Rust compiler built for wasm32**, verifies no guest artifact
 on rejection, checks emitted guests and compares native/Wasm compiler bytes.
-The already-supported functional pipeline sample is compiled and **executed**
-with expected stdout and main return value 121.
+The four compiler-admitted example sources are compiled and **executed**
+with exact stdout and return-value oracles: function-pipeline (121), generators
+(10), result-option (8080 printed, exit 0), and trap (outer Option of Result;
+5 and an error message printed, exit 7). These specific executions do not
+establish comprehensive generator, ADT, or exception semantics.
 
 The result JSON classifies every exact source as `unsupported` or
 `admitted`; only a sample in `guestExecuted` has an actual positive
