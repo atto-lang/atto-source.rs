@@ -8,10 +8,10 @@ const SOURCE: &str = r#"
       final int seed: 3;
       fnc six() -> int :: 5 end
     end
-    mtd (self: Calculator) one(): int { return self.seed + 2; }
-    mtd (Calculator self) two(): int -> { return self.seed + 2; }
-    mtd (Calculator) three() -> int { return self.seed + 2; }
-    mtd (Calculator _) four() -> int
+    pub mtd (self: Calculator) one(): int { return self.seed + 2; }
+    pub mtd (Calculator self) two(): int -> { return self.seed + 2; }
+    pub mtd (Calculator) three() -> int { return self.seed + 2; }
+    pub mtd (Calculator _) four() -> int
       let int x = self.seed,
       x + 2
     end
@@ -44,7 +44,7 @@ fn mutable_class_receivers_require_verified_mutable_self_abi() {
         define class C as
           let int count = 0;
         end
-        mtd (mut self: C) increment(): int :: 1 end
+        mtd (mut self: C) increment() -> int :: 1 end
         pub fnc main(): int { return 0; }
     "#;
     let diagnostic = compile(src).unwrap_err();
@@ -83,6 +83,20 @@ fn malformed_class_mtd_bodies_fail_under_real_parser() {
       let d = compile(&source).unwrap_err();
       assert_eq!(d.code,code,"{source}: {d}");
     }
+}
+
+#[test]
+fn non_public_receiver_stays_private_after_lowering() {
+    let source = r#"
+      define class C as end
+      mtd (self: C) secret() -> int :: 5 end
+      pub fnc main(): int {
+        val c = new C();
+        return c.secret();
+      }
+    "#;
+    let d = compile(source).unwrap_err();
+    assert_eq!(d.code,"E_PRIVATE","{d}");
 }
 
 #[test]
