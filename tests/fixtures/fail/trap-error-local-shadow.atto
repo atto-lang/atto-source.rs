@@ -1,0 +1,7 @@
+// expect-error: E_RESERVED
+// A local named Error must not be silently treated as the built-in constructor.
+fnc fail(): int {
+  val Error = 42;
+  throw Error("forged");
+}
+pub fnc main(): int { return fail(); }
