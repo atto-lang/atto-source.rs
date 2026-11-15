@@ -1205,7 +1205,21 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     validate_generator_graph(&generators, p)?;
     imports.sort();
     imports.dedup();
-    let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    let mut funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    // The synthetic closure receiver has a compiler-controlled dispatch
+    // selector. A malformed selector is a guest integrity fault, never a
+    // plausible integer result. The source AST's return-zero branch exists
+    // only to satisfy the ordinary definite-return checker; replace it with
+    // unreachable after full typing (the generated name is not source-lexable).
+    if let Some(receiver) = funcs.iter_mut().find(|f| f.name == "$owned_lambda_int_int.call") {
+        match receiver.body.as_mut_slice() {
+            [TStmt::If(_, Some(other))] if matches!(other.as_slice(), [TStmt::Return(Some(_))]) => {
+                other.clear();
+                other.push(TStmt::Unreachable);
+            }
+            _ => panic!("generated closure dispatch lost its fail-closed fallback"),
+        }
+    }
     let strings = funcs
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
