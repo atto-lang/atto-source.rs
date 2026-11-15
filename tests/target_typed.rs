@@ -209,11 +209,12 @@ fn typed_lowerer_revalidates_critical_lease_invariants_even_for_imported_headers
     assert!(!headers.state_uses[0].mutation);
     assert!(!headers.state_uses[0].exclusive);
     headers.state_uses[0].mutation = true;
-    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_READONLY");
+    // A forged source fact fails integrity revalidation before type checking.
+    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_SEALED");
     headers.state_uses[0].mutation = false;
     headers.state_uses[0].exclusive = true;
     headers.receivers[0].mutable = false;
-    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_MUTABILITY");
+    assert_eq!(lower_target_signatures(&headers).unwrap_err().code, "E_SEALED");
 }
 
 #[test]
@@ -1077,4 +1078,70 @@ fn raw_cleanup_planning_must_deny_nested_actor_acquisitions() {
         tokens:lex("{ self.handle_state(critical-write |s| -> { self.handle_state(critical-read |t| -> t.count); }); }").unwrap(),
     };
     assert_eq!(plan_receiver_cleanup(&fake).unwrap_err().code,"E_BORROW");
+}
+
+
+#[test]
+fn imported_source_facts_cannot_hide_invalid_state_rhs_or_reads() {
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(): void {
+    self.handle_state(critical-write |s| -> { s.count = true; });
+}
+"#;
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert!(!original.state_uses.is_empty());
+    assert_eq!(original.state_assignments.len(),1);
+    // The complete source has an actual bool-to-int error.
+    assert_eq!(lower_target_signatures(&original).unwrap_err().code,"E_TYPE");
+    let mut dropped=original.clone();
+    dropped.state_assignments.clear();
+    assert_eq!(lower_target_signatures(&dropped).unwrap_err().code,"E_SEALED");
+    let mut dropped=original.clone();
+    dropped.state_uses.clear();
+    assert_eq!(lower_target_signatures(&dropped).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    forged.state_assignments[0].rhs=lex("1").unwrap().into_iter()
+        .filter(|tok| tok.tok != atto_compiler::lexer::Tok::Eof).collect();
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn imported_source_facts_cannot_hide_invalid_returns_or_nominal_calls() {
+    let src="declare actor Worker; mtd (Worker self) result(): int { return true; }";
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert_eq!(original.receiver_returns.len(),1);
+    assert_eq!(lower_target_signatures(&original).unwrap_err().code,"E_TYPE");
+    let mut forged=original;
+    forged.receiver_returns.clear();
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+
+    let src="declare actor Worker;
+        mtd (Worker self) helper(): void {}
+        mtd (Worker self) caller(): void { self.helper(); }";
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert_eq!(original.receiver_calls.len(),1);
+    assert!(lower_target_signatures(&original).is_ok());
+    let mut forged=original.clone();
+    forged.receiver_calls.clear();
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    forged.receiver_calls[0].arguments.push(vec![]);
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn imported_source_facts_cannot_clear_panic_effects_or_splice_receiver_bodies() {
+    let src="declare actor Worker; mtd (Worker self) arithmetic(): void { 1 + 2; }";
+    let original=parse_target_declarations(&lex(src).unwrap()).unwrap();
+    assert!(original.receiver_effects[0].may_panic);
+    let mut forged=original.clone();
+    forged.receiver_effects[0].may_panic=false;
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    let extra=lex("{ }").unwrap();
+    forged.receiver_bodies[0].tokens.extend(extra.into_iter()
+        .filter(|tok| tok.tok != atto_compiler::lexer::Tok::Eof));
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
 }

@@ -54,7 +54,7 @@ pub enum Tok {
     Eof,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
     pub tok: Tok,
     pub pos: Pos,

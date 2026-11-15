@@ -4,7 +4,7 @@
 
 use crate::ast::{ActorDecl, ActorInterface, ActorInterfaceMethod, FieldMode, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
-use crate::target_syntax::{ReceiverEffects, ReceiverHeader, ReceiverReturn, StateAssignment, StateUse, TargetHeaders};
+use crate::target_syntax::{ReceiverEffects, ReceiverHeader, ReceiverReturn, StateAssignment, StateUse, TargetHeaders, revalidate_receiver_facts};
 use crate::lexer::{Tok, Token};
 use crate::target_flow::{ReceiverFlow, analyze_receiver_body, check_receiver_arguments};
 use crate::target_borrow::{ReceiverBorrowFacts, check_receiver_borrows};
@@ -473,6 +473,9 @@ impl ScalarParser<'_> {
 /// result annotations, so forward references within one file are permitted.
 pub fn lower_target_signatures(headers: &TargetHeaders)
     -> Result<TypedActorModule, Diagnostic> {
+    // Imported headers can omit source-derived state writes, reads, returns,
+    // or calls; re-derive the complete facts before any typed proof is used.
+    revalidate_receiver_facts(headers)?;
     let mut module = TypedActorModule {
         namespace: headers.namespace.clone(),
         actors: headers.actors.iter().map(|name| TypedActor {
