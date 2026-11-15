@@ -57,6 +57,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     }
     if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
+        // Class receiver headers can now be recognized with the production
+        // class parser, but there is no class mtd linker, typecheck or dispatch.
+        // Never feed them to the actor-only signature IR or emit guest Wasm.
+        if !headers.classes.is_empty() {
+            return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
+                "out-of-line class mtd receivers are syntax-only, not linked or browser-lowered"));
+        }
         // Type the declared method signatures without handing unlinked actor
         // declarations to the executable check / Wasm backend.
         let typed = target_typed::lower_target_signatures(&headers)?;

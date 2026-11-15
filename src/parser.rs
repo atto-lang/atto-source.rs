@@ -487,6 +487,27 @@ impl Parser {
         (self.type_names.len() - 1) as u32
     }
 
+    // Parse exactly one declaration at an existing token offset. This reuses
+    // production nesting rules rather than scanning to the first stray 'end';
+    // essential for Erlang-style methods inside a class or actor definition.
+    pub(crate) fn parse_target_class_at(toks: &[Token], offset: usize) -> R<(ClassDecl, usize)> {
+        let mut p = Self::new(toks.to_vec());
+        p.i = offset;
+        p.expect_word("define")?;
+        p.expect_word("class")?;
+        let decl = p.parse_class(false)?;
+        Ok((decl, p.i))
+    }
+
+    pub(crate) fn parse_target_actor_at(toks: &[Token], offset: usize) -> R<(ActorDecl, usize)> {
+        let mut p = Self::new(toks.to_vec());
+        p.i = offset;
+        p.expect_word("define")?;
+        p.expect_word("actor")?;
+        let decl = p.parse_actor(true)?;
+        Ok((decl, p.i))
+    }
+
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
@@ -1208,9 +1229,8 @@ impl Parser {
             if self.eat(&Tok::Comma) || self.is_word("end") {
                 return Ok(());
             }
-            // An omitted closing 'end' is a truncated callable, not an
-            // illegal statement separator. Keep the diagnostic stable for
-            // both a final tail expression and an explicit return.
+            // End-of-file during an Erlang-style body means a missing 'end',
+            // not an unsupported command delimiter.
             if *self.peek() == Tok::Eof {
                 return Err(self.expected("'end'"));
             }

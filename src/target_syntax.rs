@@ -1,6 +1,6 @@
 //! Bounded parse-only grammar for proposed actor declarations and mtd receivers.
 //! This does not lower, link, typecheck method bodies, or emit actor Wasm.
-use crate::ast::ActorDecl;
+use crate::ast::{ActorDecl, ClassDecl};
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 use crate::parser::{is_reserved, Parser, MAX_FUNCS, MAX_PARAMS};
@@ -30,6 +30,10 @@ pub struct TargetHeaders {
     /// Imported module aliases. Imports are not resolved or linked here.
     pub imports: Vec<String>,
     pub actors: Vec<String>,
+    /// Class owners found in concrete class definitions.
+    pub classes: Vec<String>,
+    /// Parsed class definitions; mtd linking/typing remains unsupported.
+    pub class_definitions: Vec<ClassDecl>,
     /// Real concrete actor syntax trees parsed by the production parser.
     /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
     pub definitions: Vec<ActorDecl>,
@@ -212,45 +216,17 @@ impl Cursor<'_> {
         Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end))
     }
 
-    /// Parse a concrete "define actor Foo as ... end" using the existing
-    /// production parser. The delimiter scan observes braces so an "end"
-    /// inside a method body does not truncate the actor declaration.
+    /// Use production parsing for one declaration; unlike a token-only scan,
+    /// it consumes inner Erlang-style method 'end' without closing the class.
     fn definition(&mut self, start: usize) -> R<ActorDecl> {
-        self.expect_word("actor")?;
-        let name = self.ident()?;
-        self.expect_word("as")?;
-        let mut braces = 0usize;
-        loop {
-            match self.tok() {
-                Tok::Eof => return Err(self.err("E_EOF", "unclosed concrete actor definition")),
-                Tok::LBrace => {
-                    braces += 1;
-                    if braces > 128 {
-                        return Err(self.err("E_NESTING", "actor definition brace nesting limit"));
-                    }
-                }
-                Tok::RBrace => {
-                    if braces == 0 {
-                        return Err(self.err("E_SYNTAX", "unbalanced actor definition brace"));
-                    }
-                    braces -= 1;
-                }
-                Tok::Ident(s) if s == "end" && braces == 0 => {
-                    self.next();
-                    break;
-                }
-                _ => {}
-            }
-            self.next();
-        }
-        let mut actor_tokens = self.toks[start..self.i].to_vec();
-        actor_tokens.push(Token { tok: Tok::Eof, pos: self.pos() });
-        let program = Parser::new(actor_tokens).parse_program()?;
-        if program.actors.len() != 1 || program.actors[0].name != name ||
-            !program.classes.is_empty() || !program.funcs.is_empty() {
-            return Err(self.err("E_SYNTAX", "invalid concrete actor definition"));
-        }
-        Ok(program.actors.into_iter().next().expect("checked one actor"))
+        let (decl, end) = Parser::parse_target_actor_at(self.toks, start)?;
+        self.i = end;
+        Ok(decl)
+    }
+    fn class_definition(&mut self, start: usize) -> R<ClassDecl> {
+        let (decl, end) = Parser::parse_target_class_at(self.toks, start)?;
+        self.i = end;
+        Ok(decl)
     }
     fn function(&mut self) -> R<(usize, usize)> {
         self.ident()?;
@@ -287,7 +263,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             out.namespace = Some(c.ident()?);
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
         } else if c.take_word("import") {
-            if !out.actors.is_empty() || !out.receivers.is_empty() {
+            if !out.actors.is_empty() || !out.classes.is_empty() || !out.receivers.is_empty() {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
             }
             c.expect_word("module")?;
@@ -303,17 +279,32 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             c.expect(&Tok::Semi, "expected ';' after module import")?;
             out.imports.push(alias);
         } else if c.take_word("define") {
-            let actor = c.definition(c.i - 1)?;
-            if out.definitions.iter().any(|other| other.name == actor.name) {
-                return Err(Diagnostic::new(actor.pos, "E_DUPLICATE",
-                    format!("duplicate concrete actor definition '{}'", actor.name)));
+            if c.word() == Some("actor") {
+                let actor = c.definition(c.i - 1)?;
+                if out.definitions.iter().any(|other| other.name == actor.name) ||
+                    out.classes.iter().any(|n| n == &actor.name) {
+                    return Err(Diagnostic::new(actor.pos, "E_DUPLICATE",
+                        format!("duplicate concrete actor definition '{}'", actor.name)));
+                }
+                out.definitions.push(actor);
+            } else if c.word() == Some("class") {
+                let class = c.class_definition(c.i - 1)?;
+                if out.classes.contains(&class.name) ||
+                    out.actors.contains(&class.name) ||
+                    out.definitions.iter().any(|a| a.name == class.name) {
+                    return Err(Diagnostic::new(class.pos, "E_DUPLICATE",
+                        format!("duplicate class or actor owner '{}'", class.name)));
+                }
+                out.classes.push(class.name.clone());
+                out.class_definitions.push(class);
+            } else {
+                return Err(c.err("E_SYNTAX", "expected 'class' or 'actor' after define"));
             }
-            out.definitions.push(actor);
         } else if c.take_word("declare") {
             c.expect_word("actor")?;
             let name = c.ident()?;
-            if out.actors.contains(&name) {
-                return Err(c.err("E_DUPLICATE", format!("duplicate actor '{name}'")));
+            if out.actors.contains(&name) || out.classes.contains(&name) {
+                return Err(c.err("E_DUPLICATE", format!("duplicate actor or class '{name}'")));
             }
             out.actors.push(name);
             c.expect(&Tok::Semi, "expected ';' after actor")?;
@@ -338,10 +329,22 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         decls += 1;
     }
     for receiver in &out.receivers {
-        if !out.actors.contains(&receiver.owner) {
+        if !out.actors.contains(&receiver.owner) && !out.classes.contains(&receiver.owner) {
             return Err(Diagnostic::new(receiver.pos, "E_UNBOUND",
                 format!("receiver owner '{}' is not declared in this source namespace",
                     receiver.owner)));
+        }
+        let duplicate_inline = out.class_definitions.iter()
+            .filter(|d| d.name == receiver.owner)
+            .any(|d| d.methods.iter().any(|m| m.name == receiver.name &&
+                 m.params.len() == receiver.arity)) ||
+            out.definitions.iter()
+            .filter(|d| d.name == receiver.owner)
+            .any(|d| d.methods.iter().any(|m| m.name == receiver.name &&
+                 m.params.len() == receiver.arity));
+        if duplicate_inline {
+            return Err(Diagnostic::new(receiver.pos, "E_DUPLICATE",
+                "out-of-line receiver duplicates an inline method (owner/name/arity)"));
         }
     }
     for (i, start, end) in spans {
@@ -370,7 +373,8 @@ pub fn resolve_receiver_header<'a>(
         return Err(Diagnostic::new(pos, "E_NAMESPACE",
             "receiver lookup is not in the source namespace"));
     }
-    if !symbols.actors.iter().any(|a| a == actor) {
+    if !symbols.actors.iter().any(|a| a == actor) &&
+        !symbols.classes.iter().any(|a| a == actor) {
         return Err(Diagnostic::new(pos, "E_UNBOUND",
             format!("unknown actor receiver type '{actor}'")));
     }
@@ -508,6 +512,11 @@ fn validate_receiver_body(
     start: usize, end: usize,
 ) -> R<()> {
     let receiver = &symbols.receivers[which];
+    // Class receivers are parsed but not actor-sealed. No class mtd emits
+    // guest code until its linker, type checker and dispatch are implemented.
+    if symbols.classes.iter().any(|c| c == &receiver.owner) {
+        return Ok(());
+    }
     // Bare -> Type bodies start with a statement rather than a delimiter;
     // do not skip the first token and bypass sealed-state validation.
     let mut i = if at(toks, start, &Tok::LBrace) || at(toks, start, &Tok::ColonColon) {
