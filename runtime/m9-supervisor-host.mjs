@@ -145,9 +145,11 @@ export class M9SupervisorHost {
       return;
     }
     if(a.fenced) {
-      // The Worker may have completed a slice before a CANCEL could be read.
+      // A slice reply may precede the queued CANCEL acknowledgment. Never
+      // retire/reclaim the accepted frame on a YIELD/DONE race: wait for
+      // the Worker's CLOSED event proving physically quiescent cleanup.
       if(msg.type==='DONE'||msg.type==='FAILED'||msg.type==='YIELD') {
-        a.abandoned++;a.active=null;a.busy=false;this.#retire(a);this.#pulse();
+        a.phase='cancel';a.busy=true;
       }
       return;
     }
