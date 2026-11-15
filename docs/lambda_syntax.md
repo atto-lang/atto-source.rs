@@ -83,3 +83,23 @@ applies independently of expression-depth limits, including ASTs constructed
 directly by tooling rather than via the parser. The `self` binding is also
 prohibited at the type-checker boundary. These are intentionally conservative
 checks: they do not grant executable closures or a Wasm callable ABI.
+
+## Direct-call execution milestone (limited browser Wasm profile)
+
+A single local immutable lambda per ordinary function can now be invoked
+directly in the same function, provided its first call uses scalar literal
+arguments. The compiler infers argument types from that call, verifies the
+lambda with the noncapturing type checker, and emits a private typed Wasm
+function using the existing direct-call ABI.
+
+Example: `val double = |n| : int -> n * 2; return double(21);`
+executes with result `42`. An explicitly terminated lambda return must
+be parenthesized, as in `val double = (|n| -> return n * 2;);`.
+
+The local lambda is a compile-time declaration, not a runtime handle.
+Only direct calls are supported: callable values, aliases, escaped closures,
+captures, reassignments, multiple lambdas per source function, contextual
+inference from nonliteral first arguments, and Rx pipelines still fail closed.
+This milestone uses ordinary typed Wasm direct calls, not indirect-call tables
+or a general first-class function type. Positive/negative guest fixtures and
+native-vs-Wasm byte parity protect the admitted subset.

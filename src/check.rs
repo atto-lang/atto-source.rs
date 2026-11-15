@@ -18,6 +18,7 @@ use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
 pub mod lambda_types;
+mod direct_lambda;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
@@ -634,6 +635,11 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    let lowered = direct_lambda::lower(p)?;
+    check_lowered(&lowered)
+}
+
+fn check_lowered(p: &Program) -> R<TProgram> {
     // Validate the bounded CFG and integer-only suspension/lifetime profile
     // before registering signatures. Reject unsupported generator effects
     // before emission; never substitute eager iterator materialization.
