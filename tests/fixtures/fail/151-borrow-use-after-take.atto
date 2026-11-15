@@ -5,6 +5,6 @@ define class Parcel as
 end
 pub fnc main(): int {
  let parcel = new Parcel();
- val moved = take!(parcel);
+ val moved = take! parcel;
  return parcel.value + moved.value;
 }

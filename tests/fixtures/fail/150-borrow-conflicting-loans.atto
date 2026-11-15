@@ -5,7 +5,7 @@ define class Parcel as
 end
 pub fnc main(): int {
  let parcel = new Parcel();
- val reader = borrow!(parcel);
- val writer = borrow! mut(parcel);
+ val reader = borrow! parcel;
+ val writer = borrow! mut parcel;
  return reader.value + writer.value;
 }

@@ -5,6 +5,6 @@ define class Parcel as
 end
 pub fnc main(): int {
  val parcel = new Parcel();
- val clone = copy!(parcel);
+ val clone = copy! parcel;
  return clone.value;
 }

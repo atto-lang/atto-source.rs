@@ -4,7 +4,7 @@ define class Parcel as
  pub let int value = 42;
 end
 fnc leak(Parcel owner): Parcel {
- val reader = borrow!(owner);
+ val reader = borrow! owner;
  return reader;
 }
 pub fnc main(): int { return 0; }

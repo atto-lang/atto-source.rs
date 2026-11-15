@@ -3,5 +3,5 @@
 define class Parcel as
  pub let int value = 42;
 end
-fnc leak(Parcel owner): Parcel { return borrow!(owner); }
+fnc leak(Parcel owner): Parcel { return borrow! owner; }
 pub fnc main(): int { return 0; }

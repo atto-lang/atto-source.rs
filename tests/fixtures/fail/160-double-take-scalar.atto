@@ -2,6 +2,6 @@
 // java: rejects
 pub fnc main(): int {
  let original = 42;
- val first = take!(original);
+ val first = take! original;
  return original + first;
 }
