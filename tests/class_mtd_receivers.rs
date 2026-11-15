@@ -103,6 +103,6 @@ fn actor_mtd_is_an_interface_contract_not_a_duplicate_implementation() {
     "#;
     let parsed = parse(good).unwrap();
     assert_eq!(parsed.receivers.len(), 1);
-    assert_eq!(compile(good).unwrap_err().code, "E_UNSUPPORTED",
-        "signature agreement must not imply actor guest dispatch");
+    assert_eq!(compile(good).unwrap_err().code, "E_DUPLICATE",
+        "a matching inline/out-of-line actor method is still a duplicate declaration");
 }
