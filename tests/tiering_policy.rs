@@ -142,7 +142,10 @@ fn ordinary_class_requires_evidence_and_is_row_first() {
     assert_eq!(
         recommend_layout(
             TypeShape::OrdinaryClass,
-            LayoutEvidence { row_oriented_reads: 100, column_oriented_reads: 150 },
+            LayoutEvidence {
+                row_oriented_reads: 100,
+                column_oriented_reads: 150,
+            },
             Some(8)
         ),
         Ok(LayoutKind::Aos)
@@ -151,7 +154,10 @@ fn ordinary_class_requires_evidence_and_is_row_first() {
 
 #[test]
 fn column_advantage_selects_soa_or_aosoa() {
-    let evidence = LayoutEvidence { row_oriented_reads: 50, column_oriented_reads: 100 };
+    let evidence = LayoutEvidence {
+        row_oriented_reads: 50,
+        column_oriented_reads: 100,
+    };
     assert_eq!(
         recommend_layout(TypeShape::OrdinaryClass, evidence, None),
         Ok(LayoutKind::Soa)
