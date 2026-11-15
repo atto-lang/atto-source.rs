@@ -1,0 +1,12 @@
+// expect-exit: 42
+pure fnc twice(int value): int { return value * 2; }
+pure fnc plus_two(int value): int { return value + 2; }
+pub fnc main(): int {
+    val factor = 2;
+    val scale = |n| : int -> n * factor;
+    block {
+        val factor = 100;
+        stdio.println(scale(21));
+    }
+    return plus_two(twice(20));
+}

@@ -1204,6 +1204,30 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    // A pure declaration is a checked transitive effect contract, not a hint.
+    // Inspect fully resolved typed calls, including branches that are never
+    // executed at runtime. Other functions are impure unless declared pure.
+    let pure_indices: BTreeSet<u32> = p.funcs.iter().enumerate()
+        .filter_map(|(idx, f)| f.is_pure.then_some(idx as u32)).collect();
+    for (idx, f) in p.funcs.iter().enumerate() {
+        if !f.is_pure { continue; }
+        if f.is_generator ||
+            has_external_state_write(&funcs[idx].body) ||
+            any_in_stmts(&funcs[idx].body, &|value| match &value.e {
+                TExpr::Call(target, _) => !pure_indices.contains(target),
+                TExpr::Print { .. } | TExpr::PrintStr { .. } |
+                TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
+                TExpr::GlobalGet(_) | TExpr::FieldGet { .. } |
+                TExpr::Spawn(_) | TExpr::Send { .. } |
+                TExpr::Alloc(_) | TExpr::AdtNew { .. } |
+                TExpr::Trap { .. } | TExpr::AdtPropagate { .. } |
+                TExpr::Str(StrOp::Concat, _, _) => true,
+                _ => false,
+            }) {
+            return Err(Diagnostic::new(f.pos, "E_PURE",
+                format!("pure fnc '{}' cannot perform I/O, use shared state, or call an impure function", f.name)));
+        }
+    }
     let strings = funcs
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
@@ -1331,6 +1355,22 @@ fn returns(body: &[TStmt]) -> bool {
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) => returns(b),
+        _ => false,
+    })
+}
+
+/// Writes to object/actor state and guest throws are effects even if there
+/// are no expression nodes (e.g. field assignment). Scan every control path.
+fn has_external_state_write(body: &[TStmt]) -> bool {
+    body.iter().any(|stmt| match stmt {
+        TStmt::FieldSet { .. } | TStmt::GlobalSet(_, _) |
+        TStmt::Throw(_) | TStmt::ForIn { .. } => true,
+        TStmt::If(arms, other) =>
+            arms.iter().any(|(_, b)| has_external_state_write(b)) ||
+            other.as_ref().is_some_and(|b| has_external_state_write(b)),
+        TStmt::Loop { body, update, .. } =>
+            has_external_state_write(body) || has_external_state_write(update),
+        TStmt::Block(body) => has_external_state_write(body),
         _ => false,
     })
 }
