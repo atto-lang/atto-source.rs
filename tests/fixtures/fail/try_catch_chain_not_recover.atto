@@ -1,0 +1,11 @@
+// expect-error: E_UNSUPPORTED
+// The browser subset cannot claim try/catch/raise precedence.
+pub fnc main(): int {
+  try {
+    throw Error("failure");
+  } catch (Error err) {
+    return 42;
+  } finally {
+    stdio.println(1);
+  }
+}
