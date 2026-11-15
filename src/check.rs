@@ -151,8 +151,14 @@ pub enum TExpr {
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
-    /// load a field of a class instance
+    /// ordinary class field read
     FieldGet {
+        obj: Box<TE>,
+        offset: u32,
+    },
+    /// A compiler-authorized state field read; never fold into FieldGet
+    /// without checking the protected receiver and lexical lease authority.
+    StateFieldRead {
         obj: Box<TE>,
         offset: u32,
     },
@@ -185,13 +191,23 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
-    /// store `value` into the field at `offset` of `obj`
+    /// ordinary class field initialization / assignment
     FieldSet {
         obj: TE,
         offset: u32,
         ty: Type,
         value: TE,
     },
+    /// Protected state write: verified lexical exclusive access to `obj`.
+    StateFieldWrite {
+        obj: TE,
+        offset: u32,
+        ty: Type,
+        value: TE,
+    },
+    /// Retain lexical protected authority through typed IR.
+    /// Single-Worker Wasm emits the body inline pending scheduler integration.
+    StateCriticalWrite(Vec<TStmt>),
     /// assign an actor-state global
     GlobalSet(u32, TE),
     Expr(TE),
@@ -1338,7 +1354,7 @@ fn returns(body: &[TStmt]) -> bool {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
-        TStmt::Block(b) => returns(b),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
         _ => false,
     })
 }
@@ -1347,7 +1363,8 @@ fn returns(body: &[TStmt]) -> bool {
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
-        TStmt::FieldSet { obj, value, .. } => any_in(obj, f) || any_in(value, f),
+        TStmt::FieldSet { obj, value, .. } |
+        TStmt::StateFieldWrite { obj, value, .. } => any_in(obj, f) || any_in(value, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
         }
@@ -1355,7 +1372,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
-        TStmt::Block(b) => any_in_stmts(b, f),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => any_in_stmts(b, f),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
     })
 }
@@ -1375,7 +1392,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
-        TExpr::FieldGet { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
+        TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
+        TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
     }
@@ -1390,7 +1408,7 @@ fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
         TStmt::Loop { body, update, .. } =>
             guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
         TStmt::ForIn { body, .. } => guest_eh_in_stmts(body),
-        TStmt::Block(b) => guest_eh_in_stmts(b),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => guest_eh_in_stmts(b),
         _ => false,
     })
 }
@@ -1410,7 +1428,7 @@ fn breaks(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Break => true,
         TStmt::If(arms, other) => arms.iter().any(|(_, b)| breaks(b)) || other.as_ref().is_some_and(|b| breaks(b)),
-        TStmt::Block(b) => breaks(b),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => breaks(b),
         _ => false,
     })
 }
@@ -1587,7 +1605,7 @@ impl<'a> FnCx<'a> {
                 self.state_write_scope = true;
                 let checked = self.scoped(body);
                 self.state_write_scope = false;
-                TStmt::Block(checked?)
+                TStmt::StateCriticalWrite(checked?)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => {
@@ -2099,15 +2117,15 @@ impl<'a> FnCx<'a> {
                         format!("cannot assign {} to field '{field}' of type {}", self.tn(v.ty), self.tn(fty)),
                     ));
                 }
-                Ok(TStmt::FieldSet {
-                    obj: TE {
-                        e: TExpr::Local(0),
-                        ty: Type::Class(c),
-                    },
-                    offset,
-                    ty: fty,
-                    value: v,
-                })
+                let obj = TE {
+                    e: TExpr::Local(0),
+                    ty: Type::Class(c),
+                };
+                if mode == FieldMode::ActorState && class.state_container {
+                    Ok(TStmt::StateFieldWrite { obj, offset, ty: fty, value: v })
+                } else {
+                    Ok(TStmt::FieldSet { obj, offset, ty: fty, value: v })
+                }
             }
             Owner::Actor { a } => {
                 let actor = &self.g.actors[a as usize];
@@ -2914,10 +2932,12 @@ impl<'a> FnCx<'a> {
                     "protected state read requires critical-read or critical-write on this receiver"));
             }
         }
+        let protected = f.mode == FieldMode::ActorState && class.state_container;
         Ok(TE {
-            e: TExpr::FieldGet {
-                obj: Box::new(obj),
-                offset: f.slot,
+            e: if protected {
+                TExpr::StateFieldRead { obj: Box::new(obj), offset: f.slot }
+            } else {
+                TExpr::FieldGet { obj: Box::new(obj), offset: f.slot }
             },
             ty: f.ty,
         })

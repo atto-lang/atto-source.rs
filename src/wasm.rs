@@ -272,11 +272,15 @@ impl Emit<'_> {
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
             }
-            TStmt::FieldSet { obj, offset, ty, value } => {
+            TStmt::FieldSet { obj, offset, ty, value } |
+            TStmt::StateFieldWrite { obj, offset, ty, value } => {
+                // Protected operation is explicit in typed IR. This is a
+                // single-Worker-only inline emission, not a shared RW lock.
                 self.expr(obj);
                 self.expr(value);
                 field_op(&mut self.code, *ty, *offset, true);
             }
+            TStmt::StateCriticalWrite(body) => self.stmts(body),
             TStmt::GlobalSet(g, v) => {
                 self.expr(v);
                 self.op(0x24);
@@ -588,7 +592,10 @@ impl Emit<'_> {
                 uleb(&mut self.code, *tmp as u64);
                 field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
             },
-            TExpr::FieldGet { obj, offset } => {
+            TExpr::FieldGet { obj, offset } |
+            TExpr::StateFieldRead { obj, offset } => {
+                // Guarded state reads are distinct from ordinary class reads
+                // until backend emission, preserving loan-provenance checks.
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
             }
