@@ -229,7 +229,8 @@ pub fn lower(input: &Program) -> R<Program> {
     let pos = Pos { line: 1, col: 1 };
     if input.classes.iter().any(|c| c.name == CLASS)
         || input.funcs.iter().any(|f| f.name == CLASS)
-        || input.actors.iter().any(|a| a.name == CLASS) {
+        || input.actors.iter().any(|a| a.name == CLASS)
+        || input.enums.iter().any(|x| x.name == CLASS) {
         return Err(fail(pos, "E_DUPLICATE", "reserved generated closure class name collision"));
     }
     for (i, (name, at)) in input.type_names.iter().enumerate() {
@@ -293,8 +294,11 @@ pub fn lower(input: &Program) -> R<Program> {
                     rewrite_expr(expr, &available, &callables, &mut sites, 0)?;
                 }
                 Stmt::Return(None, _) => {},
-                _ => return Err(fail(f.pos, "E_UNSUPPORTED",
-                    "owned closure conversion currently supports flat function bodies only")),
+                // A compound statement which does not require first-class
+                // rewriting remains the normal checker's responsibility.
+                // Nested callable sites are not silently lowered: the type
+                // checker rejects their unconverted lambda/callable forms.
+                _ => {},
             }
         }
     }
