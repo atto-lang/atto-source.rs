@@ -1,0 +1,9 @@
+// expect-exit: 9
+// java: target-only
+define class Particle as
+    mut int n = 0;
+    constructor(int v) { self.n = v; }
+    pub value(): int { return self.n; }
+end
+fnc make_particles(): Array<Particle> { return [new Particle(4),new Particle(5)]; }
+pub fnc main(): int { val xs = make_particles(); let total=0; for (Particle p : xs) { total=total+p.value(); } return total; }

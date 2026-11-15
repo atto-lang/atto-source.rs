@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+// java: target-only
+define class Particle as
+    mut int n = 0;
+    constructor(int v) { self.n = v; }
+    pub value(): int { return self.n; }
+end
+pub fnc main(): int { val xs = [1,new Particle(1)]; return 0; }

@@ -1,0 +1,8 @@
+// expect-exit: 11
+// java: target-only
+define class Particle as
+    mut int n = 0;
+    constructor(int v) { self.n = v; }
+    pub value(): int { return self.n; }
+end
+pub fnc main(): int { val xs = [new Particle(5), new Particle(6)]; let total=0; for p in xs do total=total+p.value(); end return total; }

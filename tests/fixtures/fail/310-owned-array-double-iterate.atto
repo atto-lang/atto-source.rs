@@ -1,0 +1,8 @@
+// expect-error: E_MOVED
+// java: target-only
+define class Particle as
+    mut int n = 0;
+    constructor(int v) { self.n = v; }
+    pub value(): int { return self.n; }
+end
+pub fnc main(): int { val xs = [new Particle(1)]; for (Particle p : xs) { } for (Particle p : xs) { } return 0; }
