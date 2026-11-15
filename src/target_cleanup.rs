@@ -20,8 +20,8 @@ pub struct LeaseCleanupObligation {
     pub lease: usize,
     pub exit: LeaseCleanupExit,
     pub pos: Pos,
-    /// The release is required by semantics but has not been emitted or
-    /// verified in the native, browser Wasm or other language backends.
+    /// Reporting only. Mutating this public frontend field does not
+    /// discharge a release obligation or authorize executable code.
     pub backend_release_proven: bool,
 }
 
@@ -41,8 +41,8 @@ pub struct StateLeaseCleanupRegion {
 pub struct ReceiverCleanupPlan {
     pub receiver: usize,
     pub leases: Vec<StateLeaseCleanupRegion>,
-    /// This is intentionally false whenever executable semantics are not
-    /// established. A syntactically balanced callback is not a runtime proof.
+    /// Reporting only: mutable frontend flags must never serve as authority
+    /// to enable backend execution. No backend release proof exists yet.
     pub backend_cleanup_proven: bool,
 }
 
@@ -117,6 +117,13 @@ fn callback_region(toks:&[Token], receiver:usize, open:usize, end:usize,
     // state lease. Existing primitive scalar assignments still work.
     for t in content {
         if let Tok::Ident(name)=&t.tok {
+            // This planner may be called on imported/tampered syntax facts.
+            // An inner state acquisition cannot be silently skipped when the
+            // outer callback is represented as one cleanup region.
+            if name == "handle_state" || name == "self" {
+                return Err(Diagnostic::new(t.pos,"E_BORROW",
+                    "nested state acquisition or receiver capture requires typed cleanup lowering"));
+            }
             if ["if","else","elif","while","for","loop","do","match",
                 "switch","select","defer","try","catch","finally",
                 "return","break","continue","throw","raise","panic",
@@ -179,22 +186,18 @@ pub fn plan_receiver_cleanup(body:&ReceiverBodyTokens)
     Ok(plan)
 }
 
-/// Executable lowerers must not silently infer cleanup safety from token or
-/// typed-frontend facts. This remains a hard gate until a backend consumes
-/// each cleanup edge and verifies its emitted release on all relevant exits.
+/// This frontend-only helper never authorizes lease-bearing receiver
+/// execution. In particular, caller-writable reporting flags are NOT proof.
+/// The first backend implementing real release instructions must introduce
+/// a separate backend-private, unforgeable proof checked against emitted CFG
+/// edges, not set mutable fields on this frontend data structure.
 pub fn require_backend_cleanup_proof(plan:&ReceiverCleanupPlan)
     -> Result<(),Diagnostic> {
-    // A receiver with no state leases has no state-lease unlock obligations.
-    // The independent typed body, ownership and AOT runtime gates remain
-    // mandatory; this does not grant executable permission by itself.
+    // Vacuity here proves only that there are no state-lease release edges.
+    // A different, independent gate still refuses unlowered receiver bodies.
     if plan.leases.is_empty() { return Ok(()); }
-    if !plan.backend_cleanup_proven ||
-        plan.leases.iter().flat_map(|l|&l.cleanup)
-            .any(|edge|!edge.backend_release_proven) {
-        return Err(Diagnostic::new(
-            plan.leases.first().map_or(Pos::default(),|l|l.acquire_pos),
-            "E_UNSUPPORTED",
-            "executable actor receiver cleanup has no verified backend proof"));
-    }
-    Ok(())
+    Err(Diagnostic::new(
+        plan.leases[0].acquire_pos,
+        "E_UNSUPPORTED",
+        "actor-state cleanup requires backend-emitted release on every exit; frontend flags are not a proof"))
 }
