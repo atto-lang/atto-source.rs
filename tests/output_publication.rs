@@ -91,7 +91,10 @@ fn successful_replacement_does_not_leave_staging_files() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_ne!(fs::read(&output).unwrap().as_slice(), b"previous complete object");
+    assert_ne!(
+        fs::read(&output).unwrap().as_slice(),
+        b"previous complete object"
+    );
     no_temporary_files(&dir.0);
 }
 
@@ -108,11 +111,12 @@ fn final_symlink_cannot_redirect_native_output() {
     symlink(&victim, &output).unwrap();
     let result = run(&input, &output);
     assert!(!result.status.success(), "symlinked output was accepted");
-    assert!(
-        String::from_utf8_lossy(&result.stderr).contains("refusing symlinked compiler output")
-    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("refusing symlinked compiler output"));
     assert_eq!(fs::read(&victim).unwrap(), b"must remain intact");
-    assert!(fs::symlink_metadata(&output).unwrap().file_type().is_symlink());
+    assert!(fs::symlink_metadata(&output)
+        .unwrap()
+        .file_type()
+        .is_symlink());
     no_temporary_files(&dir.0);
 }
 
