@@ -18,6 +18,32 @@ use std::{
 
 const MAX_BYTES: u64 = 1024 * 1024;
 
+/// Best-effort metadata stability before opening and after consuming the
+/// source. This is not a security proof against a privileged concurrent
+/// writer, but prevents ordinary in-place mutation/replacement from being
+/// accepted as a single source-ID snapshot.
+fn same_snapshot_metadata(first: &fs::Metadata, second: &fs::Metadata) -> bool {
+    if !first.is_file() || !second.is_file() || first.len() != second.len() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        first.dev() == second.dev() && first.ino() == second.ino()
+            && first.mtime() == second.mtime()
+            && first.mtime_nsec() == second.mtime_nsec()
+            && first.ctime() == second.ctime()
+            && first.ctime_nsec() == second.ctime_nsec()
+    }
+    #[cfg(not(unix))]
+    {
+        match (first.modified(), second.modified()) {
+            (Ok(before), Ok(after)) => before == after,
+            _ => false,
+        }
+    }
+}
+
 fn read_regular_bounded(path: &Path) -> Result<String, String> {
     let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !before.is_file() {
@@ -30,24 +56,25 @@ fn read_regular_bounded(path: &Path) -> Result<String, String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC);
     }
-    let file = options.open(path).map_err(|e| e.to_string())?;
-    let after = file.metadata().map_err(|e| e.to_string())?;
-    if !after.is_file() {
-        return Err("telemetry ID input changed to nonregular file".into());
+    let mut file = options.open(path).map_err(|e| e.to_string())?;
+    let opened = file.metadata().map_err(|e| e.to_string())?;
+    if !same_snapshot_metadata(&before, &opened) {
+        return Err("telemetry ID input changed during opening".into());
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if before.dev() != after.dev() || before.ino() != after.ino() {
-            return Err("telemetry ID input changed during opening".into());
-        }
+    if opened.len() > MAX_BYTES {
+        return Err("telemetry ID input exceeds 1 MiB budget".into());
     }
     let mut text = String::new();
-    file.take(MAX_BYTES + 1)
+    (&mut file).take(MAX_BYTES + 1)
         .read_to_string(&mut text)
         .map_err(|e| e.to_string())?;
     if text.len() as u64 > MAX_BYTES {
         return Err("telemetry ID input exceeds 1 MiB budget".into());
+    }
+    let consumed = file.metadata().map_err(|e| e.to_string())?;
+    if !same_snapshot_metadata(&opened, &consumed) ||
+        consumed.len() != text.len() as u64 {
+        return Err("telemetry ID source or registry mutated while reading".into());
     }
     Ok(text)
 }
@@ -67,6 +94,17 @@ fn rooted_source(source: &Path, registry: &Path) -> Result<(PathBuf, String), St
     }
     if canonical_source == canonical_registry {
         return Err("source and registry must be distinct files".into());
+    }
+    // Filesystem canonicalization does not collapse hardlinks. Do not let
+    // a single inode carry both independently reviewed source and manifest.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let src = fs::metadata(&canonical_source).map_err(|e| e.to_string())?;
+        let ids = fs::metadata(&canonical_registry).map_err(|e| e.to_string())?;
+        if src.dev() == ids.dev() && src.ino() == ids.ino() {
+            return Err("source and registry must not be hardlink aliases".into());
+        }
     }
     // Reject alternative path spellings/aliases including symlink parents.
     let logical = canonical_source.strip_prefix(&root).map_err(|e| e.to_string())?;
