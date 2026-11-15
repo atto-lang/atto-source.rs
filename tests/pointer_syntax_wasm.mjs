@@ -46,7 +46,7 @@ try {
   writeFileSync(source, positive);
   const native = spawnSync(nativeAttoc, [source, '-o', output], { encoding: 'utf8' });
   assert.equal(native.status, 0, native.stderr);
-  assert.deepEqual(good.bytes, readFileSync(output), 'native compiler and Wasm compiler must emit identical guest bytes');
+  assert.deepEqual(Buffer.from(good.bytes), readFileSync(output), 'native compiler and Wasm compiler must emit identical guest bytes');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
