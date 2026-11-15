@@ -1,0 +1,11 @@
+// expect-exit: 42
+// expect-stdout: 37
+pub fnc main(): int {
+  let number = 5;
+  block {
+    val writer = borrow! mut number;
+    writer = 37;
+    stdio.println(copy! writer);
+  }
+  return number + 5;
+}
