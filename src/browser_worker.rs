@@ -61,22 +61,10 @@ impl RemoteReceiptHeader {
         self.receipt_id > 0 && self.route_id > 0 &&
         self.source_generation > 0 && self.target_generation > 0 &&
         self.actor_id <= 64 &&
-        matches!((self.outcome, self.code),
-            (RemoteReceiptOutcome::Processed,RemoteReceiptCode::Ok) |
-            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteStale) |
-            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteBackpressure) |
-            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteUnavailable) |
-            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteRevoked) |
-            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteProtocol) |
-            (RemoteReceiptOutcome::Rejected,RemoteReceiptCode::RouteUnknown) |
-            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteStale) |
-            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteBackpressure) |
-            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteTimeout) |
-            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteUnavailable) |
-            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteCrash) |
-            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteReceiver) |
-            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteProtocol) |
-            (RemoteReceiptOutcome::Unknown,RemoteReceiptCode::RouteUnknown))
+        (matches!(self.outcome,RemoteReceiptOutcome::Processed)
+            && matches!(self.code,RemoteReceiptCode::Ok)) ||
+        (!matches!(self.outcome,RemoteReceiptOutcome::Processed)
+            && !matches!(self.code,RemoteReceiptCode::Ok))
     }
 }
 pub const MAX_ACTOR_TYPES_PER_TENANT: usize = 64;
