@@ -1,0 +1,11 @@
+// expect-error: E_CAPTURE
+// A nested binder must never retarget a lifted lexical capture.
+pub fnc main(): int {
+  val offset = 7;
+  val add = |n| : int -> n + offset;
+  if true then
+    val offset = 99;
+    return add(35);
+  fi
+  return 0;
+}
