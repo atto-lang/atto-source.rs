@@ -112,6 +112,9 @@ impl Resolver<'_> {
                 merge_pick(&mut fields, &name, f);
             }
             for m in inherited.methods {
+                // Static methods belong to the declaring class; do not synthesize
+                // inherited static entries in the child's instance method table.
+                if m.value.is_static { continue; }
                 if !m.value.public {
                     return Err(fail(*pos, "E_UNSUPPORTED",
                         format!("inheriting private method '{}.{}' is not yet supported",
@@ -166,6 +169,11 @@ impl Resolver<'_> {
                 if method.override_member {
                     return Err(fail(method.pos, "E_OVERRIDE",
                         "static methods cannot override instance methods"));
+                }
+                if methods.contains_key(&method.name) {
+                    return Err(fail(method.pos, "E_STATIC_INHERIT_CONFLICT",
+                        format!("static function '{}' cannot hide an inherited instance method",
+                            method.name)));
                 }
                 out.methods.push(Pick { origin: class.name.clone(), value: method.clone() });
                 continue;
