@@ -67,7 +67,7 @@ fn escaped_int_closure_uses_owned_guest_class_environment() {
     assert!(program.funcs.iter().any(|f| f.name == "__atto_escaping_closure_0.call"
         && f.params.len() == 2 && f.ret == Type::Int));
     let bytes = atto_compiler::compile(src).expect("bounded escaping closure is executable");
-    assert!(bytes.starts_with(b"\\0asm"));
+    assert!(bytes.starts_with(b"\0asm"));
 }
 #[test]
 fn braced_escaping_closure_stays_outside_the_checked_profile() {
