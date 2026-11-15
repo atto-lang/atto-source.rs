@@ -41,6 +41,7 @@ const RESERVED: &[&str] = &[
     "implements",
     "impl",
     "import",
+    "export",
     "from",
     "as",
     "fnc",
@@ -136,6 +137,7 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "isoactor",
     "define",
     "import",
+    "export",
     "async",
     "yield",
     "guard",
@@ -497,6 +499,12 @@ impl Parser {
                 ));
             }
             decls += 1;
+            // Exports may precede or follow the symbol they name. Do not
+            // bind them here: resolution happens after the entire file.
+            if self.is_word("export") {
+                prog.exports.push(self.parse_export()?);
+                continue;
+            }
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
@@ -543,6 +551,35 @@ impl Parser {
         }
         prog.type_names = std::mem::take(&mut self.type_names);
         Ok(prog)
+    }
+
+    /// File-level declaration; an omitted kind is checked against the symbol
+    /// table after parsing all top-level declarations.
+    fn parse_export(&mut self) -> R<ExportDecl> {
+        self.expect_word("export")?;
+        self.expect_word("pub")?;
+        let visibility = if self.eat(&Tok::LBracket) {
+            self.expect_word("pkg")?;
+            self.expect(Tok::RBracket, "']' after 'pub[pkg]'")?;
+            ExportVisibility::Package
+        } else {
+            ExportVisibility::Public
+        };
+        let kind = match self.word_at(0) {
+            Some("class") => Some(ExportKind::Class),
+            Some("fnc") => Some(ExportKind::Fnc),
+            Some("actor") => Some(ExportKind::Actor),
+            Some("enum") => Some(ExportKind::Enum),
+            _ => None,
+        };
+        if kind.is_some() {
+            self.advance();
+        }
+        let (name, pos) = self.ident("an export target")?;
+        // Require an explicit terminator: exports must never consume the
+        // next declaration, even if the export appears at file start.
+        self.expect(Tok::Semi, "';' after an export")?;
+        Ok(ExportDecl { name, pos, visibility, kind })
     }
 
     /// After `define class`: `Name as { class_member } end`.
