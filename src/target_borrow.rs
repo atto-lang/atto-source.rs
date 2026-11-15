@@ -69,6 +69,26 @@ fn is_call(toks: &[Token], i: usize) -> bool {
         && matches!(toks.get(i+1).map(|t| &t.tok), Some(Tok::LParen))
 }
 
+/// Only these bounded, side-effect-free boolean conditions can participate in
+/// an ownership-complete branch proof. Arbitrary conditions may move, borrow,
+/// call or suspend; parsing their braces does not prove their effects.
+fn pure_bool_condition(toks: &[Token], receiver: &TypedReceiver, depth: usize) -> bool {
+    if depth > 128 { return false; }
+    match toks {
+        [Token { tok: Tok::Ident(value), .. }]
+            if value == "true" || value == "false" => true,
+        [Token { tok: Tok::Ident(value), .. }] =>
+            receiver.params.iter().any(|p| p.name == *value
+                && p.ty == crate::target_typed::TargetType::Bool),
+        [Token { tok: Tok::Bang, .. }, inner @ ..] =>
+            pure_bool_condition(inner, receiver, depth + 1),
+        [Token { tok: Tok::LParen, .. }, inner @ ..,
+         Token { tok: Tok::RParen, .. }] =>
+            pure_bool_condition(inner, receiver, depth + 1),
+        _ => false,
+    }
+}
+
 impl Reader<'_> {
     fn pos(&self) -> Pos {
         self.toks.get(self.i).map_or(Pos::default(), |t| t.pos)
@@ -95,9 +115,17 @@ impl Reader<'_> {
                     return Err(Diagnostic::new(t.pos, "E_ESCAPE",
                         "borrowed alias may not escape into an unproved expression"));
                 }
-                if state.loans.values().any(|loan| loan.exclusive && loan.source == *name) {
+                // Shared loans permit inspection, but no mutation or
+                // replacement of the source until every loan ends.
+                let mutating = toks.get(i+1).is_some_and(|next| matches!(
+                    next.tok, Tok::Assign | Tok::PlusAssign |
+                    Tok::PlusPlus | Tok::MinusMinus))
+                    || (i > 0 && matches!(toks[i-1].tok,
+                        Tok::PlusPlus | Tok::MinusMinus));
+                if state.loans.values().any(|loan| loan.source == *name
+                    && (loan.exclusive || mutating)) {
                     return Err(Diagnostic::new(t.pos, "E_BORROW",
-                        "exclusive actor-owned loan prevents direct source access"));
+                        "actor-owned value cannot be mutated while borrowed"));
                 }
             }
         }
@@ -107,8 +135,10 @@ impl Reader<'_> {
         if state.loans.is_empty() { return Ok(()); }
         let unsafe_effect = toks.iter().enumerate().any(|(i,t)|
             ["await","yield","select","spawn","throw","raise","panic",
-             "trap","recover","defer"].iter().any(|s| named(t,s))
+             "trap","recover","defer","break","continue"].iter().any(|s| named(t,s))
             || matches!(t.tok, Tok::YieldStar | Tok::Question)
+            || (named(t,"rt") && (word(toks,i+1,"take")
+                || word(toks,i+1,"borrow")))
             || is_call(toks,i));
         if unsafe_effect {
             return Err(Diagnostic::new(toks.first().map_or(Pos::default(),|t|t.pos),
@@ -351,7 +381,14 @@ impl Reader<'_> {
         let slice=&self.toks[start..self.i];
         self.check_reads(slice,state)?;
         self.check_safepoint(slice,state)?;
-        Ok(true)
+        // Taking/borrowing in the condition must never be treated as an
+        // effect-free predicate, even when no loan was active beforehand.
+        if slice.windows(2).any(|pair| named(&pair[0],"rt")
+            && (named(&pair[1],"take") || named(&pair[1],"borrow"))) {
+            return Err(Diagnostic::new(slice[0].pos, "E_BORROW",
+                "ownership-changing receiver condition requires typed effect lowering"));
+        }
+        Ok(pure_bool_condition(slice,self.receiver,0))
     }
     fn if_chain(&mut self, state: &mut State, scope: usize, depth: usize)
         -> Result<Flow, Diagnostic> {
