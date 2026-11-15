@@ -15,6 +15,8 @@ Long-term choices: Rowan lossless CST, Salsa incremental query engine, owned Ore
 
 The prototype currently accepts both the braced and as/end spellings for a static function. Its grammar and integer-overflow semantics need reconciliation against the Java and LLVM Oreslang language specification before broad use.
 
+The bounded scalar compiler accepts both required parameter spellings `fnc add(int left, int right): int` and `fnc add(left: int, right: int): int`, including mixed-order declarations. Both lower to the same ordered native `i64` parameter slots; declaration order is not argument reordering. Parameter types must be explicit; optional/omittable parameters (`x?: int`), `Option<T>` parameter types, defaults, lambdas, and actor methods remain unsupported and must not be treated as emitted native ABI features. See `tests/name_first_formals.rs` for parser, MIR, compiler and Linux native-link regression coverage.
+
 ## Rust-only tooling policy (no Python)
 
 **Python is prohibited in this organization.** Do not add, maintain, invoke, generate, or require Python code or Python-based scripts, helpers, tests, code generators, build utilities, automation, CI steps, notebooks, or runtime dependencies. This includes `.py`, `.pyi`, `.ipynb`, `python` / `python3` commands, `pip`, `uv`, `poetry`, `pytest`, and Python GitHub Actions setup steps.
