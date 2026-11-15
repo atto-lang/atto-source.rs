@@ -61,7 +61,7 @@ fn mutable_and_nonscalar_captures_still_fail_closed() {
 }
 #[test]
 fn escaped_closure_factory_never_masquerades_as_executable() {
-    let src = "fnc make_adder(int offset): fnc(int)->int { return |n| : int -> n + offset; } pub fnc main(): int { return 0; }";
+    let src = "fnc make_adder(int offset): fnc(int)=>int { return |n| : int -> n + offset; } pub fnc main(): int { return 0; }";
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
 }
 #[test]

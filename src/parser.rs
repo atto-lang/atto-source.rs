@@ -370,7 +370,7 @@ impl Parser {
         let ty = match name.as_str() {
             "int" => Type::Int,
             "fnc" => {
-                // Canonical source type form: fnc(int, bool) -> float.
+                // Canonical source type form: fnc(int, bool) => float.
                 // The first profile admits scalar callback contracts only,
                 // without silently treating callable types as runtime values.
                 self.expect(Tok::LParen, "'(' after fnc callable type")?;
@@ -392,7 +392,7 @@ impl Parser {
                     }
                 }
                 self.expect(Tok::RParen, "')' after callable parameters")?;
-                self.expect(Tok::Arrow, "'->' before callable result type")?;
+                self.expect(Tok::FatArrow, "'=>' before callable result type")?;
                 let result_pos = self.pos();
                 let result = self.parse_type()?;
                 if !matches!(result,
@@ -400,7 +400,7 @@ impl Parser {
                     return Err(Diagnostic::new(result_pos, "E_UNSUPPORTED_TYPE",
                         "callable return type must be scalar or void"));
                 }
-                let spelling = format!("fnc({})->{}",
+                let spelling = format!("fnc({})=>{}",
                     params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
                     result.name());
                 // Identical contracts have identical Type identity across
