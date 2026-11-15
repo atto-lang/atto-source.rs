@@ -1,0 +1,4 @@
+// expect-error: E_MUTABILITY
+pub fnc main(): int {
+  val number = 40; val writer = borrow! mut number; return 0;
+}
