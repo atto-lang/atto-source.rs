@@ -62,7 +62,7 @@ fn pointer_factory_and_construction_fail_closed_before_guest_codegen() {
 fn pointer_spelling_in_comments_is_not_executable() {
     let source = "/* Pointer.alloc<int>(4); &x; *p; */\n// Pointer<int>\npub fnc main(): int { return 6 * 7; }";
     let bytes = atto_compiler::compile(source).expect("comments must not become pointer tokens");
-    assert_eq!(&bytes[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
 }
 
 #[test]
