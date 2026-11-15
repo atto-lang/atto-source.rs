@@ -1264,28 +1264,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
 /// production checked i64 arithmetic helpers and panic_code convention, but
 /// exports only pure scalar callables. No actor instance, mailbox, state
 /// memory, scheduler or generated lease cleanup is provided here.
-pub fn emit_scalar_receiver_preview(methods: &[crate::target_scalar::ScalarMethod]) -> Vec<u8> {
-    use crate::target_scalar::{ScalarExpr,ScalarMethod};
+pub(crate) fn emit_scalar_receiver_preview(methods: &[crate::target_scalar::ScalarMethod]) -> Result<Vec<u8>,crate::diag::Diagnostic> {
+    use crate::target_scalar_cfg::ScalarOp;
 
-    fn emit_expr(expr:&ScalarExpr,code:&mut Vec<u8>) {
-        match expr {
-            ScalarExpr::Param(i) => {code.push(0x20);uleb(code,*i as u64);}
-            ScalarExpr::Const(n) => {code.push(0x42);sleb(code,*n);}
-            ScalarExpr::Neg(x) => {
-                emit_expr(x,code);code.push(0x10);uleb(code,H_NEG as u64);
-            }
-            ScalarExpr::Add(a,b) | ScalarExpr::Sub(a,b) |
-            ScalarExpr::Mul(a,b) => {
-                emit_expr(a,code);emit_expr(b,code);
-                let helper=match expr {
-                    ScalarExpr::Add(..)=>H_ADD,
-                    ScalarExpr::Sub(..)=>H_SUB,
-                    _=>H_MUL,
-                };
-                code.push(0x10);uleb(code,helper as u64);
-            }
-        }
-    }
     let helpers=helper_bodies();
     debug_assert_eq!(helpers.len(),4);
     let mut types=Types(Vec::new());
@@ -1298,11 +1279,26 @@ pub fn emit_scalar_receiver_preview(methods: &[crate::target_scalar::ScalarMetho
         bodies.push(body);
     }
     let helper_count=function_types.len();
-    for ScalarMethod {arity,expr,..} in methods {
-        function_types.push(types.idx(Sig(vec![I64;*arity],vec![I64])));
+    for method in methods {
+        // A separate verifier proves stack shape, the unique normal return,
+        // and checked-arithmetic edges before any Wasm bytes are emitted.
+        // Checked exits are implemented by the existing panic-code helpers.
+        let graph=crate::target_scalar_cfg::lower_scalar_cfg(
+            &method.expr,method.arity,method.pos)?;
+        function_types.push(types.idx(Sig(vec![I64;method.arity],vec![I64])));
         let mut body=vec![0]; // no extra locals
-        emit_expr(expr,&mut body);
-        body.push(0x0B); // end function
+        for node in graph.nodes() {
+            match node.op {
+                ScalarOp::Param(i) => {body.push(0x20);uleb(&mut body,i as u64);}
+                ScalarOp::Const(n) => {body.push(0x42);sleb(&mut body,n);}
+                ScalarOp::CheckedNeg => {body.push(0x10);uleb(&mut body,H_NEG as u64);}
+                ScalarOp::CheckedAdd => {body.push(0x10);uleb(&mut body,H_ADD as u64);}
+                ScalarOp::CheckedSub => {body.push(0x10);uleb(&mut body,H_SUB as u64);}
+                ScalarOp::CheckedMul => {body.push(0x10);uleb(&mut body,H_MUL as u64);}
+                ScalarOp::Return => body.push(0x0B), // Wasm function end
+                ScalarOp::OverflowPanic => {} // exit implemented by checked helpers
+            }
+        }
         bodies.push(body);
     }
     let mut result=b"\0asm\x01\0\0\0".to_vec();
@@ -1346,5 +1342,5 @@ pub fn emit_scalar_receiver_preview(methods: &[crate::target_scalar::ScalarMetho
         code_section.extend(body);
     }
     section(&mut result,10,code_section);
-    result
+    Ok(result)
 }
