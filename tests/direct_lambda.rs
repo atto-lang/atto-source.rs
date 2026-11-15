@@ -34,8 +34,19 @@ fn zero_parameter_lambda_and_deterministic_wasm() {
     assert!(wasm.starts_with(b"\0asm"));
 }
 #[test]
-fn direct_lambda_capture_never_compiles() {
+fn immutable_scalar_capture_is_lifted_as_hidden_wasm_parameter() {
     let src = "pub fnc main(): int { val extra = 1; val f = |n| -> n + extra; return f(1); }";
+    let p = checked(src);
+    assert_eq!(p.funcs[1].params, [Type::Int, Type::Int]);
+    assert!(atto_compiler::compile(src).is_ok());
+    let TStmt::Return(Some(value)) = &p.funcs[0].body[2] else {
+        panic!("expected direct captured call return")
+    };
+    assert!(matches!(&value.e, TExpr::Call(1, args) if args.len() == 2));
+}
+#[test]
+fn mutable_outer_capture_still_rejected() {
+    let src = "pub fnc main(): int { let extra = 1; val f = |n| -> n + extra; return f(1); }";
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_CAPTURE");
 }
 #[test]
