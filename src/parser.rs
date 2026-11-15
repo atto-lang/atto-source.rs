@@ -2418,7 +2418,7 @@ impl Parser {
                     self.advance();
                     ExprKind::SelfRef
                 }
-                "handle_state" if self.state_method => self.parse_state_critical_read(),
+                "handle_state" if self.state_method => self.parse_state_critical_read()?,
                 "new" => {
                     self.advance();
                     let (class, _) = self.ident("a class name after 'new'")?;
