@@ -5,7 +5,7 @@ use atto_compiler::{
 };
 
 fn callback(src: &str) -> Expr {
-    let input = format!("pub fnc main(): int {{ val cb = {src}; return 0; }}");
+    let input = format!("pub fnc main(): int {{ val callback = {src}; return 0; }}");
     let ast = Parser::new(lexer::lex(&input).unwrap()).parse_program()
         .unwrap_or_else(|d| panic!("{src}: {d}"));
     let Stmt::Bind { init, .. } = &ast.funcs[0].body[0] else { unreachable!() };
@@ -89,7 +89,7 @@ fn scalar_operators_have_native_checker_semantics() {
 
 #[test]
 fn analyzer_success_does_not_enable_wasm_execution() {
-    let code = "pub fnc main(): int { val cb = (|n| : int -> n * 2); return 0; }";
+    let code = "pub fnc main(): int { val callback = (|n| : int -> n * 2); return 0; }";
     let d = atto_compiler::compile(code).unwrap_err();
     assert_eq!(d.code, "E_UNSUPPORTED");
     assert!(d.message.contains("lambdas"));
