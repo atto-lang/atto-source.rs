@@ -113,7 +113,7 @@ fn conditional_or_still_parses_as_or_and_not_as_lambda() {
 fn unsupported_callable_and_array_execution_fails_closed() {
     for source in [
         "pub fnc main(): int { val f = |n| : int -> n * 2; return 0; }",
-        "pub fnc main(): int { val f = |n| -> return n; return 0; }",
+        "pub fnc main(): int { val f = (|n| -> return n;); return 0; }",
         "pub fnc main(): int { val xs = [1,2,3]; return 0; }",
     ] {
         let err = atto_compiler::compile(source).expect_err("must never emit Wasm");

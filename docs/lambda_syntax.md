@@ -23,7 +23,9 @@ Accepted forms (syntax):
 - Legacy typed braceless: `|n| => int -> return n * 2;` (accepted for compatibility, not preferred)
 
 The semicolon is part of a braceless `return` statement. It is required
-inside a call argument before the closing `)`. Expression bodies do not need
+inside a call argument before the closing `)`. For a same-line standalone
+binding such as `val cb = (|n| -> return n;);`, the inner `return;` and
+outer `val;` have distinct statement terminators. Expression bodies do not need
 an inner semicolon. Multiple statements require `{ ... }`.
 
 ## Grammar and disambiguation
