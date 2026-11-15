@@ -1,0 +1,7 @@
+// expect-exit: 42
+pub fnc main(): int {
+  let number = 5;
+  val moved = take! number;
+  number = 37;
+  return moved + copy! number;
+}

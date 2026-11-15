@@ -300,6 +300,10 @@ pub enum UnOp {
     Neg,
     Plus,
     Not,
+    /// Explicit scalar copy; runtime value is unchanged, checker proves Copy eligibility.
+    Copy,
+    /// Explicit scalar move; checker invalidates the source binding.
+    Take,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

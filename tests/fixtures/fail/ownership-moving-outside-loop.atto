@@ -1,0 +1,8 @@
+// expect-error: E_MOVED
+pub fnc main(): int {
+  val number = 12;
+  for let i = 0; i < 1; i++ do
+    val shifted = take! number;
+  done
+  return 0;
+}

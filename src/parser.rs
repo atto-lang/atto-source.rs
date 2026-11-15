@@ -182,6 +182,10 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "Tuple",
     "FixedArray",
     "FixedList",
+    "Box",
+    "Arc",
+    "Atomic",
+    "Send",
     "Map",
     "Set",
     "char",
@@ -1347,7 +1351,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Box" | "Arc" | "Atomic"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -1923,8 +1927,34 @@ impl Parser {
         r
     }
 
+    #[inline(never)]
+    fn parse_scalar_ownership(&mut self, op: UnOp, pos: Pos) -> R<Expr> {
+        let operand = self.parse_unary()?;
+        Ok(Expr { kind: ExprKind::Unary(op, Box::new(operand)), pos })
+    }
+
     fn parse_unary_inner(&mut self) -> R<Expr> {
         let pos = self.pos();
+        // Keep prefix dispatch small: this function is recursive through unary
+        // and binary expression parsing, so heavy branches go out of line.
+        if *self.peek_at(1) == Tok::Bang {
+            match self.word_at(0) {
+                Some("copy") => {
+                    self.advance();
+                    self.advance();
+                    return self.parse_scalar_ownership(UnOp::Copy, pos);
+                }
+                Some("take") => {
+                    self.advance();
+                    self.advance();
+                    return self.parse_scalar_ownership(UnOp::Take, pos);
+                }
+                Some("borrow" | "share") =>
+                    return Err(unsupported(pos,
+                        "borrow! / share! ownership and lifetime operators")),
+                _ => {}
+            }
+        }
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,

@@ -1,0 +1,9 @@
+// expect-exit: 80
+// Explicit scalar moves use the same guest scalar Wasm ABI on native and browser.
+// No Arc/Box/borrowing is admitted by this fixture.
+pub fnc main(): int {
+  val initial = 40;
+  val copied = copy! initial;
+  val moved = take! initial;
+  return copied + moved;
+}

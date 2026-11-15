@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED_TYPE
+pub fnc main(): int {
+  val unique: Box<int> = Box<int>(1);
+  return 0;
+}
