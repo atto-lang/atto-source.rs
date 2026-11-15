@@ -62,6 +62,14 @@ fn fail(pos: Pos, why: &'static str) -> Diagnostic {
     Diagnostic::new(pos, "E_CLEANUP", why)
 }
 
+fn before(a: Pos, b: Pos) -> bool {
+    (a.line, a.col) < (b.line, b.col)
+}
+
+fn within(pos: Pos, begin: Pos, end: Pos) -> bool {
+    !before(pos, begin) && !before(end, pos)
+}
+
 /// Verify each concrete three-instruction cleanup path, and verify the set
 /// includes exactly one normal/cancel path per lease and exactly one checked
 /// panic path when the callback contains potentially trapping arithmetic.
@@ -118,7 +126,18 @@ pub fn lower_verified_cleanup_cfg(
     }
     let mut paths = Vec::new();
     let mut expected = Vec::new();
+    let mut last_end: Option<Pos> = None;
     for (id,lease) in plan.leases.iter().enumerate() {
+        // Even for an experimental CFG, source locations must describe
+        // sequential, non-overlapping acquisitions. Public frontend plans
+        // cannot claim two concurrent locks as separate lexical callbacks.
+        if lease.acquire_pos.line == 0 || lease.acquire_pos.col == 0
+            || !before(lease.acquire_pos, lease.normal_end_pos)
+            || last_end.is_some_and(|end| !before(end, lease.acquire_pos)) {
+            return Err(fail(lease.acquire_pos,
+                "lease regions must have valid, ordered, non-overlapping spans"));
+        }
+        last_end = Some(lease.normal_end_pos);
         if lease.lease != id || lease.receiver != plan.receiver {
             return Err(fail(lease.acquire_pos, "lease identity is inconsistent"));
         }
@@ -129,12 +148,14 @@ pub fn lower_verified_cleanup_cfg(
             return Err(fail(lease.acquire_pos, "missing normal cleanup obligation"));
         };
         if normal.lease != id || normal.exit != LeaseCleanupExit::Normal
+            || normal.pos != lease.normal_end_pos
             || normal.backend_release_proven {
             return Err(fail(lease.acquire_pos, "invalid normal lease cleanup obligation"));
         }
         if lease.checked_arithmetic {
             let panic = &lease.cleanup[1];
             if panic.lease != id || panic.exit != LeaseCleanupExit::CheckedPanic
+                || !within(panic.pos, lease.acquire_pos, lease.normal_end_pos)
                 || panic.backend_release_proven {
                 return Err(fail(lease.acquire_pos, "invalid checked-panic cleanup obligation"));
             }
