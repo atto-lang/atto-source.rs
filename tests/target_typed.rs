@@ -692,8 +692,8 @@ fn actor_ownership_releases_lexical_borrow_on_inner_scope_exit() {
     assert_eq!(facts.moves,1);
     assert_eq!(facts.lexical_loan_releases,1);
     assert_eq!(facts.branch_joins,0);
-    assert!(!facts.ownership_preflight_complete,
-        "nested block ownership does not prove all expression semantics");
+    assert!(facts.ownership_preflight_complete,
+        "the bounded ownership subset proves lexical release, not executable code");
     assert!(!m.receivers[0].body_lowered);
     assert_eq!(atto_compiler::compile(source).unwrap_err().code,"E_UNSUPPORTED");
 }
