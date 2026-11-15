@@ -22,7 +22,7 @@ fn five_body_spellings_parse_and_compile() {
         assert!(matches!(p.funcs[i].body.last(), Some(Stmt::Return(Some(_), _))));
     }
     let first = compile(src).unwrap();
-    assert_eq!(&first[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&first[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
     assert_eq!(first, compile(src).unwrap(), "deterministic guest bytes");
 }
 
