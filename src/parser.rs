@@ -1949,9 +1949,16 @@ impl Parser {
                     self.advance();
                     return self.parse_scalar_ownership(UnOp::Take, pos);
                 }
-                Some("borrow" | "share") =>
+                Some("borrow") => {
+                    self.advance();
+                    self.advance();
+                    let exclusive = self.eat_word("mut");
+                    return self.parse_scalar_ownership(
+                        if exclusive { UnOp::BorrowMut } else { UnOp::Borrow }, pos);
+                }
+                Some("share") =>
                     return Err(unsupported(pos,
-                        "borrow! / share! ownership and lifetime operators")),
+                        "share! requires verified Arc handle ownership")),
                 _ => {}
             }
         }
