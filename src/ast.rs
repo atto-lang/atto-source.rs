@@ -379,6 +379,10 @@ pub enum ExprKind {
     Call(String, Vec<Expr>),
     /// `self`
     SelfRef,
+    /// Compiler-recognized immutable by-value projection from an explicit
+    /// `handle_state(critical-read |s| -> s.field)` scope. Never ordinary
+    /// class member access: the checker must prove a protected state lease.
+    StateRead(String),
     /// `new Class(args)`
     New(String, Vec<Expr>),
     /// `spawn Actor()`

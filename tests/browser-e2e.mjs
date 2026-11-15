@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -134,6 +135,30 @@ try{
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
   assert.match(await run(values,'main() -> 1'),/^3\.5\n1\.0E7\nzero\/many\ntrue\nmain\(\) -> 1$/);
   console.log('PASS browser: float (Java Double.toString), string values and match');
+
+  // The full source bytes are mirrored from atto-lang.github.io PR #127,
+  // not a hand-written approximation. Test a real Chromium dedicated Worker,
+  // with the actual Rust-compiled wasm32 compiler and its emitted guest Wasm.
+  const stateSource = await readFile(new URL('./browser/fixtures/play-state-containers.atto',import.meta.url),'utf8');
+  const blobHash = createHash('sha1')
+    .update('blob '+Buffer.byteLength(stateSource)).update(Buffer.from([0])).update(stateSource).digest('hex');
+  assert.equal(blobHash, 'eac6084e6a02989f8973eb7fc2af7d59baf9db7e',
+    'exact /play preview Git blob must match website PR, not a divergent test sample');
+  assert.equal(await run(stateSource, 'main() -> 0'), '2\n0\nmain() -> 0');
+  console.log('PASS browser: byte-verified /play state preview compiles AND executes in Chromium Worker');
+
+  const independent = await readFile(new URL('./fixtures/pass/180-standalone-state-critical.atto',import.meta.url),'utf8');
+  assert.equal(await run(independent,'main() -> 0'), '2\n0\n7\n2\nmain() -> 0');
+  console.log('PASS browser: separate state instances, critical read/write, reset');
+
+  const unguarded = await readFile(new URL('./fixtures/fail/196-state-same-class-access.atto',import.meta.url),'utf8');
+  assert.match(await run(unguarded,'E_STATE_BORROW'), /^E_STATE_BORROW:/);
+  const lexical = await readFile(new URL('./fixtures/fail/188-state-spaced-critical-read.atto',import.meta.url),'utf8');
+  assert.match(await run(lexical,'E_SYNTAX'), /^E_SYNTAX:/);
+  assert.equal(await run(stateSource,'main() -> 0'),'2\n0\nmain() -> 0',
+    'invalid code must not poison the next Worker or leave stale guest bytes');
+  console.log('PASS browser: state capability bypass and malformed keyword fail closed; recovery executes');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

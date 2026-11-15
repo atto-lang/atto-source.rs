@@ -384,6 +384,9 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Active, compiler-admitted exclusive state write loan.
     state_write_scope: bool,
+    /// Transient, nonescaping grant only for a compiler-recognized
+    /// by-value critical-read projector (never arbitrary member access).
+    state_read_scope: bool,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -1425,6 +1428,7 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             state_write_scope: false,
+            state_read_scope: false,
             imports,
             data,
         }
@@ -2609,6 +2613,25 @@ impl<'a> FnCx<'a> {
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
+            ExprKind::StateRead(field) => {
+                let c = match self.owner {
+                    Owner::Class { c, ctor: false, is_static: false }
+                        if self.g.classes[c as usize].state_container => c,
+                    _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "critical-read requires a protected instance state container")),
+                };
+                if self.state_read_scope || self.state_write_scope {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "protected state read cannot nest with another active lease"));
+                }
+                self.state_read_scope = true;
+                let checked = self.field_get(TE {
+                    e: TExpr::Local(0),
+                    ty: Type::Class(c),
+                }, field, pos);
+                self.state_read_scope = false;
+                checked?
+            }
             ExprKind::SelfRef => {
                 return Err(match self.owner {
                     Owner::Class { is_static: false, .. } | Owner::Actor { .. } => Diagnostic::new(
@@ -2877,6 +2900,19 @@ impl<'a> FnCx<'a> {
                     class.name, class.name
                 ),
             ));
+        }
+        // Same-class privacy is NOT a state lease. An ordinary method may
+        // inspect a different instance's private fields, but never its sealed
+        // state. Only the compiler's lexical read projection or active write
+        // scope may read the receiver instance's own protected storage.
+        if f.mode == FieldMode::ActorState && class.state_container {
+            let same_receiver = matches!(&obj.e, TExpr::Local(0))
+                && matches!(self.owner,
+                    Owner::Class { c: owner, ctor: false, is_static: false } if owner == c);
+            if !same_receiver || !(self.state_read_scope || self.state_write_scope) {
+                return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                    "protected state read requires critical-read or critical-write on this receiver"));
+            }
         }
         Ok(TE {
             e: TExpr::FieldGet {

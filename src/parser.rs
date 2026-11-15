@@ -1512,11 +1512,9 @@ impl Parser {
         if projector != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
             "critical-read requires s.field")); }
         self.expect(Tok::Dot, "'.' in s.field")?;
-        let (field, field_pos) = self.ident("state field")?;
+        let (field, _) = self.ident("state field")?;
         self.expect(Tok::RParen, "')' after critical-read")?;
-        Ok(ExprKind::Member(Box::new(Expr {
-            kind: ExprKind::SelfRef, pos: field_pos
-        }), field))
+        Ok(ExprKind::StateRead(field))
     }
 
     /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
