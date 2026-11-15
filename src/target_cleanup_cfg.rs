@@ -46,6 +46,16 @@ pub struct VerifiedCleanupCfg {
 impl VerifiedCleanupCfg {
     pub fn paths(&self) -> &[CleanupPath] { &self.paths }
     pub fn lease_count(&self) -> usize { self.leases }
+    /// A native runtime operation is admitted only for an actual verified
+    /// path of the expected lease, mode, and exit kind.
+    fn permits(&self, id:usize, mode:StateLeaseMode, exit:CleanupExit)->bool {
+        self.paths.iter().any(|p| p.lease == id && p.exit == exit
+            && matches!(&p.ops[..],
+                [CleanupOp::Acquire { lease, mode: m },
+                 CleanupOp::Release { lease: r },
+                 CleanupOp::Exit(e)]
+                if *lease == id && *r == id && *m == mode && *e == exit))
+    }
 }
 
 fn fail(pos: Pos, why: &'static str) -> Diagnostic {
@@ -155,7 +165,8 @@ pub fn lower_verified_cleanup_cfg(
 /// behavior with the same strict cleanup paths recorded above.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_experiment {
-    use std::panic::{catch_unwind, AssertUnwindSafe, UnwindSafe};
+    use super::{CleanupExit, StateLeaseMode, VerifiedCleanupCfg};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError,
@@ -187,15 +198,24 @@ pub mod native_experiment {
             Self { value:RwLock::new(initial),releases:AtomicUsize::new(0) }
         }
         /// Only experimental Rust code calls this, NOT emitted Atto receiver code.
-        pub fn with_shared<R>(&self, f:impl FnOnce(i64)->R) -> R {
+        pub fn with_shared<R>(&self, cfg:&VerifiedCleanupCfg, lease:usize,
+            f:impl FnOnce(i64)->R) -> Result<R,&'static str> {
+            if !cfg.permits(lease,StateLeaseMode::SharedRead,CleanupExit::Normal) {
+                return Err("unverified shared-read cleanup path");
+            }
             let guard=SharedGuard {
                 lock:self.value.read().unwrap_or_else(|err|err.into_inner()),
                 releases:&self.releases,
             };
-            f(*guard.lock)
+            Ok(f(*guard.lock))
         }
-        pub fn checked_add(&self, delta:i64) -> std::thread::Result<i64> {
-            catch_unwind(AssertUnwindSafe(|| {
+        pub fn checked_add(&self, cfg:&VerifiedCleanupCfg, lease:usize,
+            delta:i64) -> Result<std::thread::Result<i64>,&'static str> {
+            if !cfg.permits(lease,StateLeaseMode::ExclusiveWrite,CleanupExit::Normal)
+                || !cfg.permits(lease,StateLeaseMode::ExclusiveWrite,CleanupExit::CheckedPanic) {
+                return Err("missing verified exclusive checked-arithmetic cleanup path");
+            }
+            Ok(catch_unwind(AssertUnwindSafe(|| {
                 let mut guard=ExclusiveGuard {
                     lock:self.value.write().unwrap_or_else(|err|err.into_inner()),
                     releases:&self.releases,
@@ -204,23 +224,31 @@ pub mod native_experiment {
                     .expect("checked actor-state arithmetic overflow");
                 *guard.lock=value;
                 value
-            }))
+            })))
         }
-        pub fn cancel_while_exclusive(&self) -> Result<(), &'static str> {
+        pub fn cancel_while_exclusive(&self, cfg:&VerifiedCleanupCfg,
+            lease:usize) -> Result<(), &'static str> {
+            if !cfg.permits(lease,StateLeaseMode::ExclusiveWrite,CleanupExit::CooperativeCancel) {
+                return Err("unverified cooperative cancellation cleanup path");
+            }
             let _guard=ExclusiveGuard {
                 lock:self.value.write().unwrap_or_else(|err|err.into_inner()),
                 releases:&self.releases,
             };
             Err("cancelled")
         }
-        pub fn panic_while_shared(&self) -> std::thread::Result<()> {
-            catch_unwind(AssertUnwindSafe(|| {
+        pub fn panic_while_shared(&self, cfg:&VerifiedCleanupCfg,
+            lease:usize) -> Result<std::thread::Result<()>,&'static str> {
+            if !cfg.permits(lease,StateLeaseMode::SharedRead,CleanupExit::CheckedPanic) {
+                return Err("unverified shared-read panic cleanup path");
+            }
+            Ok(catch_unwind(AssertUnwindSafe(|| {
                 let _guard=SharedGuard {
                     lock:self.value.read().unwrap_or_else(|err|err.into_inner()),
                     releases:&self.releases,
                 };
                 panic!("synthetic read callback panic");
-            }))
+            })))
         }
         pub fn release_count(&self)->usize {
             self.releases.load(Ordering::SeqCst)
