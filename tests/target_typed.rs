@@ -993,3 +993,16 @@ mtd (mut self: Counter) update(ActorRef<Counter> peer): void {
         .iter().all(|edge|!edge.backend_release_proven));
     assert!(!m.receivers[0].body_lowered);
 }
+
+#[test]
+fn lease_free_receiver_has_no_state_unlock_obligation_but_cannot_emit() {
+    use atto_compiler::target_cleanup::require_backend_cleanup_proof;
+    let src="declare actor Foo;
+        mtd (Foo self) identity(int n): int { return n; }";
+    let m=typed(src).unwrap();
+    assert_eq!(m.receiver_cleanup[0].leases.len(),0);
+    assert!(require_backend_cleanup_proof(&m.receiver_cleanup[0]).is_ok());
+    assert!(!m.receivers[0].body_lowered,
+        "vacuous lock-cleanup proof cannot authorize receiver codegen");
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
