@@ -3,7 +3,8 @@
 The preferred braceless form is `|parameters| : ReturnType -> body`.
 The annotation is optional: return types should normally be inferred from
 expressions and contextual callable signatures (when the relevant backend
-supports closure typing). Do **not** write `=>` in new formatted code.
+supports closure typing). Use `=>` only in **callable type definitions** such as `fnc(int) => int`;
+use `->` between a lambda's parameters/return annotation and its body.
 
 ```atto
 val values = rx.Observable.from_iter([1, 2, 3, 4, 5]);
@@ -51,10 +52,12 @@ resolution are separate from parsing. Repeated parameter names fail closed.
 ## Implementation status
 
 `atto-source.rs` recognizes these lambda expressions as AST nodes, including
-those nested inside method-call arguments. This is **syntax-only**: the Rust
-browser compiler does not yet implement callable value types, capture/borrow
-checking, callback invocation, Rx Observable methods or Wasm closure lowering.
-It reports `E_UNSUPPORTED` rather than emitting an invalid Wasm artifact.
+those nested inside method-call arguments. Most syntax remains preview-only. The Rust browser compiler now admits a
+**bounded executable** `fnc(int) => int` profile using private class-backed
+immutable integer captures and a one-entry typed Wasm indirect-call table.
+General callable handles, arbitrary capture types, nested closure bodies,
+memory reclamation, actor transport and Rx callbacks remain unsupported and
+must fail closed. No frontend syntax support alone proves execution.
 The formatter project must still implement canonical rendering and round trips.
 
 ## Contextual noncapturing type checking (signature-only)
@@ -136,9 +139,9 @@ function indexing or the existing direct-call contract.
 The `CallableTarget::Indirect` variant is a **reserved IR intent**, not an
 implemented feature: construction fails with `E_UNSUPPORTED` until a
 per-instance Wasm table ABI, stale handle checks, ownership and type-index
-validation are implemented. Callable parameters/returns in source syntax,
-first-class local function values, closure captures and Rx callbacks are
-still unsupported. The types cannot be interpreted as runtime handles.
+validation are implemented. The scalar `fnc(int) => int` class-backed profile is lowered separately;
+the reserved IR target is **not** a general runtime handle representation.
+Other callable signatures and Rx callbacks remain unsupported.
 
 ## Source callable types: parsed, validated, and gated
 
@@ -156,23 +159,26 @@ shape (including aliases such as `boolean` / `bool` and
 
 The parse/check boundary enforces parameter count and scalar-only types,
 resolves canonical signatures into `CallableSignature`, and rejects
-forged or malformed signature metadata. **Executable callable parameters,
-values, returns and indirect dispatch remain unsupported:** a program
-that needs those runtime features fails with `E_UNSUPPORTED` and produces
-no guest Wasm. `fnc(int) => int` describes a callable contract; it
-does not yet allocate a function table or make lambdas first-class.
+forged or malformed signature metadata. The **narrow** `fnc(int) => int` profile now supports first-class local
+closures, callable parameters/returns, and a checker-generated typed Wasm
+indirect call through a sealed one-entry method table. An actual owned integer
+capture survives its creating function's return. Other callable signatures
+still fail closed; this is **not** the final general callable-handle ABI.
 
-The earlier direct-lambda profile (private, noncapturing direct Wasm calls)
-continues to work unchanged. The next milestone is verified per-instance
-Wasm table entries and a typed indirect-call ABI with ownership checks.
+The earlier direct-lambda profile (private direct Wasm calls) continues to
+work unchanged. The next milestone is **general** per-instance function
+table entries, owned reclaimable capture frames, generation-fenced handles,
+actor/domain validation, and cleanup on all exceptional exits.
 
 When a lambda is explicitly annotated with a callable type, the
 compiler performs contextual arity, return-type, and capture analysis
 before returning the runtime `E_UNSUPPORTED` gate. For example, an
 annotated `fnc(int) =>bool` lambda returning an integer produces
 `E_TYPE`, while referring to an outer variable produces `E_CAPTURE`.
-A correctly typed annotation still cannot execute or escape without the
-indirect-table ABI.
+A correctly typed `fnc(int) => int` lambda may execute or escape when
+used in the newly supported bounded profile; uninvoked standalone local
+annotations still follow the existing conservative gate until the full
+ownership/lifetime analysis is integrated.
 
 ## Playground direct-lambda / functor compatibility profile (candidate)
 
@@ -191,8 +197,9 @@ Until the compiler has an owned closure environment, nested bindings,
 for-in binders, and match-arm binders that shadow a lifted capture are
 rejected with `E_CAPTURE`, rather than silently redirecting the read to
 the inner binding. The corresponding negative source fixture is
-`lambda-direct-capture-shadow.atto`. Mutable captures and escaping factory
-closures are separate negative tests.
+`lambda-direct-capture-shadow.atto`. Mutable captures and unsupported escaping closure bodies remain separate
+negative tests; an expression-bodied factory with immutable integer captures
+is now executable.
 
 Reference comparisons:
 
@@ -204,14 +211,45 @@ Reference comparisons:
   native guest implementation of the full escaping closure/functor ABI.
 - In AttoLang, the canonical authored lambda return annotation uses
   `|n| : int -> ...`. `fnc(int) => int` names a callable **source type**
-  but does not automatically authorize indirect Wasm calls.
+  but does not by itself authorize arbitrary first-class Wasm handles.
 
 The website's broader **Closures, functors and lambdas** preview also uses
 `make_adder(...): fnc(int) => int` and a higher-order
-`apply_twice(callback, ...)`. These require first-class callable values,
-owned closure environments, a verified typed indirect-call/table contract,
-and native/wasm32/browsers guest execution receipts. **Do not enable the
-preview's Run/Format actions or promote compiler bytes based only on this
-bounded direct-call fixture.** The currently pinned public compiler predates
+`apply_twice(callback, ...)`. The bounded Rust/Wasm compiler now executes the scalar `fnc(int) => int`
+subset (including `make_adder` and `apply_twice`) through a private typed
+indirect method table, but full general-purpose closure ownership, cleanup,
+and browser execution remain unverified. **Do not enable the preview's
+Run/Format actions or promote compiler bytes based on this limited subset.** The currently pinned public compiler predates
 this branch and must be separately rebuilt, independently reviewed, and
 released through the protected Pages gate.
+
+## Executable class-backed owned integer closures (draft)
+
+The source compiler currently desugars `fnc(int) => int` to an internal,
+unnameable class with one dispatch selector and four integer capture slots.
+Closure creation takes **value snapshots** of immutable `int` bindings into
+a module-private bump heap. A generated `.call(int)` method dispatches among
+a bounded set of expression-bodied targets. The Wasm emitter installs that
+method in an unexported `funcref` table and uses **typed `call_indirect`**
+at the invocation site. This is an executable closed-world adapter, **not**
+the production generational `CallableHandle` ABI.
+
+The initial caps are one `int` input, one `int` result, at most four
+immutable `int` captures per lambda, at most 32 lambda sites, and simple
+expression bodies. Source functions with unrelated control flow continue
+through the ordinary checker. The guest heap currently has bounded bump
+allocation **without reclaiming closed closure environments**; do not rely
+on this prototype for unbounded allocation or hard-real-time lifetimes.
+
+Exact-source CI acceptance fixtures:
+- `callable-owned-make-adder.atto` returns 42 after its factory returned
+- `callable-owned-apply-twice.atto` returns 40 through a higher-order argument
+- `callable-owned-independent-captures.atto` returns 43
+- `callable-owned-multiple-targets.atto` returns 41
+- `callable-owned-unrelated-control-flow.atto` returns 42
+- malformed type arrows, mutable captures, unsupported bodies and use-after-move
+  reject before emitting a guest module
+
+The remaining release gates are the entire exact Git source tree and test
+corpus, real Chromium Worker execution, sanitizer evidence, production capture
+cleanup, stable ABI documentation and backend-parity review.
