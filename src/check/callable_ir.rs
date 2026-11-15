@@ -59,7 +59,7 @@ impl CallableSignature {
                 "callable signature references missing type metadata")
         })?;
         let (args, result) = text.strip_prefix("fnc(")
-            .and_then(|x| x.split_once(")->"))
+            .and_then(|x| x.split_once(")=>"))
             .ok_or_else(|| Diagnostic::new(*at, "E_UNSUPPORTED_TYPE",
                 "malformed callable signature metadata"))?;
         let scalar = |word: &str| -> Option<Type> {
@@ -91,7 +91,7 @@ impl CallableSignature {
     }
 
     pub fn source_spelling(&self) -> String {
-        format!("fnc({})->{}",
+        format!("fnc({})=>{}",
             self.params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
             self.result.name())
     }
