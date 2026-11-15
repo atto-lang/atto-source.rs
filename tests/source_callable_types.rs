@@ -99,22 +99,24 @@ fn callable_fat_arrow_is_required_in_parameter_return_and_local_type_positions()
     for source in [
         "pub fnc use_it(fnc(int) -> int callback): int { return 0; }",
         "pub fnc factory(): fnc(int) -> int { return 0; }",
-        "pub fnc main(): int { val cb: fnc(int) -> int = |n| : int -> n; return 0; }",
+        "pub fnc main(): int { val callback: fnc(int) -> int = |n| : int -> n; return 0; }",
     ] {
         let e = atto_compiler::compile(source).expect_err("old callable type arrow is invalid");
         assert_eq!(e.code, "E_SYNTAX", "{source}: {e}");
         assert!(e.pos.line > 0 && e.pos.col > 0);
     }
     // Typed lambda runnable arrows retain their original meaning.
-    let source = "pub fnc main(): int { val cb = |n| : int -> n * 2; return cb(21); }";
+    let source = "pub fnc main(): int { val callback = |n| : int -> n * 2; return callback(21); }";
     assert!(atto_compiler::compile(source).is_ok());
 }
 
 #[test]
-fn canonical_callable_type_with_typed_lambda_is_checked_before_emission() {
+fn canonical_callable_type_factory_compiles_bounded_owned_environment() {
     let source = "fnc make_adder(int offset): fnc(int) => int { return |n| : int -> n + offset; } pub fnc main(): int { return 0; }";
-    let diagnostic = atto_compiler::compile(source).expect_err("first-class callable still gated");
-    assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{diagnostic}");
+    // This bounded factory escape is now compiled to a private, owned class;
+    // general first-class callable parameters remain gated separately.
+    let guest = atto_compiler::compile(source).expect("bounded owned closure factory");
+    assert!(guest.starts_with(b"\\0asm"));
 }
 
 #[test]
