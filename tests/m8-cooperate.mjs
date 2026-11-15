@@ -44,12 +44,13 @@ if (process.env.ATTOC) {
 const wasm = new WebAssembly.Module(one.bytes);
 assert.deepEqual(WebAssembly.Module.imports(wasm), []);
 assert.deepEqual(WebAssembly.Module.exports(wasm).map(x=>x.name).sort(),
-  ['m8_close','m8_index','m8_new','m8_pc','m8_result','m8_resume'].sort());
+  ['m8_close','m8_fault','m8_index','m8_new','m8_pc','m8_result','m8_resume'].sort());
 assert.equal(WebAssembly.Module.customSections(wasm,'atto.m8.cooperate').length, 1);
 const {exports: a} = new WebAssembly.Instance(wasm);
 const h = a.m8_new(100_000n);
 assert.equal(h,1n);
 assert.equal(a.m8_pc(h),0);
+assert.equal(a.m8_fault(h),0);
 assert.throws(()=>a.m8_new(7n),WebAssembly.RuntimeError,'cannot start second in-flight frame');
 assert.throws(()=>a.m8_resume(h,0),WebAssembly.RuntimeError);
 assert.throws(()=>a.m8_resume(h,65537),WebAssembly.RuntimeError);
@@ -68,6 +69,7 @@ assert.ok(yields>=24_999,'expected reduction-budget yields');
 assert.equal(a.m8_index(h),100_000n);
 assert.equal(a.m8_result(h),4_999_950_000n);
 assert.equal(a.m8_pc(h),4);
+assert.equal(a.m8_fault(h),0);
 assert.equal(a.m8_resume(h,1),0,'DONE must be idempotent');
 a.m8_close(h);
 assert.throws(()=>a.m8_resume(h,1),WebAssembly.RuntimeError);
@@ -98,8 +100,22 @@ assert.ok(ov.bytes && WebAssembly.validate(ov.bytes));
 const o=new WebAssembly.Instance(new WebAssembly.Module(ov.bytes)).exports;
 const oh=o.m8_new(3n);
 assert.throws(()=>o.m8_resume(oh,1),WebAssembly.RuntimeError,'overflow must trap');
+assert.equal(o.m8_fault(oh),1,'arithmetic fault must be durable and inspectable');
 assert.throws(()=>o.m8_resume(oh,1),WebAssembly.RuntimeError,'trapped frame must not resume');
+assert.throws(()=>o.m8_result(oh),WebAssembly.RuntimeError,'faulted result must not leak');
+assert.throws(()=>o.m8_pc(oh),WebAssembly.RuntimeError,'faulted PC must not report suspended');
+assert.throws(()=>o.m8_new(0n),WebAssembly.RuntimeError,'faulted actor cannot admit a new frame');
+o.m8_close(oh);
+assert.throws(()=>o.m8_fault(oh),WebAssembly.RuntimeError,'closed frame must not reveal old fault');
+assert.throws(()=>o.m8_resume(oh,1),WebAssembly.RuntimeError,'old fault incarnation cannot resume');
+const recovered=o.m8_new(1n); // loop skipped: original source has initial index=1
+assert.ok(recovered>oh,'actor incarnation must increase after fault cleanup');
+assert.equal(o.m8_fault(recovered),0,'old failure code leaked into new incarnation');
+assert.equal(o.m8_resume(recovered,1),0);
+assert.equal(o.m8_result(recovered),9223372036854775807n);
+o.m8_close(recovered);
 console.log('M8_WASM_I64_OVERFLOW_FAILS_CLOSED=PASS');
+console.log('M8_WASM_FAULT_INSPECT_CLOSE_REINCARNATE=PASS');
 for (const bad of [
   source.replace('rt cooperate;','rt borrow total; rt cooperate;'),
   source.replace('rt cooperate;','critical-write total; rt cooperate;'),
@@ -110,4 +126,26 @@ for (const bad of [
   assert.ok(outcome.err?.includes('E_UNSUPPORTED'), 'unsafe extension compiled');
 }
 console.log('M8_WASM_UNSUPPORTED_EFFECTS_REJECTED=PASS');
+// The maximum legal reduction slice must be honored. Exactly 65,536
+// committed iterations must precede the next YIELD, without early replay.
+const c=new WebAssembly.Instance(wasm).exports;
+const ch=c.m8_new(65537n);
+assert.equal(c.m8_resume(ch,65536),1);
+assert.equal(c.m8_index(ch),65536n,'maximal legal slice miscounted reductions');
+assert.equal(c.m8_pc(ch),1);
+assert.equal(c.m8_resume(ch,1),0);
+assert.equal(c.m8_index(ch),65537n);
+assert.equal(c.m8_result(ch),(65537n*65536n)/2n);
+c.m8_close(ch);
+// STOP-like host cancellation of a suspended frame must invalidate handle,
+// without running any remaining statement.
+const cancel=new WebAssembly.Instance(wasm).exports;
+const cancelHandle=cancel.m8_new(100000n);
+assert.equal(cancel.m8_resume(cancelHandle,1),1);
+assert.equal(cancel.m8_index(cancelHandle),1n);
+cancel.m8_close(cancelHandle);
+assert.throws(()=>cancel.m8_resume(cancelHandle,1),WebAssembly.RuntimeError);
+assert.throws(()=>cancel.m8_close(cancelHandle),WebAssembly.RuntimeError);
+assert.equal(cancel.m8_fault(cancel.m8_new(0n)),0);
+console.log('M8_WASM_MAX_BUDGET_AND_SUSPENDED_CLOSE=PASS');
 console.log('M8_SCOPE=ONE_FRAME_PER_WASM_INSTANCE_NOT_FULL_ACTOR_MAILBOX_SELECT_OR_HARD_RT');
