@@ -17,6 +17,9 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+pub mod lambda_types;
+mod direct_lambda;
+pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
@@ -413,7 +416,7 @@ impl Globals<'_> {
             Type::Class(i) => self.classes[i as usize].name.clone(),
             Type::Enum(i) => self.enums[i as usize].name.clone(),
             Type::ActorRef(i) => format!("ActorRef<{}>", self.actors[i as usize].name),
-            Type::Named(i) | Type::NamedRef(i) => self.type_names[i as usize].0.clone(),
+            Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
             t => t.name().to_string(),
         }
     }
@@ -443,6 +446,19 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
             } else {
                 return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'")));
             }
+        }
+        Type::Callable(_) => {
+            // Type recognition and structural signature validation are
+            // available now, but the browser backend has no callable value
+            // storage or verified indirect-call ABI. Stop before emitting.
+            let signature = callable_ir::CallableSignature::from_source_type(
+                t, type_names, Pos { line: 1, col: 1 })?;
+            return Err(Diagnostic::new(
+                type_names[match t { Type::Callable(i) => i as usize, _ => unreachable!() }].1,
+                "E_UNSUPPORTED",
+                format!("callable value type {} is parsed and checked but requires validated Wasm indirect dispatch",
+                    signature.source_spelling()),
+            ));
         }
         Type::NamedRef(i) => {
             let (n, pos) = &type_names[i as usize];
@@ -642,6 +658,11 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    let lowered = direct_lambda::lower(p)?;
+    check_lowered(&lowered)
+}
+
+fn check_lowered(p: &Program) -> R<TProgram> {
     // Validate the bounded CFG and integer-only suspension/lifetime profile
     // before registering signatures. Reject unsupported generator effects
     // before emission; never substitute eager iterator materialization.
@@ -1255,7 +1276,7 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
         Type::Class(i) => classes[i as usize].clone(),
         Type::Enum(i) => enums[i as usize].name.clone(),
         Type::ActorRef(i) => format!("ActorRef<{}>", actors[i as usize]),
-        Type::Named(i) | Type::NamedRef(i) => tn[i as usize].0.clone(),
+        Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => tn[i as usize].0.clone(),
         t => t.name().to_string(),
     }
 }
@@ -2648,6 +2669,10 @@ impl<'a> FnCx<'a> {
             }
             ExprKind::Member(base, name) => self.member(base, name, pos)?,
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
+            ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "array literals are parsed but not yet lowered to browser Wasm")),
+            ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented")),
         })
     }
 
@@ -3276,4 +3301,52 @@ impl<'a> FnCx<'a> {
             ty: Type::Void,
         })
     }
+}
+
+
+/// Check proposed nominal actor interfaces *inside the production AST*.
+/// This does not typecheck the concrete method bodies or enable codegen.
+/// It prevents duplicate or incompatible in-actor/out-of-line declarations.
+pub fn check_target_actor_interface(program: &Program) -> R<()> {
+    let Some(interface) = &program.actor_interface else { return Ok(()); };
+    for (i, name) in interface.forwards.iter().enumerate() {
+        if interface.forwards[..i].contains(name) {
+            return Err(Diagnostic::new(Pos::default(), "E_DUPLICATE",
+                format!("duplicate forward actor '{name}'")));
+        }
+    }
+    for (i, actor) in program.actors.iter().enumerate() {
+        if !interface.forwards.contains(&actor.name) {
+            return Err(Diagnostic::new(actor.pos, "E_UNBOUND",
+                format!("actor definition '{}' has no matching declaration", actor.name)));
+        }
+        if program.actors[..i].iter().any(|a| a.name == actor.name) {
+            return Err(Diagnostic::new(actor.pos, "E_DUPLICATE",
+                format!("duplicate concrete actor '{}'", actor.name)));
+        }
+        let owner = interface.forwards.iter().position(|n| n == &actor.name)
+            .expect("validated actor declaration");
+        for method in interface.methods.iter().filter(|m| m.owner as usize == owner) {
+            if method.name == "receive" {
+                return Err(Diagnostic::new(method.pos, "E_SIGNATURE",
+                    "receive is a sealed actor lifecycle handler"));
+            }
+            if actor.fields.iter().any(|f| f.name == method.name) {
+                return Err(Diagnostic::new(method.pos, "E_DUPLICATE",
+                    format!("receiver '{}.{}' collides with actor state", actor.name, method.name)));
+            }
+            for inside in &actor.methods {
+                if inside.name == method.name && inside.params.len() == method.params.len() {
+                    let equal = inside.ret == method.ret &&
+                        inside.public == method.public &&
+                        inside.params.iter().zip(&method.params).all(|(a,b)| a.ty == b.ty);
+                    return Err(Diagnostic::new(method.pos,
+                        if equal { "E_DUPLICATE" } else { "E_SIGNATURE" },
+                        format!("receiver '{}.{}' collides with in-actor method",
+                            actor.name, method.name)));
+                }
+            }
+        }
+    }
+    Ok(())
 }
