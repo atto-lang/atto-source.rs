@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+define class Base as
+  constructor(int value) {}
+end
+define class Sub extends Base as end
+pub fnc main(): int { return 0; }
