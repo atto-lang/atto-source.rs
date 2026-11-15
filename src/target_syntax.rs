@@ -106,22 +106,73 @@ impl Cursor<'_> {
             }
         }
     }
-    fn body(&mut self) -> R<()> {
-        self.expect(&Tok::LBrace, "expected '{' for a method body")?;
-        let mut depth = 1u32;
-        while depth != 0 {
-            match self.tok() {
-                Tok::Eof => return Err(self.err("E_EOF", "unclosed method body")),
-                Tok::LBrace => {
-                    depth += 1;
-                    if depth > 128 { return Err(self.err("E_NESTING", "body nesting limit")); }
+    fn body(&mut self, arrow_type: bool, colon_type: bool) -> R<()> {
+        // Target-only receiver bodies are delimiter scans, not executable Wasm.
+        if colon_type && self.take(&Tok::Arrow) && *self.tok() != Tok::LBrace {
+            return Err(self.err("E_SYNTAX", "': Type ->' requires a braced body"));
+        }
+        if self.take(&Tok::LBrace) {
+            let mut depth = 1u32;
+            while depth != 0 {
+                match self.tok() {
+                    Tok::Eof => return Err(self.err("E_EOF", "unclosed method body")),
+                    Tok::LBrace => {
+                        depth += 1;
+                        if depth > 128 { return Err(self.err("E_NESTING", "body nesting limit")); }
+                    }
+                    Tok::RBrace => depth -= 1,
+                    _ => {}
                 }
-                Tok::RBrace => depth -= 1,
+                self.next();
+            }
+            return Ok(());
+        }
+        if !arrow_type {
+            return Err(self.err("E_SYNTAX", "expected '{' for a method body"));
+        }
+        if self.take(&Tok::ColonColon) && *self.tok() == Tok::LBrace {
+            return Err(self.err("E_SYNTAX", "'::' requires a comma/end body, not '{'"));
+        }
+        if *self.tok() == Tok::Arrow {
+            return Err(self.err("E_SYNTAX", "a second '->' is not a body delimiter"));
+        }
+        let (mut braces, mut conditionals, mut items) = (0u32, 0u32, 0usize);
+        loop {
+            match self.tok() {
+                Tok::Eof => return Err(self.err("E_EOF", "unclosed Erlang-style method body")),
+                Tok::Ident(s) if s == "end" && braces == 0 => {
+                    if items == 0 { return Err(self.err("E_SYNTAX", "empty Erlang-style method body")); }
+                    self.next();
+                    return Ok(());
+                }
+                Tok::Ident(s) if braces == 0 && matches!(s.as_str(), "match" | "select" | "switch") =>
+                    return Err(self.err("E_UNSUPPORTED",
+                        "nested end-delimited match/select/switch requires a recursive method parser")),
+                Tok::Ident(s) if braces == 0 && s == "if" => conditionals += 1,
+                Tok::Ident(s) if braces == 0 && s == "fi" => {
+                    if conditionals == 0 { return Err(self.err("E_SYNTAX", "unmatched fi")); }
+                    conditionals -= 1;
+                }
+                Tok::LBrace => {
+                    braces += 1;
+                    if braces > 128 { return Err(self.err("E_NESTING", "body nesting limit")); }
+                }
+                Tok::RBrace => {
+                    if braces == 0 { return Err(self.err("E_SYNTAX", "unmatched '}'")); }
+                    braces -= 1;
+                }
+                Tok::Semi if braces == 0 && conditionals == 0 =>
+                    return Err(self.err("E_SYNTAX", "Erlang-style items require commas, not semicolons")),
+                Tok::Comma if braces == 0 && conditionals == 0 => {
+                    if matches!(self.toks.get(self.i + 1).map(|x| &x.tok), Some(Tok::Ident(s)) if s == "end") {
+                        return Err(self.err("E_SYNTAX", "trailing comma in Erlang-style body"));
+                    }
+                }
                 _ => {}
             }
+            items += 1;
             self.next();
         }
-        Ok(())
     }
     fn receiver(&mut self, pos: Pos, public: bool) -> R<(ReceiverHeader, usize, usize)> {
         self.expect(&Tok::LParen, "expected '(' before receiver")?;
@@ -147,13 +198,15 @@ impl Cursor<'_> {
         let name = self.ident()?;
         let params = self.params()?;
         let arity = params.len();
+        let arrow_type = *self.tok() == Tok::Arrow;
+        let colon_type = *self.tok() == Tok::Colon;
         let return_type = if self.take(&Tok::Colon) || self.take(&Tok::Arrow) {
             self.type_name()?
         } else {
             "void".to_owned()
         };
         let start = self.i;
-        self.body()?;
+        self.body(arrow_type, colon_type)?;
         let end = self.i;
         Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end))
     }
@@ -201,9 +254,11 @@ impl Cursor<'_> {
     fn function(&mut self) -> R<(usize, usize)> {
         self.ident()?;
         self.params()?;
+        let arrow_type = *self.tok() == Tok::Arrow;
+        let colon_type = *self.tok() == Tok::Colon;
         if self.take(&Tok::Colon) || self.take(&Tok::Arrow) { self.type_name()?; }
         let start = self.i;
-        self.body()?;
+        self.body(arrow_type, colon_type)?;
         Ok((start, self.i))
     }
 }
@@ -272,7 +327,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 }
                 spans.push((out.receivers.len(), start, end));
                 out.receivers.push(method);
-            } else if c.take_word("fnc") {
+            } else if c.take_word("fnc") || c.take_word("routine") {
                 function_spans.push(c.function()?);
             } else {
                 return Err(c.err("E_SYNTAX",
@@ -452,7 +507,11 @@ fn validate_receiver_body(
     start: usize, end: usize,
 ) -> R<()> {
     let receiver = &symbols.receivers[which];
-    let mut i = start + 1;
+    // Bare -> Type bodies start with a statement rather than a delimiter;
+    // do not skip the first token and bypass sealed-state validation.
+    let mut i = if at(toks, start, &Tok::LBrace) || at(toks, start, &Tok::ColonColon) {
+        start + 1
+    } else { start };
     while i < end.saturating_sub(1) {
         if word_at(toks, i, "handle_state") &&
             !(i >= 2 && word_at(toks, i-2, "self") && at(toks, i-1, &Tok::Dot)) {
@@ -489,7 +548,10 @@ fn validate_spawned_actor_calls(
     // Narrow, lexical analysis of direct 'val ref = spawn Actor()' bindings.
     // A later typed checker must handle aliases, parameters and dataflow.
     let mut actor_refs: Vec<(&str, &str)> = Vec::new();
-    for i in start+1..end.saturating_sub(1) {
+    let first = if at(toks, start, &Tok::LBrace) || at(toks, start, &Tok::ColonColon) {
+        start + 1
+    } else { start };
+    for i in first..end.saturating_sub(1) {
         if (word_at(toks, i, "val") || word_at(toks, i, "let")) &&
             matches!(toks.get(i+1).map(|t| &t.tok), Some(Tok::Ident(_))) &&
             at(toks, i+2, &Tok::Assign) && word_at(toks, i+3, "spawn") {
@@ -502,7 +564,7 @@ fn validate_spawned_actor_calls(
             }
         }
     }
-    for i in start+1..end.saturating_sub(1) {
+    for i in first..end.saturating_sub(1) {
         if let Some((name, _)) = actor_refs.iter().find(|(n,_)| word_at(toks, i, n)) {
             if at(toks, i+1, &Tok::Dot) &&
                 matches!(toks.get(i+2).map(|t| &t.tok), Some(Tok::Ident(_))) {
