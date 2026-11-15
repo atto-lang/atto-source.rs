@@ -205,6 +205,9 @@ pub struct Parser {
     type_names: Vec<(String, Pos)>,
     /// Scope of an explicit generator function body.
     in_generator: bool,
+    /// Only the outer Erlang-style callable sequence accepts commas as
+    /// statement terminators. Nested C blocks keep their own grammar.
+    erlang_body: bool,
 }
 
 struct TypeFirstField {
@@ -238,6 +241,7 @@ impl Parser {
             cond: 0,
             type_names: Vec::new(),
             in_generator: false,
+            erlang_body: false,
         }
     }
 
@@ -859,11 +863,10 @@ impl Parser {
         if *self.peek() == Tok::LParen {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
+        let arrow_type = *self.peek() == Tok::Arrow;
+        let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
-        if *self.peek() != Tok::LBrace {
-            return Err(unsupported(self.pos(), "methods without a body"));
-        }
-        let body = self.parse_block()?;
+        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
         Ok(Method {
             name,
             pos,
@@ -1005,13 +1008,15 @@ impl Parser {
         }
         self.expect(Tok::LParen, "'('")?;
         let params = self.parse_params()?;
+        let arrow_type = *self.peek() == Tok::Arrow;
+        let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
         if is_generator && ret != Type::GeneratorInt {
             return Err(Diagnostic::new(pos, "E_TYPE",
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
         }
         self.in_generator = is_generator;
-        let body = self.parse_block()?;
+        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
         self.in_generator = false;
         let _ = start;
         Ok(Func {
@@ -1055,41 +1060,125 @@ impl Parser {
 
     // ----------------------------------------------------------- statements
 
+    /// C-style braces remain the default. The extra -> after : Type is an
+    /// explicit body marker; a -> Type header also admits comma/end bodies.
+    fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type) -> R<Vec<Stmt>> {
+        if arrow_type {
+            if *self.peek() == Tok::LBrace {
+                return self.parse_block();
+            }
+            self.eat(&Tok::ColonColon);
+            return self.parse_erlang_body(ret);
+        }
+        if colon_type && self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "a ': Type ->' callable body must open with '{'"));
+        }
+        self.parse_block()
+    }
+
+    /// In an Erlang-style sequence the last expression is an implicit return
+    /// for a value-typed callable. All earlier items require commas; the
+    /// nested statement grammar is kept independent by parse_block/until.
+    fn parse_erlang_body(&mut self, ret: Type) -> R<Vec<Stmt>> {
+        if self.in_generator {
+            return Err(unsupported(self.pos(), "Erlang-style generator bodies"));
+        }
+        self.enter()?;
+        let previous = self.erlang_body;
+        self.erlang_body = true;
+        let parsed = (|| -> R<Vec<Stmt>> {
+            let mut out: Vec<Stmt> = Vec::new();
+            while !self.is_word("end") {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected("'end'"));
+                }
+                if *self.peek() == Tok::Comma {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "empty item in Erlang-style callable body"));
+                }
+                let start = self.i;
+                let stmt = self.parse_stmt()?;
+                if self.i == start {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "callable body did not consume a statement"));
+                }
+                // Ordinary statements consume the comma in terminator().
+                // Compound statements like if/fi leave the comma for us.
+                let consumed_comma = self.i > 0 && self.toks[self.i - 1].tok == Tok::Comma;
+                if !consumed_comma && !self.is_word("end") {
+                    self.expect(Tok::Comma, "',' between Erlang-style body items")?;
+                }
+                if self.is_word("end") &&
+                    (consumed_comma || (self.i > 0 && self.toks[self.i - 1].tok == Tok::Comma)) {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "trailing comma in Erlang-style callable body"));
+                }
+                out.push(stmt);
+            }
+            self.expect_word("end")?;
+            if ret != Type::Void {
+                if let Some(last) = out.last_mut() {
+                    if let Stmt::Expr(expr) = last {
+                        let pos = expr.pos;
+                        *last = Stmt::Return(Some(expr.clone()), pos);
+                    }
+                }
+            }
+            Ok(out)
+        })();
+        self.erlang_body = previous;
+        self.leave();
+        parsed
+    }
+
     fn parse_block(&mut self) -> R<Vec<Stmt>> {
         self.expect(Tok::LBrace, "'{'")?;
         self.enter()?;
-        let mut out = Vec::new();
-        while *self.peek() != Tok::RBrace {
-            if *self.peek() == Tok::Eof {
-                return Err(self.expected("'}'"));
+        let previous = self.erlang_body;
+        self.erlang_body = false;
+        let parsed = (|| -> R<Vec<Stmt>> {
+            let mut out = Vec::new();
+            while *self.peek() != Tok::RBrace {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected("'}'"));
+                }
+                out.push(self.parse_stmt()?);
             }
-            out.push(self.parse_stmt()?);
-        }
-        self.advance();
+            self.advance();
+            Ok(out)
+        })();
+        self.erlang_body = previous;
         self.leave();
-        Ok(out)
+        parsed
     }
 
     fn parse_stmts_until(&mut self, stops: &[&str]) -> R<Vec<Stmt>> {
         self.enter()?;
-        let mut out = Vec::new();
-        loop {
-            if let Some(w) = self.word_at(0) {
-                if stops.contains(&w) {
-                    break;
+        let previous = self.erlang_body;
+        self.erlang_body = false;
+        let parsed = (|| -> R<Vec<Stmt>> {
+            let mut out = Vec::new();
+            loop {
+                if let Some(w) = self.word_at(0) {
+                    if stops.contains(&w) {
+                        break;
+                    }
                 }
+                if *self.peek() == Tok::Eof {
+                    let want: Vec<String> = stops.iter().map(|s| format!("'{s}'")).collect();
+                    return Err(self.expected(&want.join(" or ")));
+                }
+                if *self.peek() == Tok::RBrace {
+                    return Err(self.expected(&format!("'{}'", stops.last().unwrap())));
+                }
+                out.push(self.parse_stmt()?);
             }
-            if *self.peek() == Tok::Eof {
-                let want: Vec<String> = stops.iter().map(|s| format!("'{s}'")).collect();
-                return Err(self.expected(&want.join(" or ")));
-            }
-            if *self.peek() == Tok::RBrace {
-                return Err(self.expected(&format!("'{}'", stops.last().unwrap())));
-            }
-            out.push(self.parse_stmt()?);
-        }
+            Ok(out)
+        })();
+        self.erlang_body = previous;
         self.leave();
-        Ok(out)
+        parsed
     }
 
     fn parse_loop_body(&mut self) -> R<Vec<Stmt>> {
@@ -1108,6 +1197,13 @@ impl Parser {
     /// boundary (`}` `fi` `end` `else` `elseif` `done` or end of input), or an
     /// implicit newline terminator (the next token starts on a later line).
     fn terminator(&mut self) -> R<()> {
+        if self.erlang_body {
+            if self.eat(&Tok::Comma) || self.is_word("end") {
+                return Ok(());
+            }
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "Erlang-style callable body items require ',' or 'end', not ';' or newline"));
+        }
         if self.eat(&Tok::Semi) {
             return Ok(());
         }
@@ -1185,7 +1281,7 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
-                let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)
+                let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
                 let value = if at_end { None } else { Some(self.parse_expr()?) };
                 if self.in_generator && value.is_some() {
