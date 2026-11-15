@@ -169,3 +169,45 @@ annotated `fnc(int)->bool` lambda returning an integer produces
 `E_TYPE`, while referring to an outer variable produces `E_CAPTURE`.
 A correctly typed annotation still cannot execute or escape without the
 indirect-table ABI.
+
+## Playground direct-lambda / functor compatibility profile (candidate)
+
+The browser-oriented `closure-lambda-functor-direct-profile.atto` guest
+fixture composes three **independently compiled direct** paths: a capture-free
+scalar lambda, one expression-bodied lambda capturing an immutable scalar
+parameter, and an ordinary class with an explicit `.call(int)` method. It
+returns 42 if all three behave correctly. `tests/closures-wasm.mjs` must
+compile that same source via both the native Rust compiler and the actual
+`wasm32-unknown-unknown` compiler, compare guest module bytes, and execute
+the generated guest to observe `main() == 42`. The fixture is not a claim
+that callable objects are generally executable.
+
+A lifted captured name must retain **definition-site lexical identity**.
+Until the compiler has an owned closure environment, nested bindings,
+for-in binders, and match-arm binders that shadow a lifted capture are
+rejected with `E_CAPTURE`, rather than silently redirecting the read to
+the inner binding. The corresponding negative source fixture is
+`lambda-direct-capture-shadow.atto`. Mutable captures and escaping factory
+closures are separate negative tests.
+
+Reference comparisons:
+
+- `oreslang-source.java/examples/callables.ores` demonstrates lexical
+  closure capture versus explicit `nlex` noncapturing lambdas; its
+  `OwnershipAndClosureTest` also exercises escaping mutable captures.
+- `oreslang-source.llvm` currently contains scalar frontend/IR and
+  experimental functor type and runtime components, not a proven
+  native guest implementation of the full escaping closure/functor ABI.
+- In AttoLang, the canonical authored lambda return annotation uses
+  `|n| : int -> ...`. `fnc(int) -> int` names a callable **source type**
+  but does not automatically authorize indirect Wasm calls.
+
+The website's broader **Closures, functors and lambdas** preview also uses
+`make_adder(...) -> fnc(int) -> int` and a higher-order
+`apply_twice(callback, ...)`. These require first-class callable values,
+owned closure environments, a verified typed indirect-call/table contract,
+and native/wasm32/browsers guest execution receipts. **Do not enable the
+preview's Run/Format actions or promote compiler bytes based only on this
+bounded direct-call fixture.** The currently pinned public compiler predates
+this branch and must be separately rebuilt, independently reviewed, and
+released through the protected Pages gate.
