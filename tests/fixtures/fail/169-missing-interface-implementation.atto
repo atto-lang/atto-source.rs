@@ -1,0 +1,4 @@
+// expect-error: E_INTERFACE
+define interface Named as name(): string; end
+define class Missing implements Named as end
+pub fnc main(): int { return 0; }
