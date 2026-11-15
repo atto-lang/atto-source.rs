@@ -78,6 +78,7 @@ const RESERVED: &[&str] = &[
     "continue",
     "switch",
     "match",
+    "maybe",
     "matches",
     "over",
     "default",
@@ -121,6 +122,7 @@ const RESERVED: &[&str] = &[
 /// Statement-leading keywords that name real AttoLang features this compiler
 /// does not lower yet. They are rejected, never approximated.
 const UNSUPPORTED_STMT: &[&str] = &[
+    "maybe",
     "switch",
     "try",
     "select",
@@ -2293,7 +2295,7 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "await" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
