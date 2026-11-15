@@ -39,7 +39,10 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const passes = [
   'lambda-direct-capture-val',
   'lambda-direct-capture-param',
-  'closure-lambda-functor-direct-profile'
+  'closure-lambda-functor-direct-profile',
+  'closure-escape-independent-factories',
+  'closure-escape-two-captures',
+  'closure-escape-reuse-instance'
 ];
 for (const name of passes) {
   const path = 'tests/fixtures/pass/' + name + '.atto';
@@ -56,7 +59,17 @@ for (const name of passes) {
 for (const [name, code] of [
   ['lambda-direct-capture-mutable', 'E_CAPTURE'],
   ['lambda-direct-capture-shadow', 'E_CAPTURE'],
-  ['lambda-direct-capture-escape', 'E_UNSUPPORTED']
+  ['lambda-direct-capture-escape', 'E_UNSUPPORTED'],
+  ['closure-escape-mutable-param', 'E_CAPTURE'],
+  ['closure-escape-unknown-capture', 'E_CAPTURE'],
+  ['closure-escape-indirect-parameter', 'E_UNSUPPORTED'],
+  ['callable-thin-type-arrow', 'E_SYNTAX'],
+  ['closure-escape-two-factories', 'E_UNSUPPORTED'],
+  ['closure-escape-forged-reserved-class', 'E_TOKEN'],
+  ['closure-escape-field-private', 'E_PRIVATE'],
+  ['closure-escape-arg-type', 'E_TYPE'],
+  ['closure-escape-use-after-move', 'E_MOVED'],
+  ['closure-escape-callable-shadow', 'E_CAPTURE']
 ]) {
   const source = readFileSync('tests/fixtures/fail/' + name + '.atto', 'utf8');
   const got = compile(source);
@@ -67,4 +80,4 @@ for (const [name, code] of [
   const recovered = compile('pub fnc main(): int {return 42;}');
   assert.equal(recovered.ok, true, name + ': compiler state recovery');
 }
-console.log('PASS restricted closure/lambda/functor Rust & wasm32 compilation and fail-closed boundary');
+console.log('PASS bounded factory-escaped closure and direct callable guest native/wasm parity; unsupported profiles fail closed');

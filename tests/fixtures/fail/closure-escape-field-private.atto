@@ -1,0 +1,9 @@
+// expect-error: E_PRIVATE
+// Source may not reach into a generated environment.
+fnc make_adder(int offset): fnc(int) => int {
+  return |n| : int -> n + offset;
+}
+pub fnc main(): int {
+  val add_one = make_adder(1);
+  return add_one.offset;
+}

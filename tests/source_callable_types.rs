@@ -111,10 +111,12 @@ fn callable_fat_arrow_is_required_in_parameter_return_and_local_type_positions()
 }
 
 #[test]
-fn canonical_callable_type_with_typed_lambda_is_checked_before_emission() {
+fn canonical_callable_type_factory_compiles_bounded_owned_environment() {
     let source = "fnc make_adder(int offset): fnc(int) => int { return |n| : int -> n + offset; } pub fnc main(): int { return 0; }";
-    let diagnostic = atto_compiler::compile(source).expect_err("first-class callable still gated");
-    assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{diagnostic}");
+    // This bounded factory escape is now compiled to a private, owned class;
+    // general first-class callable parameters remain gated separately.
+    let guest = atto_compiler::compile(source).expect("bounded owned closure factory");
+    assert!(guest.starts_with(b"\0asm"));
 }
 
 #[test]

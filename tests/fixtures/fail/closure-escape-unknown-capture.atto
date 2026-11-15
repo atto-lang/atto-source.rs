@@ -1,0 +1,5 @@
+// expect-error: E_CAPTURE
+fnc make_bad(int offset): fnc(int) => int {
+  return |n| : int -> n + unknown;
+}
+pub fnc main(): int { return 0; }

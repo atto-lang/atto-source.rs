@@ -77,6 +77,32 @@ try{
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
+  // Exercise the *new* factory escape in real Chromium and the actual
+  // browser-wasm32 compiler, not just Node or a source-text evaluator.
+  const escapedClosure = [
+    'fnc make_adder(int offset): fnc(int) => int {',
+    '  return |n| : int -> n + offset;',
+    '}',
+    'pub fnc main(): int {',
+    '  val add_one = make_adder(1);',
+    '  val add_ten = make_adder(10);',
+    '  return add_one(21) + add_ten(10);',
+    '}'
+  ].join('\n');
+  assert.match(await run(escapedClosure, 'main() -> 42'), /42$/);
+  console.log('PASS browser: two independent factory-escaped closure environments return 42');
+
+  // This milestone must not accidentally admit general callable parameters.
+  const unsupportedIndirect = [
+    'fnc make_adder(int offset): fnc(int) => int {',
+    '  return |n| : int -> n + offset;',
+    '}',
+    'fnc apply(fnc(int) => int operation, int n): int { return operation(n); }',
+    'pub fnc main(): int { return 0; }'
+  ].join('\n');
+  assert.match(await run(unsupportedIndirect, 'E_UNSUPPORTED'), /E_UNSUPPORTED/);
+  console.log('PASS browser: general first-class callable arguments fail closed');
+
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
   console.log('PASS browser: val reassignment fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 8; }','main() -> 48'),/48/);
