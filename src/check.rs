@@ -17,6 +17,7 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod inheritance;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
@@ -649,7 +650,8 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
-    let lowered = direct_lambda::lower(p)?;
+    let inherited = inheritance::lower(p)?;
+    let lowered = direct_lambda::lower(&inherited)?;
     check_lowered(&lowered)
 }
 
