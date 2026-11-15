@@ -59,6 +59,9 @@ impl Cursor<'_> {
         if minus { self.idx += 1; }
         let at = self.pos();
         match self.take()? {
+            // The canonical lexer intentionally encodes exactly 2^63 as None;
+            // it is legal only with unary minus (i64::MIN).
+            Tok::Int(None) if minus => Ok(i64::MIN),
             Tok::Int(Some(n)) => {
                 if minus && n == (i64::MAX as u64) + 1 { return Ok(i64::MIN); }
                 let v = i64::try_from(n).map_err(|_| bad(at, "i64 literal overflow"))?;
