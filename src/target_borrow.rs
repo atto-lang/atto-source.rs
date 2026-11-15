@@ -92,8 +92,12 @@ impl Reader<'_> {
                         format!("use of moved actor-owned value '{name}'")));
                 }
                 if state.loans.contains_key(name) {
-                    return Err(Diagnostic::new(t.pos, "E_BORROW",
+                    return Err(Diagnostic::new(t.pos, "E_ESCAPE",
                         "borrowed alias may not escape into an unproved expression"));
+                }
+                if state.loans.values().any(|loan| loan.exclusive && loan.source == *name) {
+                    return Err(Diagnostic::new(t.pos, "E_BORROW",
+                        "exclusive actor-owned loan prevents direct source access"));
                 }
             }
         }
@@ -284,7 +288,9 @@ impl Reader<'_> {
             if let (Some(Token{tok:Tok::Ident(source),pos}),
                 Some(Token{tok:Tok::Semi,..}))=
                 (self.toks.get(start+2),self.toks.get(start+3)) {
-                self.take(state,source,*pos)?;
+                let name=source.clone();
+                let location=*pos;
+                self.take(state,&name,location)?;
                 self.i=start+4;
                 return Ok(Flow {falls_through:true,complete:true});
             }
