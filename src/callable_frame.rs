@@ -2,7 +2,7 @@
 //! reference model. This is NOT guest-Wasm closure lowering. The ordinary
 //! compiler still rejects escaped callable values and call_indirect.
 //!
-//! The handle is a private per-instance (generation, one-based slot) pair.
+//! The handle is a private (owner domain, generation, one-based slot) triple.
 //! An owner ID is checked against the arena on every operation; a raw integer
 //! cannot be turned into an AttoLang callable by source code or host messages.
 //! A runtime implementing this contract must restrict access to checked
@@ -48,9 +48,9 @@ impl ScalarCapture {
 
 /// Opaque compiler/runtime capability, NOT a user-constructible integer cast.
 #[derive(Debug, PartialEq, Eq)]
-pub struct CallableHandle(u64);
+pub struct CallableHandle(u128);
 impl CallableHandle {
-    pub fn bits(&self) -> u64 { self.0 }
+    pub fn bits(&self) -> u128 { self.0 }
 }
 
 /// Borrowed read of a validated live environment. The borrow cannot outlive
@@ -137,8 +137,9 @@ impl CallableArena {
         slot.captures[..captures.len()].copy_from_slice(captures);
         slot.capture_count = captures.len();
         slot.live = true;
-        let number = slot_idx as u64 + 1;
-        Ok(CallableHandle(((slot.generation as u64) << 32) | number))
+        let number = slot_idx as u128 + 1;
+        Ok(CallableHandle(((self.owner as u128) << 64)
+            | ((slot.generation as u128) << 32) | number))
     }
 
     fn check_owner(&self, caller_owner: u64) -> Result<(), CallableFault> {
@@ -149,8 +150,11 @@ impl CallableArena {
         }
     }
 
-    fn index(&self, bits: u64, caller_owner: u64) -> Result<usize, CallableFault> {
+    fn index(&self, bits: u128, caller_owner: u64) -> Result<usize, CallableFault> {
         self.check_owner(caller_owner)?;
+        if (bits >> 64) as u64 != self.owner {
+            return Err(CallableFault::InvalidOwner);
+        }
         let number = bits as u32;
         let generation = (bits >> 32) as u32;
         if number == 0 || generation == 0 || number as usize > self.slots.len() {
@@ -168,7 +172,7 @@ impl CallableArena {
     /// Guest-private ingress validation. No source-language numeric conversion
     /// or host serialization is permitted to call this as an authorization step.
     pub fn validate_bits<'a>(
-        &'a self, bits: u64, caller_owner: u64,
+        &'a self, bits: u128, caller_owner: u64,
         expected: &CallableSignature,
     ) -> Result<CallableView<'a>, CallableFault> {
         let slot = &self.slots[self.index(bits, caller_owner)?];
@@ -183,7 +187,7 @@ impl CallableArena {
 
     /// Close once. Scrub all captures before a slot can be recycled. A
     /// generation reaching u32::MAX is retired rather than wrapping to 1.
-    pub fn close(&mut self, bits: u64, caller_owner: u64) -> Result<(), CallableFault> {
+    pub fn close(&mut self, bits: u128, caller_owner: u64) -> Result<(), CallableFault> {
         let index = self.index(bits, caller_owner)?;
         let slot = &mut self.slots[index];
         slot.captures.fill(ScalarCapture::default());
@@ -214,7 +218,7 @@ mod tests {
         CallableSignature::scalar(vec![Type::Int], Type::Int,
             Pos { line: 1, col: 1 }).unwrap()
     }
-    fn invoke_add(arena: &CallableArena, handle: u64, owner: u64, n: i64) -> i64 {
+    fn invoke_add(arena: &CallableArena, handle: u128, owner: u64, n: i64) -> i64 {
         let checked = arena.validate_bits(handle, owner, &sig()).unwrap();
         assert_eq!(checked.function_index, 0);
         let ScalarCapture::Int(offset) = checked.captures[0] else {
@@ -251,8 +255,10 @@ mod tests {
         let old = first.bits();
         assert_eq!(arena.validate_bits(0, 7, &sig()).err(),
             Some(CallableFault::InvalidHandle));
-        assert_eq!(arena.validate_bits((1u64 << 32) | 200, 7, &sig()).err(),
+        assert_eq!(arena.validate_bits((7u128 << 64) | (1u128 << 32) | 200, 7, &sig()).err(),
             Some(CallableFault::InvalidHandle));
+        assert_eq!(arena.validate_bits(old + (1u128 << 32), 7, &sig()).err(),
+            Some(CallableFault::StaleHandle));
         arena.close(old, 7).unwrap();
         assert_eq!(arena.validate_bits(old, 7, &sig()).err(),
             Some(CallableFault::StaleHandle));
@@ -270,6 +276,11 @@ mod tests {
         assert_eq!(arena.validate_bits(h.bits(), 8, &sig()).err(),
             Some(CallableFault::InvalidOwner));
         assert_eq!(arena.close(h.bits(), 8), Err(CallableFault::InvalidOwner));
+        let mut other = CallableArena::new(8).unwrap();
+        let other_h = other.allocate(8, sig(), 0, &[ScalarCapture::Int(99)]).unwrap();
+        assert_eq!(h.bits() as u32, other_h.bits() as u32); // same slot, different domain
+        assert_eq!(other.validate_bits(h.bits(), 8, &sig()).err(),
+            Some(CallableFault::InvalidOwner));
         let different = CallableSignature::scalar(vec![Type::Bool], Type::Int,
             Pos { line: 1, col: 1 }).unwrap();
         assert_eq!(arena.validate_bits(h.bits(), 7, &different).err(),
@@ -301,7 +312,7 @@ mod tests {
         arena.slots[0].live = true;
         arena.slots[0].owner = 7;
         arena.slots[0].signature = Some(sig());
-        let last = ((u32::MAX as u64) << 32) | 1;
+        let last = (7u128 << 64) | ((u32::MAX as u128) << 32) | 1;
         arena.close(last, 7).unwrap();
         assert!(arena.slots[0].retired);
         assert!(arena.free.is_empty());
