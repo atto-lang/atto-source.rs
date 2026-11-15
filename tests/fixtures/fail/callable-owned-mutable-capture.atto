@@ -3,4 +3,4 @@ fnc make_adder(int offset): fnc(int) => int {
     let variable = offset;
     return |n| : int -> n + variable;
 }
-pub fnc main(): int { return make_adder(1)(41); }
+pub fnc main(): int { val adder = make_adder(1); return adder(41); }
