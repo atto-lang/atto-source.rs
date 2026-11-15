@@ -77,6 +77,15 @@ try{
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
+  // Exercise the exact lexically captured, pure-function sample from the
+  // public playground through Chromium's real Wasm compiler and guest workers.
+  const lexical = await readFile(new URL('./fixtures/pass/playground-lexical-scope-pure.atto', import.meta.url), 'utf8');
+  assert.equal(await run(lexical, 'main() -> 0'), '42\n42\n2\n42\nmain() -> 0');
+  console.log('PASS browser: lexical capture, scope shadowing and pure arithmetic (42/42/2/42)');
+  const impure = await readFile(new URL('./fixtures/fail/pure-transitive-call.atto', import.meta.url), 'utf8');
+  assert.match(await run(impure, 'E_PURE'), /E_PURE/);
+  console.log('PASS browser: transitive impurity is rejected by the compiler');
+
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
   console.log('PASS browser: val reassignment fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 8; }','main() -> 48'),/48/);
