@@ -7,6 +7,7 @@ use crate::diag::{Diagnostic, Pos};
 use crate::target_syntax::{ReceiverEffects, ReceiverHeader, ReceiverReturn, StateAssignment, StateUse, TargetHeaders};
 use crate::lexer::{Tok, Token};
 use crate::target_flow::{ReceiverFlow, analyze_receiver_body, check_receiver_arguments};
+use crate::target_borrow::{ReceiverBorrowFacts, check_receiver_borrows};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetType {
@@ -84,6 +85,9 @@ pub struct TypedActorModule {
     pub body_returns: Vec<TypedBodyReturn>,
     /// Structured flow facts; never an executable actor body proof.
     pub receiver_flows: Vec<ReceiverFlow>,
+    /// Conservative path-sensitive ownership and lexical loan facts.
+    /// These never license executable receiver lowering.
+    pub receiver_borrows: Vec<ReceiverBorrowFacts>,
 }
 
 fn type_error(pos: Pos, why: impl Into<String>) -> Diagnostic {
@@ -476,6 +480,7 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
         state_uses: Vec::with_capacity(headers.state_uses.len()),
         body_returns: Vec::with_capacity(headers.receiver_returns.len()),
         receiver_flows: Vec::with_capacity(headers.receiver_bodies.len()),
+        receiver_borrows: Vec::with_capacity(headers.receiver_bodies.len()),
     };
     for definition in &headers.definitions {
         if !headers.actors.contains(&definition.name) {
@@ -511,6 +516,7 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     }
     for body in &headers.receiver_bodies {
         module.receiver_flows.push(analyze_receiver_body(headers, &module, body)?);
+        module.receiver_borrows.push(check_receiver_borrows(&module, body)?);
     }
     // Bounded monotone fixed point: each effect bit can transition only from
     // false to true. Recursive calls are handled without unbounded DFS.
