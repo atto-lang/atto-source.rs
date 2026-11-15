@@ -189,6 +189,8 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             rewrite_expr(target, d)?;
             rewrite_expr(value, d)
         }
+        Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
+            "direct lambda rewriting cannot cross a protected state loan")),
         Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
             rewrite_expr(e, d),
         Stmt::Return(Some(e), _) => rewrite_expr(e, d),
@@ -302,7 +304,7 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
 fn stmt_pos(s: &Stmt) -> Pos {
     match s {
         Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } |
-        Stmt::FieldAssign { pos, .. } | Stmt::If { pos, .. } |
+        Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
         Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
