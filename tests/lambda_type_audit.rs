@@ -50,9 +50,9 @@ fn valid_mixed_branch_return_then_fallthrough() {
 
 #[test]
 fn nested_scope_and_local_shadowing_stay_lexical() {
-    assert_eq!(checked("|n| -> { val x = n; { val x = 2; } return x; }"),
+    assert_eq!(checked("|n| -> { val x = n; block { val x = 2; } return x; }"),
         Ok(Type::Int));
-    let d = checked("|n| -> { { val x = n; } return x; }").unwrap_err();
+    let d = checked("|n| -> { block { val x = n; } return x; }").unwrap_err();
     assert_eq!(d.code, "E_CAPTURE", "{d}");
 }
 
