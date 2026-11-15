@@ -8,12 +8,12 @@ define class Parcel as
 end
 pub fnc main(): int {
   let parcel = new Parcel();
-  {
+  block {
     val first = borrow!(parcel);
     val second = borrow!(parcel);
     stdio.println(first.value + second.value);
   }
-  {
+  block {
     val writer = borrow! mut(parcel);
     writer.value = 43;
   }
