@@ -14,7 +14,10 @@ struct Direct {
     hidden: String,
     lambda: Expr,
     params: Vec<String>,
+    variadic: bool,
     inferred: Option<Vec<Type>>,
+    /// One private Wasm function per concrete argument signature of a wildcard lambda.
+    variants: Vec<(Vec<Type>, String)>,
     calls: usize,
     expression_depth: usize,
     statement_depth: usize,
@@ -47,7 +50,7 @@ pub fn lower(input: &Program) -> R<Program> {
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
             if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
-                if let ExprKind::Lambda { params, .. } = &init.kind {
+                if let ExprKind::Lambda { params, variadic, .. } = &init.kind {
                     if direct.is_some() {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "at most one direct lambda per function is supported"));
@@ -95,7 +98,8 @@ pub fn lower(input: &Program) -> R<Program> {
                         source: name.clone(),
                         hidden,
                         lambda: init.clone(),
-                        params: params.clone(), inferred: None, calls: 0,
+                        params: params.clone(), variadic: *variadic,
+                        inferred: None, variants: Vec::new(), calls: 0,
                         expression_depth: 0, statement_depth: 0,
                     });
                     continue;
@@ -112,39 +116,52 @@ pub fn lower(input: &Program) -> R<Program> {
                 return Err(error(d.lambda.pos, "E_UNSUPPORTED",
                     "unused lambdas are not executable; first-class callables remain unsupported"));
             }
-            let types = d.inferred.ok_or_else(|| error(d.lambda.pos, "E_INFER",
-                "lambda parameter types need a direct invocation"))?;
-            let signature = CallableSignature::from_noncapturing(&d.lambda, Some(&types), None)?;
-            let callable = TypedCallable::checked(
-                signature,
-                CallableTarget::Direct {
-                    function_index: (input.funcs.len() + generated.len()) as u32,
-                },
-                d.lambda.pos,
-            )?;
-            callable.check_arguments(&types, d.lambda.pos)?;
-            let inner = match d.lambda.kind {
-                ExprKind::Lambda { body, .. } => body,
-                _ => unreachable!(),
+            let signatures = if d.variadic {
+                d.variants.clone()
+            } else {
+                vec![(d.inferred.ok_or_else(|| error(d.lambda.pos, "E_INFER",
+                    "lambda parameter types need a direct invocation"))?, d.hidden.clone())]
             };
-            let lambda_body = match inner {
-                LambdaBody::Expression(e) => {
-                    let p = e.pos;
-                    vec![Stmt::Return(Some(*e), p)]
-                }
-                LambdaBody::Statement(s) => vec![*s],
-                LambdaBody::Block(b) => b,
-            };
-            generated.push(Func {
-                name: d.hidden,
-                pos: d.lambda.pos,
-                is_generator: false,
-                params: d.params.into_iter().zip(types).map(|(name, ty)| Param {
-                    name, ty, mutable: false, pos: d.lambda.pos,
-                }).collect(),
-                ret: callable.signature().result,
-                body: lambda_body,
-            });
+            for (types, hidden) in signatures {
+                let signature = CallableSignature::from_noncapturing(&d.lambda, Some(&types), None)?;
+                let callable = TypedCallable::checked(
+                    signature,
+                    CallableTarget::Direct {
+                        function_index: (input.funcs.len() + generated.len()) as u32,
+                    },
+                    d.lambda.pos,
+                )?;
+                callable.check_arguments(&types, d.lambda.pos)?;
+                let inner = match &d.lambda.kind {
+                    ExprKind::Lambda { body, .. } => body.clone(),
+                    _ => unreachable!(),
+                };
+                let lambda_body = match inner {
+                    LambdaBody::Expression(e) => {
+                        let p = e.pos;
+                        vec![Stmt::Return(Some(*e), p)]
+                    }
+                    LambdaBody::Statement(s) => vec![*s],
+                    LambdaBody::Block(b) => b,
+                };
+                let param_names: Vec<String> = if d.variadic {
+                    (0..types.len()).map(|i| format!("$lambda_discard_{i}")).collect()
+                } else {
+                    d.params.iter().enumerate().map(|(i, name)| {
+                        if name == "_" { format!("$lambda_discard_{i}") } else { name.clone() }
+                    }).collect()
+                };
+                generated.push(Func {
+                    name: hidden,
+                    pos: d.lambda.pos,
+                    is_generator: false,
+                    params: param_names.into_iter().zip(types).map(|(name, ty)| Param {
+                        name, ty, mutable: false, pos: d.lambda.pos,
+                    }).collect(),
+                    ret: callable.signature().result,
+                    body: lambda_body,
+                });
+            }
         }
         f.body = body;
     }
@@ -256,18 +273,38 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         ExprKind::Call(name, args) => {
             for a in args.iter_mut() { rewrite_expr(a, d)?; }
             if *name == d.source {
-                if args.len() != d.params.len() {
-                    return Err(error(e.pos, "E_ARITY", format!(
-                        "lambda expects {} arguments, got {}",
-                        d.params.len(), args.len())));
-                }
-                if d.inferred.is_none() {
+                if d.variadic {
+                    if args.len() > crate::parser::MAX_PARAMS {
+                        return Err(error(e.pos, "E_SOURCE_LIMIT", "wildcard lambda call exceeds maximum arity"));
+                    }
                     let types = args.iter().map(literal_type).collect::<Option<Vec<_>>>()
                         .ok_or_else(|| error(e.pos, "E_INFER",
-                            "first direct call must have scalar literal arguments"))?;
-                    d.inferred = Some(types);
+                            "wildcard direct call needs scalar literal arguments or an expected callable signature"))?;
+                    let hidden = if let Some((_, hidden)) = d.variants.iter().find(|(t, _)| *t == types) {
+                        hidden.clone()
+                    } else {
+                        if d.variants.len() >= 64 {
+                            return Err(error(e.pos, "E_SOURCE_LIMIT", "too many wildcard lambda specializations"));
+                        }
+                        let hidden = format!("{}_sig_{}", d.hidden, d.variants.len());
+                        d.variants.push((types, hidden.clone()));
+                        hidden
+                    };
+                    *name = hidden;
+                } else {
+                    if args.len() != d.params.len() {
+                        return Err(error(e.pos, "E_ARITY", format!(
+                            "lambda expects {} arguments, got {}",
+                            d.params.len(), args.len())));
+                    }
+                    if d.inferred.is_none() {
+                        let types = args.iter().map(literal_type).collect::<Option<Vec<_>>>()
+                            .ok_or_else(|| error(e.pos, "E_INFER",
+                                "first direct call must have scalar literal arguments"))?;
+                        d.inferred = Some(types);
+                    }
+                    *name = d.hidden.clone();
                 }
-                *name = d.hidden.clone();
                 d.calls += 1;
             }
             Ok(())
