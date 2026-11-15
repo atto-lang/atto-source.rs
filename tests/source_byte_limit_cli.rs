@@ -42,7 +42,7 @@ fn exact_frontend_byte_limit_is_accepted_by_cli_and_native_emitter() {
     let source = dir.join("at-limit.ores");
     let object = dir.join("at-limit.o");
     let contents = source_with_exact_byte_count(MAX_SOURCE_BYTES);
-    assert_eq!(contents.as_bytes().len(), MAX_SOURCE_BYTES);
+    assert_eq!(contents.len(), MAX_SOURCE_BYTES);
     fs::write(&source, contents).expect("write exact-limit source");
 
     let check = run(&["--check", source.to_str().unwrap()]);
@@ -74,7 +74,7 @@ fn byte_over_limit_is_rejected_before_object_or_facts_publication() {
     let object = dir.join("unexpected.o");
     let facts = dir.join("unexpected.json");
     let contents = source_with_exact_byte_count(MAX_SOURCE_BYTES + 1);
-    assert_eq!(contents.as_bytes().len(), MAX_SOURCE_BYTES + 1);
+    assert_eq!(contents.len(), MAX_SOURCE_BYTES + 1);
     fs::write(&source, contents).expect("write over-limit source");
 
     let source_arg = source.to_str().unwrap();
