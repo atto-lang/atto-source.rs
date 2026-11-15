@@ -1635,6 +1635,10 @@ impl<'a> FnCx<'a> {
                         "for-in currently requires a fresh generator call"));
                 }
                 let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
+                // A generator may yield zero elements. Reassigning a moved
+                // outer scalar inside its body does not prove it was
+                // reinitialized on the zero-iteration exit path.
+                let at_entry = self.moved.clone();
                 self.scopes.push(Vec::new());
                 let checked = (|| {
                     let value_slot = self.declare(name, Type::Int, false, *pos)?;
@@ -1642,6 +1646,7 @@ impl<'a> FnCx<'a> {
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
                 })();
                 self.pop_scope();
+                self.moved.extend(at_entry);
                 checked?
             }
             Stmt::Return(v, pos) => match (v, self.ret) {
@@ -1698,7 +1703,11 @@ impl<'a> FnCx<'a> {
             }
             Stmt::While { cond, body, .. } => {
                 let c = self.repeated_cond(cond, "while")?;
+                let at_entry = self.moved.clone();
                 let body = self.looped(body)?;
+                // Zero iterations are possible: a body-local assignment
+                // must not make an already-moved owner appear initialized.
+                self.moved.extend(at_entry);
                 TStmt::Loop {
                     cond: Some(c),
                     body,
@@ -1706,7 +1715,10 @@ impl<'a> FnCx<'a> {
                 }
             }
             Stmt::Loop { body, .. } => {
+                let at_entry = self.moved.clone();
                 let body = self.looped(body)?;
+                // An early break/continue can skip a reassignment.
+                self.moved.extend(at_entry);
                 TStmt::Loop {
                     cond: None,
                     body,
@@ -1727,6 +1739,9 @@ impl<'a> FnCx<'a> {
                     // including after continue; they must not transfer
                     // locals allocated before the loop's repeated region.
                     let repeated_floor = self.nparams + self.locals.len() as u32;
+                    // The initializer definitely ran; the body/update may
+                    // run zero times. Preserve any moved owner at this join.
+                    let at_entry = self.moved.clone();
                     let c = match cond {
                         Some(c) => Some(self.repeated_cond(c, "for")?),
                         None => None,
@@ -1739,6 +1754,7 @@ impl<'a> FnCx<'a> {
                     };
                     self.loop_floors.pop();
                     let u = update_result?;
+                    self.moved.extend(at_entry);
                     out.push(TStmt::Loop {
                         cond: c,
                         body: b,

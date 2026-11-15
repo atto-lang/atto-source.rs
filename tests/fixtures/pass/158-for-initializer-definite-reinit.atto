@@ -1,0 +1,11 @@
+// expect-exit: 42
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val moved = take! parcel;
+  for (parcel = new Parcel(); false;) { }
+  return parcel.value;
+}
