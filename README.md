@@ -370,3 +370,9 @@ A narrow, typed `remote_actor(ActorType, slot)` expression yields an `ActorRef<A
 `tests/fixtures/browser/remote-actor-source-send.atto` defines a real `Sender` actor whose receive method calls `remote_actor(Counter, 1).send(mail.value)`. The application must explicitly grant and bind slot 1 using `BrowserTenantClient.grant_route()` and `bind_route()` before invoking the sender guest. `tests/fixtures/browser/remote-actor-receiver.atto` supplies an isolated receiver.
 
 This v1 integration **does not yet provide per-send `Result<T,E>`, guest suspension, guaranteed delivery after crash, dynamic route acquisition, or compiler-checked cross-worker `rt take`/`rt copy`**. The supervisor returns a batch-level completion acknowledgement only after the destination handler finishes each send; failures restart the source tenant. This is an intentional, limited bridge, not full remote actor semantics.
+
+### Typed host send receipts (not guest async yet)
+
+`browser_worker::SEND_RECEIPT_PROTOCOL` identifies `atto.browser.send-receipt.v1`. `RemoteReceiptOutcome`, `RemoteReceiptCode`, and `RemoteReceiptHeader` give the Rust compiler/build tools typed metadata matching the JS host and Wasm admission contracts. `BrowserTenantArtifact.send_receipt_protocol` advertises the version. `processed` means handler completion; `rejected` means no delivery was dispatched; `unknown` indicates uncertain processing after dispatch. The final case must never be treated as a safe implicit retry.
+
+**The emitted `actor_send` guest ABI still returns `void`, and `await remote.send_async(...)` is intentionally rejected.** Compiler-owned suspension frames, guest-visible `Result<int,string>`, per-send completion propagation and ownership checking across `await` are separate next milestones. The new tests enforce this limitation rather than pretending the feature exists.
