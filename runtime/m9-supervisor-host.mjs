@@ -90,7 +90,7 @@ export class M9SupervisorHost {
     const a=this.#resolve(ref);
     if(!a)return false;
     a.accepting=false;
-    this.#control(a,'STOP',0,'graceful stop',a.active?.message_id??0);
+    this.#control(a,'STOP',0,'graceful stop',0);
     this.#pulse();
     return true;
   }
@@ -271,7 +271,7 @@ export class M9SupervisorHost {
     for(const a of this.#actors.values()) {
       if(!a.retired&&!a.fenced) {
         a.accepting=false;
-        this.#control(a,'STOP',0,'host closing',a.active?.message_id??0);
+        this.#control(a,'STOP',0,'host closing',0);
       }
     }
     this.#pulse();
