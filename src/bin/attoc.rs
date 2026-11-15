@@ -4,11 +4,14 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (input, output) = match args.as_slice() {
-        [i] => (i.clone(), None),
-        [i, o, out] if o == "-o" => (i.clone(), Some(out.clone())),
+    let (input, output, scalar_preview) = match args.as_slice() {
+        [i] => (i.clone(), None,false),
+        [i, o, out] if o == "-o" => (i.clone(), Some(out.clone()),false),
+        [flag, i] if flag == "--scalar-preview" => (i.clone(),None,true),
+        [flag, i, o, out] if flag == "--scalar-preview" && o == "-o" =>
+            (i.clone(),Some(out.clone()),true),
         _ => {
-            eprintln!("usage: attoc <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc [--scalar-preview] <input.atto> [-o out.wasm]");
             return ExitCode::from(2);
         }
     };
@@ -19,7 +22,12 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match atto_compiler::compile(&source) {
+    let built=if scalar_preview {
+        atto_compiler::target_scalar::compile_scalar_receiver_preview(&source)
+    } else {
+        atto_compiler::compile(&source)
+    };
+    match built {
         Ok(bytes) => {
             if let Some(o) = output {
                 if std::fs::write(&o, &bytes).is_err() {
