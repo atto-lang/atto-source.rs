@@ -1,0 +1,6 @@
+// expect-error: E_AMBIGUOUS_MEMBER
+define class Root as pub label(): int { return 0; } end
+define class Left extends Root as pub override label(): int { return 1; } end
+define class Right extends Root as pub override label(): int { return 2; } end
+define class Broken extends Left, Right as end
+pub fnc main(): int { return 0; }
