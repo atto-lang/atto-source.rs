@@ -2,6 +2,25 @@
 // One dedicated Worker per actor; does not claim pooled scheduling, full
 // atto.browser.guest.v2 parity, or hard-real-time CPU preemption.
 const invariant=(ok,why)=>{if(!ok)throw new Error(why)};
+const MAX_WIRE_ID = Number.MAX_SAFE_INTEGER;
+// Canonical M9 wire encoding is separate from host ActorRef authority.
+// Never serialize arbitrary worker-supplied identity or original object keys.
+export function notice_to_wire_json(notice) {
+  invariant(notice && typeof notice === 'object', 'invalid supervisor notice');
+  const {kind,actor_id,generation,supervisor_id,message_id,fault_code,reason}=notice;
+  for (const [name,value] of Object.entries({actor_id,generation,supervisor_id,message_id})) {
+    invariant(Number.isSafeInteger(value) && value>=0 && value<=MAX_WIRE_ID,
+      'out-of-range supervisor wire '+name);
+  }
+  invariant(generation>0,'zero actor incarnation');
+  invariant(kind==='STOP'||kind==='PANIC','invalid CONTROL kind');
+  invariant(typeof reason==='string' && new TextEncoder().encode(reason).length>=1
+    && new TextEncoder().encode(reason).length<=128,'invalid CONTROL reason');
+  invariant((kind==='STOP' && message_id===0 && fault_code===0)
+    || (kind==='PANIC' && [1,2,100,101].includes(fault_code)),
+    'invalid CONTROL kind/fault pair');
+  return JSON.stringify({kind,actor_id,generation,supervisor_id,message_id,fault_code,reason});
+}
 export class M9SupervisorHost {
   #actors=new Map();
   #nextId=0;
@@ -58,6 +77,10 @@ export class M9SupervisorHost {
     let v;
     try {v=BigInt(amount)} catch {return 'INVALID'}
     if(v < -(1n<<63n) || v >= 1n<<63n)return 'INVALID';
+    if(a.nextMessage>MAX_WIRE_ID) {
+      a.accepting=false;this.#control(a,'STOP',0,'message id exhausted',0);
+      return 'CLOSED';
+    }
     a.inbox.push({message_id:a.nextMessage++,amount:String(v)});
     a.accepted++;
     this.#pulse();
