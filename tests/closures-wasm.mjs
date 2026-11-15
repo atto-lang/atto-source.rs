@@ -36,12 +36,36 @@ function compile(src) {
   return {ok: true, guest};
 }
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+// Inspect the actual emitted Wasm section inventory rather than relying on
+// a coincidental 0x11 byte in a function body or JS-simulated execution.
+function section_ids(bytes) {
+  const ids = new Set();
+  let i = 8;
+  while (i < bytes.length) {
+    const id = bytes[i++];
+    let size = 0, shift = 0, byte;
+    do {
+      assert.ok(i < bytes.length && shift < 35, 'valid canonical uleb section header');
+      byte = bytes[i++];
+      size += (byte & 127) * 2 ** shift;
+      shift += 7;
+    } while (byte & 128);
+    assert.ok(i + size <= bytes.length, 'section length within Wasm');
+    ids.add(id);
+    i += size;
+  }
+  assert.equal(i, bytes.length, 'complete Wasm section parse');
+  return ids;
+}
+
 const passes = [
   ['lambda-direct-capture-val', 42n],
   ['lambda-direct-capture-param', 42n],
   ['closure-lambda-functor-direct-profile', 42n],
   ['callable-owned-make-adder', 42n],
-  ['callable-owned-apply-twice', 40n]
+  ['callable-owned-apply-twice', 40n],
+  ['callable-owned-independent-captures', 43n],
+  ['callable-owned-multiple-targets', 41n]
 ];
 for (const [name, expected] of passes) {
   const path = 'tests/fixtures/pass/' + name + '.atto';
@@ -50,6 +74,13 @@ for (const [name, expected] of passes) {
   assert.equal(got.ok, true, name + ': ' + got.error);
   const native = execFileSync('target/release/attoc', [path], {maxBuffer: 1024 * 1024});
   assert.equal(hash(got.guest), hash(native), name + ': exact native / wasm32 compiler byte parity');
+  const sections = section_ids(got.guest);
+  if (name.startsWith('callable-owned-')) {
+    assert.ok(sections.has(4), name + ': must define a Wasm function table');
+    assert.ok(sections.has(9), name + ': must initialize typed indirect call target');
+  } else {
+    assert.ok(!sections.has(4), name + ': direct-only module must have no callable table');
+  }
   const guestModule = new WebAssembly.Module(got.guest);
   assert.deepEqual(WebAssembly.Module.imports(guestModule), [], 'no guest host imports');
   assert.equal(new WebAssembly.Instance(guestModule, {}).exports.main(), expected, name);
@@ -60,7 +91,8 @@ for (const [name, code] of [
   ['lambda-direct-capture-shadow', 'E_CAPTURE'],
   ['lambda-direct-capture-escape', 'E_UNSUPPORTED'],
   ['callable-old-skinny-arrow-type', 'E_SYNTAX'],
-  ['callable-owned-mutable-capture', 'E_CAPTURE']
+  ['callable-owned-mutable-capture', 'E_CAPTURE'],
+  ['callable-owned-use-after-move', 'E_MOVED']
 ]) {
   const source = readFileSync('tests/fixtures/fail/' + name + '.atto', 'utf8');
   const got = compile(source);
