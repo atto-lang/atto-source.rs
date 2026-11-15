@@ -41,6 +41,9 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
 
+      - name: Execute bounded mutation fuzz on actual Wasm compiler (seed 99)
+        run: node tests/fuzz-exec.mjs 2 99
+
       - name: Execute generator frame ownership, delegate closure and native/Wasm byte parity
         env:
           ATTOC: target/release/attoc
