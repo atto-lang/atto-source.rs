@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED_TYPE
+pub fnc apply(fnc(void)->int callback): int { return 0; }
+pub fnc main(): int { return 0; }

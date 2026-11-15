@@ -133,3 +133,25 @@ per-instance Wasm table ABI, stale handle checks, ownership and type-index
 validation are implemented. Callable parameters/returns in source syntax,
 first-class local function values, closure captures and Rx callbacks are
 still unsupported. The types cannot be interpreted as runtime handles.
+
+## Source callable types: parsed, validated, and gated
+
+The browser frontend now recognizes scalar callable type syntax such as
+`fnc(int) -> int`, `fnc(int, bool) -> string`, and `fnc() -> void`.
+For example, a declaration may use `fnc(int) -> int callback` as a
+parameter type, or `val callback: fnc(int) -> int = ...` as an
+annotated binding. Identical scalar signatures are interned by canonical
+shape (including aliases such as `boolean` / `bool` and
+`String` / `string`), not by source position.
+
+The parse/check boundary enforces parameter count and scalar-only types,
+resolves canonical signatures into `CallableSignature`, and rejects
+forged or malformed signature metadata. **Executable callable parameters,
+values, returns and indirect dispatch remain unsupported:** a program
+that needs those runtime features fails with `E_UNSUPPORTED` and produces
+no guest Wasm. `fnc(int) -> int` describes a callable contract; it
+does not yet allocate a function table or make lambdas first-class.
+
+The earlier direct-lambda profile (private, noncapturing direct Wasm calls)
+continues to work unchanged. The next milestone is verified per-instance
+Wasm table entries and a typed indirect-call ABI with ownership checks.
