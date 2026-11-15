@@ -91,7 +91,7 @@ fn successful_replacement_does_not_leave_staging_files() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_ne!(fs::read(&output).unwrap(), b"previous complete object");
+    assert_ne!(fs::read(&output).unwrap().as_slice(), b"previous complete object");
     no_temporary_files(&dir.0);
 }
 
