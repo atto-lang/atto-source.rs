@@ -96,6 +96,16 @@ for (const [name, expected] of passes) {
       assert.equal(instance.exports.main(), 42n, name + ' recycled iteration ' + i);
     }
     assert.equal(instance.exports.panic_code.value, 0, 'no hidden panic during reuse');
+    // Closing an environment scrubs all five 64-bit selector/capture words.
+    // The next allocation should reuse its slot, not the shared bump heap.
+    const memory = new DataView(instance.exports.memory.buffer);
+    for (const off of [8, 16, 24, 32, 40]) {
+      assert.equal(memory.getBigInt64(off, true), 0n,
+        name + ': closure selector/capture is zero after close at ' + off);
+    }
+    assert.ok(memory.getInt32(48, true) > 1024,
+      name + ': generation increased with each close');
+    assert.equal(memory.getInt32(52, true), 0, name + ': free-list terminator');
   }
   console.log('PASS ' + name + ' actual guest ' + expected + ', native/wasm artifact SHA ' + hash(got.guest));
 }
@@ -122,7 +132,29 @@ for (const [name, code] of [
 // Named closure double-close and use-after-close fail at E_MOVED before
 // emission. Runtime handle validation is separately exercised by the
 // controlled memory tampering below and by 1,024 slot reuse iterations.
-// Corrupt compiler-private object fields via the intentionally exported guest
+// Exhaustion must fail at the explicit 256-slot capacity instead of
+// silently reusing a live slot or writing beyond the reserved arena.
+// A separate Wasm instance has its own generation and free-list globals.
+const capacityPath = 'tests/fixtures/pass/callable-owned-capacity-guard.atto';
+const capacitySource = readFileSync(capacityPath, 'utf8');
+const capacityResult = compile(capacitySource);
+assert.equal(capacityResult.ok, true, 'capacity fixture compiles');
+const capacityNative = execFileSync('target/release/attoc', [capacityPath],
+  { maxBuffer: 1024 * 1024 });
+assert.equal(hash(capacityResult.guest), hash(capacityNative), 'capacity fixture compiler parity');
+const capacityModule = new WebAssembly.Module(capacityResult.guest);
+const limited = new WebAssembly.Instance(capacityModule, {});
+for (let i = 0; i < 256; i++) {
+  assert.equal(limited.exports.main(), 42n, 'unclosed allocation ' + i);
+}
+assert.throws(() => limited.exports.main(), WebAssembly.RuntimeError,
+  '257th unclosed allocation must trap');
+assert.equal(limited.exports.panic_code.value, 3, 'capacity overflow uses PANIC_HEAP');
+const isolated = new WebAssembly.Instance(capacityModule, {});
+assert.equal(isolated.exports.main(), 42n, 'other instance owns separate arena');
+console.log('PASS per-instance 256-slot closure capacity traps safely without recycling live slots');
+
+//// Corrupt compiler-private object fields via the intentionally exported guest
 // linear memory at a controlled host import callback checkpoint. This is a
 // deliberate malicious-host test, not an Atto source feature or guest import
 // policy relaxation. Fixed layout: heap starts at 8; first closure slot
