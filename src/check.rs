@@ -1369,9 +1369,17 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Call(target, args) =>
             pure_indices.contains(target) &&
             args.iter().all(|arg| pure_expr(arg, pure_indices)),
-        TExpr::Str(op, a, b) =>
-            *op != StrOp::Concat && pure_expr(a, pure_indices) &&
-            b.as_ref().is_none_or(|b| pure_expr(b, pure_indices)),
+        TExpr::Str(op, a, b) => {
+            // Exhaustive over string helpers too: a new helper may allocate
+            // or mutate memory, so it cannot silently inherit purity.
+            let read_only = match op {
+                StrOp::Eq | StrOp::StartsWith | StrOp::EndsWith |
+                StrOp::Contains | StrOp::Trim | StrOp::Cmp => true,
+                StrOp::Concat => false,
+            };
+            read_only && pure_expr(a, pure_indices) &&
+                b.as_ref().is_none_or(|b| pure_expr(b, pure_indices))
+        },
         // Disallowed effects include heap mutation/allocations, object/actor
         // state reads, I/O, actor operations, guest exception handling and
         // propagation. Keep these explicit when evolving the language.
