@@ -8,6 +8,7 @@ use crate::target_syntax::{ReceiverEffects, ReceiverHeader, ReceiverReturn, Stat
 use crate::lexer::{Tok, Token};
 use crate::target_flow::{ReceiverFlow, analyze_receiver_body, check_receiver_arguments};
 use crate::target_borrow::{ReceiverBorrowFacts, check_receiver_borrows};
+use crate::target_cleanup::{ReceiverCleanupPlan, plan_receiver_cleanup};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetType {
@@ -88,6 +89,9 @@ pub struct TypedActorModule {
     /// Conservative path-sensitive ownership and lexical loan facts.
     /// These never license executable receiver lowering.
     pub receiver_borrows: Vec<ReceiverBorrowFacts>,
+    /// Frontend lock-acquire/normal/trap cleanup obligations. The runtime
+    /// backend has not discharged them; all out-of-line mtds remain gated.
+    pub receiver_cleanup: Vec<ReceiverCleanupPlan>,
 }
 
 fn type_error(pos: Pos, why: impl Into<String>) -> Diagnostic {
@@ -481,6 +485,7 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
         body_returns: Vec::with_capacity(headers.receiver_returns.len()),
         receiver_flows: Vec::with_capacity(headers.receiver_bodies.len()),
         receiver_borrows: Vec::with_capacity(headers.receiver_bodies.len()),
+        receiver_cleanup: Vec::with_capacity(headers.receiver_bodies.len()),
     };
     for definition in &headers.definitions {
         if !headers.actors.contains(&definition.name) {
@@ -517,6 +522,7 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     for body in &headers.receiver_bodies {
         module.receiver_flows.push(analyze_receiver_body(headers, &module, body)?);
         module.receiver_borrows.push(check_receiver_borrows(&module, body)?);
+        module.receiver_cleanup.push(plan_receiver_cleanup(body)?);
     }
     // Bounded monotone fixed point: each effect bit can transition only from
     // false to true. Recursive calls are handled without unbounded DFS.
