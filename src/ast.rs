@@ -35,6 +35,11 @@ pub enum Type {
     /// Immutable Array<int> view backed by aligned module data: a packed
     /// 32-bit offset and element count, with no per-iteration allocation.
     ArrayInt,
+    /// Unresolved Array<Class> element name (index in Program.type_names).
+    ArrayNamed(u32),
+    /// Owned arena array of class handles; moving the descriptor transfers
+    /// ownership of all elements, never an implicit mutable borrow.
+    ArrayClass(u32),
 }
 
 impl Type {
@@ -52,6 +57,7 @@ impl Type {
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
             Type::ArrayInt => "Array<int>",
+            Type::ArrayNamed(_) | Type::ArrayClass(_) => "Array<object>",
             _ => "object",
         }
     }
