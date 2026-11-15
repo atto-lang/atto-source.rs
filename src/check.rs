@@ -99,6 +99,9 @@ pub enum TExpr {
     StrConst(u32, u32),
     /// Immutable contiguous Array<int> descriptor: data offset and length.
     ArrayConst(u32, u32),
+    /// Arena-allocated contiguous owned class handles; descriptor is
+    /// (u32 offset << 32) | u32 length, moved linearly by source binding.
+    ArrayNew { elements: Vec<TE>, tmp: u32 },
     /// `int` widened to `float` (Java numeric promotion)
     IntToFloat(Box<TE>),
     FNeg(Box<TE>),
@@ -209,11 +212,12 @@ pub enum TStmt {
     },
     /// A read-only contiguous i64 array; the source expression is evaluated
     /// exactly once and elements are loaded by index, not via virtual next().
-    ForArrayInt {
+    ForArray {
         source: TE,
         array_slot: u32,
         index_slot: u32,
         value_slot: u32,
+        item_type: Type,
         body: Vec<TStmt>,
     },
     If(Vec<(TE, Vec<TStmt>)>, Option<Vec<TStmt>>),
@@ -424,6 +428,7 @@ impl Globals<'_> {
     fn tn(&self, t: Type) -> String {
         match t {
             Type::Class(i) => self.classes[i as usize].name.clone(),
+        Type::ArrayClass(i) => format!("Array<{}>", self.classes[i as usize].name),
             Type::Enum(i) => self.enums[i as usize].name.clone(),
             Type::ActorRef(i) => format!("ActorRef<{}>", self.actors[i as usize].name),
             Type::Named(i) | Type::NamedRef(i) => self.type_names[i as usize].0.clone(),
@@ -445,6 +450,14 @@ impl Globals<'_> {
 /// Resolve parser type names against the declaration tables.
 fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> R<Type> {
     Ok(match t {
+        Type::ArrayNamed(i) => {
+            match resolve(Type::Named(i), type_names, classes, enums, actors)? {
+                Type::Class(c) => Type::ArrayClass(c),
+                other => return Err(Diagnostic::new(type_names[i as usize].1,
+                    "E_UNSUPPORTED_TYPE",
+                    format!("Array element must be a class, found {}", other.name()))),
+            }
+        }
         Type::Named(i) => {
             let (n, pos) = &type_names[i as usize];
             if let Some(c) = classes.iter().position(|c| c == n) {
@@ -1231,6 +1244,7 @@ pub fn check(p: &Program) -> R<TProgram> {
 fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> String {
     match t {
         Type::Class(i) => classes[i as usize].clone(),
+        Type::ArrayClass(i) => format!("Array<{}>", classes[i as usize]),
         Type::Enum(i) => enums[i as usize].name.clone(),
         Type::ActorRef(i) => format!("ActorRef<{}>", actors[i as usize]),
         Type::Named(i) | Type::NamedRef(i) => tn[i as usize].0.clone(),
@@ -1241,7 +1255,8 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
 /// Actors are isolated from sibling classes, enums and other actors.
 fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
     match t {
-        Type::Class(i) => Err(isolation(pos, actor, "sibling class", &g.classes[i as usize].name)),
+        Type::Class(i) | Type::ArrayClass(i) =>
+            Err(isolation(pos, actor, "sibling class", &g.classes[i as usize].name)),
         Type::Enum(i) => Err(isolation(pos, actor, "sibling enum", &g.enums[i as usize].name)),
         Type::ActorRef(i) => Err(isolation(pos, actor, "actor", &g.actors[i as usize].name)),
         _ => Ok(()),
@@ -1352,7 +1367,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::Loop { cond, body, update } => {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
-        TStmt::ForIn { source, body, .. } | TStmt::ForArrayInt { source, body, .. } =>
+        TStmt::ForIn { source, body, .. } | TStmt::ForArray { source, body, .. } =>
             any_in(source, f) || any_in_stmts(body, f),
         TStmt::Block(b) => any_in_stmts(b, f),
         TStmt::Recur(values) => values.iter().any(|(_, _, value)| any_in(value, f)),
@@ -1366,6 +1381,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::StateLoop { init, body, .. } => any_in_stmts(init, f) || any_in_stmts(body, f),
+        TExpr::ArrayNew { elements, .. } => elements.iter().any(|e| any_in(e, f)),
         TExpr::Trap { value, .. } => any_in(value, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
@@ -1390,7 +1406,7 @@ fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
             || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
         TStmt::Loop { body, update, .. } =>
             guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
-        TStmt::ForIn { body, .. } | TStmt::ForArrayInt { body, .. } =>
+        TStmt::ForIn { body, .. } | TStmt::ForArray { body, .. } =>
             guest_eh_in_stmts(body),
         TStmt::Block(b) => guest_eh_in_stmts(b),
         _ => false,
@@ -2372,7 +2388,8 @@ impl<'a> FnCx<'a> {
     /// assignment, argument, return): naming an object local moves it.
     fn consume(&mut self, e: &Expr) -> R<TE> {
         let v = self.value(e)?;
-        if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
+        if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_) | Type::ArrayClass(_)) =
+            (&e.kind, &v.e, v.ty) {
             let slot = *slot;
             if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                 return Err(Diagnostic::new(
