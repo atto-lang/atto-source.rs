@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+pub fnc main(): int {
+    val plus = |n| -> n + 1;
+    val alias = plus;
+    return plus(41);
+}
