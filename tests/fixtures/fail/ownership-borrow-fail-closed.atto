@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_ESCAPE
 pub fnc main(): int {
   val number = 42;
   val loan = borrow! number;
