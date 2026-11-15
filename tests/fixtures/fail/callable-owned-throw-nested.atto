@@ -1,0 +1,12 @@
+// expect-error: E_UNSUPPORTED
+fnc make_adder(int offset): fnc(int) => int {
+    return |n| : int -> n + offset;
+}
+fnc unsafe_scope(): int {
+    val adder = make_adder(1);
+    if true then
+        throw Error("nested exception");
+    fi
+    return 42;
+}
+pub fnc main(): int { return 42; }
