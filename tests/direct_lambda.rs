@@ -60,9 +60,10 @@ fn mutable_and_nonscalar_captures_still_fail_closed() {
     assert!(atto_compiler::compile(non_scalar).is_err());
 }
 #[test]
-fn escaped_closure_factory_never_masquerades_as_executable() {
+fn scalar_escaping_closure_factory_is_real_guest_wasm() {
     let src = "fnc make_adder(int offset): fnc(int)=>int { return |n| : int -> n + offset; } pub fnc main(): int { return 0; }";
-    assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
+    let bytes = atto_compiler::compile(src).expect("owned closure factory is now admitted");
+    assert!(bytes.starts_with(b"\\0asm"));
 }
 #[test]
 fn lambda_escape_does_not_silently_create_callable() {
