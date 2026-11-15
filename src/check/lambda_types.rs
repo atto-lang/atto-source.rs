@@ -21,18 +21,27 @@ pub struct CheckedLambda {
 pub fn check_noncapturing(
     lambda: &Expr, expected_params: Option<&[Type]>, expected_result: Option<Type>
 ) -> R<CheckedLambda> {
-    let (names, annotated, body) = match &lambda.kind {
-        ExprKind::Lambda { params, return_type, body } => (params, return_type, body),
+    let (names, annotated, body, variadic) = match &lambda.kind {
+        ExprKind::Lambda { params, return_type, body, variadic } =>
+            (params, return_type, body, *variadic),
         _ => return Err(err(lambda.pos, "E_TYPE", "expected a lambda")),
     };
+    if variadic && !names.is_empty() {
+        return Err(err(lambda.pos, "E_SYNTAX", "wildcard lambda cannot declare named parameters"));
+    }
     let types: &[Type] = match expected_params {
-        Some(types) if types.len() == names.len() => types,
+        Some(types) if variadic || types.len() == names.len() => types,
         Some(types) => return Err(err(lambda.pos, "E_ARITY", format!(
             "callback expects {} parameters, found {}", types.len(), names.len()))),
+        None if variadic => return Err(err(lambda.pos, "E_INFER",
+            "wildcard lambda requires a concrete callable signature")),
         None if names.is_empty() => &[],
         None => return Err(err(lambda.pos, "E_INFER",
             "lambda parameters need contextual callable types")),
     };
+    if types.len() > crate::parser::MAX_PARAMS {
+        return Err(err(lambda.pos, "E_SOURCE_LIMIT", "wildcard lambda exceeds maximum callable arity"));
+    }
     if types.iter().any(|t| !scalar(*t) || *t == Type::Void) {
         return Err(err(lambda.pos, "E_UNSUPPORTED_TYPE", "lambda parameter type is not a scalar value"));
     }
@@ -50,7 +59,16 @@ pub fn check_noncapturing(
         frames: vec![vec![]], returns: vec![], count: 0,
         depth: 0, statement_depth: 0,
     };
-    for (name, ty) in names.iter().zip(types) {
+    // Never bind an ignored argument under a source-spellable name.
+    // '$' cannot occur in AttoLang identifiers, including forged source lambdas.
+    let param_names: Vec<String> = if variadic {
+        (0..types.len()).map(|i| format!("$lambda_discard_{i}")).collect()
+    } else {
+        names.iter().enumerate().map(|(i, name)| {
+            if name == "_" { format!("$lambda_discard_{i}") } else { name.clone() }
+        }).collect()
+    };
+    for (name, ty) in param_names.iter().zip(types) {
         ctx.bind(name, *ty, false, lambda.pos)?;
     }
     let complete = match body {
@@ -79,7 +97,7 @@ pub fn check_noncapturing(
         return Err(err(lambda.pos, "E_RETURN", "not all lambda paths return a value"));
     }
     Ok(CheckedLambda {
-        params: names.iter().cloned().zip(types.iter().copied()).collect(),
+        params: param_names.into_iter().zip(types.iter().copied()).collect(),
         result, annotated: ann.is_some(),
     })
 }
