@@ -639,6 +639,43 @@ pub fn link_executable_class_receivers(toks: &[Token], headers: &TargetHeaders) 
         let class = program.classes.iter_mut().find(|c| c.name == header.owner)
             .ok_or_else(|| Diagnostic::new(header.pos, "E_UNBOUND",
                 "receiver owner must be defined in this compilation unit"))?;
+        // No mutable receiver, alias escape, or transitive inline mutator may
+        // be smuggled through the read-only class mtd profile. Limit exposed
+        // fields to scalar values; arbitrary object-reference loans require a
+        // separate borrow/effect proof rather than source-name guessing.
+        if class.fields.iter().any(|f| !matches!(
+            f.ty, Type::Int | Type::Bool | Type::Float | Type::Str
+        )) {
+            return Err(Diagnostic::new(header.pos, "E_UNSUPPORTED_TYPE",
+                "class mtd query mode requires scalar-only instance fields"));
+        }
+        for i in *start..*limit {
+            if !matches!(toks[i].tok, Tok::Ident(ref w) if w == "self") {
+                continue;
+            }
+            if !matches!(toks.get(i + 1).map(|t| &t.tok), Some(Tok::Dot)) {
+                return Err(Diagnostic::new(toks[i].pos, "E_OWNERSHIP",
+                    "class mtd query receiver cannot escape or be reborrowed"));
+            }
+            let member = match toks.get(i + 2).map(|t| &t.tok) {
+                Some(Tok::Ident(name)) => name,
+                _ => return Err(Diagnostic::new(toks[i].pos, "E_OWNERSHIP",
+                    "invalid class query receiver member access")),
+            };
+            match toks.get(i + 3).map(|t| &t.tok) {
+                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus) =>
+                    return Err(Diagnostic::new(toks[i].pos, "E_OWNERSHIP",
+                        "immutable class mtd cannot mutate instance fields")),
+                Some(Tok::LParen) => {
+                    if !headers.receivers.iter().any(|r|
+                        r.owner == header.owner && r.name == *member && !r.mutable) {
+                        return Err(Diagnostic::new(toks[i].pos, "E_UNSUPPORTED",
+                            "immutable mtd may call only another checked mtd receiver"));
+                    }
+                }
+                _ => {}
+            }
+        }
         if class.fields.iter().any(|f| f.name == method.name) ||
             class.methods.iter().any(|m| m.name == method.name &&
                                     m.params.len() == method.params.len()) {
