@@ -260,6 +260,15 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
                 return Err(error(*pos, "E_UNSUPPORTED",
                     "shadowing direct lambda is unsupported"));
             }
+            // Capture lifting passes the original lexical name as a hidden
+            // call argument. A nested binding with that name could otherwise
+            // silently select the newer value at invocation time rather than
+            // the captured value at lambda creation. Reject that profile until
+            // closure environments preserve definition-site identity.
+            if d.captures.iter().any(|(captured, _)| captured == name) {
+                return Err(error(*pos, "E_CAPTURE",
+                    "shadowing a lifted closure capture requires an owned environment"));
+            }
             rewrite_expr(init, d)
         }
         Stmt::Assign { name, value, pos } => {
@@ -301,6 +310,10 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
                 return Err(error(*pos, "E_UNSUPPORTED",
                     "for-in may not shadow direct lambda"));
             }
+            if d.captures.iter().any(|(captured, _)| captured == name) {
+                return Err(error(*pos, "E_CAPTURE",
+                    "for-in binder shadows a lifted closure capture"));
+            }
             rewrite_expr(source, d)?;
             rewrite_statements(body, d)
         }
@@ -314,6 +327,10 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
                 if bound.is_some_and(|n| *n == d.source) {
                     return Err(error(arm.pos, "E_UNSUPPORTED",
                         "match arm cannot shadow direct lambda"));
+                }
+                if bound.is_some_and(|n| d.captures.iter().any(|(captured, _)| captured == n)) {
+                    return Err(error(arm.pos, "E_CAPTURE",
+                        "match arm binder shadows a lifted closure capture"));
                 }
                 if let Some(guard) = &mut arm.guard { rewrite_expr(guard, d)?; }
                 rewrite_statements(&mut arm.body, d)?;
