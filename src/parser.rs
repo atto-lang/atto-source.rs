@@ -2124,9 +2124,21 @@ impl Parser {
         let body = if *self.peek() == Tok::LBrace {
             LambdaBody::Block(self.parse_block()?)
         } else if self.is_word("return") {
-            // A statement-bodied lambda requires its own semicolon even when
-            // nested inside a call: .map(|n| : int -> return n * 2;).
-            LambdaBody::Statement(Box::new(self.parse_stmt()?))
+            // Unlike ordinary statements, a braceless lambda's return must
+            // have a literal semicolon. A newline before the closing ')' does
+            // not terminate this lambda body.
+            let pos = self.pos();
+            self.advance();
+            let value = if *self.peek() == Tok::Semi {
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
+            if !self.eat(&Tok::Semi) {
+                return Err(Diagnostic::new(self.pos(), "E_SEMICOLON",
+                    "a braceless lambda return requires ';' before its closing delimiter"));
+            }
+            LambdaBody::Statement(Box::new(Stmt::Return(value, pos)))
         } else {
             LambdaBody::Expression(Box::new(self.parse_expr()?))
         };
