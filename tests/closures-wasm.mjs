@@ -66,7 +66,10 @@ const passes = [
   ['callable-owned-apply-twice', 40n],
   ['callable-owned-independent-captures', 43n],
   ['callable-owned-multiple-targets', 41n],
-  ['callable-owned-unrelated-control-flow', 42n]
+  ['callable-owned-unrelated-control-flow', 42n],
+  ['callable-owned-explicit-close', 42n],
+  ['callable-owned-close-independent', 42n],
+  ['callable-owned-recycle-after-call', 42n]
 ];
 for (const [name, expected] of passes) {
   const path = 'tests/fixtures/pass/' + name + '.atto';
@@ -84,7 +87,16 @@ for (const [name, expected] of passes) {
   }
   const guestModule = new WebAssembly.Module(got.guest);
   assert.deepEqual(WebAssembly.Module.imports(guestModule), [], 'no guest host imports');
-  assert.equal(new WebAssembly.Instance(guestModule, {}).exports.main(), expected, name);
+  const instance = new WebAssembly.Instance(guestModule, {});
+  assert.equal(instance.exports.main(), expected, name);
+  if (name === 'callable-owned-explicit-close') {
+    // The same instance has only 256 closure slots. Without guest release
+    // and generation-fenced reuse, this repeat test exhausts its heap/arena.
+    for (let i = 0; i < 1024; i++) {
+      assert.equal(instance.exports.main(), 42n, name + ' recycled iteration ' + i);
+    }
+    assert.equal(instance.exports.panic_code.value, 0, 'no hidden panic during reuse');
+  }
   console.log('PASS ' + name + ' actual guest ' + expected + ', native/wasm artifact SHA ' + hash(got.guest));
 }
 for (const [name, code] of [
@@ -104,4 +116,46 @@ for (const [name, code] of [
   const recovered = compile('pub fnc main(): int {return 42;}');
   assert.equal(recovered.ok, true, name + ': compiler state recovery');
 }
+
+// Runtime integrity checks must execute real guest Wasm, not just inspect
+// source diagnostics. No language source can forge a closure handle.
+for (const name of ['callable-owned-stale-after-reuse', 'callable-owned-double-close']) {
+  const path = 'tests/fixtures/pass/' + name + '.atto';
+  const got = compile(readFileSync(path, 'utf8'));
+  assert.equal(got.ok, true, name + ': compile');
+  const native = execFileSync('target/release/attoc', [path], { maxBuffer: 1024 * 1024 });
+  assert.equal(hash(got.guest), hash(native), name + ': compiler output parity');
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(got.guest), {});
+  assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError, name + ': runtime trap');
+  assert.equal(instance.exports.panic_code.value, 6, name + ': closure invalid-handle panic');
+  console.log('PASS ' + name + ' runtime rejected stale/double close with panic_code=6');
+}
+
+// Corrupt compiler-private object fields via the intentionally exported guest
+// linear memory at a controlled host import callback checkpoint. This is a
+// deliberate malicious-host test, not an Atto source feature or guest import
+// policy relaxation. Fixed layout: heap starts at 8; first closure slot
+// selector at offset 8, generation at offset 48, state at offset 52.
+const tamperPath = 'tests/fixtures/pass/callable-owned-tamper-checkpoint.atto';
+const tamper = compile(readFileSync(tamperPath, 'utf8'));
+assert.equal(tamper.ok, true, 'tamper fixture must compile');
+for (const [kind, expected] of [['selector', 0], ['generation', 6], ['live_state', 6]]) {
+  let instance;
+  let callbacks = 0;
+  const imports = { atto: { print_i64(v) {
+    assert.equal(v, 7n);
+    callbacks++;
+    const mem = new DataView(instance.exports.memory.buffer);
+    if (kind === 'selector') mem.setBigInt64(8, 99n, true);
+    if (kind === 'generation') mem.setInt32(48, 0, true);
+    if (kind === 'live_state') mem.setInt32(52, 0, true);
+  }}};
+  instance = new WebAssembly.Instance(new WebAssembly.Module(tamper.guest), imports);
+  assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError, kind + ': fail-closed');
+  assert.equal(callbacks, 1);
+  assert.equal(instance.exports.panic_code.value, expected,
+    kind + ': selector unreachable or handle validation fault');
+  console.log('PASS malicious-host ' + kind + ' corruption traps safely');
+}
+
 console.log('PASS restricted closure/lambda/functor Rust & wasm32 compilation and fail-closed boundary');
