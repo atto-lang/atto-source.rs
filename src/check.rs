@@ -1361,8 +1361,24 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Neg(a) | TExpr::Not(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
             pure_expr(a, pure_indices),
-        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) =>
-            pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
+        TExpr::Bin(op, a, b) => {
+            // Arithmetic, comparisons and eager boolean logic have no
+            // observable external effects; newly added operators must be
+            // reviewed explicitly, even if they reuse TExpr::Bin.
+            let read_only = match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
+                BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or => true,
+            };
+            read_only && pure_expr(a, pure_indices) && pure_expr(b, pure_indices)
+        }
+        TExpr::Builtin(op, a, b) => {
+            // Fail closed when the builtin catalog adds a new operation.
+            let read_only = match op {
+                Builtin::And | Builtin::Or | Builtin::Xor => true,
+            };
+            read_only && pure_expr(a, pure_indices) && pure_expr(b, pure_indices)
+        }
         TExpr::Ternary(c, a, b) =>
             pure_expr(c, pure_indices) &&
             pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
