@@ -3,7 +3,12 @@ use oreslang_source_rs::{
     profile::{self, BuildProfile},
     safety,
 };
-use std::{env, fs, io::{Read, Write}, path::Path, process::ExitCode};
+use std::{
+    env, fs,
+    io::{Read, Write},
+    path::Path,
+    process::ExitCode,
+};
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
@@ -24,9 +29,7 @@ fn canonical_destination(path: &str) -> Result<std::path::PathBuf, String> {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             Err("refusing symlinked compiler output".into())
         }
-        Ok(metadata) if !metadata.is_file() => {
-            Err("compiler output must be a regular file".into())
-        }
+        Ok(metadata) if !metadata.is_file() => Err("compiler output must be a regular file".into()),
         Ok(_) => Ok(resolved),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(resolved),
         Err(error) => Err(error.to_string()),
