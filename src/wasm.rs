@@ -29,6 +29,13 @@ use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep,
 mod generator_runtime;
 mod receiver_instance;
 mod cleanup_witness;
+pub(crate) fn emit_stateful_method_preview(
+    cfg:&crate::target_cleanup_cfg::VerifiedCleanupCfg,
+    shape:&crate::target_stateful::StatefulShape
+)->Result<Vec<u8>,crate::diag::Diagnostic>{
+    cleanup_witness::emit_stateful(cfg,shape)
+}
+
 
 /// Distinct opt-in *synthetic* cleanup-path witness, not actor mtd codegen.
 pub(crate) fn emit_cleanup_wasm_witness(
