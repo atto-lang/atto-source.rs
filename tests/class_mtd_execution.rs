@@ -35,3 +35,24 @@ fn signature_duplicates_and_unsupported_types_reject_without_output() {
         assert_eq!(d.code, code, "{source}: {d}");
     }
 }
+
+#[test]
+fn immutable_class_mtd_rejects_mutation_alias_escape_and_inline_mutators() {
+    for (source, expected) in [
+        (
+            "define class C as int value: 1; end mtd (self: C) update() -> int { self.value = 2; return 2; } pub fnc main(): int { return 0; }",
+            "E_OWNERSHIP"
+        ),
+        (
+            "define class C as int value: 1; end mtd (self: C) leak() -> int :: val alias = self, 2 end pub fnc main(): int { return 0; }",
+            "E_OWNERSHIP"
+        ),
+        (
+            "define class C as int value: 1; method unsafe_call(): int { return 2; } end mtd (self: C) query() -> int :: self.unsafe_call() end pub fnc main(): int { return 0; }",
+            "E_UNSUPPORTED"
+        )
+    ] {
+        let d = compile(source).expect_err("immutable receiver mutation must be refused");
+        assert_eq!(d.code, expected, "{source}: {d}");
+    }
+}
