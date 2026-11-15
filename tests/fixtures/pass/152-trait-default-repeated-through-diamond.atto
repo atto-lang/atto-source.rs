@@ -1,0 +1,11 @@
+// expect-exit: 42
+define pub trait Shared as
+  answer(): int { return 42; }
+end
+define class Left implements Shared as end
+define class Right implements Shared as end
+define class Diamond extends Left, Right as end
+pub fnc main(): int {
+  val d = new Diamond();
+  return d.answer();
+}
