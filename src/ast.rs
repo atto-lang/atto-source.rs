@@ -17,7 +17,7 @@ pub enum Type {
     Named(u32),
     /// Unresolved `ActorRef<Name>`: index into [`Program::type_names`].
     NamedRef(u32),
-    /// Source-level `fnc(T1, T2) -> R` signature. The index refers to a
+    /// Source-level `fnc(T1, T2) => R` signature. The index refers to a
     /// canonical, compiler-interned signature in `Program::type_names`.
     /// This type is recognized and checked, but cannot yet be represented
     /// as a runtime value or Wasm function-table entry.
@@ -53,7 +53,7 @@ impl Type {
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
-            Type::Callable(_) => "fnc(...)->...",
+            Type::Callable(_) => "fnc(...)=>...",
             _ => "object",
         }
     }
