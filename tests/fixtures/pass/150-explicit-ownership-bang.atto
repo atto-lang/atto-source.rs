@@ -21,6 +21,6 @@ pub fnc main(): int {
   val copied = copy!(source_number);
   val moved = take!(parcel);
   stdio.println(moved.value);
-  val shared = share!(42);
-  return copied + shared;
+  val shared_number = share!(42);
+  return copied + shared_number;
 }
