@@ -1,0 +1,9 @@
+// expect-error: E_RESERVED
+// User-declared actors cannot impersonate built-in Error in a throw.
+define actor Error as
+  receive(ActorMail<int> mail): void {
+    return;
+  }
+end
+fnc fail(): int { throw Error("forged"); }
+pub fnc main(): int { return fail(); }
