@@ -172,3 +172,17 @@ pub fn recommend_layout(
         None => LayoutKind::Soa,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hot_counters_saturate_and_never_retrigger() {
+        let mut counters = TraceCounters::<1>::new(u32::MAX).unwrap();
+        counters.counts[0] = u32::MAX - 1;
+        assert_eq!(counters.observe(0), Ok(TraceEvent::BecameHot));
+        assert_eq!(counters.observe(0), Ok(TraceEvent::AlreadyHot));
+        assert_eq!(counters.count(0), Some(u32::MAX));
+    }
+}
