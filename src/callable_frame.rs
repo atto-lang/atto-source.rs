@@ -81,6 +81,14 @@ impl Slot {
     }
 }
 
+/// Compiler-controlled function-table target, including the exact captured
+/// field layout. Its identity and signature never change after registration.
+#[derive(Clone, Debug)]
+struct RegisteredTarget {
+    signature: CallableSignature,
+    capture_types: Vec<Type>,
+}
+
 /// One arena belongs to exactly one guest instance/actor execution domain.
 /// Callers must supply that domain's trusted owner identity on access.
 #[derive(Debug)]
@@ -88,16 +96,63 @@ pub struct CallableArena {
     owner: u64,
     slots: Vec<Slot>,
     free: Vec<u32>,
+    targets: Vec<Option<RegisteredTarget>>,
 }
 impl CallableArena {
     pub fn new(owner: u64) -> Result<Self, CallableFault> {
         if owner == 0 { return Err(CallableFault::InvalidOwner); }
-        Ok(Self { owner, slots: Vec::new(), free: Vec::new() })
+        Ok(Self { owner, slots: Vec::new(), free: Vec::new(), targets: Vec::new() })
     }
 
-    /// Capture layout is checked separately from a callable's argument and
-    /// result signature. The actual typed compiler must validate each binding
-    /// at its definition site before invoking this arena.
+    fn signature_is_valid(signature: &CallableSignature) -> bool {
+        signature.params.len() <= crate::parser::MAX_PARAMS
+            && signature.params.iter().all(|t| matches!(t,
+                Type::Int | Type::Bool | Type::Float | Type::Str))
+            && matches!(signature.result,
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void)
+    }
+
+    /// Install a compiler-verified, immutable module function-table target.
+    /// Unregistered indices, incompatible signatures and capture layouts
+    /// must be rejected BEFORE a callable slot/environment is allocated.
+    pub fn register_target(
+        &mut self, caller_owner: u64, function_index: u32,
+        signature: CallableSignature, capture_types: &[Type],
+    ) -> Result<(), CallableFault> {
+        self.check_owner(caller_owner)?;
+        if function_index >= crate::parser::MAX_FUNCS as u32 {
+            return Err(CallableFault::InvalidTarget);
+        }
+        if !Self::signature_is_valid(&signature) {
+            return Err(CallableFault::SignatureMismatch);
+        }
+        if capture_types.len() > MAX_CAPTURE_WORDS
+            || capture_types.iter().any(|t| !matches!(t,
+                Type::Int | Type::Bool | Type::Float)) {
+            return Err(CallableFault::InvalidCapture);
+        }
+        let index = function_index as usize;
+        if self.targets.len() <= index {
+            self.targets.resize_with(index + 1, || None);
+        }
+        if let Some(existing) = &self.targets[index] {
+            if existing.signature != signature {
+                return Err(CallableFault::SignatureMismatch);
+            }
+            if existing.capture_types != capture_types {
+                return Err(CallableFault::InvalidCapture);
+            }
+            return Ok(());
+        }
+        self.targets[index] = Some(RegisteredTarget {
+            signature,
+            capture_types: capture_types.to_vec(),
+        });
+        Ok(())
+    }
+
+    /// The capture environment must match its immutable, compiler-registered
+    /// function-table signature and field layout, not just a caller assertion.
     pub fn allocate(
         &mut self, caller_owner: u64, signature: CallableSignature,
         function_index: u32, captures: &[ScalarCapture],
@@ -109,12 +164,17 @@ impl CallableArena {
         if captures.len() > MAX_CAPTURE_WORDS {
             return Err(CallableFault::InvalidCapture);
         }
-        if signature.params.len() > crate::parser::MAX_PARAMS
-            || signature.params.iter().any(|t| !matches!(t,
-                Type::Int | Type::Bool | Type::Float | Type::Str))
-            || !matches!(signature.result,
-                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
+        if !Self::signature_is_valid(&signature) {
             return Err(CallableFault::SignatureMismatch);
+        }
+        let target = self.targets.get(function_index as usize)
+            .and_then(Option::as_ref).ok_or(CallableFault::InvalidTarget)?;
+        if target.signature != signature {
+            return Err(CallableFault::SignatureMismatch);
+        }
+        if target.capture_types.len() != captures.len()
+            || target.capture_types.iter().zip(captures).any(|(t, c)| *t != c.ty()) {
+            return Err(CallableFault::InvalidCapture);
         }
         // One-based slot number keeps 0 invalid even in generation 1.
         let slot_idx = if let Some(index) = self.free.pop() {
@@ -219,6 +279,11 @@ mod tests {
         CallableSignature::scalar(vec![Type::Int], Type::Int,
             Pos { line: 1, col: 1 }).unwrap()
     }
+    fn registered_arena() -> CallableArena {
+        let mut arena = CallableArena::new(7).unwrap();
+        arena.register_target(7, 0, sig(), &[Type::Int]).unwrap();
+        arena
+    }
     fn invoke_add(arena: &CallableArena, handle: u128, owner: u64, n: i64) -> i64 {
         let checked = arena.validate_bits(handle, owner, &sig()).unwrap();
         assert_eq!(checked.function_index, 0);
@@ -232,7 +297,7 @@ mod tests {
     }
     #[test]
     fn escaping_factory_preserves_its_owned_capture_after_return() {
-        let mut arena = CallableArena::new(7).unwrap();
+        let mut arena = registered_arena();
         let add_one = make_adder(&mut arena, 1);
         assert_eq!(invoke_add(&arena, add_one.bits(), 7, 41), 42);
         arena.close(add_one.bits(), 7).unwrap();
@@ -240,7 +305,7 @@ mod tests {
     }
     #[test]
     fn independent_instances_and_higher_order_reference_semantics() {
-        let mut arena = CallableArena::new(7).unwrap();
+        let mut arena = registered_arena();
         let one = make_adder(&mut arena, 1);
         let two = make_adder(&mut arena, 2);
         let apply_twice = |h| invoke_add(&arena, h, 7, invoke_add(&arena, h, 7, 40));
@@ -251,7 +316,7 @@ mod tests {
     }
     #[test]
     fn rejects_stale_forged_zero_and_out_of_range_handles() {
-        let mut arena = CallableArena::new(7).unwrap();
+        let mut arena = registered_arena();
         let first = make_adder(&mut arena, 3);
         let old = first.bits();
         assert_eq!(arena.validate_bits(0, 7, &sig()).err(),
@@ -272,12 +337,13 @@ mod tests {
     }
     #[test]
     fn rejects_cross_actor_and_wrong_signature_dispatch() {
-        let mut arena = CallableArena::new(7).unwrap();
+        let mut arena = registered_arena();
         let h = make_adder(&mut arena, 1);
         assert_eq!(arena.validate_bits(h.bits(), 8, &sig()).err(),
             Some(CallableFault::InvalidOwner));
         assert_eq!(arena.close(h.bits(), 8), Err(CallableFault::InvalidOwner));
         let mut other = CallableArena::new(8).unwrap();
+        other.register_target(8, 0, sig(), &[Type::Int]).unwrap();
         let other_h = other.allocate(8, sig(), 0, &[ScalarCapture::Int(99)]).unwrap();
         assert_eq!(h.bits() as u32, other_h.bits() as u32); // same slot, different domain
         assert_eq!(other.validate_bits(h.bits(), 8, &sig()).err(),
@@ -290,7 +356,7 @@ mod tests {
     #[test]
     fn guards_invalid_ownership_target_and_capture_limits() {
         assert!(matches!(CallableArena::new(0), Err(CallableFault::InvalidOwner)));
-        let mut arena = CallableArena::new(7).unwrap();
+        let mut arena = registered_arena();
         assert_eq!(arena.allocate(8, sig(), 0, &[]).unwrap_err(),
             CallableFault::InvalidOwner);
         assert_eq!(arena.allocate(7, sig(), crate::parser::MAX_FUNCS as u32, &[]).unwrap_err(),
@@ -301,8 +367,34 @@ mod tests {
         assert_eq!(arena.live_count(), 0);
     }
     #[test]
+    fn target_registration_checks_signature_capture_layout_and_identity() {
+        let mut arena = registered_arena();
+        let different = CallableSignature::scalar(
+            vec![Type::Bool], Type::Int, Pos { line: 1, col: 1 }).unwrap();
+        assert_eq!(arena.allocate(7, different.clone(), 0, &[ScalarCapture::Int(1)]).unwrap_err(),
+            CallableFault::SignatureMismatch);
+        assert_eq!(arena.allocate(7, sig(), 0, &[ScalarCapture::Bool(true)]).unwrap_err(),
+            CallableFault::InvalidCapture);
+        assert_eq!(arena.allocate(7, sig(), 0, &[]).unwrap_err(),
+            CallableFault::InvalidCapture);
+        assert_eq!(arena.allocate(7, sig(), 1, &[ScalarCapture::Int(1)]).unwrap_err(),
+            CallableFault::InvalidTarget);
+        assert_eq!(arena.register_target(8, 1, sig(), &[Type::Int]),
+            Err(CallableFault::InvalidOwner));
+        assert_eq!(arena.register_target(7, 0, different, &[Type::Int]),
+            Err(CallableFault::SignatureMismatch));
+        assert_eq!(arena.register_target(7, 0, sig(), &[Type::Bool]),
+            Err(CallableFault::InvalidCapture));
+        assert_eq!(arena.register_target(7, 1, sig(), &[Type::ActorRef(0)]),
+            Err(CallableFault::InvalidCapture));
+        // Matching registrations are idempotent, never replace target metadata.
+        assert_eq!(arena.register_target(7, 0, sig(), &[Type::Int]), Ok(()));
+        assert_eq!(arena.live_count(), 0);
+    }
+
+    #[test]
     fn close_scrubs_captures_and_never_recycles_exhausted_generations() {
-        let mut arena = CallableArena::new(7).unwrap();
+        let mut arena = registered_arena();
         let h = make_adder(&mut arena, 15);
         let bits = h.bits();
         arena.close(bits, 7).unwrap();
