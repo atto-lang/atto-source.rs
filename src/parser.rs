@@ -186,6 +186,7 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "Set",
     "char",
     "byte",
+    "Pointer", // compiler-known builtin; this subset must never accept it as a user class
 ];
 
 pub fn is_reserved(name: &str) -> bool {
@@ -448,6 +449,16 @@ impl Parser {
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
             "string" | "String" => Type::Str,
+            "Pointer" => {
+                // Fail closed until typed ownership, provenance and actual
+                // compiled Wasm/AOT lowering exist. Never resolve Pointer<T>
+                // as an ordinary user class or silently erase its generic T.
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNSUPPORTED_TYPE",
+                    "Pointer<T> needs checked ownership, provenance and AOT lowering; this compiler does not implement it",
+                ))
+            }
             n if UNSUPPORTED_TYPES.contains(&n) => {
                 return Err(Diagnostic::new(
                     pos,
@@ -548,6 +559,13 @@ impl Parser {
     /// After `define class`: `Name as { class_member } end`.
     fn parse_class(&mut self, public: bool) -> R<ClassDecl> {
         let (name, pos) = self.ident("a class name")?;
+        if name == "Pointer" {
+            return Err(Diagnostic::new(
+                pos,
+                "E_RESERVED_TYPE",
+                "Pointer is a compiler-known builtin and may not be defined as a user class",
+            ));
+        }
         self.decl_head("class")?;
         self.expect_word("as")?;
         let m = self.parse_members(&name, false, "end")?;
@@ -1929,7 +1947,11 @@ impl Parser {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
             Tok::Bang => UnOp::Not,
-            Tok::Amp => return Err(unsupported(pos, "borrow expressions")),
+            Tok::Amp | Tok::Star => return Err(Diagnostic::new(
+                pos,
+                "E_POINTER_SYNTAX",
+                "pointer address-of and dereference cannot use unary '&' or '*'; use checked Pointer<T> methods and ownership operations",
+            )),
             Tok::PlusPlus | Tok::MinusMinus => {
                 return Err(Diagnostic::new(
                     pos,
