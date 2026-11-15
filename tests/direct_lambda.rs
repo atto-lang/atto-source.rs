@@ -64,7 +64,7 @@ fn escaped_int_closure_uses_owned_guest_class_environment() {
     let src = "fnc make_adder(int offset): fnc(int)->int { return |n| : int -> n + offset; } pub fnc main(): int { val add_one = make_adder(1); return add_one(41); }";
     let program = checked(src);
     assert!(program.heap, "each escaping closure must own a bounded guest heap environment");
-    assert!(program.funcs.iter().any(|f| f.name == "__atto_escaping_closure_0.call"
+    assert!(program.funcs.iter().any(|f| f.name == "$atto_escaping_closure_0.call"
         && f.params.len() == 2 && f.ret == Type::Int));
     let bytes = atto_compiler::compile(src).expect("bounded escaping closure is executable");
     assert!(bytes.starts_with(b"\0asm"));
