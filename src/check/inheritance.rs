@@ -4,7 +4,7 @@
 //! This intentionally does not claim dynamic upcasts or virtual tables.
 
 use std::collections::{BTreeMap, BTreeSet};
-use crate::ast::{ClassDecl, ContractDecl, Field, Method, Program, Type};
+use crate::ast::{ContractDecl, Field, Method, Program, Type};
 use crate::diag::{Diagnostic, Pos};
 
 type R<T> = Result<T, Diagnostic>;
@@ -40,7 +40,7 @@ fn type_name(ty: Type, program: &Program) -> String {
 fn compatible(a: &Method, b: &Method, program: &Program) -> bool {
     !a.is_static && !b.is_static && a.params.len() == b.params.len()
         && type_name(a.ret, program) == type_name(b.ret, program)
-        && a.params.iter().zip(&b.params).all(|(x, y) =>
+        && a.params.iter().zip(&b.params).all(|(x, y)|
             type_name(x.ty, program) == type_name(y.ty, program))
 }
 
