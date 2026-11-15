@@ -1406,6 +1406,43 @@ impl Parser {
     }
 
 
+    /// The Java/LLVM compound-keyword contract requires exactly adjacent
+    /// ASCII critical-read / critical-write, not spaced subtraction tokens.
+    /// The lexer intentionally keeps '-' separate for arithmetic; this
+    /// contextual check preserves the original byte columns and diagnostics.
+    fn parse_state_critical_mode(&mut self, read_only: bool) -> R<bool> {
+        let keyword_pos = self.pos();
+        self.expect_word("critical")?;
+        if self.peek() != &Tok::Minus {
+            if read_only {
+                return Err(Diagnostic::new(keyword_pos, "E_SYNTAX",
+                    "critical-read must use one contiguous compound keyword"));
+            }
+            return Ok(true); // bare critical is the exclusive write alias
+        }
+        let minus_pos = self.pos();
+        if minus_pos.line != keyword_pos.line ||
+            minus_pos.col != keyword_pos.col + 8 {
+            return Err(Diagnostic::new(minus_pos, "E_SYNTAX",
+                "critical-read / critical-write must not contain whitespace around '-'"));
+        }
+        self.advance();
+        let suffix_pos = self.pos();
+        if suffix_pos.line != minus_pos.line ||
+            suffix_pos.col != minus_pos.col + 1 {
+            return Err(Diagnostic::new(suffix_pos, "E_SYNTAX",
+                "critical-read / critical-write must not contain whitespace around '-'"));
+        }
+        if self.eat_word("read") {
+            return Ok(false);
+        }
+        if self.eat_word("write") && !read_only {
+            return Ok(true);
+        }
+        Err(Diagnostic::new(suffix_pos, "E_SYNTAX",
+            "expected a contiguous critical-read or critical-write state mode"))
+    }
+
     /// A lexical, non-suspending state loan. Syntactic admission is deliberately
     /// narrower than arbitrary closures: mutation only, pure scalar RHS, no
     /// early return, IO, allocations, calls, loops or nested state access.
@@ -1417,12 +1454,7 @@ impl Parser {
         }
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
-        self.expect_word("critical")?;
-        let write = if self.eat(&Tok::Minus) {
-            if self.eat_word("write") { true }
-            else if self.eat_word("read") { false }
-            else { return Err(self.expected("'read' or 'write' after critical-")); }
-        } else { true };
+        let write = self.parse_state_critical_mode(false)?;
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, _) = self.ident("state lease binder")?;
         if binder != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
@@ -1466,9 +1498,10 @@ impl Parser {
         }
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
-        self.expect_word("critical")?;
-        self.expect(Tok::Minus, "'-' before read")?;
-        self.expect_word("read")?;
+        if self.parse_state_critical_mode(true)? {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "critical-read must be immutable"));
+        }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, _) = self.ident("state lease binder")?;
         if binder != "s" { return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
