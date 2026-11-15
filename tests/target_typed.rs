@@ -1006,3 +1006,75 @@ fn lease_free_receiver_has_no_state_unlock_obligation_but_cannot_emit() {
         "vacuous lock-cleanup proof cannot authorize receiver codegen");
     assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
 }
+
+#[test]
+fn forged_frontend_flags_can_never_authorize_actor_lease_cleanup() {
+    use atto_compiler::target_cleanup::require_backend_cleanup_proof;
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(): void {
+    self.handle_state(critical-write |s| -> { s.count = s.count + 1; });
+}
+"#;
+    let mut plan=typed(src).unwrap().receiver_cleanup.remove(0);
+    assert_eq!(plan.leases.len(),1);
+    assert_eq!(plan.leases[0].cleanup.len(),2);
+    // These are externally mutable facts, NOT actual generated release code.
+    plan.backend_cleanup_proven=true;
+    for edge in &mut plan.leases[0].cleanup {
+        edge.backend_release_proven=true;
+    }
+    assert_eq!(require_backend_cleanup_proof(&plan).unwrap_err().code,"E_UNSUPPORTED");
+    plan.leases[0].cleanup.clear();
+    assert_eq!(require_backend_cleanup_proof(&plan).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn imported_receiver_bodies_cannot_omit_or_duplicate_cleanup_requirements() {
+    let source="declare actor Counter;
+        mtd (Counter self) first(): void { }
+        mtd (Counter self) second(): void { }";
+    let original=parse_target_declarations(&lex(source).unwrap()).unwrap();
+    assert_eq!(original.receiver_bodies.len(),2);
+    let mut missing=original.clone();
+    missing.receiver_bodies.pop();
+    assert_eq!(lower_target_signatures(&missing).unwrap_err().code,"E_SEALED");
+    let mut swapped=original.clone();
+    swapped.receiver_bodies.swap(0,1);
+    assert_eq!(lower_target_signatures(&swapped).unwrap_err().code,"E_SEALED");
+    let mut duplicated=original;
+    duplicated.receiver_bodies[1].receiver=0;
+    assert_eq!(lower_target_signatures(&duplicated).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn imported_state_effects_must_match_actual_lease_regions() {
+    let source=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) write_now(): void {
+    self.handle_state(critical-write |s| -> { s.count = 1; });
+}
+"#;
+    let original=parse_target_declarations(&lex(source).unwrap()).unwrap();
+    assert!(original.receiver_effects[0].reads_state);
+    assert!(original.receiver_effects[0].writes_state);
+    let mut forged=original.clone();
+    forged.receiver_effects[0].reads_state=false;
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+    let mut forged=original;
+    forged.receiver_effects[0].writes_state=false;
+    assert_eq!(lower_target_signatures(&forged).unwrap_err().code,"E_SEALED");
+}
+
+#[test]
+fn raw_cleanup_planning_must_deny_nested_actor_acquisitions() {
+    use atto_compiler::target_cleanup::plan_receiver_cleanup;
+    use atto_compiler::target_syntax::ReceiverBodyTokens;
+    let fake=ReceiverBodyTokens{
+        receiver:0,
+        tokens:lex("{ self.handle_state(critical-write |s| -> { self.handle_state(critical-read |t| -> t.count); }); }").unwrap(),
+    };
+    assert_eq!(plan_receiver_cleanup(&fake).unwrap_err().code,"E_BORROW");
+}
