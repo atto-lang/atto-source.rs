@@ -19,6 +19,7 @@ pub mod target_borrow;
 pub mod target_cleanup;
 pub mod target_cleanup_cfg;
 pub mod target_scalar;
+mod target_scalar_cfg;
 pub mod target_typed;
 pub mod wasm;
 
