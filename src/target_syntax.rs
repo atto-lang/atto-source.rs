@@ -403,6 +403,23 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
     // The previous nested per-token scans over class ends / omission ranges
     // were quadratic in declaration count.
     let mut omitted = vec![false; toks.len()];
+    // Validate *all* source ranges before the first semantic self/effect
+    // scan. A forged overlapping ledger must be E_SYNTAX, never be interpreted
+    // as a receiver body that can accidentally read another declaration.
+    for site in &headers.receiver_sites {
+        if site.declaration_start >= site.method_start ||
+            site.method_start >= site.end || site.end > toks.len() {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "invalid out-of-line receiver source span"));
+        }
+        for slot in &mut omitted[site.declaration_start..site.end] {
+            if *slot {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "overlapping class receiver source spans"));
+            }
+            *slot = true;
+        }
+    }
     for (receiver, site) in headers.receivers.iter().zip(&headers.receiver_sites) {
         if receiver.mutable {
             return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
@@ -464,15 +481,7 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
             insertions[owner].push(toks[site.declaration_start].clone());
         }
         insertions[owner].extend_from_slice(&toks[site.method_start..site.end]);
-        // Reject overlapping/malformed span ledgers rather than accidentally
-        // deleting an unrelated declaration during token lowering.
-        for slot in &mut omitted[site.declaration_start..site.end] {
-            if *slot {
-                return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
-                    "overlapping class receiver source spans"));
-            }
-            *slot = true;
-        }
+
     }
     let mut insert_at = vec![None; toks.len()];
     for (owner, end) in headers.class_ends.iter().copied().enumerate() {
