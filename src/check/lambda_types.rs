@@ -291,7 +291,7 @@ impl Context {
 fn position(stmt: &Stmt) -> Pos {
     match stmt {
         Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } |
-        Stmt::FieldAssign { pos, .. } | Stmt::If { pos, .. } |
+        Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
         Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
