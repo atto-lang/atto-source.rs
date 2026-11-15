@@ -45,10 +45,14 @@ pub enum Import {
     ActorSpawn,
     /// `actor_send(ref: i32, value: i64)`: enqueue one message
     ActorSend,
+    /// Private Worker-owned state-container creation/lexical admission hooks.
+    StateRegister,
+    StateEnter,
+    StateLeave,
 }
 
 impl Import {
-    pub const ALL: [Import; 7] = [
+    pub const ALL: [Import; 10] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -56,6 +60,9 @@ impl Import {
         Import::PrintF64,
         Import::ActorSpawn,
         Import::ActorSend,
+        Import::StateRegister,
+        Import::StateEnter,
+        Import::StateLeave,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -66,6 +73,9 @@ impl Import {
             Import::PrintF64 => "print_f64",
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
+            Import::StateRegister => "state_register",
+            Import::StateEnter => "state_enter",
+            Import::StateLeave => "state_leave",
         }
     }
 }
@@ -208,6 +218,9 @@ pub enum TStmt {
     /// Retain lexical protected authority through typed IR.
     /// Single-Worker Wasm emits the body inline pending scheduler integration.
     StateCriticalWrite(Vec<TStmt>),
+    /// Register a freshly allocated protected state object with the trusted
+    /// Worker host BEFORE returning it. Constructors cannot forge a lease.
+    StateRegister(TE),
     /// assign an actor-state global
     GlobalSet(u32, TE),
     Expr(TE),
@@ -1126,6 +1139,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ty: Type::Void,
             }));
         }
+        if c.state_container {
+            body.push(TStmt::StateRegister(obj.clone()));
+        }
         body.push(TStmt::Return(Some(obj)));
         funcs[info.new_idx as usize] = Some(TFunc {
             name: format!("{}.new", c.name),
@@ -1225,6 +1241,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     }
 
     validate_generator_graph(&generators, p)?;
+    if p.classes.iter().any(|c| c.state_container) {
+        imports.extend([Import::StateRegister, Import::StateEnter, Import::StateLeave]);
+    }
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
@@ -1362,7 +1381,8 @@ fn returns(body: &[TStmt]) -> bool {
 /// Whether any expression node in `body` satisfies `f`.
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
+        TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } |
         TStmt::StateFieldWrite { obj, value, .. } => any_in(obj, f) || any_in(value, f),
         TStmt::If(arms, other) => {

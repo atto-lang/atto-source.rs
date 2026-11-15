@@ -186,6 +186,9 @@ struct Emit<'a> {
     /// Owned generator handles active in nested for-in loops. Function-level
     /// returns close these in reverse order before exiting.
     active_iterators: Vec<u32>,
+    /// Scratch i64 local for an opaque host-issued admission ticket.
+    state_ticket_slot: Option<u32>,
+    state_write_depth: u32,
 }
 
 impl Emit<'_> {
@@ -272,15 +275,39 @@ impl Emit<'_> {
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
             }
-            TStmt::FieldSet { obj, offset, ty, value } |
-            TStmt::StateFieldWrite { obj, offset, ty, value } => {
-                // Protected operation is explicit in typed IR. This is a
-                // single-Worker-only inline emission, not a shared RW lock.
+            TStmt::FieldSet { obj, offset, ty, value } => {
                 self.expr(obj);
                 self.expr(value);
                 field_op(&mut self.code, *ty, *offset, true);
             }
-            TStmt::StateCriticalWrite(body) => self.stmts(body),
+            TStmt::StateFieldWrite { obj, offset, ty, value } => {
+                assert!(self.state_write_depth > 0,
+                    "state field write missing typed exclusive scope");
+                self.expr(obj);
+                self.expr(value);
+                field_op(&mut self.code, *ty, *offset, true);
+            }
+            TStmt::StateCriticalWrite(body) => {
+                // Synchronous, never-park: the host authenticates this
+                // container/continuation and either grants immediately or
+                // fails closed. Yield/throw/defer in this lexical scope are
+                // rejected by the frontend's restricted state profile.
+                let slot = self.state_ticket_slot.expect("protected state uses a ticket local");
+                debug_assert_eq!(self.state_write_depth, 0);
+                self.get(0); // typed receiver: protected state self
+                self.i32c(1); // write mode
+                self.call(self.l.import(Import::StateEnter));
+                self.set(slot);
+                self.state_write_depth += 1;
+                self.stmts(body);
+                self.state_write_depth -= 1;
+                self.get(slot);
+                self.call(self.l.import(Import::StateLeave));
+            }
+            TStmt::StateRegister(obj) => {
+                self.expr(obj);
+                self.call(self.l.import(Import::StateRegister));
+            },
             TStmt::GlobalSet(g, v) => {
                 self.expr(v);
                 self.op(0x24);
@@ -592,12 +619,29 @@ impl Emit<'_> {
                 uleb(&mut self.code, *tmp as u64);
                 field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
             },
-            TExpr::FieldGet { obj, offset } |
-            TExpr::StateFieldRead { obj, offset } => {
-                // Guarded state reads are distinct from ordinary class reads
-                // until backend emission, preserving loan-provenance checks.
+            TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
+            }
+            TExpr::StateFieldRead { obj, offset } => {
+                if self.state_write_depth == 0 {
+                    // Read an immutable scalar by value. The host owns the
+                    // ticket, never the source code or the Wasm guest.
+                    let slot = self.state_ticket_slot.expect("protected read ticket local");
+                    self.get(0);
+                    self.i32c(0); // read mode
+                    self.call(self.l.import(Import::StateEnter));
+                    self.set(slot);
+                    self.expr(obj);
+                    field_op(&mut self.code, v.ty, *offset, false);
+                    // Result remains on Wasm stack while leave consumes the
+                    // ticket, guaranteeing leave before the value escapes.
+                    self.get(slot);
+                    self.call(self.l.import(Import::StateLeave));
+                } else {
+                    self.expr(obj);
+                    field_op(&mut self.code, v.ty, *offset, false);
+                }
             }
             TExpr::GlobalGet(g) => {
                 self.op(0x23);
@@ -994,6 +1038,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintF64 => Sig(vec![F64], vec![]),
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![]),
+            Import::StateRegister => Sig(vec![I32], vec![]),
+            Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
+            Import::StateLeave => Sig(vec![I64], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1023,12 +1070,19 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         let is_void_main = i as u32 == p.main && main_void;
         let results: Vec<u8> = if is_void_main { vec![I64] } else { vt(f.ret).into_iter().collect() };
         func_types.push(types.idx(Sig(params, results)));
+        // Reserve one host-ticket local only in state-enabled modules.
+        // The ticket never reaches user source or escapes into other methods.
+        let state_hooks = p.imports.contains(&Import::StateEnter);
+        let mut locals = f.locals.clone();
+        if state_hooks { locals.push(Type::Int); }
         let mut e = Emit {
             l: &layout,
-            code: locals_decl(&f.locals),
+            code: locals_decl(&locals),
             frames: Vec::new(),
             void_main: is_void_main,
             active_iterators: Vec::new(),
+            state_ticket_slot: state_hooks.then_some((f.params.len()+f.locals.len()) as u32),
+            state_write_depth: 0,
         };
         if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
             // Creator is lazy: allocate a 56-byte checked continuation frame
@@ -1070,6 +1124,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             frames: Vec::new(),
             void_main: false,
             active_iterators: Vec::new(),
+            state_ticket_slot: None,
+            state_write_depth: 0,
         };
         for (ai, a) in p.actors.iter().enumerate() {
             e.code.extend_from_slice(&[0x20, 0]);

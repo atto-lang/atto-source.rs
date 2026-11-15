@@ -10,6 +10,8 @@ pub enum Mode { Read, Write }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ticket {
+    pub container: u64,
+    pub actor_incarnation: u64,
     pub epoch: u64,
     pub invocation: u64,
     pub continuation: u64,
@@ -44,6 +46,8 @@ pub struct Snapshot {
 /// One logical admission domain. Thread identities do not determine ownership;
 /// the caller supplies a scheduler-authenticated continuation + incarnation.
 pub struct Gate<const N: usize> {
+    container: u64,
+    actor_incarnation: u64,
     epoch: u64,
     next: u64,
     retired: bool,
@@ -51,8 +55,17 @@ pub struct Gate<const N: usize> {
 }
 
 impl<const N: usize> Gate<N> {
+    /// Compatibility constructor for a single local admission domain.
+    /// Production runtimes should call with_identity using host-owned IDs.
     pub const fn new(epoch: u64) -> Self {
-        Self { epoch, next: 0, retired: false, slots: [None; N] }
+        Self::with_identity(0, 0, epoch)
+    }
+
+    /// The host/scheduler owns these identities; never accept them from a
+    /// guest or from a caller who can forge an actor's continuation.
+    pub const fn with_identity(container: u64, actor_incarnation: u64, epoch: u64) -> Self {
+        Self { container, actor_incarnation, epoch, next: 0,
+               retired: false, slots: [None; N] }
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -97,7 +110,10 @@ impl<const N: usize> Gate<N> {
             Mode::Write => active.readers == 0 && active.writers == 0,
         };
         self.next = next;
-        let ticket = Ticket { epoch: self.epoch, invocation: next, continuation, mode };
+        let ticket = Ticket {
+            container: self.container, actor_incarnation: self.actor_incarnation,
+            epoch: self.epoch, invocation: next, continuation, mode,
+        };
         self.slots[idx] = Some(Entry {
             ticket, phase: if grant { Phase::Granted } else { Phase::Queued },
         });
@@ -273,12 +289,29 @@ mod tests {
         assert_eq!(g.request(10, Mode::Write), Err(Error::ReadToWriteUpgrade));
         assert_eq!(g.request(10, Mode::Read), Err(Error::AlreadyActive));
         assert_eq!(g.start(Ticket { epoch: 78, ..a }), Err(Error::StaleTicket));
+        assert_eq!(g.start(Ticket { container: 1, ..a }), Err(Error::StaleTicket));
+        assert_eq!(g.start(Ticket { actor_incarnation: 1, ..a }), Err(Error::StaleTicket));
         assert_eq!(g.start(Ticket { continuation: 11, ..a }), Err(Error::StaleTicket));
         assert_eq!(g.start(Ticket { mode: Mode::Write, ..a }), Err(Error::StaleTicket));
         g.cancel(a).unwrap();
         let b = ticket(g.request(10, Mode::Read).unwrap());
         assert_ne!(a.invocation, b.invocation);
         assert_eq!(g.start(a), Err(Error::StaleTicket));
+    }
+
+    #[test]
+    fn same_epoch_and_continuation_in_other_containers_cannot_reuse_ticket() {
+        let mut x = Gate::<2>::with_identity(1, 7, 55);
+        let mut y = Gate::<2>::with_identity(2, 7, 55);
+        let mut restarted_actor = Gate::<2>::with_identity(1, 8, 55);
+        let a = ticket(x.request(5, Mode::Write).unwrap());
+        let b = ticket(y.request(5, Mode::Write).unwrap());
+        assert_eq!(a.invocation, b.invocation);
+        assert_ne!(a, b);
+        assert_eq!(y.start(a), Err(Error::StaleTicket));
+        assert_eq!(restarted_actor.start(a), Err(Error::StaleTicket));
+        x.start(a).unwrap();
+        x.finish(a).unwrap();
     }
 
     #[test]

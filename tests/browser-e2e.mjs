@@ -147,6 +147,15 @@ try{
   assert.equal(await run(stateSource, 'main() -> 0'), '2\n0\nmain() -> 0');
   console.log('PASS browser: byte-verified /play state preview compiles AND executes in Chromium Worker');
 
+  // Real guest fault while an exclusive state ticket is physically active.
+  // The Worker aborts only after unwind, and each new Worker has fresh tickets.
+  const stateOverflow = stateSource.replace('counter.increment(2);',
+    'counter.increment(9223372036854775807);\n  counter.increment(1);');
+  assert.notEqual(stateOverflow,stateSource,'overflow fixture must alter the program');
+  assert.match(await run(stateOverflow,'E_PANIC'),/E_PANIC: integer overflow/);
+  assert.equal(await run(stateSource, 'main() -> 0'), '2\n0\nmain() -> 0');
+  console.log('PASS browser: state write panic aborts host ticket and next Worker recovers');
+
   const independent = await readFile(new URL('./fixtures/pass/180-standalone-state-critical.atto',import.meta.url),'utf8');
   assert.equal(await run(independent,'main() -> 0'), '2\n0\n7\n2\nmain() -> 0');
   console.log('PASS browser: separate state instances, critical read/write, reset');
