@@ -1,4 +1,5 @@
 // expect-exit: 42
+// expect-stdout: 42
 pure fnc twice(int value): int { return value * 2; }
 pure fnc plus_two(int value): int { return value + 2; }
 pub fnc main(): int {
