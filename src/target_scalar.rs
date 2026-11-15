@@ -155,7 +155,7 @@ pub fn lower_scalar_body(
 
 /// Public, explicit preview entry point. The normal compile() function does
 /// not call this: actor dispatch and state ownership are not implemented.
-pub fn compile_scalar_receiver_preview(source:&str) -> Result<Vec<u8>,Diagnostic> {
+fn validate_scalar_receiver_methods(source:&str) -> Result<Vec<ScalarMethod>,Diagnostic> {
     if source.len()>crate::SOURCE_CAP {
         return Err(Diagnostic::new(Pos{line:1,col:1},"E_SOURCE_LIMIT",
             "source exceeds scalar preview byte budget"));
@@ -195,9 +195,27 @@ pub fn compile_scalar_receiver_preview(source:&str) -> Result<Vec<u8>,Diagnostic
         }
         methods.push(method);
     }
+    Ok(methods)
+}
+
+/// Explicit opt-in stateless preview; production receiver compilation remains closed.
+pub fn compile_scalar_receiver_preview(source:&str) -> Result<Vec<u8>,Diagnostic> {
+    let methods=validate_scalar_receiver_methods(source)?;
     let bytes=crate::wasm::emit_scalar_receiver_preview(&methods)?;
     if bytes.len()>crate::wasm::MAX_OUTPUT {
         return Err(error(Pos{line:1,col:1},"scalar preview Wasm output cap exceeded"));
+    }
+    Ok(bytes)
+}
+
+/// Restricted actor-instance-bound scalar receiver preview. The generated
+/// module must be bound once by a trusted host before any receiver can run.
+/// This is not a scheduler, state layout or lease-cleanup implementation.
+pub fn compile_scalar_receiver_instance_preview(source:&str) -> Result<Vec<u8>,Diagnostic> {
+    let methods=validate_scalar_receiver_methods(source)?;
+    let bytes=crate::wasm::emit_scalar_receiver_instance_preview(&methods)?;
+    if bytes.len()>crate::wasm::MAX_OUTPUT {
+        return Err(error(Pos{line:1,col:1},"receiver instance preview Wasm output cap exceeded"));
     }
     Ok(bytes)
 }
