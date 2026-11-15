@@ -398,7 +398,11 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
     // kept in place, while out-of-line method headers/bodies are attached
     // immediately before its closing end. Source token positions are retained.
     let mut insertions: Vec<Vec<Token>> = vec![Vec::new(); headers.class_definitions.len()];
-    let mut omitted: Vec<(usize, usize)> = Vec::new();
+    // Bound source rewriting to O(tokens + copied method tokens), even when
+    // a file declares hundreds of classes/receivers within SOURCE_CAP.
+    // The previous nested per-token scans over class ends / omission ranges
+    // were quadratic in declaration count.
+    let mut omitted = vec![false; toks.len()];
     for (receiver, site) in headers.receivers.iter().zip(&headers.receiver_sites) {
         if receiver.mutable {
             return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
@@ -460,16 +464,33 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
             insertions[owner].push(toks[site.declaration_start].clone());
         }
         insertions[owner].extend_from_slice(&toks[site.method_start..site.end]);
-        omitted.push((site.declaration_start, site.end));
+        // Reject overlapping/malformed span ledgers rather than accidentally
+        // deleting an unrelated declaration during token lowering.
+        for slot in &mut omitted[site.declaration_start..site.end] {
+            if *slot {
+                return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
+                    "overlapping class receiver source spans"));
+            }
+            *slot = true;
+        }
+    }
+    let mut insert_at = vec![None; toks.len()];
+    for (owner, end) in headers.class_ends.iter().copied().enumerate() {
+        if end >= toks.len() || insert_at[end].replace(owner).is_some() {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "invalid or overlapping class closing token spans"));
+        }
+        if omitted[end] {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "class receiver span overlaps a class end delimiter"));
+        }
     }
     let mut result: Vec<Token> = Vec::with_capacity(toks.len());
     for (i, token) in toks.iter().enumerate() {
-        for (owner, end) in headers.class_ends.iter().enumerate() {
-            if *end == i {
-                result.extend(insertions[owner].iter().cloned());
-            }
+        if let Some(owner) = insert_at[i] {
+            result.extend(insertions[owner].iter().cloned());
         }
-        if !omitted.iter().any(|(start,end)| *start <= i && i < *end) {
+        if !omitted[i] {
             result.push(token.clone());
         }
     }
