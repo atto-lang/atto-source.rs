@@ -24,6 +24,7 @@ pub struct ScalarMethod {
     pub owner: String,
     pub name: String,
     pub arity: usize,
+    pub pos: Pos,
     pub expr: ScalarExpr,
 }
 
@@ -148,7 +149,7 @@ pub fn lower_scalar_body(
     }
     Ok(ScalarMethod{
         owner:owner.to_owned(),name:receiver.method.clone(),
-        arity:receiver.params.len(),expr,
+        arity:receiver.params.len(),pos:receiver.pos,expr,
     })
 }
 
@@ -194,7 +195,7 @@ pub fn compile_scalar_receiver_preview(source:&str) -> Result<Vec<u8>,Diagnostic
         }
         methods.push(method);
     }
-    let bytes=crate::wasm::emit_scalar_receiver_preview(&methods);
+    let bytes=crate::wasm::emit_scalar_receiver_preview(&methods)?;
     if bytes.len()>crate::wasm::MAX_OUTPUT {
         return Err(error(Pos{line:1,col:1},"scalar preview Wasm output cap exceeded"));
     }
