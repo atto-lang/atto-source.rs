@@ -359,6 +359,12 @@ enum Owner {
     },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BorrowKind {
+    Shared,
+    Exclusive,
+}
+
 struct Local {
     name: String,
     slot: u32,
@@ -366,6 +372,8 @@ struct Local {
     mutable: bool,
     /// `Some(payload)` for the `ActorMail<T>` parameter of receive
     mail: Option<Type>,
+    /// A compiler-only scalar loan alias; its slot is the source owner's slot.
+    borrow: Option<BorrowKind>,
 }
 
 struct FnCx<'a> {
@@ -477,7 +485,7 @@ fn isolation(pos: Pos, actor: &str, what: &str, name: &str) -> Diagnostic {
 fn const_init(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_) => true,
-        ExprKind::Unary(UnOp::Copy | UnOp::Take, _) => false,
+        ExprKind::Unary(UnOp::Copy | UnOp::Take | UnOp::Borrow | UnOp::BorrowMut, _) => false,
         ExprKind::Unary(_, a) => const_init(a),
         ExprKind::Binary(_, a, b) => const_init(a) && const_init(b),
         ExprKind::Ternary(c, a, b) => const_init(c) && const_init(a) && const_init(b),
@@ -551,6 +559,7 @@ fn generator_forin_scalar_expr(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
         ExprKind::Str(_) | ExprKind::Var(_) => true,
+        ExprKind::Unary(UnOp::Borrow | UnOp::BorrowMut, _) => false,
         ExprKind::Unary(_, a) => generator_forin_scalar_expr(a),
         ExprKind::Binary(_, a, b) => generator_forin_scalar_expr(a)
             && generator_forin_scalar_expr(b),
@@ -1298,6 +1307,7 @@ fn body_check(
             ty: Type::Int,
             mutable: false,
             mail: Some(payload),
+            borrow: None,
         });
     } else {
         for (i, (n, t, m)) in named.iter().enumerate() {
@@ -1307,6 +1317,7 @@ fn body_check(
                 ty: *t,
                 mutable: *m,
                 mail: None,
+                borrow: None,
             });
         }
     }
@@ -1464,6 +1475,7 @@ impl<'a> FnCx<'a> {
             ty,
             mutable,
             mail: None,
+            borrow: None,
         });
         Ok(slot)
     }
@@ -1480,6 +1492,85 @@ impl<'a> FnCx<'a> {
         let slot = self.nparams + self.locals.len() as u32;
         self.locals.push(ty);
         Ok(slot)
+    }
+
+    /// Loan records live in lexical scopes and disappear on scope exit,
+    /// including a branch-specific scope. No guest reference is manufactured.
+    fn loan_state(&self, owner_slot: u32) -> (usize, bool) {
+        let mut count = 0;
+        let mut exclusive = false;
+        for local in self.scopes.iter().flatten() {
+            if local.slot == owner_slot {
+                if let Some(kind) = local.borrow {
+                    count += 1;
+                    exclusive |= kind == BorrowKind::Exclusive;
+                }
+            }
+        }
+        (count, exclusive)
+    }
+
+    fn ensure_unloaned(&self, slot: u32, pos: Pos) -> R<()> {
+        if self.loan_state(slot).0 != 0 {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "cannot mutate or move the owner while a borrow is live"));
+        }
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn bind_scalar_borrow(&mut self, kind: BindKind, name: &str, annotation: Option<Type>,
+        inner: &Expr, exclusive: bool, pos: Pos) -> R<TStmt> {
+        if kind != BindKind::Val || annotation.is_some() {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "scalar borrow aliases currently require an inferred 'val name = borrow! ...' binding"));
+        }
+        let ExprKind::Var(owner_name) = &inner.kind else {
+            return Err(Diagnostic::new(inner.pos, "E_BORROW",
+                "borrow! requires a named, live scalar local"));
+        };
+        let owner = match self.lookup(owner_name) {
+            Some(local) => local,
+            None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND",
+                format!("unknown borrow owner '{owner_name}'"))),
+        };
+        let (slot, ty, mutable, existing_loan) =
+            (owner.slot, owner.ty, owner.mutable, owner.borrow);
+        if existing_loan.is_some() {
+            return Err(Diagnostic::new(inner.pos, "E_BORROW",
+                "reborrowing an alias requires explicit lifetime/provenance lowering"));
+        }
+        if self.moved.contains(&slot) {
+            return Err(Diagnostic::new(inner.pos, "E_MOVED",
+                format!("cannot borrow moved owner '{owner_name}'")));
+        }
+        if !matches!(ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+            return Err(Diagnostic::new(inner.pos, "E_UNSUPPORTED",
+                "only nonescaping scalar local loans are supported; heap and actor loans require ownership lowering"));
+        }
+        if exclusive && !mutable {
+            return Err(Diagnostic::new(inner.pos, "E_MUTABILITY",
+                "borrow! mut requires a mutable owner binding"));
+        }
+        let (count, has_exclusive) = self.loan_state(slot);
+        if has_exclusive || (exclusive && count > 0) {
+            return Err(Diagnostic::new(inner.pos, "E_BORROW",
+                "borrow conflicts with an existing shared or exclusive loan"));
+        }
+        if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
+            return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
+        }
+        if name == "self" {
+            return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
+        }
+        self.scopes.last_mut().unwrap().push(Local {
+            name: name.to_string(), slot, ty, mutable: false, mail: None,
+            borrow: Some(if exclusive { BorrowKind::Exclusive } else { BorrowKind::Shared }),
+        });
+        // The loan is a source-level reference, not a copy. The read and
+        // write-through operations subsequently lower directly to the owner's
+        // checked scalar local, with no guest pointer or heap alias.
+        Ok(TStmt::Block(Vec::new()))
     }
 
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
@@ -1516,6 +1607,10 @@ impl<'a> FnCx<'a> {
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
+                if let ExprKind::Unary(op @ (UnOp::Borrow | UnOp::BorrowMut), inner) = &init.kind {
+                    return self.bind_scalar_borrow(*kind, name, *ty, inner,
+                        *op == UnOp::BorrowMut, *pos);
+                }
                 let want = match ty {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
@@ -1545,10 +1640,24 @@ impl<'a> FnCx<'a> {
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
-                let (slot, ty, mutable, mail) = match self.lookup(name) {
-                    Some(l) => (l.slot, l.ty, l.mutable, l.mail.is_some()),
+                let (slot, ty, mutable, mail, borrow) = match self.lookup(name) {
+                    Some(l) => (l.slot, l.ty, l.mutable, l.mail.is_some(), l.borrow),
                     None => return Err(Diagnostic::new(*pos, "E_UNBOUND", format!("unknown name '{name}'"))),
                 };
+                if let Some(kind) = borrow {
+                    if kind != BorrowKind::Exclusive {
+                        return Err(Diagnostic::new(*pos, "E_BORROW",
+                            "cannot write through a shared borrow"));
+                    }
+                    let v = self.consume_expected(value, ty)?;
+                    if v.ty != ty {
+                        return Err(type_err(value.pos,
+                            format!("cannot assign {} through borrow of {}", self.tn(v.ty), self.tn(ty))));
+                    }
+                    // Assignment changes the referent, NOT the alias binding.
+                    return Ok(TStmt::Set(slot, v));
+                }
+                self.ensure_unloaned(slot, *pos)?;
                 if !mutable || mail {
                     return Err(Diagnostic::new(
                         *pos,
@@ -2172,6 +2281,12 @@ impl<'a> FnCx<'a> {
     /// A value in an ownership-transferring position (binding initializer,
     /// assignment, argument, return): naming an object local moves it.
     fn consume(&mut self, e: &Expr) -> R<TE> {
+        if let ExprKind::Var(name) = &e.kind {
+            if self.lookup(name).is_some_and(|l| l.borrow.is_some()) {
+                return Err(Diagnostic::new(e.pos, "E_ESCAPE",
+                    "borrowed alias cannot be returned, passed, or rebound as an owned value; use copy! for scalar values"));
+            }
+        }
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
@@ -2182,6 +2297,7 @@ impl<'a> FnCx<'a> {
                     format!("cannot move '{name}' inside a loop: it is declared outside the loop"),
                 ));
             }
+            self.ensure_unloaned(slot, e.pos)?;
             self.moved.insert(slot);
         }
         Ok(v)
@@ -2241,6 +2357,9 @@ impl<'a> FnCx<'a> {
         match &e.kind {
             ExprKind::Unary(UnOp::Copy, inner) => self.scalar_copy(inner, e.pos),
             ExprKind::Unary(UnOp::Take, inner) => self.scalar_take(inner, e.pos),
+            ExprKind::Unary(UnOp::Borrow | UnOp::BorrowMut, _) =>
+                Err(Diagnostic::new(e.pos, "E_ESCAPE",
+                    "borrow! references are only admitted as scoped val bindings")),
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
                 e: TExpr::I64(i64::MIN),
                 ty: Type::Int,
@@ -2296,6 +2415,9 @@ impl<'a> FnCx<'a> {
                 "take! requires a named local binding, not an expression"));
         };
         let value = self.value(inner)?;
+        if self.lookup(name).is_some_and(|l| l.borrow.is_some()) {
+            return Err(Diagnostic::new(pos, "E_ESCAPE", "cannot take! from a borrowed alias"));
+        }
         if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "take! of owned objects requires verified destructor and transfer semantics"));
@@ -2308,6 +2430,7 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_MOVED",
                 format!("cannot take! '{name}' inside a loop: it is declared outside the loop")));
         }
+        self.ensure_unloaned(*slot, pos)?;
         self.moved.insert(*slot);
         Ok(value)
     }
@@ -2348,8 +2471,8 @@ impl<'a> FnCx<'a> {
                         }
                     }
                 }
-                UnOp::Copy | UnOp::Take => {
-                    unreachable!("explicit scalar ownership handled before generic unary lowering")
+                UnOp::Copy | UnOp::Take | UnOp::Borrow | UnOp::BorrowMut => {
+                    unreachable!("explicit ownership handled before generic unary lowering")
                 }
                 UnOp::Not => {
                     if v.ty != Type::Bool {
@@ -2597,6 +2720,10 @@ impl<'a> FnCx<'a> {
                 Some(l) => {
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
+                    }
+                    if l.borrow.is_none() && self.loan_state(l.slot).1 {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            format!("direct access to '{name}' is forbidden while its exclusive loan is live")));
                     }
                     TE {
                         e: TExpr::Local(l.slot),
