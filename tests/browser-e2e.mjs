@@ -27,7 +27,7 @@ async function until(fn,label){
     try{const value=await fn();if(value)return value;last=value}catch(e){last=e.message}
     await sleep(100);
   }
-  throw new Error(label+' timed out: '+last);
+  throw new Error((typeof label==='function'?label():label)+' timed out: '+last);
 }
 let chrome,ws;
 try{
@@ -73,7 +73,7 @@ try{
       const value=await evaluate("document.querySelector('#result').textContent");
       lastOutput=value;
       return value?.includes(expected)?value:null;
-    },expected+' (last browser output: '+lastOutput+')');
+    },()=>expected+' (last browser output: '+lastOutput+')');
     return state;
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
