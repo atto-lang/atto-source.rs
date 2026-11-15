@@ -17,6 +17,11 @@ pub enum Type {
     Named(u32),
     /// Unresolved `ActorRef<Name>`: index into [`Program::type_names`].
     NamedRef(u32),
+    /// Source-level `fnc(T1, T2) -> R` signature. The index refers to a
+    /// canonical, compiler-interned signature in `Program::type_names`.
+    /// This type is recognized and checked, but cannot yet be represented
+    /// as a runtime value or Wasm function-table entry.
+    Callable(u32),
     /// Instance of `Program::classes[i]` (a heap reference).
     Class(u32),
     /// Value of `Program::enums[i]`.
@@ -48,6 +53,7 @@ impl Type {
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
+            Type::Callable(_) => "fnc(...)->...",
             _ => "object",
         }
     }
@@ -62,7 +68,8 @@ pub struct Program {
     /// Optional non-executable out-of-line actor interface in the production AST.
     /// Executable actor code still uses the normal actors field above.
     pub actor_interface: Option<ActorInterface>,
-    /// Spellings referenced by `Type::Named` / `Type::NamedRef`.
+    /// Spellings referenced by `Type::Named` / `Type::NamedRef`, plus
+    /// canonical compiler-interned source callable signatures.
     pub type_names: Vec<(String, Pos)>,
 }
 

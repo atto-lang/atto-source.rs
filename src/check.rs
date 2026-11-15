@@ -407,7 +407,7 @@ impl Globals<'_> {
             Type::Class(i) => self.classes[i as usize].name.clone(),
             Type::Enum(i) => self.enums[i as usize].name.clone(),
             Type::ActorRef(i) => format!("ActorRef<{}>", self.actors[i as usize].name),
-            Type::Named(i) | Type::NamedRef(i) => self.type_names[i as usize].0.clone(),
+            Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
             t => t.name().to_string(),
         }
     }
@@ -437,6 +437,19 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
             } else {
                 return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'")));
             }
+        }
+        Type::Callable(_) => {
+            // Type recognition and structural signature validation are
+            // available now, but the browser backend has no callable value
+            // storage or verified indirect-call ABI. Stop before emitting.
+            let signature = callable_ir::CallableSignature::from_source_type(
+                t, type_names, Pos { line: 1, col: 1 })?;
+            return Err(Diagnostic::new(
+                type_names[match t { Type::Callable(i) => i as usize, _ => unreachable!() }].1,
+                "E_UNSUPPORTED",
+                format!("callable value type {} is parsed and checked but requires validated Wasm indirect dispatch",
+                    signature.source_spelling()),
+            ));
         }
         Type::NamedRef(i) => {
             let (n, pos) = &type_names[i as usize];
@@ -1219,7 +1232,7 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
         Type::Class(i) => classes[i as usize].clone(),
         Type::Enum(i) => enums[i as usize].name.clone(),
         Type::ActorRef(i) => format!("ActorRef<{}>", actors[i as usize]),
-        Type::Named(i) | Type::NamedRef(i) => tn[i as usize].0.clone(),
+        Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => tn[i as usize].0.clone(),
         t => t.name().to_string(),
     }
 }

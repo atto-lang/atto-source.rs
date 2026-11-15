@@ -87,7 +87,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Str => Some(I64),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
-        Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
+        Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
 }
 

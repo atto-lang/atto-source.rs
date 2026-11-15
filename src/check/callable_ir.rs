@@ -43,6 +43,59 @@ impl CallableSignature {
             checked.result, lambda.pos)
     }
 
+    /// Read a source callable type encoded in the parser's canonical
+    /// signature table. This keeps source AST Type copyable without creating
+    /// an unstable runtime ABI or a new Program struct field. Invalid direct
+    /// ASTs fail closed rather than indexing outside the table.
+    pub fn from_source_type(
+        ty: Type, names: &[(String, Pos)], pos: Pos,
+    ) -> R<Self> {
+        let Type::Callable(i) = ty else {
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                "expected a callable source type"));
+        };
+        let (text, at) = names.get(i as usize).ok_or_else(|| {
+            Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "callable signature references missing type metadata")
+        })?;
+        let (args, result) = text.strip_prefix("fnc(")
+            .and_then(|x| x.split_once(")->"))
+            .ok_or_else(|| Diagnostic::new(*at, "E_UNSUPPORTED_TYPE",
+                "malformed callable signature metadata"))?;
+        let scalar = |word: &str| -> Option<Type> {
+            match word {
+                "int" => Some(Type::Int),
+                "bool" => Some(Type::Bool),
+                "float" => Some(Type::Float),
+                "string" => Some(Type::Str),
+                "void" => Some(Type::Void),
+                _ => None,
+            }
+        };
+        let params = if args.is_empty() { vec![] } else {
+            args.split(',').map(|s| scalar(s).ok_or_else(|| {
+                Diagnostic::new(*at, "E_UNSUPPORTED_TYPE",
+                    "malformed callable parameter metadata")
+            })).collect::<R<Vec<_>>>()?
+        };
+        let result = scalar(result).ok_or_else(|| Diagnostic::new(
+            *at, "E_UNSUPPORTED_TYPE", "malformed callable result metadata"))?;
+        let checked = Self::scalar(params, result, *at)?;
+        // Require canonical encoding, including no aliases or empty fields:
+        // malformed/forged source ASTs must never resolve a different type.
+        if checked.source_spelling() != *text {
+            return Err(Diagnostic::new(*at, "E_UNSUPPORTED_TYPE",
+                "noncanonical callable signature metadata"));
+        }
+        Ok(checked)
+    }
+
+    pub fn source_spelling(&self) -> String {
+        format!("fnc({})->{}",
+            self.params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
+            self.result.name())
+    }
+
     pub fn check_arguments(&self, actual: &[Type], pos: Pos) -> R<Type> {
         if actual.len() != self.params.len() {
             return Err(Diagnostic::new(pos, "E_ARITY", format!(
