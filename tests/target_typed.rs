@@ -709,3 +709,74 @@ fn actor_ownership_opaque_loops_never_contribute_an_executable_proof() {
     assert!(!m.receivers[0].body_lowered);
     assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
 }
+
+#[test]
+fn actor_borrow_shared_loan_does_not_authorize_source_mutation() {
+    let prelude = "declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    for change in [
+        "peer = spawn Foo();",
+        "peer += 1;",
+        "peer++;",
+        "++peer;",
+    ] {
+        rejects(&format!("{prelude}
+            val borrowed = rt borrow peer;
+            {change}
+        }}"), "E_BORROW");
+    }
+}
+
+#[test]
+fn receiver_ownership_conditions_never_hide_implicit_move_or_borrow() {
+    let prelude = "declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {";
+    for condition in ["rt take peer", "rt borrow peer", "rt borrow mut peer"] {
+        rejects(&format!("{prelude}
+            if {condition} {{ }} else {{ }}
+        }}"), "E_BORROW");
+    }
+}
+
+#[test]
+fn opaque_receiver_conditions_are_not_misreported_as_complete_ownership_proofs() {
+    let src="declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {
+            if compute(peer) { } else { }
+        }";
+    let module=typed(src).expect("unproved call is retained as an explicit obligation");
+    assert!(!module.receiver_borrows[0].ownership_preflight_complete);
+    assert!(!module.receiver_flows[0].fully_structured);
+    assert!(module.receivers[0].effects.unproved_call);
+    assert!(!module.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn pure_bool_conditions_preserve_bounded_move_joins() {
+    let good="declare actor Foo;
+        mtd (Foo self) run(bool flag,ActorRef<Foo> peer): void {
+            if (!flag) { val p = rt borrow peer; } else {}
+            rt take peer;
+        }";
+    let m=typed(good).expect("branch-scoped shared borrow is released before taking");
+    assert!(m.receiver_borrows[0].ownership_preflight_complete);
+    assert_eq!(m.receiver_borrows[0].moves,1);
+    assert_eq!(m.receiver_borrows[0].branch_joins,1);
+    assert!(!m.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(good).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn shared_borrows_remain_compatible_until_lexical_scope_end() {
+    let src="declare actor Foo;
+        mtd (Foo self) run(ActorRef<Foo> peer): void {
+            { val first = rt borrow peer; val second = rt borrow peer; }
+            rt take peer;
+        }";
+    let m=typed(src).expect("two shared borrows can coexist");
+    assert_eq!(m.receiver_borrows[0].loans,2);
+    assert_eq!(m.receiver_borrows[0].lexical_loan_releases,2);
+    assert!(m.receiver_borrows[0].ownership_preflight_complete);
+    assert!(!m.receivers[0].body_lowered);
+}
