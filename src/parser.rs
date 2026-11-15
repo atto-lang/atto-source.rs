@@ -182,6 +182,10 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "Tuple",
     "FixedArray",
     "FixedList",
+    "Box",
+    "Arc",
+    "Atomic",
+    "Send",
     "Map",
     "Set",
     "char",
@@ -1347,7 +1351,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Box" | "Arc" | "Atomic"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -1925,6 +1929,27 @@ impl Parser {
 
     fn parse_unary_inner(&mut self) -> R<Expr> {
         let pos = self.pos();
+        // Admit only a checked, executable scalar profile for copy! and take!.
+        // borrow! (including borrow! mut) and share! need tracked loans and
+        // refcounted handles; reject BEFORE code generation, never erase them.
+        if let Tok::Ident(word) = self.peek() {
+            if matches!(word.as_str(), "copy" | "take" | "borrow" | "share")
+                && *self.peek_at(1) == Tok::Bang
+            {
+                let word = word.clone();
+                self.advance();
+                self.advance();
+                return match word.as_str() {
+                    "copy" | "take" => {
+                        let operand = self.parse_unary()?;
+                        let op = if word == "copy" { UnOp::Copy } else { UnOp::Take };
+                        Ok(Expr { kind: ExprKind::Unary(op, Box::new(operand)), pos })
+                    }
+                    _ => Err(unsupported(pos,
+                        "borrow! / share! ownership and lifetime operators")),
+                };
+            }
+        }
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
