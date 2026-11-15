@@ -141,6 +141,7 @@ impl Cursor<'_> {
             match self.tok() {
                 Tok::Eof => return Err(self.err("E_EOF", "unclosed Erlang-style method body")),
                 Tok::Ident(s) if s == "end" && braces == 0 => {
+                    if conditionals != 0 { return Err(self.err("E_SYNTAX", "unclosed if/fi in Erlang-style body")); }
                     if items == 0 { return Err(self.err("E_SYNTAX", "empty Erlang-style method body")); }
                     self.next();
                     return Ok(());
