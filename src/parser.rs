@@ -1185,6 +1185,16 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
+                // A first executable profile of value match: two already-bound
+                // int locals as the tuple subject, bool guards, and bool arms.
+                // This deliberately does not claim first-class Tuple support.
+                if self.is_word("match") && *self.peek_at(1) == Tok::Lt {
+                    if self.in_generator {
+                        return Err(Diagnostic::new(pos, "E_RETURN",
+                            "generators cannot return a value match"));
+                    }
+                    return self.parse_return_guard_match_pair(pos);
+                }
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
                 let value = if at_end { None } else { Some(self.parse_expr()?) };
@@ -1447,6 +1457,86 @@ impl Parser {
         // each elif arm nests one level deeper in the lowered if/else chain
         self.height -= arms.len() as u32 - 1;
         Ok(Stmt::If { arms, otherwise, pos })
+    }
+
+    /// First executable guarded value-match profile for the browser backend.
+    /// `return match<bool> (x, y) over on x < 1 -> false, default -> true end`
+    /// lowers through the existing typed conditional checker and guest Wasm
+    /// backend. The tuple components must be existing int variables; this is
+    /// NOT a general Tuple expression or structural pattern implementation.
+    fn parse_return_guard_match_pair(&mut self, pos: Pos) -> R<Stmt> {
+        self.expect_word("match")?;
+        self.expect(Tok::Lt, "'<' after match")?;
+        let result_ty = self.parse_type()?;
+        if result_ty != Type::Bool {
+            return Err(unsupported(pos, "value match result types other than bool"));
+        }
+        self.expect(Tok::Gt, "'>' after bool")?;
+        self.expect(Tok::LParen, "'(' starting the pair subject")?;
+        let first_pos = self.pos();
+        let (first, _) = self.ident("the first tuple subject variable")?;
+        self.expect(Tok::Comma, "',' separating tuple subject variables")?;
+        let second_pos = self.pos();
+        let (second, _) = self.ident("the second tuple subject variable")?;
+        self.expect(Tok::RParen, "')' closing the pair subject")?;
+        self.expect_word("over")?;
+
+        let mut arms = Vec::new();
+        let mut otherwise = None;
+        let mut count = 0;
+        while !self.is_word("end") && *self.peek() != Tok::Eof {
+            self.grow(1)?;
+            count += 1;
+            let arm_pos = self.pos();
+            if self.eat_word("default") {
+                if otherwise.is_some() {
+                    return Err(Diagnostic::new(arm_pos, "E_MATCH",
+                        "duplicate match default arm"));
+                }
+                self.expect(Tok::Arrow, "'->' after default")?;
+                let value = self.parse_expr()?;
+                otherwise = Some(vec![Stmt::Return(Some(value), arm_pos)]);
+            } else {
+                if otherwise.is_some() {
+                    return Err(Diagnostic::new(arm_pos, "E_MATCH",
+                        "default must be the final match arm"));
+                }
+                self.expect_word("on")?;
+                let guard = self.parse_expr()?;
+                self.expect(Tok::Arrow, "'->' after match guard")?;
+                let value = self.parse_expr()?;
+                arms.push((guard, vec![Stmt::Return(Some(value), arm_pos)]));
+            }
+            if !self.is_word("end") {
+                self.expect(Tok::Comma, "',' between match arms")?;
+            }
+        }
+        self.expect_word("end")?;
+        self.height -= count;
+        if arms.is_empty() {
+            return Err(Diagnostic::new(pos, "E_MATCH",
+                "a guarded pair match needs at least one 'on' arm"));
+        }
+        let otherwise = otherwise.ok_or_else(|| Diagnostic::new(pos, "E_MATCH",
+            "non-exhaustive guarded pair match: add a final default arm"))?;
+        self.terminator()?;
+        // Check both subject elements as int, and read each once, before
+        // examining the guards. Compiler-only names cannot be written in
+        // user source; each match is isolated in its own lexical block.
+        let first_subject = Stmt::Bind {
+            kind: BindKind::Val, name: "$match_pair_first".to_string(),
+            ty: Some(Type::Int),
+            init: Expr { kind: ExprKind::Var(first), pos: first_pos },
+            pos: first_pos,
+        };
+        let second_subject = Stmt::Bind {
+            kind: BindKind::Val, name: "$match_pair_second".to_string(),
+            ty: Some(Type::Int),
+            init: Expr { kind: ExprKind::Var(second), pos: second_pos },
+            pos: second_pos,
+        };
+        Ok(Stmt::Block(vec![first_subject, second_subject,
+            Stmt::If { arms, otherwise: Some(otherwise), pos }]))
     }
 
     /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
