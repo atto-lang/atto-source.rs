@@ -796,11 +796,13 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let methods_of = |owner: &str, ms: &[Method], fields: &[Field]| -> R<Vec<MethodInfo>> {
         let mut out: Vec<MethodInfo> = Vec::new();
         for m in ms {
-            if out.iter().any(|o| o.name == m.name) || fields.iter().any(|f| f.name == m.name) {
+            if out.iter().any(|o| o.name == m.name && o.params.len() == m.params.len() &&
+                o.is_static == m.is_static) || fields.iter().any(|f| f.name == m.name) {
                 return Err(Diagnostic::new(
                     m.pos,
                     "E_DUPLICATE",
-                    format!("'{owner}' already declares a member named '{}'", m.name),
+                    format!("'{owner}' already declares member '{}', arity {}; overload identity is name + arity within instance/static namespace",
+                        m.name, m.params.len()),
                 ));
             }
             out.push(MethodInfo {
@@ -2874,14 +2876,18 @@ impl<'a> FnCx<'a> {
                         return Err(isolation(base.pos, me, "sibling class", n));
                     }
                     let class = &self.g.classes[c as usize];
-                    let m = match class.methods.iter().find(|m| m.name == name) {
+                    let m = match class.methods.iter().find(|m| m.name == name && m.params.len() == args.len() && m.is_static) {
                         Some(m) => m.clone(),
                         None => {
-                            return Err(Diagnostic::new(
-                                pos,
-                                "E_UNBOUND",
-                                format!("class '{n}' has no static function '{name}'"),
-                            ))
+                            if class.methods.iter().any(|m| m.name == name && m.params.len() == args.len() && !m.is_static) {
+                                return Err(type_err(pos, format!("'{n}.{name}' is an instance method; call it on an instance")));
+                            }
+                            if class.methods.iter().any(|m| m.name == name && m.is_static) {
+                                return Err(Diagnostic::new(pos, "E_ARITY",
+                                    format!("static function '{n}.{name}' has no overload with {} argument(s)", args.len())));
+                            }
+                            return Err(Diagnostic::new(pos, "E_UNBOUND",
+                                format!("class '{n}' has no static function '{name}'")));
                         }
                     };
                     if !m.is_static {
@@ -3007,14 +3013,19 @@ impl<'a> FnCx<'a> {
 
     fn instance_call(&mut self, recv: TE, c: u32, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         let class = &self.g.classes[c as usize];
-        let m = match class.methods.iter().find(|m| m.name == name) {
+        let m = match class.methods.iter().find(|m|
+            m.name == name && m.params.len() == args.len() && !m.is_static) {
             Some(m) => m.clone(),
             None => {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNBOUND",
-                    format!("class '{}' has no method '{name}'", class.name),
-                ))
+                if class.methods.iter().any(|m| m.name == name && m.params.len() == args.len() && m.is_static) {
+                    return Err(type_err(pos, format!("'{}.{name}' is a static function; call it on the class", class.name)));
+                }
+                if class.methods.iter().any(|m| m.name == name && !m.is_static) {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        format!("method '{}.{name}' has no overload with {} argument(s)", class.name, args.len())));
+                }
+                return Err(Diagnostic::new(pos, "E_UNBOUND",
+                    format!("class '{}' has no method '{name}'", class.name)));
             }
         };
         let cname = class.name.clone();
