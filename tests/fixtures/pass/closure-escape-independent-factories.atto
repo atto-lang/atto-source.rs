@@ -1,0 +1,11 @@
+// expect-exit: 42
+// Each call returns a distinct guest-owned class environment. The factory
+// stack frame is gone before the returned closure is invoked.
+fnc make_adder(int offset): fnc(int) -> int {
+  return |n| : int -> n + offset;
+}
+pub fnc main(): int {
+  val add_one = make_adder(1);
+  val add_ten = make_adder(10);
+  return add_one(21) + add_ten(10);
+}
