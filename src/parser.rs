@@ -508,6 +508,31 @@ impl Parser {
         Ok((decl, p.i))
     }
 
+    /// Production parser entry points for a target-header-preflighted class
+    /// receiver or top-level callable. Callers provide exact token spans from
+    /// target_syntax, not user-controlled byte slicing or a shadow grammar.
+    pub(crate) fn parse_target_method_at(
+        toks: &[Token], offset: usize, public: bool,
+    ) -> R<(Method, usize)> {
+        let mut p = Self::new(toks.to_vec());
+        if offset >= toks.len() {
+            return Err(Diagnostic::new(Pos::default(), "E_EOF", "method offset beyond source"));
+        }
+        p.i = offset;
+        let method = p.parse_method(public, false)?;
+        Ok((method, p.i))
+    }
+
+    pub(crate) fn parse_target_func_at(toks: &[Token], offset: usize) -> R<(Func, usize)> {
+        let mut p = Self::new(toks.to_vec());
+        if offset >= toks.len() {
+            return Err(Diagnostic::new(Pos::default(), "E_EOF", "function offset beyond source"));
+        }
+        p.i = offset;
+        let func = p.parse_func()?;
+        Ok((func, p.i))
+    }
+
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
