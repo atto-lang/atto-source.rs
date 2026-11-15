@@ -207,10 +207,29 @@ pub mod native_experiment {
             Self { value:RwLock::new(initial),releases:AtomicUsize::new(0) }
         }
         /// Only experimental Rust code calls this, NOT emitted Atto receiver code.
-        pub fn with_shared<R>(&self, cfg:&VerifiedCleanupCfg, lease:usize,
-            f:impl FnOnce(i64)->R) -> Result<R,&'static str> {
+        /// Fixed read operation with no user callback. The only local
+        /// observable exit after acquisition is normal return; unlike an
+        /// arbitrary callback this does not require a panic cleanup edge.
+        pub fn read_snapshot(&self, cfg:&VerifiedCleanupCfg,
+            lease:usize) -> Result<i64,&'static str> {
             if !cfg.permits(lease,StateLeaseMode::SharedRead,CleanupExit::Normal) {
                 return Err("unverified shared-read cleanup path");
+            }
+            let guard=SharedGuard {
+                lock:Some(self.value.read().unwrap_or_else(|err|err.into_inner())),
+                releases:&self.releases,
+            };
+            Ok(**guard.lock.as_ref().expect("live read lease"))
+        }
+
+        /// Arbitrary native callbacks can panic, even when their Rust body
+        /// looks pure. They require both the normal AND unwind cleanup paths.
+        /// This does not authorize callbacks in the generated Atto backend.
+        pub fn with_shared<R>(&self, cfg:&VerifiedCleanupCfg, lease:usize,
+            f:impl FnOnce(i64)->R) -> Result<R,&'static str> {
+            if !cfg.permits(lease,StateLeaseMode::SharedRead,CleanupExit::Normal)
+                || !cfg.permits(lease,StateLeaseMode::SharedRead,CleanupExit::CheckedPanic) {
+                return Err("shared callback requires verified normal and panic cleanup paths");
             }
             let guard=SharedGuard {
                 lock:Some(self.value.read().unwrap_or_else(|err|err.into_inner())),
