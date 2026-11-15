@@ -873,3 +873,123 @@ fn unproved_return_expression_never_certifies_complete_ownership() {
     assert!(!m.receiver_borrows[0].exit_edges[0].runtime_cleanup_proven);
     assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
 }
+
+#[test]
+fn state_cleanup_records_read_lease_normal_edge_without_backend_proof() {
+    use atto_compiler::target_cleanup::{
+        LeaseCleanupExit,StateLeaseMode,require_backend_cleanup_proof
+    };
+    let src=r#"
+declare actor Counter;
+define actor Counter as val int count = 4; end
+mtd (Counter self) read_count(): int {
+    return self.handle_state(critical-read |s| -> s.count);
+}
+"#;
+    let typed_module=typed(src).unwrap();
+    let plan=&typed_module.receiver_cleanup[0];
+    assert_eq!(plan.leases.len(),1);
+    let region=&plan.leases[0];
+    assert_eq!(region.receiver,0);
+    assert_eq!(region.lease,0);
+    assert_eq!(region.mode,StateLeaseMode::SharedRead);
+    assert!(!region.checked_arithmetic);
+    assert_eq!(region.cleanup.len(),1);
+    assert_eq!(region.cleanup[0].exit,LeaseCleanupExit::Normal);
+    assert!(!region.cleanup[0].backend_release_proven);
+    assert!(!plan.backend_cleanup_proven);
+    assert_eq!(require_backend_cleanup_proof(plan).unwrap_err().code,"E_UNSUPPORTED");
+    assert!(!typed_module.receivers[0].body_lowered);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn state_cleanup_write_lease_requires_distinct_panic_release_obligation() {
+    use atto_compiler::target_cleanup::{
+        LeaseCleanupExit,StateLeaseMode,require_backend_cleanup_proof
+    };
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) increment(int delta): void {
+    self.handle_state(critical-write |s| -> {
+        s.count = s.count + delta;
+    });
+}
+"#;
+    let typed_module=typed(src).unwrap();
+    let region=&typed_module.receiver_cleanup[0].leases[0];
+    assert_eq!(region.mode,StateLeaseMode::ExclusiveWrite);
+    assert!(region.checked_arithmetic);
+    assert_eq!(region.cleanup.len(),2);
+    assert_eq!(region.cleanup[0].exit,LeaseCleanupExit::Normal);
+    assert_eq!(region.cleanup[1].exit,LeaseCleanupExit::CheckedPanic);
+    assert!(region.cleanup.iter().all(|edge|!edge.backend_release_proven));
+    assert_ne!(region.cleanup[0].pos,region.cleanup[1].pos);
+    assert_eq!(require_backend_cleanup_proof(&typed_module.receiver_cleanup[0])
+        .unwrap_err().code,"E_UNSUPPORTED");
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn multiple_state_lease_callbacks_are_separate_cleanup_regions() {
+    use atto_compiler::target_cleanup::StateLeaseMode;
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) twice(): void {
+    self.handle_state(critical-read |s| -> s.count);
+    self.handle_state(critical-write |t| -> { t.count = 1; });
+}
+"#;
+    let m=typed(src).unwrap();
+    let p=&m.receiver_cleanup[0];
+    assert_eq!(p.leases.len(),2);
+    assert_eq!(p.leases[0].lease,0);
+    assert_eq!(p.leases[1].lease,1);
+    assert_eq!(p.leases[0].mode,StateLeaseMode::SharedRead);
+    assert_eq!(p.leases[1].mode,StateLeaseMode::ExclusiveWrite);
+    assert_eq!(p.leases[0].cleanup.len(),1);
+    assert_eq!(p.leases[1].cleanup.len(),1);
+    assert!(p.leases[0].normal_end_pos != p.leases[1].normal_end_pos);
+    assert!(!m.receivers[0].body_lowered);
+}
+
+#[test]
+fn branch_and_loop_inside_critical_callback_require_executable_cleanup_proof() {
+    let prefix=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(): void {
+    self.handle_state(critical-write |s| -> {
+"#;
+    for callback in [
+        "if true { s.count = 1; } else { s.count = 2; }",
+        "while true { s.count = s.count + 1; }",
+        "for i in values { s.count = 1; }",
+        "loop { s.count = s.count + 1; }",
+        "match 1 over 1 -> { s.count = 1; } end",
+    ] {
+        let source=format!("{prefix} {callback} }}); }}");
+        rejects(&source,"E_BORROW");
+    }
+}
+
+#[test]
+fn actor_state_cleanup_contract_is_distinct_from_lexical_local_borrow() {
+    let src=r#"
+declare actor Counter;
+define actor Counter as let int count = 0; end
+mtd (mut self: Counter) update(ActorRef<Counter> peer): void {
+    { val alias = rt borrow peer; }
+    self.handle_state(critical-write |s| -> { s.count = 1; });
+}
+"#;
+    let m=typed(src).unwrap();
+    assert_eq!(m.receiver_borrows[0].loans,1);
+    assert_eq!(m.receiver_borrows[0].closed_regions.len(),1);
+    assert_eq!(m.receiver_cleanup[0].leases.len(),1);
+    assert!(m.receiver_cleanup[0].leases[0].cleanup
+        .iter().all(|edge|!edge.backend_release_proven));
+    assert!(!m.receivers[0].body_lowered);
+}
