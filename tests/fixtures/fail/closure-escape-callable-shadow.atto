@@ -1,0 +1,12 @@
+// expect-error: E_CAPTURE
+fnc make_adder(int offset): fnc(int) -> int {
+  return |n| : int -> n + offset;
+}
+pub fnc main(): int {
+  val add_one = make_adder(1);
+  if true then
+    val add_one = 3;
+    return add_one(41);
+  fi
+  return 0;
+}
