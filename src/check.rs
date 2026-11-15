@@ -2057,7 +2057,10 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
-                if !ctor {
+                // Only define state declares ActorState-mode class fields.
+                // Its parser admits writes solely inside checked, synchronous
+                // critical scopes; ordinary class self remains read-only.
+                if !ctor && mode != FieldMode::ActorState {
                     return Err(Diagnostic::new(
                         pos,
                         "E_OWNERSHIP",
