@@ -1927,27 +1927,32 @@ impl Parser {
         r
     }
 
+    #[inline(never)]
+    fn parse_scalar_ownership(&mut self, op: UnOp, pos: Pos) -> R<Expr> {
+        let operand = self.parse_unary()?;
+        Ok(Expr { kind: ExprKind::Unary(op, Box::new(operand)), pos })
+    }
+
     fn parse_unary_inner(&mut self) -> R<Expr> {
         let pos = self.pos();
-        // Admit only a checked, executable scalar profile for copy! and take!.
-        // borrow! (including borrow! mut) and share! need tracked loans and
-        // refcounted handles; reject BEFORE code generation, never erase them.
-        if let Tok::Ident(word) = self.peek() {
-            if matches!(word.as_str(), "copy" | "take" | "borrow" | "share")
-                && *self.peek_at(1) == Tok::Bang
-            {
-                let word = word.clone();
-                self.advance();
-                self.advance();
-                return match word.as_str() {
-                    "copy" | "take" => {
-                        let operand = self.parse_unary()?;
-                        let op = if word == "copy" { UnOp::Copy } else { UnOp::Take };
-                        Ok(Expr { kind: ExprKind::Unary(op, Box::new(operand)), pos })
-                    }
-                    _ => Err(unsupported(pos,
+        // Keep prefix dispatch small: this function is recursive through unary
+        // and binary expression parsing, so heavy branches go out of line.
+        if *self.peek_at(1) == Tok::Bang {
+            match self.word_at(0) {
+                Some("copy") => {
+                    self.advance();
+                    self.advance();
+                    return self.parse_scalar_ownership(UnOp::Copy, pos);
+                }
+                Some("take") => {
+                    self.advance();
+                    self.advance();
+                    return self.parse_scalar_ownership(UnOp::Take, pos);
+                }
+                Some("borrow" | "share") =>
+                    return Err(unsupported(pos,
                         "borrow! / share! ownership and lifetime operators")),
-                };
+                _ => {}
             }
         }
         let op = match self.peek() {
