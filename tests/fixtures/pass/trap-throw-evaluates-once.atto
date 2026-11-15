@@ -1,0 +1,17 @@
+// expect-exit: 7
+// expect-stdout: side effect
+// expect-stdout: caught exactly once
+// The operand of a failing caller-side trap executes once, and only the
+// ordinary Error is captured; the caller continues after the catch.
+fnc leaf(): int {
+  stdio.println("side effect");
+  throw Error("ordinary failure");
+}
+
+pub fnc main(): int {
+  match trap leaf() over
+    on Some(value) -> { return value; }
+    on None -> { stdio.println("caught exactly once"); }
+  end
+  return 7;
+}
