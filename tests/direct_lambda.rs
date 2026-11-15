@@ -61,7 +61,7 @@ fn mutable_and_nonscalar_captures_still_fail_closed() {
 }
 #[test]
 fn escaped_int_closure_uses_owned_guest_class_environment() {
-    let src = "fnc make_adder(int offset): fnc(int)->int { return |n| : int -> n + offset; } pub fnc main(): int { val add_one = make_adder(1); return add_one(41); }";
+    let src = "fnc make_adder(int offset): fnc(int)=>int { return |n| : int -> n + offset; } pub fnc main(): int { val add_one = make_adder(1); return add_one(41); }";
     let program = checked(src);
     assert!(program.heap, "each escaping closure must own a bounded guest heap environment");
     assert!(program.funcs.iter().any(|f| f.name == "$atto_escaping_closure_0.call"
@@ -71,7 +71,7 @@ fn escaped_int_closure_uses_owned_guest_class_environment() {
 }
 #[test]
 fn braced_escaping_closure_stays_outside_the_checked_profile() {
-    let src = "fnc make_adder(int offset): fnc(int)->int { return |n| : int -> { return n + offset; }; } pub fnc main(): int { return 0; }";
+    let src = "fnc make_adder(int offset): fnc(int)=>int { return |n| : int -> { return n + offset; }; } pub fnc main(): int { return 0; }";
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
 }
 #[test]

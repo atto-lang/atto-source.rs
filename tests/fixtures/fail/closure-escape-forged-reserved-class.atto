@@ -1,7 +1,7 @@
 // expect-error: E_TOKEN
 // The generated $atto_escaping_closure_0 name is deliberately unlexable;
 // source must never be able to construct or impersonate an environment.
-fnc make_adder(int offset): fnc(int) -> int {
+fnc make_adder(int offset): fnc(int) => int {
   return |n| : int -> n + offset;
 }
 pub fnc main(): int {

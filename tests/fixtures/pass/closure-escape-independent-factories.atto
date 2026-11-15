@@ -1,7 +1,7 @@
 // expect-exit: 42
 // Each call returns a distinct guest-owned class environment. The factory
 // stack frame is gone before the returned closure is invoked.
-fnc make_adder(int offset): fnc(int) -> int {
+fnc make_adder(int offset): fnc(int) => int {
   return |n| : int -> n + offset;
 }
 pub fnc main(): int {

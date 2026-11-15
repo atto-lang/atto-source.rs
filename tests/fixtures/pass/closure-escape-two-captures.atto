@@ -1,6 +1,6 @@
 // expect-exit: 42
 // Two immutable scalar parameters are copied in lexical declaration order.
-fnc make_linear(int slope, int bias): fnc(int) -> int {
+fnc make_linear(int slope, int bias): fnc(int) => int {
   return |n| : int -> n * slope + bias;
 }
 pub fnc main(): int {

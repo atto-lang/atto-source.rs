@@ -63,6 +63,7 @@ for (const [name, code] of [
   ['closure-escape-mutable-param', 'E_CAPTURE'],
   ['closure-escape-unknown-capture', 'E_CAPTURE'],
   ['closure-escape-indirect-parameter', 'E_UNSUPPORTED'],
+  ['callable-thin-type-arrow', 'E_SYNTAX'],
   ['closure-escape-two-factories', 'E_UNSUPPORTED'],
   ['closure-escape-forged-reserved-class', 'E_TOKEN'],
   ['closure-escape-field-private', 'E_PRIVATE'],

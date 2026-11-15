@@ -1,0 +1,6 @@
+// expect-error: E_SYNTAX
+// Thin arrow is reserved for executable lambda/function bodies, not a callable type.
+fnc make_bad(int offset): fnc(int) -> int {
+  return |n| : int -> n + offset;
+}
+pub fnc main(): int { return 0; }

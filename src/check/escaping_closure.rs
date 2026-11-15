@@ -1,6 +1,6 @@
 //! First escaping lexical closure runtime profile for the native+wasm32 compiler.
  //! 
-//! Converts one immutable `fnc(int)->int` factory-returned expression lambda
+//! Converts one immutable `fnc(int)=>int` factory-returned expression lambda
 //! into a private nominal class with an owned guest-heap capture environment.
 //! Each factory invocation constructs a distinct object. Calls are statically
 //! resolved to the generated class's checked method ABI: no function table,
@@ -92,7 +92,7 @@ fn is_factory_call(value: &Expr, name: &str) -> bool {
 }
 // A callable value is admitted only as a distinct immutable local created
 // by the known factory. The class is a nominal, move-checked owned value.
-// Importantly: a source `fnc(int)->int` is NOT lowered for arbitrary
+// Importantly: a source `fnc(int)=>int` is NOT lowered for arbitrary
 // parameters, aliases, classes, actor transport or other closure factories.
 fn rewrite_expr(e: &mut Expr, known: &BTreeSet<String>, depth: usize) -> R<()> {
     if depth >= MAX_DEPTH { return Err(err(e.pos, "E_NESTING",
@@ -230,7 +230,7 @@ pub fn lower(source: &Program) -> R<Program> {
     let signature = CallableSignature::from_source_type(f.ret, &p.type_names, f.pos)?;
     if signature.params != [Type::Int] || signature.result != Type::Int {
         return Err(err(f.pos, "E_UNSUPPORTED_TYPE",
-            "escaping closure v1 admits only fnc(int)->int"));
+            "escaping closure v1 admits only fnc(int)=>int"));
     }
     if f.is_generator || f.name == "main" {
         return Err(err(f.pos, "E_UNSUPPORTED", "escaping callable factory must be an ordinary non-entry function"));

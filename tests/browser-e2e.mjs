@@ -80,7 +80,7 @@ try{
   // Exercise the *new* factory escape in real Chromium and the actual
   // browser-wasm32 compiler, not just Node or a source-text evaluator.
   const escapedClosure = [
-    'fnc make_adder(int offset): fnc(int) -> int {',
+    'fnc make_adder(int offset): fnc(int) => int {',
     '  return |n| : int -> n + offset;',
     '}',
     'pub fnc main(): int {',
@@ -94,10 +94,10 @@ try{
 
   // This milestone must not accidentally admit general callable parameters.
   const unsupportedIndirect = [
-    'fnc make_adder(int offset): fnc(int) -> int {',
+    'fnc make_adder(int offset): fnc(int) => int {',
     '  return |n| : int -> n + offset;',
     '}',
-    'fnc apply(fnc(int) -> int operation, int n): int { return operation(n); }',
+    'fnc apply(fnc(int) => int operation, int n): int { return operation(n); }',
     'pub fnc main(): int { return 0; }'
   ].join('\n');
   assert.match(await run(unsupportedIndirect, 'E_UNSUPPORTED'), /E_UNSUPPORTED/);
