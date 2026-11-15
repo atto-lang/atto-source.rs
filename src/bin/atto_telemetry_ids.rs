@@ -249,6 +249,31 @@ mod tests {
         assert!(rooted_source(manifest, manifest).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn denies_source_and_manifest_that_alias_the_same_hardlink_inode() {
+        let file_name = format!("__atto_source_link_{}.atto", std::process::id());
+        let linked = Path::new(&file_name);
+        assert!(!linked.exists());
+        fs::hard_link("Cargo.toml", linked).expect("create local hardlink test input");
+        let result = rooted_source(linked, Path::new("Cargo.toml"));
+        fs::remove_file(linked).expect("remove local test hardlink");
+        assert!(result.unwrap_err().contains("hardlink aliases"));
+    }
+
+    #[test]
+    fn detects_in_place_input_mutation_from_saved_metadata() {
+        let file_name = format!("__atto_mutation_{}.json", std::process::id());
+        let path = Path::new(&file_name);
+        assert!(!path.exists());
+        fs::write(path, b"one").expect("create private test input");
+        let before = fs::metadata(path).expect("snapshot original input");
+        fs::write(path, b"longer").expect("mutate input bytes");
+        let after = fs::metadata(path).expect("snapshot changed input");
+        fs::remove_file(path).expect("remove temporary test input");
+        assert!(!same_snapshot_metadata(&before, &after));
+    }
+
     #[test]
     fn checks_and_locates_real_atto_fixture_without_native_codegen() {
         let source = "examples/source-ids-main.atto".to_string();
