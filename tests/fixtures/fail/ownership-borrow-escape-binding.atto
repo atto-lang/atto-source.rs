@@ -1,0 +1,4 @@
+// expect-error: E_ESCAPE
+pub fnc main(): int {
+  val number = 42; val reader = borrow! number; val escaped = reader; return 0;
+}
