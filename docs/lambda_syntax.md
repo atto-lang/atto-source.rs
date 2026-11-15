@@ -1,6 +1,32 @@
 # AttoLang lambda return-type syntax (parser profile v1)
 
 The preferred braceless form is `|parameters| : ReturnType -> body`.
+
+## Zero-or-more discarded arguments
+
+A standalone underscore in lambda-head position is an arity-polymorphic
+discard wildcard. It accepts **any statically resolved callable signature**
+within the normal `MAX_PARAMS` limit, exposes no names, and returns its body:
+
+```atto
+val constant = _ : int -> 5;
+constant();            // 5
+constant(7);           // 5
+constant(true, 9);     // 5
+```
+
+This differs from `|| : int -> 5` (exactly zero arguments),
+`|_| : int -> 5` (exactly one discarded argument), and
+`|_, _| : int -> 5` (exactly two discarded arguments).
+
+The parser keeps an explicit `variadic` AST flag. Contextual lambda checking
+needs a concrete expected callable signature; a standalone wildcard without
+one fails inference. The direct noncapturing Rust/Wasm subset can also infer
+from **literal-scalar direct calls** and generates one private function per
+distinct argument signature. Arguments are still evaluated normally, exactly
+once, before their values are discarded. Neither an arbitrary runtime
+variadic ABI nor escaped callable values are enabled by this syntax.
+
 The annotation is optional: return types should normally be inferred from
 expressions and contextual callable signatures (when the relevant backend
 supports closure typing). Do **not** write `=>` in new formatted code.
