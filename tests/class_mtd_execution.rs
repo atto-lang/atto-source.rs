@@ -29,7 +29,7 @@ fn signature_duplicates_and_unsupported_types_reject_without_output() {
     for (source, code) in [
         ("define class C as foo(): int { return 1; } end mtd (self: C) foo() -> int :: 2 end", "E_DUPLICATE"),
         ("define class C as end mtd (self: C) weird(List<int> x) -> int :: 2 end", "E_UNSUPPORTED_TYPE"),
-        ("define class C as end mtd (self: C) invalid() -> int :: true end", "E_TYPE"),
+        ("define class C as end mtd (self: C) invalid() -> int :: true end pub fnc main(): int { return 0; }", "E_TYPE"),
     ] {
         let d = compile(source).unwrap_err();
         assert_eq!(d.code, code, "{source}: {d}");
