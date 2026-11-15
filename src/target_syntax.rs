@@ -24,6 +24,15 @@ pub struct ReceiverHeader {
     pub public: bool,
     pub pos: Pos,
 }
+/// Source token offsets for an out-of-line receiver, retained so executable
+/// class mtd declarations can be lowered by the production method parser.
+#[derive(Clone, Debug)]
+pub struct ReceiverSite {
+    pub declaration_start: usize,
+    pub method_start: usize,
+    pub end: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TargetHeaders {
     pub namespace: Option<String>,
@@ -34,6 +43,10 @@ pub struct TargetHeaders {
     pub classes: Vec<String>,
     /// Parsed class definitions; mtd linking/typing remains unsupported.
     pub class_definitions: Vec<ClassDecl>,
+    /// Token offset of each class's closing 'end', in class_definitions order.
+    pub class_ends: Vec<usize>,
+    /// Receiver declaration and body token offsets, in receivers order.
+    pub receiver_sites: Vec<ReceiverSite>,
     /// Real concrete actor syntax trees parsed by the production parser.
     /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
     pub definitions: Vec<ActorDecl>,
@@ -179,7 +192,7 @@ impl Cursor<'_> {
             self.next();
         }
     }
-    fn receiver(&mut self, pos: Pos, public: bool) -> R<(ReceiverHeader, usize, usize)> {
+    fn receiver(&mut self, pos: Pos, public: bool) -> R<(ReceiverHeader, usize, usize, usize)> {
         self.expect(&Tok::LParen, "expected '(' before receiver")?;
         // Both the explicit typed spelling and the nominal receiver spelling
         // are accepted: (mut self: Foo), (self: Foo), (Foo self),
@@ -200,6 +213,7 @@ impl Cursor<'_> {
             (owner, false)
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
+        let method_start = self.i;
         let name = self.ident()?;
         let params = self.params()?;
         let arity = params.len();
@@ -213,7 +227,7 @@ impl Cursor<'_> {
         let start = self.i;
         self.body(arrow_type, colon_type)?;
         let end = self.i;
-        Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end))
+        Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end, method_start))
     }
 
     /// Use production parsing for one declaration; unlike a token-only scan,
@@ -296,6 +310,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                         format!("duplicate class or actor owner '{}'", class.name)));
                 }
                 out.classes.push(class.name.clone());
+                out.class_ends.push(c.i - 1);
                 out.class_definitions.push(class);
             } else {
                 return Err(c.err("E_SYNTAX", "expected 'class' or 'actor' after define"));
@@ -309,15 +324,19 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             out.actors.push(name);
             c.expect(&Tok::Semi, "expected ';' after actor")?;
         } else {
+            let declaration_start = c.i;
             let public = c.take_word("pub");
             if c.take_word("mtd") {
-                let (method, start, end) = c.receiver(pos, public)?;
+                let (method, start, end, method_start) = c.receiver(pos, public)?;
                 if out.receivers.iter().any(|m: &ReceiverHeader| m.owner == method.owner
                     && m.name == method.name && m.arity == method.arity) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE",
                         "duplicate receiver signature (owner/name/arity)"));
                 }
                 spans.push((out.receivers.len(), start, end));
+                out.receiver_sites.push(ReceiverSite {
+                    declaration_start, method_start, end,
+                });
                 out.receivers.push(method);
             } else if c.take_word("fnc") || c.take_word("routine") {
                 function_spans.push(c.function()?);
@@ -356,6 +375,67 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
     Ok(out)
 }
 
+
+
+/// Transform a class-only out-of-line receiver unit into normal class member
+/// tokens. This is a *syntax lowering*: the production parser, ownership
+/// checker and Wasm emitter then do all semantic work on the resulting AST.
+/// No actor receiver, namespace/import or mutable receiver is admitted here.
+pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<Token>> {
+    let pos = toks.first().map(|t| t.pos).unwrap_or_default();
+    if headers.classes.is_empty() || headers.namespace.is_some() ||
+       !headers.imports.is_empty() || !headers.actors.is_empty() ||
+       !headers.definitions.is_empty() {
+        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+            "only local class receivers can be compiled; actor, namespace and import linking is unavailable"));
+    }
+    if headers.class_ends.len() != headers.class_definitions.len() ||
+        headers.receiver_sites.len() != headers.receivers.len() {
+        return Err(Diagnostic::new(pos, "E_SYNTAX", "inconsistent receiver token ranges"));
+    }
+    // One inserted token stream per class. The original class declaration is
+    // kept in place, while out-of-line method headers/bodies are attached
+    // immediately before its closing end. Source token positions are retained.
+    let mut insertions: Vec<Vec<Token>> = vec![Vec::new(); headers.class_definitions.len()];
+    let mut omitted: Vec<(usize, usize)> = Vec::new();
+    for (receiver, site) in headers.receivers.iter().zip(&headers.receiver_sites) {
+        if receiver.mutable {
+            return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
+                "mutable class mtd receivers require a verified mutable-self ownership ABI"));
+        }
+        let owner = headers.class_definitions.iter().position(|c| c.name == receiver.owner)
+            .ok_or_else(|| Diagnostic::new(receiver.pos, "E_UNBOUND",
+                "class receiver owner has no local definition"))?;
+        if site.declaration_start >= site.method_start ||
+            site.method_start >= site.end || site.end > toks.len() ||
+            headers.class_ends[owner] >= toks.len() {
+            return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
+                "invalid out-of-line receiver source span"));
+        }
+        if receiver.public {
+            // pub mtd (self: Type) method(...) becomes a public inline method.
+            if !matches!(&toks[site.declaration_start].tok, Tok::Ident(s) if s == "pub") {
+                return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
+                    "missing public receiver visibility token"));
+            }
+            insertions[owner].push(toks[site.declaration_start].clone());
+        }
+        insertions[owner].extend_from_slice(&toks[site.method_start..site.end]);
+        omitted.push((site.declaration_start, site.end));
+    }
+    let mut result: Vec<Token> = Vec::with_capacity(toks.len());
+    for (i, token) in toks.iter().enumerate() {
+        for (owner, end) in headers.class_ends.iter().enumerate() {
+            if *end == i {
+                result.extend(insertions[owner].iter().cloned());
+            }
+        }
+        if !omitted.iter().any(|(start,end)| *start <= i && i < *end) {
+            result.push(token.clone());
+        }
+    }
+    Ok(result)
+}
 
 /// Resolve a receiver header against nominal, file-scoped symbols. This does
 /// not link a full actor definition or prove that a method is callable through
