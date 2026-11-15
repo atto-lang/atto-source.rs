@@ -2252,6 +2252,28 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut(owner)', not 'borrow_mut!(owner)'"));
+                }
+                "borrow" | "copy" | "take" | "share" if *self.peek_at(1) == Tok::Bang => {
+                    self.advance(); // name
+                    self.advance(); // !
+                    let mutable = s == "borrow" && self.eat_word("mut");
+                    if s != "borrow" && self.is_word("mut") {
+                        return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
+                    }
+                    self.expect(Tok::LParen, "'(' after ownership operator")?;
+                    let inner = self.parse_expr()?;
+                    self.expect(Tok::RParen, "')' after ownership operand")?;
+                    let action = match s.as_str() {
+                        "borrow" => OwnershipOp::Borrow,
+                        "copy" => OwnershipOp::Copy,
+                        "take" => OwnershipOp::Take,
+                        "share" => OwnershipOp::Share,
+                        _ => unreachable!(),
+                    };
+                    ExprKind::Ownership(action, mutable, Box::new(inner))
+                }
                 "true" => {
                     self.advance();
                     ExprKind::Bool(true)

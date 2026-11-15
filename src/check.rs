@@ -368,6 +368,9 @@ struct Local {
     mail: Option<Type>,
 }
 
+#[derive(Clone, Copy)]
+struct ScopedLoan { owner: u32, mutable: bool }
+
 struct FnCx<'a> {
     g: &'a Globals<'a>,
     owner: Owner,
@@ -380,6 +383,8 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Borrowed class locals keyed by their own slot.
+    loans: BTreeMap<u32, ScopedLoan>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -1419,6 +1424,7 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            loans: BTreeMap::new(),
             imports,
             data,
         }
@@ -1481,10 +1487,19 @@ impl<'a> FnCx<'a> {
         Ok(slot)
     }
 
+    fn pop_scope(&mut self) {
+        if let Some(ended) = self.scopes.pop() {
+            for l in ended {
+                self.loans.remove(&l.slot);
+                self.moved.remove(&l.slot);
+            }
+        }
+    }
+
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.scopes.push(Vec::new());
         let r = self.stmts(body);
-        self.scopes.pop();
+        self.pop_scope();
         r
     }
 
@@ -1515,6 +1530,9 @@ impl<'a> FnCx<'a> {
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
+                if let ExprKind::Ownership(OwnershipOp::Borrow, mutable, inner) = &init.kind {
+                    return self.borrow_binding(*kind, name, *ty, inner, *mutable, *pos);
+                }
                 let want = match ty {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
@@ -1554,6 +1572,9 @@ impl<'a> FnCx<'a> {
                         "E_IMMUTABLE",
                         format!("cannot reassign val binding '{name}'"),
                     ));
+                }
+                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed local or owner while the loan is live"));
                 }
                 let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
@@ -1603,7 +1624,7 @@ impl<'a> FnCx<'a> {
                     let body = self.looped(body)?;
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
                 })();
-                self.scopes.pop();
+                self.pop_scope();
                 checked?
             }
             Stmt::Return(v, pos) => match (v, self.ret) {
@@ -1700,7 +1721,7 @@ impl<'a> FnCx<'a> {
                     });
                     Ok(TStmt::Block(out))
                 })();
-                self.scopes.pop();
+                self.pop_scope();
                 r?
             }
             Stmt::Break(pos) | Stmt::Continue(pos) => {
@@ -1880,7 +1901,7 @@ impl<'a> FnCx<'a> {
                 };
                 Ok((cond, body))
             })();
-            self.scopes.pop();
+            self.pop_scope();
             let (cond, body) = r?;
             if arm.guard.is_none() {
                 match key {
@@ -1998,7 +2019,7 @@ impl<'a> FnCx<'a> {
                 };
                 Ok((cond, body))
             })();
-            self.scopes.pop();
+            self.pop_scope();
             let (cond, body) = r?;
             if arm.guard.is_none() {
                 match key {
@@ -2023,6 +2044,30 @@ impl<'a> FnCx<'a> {
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
+        if let ExprKind::Var(name) = &target.kind {
+            if let Some(local) = self.lookup(name) {
+                if let Some(loan) = self.loans.get(&local.slot).copied() {
+                    if !loan.mutable {
+                        return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
+                    }
+                    let Type::Class(c) = local.ty else { unreachable!("tracked loans must be class typed") };
+                    let class = &self.g.classes[c as usize];
+                    let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
+                        Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
+                    if !f.public && self.inside_class() != Some(c) {
+                        return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
+                    }
+                    if f.mode == FieldMode::Final {
+                        return Err(Diagnostic::new(pos, "E_IMMUTABLE", "cannot mutate final field through borrow! mut"));
+                    }
+                    let (slot, offset, fty) = (local.slot, f.slot, f.ty);
+                    let checked = self.consume_expected(value, fty)?;
+                    if checked.ty != fty { return Err(type_err(value.pos, "borrowed field assignment type mismatch")); }
+                    return Ok(TStmt::FieldSet { obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
+                        offset, ty: fty, value: checked });
+                }
+            }
+        }
         if !matches!(target.kind, ExprKind::SelfRef) {
             return Err(Diagnostic::new(
                 pos,
@@ -2168,12 +2213,100 @@ impl<'a> FnCx<'a> {
         Ok(v)
     }
 
+    /// Class loans are bound to lexical locals; no owner transfer or escape.
+    fn borrow_binding(&mut self, kind: BindKind, name: &str, annotation: Option<Type>,
+                      inner: &Expr, mutable: bool, pos: Pos) -> R<TStmt> {
+        let ExprKind::Var(owner_name) = &inner.kind else {
+            return Err(Diagnostic::new(inner.pos, "E_BORROW", "borrow! requires a named owner"));
+        };
+        let (owner, owner_ty) = match self.lookup(owner_name) {
+            Some(l) => (l.slot, l.ty),
+            None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
+        };
+        if self.loans.contains_key(&owner) {
+            return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
+        }
+        if let Some(loan) = self.loans.values().find(|loan| loan.owner == owner) {
+            if mutable || loan.mutable {
+                return Err(Diagnostic::new(pos, "E_BORROW", "conflicting loans: mutable borrowing must be exclusive"));
+            }
+        }
+        let value = self.value(inner)?;
+        if let Some(annotation) = annotation {
+            let expected = self.resolve(annotation, pos)?;
+            if expected != value.ty {
+                return Err(type_err(pos, format!("borrowed binding '{name}' expects {}, found {}", self.tn(expected), self.tn(value.ty))));
+            }
+        }
+        if !matches!(owner_ty, Type::Class(_)) {
+            if mutable {
+                return Err(Diagnostic::new(pos, "E_BORROW", "mutable scalar loans require reference storage lowering; not yet supported"));
+            }
+            if !matches!(owner_ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                return Err(Diagnostic::new(pos, "E_BORROW", "borrowing this type is not supported by the guest Wasm backend"));
+            }
+            let slot = self.declare(name, value.ty, kind == BindKind::Let, pos)?;
+            return Ok(TStmt::Set(slot, value));
+        }
+        let slot = self.declare(name, value.ty, false, pos)?;
+        self.loans.insert(slot, ScopedLoan { owner, mutable });
+        Ok(TStmt::Set(slot, value))
+    }
+
+    fn explicit_ownership(&mut self, action: OwnershipOp, mutable: bool, inner: &Expr, pos: Pos) -> R<TE> {
+        if mutable && action != OwnershipOp::Borrow {
+            return Err(Diagnostic::new(pos, "E_SYNTAX", "mut is only valid after borrow!"));
+        }
+        match action {
+            OwnershipOp::Borrow => {
+                if mutable {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
+                }
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding"));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Copy | OwnershipOp::Share => {
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    let name = if action == OwnershipOp::Copy { "copy!" } else { "share!" };
+                    return Err(Diagnostic::new(pos, if action == OwnershipOp::Copy { "E_COPY" } else { "E_SHARE" },
+                        format!("{name} requires a verified immutable copyable scalar; class, actor and generator handles are not shareable")));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Take => {
+                let ExprKind::Var(name) = &inner.kind else {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a named owned local"));
+                };
+                let value = self.value(inner)?;
+                let TExpr::Local(slot_ref) = &value.e else {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
+                };
+                let slot = *slot_ref;
+                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "take! is forbidden while an owner is borrowed"));
+                }
+                if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
+                    return Err(Diagnostic::new(pos, "E_MOVED", format!("cannot take '{name}' from outside a loop")));
+                }
+                self.moved.insert(slot);
+                Ok(value)
+            }
+        }
+    }
+
     /// A value in an ownership-transferring position (binding initializer,
     /// assignment, argument, return): naming an object local moves it.
     fn consume(&mut self, e: &Expr) -> R<TE> {
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
+            if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
+            }
             if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                 return Err(Diagnostic::new(
                     e.pos,
@@ -2244,6 +2377,7 @@ impl<'a> FnCx<'a> {
             }),
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
+            ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
@@ -2559,6 +2693,9 @@ impl<'a> FnCx<'a> {
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
+                    if self.loans.values().any(|loan| loan.owner == l.slot && loan.mutable) {
+                        return Err(Diagnostic::new(pos, "E_BORROW", format!("owner '{name}' is exclusively mutably borrowed")));
+                    }
                     TE {
                         e: TExpr::Local(l.slot),
                         ty: l.ty,
@@ -2580,7 +2717,7 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
