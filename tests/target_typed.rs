@@ -780,3 +780,96 @@ fn shared_borrows_remain_compatible_until_lexical_scope_end() {
     assert!(m.receiver_borrows[0].ownership_preflight_complete);
     assert!(!m.receivers[0].body_lowered);
 }
+#[test]
+fn receiver_exit_edges_track_all_proved_branches_without_runtime_claims() {
+    use atto_compiler::target_borrow::BorrowExitKind;
+    let src="declare actor Alpha;
+        mtd (Alpha self) choose(bool flag): int {
+            if flag { return 10; } else { return 20; }
+        }";
+    let m=typed(src).unwrap();
+    let facts=&m.receiver_borrows[0];
+    assert!(facts.ownership_preflight_complete);
+    assert!(!facts.normal_fallthrough);
+    assert_eq!(facts.exit_edges.len(),2);
+    for edge in &facts.exit_edges {
+        assert_eq!(edge.kind,BorrowExitKind::Return);
+        assert_eq!(edge.active_loans,0);
+        assert!(edge.lexical_exit_checked);
+        assert!(!edge.runtime_cleanup_proven);
+    }
+    assert!(!m.receivers[0].body_lowered);
+}
+
+#[test]
+fn receiver_borrow_region_close_is_explicit_and_not_runtime_cleanup() {
+    use atto_compiler::target_borrow::BorrowExitKind;
+    let src="declare actor Alpha;
+        mtd (Alpha self) run(ActorRef<Alpha> peer): void {
+            { val left = rt borrow peer; val right = rt borrow peer; }
+            rt take peer;
+        }";
+    let m=typed(src).unwrap();
+    let facts=&m.receiver_borrows[0];
+    assert_eq!(facts.loans,2);
+    assert_eq!(facts.closed_regions.len(),2);
+    assert_ne!(facts.closed_regions[0].region,facts.closed_regions[1].region);
+    assert!(facts.closed_regions.iter().all(|r|r.source=="peer" && r.scope==1));
+    assert_eq!(facts.exit_edges.len(),1);
+    assert_eq!(facts.exit_edges[0].kind,BorrowExitKind::Fallthrough);
+    assert!(!facts.exit_edges[0].runtime_cleanup_proven);
+    assert!(facts.ownership_preflight_complete);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
+
+#[test]
+fn receiver_exit_records_unproved_unwind_and_cancel_obligations() {
+    use atto_compiler::target_borrow::BorrowExitKind;
+    let src="declare actor A;
+        mtd (A self) stop(): void { panic(Error(\"stop\")); }
+        mtd (A self) suspend(): void { await pending(); }";
+    let m=typed(src).unwrap();
+    assert_eq!(m.receiver_borrows.len(),2);
+    assert!(m.receiver_borrows[0].exit_edges.iter()
+        .any(|edge|edge.kind==BorrowExitKind::Panic
+             && !edge.runtime_cleanup_proven));
+    assert!(!m.receiver_borrows[0].ownership_preflight_complete);
+    assert!(m.receiver_borrows[1].exit_edges.iter()
+        .any(|edge|edge.kind==BorrowExitKind::Suspend
+             && !edge.runtime_cleanup_proven));
+    assert!(m.receiver_borrows[1].exit_edges.iter()
+        .any(|edge|edge.kind==BorrowExitKind::Cancel
+             && !edge.runtime_cleanup_proven));
+    assert!(!m.receiver_borrows[1].ownership_preflight_complete);
+    assert!(m.receivers.iter().all(|r|!r.body_lowered));
+}
+
+#[test]
+fn arithmetic_possible_panic_cannot_cross_active_lexical_borrow() {
+    let prefix="declare actor A;
+        mtd (A self) run(ActorRef<A> peer): void {
+            val lease = rt borrow peer;";
+    for expr in ["1+2;","10-3;","10*3;","10/3;"] {
+        rejects(&format!("{prefix} {expr} }}"),"E_BORROW");
+    }
+    let safe="declare actor A;
+        mtd (A self) run(ActorRef<A> peer): void {
+            { val lease = rt borrow peer; }
+            1+2;
+        }";
+    let m=typed(safe).unwrap();
+    assert!(!m.receiver_borrows[0].ownership_preflight_complete);
+    assert!(m.receiver_borrows[0].exit_edges.iter()
+        .all(|edge|!edge.runtime_cleanup_proven));
+}
+
+#[test]
+fn unproved_return_expression_never_certifies_complete_ownership() {
+    let src="declare actor A;
+        mtd (A self) read(): int { return risky(); }";
+    let m=typed(src).unwrap();
+    assert!(!m.receiver_borrows[0].ownership_preflight_complete);
+    assert_eq!(m.receiver_borrows[0].exit_edges.len(),1);
+    assert!(!m.receiver_borrows[0].exit_edges[0].runtime_cleanup_proven);
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code,"E_UNSUPPORTED");
+}
