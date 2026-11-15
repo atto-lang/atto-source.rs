@@ -1,8 +1,10 @@
-// expect-error: E_DUPLICATE
-define class __atto_escaping_closure_0 as
-  int something: 0;
-end
+// expect-error: E_TOKEN
+// The generated $atto_escaping_closure_0 name is deliberately unlexable;
+// source must never be able to construct or impersonate an environment.
 fnc make_adder(int offset): fnc(int) -> int {
   return |n| : int -> n + offset;
 }
-pub fnc main(): int { return 0; }
+pub fnc main(): int {
+  val forged = new $atto_escaping_closure_0(41);
+  return forged.call(1);
+}
