@@ -56,3 +56,19 @@ browser compiler does not yet implement callable value types, capture/borrow
 checking, callback invocation, Rx Observable methods or Wasm closure lowering.
 It reports `E_UNSUPPORTED` rather than emitting an invalid Wasm artifact.
 The formatter project must still implement canonical rendering and round trips.
+
+## Contextual noncapturing type checking (signature-only)
+
+The Rust frontend now exposes `check::lambda_types::check_noncapturing`.
+Given an expected callback parameter list (e.g. `[int]`), it can infer a
+scalar result type from the lambda body or validate an explicit annotation.
+It checks basic arithmetic, comparisons, local `val`/`let` bindings,
+immutable reassignment, and return paths through `if`/`else` blocks.
+It refuses unknown/outer variables, `self` captures, unsupported effects,
+nested closures and non-scalar type annotations rather than guessing.
+
+This is **not** a callable-value type in the executable compiler IR; no
+closure objects, Rx method integration, ownership transport, callback
+invocation or Wasm closure lowering are implemented. The normal `compile()`
+path continues to reject lambda values with `E_UNSUPPORTED` until those
+capabilities have been tested independently.
