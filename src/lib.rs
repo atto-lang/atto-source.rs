@@ -55,24 +55,30 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    if target {
+    let program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
-        // Class receiver headers can now be recognized with the production
-        // class parser, but there is no class mtd linker, typecheck or dispatch.
-        // Never feed them to the actor-only signature IR or emit guest Wasm.
-        if !headers.classes.is_empty() {
+        if headers.namespace.is_none() && headers.imports.is_empty() &&
+            headers.actors.is_empty() && headers.definitions.is_empty() &&
+            !headers.receivers.is_empty() &&
+            headers.receivers.iter().all(|r| headers.classes.contains(&r.owner)) {
+            // Only local concrete class receivers use the existing checked
+            // instance-method backend. No actor target may enter this path.
+            target_syntax::link_executable_class_receivers(&toks, &headers)?
+        } else {
+            if !headers.classes.is_empty() {
+                return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
+                    "mixed target classes/actors/namespaces are not executable"));
+            }
+            // Preserve the existing actor signature-only safety validation.
+            let typed = target_typed::lower_target_signatures(&headers)?;
+            let actor_ast = target_typed::build_actor_program(&headers, &typed);
+            check::check_target_actor_interface(&actor_ast)?;
             return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
-                "out-of-line class mtd receivers are syntax-only, not linked or browser-lowered"));
+                "namespace-scoped actors and mtd receivers are syntax-only"));
         }
-        // Type the declared method signatures without handing unlinked actor
-        // declarations to the executable check / Wasm backend.
-        let typed = target_typed::lower_target_signatures(&headers)?;
-        let actor_ast = target_typed::build_actor_program(&headers, &typed);
-        check::check_target_actor_interface(&actor_ast)?;
-        return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
-            "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
-    }
-    let program = parser::Parser::new(toks).parse_program()?;
+    } else {
+        parser::Parser::new(toks).parse_program()?
+    };
     let typed = check::check(&program)?;
     let bytes = wasm::emit(&typed);
     if bytes.len() > wasm::MAX_OUTPUT {
