@@ -206,6 +206,10 @@ for (const f of await fixtures('pass')) {
         // spelling from the oreslang-source.llvm v1 design contracts; tracked
         // so this fixture is revisited when the Java parser admits it
         assert.ok(j.rejected, 'Java now accepts this LLVM-design spelling: update the fixture claim');
+      } else if (claim === 'rejects') {
+        // A passing Rust/Wasm guest must not be reported as Java parity
+        // while the Java compiler still rejects this newer Atto construct.
+        assert.ok(j.rejected, 'Java now accepts this Rust/Wasm-positive fixture: update its parity claim');
       } else {
         assert.ok(!j.rejected, `Java reference rejected it: ${j.stdout}`);
         if (j.race && header(f.source, 'stdout-order')[0] === 'unordered') {
