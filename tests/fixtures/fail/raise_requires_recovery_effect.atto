@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+// raise cannot be downgraded to the ordinary throw/trap EH tag.
+pub fnc main(): int {
+  raise Error("must reach recover");
+  return 42;
+}
