@@ -65,7 +65,7 @@ pub struct ReceiverEffects {
     pub unproved_call: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReceiverCall {
     pub caller: usize,
     pub callee: usize,
@@ -83,7 +83,7 @@ pub struct ReceiverBodyTokens {
 
 /// A concrete state write that must undergo typed RHS checking before any
 /// executable lowering. The source span is bounded by the lexer and callback.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateAssignment {
     pub receiver: usize,
     pub field: String,
@@ -95,7 +95,7 @@ pub struct StateAssignment {
 
 /// Explicit return in a receiver body. Unrecognized expressions remain
 /// unproved; typed lowering must not invent a result type.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReceiverReturn {
     pub receiver: usize,
     pub pos: Pos,
@@ -394,6 +394,74 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
     Ok(out)
 }
 
+
+/// Recompute source-derived receiver facts before consuming a potentially
+/// imported or mutated TargetHeaders object. Merely checking the number of
+/// receiver bodies/lease flags is insufficient: an omitted assignment, return
+/// or nominal call could otherwise evade the typed frontend's diagnostics.
+pub(crate) fn revalidate_receiver_facts(headers: &TargetHeaders) -> R<()> {
+    if headers.receiver_bodies.len() != headers.receivers.len() {
+        return Err(Diagnostic::new(Pos::default(), "E_SEALED",
+            "missing receiver body prevents source-fact validation"));
+    }
+    let mut effects = Vec::with_capacity(headers.receivers.len());
+    let mut uses = Vec::new();
+    let mut assignments = Vec::new();
+    let mut returns = Vec::new();
+    let mut calls = Vec::new();
+    for (index, body) in headers.receiver_bodies.iter().enumerate() {
+        let toks = &body.tokens;
+        if body.receiver != index || toks.len() < 2 || toks.len() > crate::lexer::MAX_TOKENS ||
+            !matches!(toks.first().map(|t| &t.tok), Some(Tok::LBrace)) ||
+            !matches!(toks.last().map(|t| &t.tok), Some(Tok::RBrace)) {
+            return Err(Diagnostic::new(headers.receivers[index].pos, "E_SEALED",
+                "receiver body shape/index differs from source declaration"));
+        }
+        // A constructed body must be a single bounded brace region, not a
+        // partial body followed by hidden source statements.
+        let mut depth = 0usize;
+        for (offset, token) in toks.iter().enumerate() {
+            match token.tok {
+                Tok::LBrace => {
+                    depth += 1;
+                    if depth > 128 {
+                        return Err(Diagnostic::new(token.pos, "E_NESTING",
+                            "imported receiver body nesting limit"));
+                    }
+                }
+                Tok::RBrace => {
+                    if depth == 0 {
+                        return Err(Diagnostic::new(token.pos, "E_SEALED",
+                            "unexpected receiver body close"));
+                    }
+                    depth -= 1;
+                    if depth == 0 && offset + 1 != toks.len() {
+                        return Err(Diagnostic::new(token.pos, "E_SEALED",
+                            "trailing tokens after receiver body"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            return Err(Diagnostic::new(headers.receivers[index].pos, "E_SEALED",
+                "unclosed imported receiver body"));
+        }
+        let audit = validate_receiver_body(toks, headers, index, 0, toks.len())?;
+        effects.push(audit.effects);
+        uses.extend(audit.uses);
+        assignments.extend(audit.assignments);
+        returns.extend(audit.returns);
+        calls.extend(audit.calls);
+    }
+    if headers.receiver_effects != effects || headers.state_uses != uses ||
+        headers.state_assignments != assignments || headers.receiver_returns != returns ||
+        headers.receiver_calls != calls {
+        return Err(Diagnostic::new(Pos::default(), "E_SEALED",
+            "receiver source facts are missing, reordered, or inconsistent with body tokens"));
+    }
+    Ok(())
+}
 
 /// Resolve a receiver header against nominal, file-scoped symbols. This does
 /// not link a full actor definition or prove that a method is callable through
