@@ -53,7 +53,7 @@ try {
     const guest = new WebAssembly.Instance(module, imports);
     const actual = guest.exports.main();
     assert.equal(actual, BigInt(want), name + ': wrong guest return value');
-    assert.equal(guest.exports.panic_code(), 0, name + ': unexpected panic');
+    assert.equal(guest.exports.panic_code.value, 0, name + ': unexpected panic');
     console.log('PASS guest execution', name, String(actual));
   }
   for (const name of negative) {
