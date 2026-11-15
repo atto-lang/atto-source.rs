@@ -79,3 +79,30 @@ fn nested_end_style_actor_method_does_not_truncate_actor_definition() {
     assert_eq!(p.receivers.len(), 1);
     assert_eq!(compile(src).unwrap_err().code, "E_UNSUPPORTED");
 }
+
+#[test]
+fn actor_mtd_is_an_interface_contract_not_a_duplicate_implementation() {
+    let bad = r#"
+        use namespace workers;
+        declare actor Foo;
+        define actor Foo as
+            foo(): int { return 1; }
+        end
+        mtd (Foo self) foo(): bool { return true; }
+    "#;
+    assert_eq!(compile(bad).unwrap_err().code, "E_SIGNATURE",
+        "actor interface mismatches are signatures, not class duplicates");
+
+    let good = r#"
+        use namespace workers;
+        declare actor Foo;
+        define actor Foo as
+            foo(): int { return 1; }
+        end
+        mtd (Foo self) foo(): int { return 1; }
+    "#;
+    let parsed = parse(good).unwrap();
+    assert_eq!(parsed.receivers.len(), 1);
+    assert_eq!(compile(good).unwrap_err().code, "E_UNSUPPORTED",
+        "signature agreement must not imply actor guest dispatch");
+}
