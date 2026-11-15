@@ -1,13 +1,13 @@
 // Runs native-compiler-generated Wasm guests for all currently implemented callable forms.
 // In particular, this checks *execution* rather than just compiler acceptance.
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const attoc = fileURLToPath(new URL('../target/debug/attoc', import.meta.url));
+const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc', import.meta.url));
 const fixtures = [
   '165-callable-five-function-forms.atto',
   '166-callable-five-routine-forms.atto',
@@ -65,6 +65,7 @@ try {
     const built = run(path, output);
     assert.equal(built.status, 1, name + ': expected compiler rejection');
     assert.ok(built.stderr.includes(want), name + ': missing ' + want + ': ' + built.stderr);
+    await assert.rejects(stat(output), {code:'ENOENT'}, name + ': rejected source emitted an artifact');
     console.log('PASS expected diagnostic', name, want);
   }
 } finally {
