@@ -71,7 +71,7 @@ pub fn lower(input: &Program) -> R<Program> {
         if let Some(d) = direct {
             if d.calls == 0 {
                 return Err(error(d.lambda.pos, "E_UNSUPPORTED",
-                    "lambda is not directly invoked; first-class callables remain unsupported"));
+                    "unused lambdas are not executable; first-class callables remain unsupported"));
             }
             let types = d.inferred.ok_or_else(|| error(d.lambda.pos, "E_INFER",
                 "lambda parameter types need a direct invocation"))?;
