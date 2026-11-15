@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+// No guest artifact until defer cleanup is executed on all exit edges.
+pub fnc main(): int {
+  defer stdio.println(1);
+  return 42;
+}
