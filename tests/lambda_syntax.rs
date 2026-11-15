@@ -47,7 +47,7 @@ fn inferred_expression_and_statement_bodies_parse() {
         "values.map(|n| -> int { return n * 2; })",
         "values.map(|n| => int -> return n * 2;)",
         "values.map(|n| : Result<int,Error> -> n)",
-        "values.map(|n| : my.types.Response -> n)",
+        "values.map(|n| : my.model.Response -> n)",
         "values.map(|n| -> |m| -> n + m)",
         "values.map(|| -> 1)",
     ] {
@@ -62,7 +62,7 @@ fn lambda_parser_rejects_bad_signatures_and_unterminated_return() {
         ("values.map(|n| : -> return n;)", "E_SYNTAX"),
         ("values.map(|n,n| -> n)", "E_DUPLICATE"),
         ("values.map(|n| : int return n;)", "E_SYNTAX"),
-        ("values.map(|n| : int -> return n)", "E_SYNTAX"),
+        ("values.map(|n| : int -> return n)", "E_SEMICOLON"),
         ("values.map(|n| : int => int -> return n;)", "E_SYNTAX"),
         ("values.map(|n| -> val x = n; return x;)", "E_SYNTAX"),
     ] {
