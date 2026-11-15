@@ -45,10 +45,17 @@ accept('pub fnc main(): int {let n=5; val c=take! n; n=37; return c+copy! n;}');
 reject('pub fnc main(): int {val n=42; val x=take! n; return n;}', 'E_MOVED');
 reject('pub fnc main(): int {val n=42; val x=take! n; return take! n;}', 'E_MOVED');
 reject('pub fnc main(): int {return take! (40+2);}', 'E_MOVE');
-reject('pub fnc main(): int {val n=42; val b=borrow! n; return n;}', 'E_UNSUPPORTED');
-reject('pub fnc main(): int {let n=42; val b=borrow! mut n; return n;}', 'E_UNSUPPORTED');
+accept('pub fnc main(): int {let n=40; block {val a=borrow! n; val b=borrow! n; stdio.println(copy! a+copy! b);} n=42; return n;}');
+accept('pub fnc main(): int {let n=40; block {val writer=borrow! mut n; writer=42;} return n;}');
+reject('pub fnc main(): int {val n=42; val b=borrow! n; return b;}', 'E_ESCAPE');
+reject('pub fnc main(): int {let n=42; val b=borrow! mut n; return b;}', 'E_ESCAPE');
+reject('pub fnc main(): int {let n=42; val b=borrow! n; n=43; return 0;}', 'E_BORROW');
+reject('pub fnc main(): int {let n=42; val b=borrow! mut n; return n;}', 'E_BORROW');
+reject('pub fnc main(): int {let n=42; val a=borrow! n; val b=borrow! mut n; return 0;}', 'E_BORROW');
+reject('pub fnc main(): int {let n=42; val a=borrow! mut n; val b=borrow! n; return 0;}', 'E_BORROW');
+reject('pub fnc main(): int {let n=42; val a=borrow! mut n; a=41; return take! n;}', 'E_BORROW');
 reject('pub fnc main(): int {val n=42; val b=share! n; return n;}', 'E_UNSUPPORTED');
 for (const t of ['Box', 'Arc', 'Atomic']) {
   reject('pub fnc main(): int {val n: '+t+'<int> = 0; return 0;}', 'E_UNSUPPORTED_TYPE');
 }
-console.log('PASS browser Wasm ownership ABI: 2 scalar admits, 9 fail-closed cases');
+console.log('PASS browser Wasm ownership ABI: 4 scalar admits, 14 fail-closed cases');
