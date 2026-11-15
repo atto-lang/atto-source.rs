@@ -86,8 +86,9 @@ fn vt(t: Type) -> Option<u8> {
         Type::Float => Some(F64),
         Type::Str => Some(I64),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
-        Type::GeneratorInt | Type::ArrayInt => Some(I64),
-        Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
+        Type::GeneratorInt | Type::ArrayInt | Type::ArrayClass(_) => Some(I64),
+        Type::Named(_) | Type::NamedRef(_) | Type::ArrayNamed(_) =>
+            unreachable!("types are resolved by the checker"),
     }
 }
 
@@ -309,7 +310,7 @@ impl Emit<'_> {
                 }
                 self.op(0x0F);
             }
-            TStmt::ForArrayInt { source, array_slot, index_slot, value_slot, body } => {
+            TStmt::ForArray { source, array_slot, index_slot, value_slot, item_type, body } => {
                 // A readonly packed Array<int> view: i64 = data_offset:32 |
                 // element_count:32. The source is evaluated once, arrays live
                 // in 8-byte aligned module data, so no iterator heap object
@@ -335,6 +336,11 @@ impl Emit<'_> {
                 self.op(0x6C); // i32.mul: index * sizeof(int)
                 self.op(0x6A); // i32.add: base + offset
                 self.load_i64(0);
+                if matches!(item_type, Type::Class(_)) {
+                    // A class handle is an arena-relative i32, stored as a
+                    // zero-extended i64 in each contiguous eight-byte slot.
+                    self.op(0xA7); // i32.wrap_i64
+                }
                 self.set(*value_slot);
                 self.open(0x02, 0x40, Frame::Continue);
                 self.stmts(body);
@@ -434,6 +440,29 @@ impl Emit<'_> {
             }
             TExpr::StrConst(offset, len) | TExpr::ArrayConst(offset, len) =>
                 self.i64c(((*offset as i64) << 32) | *len as i64),
+            TExpr::ArrayNew { elements, tmp } => {
+                // Allocate a single bounded array of arena-relative object
+                // handles. Constructors execute once left-to-right after
+                // allocation. An interrupted construction is reclaimable
+                // with its owning arena, never by a shared GC.
+                self.i32c((elements.len() as u32).saturating_mul(8));
+                self.call(self.l.helper(H_ALLOC));
+                self.set(*tmp);
+                for (i, value) in elements.iter().enumerate() {
+                    self.get(*tmp);
+                    self.expr(value);
+                    self.op(0xAD); // i64.extend_i32_u
+                    self.store_i64(i as u32 * 8);
+                }
+                // Pack (arena_offset << 32) | len; the for-loop moves
+                // the array descriptor, so raw handles do not alias.
+                self.get(*tmp);
+                self.op(0xAD); // i64.extend_i32_u
+                self.i64c(32);
+                self.op(0x86); // i64.shl
+                self.i64c(elements.len() as i64);
+                self.op(0x84); // i64.or
+            },
             TExpr::IntToFloat(a) => {
                 self.expr(a);
                 self.op(0xB9); // f64.convert_i64_s
