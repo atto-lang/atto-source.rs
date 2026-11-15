@@ -66,11 +66,11 @@ fn direct_wasm_specializes_distinct_arity_and_type_signatures() {
     let parsed = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
     let lowered = check::check(&parsed).unwrap();
     assert_eq!(lowered.funcs.len(), 4);
-    assert_eq!(lowered.funcs[1].params, []);
+    assert!(lowered.funcs[1].params.is_empty());
     assert_eq!(lowered.funcs[2].params, [Type::Int]);
     assert_eq!(lowered.funcs[3].params, [Type::Bool, Type::Int]);
     let wasm = compile(source).unwrap();
-    assert!(wasm.starts_with(b"\\0asm"));
+    assert!(wasm.starts_with(b"\0asm"));
     assert_eq!(compile(source).unwrap(), wasm);
 }
 
