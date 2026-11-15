@@ -353,11 +353,12 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 format!("receiver owner '{}' is not declared in this source namespace",
                     receiver.owner)));
         }
+        // For classes, mtd adds a *second implementation*: same owner/name/
+        // arity alongside an inline method is a duplicate. For actors, mtd
+        // remains a signature-only declaration paired with an inline actor
+        // method. Its return/parameter mismatch is E_SIGNATURE from the
+        // actor interface checker, NOT a duplicate-implementation error.
         let duplicate_inline = out.class_definitions.iter()
-            .filter(|d| d.name == receiver.owner)
-            .any(|d| d.methods.iter().any(|m| m.name == receiver.name &&
-                 m.params.len() == receiver.arity)) ||
-            out.definitions.iter()
             .filter(|d| d.name == receiver.owner)
             .any(|d| d.methods.iter().any(|m| m.name == receiver.name &&
                  m.params.len() == receiver.arity));
