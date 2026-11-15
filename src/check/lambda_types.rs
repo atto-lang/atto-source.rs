@@ -46,7 +46,10 @@ pub fn check_noncapturing(
                 "annotated result {} differs from expected {}", a.name(), b.name())));
         }
     }
-    let mut ctx = Context { frames: vec![vec![]], returns: vec![], count: 0, depth: 0 };
+    let mut ctx = Context {
+        frames: vec![vec![]], returns: vec![], count: 0,
+        depth: 0, statement_depth: 0,
+    };
     for (name, ty) in names.iter().zip(types) {
         ctx.bind(name, *ty, false, lambda.pos)?;
     }
@@ -103,9 +106,15 @@ struct Context {
     returns: Vec<(Type, Pos)>,
     count: usize,
     depth: usize,
+    statement_depth: usize,
 }
 impl Context {
     fn bind(&mut self, name: &str, ty: Type, mutable: bool, p: Pos) -> R<()> {
+        // Even callers that construct ASTs directly must not bypass the
+        // parser's receiver-name restriction.
+        if name == "self" {
+            return Err(err(p, "E_RESERVED", "'self' cannot be rebound in a lambda"));
+        }
         let frame = self.frames.last_mut().unwrap();
         if frame.iter().any(|l| l.name == name) {
             return Err(err(p, "E_DUPLICATE", format!("duplicate lambda name '{name}'")));
@@ -127,12 +136,29 @@ impl Context {
         r
     }
     fn statements(&mut self, body: &[Stmt]) -> R<bool> {
+        let mut complete = false;
         for s in body {
-            if self.statement(s)? { return Ok(true); }
+            // Do not silently skip invalid return types, captures, or
+            // unsupported effects hidden in unreachable tail statements.
+            if complete {
+                return Err(err(position(s), "E_UNREACHABLE",
+                    "lambda has a statement after an unconditional return"));
+            }
+            complete = self.statement(s)?;
         }
-        Ok(false)
+        Ok(complete)
     }
     fn statement(&mut self, s: &Stmt) -> R<bool> {
+        if self.statement_depth >= DEPTH_LIMIT {
+            return Err(err(position(s), "E_NESTING",
+                "lambda statement nesting limit exceeded"));
+        }
+        self.statement_depth += 1;
+        let checked = self.statement_inner(s);
+        self.statement_depth -= 1;
+        checked
+    }
+    fn statement_inner(&mut self, s: &Stmt) -> R<bool> {
         match s {
             Stmt::Return(v, p) => {
                 let ty = v.as_ref().map_or(Ok(Type::Void), |e| self.expression(e))?;
