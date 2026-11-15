@@ -1,0 +1,12 @@
+// expect-exit: 42
+define class Base as
+  pub pick(): int { return 1; }
+  pub pick(int n): int { return n + 1; }
+end
+define class Child extends Base as
+  pub override pick(int n): int { return n + 40; }
+end
+pub fnc main(): int {
+  val child = new Child();
+  return child.pick() + child.pick(1);
+}
