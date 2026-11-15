@@ -26,7 +26,7 @@ struct FieldPlacement {
 
 /// An immutable, checked address-arithmetic plan. All offsets are relative
 /// to a caller-provided allocation; they must not be treated as pointers.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LayoutPlan {
     kind: LayoutKind,
     rows: usize,
