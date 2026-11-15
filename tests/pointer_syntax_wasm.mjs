@@ -32,7 +32,7 @@ function compile(source) {
   assert.ok(WebAssembly.validate(bytes), 'compiled guest must be valid Wasm');
   return { ok: true, bytes };
 }
-const positive = 'pub fnc main(): int { return 6 * 7; }';
+const positive = '/* Pointer.alloc<int>(4); &x; *p; */\npub fnc main(): int { return 6 * 7; }';
 const good = compile(positive);
 assert.equal(good.ok, true, good.error);
 const guest = new WebAssembly.Instance(new WebAssembly.Module(good.bytes), {
@@ -53,9 +53,13 @@ try {
 const negatives = [
   ['pointer_type', 'pub fnc main(): int { val p: Pointer<int> = 0; return 0; }', 'E_UNSUPPORTED_TYPE'],
   ['pointer_return', 'pub fnc main(): Pointer<int> { return 0; }', 'E_UNSUPPORTED_TYPE'],
+  ['pointer_alloc', 'pub fnc main(): int { val p = Pointer.alloc<int>(4); return 0; }', 'E_UNSUPPORTED_TYPE'],
+  ['pointer_new', 'pub fnc main(): int { val p = new Pointer(); return 0; }', 'E_UNSUPPORTED_TYPE'],
+  ['pointer_value', 'pub fnc main(): int { return Pointer; }', 'E_UNSUPPORTED_TYPE'],
   ['pointer_class_shadow', 'define class Pointer as end\npub fnc main(): int { return 0; }', 'E_RESERVED_TYPE'],
   ['address_of', 'pub fnc main(): int { val x = 1; return &x; }', 'E_POINTER_SYNTAX'],
-  ['unary_deref', 'pub fnc main(): int { val x = 1; return *x; }', 'E_POINTER_SYNTAX']
+  ['unary_deref', 'pub fnc main(): int { val x = 1; return *x; }', 'E_POINTER_SYNTAX'],
+  ['unary_star_chain', 'pub fnc main(): int { return 6 * *7; }', 'E_POINTER_SYNTAX']
 ];
 for (const [name, source, code] of negatives) {
   const outcome = compile(source);
@@ -63,4 +67,4 @@ for (const [name, source, code] of negatives) {
   assert.ok(outcome.error.includes(code), name + ': ' + outcome.error);
   console.log('POINTER_GUEST_NO_ARTIFACT=' + name + ' code=' + code);
 }
-console.log('PASS compiled Wasm multiplication guest exit=42, native-vs-Wasm byte parity, and 5 pointer no-artifact failures');
+console.log('PASS compiled Wasm multiplication guest exit=42, native-vs-Wasm byte parity, and ' + negatives.length + ' pointer no-artifact failures');
