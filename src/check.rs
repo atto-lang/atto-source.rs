@@ -3049,6 +3049,15 @@ impl<'a> FnCx<'a> {
         self.arity(&label, m.params.len(), args.len(), pos)?;
         let mut targs = vec![recv];
         targs.extend(self.args(&label, args, &m.params)?);
+        // Closing a compiler-private owned closure is a consuming operation.
+        // Reject a second close or invocation at the source ownership gate.
+        // The runtime generation check remains authoritative against forged
+        // guest frames or malicious host writes to exported linear memory.
+        if cname == "$owned_lambda_int_int" && name == "close" {
+            if let TExpr::Local(slot) = &targs[0].e {
+                self.moved.insert(*slot);
+            }
+        }
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,
