@@ -38,7 +38,7 @@ if (process.env.ATTOC) {
     const fs = await import('node:fs');
     fs.writeFileSync(src, source);
     const native = execFileSync(process.env.ATTOC, [src]);
-    assert.deepEqual(one.bytes, native, 'host Rust and wasm32 compiler differ');
+    assert.ok(Buffer.from(one.bytes).equals(native), 'host Rust and wasm32 compiler bytes differ');
   } finally {rmSync(tmp,{recursive:true,force:true});}
 }
 const wasm = new WebAssembly.Module(one.bytes);
