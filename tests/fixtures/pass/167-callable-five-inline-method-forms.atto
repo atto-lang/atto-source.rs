@@ -1,0 +1,23 @@
+// expect-exit: 42
+define class Methods as
+    method m_colon() : int {
+        return 5;
+    }
+    fnc m_colon_arrow() : int -> {
+        return 5;
+    }
+    m_arrow() -> int {
+        return 5;
+    }
+    m_end() -> int
+        let int x = 3,
+        x + 2
+    end
+    m_delimited() -> int ::
+        let int x = 3, x + 2
+    end
+end
+pub fnc main(): int {
+    val value = new Methods();
+    return value.m_colon() + value.m_colon_arrow() + value.m_arrow() + value.m_end() + value.m_delimited() + 17;
+}
