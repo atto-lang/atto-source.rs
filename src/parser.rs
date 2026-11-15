@@ -1411,6 +1411,10 @@ impl Parser {
     /// early return, IO, allocations, calls, loops or nested state access.
     fn parse_state_critical_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
+        if self.state_binder.is_some() {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "nested critical scopes cannot mint a second state loan"));
+        }
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
         self.expect_word("critical")?;
@@ -1456,6 +1460,10 @@ impl Parser {
 
     /// A single by-value immutable state projection, not a reference loan.
     fn parse_state_critical_read(&mut self) -> R<ExprKind> {
+        if self.state_binder.is_some() {
+            return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
+                "critical-read cannot nest inside an active critical state write"));
+        }
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
         self.expect_word("critical")?;
