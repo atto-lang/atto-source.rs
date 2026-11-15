@@ -82,3 +82,52 @@ fn long_left_spines_fail_closed_before_aot_artifact_or_check_output() {
         }
     }
 }
+
+
+#[test]
+fn exact_structural_depth_boundary_applies_to_check_and_object_output() {
+    for extension in ["atto", "ores"] {
+        for object_mode in [false, true] {
+            let good = run_compiler(&source_for(128), extension, object_mode);
+            assert_eq!(
+                good.status.code(),
+                Some(0),
+                "{extension} object={object_mode}: {}",
+                String::from_utf8_lossy(&good.stderr)
+            );
+            assert!(good.stderr.is_empty());
+
+            let bad = run_compiler(&source_for(129), extension, object_mode);
+            assert_eq!(bad.status.code(), Some(1), "{extension} object={object_mode}");
+            assert!(bad.stdout.is_empty());
+            let stderr = String::from_utf8_lossy(&bad.stderr);
+            assert!(
+                stderr.contains("resource_limit") && stderr.contains("expression AST depth"),
+                "{extension} object={object_mode}: {stderr}"
+            );
+        }
+    }
+}
+
+#[test]
+fn call_wrapper_consumes_one_additional_ast_level() {
+    for (terms, should_pass) in [(127, true), (128, false)] {
+        let source = format!(
+            "pub fnc main(): int {{ return helper({}); }} fnc helper(int x): int {{ return x; }}",
+            vec!["1"; terms].join("+")
+        );
+        for extension in ["atto", "ores"] {
+            let output = run_compiler(&source, extension, false);
+            assert_eq!(
+                output.status.success(),
+                should_pass,
+                "{extension} {terms}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if !should_pass {
+                assert!(output.stdout.is_empty());
+                assert!(String::from_utf8_lossy(&output.stderr).contains("resource_limit"));
+            }
+        }
+    }
+}
