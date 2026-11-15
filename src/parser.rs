@@ -923,7 +923,12 @@ impl Parser {
     fn parse_return_spec(&mut self) -> R<Type> {
         if self.eat(&Tok::Colon) {
             let ty = self.parse_type()?;
-            self.eat(&Tok::Arrow);
+            // The optional arrow after ': T' introduces a *brace* body.
+            // Without this gate it is silently accepted before an end body.
+            if self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "': T ->' must introduce a brace-delimited callable body"));
+            }
             Ok(ty)
         } else if self.eat(&Tok::Arrow) {
             self.parse_type()
@@ -1066,6 +1071,10 @@ impl Parser {
 
     fn parse_block(&mut self) -> R<Vec<Stmt>> {
         self.expect(Tok::LBrace, "'{'")?;
+        // Braced statements retain their C-like terminators even when nested
+        // inside an Erlang-style callable; do not leak comma sequencing.
+        let outer_end_callable = self.in_end_callable;
+        self.in_end_callable = false;
         self.enter()?;
         let mut out = Vec::new();
         while *self.peek() != Tok::RBrace {
@@ -1076,6 +1085,7 @@ impl Parser {
         }
         self.advance();
         self.leave();
+        self.in_end_callable = outer_end_callable;
         Ok(out)
     }
 
