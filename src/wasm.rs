@@ -28,6 +28,21 @@ use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep,
 
 mod generator_runtime;
 mod receiver_instance;
+mod cleanup_witness;
+
+/// Distinct opt-in *synthetic* cleanup-path witness, not actor mtd codegen.
+pub(crate) fn emit_cleanup_wasm_witness(
+    cfg:&crate::target_cleanup_cfg::VerifiedCleanupCfg,
+)->Result<Vec<u8>,crate::diag::Diagnostic>{
+    cleanup_witness::emit(cfg)
+}
+
+pub(crate) fn audit_cleanup_wasm_witness(
+    bytes:&[u8],
+)->Result<(),crate::diag::Diagnostic>{
+    cleanup_witness::audit_emitted_module(bytes)
+}
+
 
 /// Restricted instance-bound scalar receiver preview; ordinary compilation stays closed.
 pub(crate) fn emit_scalar_receiver_instance_preview(
