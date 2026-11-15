@@ -1,5 +1,6 @@
 // Actual Chromium + web workers + Rust-compiled compiler + guest Wasm.
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
@@ -105,6 +106,20 @@ try{
     '}';
   assert.match(await run(callerTrap, 'main() -> 7'), /^bad id\nmain\(\) -> 7$/);
   console.log('PASS browser: trap Some(Err) remains Result data');
+
+  // Execute the *exact* playground PR #128 program in a real browser Worker.
+  // Only conformance metadata (// expect-...) is removed from the fixture.
+  const playgroundFixture = await readFile(new URL('./fixtures/pass/107-playground-trap-expression.atto', import.meta.url), 'utf8');
+  const previewStart = playgroundFixture.indexOf('// SYNTAX PREVIEW');
+  assert.ok(previewStart > 0, 'missing exact public playground source');
+  const playgroundSource = playgroundFixture.slice(previewStart);
+  const gitBlob = createHash('sha1')
+    .update('blob ' + Buffer.byteLength(playgroundSource, 'utf8') + '\\0')
+    .update(playgroundSource).digest('hex');
+  assert.equal(gitBlob, '71d22c2365c687fbce044cea7d7d2927c3fb6e86', 'public trap example source mismatch');
+  assert.match(await run(playgroundSource, 'main() -> 7'),
+    /^5\\nid must be nonnegative\\nan ordinary throw was caught\\nmain\\(\\) -> 7$/);
+  console.log('PASS browser: exact public trap preview Some(Ok), Some(Err), thrown None');
 
   const ordinaryThrow =
     'fnc leaf(): int { throw Error("failure"); }\n' +
