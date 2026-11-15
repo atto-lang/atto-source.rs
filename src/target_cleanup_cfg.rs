@@ -178,19 +178,28 @@ pub mod native_experiment {
     }
 
     struct SharedGuard<'a> {
-        lock: RwLockReadGuard<'a,i64>,
+        lock: Option<RwLockReadGuard<'a,i64>>,
         releases: &'a AtomicUsize,
     }
     impl Drop for SharedGuard<'_> {
-        fn drop(&mut self) { self.releases.fetch_add(1,Ordering::SeqCst); }
+        fn drop(&mut self) {
+            // Unlock *before* reporting the release. Incrementing while the
+            // guard field is still alive makes release_count observable too
+            // early from a second thread.
+            drop(self.lock.take());
+            self.releases.fetch_add(1,Ordering::SeqCst);
+        }
     }
 
     struct ExclusiveGuard<'a> {
-        lock: RwLockWriteGuard<'a,i64>,
+        lock: Option<RwLockWriteGuard<'a,i64>>,
         releases: &'a AtomicUsize,
     }
     impl Drop for ExclusiveGuard<'_> {
-        fn drop(&mut self) { self.releases.fetch_add(1,Ordering::SeqCst); }
+        fn drop(&mut self) {
+            drop(self.lock.take());
+            self.releases.fetch_add(1,Ordering::SeqCst);
+        }
     }
 
     impl LeaseCell {
@@ -204,10 +213,10 @@ pub mod native_experiment {
                 return Err("unverified shared-read cleanup path");
             }
             let guard=SharedGuard {
-                lock:self.value.read().unwrap_or_else(|err|err.into_inner()),
+                lock:Some(self.value.read().unwrap_or_else(|err|err.into_inner())),
                 releases:&self.releases,
             };
-            Ok(f(*guard.lock))
+            Ok(f(**guard.lock.as_ref().expect("live read lease")))
         }
         pub fn checked_add(&self, cfg:&VerifiedCleanupCfg, lease:usize,
             delta:i64) -> Result<std::thread::Result<i64>,&'static str> {
@@ -217,12 +226,13 @@ pub mod native_experiment {
             }
             Ok(catch_unwind(AssertUnwindSafe(|| {
                 let mut guard=ExclusiveGuard {
-                    lock:self.value.write().unwrap_or_else(|err|err.into_inner()),
+                    lock:Some(self.value.write().unwrap_or_else(|err|err.into_inner())),
                     releases:&self.releases,
                 };
-                let value=guard.lock.checked_add(delta)
+                let state=guard.lock.as_mut().expect("live write lease");
+                let value=state.checked_add(delta)
                     .expect("checked actor-state arithmetic overflow");
-                *guard.lock=value;
+                **state=value;
                 value
             })))
         }
@@ -232,7 +242,7 @@ pub mod native_experiment {
                 return Err("unverified cooperative cancellation cleanup path");
             }
             let _guard=ExclusiveGuard {
-                lock:self.value.write().unwrap_or_else(|err|err.into_inner()),
+                lock:Some(self.value.write().unwrap_or_else(|err|err.into_inner())),
                 releases:&self.releases,
             };
             Err("cancelled")
@@ -244,7 +254,7 @@ pub mod native_experiment {
             }
             Ok(catch_unwind(AssertUnwindSafe(|| {
                 let _guard=SharedGuard {
-                    lock:self.value.read().unwrap_or_else(|err|err.into_inner()),
+                    lock:Some(self.value.read().unwrap_or_else(|err|err.into_inner())),
                     releases:&self.releases,
                 };
                 panic!("synthetic read callback panic");
