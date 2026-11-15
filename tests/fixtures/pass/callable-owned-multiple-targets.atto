@@ -1,0 +1,9 @@
+// expect-exit: 41
+fnc apply(fnc(int) => int operation, int value): int {
+    return operation(value);
+}
+pub fnc main(): int {
+    val plus_one = |n| : int -> n + 1;
+    val twice = |n| : int -> n * 2;
+    return apply(plus_one, 20) + apply(twice, 10);
+}
