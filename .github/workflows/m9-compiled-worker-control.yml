@@ -1,0 +1,43 @@
+name: M9 compiled actor worker supervisor CONTROL execution
+on:
+  push:
+    branches: [feat/m9-worker-supervisor-panic-20261115]
+  pull_request:
+    paths:
+      - 'runtime/m9-actor-worker.mjs'
+      - 'runtime/m9-supervisor-host.mjs'
+      - 'tests/m9-worker-supervisor.mjs'
+      - 'tests/browser-e2e.mjs'
+      - '.github/workflows/m9-compiled-worker-control.yml'
+permissions:
+  contents: read
+jobs:
+  m9-real-workers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify immutable Git HEAD and provision Rust Wasm target
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD^{tree}
+          rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.85.1
+      - name: Compile native Rust host and wasm32 browser compiler
+        run: |
+          cargo test --locked --test m8_cooperate
+          cargo build --locked --release --bin attoc
+          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+      - name: Execute compiled Atto in Node Workers, mailbox and supervisor PANIC
+        run: node tests/m9-worker-supervisor.mjs
+      - name: Execute compiled Atto in real Chromium browser Workers
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          node tests/browser-e2e.mjs
+      - name: Evidence scope
+        run: echo 'M9 dedicated workers and restricted M8 compiled .atto actor, not pooled arbitrary actor scheduling'

@@ -11,6 +11,8 @@ const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
+  ['/m9-supervisor-host.mjs',[new URL('../runtime/m9-supervisor-host.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/m9-actor-worker.mjs',[new URL('../runtime/m9-actor-worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
 ]);
 const server=createServer(async(req,res)=>{
   requests.push({method:req.method,path:req.url});
@@ -134,6 +136,40 @@ try{
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
   assert.match(await run(values,'main() -> 1'),/^3\.5\n1\.0E7\nzero\/many\ntrue\nmain\(\) -> 1$/);
   console.log('PASS browser: float (Java Double.toString), string values and match');
+  // M9: actual Chromium Worker executes the Rust compiler-emitted .atto actor.
+  const m9Source=await readFile(new URL('./fixtures/m8/cooperative_sum.atto',import.meta.url),'utf8');
+  const m9Lines=[
+    '(async()=>{',
+    'const {M9SupervisorHost}=await import("/m9-supervisor-host.mjs");',
+    'const wasm=await (await fetch("/atto_compiler.wasm")).arrayBuffer();',
+    'const c=new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports;',
+    'const source='+JSON.stringify(m9Source)+';',
+    'function compile(s){const b=new TextEncoder().encode(s);new Uint8Array(c.memory.buffer,c.input_ptr(),b.length).set(b);',
+    'if(c.compile(b.length)!==0)throw new Error("M9 source compile failed");',
+    'return new Uint8Array(c.memory.buffer,c.result_ptr(),c.result_length()).slice();}',
+    'const valid=compile(source);',
+    'const invalid=compile(source.replace("let total: int = 0;","let total: int = 9223372036854775807;").replace("let i: int = 0;","let i: int = 1;"));',
+    'const notices=[];const host=new M9SupervisorHost({maxActors:3,mailboxCapacity:3,reductionBudget:4,onControl:x=>notices.push(x)});',
+    'try {',
+    'const a=host.spawn(new Worker("/m9-actor-worker.mjs",{type:"module"}),valid,11);',
+    'const b=host.spawn(new Worker("/m9-actor-worker.mjs",{type:"module"}),invalid,11);',
+    'for(const n of [1000,12,3])if(host.try_send(a,n)!=="ACCEPTED")throw new Error("healthy admission");',
+    'for(const n of [3,3,3])if(host.try_send(b,n)!=="ACCEPTED")throw new Error("fault admission");',
+    'if(host.try_send(b,3)!=="FULL")throw new Error("bounded DATA gate");',
+    'host.request_stop(b);host.request_stop(a);',
+    'if(!(await host.await_terminal(a,15000))||!(await host.await_terminal(b,15000)))throw new Error("worker terminal deadline");',
+    'const sa=host.check_conservation(a),sb=host.check_conservation(b);',
+    'return {accepted:sa.accepted,completed:sa.completed,sum:String(sa.resultSum),yielded:sa.yielded,',
+    'failed:sb.failed,abandoned:sb.abandoned,controls:notices.filter(n=>n.actor_id===b.actor_id).map(n=>n.kind),',
+    'fault:notices.find(n=>n.actor_id===b.actor_id&&n.kind==="PANIC")?.fault_code};',
+    '} finally{await host.close()}',
+    '})()'
+  ];
+  const m9Result=await evaluate(m9Lines.join('\n'));
+  assert.deepEqual(m9Result, {accepted:3,completed:3,sum:'499569',yielded:251,
+    failed:1,abandoned:2,controls:['STOP','PANIC'],fault:1});
+  assert.ok(requests.some(x=>x.path==='/m9-actor-worker.mjs'));
+  console.log('M9_REAL_CHROMIUM_COMPILER_WORKER_SUPERVISOR=PASS');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
