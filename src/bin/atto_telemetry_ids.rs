@@ -327,6 +327,23 @@ mod tests {
     }
 
     #[test]
+    fn proposal_budget_counts_appended_newline_before_file_creation() {
+        let output = format!("__atto_identity_budget_{}.json", std::process::id());
+        let path = Path::new(&output);
+        assert!(!path.exists());
+        let baseline = serde_json::to_vec_pretty(&serde_json::json!({"k": ""}))
+            .expect("baseline JSON serializer");
+        let value = serde_json::json!({
+            "k": "x".repeat(MAX_BYTES as usize - baseline.len())
+        });
+        assert_eq!(serde_json::to_vec_pretty(&value).unwrap().len(), MAX_BYTES as usize);
+        let error = write_proposal(path, Path::new("Cargo.toml"),
+            Path::new("Cargo.lock"), &value).unwrap_err();
+        assert!(error.contains("plus newline"));
+        assert!(!path.exists(), "oversize proposals must never create a file");
+    }
+
+    #[test]
     fn rejects_missing_source_without_creating_files() {
         let missing = Path::new("__atto_identity_missing_source_test.atto");
         let result = read_regular_bounded(missing).unwrap_err();
