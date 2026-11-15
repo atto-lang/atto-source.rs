@@ -52,6 +52,18 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "at most one direct lambda per function is supported"));
                     }
+                    if let Some(t @ Type::Callable(_)) = ty {
+                        // Even though callable storage is not executable,
+                        // a typed lambda binding provides a complete
+                        // contextual signature: check its body and captures
+                        // before the explicit runtime capability gate.
+                        let want = CallableSignature::from_source_type(
+                            *t, &input.type_names, *pos)?;
+                        let _typed = CallableSignature::from_noncapturing(
+                            init, Some(&want.params), Some(want.result))?;
+                        return Err(error(*pos, "E_UNSUPPORTED",
+                            "typed callable values require verified Wasm indirect dispatch"));
+                    }
                     if *kind != BindKind::Val || ty.is_some() {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "direct lambdas need an unannotated immutable val binding"));
