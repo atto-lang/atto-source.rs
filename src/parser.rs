@@ -1089,6 +1089,10 @@ impl Parser {
         self.erlang_body = true;
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut out: Vec<Stmt> = Vec::new();
+            if self.is_word("end") {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "Erlang-style callable bodies require at least one item"));
+            }
             while !self.is_word("end") {
                 if *self.peek() == Tok::Eof {
                     return Err(self.expected("'end'"));
