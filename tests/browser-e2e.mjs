@@ -114,11 +114,11 @@ try{
   assert.ok(previewStart > 0, 'missing exact public playground source');
   const playgroundSource = playgroundFixture.slice(previewStart);
   const gitBlob = createHash('sha1')
-    .update('blob ' + Buffer.byteLength(playgroundSource, 'utf8') + '\\0')
+    .update('blob ' + Buffer.byteLength(playgroundSource, 'utf8') + '\0')
     .update(playgroundSource).digest('hex');
   assert.equal(gitBlob, '71d22c2365c687fbce044cea7d7d2927c3fb6e86', 'public trap example source mismatch');
   assert.match(await run(playgroundSource, 'main() -> 7'),
-    /^5\\nid must be nonnegative\\nan ordinary throw was caught\\nmain\\(\\) -> 7$/);
+    /^5\nid must be nonnegative\nan ordinary throw was caught\nmain\(\) -> 7$/);
   console.log('PASS browser: exact public trap preview Some(Ok), Some(Err), thrown None');
 
   const ordinaryThrow =
