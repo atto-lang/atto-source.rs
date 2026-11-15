@@ -227,7 +227,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
     // before preprocessing. Comments, strings and templates cannot hide
     // binary NUL or terminal ESC/DEL. Never echo raw control characters.
     if let Some((offset, byte)) = source.bytes().enumerate().find(|(_, byte)| {
-        matches!(byte, 0 | 0x1b | 0x7f)
+        matches!(*byte, 0 | 0x1b | 0x7f)
     }) {
         return Err(ParseError {
             offset,
