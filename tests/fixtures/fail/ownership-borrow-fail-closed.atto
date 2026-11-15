@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+pub fnc main(): int {
+  val number = 42;
+  val loan = borrow! number;
+  return loan;
+}
