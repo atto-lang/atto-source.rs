@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import {Worker} from 'node:worker_threads';
 import {readFileSync} from 'node:fs';
-import {M9SupervisorHost} from '../runtime/m9-supervisor-host.mjs';
+import {M9SupervisorHost, notice_to_wire_json} from '../runtime/m9-supervisor-host.mjs';
 const compilerBytes=readFileSync('target/wasm32-unknown-unknown/release/atto_compiler.wasm');
 const compiler=new WebAssembly.Instance(new WebAssembly.Module(compilerBytes)).exports;
 assert.equal(compiler.abi_version(),2);
@@ -22,6 +22,20 @@ const faultSource=source.replace('let total: int = 0;','let total: int = 9223372
   .replace('let i: int = 0;','let i: int = 1;');
 const fault=compile(faultSource);
 function make_worker(){return new Worker(new URL('../runtime/m9-actor-worker.mjs',import.meta.url),{type:'module'})}
+const stopGolden=readFileSync('tests/fixtures/m9/stop.json','utf8').trimEnd();
+const panicGolden=readFileSync('tests/fixtures/m9/panic.json','utf8').trimEnd();
+const stopped={kind:'STOP',actor_id:0,generation:1,supervisor_id:777,
+  message_id:0,fault_code:0,reason:'graceful stop'};
+const panicked={kind:'PANIC',actor_id:0,generation:1,supervisor_id:777,
+  message_id:1,fault_code:1,reason:'checked arithmetic'};
+assert.equal(notice_to_wire_json(stopped),stopGolden);
+assert.equal(notice_to_wire_json(panicked),panicGolden);
+for (const mutation of [
+  {...stopped,actor_id:-1}, {...stopped,actor_id:Number.MAX_SAFE_INTEGER+1},
+  {...stopped,generation:0}, {...panicked,fault_code:0},
+  {...stopped,message_id:1}, {...panicked,reason:'x'.repeat(129)},
+  {...panicked,kind:'DONE'}
+])assert.throws(()=>notice_to_wire_json(mutation),'malformed wire accepted');
 const notices=[];
 const host=new M9SupervisorHost({maxActors:4,mailboxCapacity:3,reductionBudget:4,
   onControl:notice=>notices.push(notice)});
@@ -64,6 +78,14 @@ try {
   assert.equal(faultNotices[1].supervisor_id,21);
   assert.equal(faultNotices[1].generation,workerB.generation);
   assert.ok(notices.every(x=>Object.isFrozen(x)));
+  for(const n of notices) {
+    const wire=notice_to_wire_json(n);
+    const parsed=JSON.parse(wire);
+    assert.deepEqual(Object.keys(parsed),[
+      'kind','actor_id','generation','supervisor_id','message_id','fault_code','reason']);
+    assert.equal(parsed.actor_id,n.actor_id);
+  }
+  console.log('M9_RUST_WASM_CANONICAL_NOTICE_JSON=PASS');
   console.log('M9_REAL_COMPILED_ATTO_WORKER_MESSAGES=PASS');
   console.log('M9_PRIORITY_SUPERVISOR_STOP_THEN_PANIC=PASS');
   console.log('M9_SATURATED_DATA_DOES_NOT_BLOCK_CONTROL=PASS');
