@@ -1955,7 +1955,17 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(error.pos, "E_ARITY",
                 "Error(message) requires exactly one string argument"));
         }
-        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
+        // Error is a nominal built-in, not a stringly typed call. Reject
+        // shadowing in *every* namespace that a source author can introduce:
+        // local bindings/parameters, free functions, classes, enums and actors.
+        // Otherwise `throw Error(message)` could silently bypass a same-name
+        // user declaration and forge the private guest exception tag.
+        if self.lookup("Error").is_some()
+            || self.g.names.contains_key("Error")
+            || self.g.class("Error").is_some()
+            || self.g.enums.iter().any(|e| e.name == "Error")
+            || self.g.actors.iter().any(|a| a.name == "Error")
+        {
             return Err(Diagnostic::new(error.pos, "E_RESERVED",
                 "the guest Error constructor cannot be shadowed"));
         }
