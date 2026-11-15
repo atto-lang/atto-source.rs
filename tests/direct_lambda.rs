@@ -74,3 +74,24 @@ fn not_called_lambda_remains_unsupported() {
     let src = "pub fnc main(): int { val f = |n| -> n + 1; return 0; }";
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_UNSUPPORTED");
 }
+
+#[test]
+fn nested_shadow_does_not_rebind_captured_lexical_value() {
+    // Definition-site binding identity is required by Java lexical closures.
+    // The current direct Wasm profile lacks an environment object, therefore
+    // it must reject a nested shadow instead of passing the wrong value.
+    let src = r#"
+        pub fnc main(): int {
+            val offset = 7;
+            val add = |n| : int -> n + offset;
+            if true then
+                val offset = 99;
+                return add(35);
+            fi
+            return 0;
+        }
+    "#;
+    let d = atto_compiler::compile(src).expect_err("shadow must not retarget capture");
+    assert_eq!(d.code, "E_CAPTURE", "{d}");
+    assert!(d.message.contains("shadow"), "{d}");
+}
