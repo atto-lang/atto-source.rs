@@ -441,6 +441,12 @@ impl Emit<'_> {
             TExpr::StrConst(offset, len) | TExpr::ArrayConst(offset, len) =>
                 self.i64c(((*offset as i64) << 32) | *len as i64),
             TExpr::ArrayNew { elements, tmp } => {
+                if elements.is_empty() {
+                    // Contextually typed empty arrays never allocate; the
+                    // zero descriptor has length zero, so no load is reachable.
+                    self.i64c(0);
+                    return;
+                }
                 // Allocate a single bounded array of arena-relative object
                 // handles. Constructors execute once left-to-right after
                 // allocation. An interrupted construction is reclaimable
