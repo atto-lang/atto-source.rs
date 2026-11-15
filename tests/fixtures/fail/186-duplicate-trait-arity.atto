@@ -1,0 +1,6 @@
+// expect-error: E_DUPLICATE
+define trait T as
+  get(int n): int { return n; }
+  get(bool n): int { return 5; }
+end
+pub fnc main(): int { return 0; }
