@@ -104,7 +104,7 @@ pub fnc main(): int {
 "#;
     let p = source_program(src);
     let checked = check::check(&p).expect("constructor call must be rewritten");
-    assert!(checked.funcs.iter().any(|f| f.name == "$lambda_2"));
+    assert!(checked.funcs.iter().any(|f| f.name == "$lambda_1"));
     assert!(atto_compiler::compile(src).is_ok());
 }
 
