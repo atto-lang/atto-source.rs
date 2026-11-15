@@ -1,0 +1,9 @@
+// expect-error: E_AMBIGUOUS_MEMBER
+define trait T as
+  status(): int { return 2; }
+end
+define class Parent as
+  pub status(): int { return 1; }
+end
+define class Child extends Parent implements T as end
+pub fnc main(): int { return 0; }
