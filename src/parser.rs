@@ -356,7 +356,7 @@ impl Parser {
     fn is_type_word(&self, n: usize) -> bool {
         matches!(
             self.word_at(n),
-            Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String")
+            Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
         ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
     }
 
@@ -369,6 +369,48 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "fnc" => {
+                // Canonical source type form: fnc(int, bool) -> float.
+                // The first profile admits scalar callback contracts only,
+                // without silently treating callable types as runtime values.
+                self.expect(Tok::LParen, "'(' after fnc callable type")?;
+                let mut params = Vec::<Type>::new();
+                if *self.peek() != Tok::RParen {
+                    loop {
+                        if params.len() >= MAX_PARAMS {
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                                "callable signature exceeds maximum parameter count"));
+                        }
+                        let arg_pos = self.pos();
+                        let arg = self.parse_type()?;
+                        if !matches!(arg, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                            return Err(Diagnostic::new(arg_pos, "E_UNSUPPORTED_TYPE",
+                                "callable parameter must be a non-void scalar type"));
+                        }
+                        params.push(arg);
+                        if !self.eat(&Tok::Comma) { break; }
+                    }
+                }
+                self.expect(Tok::RParen, "')' after callable parameters")?;
+                self.expect(Tok::Arrow, "'->' before callable result type")?;
+                let result_pos = self.pos();
+                let result = self.parse_type()?;
+                if !matches!(result,
+                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
+                    return Err(Diagnostic::new(result_pos, "E_UNSUPPORTED_TYPE",
+                        "callable return type must be scalar or void"));
+                }
+                let spelling = format!("fnc({})->{}",
+                    params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
+                    result.name());
+                // Identical contracts have identical Type identity across
+                // declarations, regardless of whitespace and type aliases.
+                let id = match self.type_names.iter().position(|(n, _)| *n == spelling) {
+                    Some(existing) => existing as u32,
+                    None => self.type_name(spelling, pos),
+                };
+                Type::Callable(id)
+            }
             "Option" => {
                 self.expect(Tok::Lt, "'<' after Option")?;
                 let inner = self.parse_type()?;
