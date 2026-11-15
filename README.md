@@ -350,3 +350,9 @@ The fixture corpus is in `tests/fixtures/`:
 - It checks recovery after an error.
 - With `ATTOC` set, it requires byte-identical native output.
 - With `ATTO_JAVA` set, it requires the Java reference to agree on exit status, stdout and acceptance for each fixture.
+
+## Browser tenant worker artifact (experimental)
+
+`atto_compiler::browser_worker::compile_browser_tenant(source)` compiles the existing AttoLang subset to real Wasm and reads the compiler-produced `atto.actors` custom section into a bounded actor-name list. It exposes `atto.browser.guest.v2` plus the `atto.browser.tenants.v1` worker envelope contract for bundlers targeting [atto-browser](https://github.com/atto-lang/atto-browser). The original `compile` ABI remains unchanged.
+
+The browser host runs one Web Worker per tenant and may instantiate several actor-specific Wasm instances within it. This helper does not bundle workers or provide a security boundary; actual Wasm admission, capability grants, worker termination, and runtime conformance remain responsibilities of the host. Run `cargo test` for the manifest tests; no Rust execution proof is claimed until CI verifies the branch.
