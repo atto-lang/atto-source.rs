@@ -78,3 +78,49 @@ fn direct_lambda_name_collision_does_not_affect_unrelated_functions() {
     assert_eq!(typed.funcs[2].name, "$lambda_1");
     assert!(atto_compiler::compile(source).is_ok());
 }
+
+
+#[test]
+fn lambda_calls_in_constructor_arguments_bind_to_definition_site() {
+    // The top-level function deliberately has the same name as the local
+    // direct lambda. Missing New(arg) recursion otherwise resolves this call
+    // to the wrong function and silently changes the result.
+    let src = r#"
+fnc transform(int n): int { return n * 100; }
+define class Container as
+  mut int value = 0;
+  constructor(int v) { self.value = v; }
+  pub get(): int { return self.value; }
+end
+pub fnc main(): int {
+  val factor = 2;
+  val transform = |n| : int -> n * factor;
+  block {
+    val factor = 100;
+    val container = new Container(transform(21));
+    return container.get();
+  }
+}
+"#;
+    let p = source_program(src);
+    let checked = check::check(&p).expect("constructor call must be rewritten");
+    assert!(checked.funcs.iter().any(|f| f.name == "$lambda_2"));
+    assert!(atto_compiler::compile(src).is_ok());
+}
+
+#[test]
+fn constructor_argument_cannot_escape_direct_lambda_as_value() {
+    let src = r#"
+define class Holder as
+  mut int value = 0;
+  constructor(int v) { self.value = v; }
+end
+pub fnc main(): int {
+  val direct = |n| : int -> n + 1;
+  val holder = new Holder(direct);
+  return direct(41);
+}
+"#;
+    let error = atto_compiler::compile(src).unwrap_err();
+    assert_eq!(error.code, "E_UNSUPPORTED", "{error}");
+}

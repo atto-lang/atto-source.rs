@@ -345,13 +345,20 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
             for a in args { rewrite_expr(a, d)?; }
             Ok(())
         }
-        ExprKind::Array(args) => {
+        ExprKind::Array(args) | ExprKind::New(_, args) => {
+            // Constructor arguments are genuine call arguments. Omitting
+            // them lets a direct lambda call bypass lexical snapshot rewriting
+            // (or silently resolve to a same-named top-level function).
             for a in args { rewrite_expr(a, d)?; }
             Ok(())
         }
         ExprKind::Lambda { .. } => Err(error(e.pos, "E_UNSUPPORTED",
             "nested or escaping lambda needs closure lowering")),
-        _ => Ok(()),
+        // Exhaustive AST traversal: introducing a new expression kind must
+        // require a compiler review of its lexical binding behaviour.
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef |
+        ExprKind::Spawn(_) => Ok(()),
     }
 }
 

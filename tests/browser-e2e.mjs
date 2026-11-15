@@ -90,7 +90,8 @@ try{
   for (const [fixture, expected] of [
     ['pure-lexical-two-captures.atto', 'main() -> 42'],
     ['pure-lexical-bool-capture.atto', 'main() -> 42'],
-    ['pure-mutual-recursion.atto', 'main() -> 42']
+    ['pure-mutual-recursion.atto', 'main() -> 42'],
+    ['lexical-constructor-lambda-capture.atto', 'main() -> 42']
   ]) {
     const source = await readFile(new URL('./fixtures/pass/' + fixture, import.meta.url), 'utf8');
     assert.match(await run(source, expected), /^main\(\) -> 42$/);
@@ -99,7 +100,8 @@ try{
   for (const [fixture, expected] of [
     ['pure-transitive-dead-branch.atto', 'E_PURE'],
     ['lexical-out-of-scope-capture.atto', 'E_CAPTURE'],
-    ['lexical-escaping-mutable-counter.atto', 'E_CAPTURE']
+    ['lexical-escaping-mutable-counter.atto', 'E_CAPTURE'],
+    ['lexical-constructor-lambda-escape.atto', 'E_UNSUPPORTED']
   ]) {
     const source = await readFile(new URL('./fixtures/fail/' + fixture, import.meta.url), 'utf8');
     assert.match(await run(source, expected), new RegExp(expected));
