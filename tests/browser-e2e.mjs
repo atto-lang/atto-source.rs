@@ -85,6 +85,27 @@ try{
   const impure = await readFile(new URL('./fixtures/fail/pure-transitive-call.atto', import.meta.url), 'utf8');
   assert.match(await run(impure, 'E_PURE'), /E_PURE/);
   console.log('PASS browser: transitive impurity is rejected by the compiler');
+  // Parity-inspired lexical tests: Java's closure lifetime is broader, but
+  // this deliberately bounded Rust/Wasm profile must preserve lexical values.
+  for (const [fixture, expected] of [
+    ['pure-lexical-two-captures.atto', 'main() -> 42'],
+    ['pure-lexical-bool-capture.atto', 'main() -> 42'],
+    ['pure-mutual-recursion.atto', 'main() -> 42']
+  ]) {
+    const source = await readFile(new URL('./fixtures/pass/' + fixture, import.meta.url), 'utf8');
+    assert.match(await run(source, expected), /^main\(\) -> 42$/);
+  }
+  console.log('PASS browser: immutable lexical captures and mutually recursive pure functions');
+  for (const [fixture, expected] of [
+    ['pure-transitive-dead-branch.atto', 'E_PURE'],
+    ['lexical-out-of-scope-capture.atto', 'E_CAPTURE'],
+    ['lexical-escaping-mutable-counter.atto', 'E_CAPTURE']
+  ]) {
+    const source = await readFile(new URL('./fixtures/fail/' + fixture, import.meta.url), 'utf8');
+    assert.match(await run(source, expected), new RegExp(expected));
+  }
+  console.log('PASS browser: effects and invalid captures cannot masquerade as pure or lexical');
+
 
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
   console.log('PASS browser: val reassignment fails closed');
