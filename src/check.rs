@@ -1948,6 +1948,13 @@ impl<'a> FnCx<'a> {
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
+        // Pattern bindings used by guards must be initialized before the
+        // guard condition executes. Pure scalar handles are copied from the
+        // once-evaluated subject, and remain lexically scoped to their arms.
+        // These initializations must precede TStmt::If, whose conditions
+        // run before any branch body. Do not use this for ADT payloads:
+        // their reads require a proven matching variant tag.
+        let mut match_setup = vec![TStmt::Set(tmp, subj)];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             if covered {
@@ -2040,7 +2047,14 @@ impl<'a> FnCx<'a> {
                 let mut body = Vec::new();
                 if let Some(n) = bind {
                     let slot = self.declare(n, sty, false, arm.pos)?;
-                    body.push(TStmt::Set(slot, get()));
+                    let assignment = TStmt::Set(slot, get());
+                    if arm.guard.is_some() {
+                        // A guard reads its arm-local binding in the If
+                        // condition, before any arm body is reached.
+                        match_setup.push(assignment);
+                    } else {
+                        body.push(assignment);
+                    }
                 }
                 let guard = match &arm.guard {
                     Some(g) => Some(self.cond(g, "match guard")?),
@@ -2101,10 +2115,8 @@ impl<'a> FnCx<'a> {
             ));
         }
         self.moved = after;
-        Ok(TStmt::Block(vec![
-            TStmt::Set(tmp, subj),
-            TStmt::If(out, Some(vec![TStmt::Unreachable])),
-        ]))
+        match_setup.push(TStmt::If(out, Some(vec![TStmt::Unreachable])));
+        Ok(TStmt::Block(match_setup))
     }
 
 
