@@ -3150,40 +3150,61 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        // A generic annotation such as Box<Box<...<int>>> can be 100+
+        // levels deep. Recursive generic parsing consumes multiple native
+        // stack frames per level and can abort before E_NESTING is returned
+        // on smaller runner stacks. Parse the same grammar iteratively.
         self.enter()?;
-        let result = (|| {
-            let mut name = match self.peek().clone() {
-                Tok::Ident(s) if !is_reserved(&s) || s == "void" => {
-                    self.advance();
-                    s
+        let parsed = (|| -> R<String> {
+            let mut spelling = String::new();
+            let mut generic_depth = 0u32;
+            let mut need_type = true;
+            loop {
+                if need_type {
+                    if self.depth.saturating_add(generic_depth) > MAX_DEPTH
+                        || self.height.saturating_add(generic_depth) > MAX_TREE_HEIGHT {
+                        return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                            "lambda type nesting exceeds the parser depth budget"));
+                    }
+                    let type_name = match self.peek().clone() {
+                        Tok::Ident(s) if !is_reserved(&s) || s == "void" => {
+                            self.advance();
+                            s
+                        }
+                        _ => return Err(self.expected("a lambda return type")),
+                    };
+                    spelling.push_str(&type_name);
+                    while self.eat(&Tok::Dot) {
+                        let segment = match self.peek().clone() {
+                            Tok::Ident(s) => { self.advance(); s }
+                            _ => return Err(self.expected("a qualified type name")),
+                        };
+                        spelling.push('.');
+                        spelling.push_str(&segment);
+                    }
+                    if self.eat(&Tok::Lt) {
+                        spelling.push('<');
+                        generic_depth += 1;
+                        need_type = true;
+                        continue;
+                    }
+                    need_type = false;
                 }
-                _ => return Err(self.expected("a lambda return type")),
-            };
-            while self.eat(&Tok::Dot) {
-                // Namespace/module segments may be spelled like keywords
-                // (e.g. my.types.Response). After '.', the token is never
-                // parsed as a control-flow keyword.
-                let part = match self.peek().clone() {
-                    Tok::Ident(part) => { self.advance(); part }
-                    _ => return Err(self.expected("a qualified type name")),
-                };
-                name.push('.');
-                name.push_str(&part);
-            }
-            if self.eat(&Tok::Lt) {
-                name.push('<');
-                loop {
-                    name.push_str(&self.parse_lambda_type()?);
-                    if !self.eat(&Tok::Comma) { break; }
-                    name.push(',');
+                if generic_depth == 0 {
+                    return Ok(spelling);
+                }
+                if self.eat(&Tok::Comma) {
+                    spelling.push(',');
+                    need_type = true;
+                    continue;
                 }
                 self.expect(Tok::Gt, "'>' after lambda type arguments")?;
-                name.push('>');
+                spelling.push('>');
+                generic_depth -= 1;
             }
-            Ok(name)
         })();
         self.leave();
-        result
+        parsed
     }
 
     fn parse_lambda(&mut self, suspends: bool) -> R<ExprKind> {
