@@ -225,3 +225,130 @@ pub fn check_unary(t: &[Token], signatures: &[UnarySignature])
 pub fn resolve_message_mode(t: &[Token], message: &str) -> R<Option<ActorResponseMode>> {
     resolve(message, &nominal_headers(t)?, &mut BTreeSet::new())
 }
+
+
+/// Preflight ordinary actor mail reply sites against the message's NOMINAL
+/// response mode. This is typed source IR only: arbitrary expressions and
+/// control-flow linearity still require the full production checker.
+pub fn check_explicit_replies(t: &[Token]) -> R<Vec<ActorMessageContract>> {
+    let graph = nominal_headers(t)?;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 8 < t.len() {
+        if !(is(t, i, "receive") && is_tok(t, i + 1, &Tok::LParen)
+            && is(t, i + 2, "ActorMail") && is_tok(t, i + 3, &Tok::Lt)
+            && is_tok(t, i + 5, &Tok::Gt) && is_tok(t, i + 7, &Tok::RParen)) {
+            i += 1; continue;
+        }
+        let (message, mail) = match (&t[i + 4].tok, &t[i + 6].tok) {
+            (Tok::Ident(msg), Tok::Ident(var)) => (msg.as_str(), var.as_str()),
+            _ => { i += 1; continue; },
+        };
+        let mut body_start = i + 8;
+        if is_tok(t, body_start, &Tok::Colon) || is_tok(t, body_start, &Tok::Arrow) {
+            body_start += 1;
+            if !is(t, body_start, "void") {
+                // Nonvoid return is handled by the unary actor validator,
+                // not by ordinary reply sugar.
+                i += 1; continue;
+            }
+            body_start += 1;
+        }
+        if !is_tok(t, body_start, &Tok::LBrace) { i += 1; continue; }
+        let mut end = body_start + 1;
+        let mut depth = 1usize;
+        while end < t.len() && depth > 0 {
+            match t[end].tok {
+                Tok::LBrace => depth += 1,
+                Tok::RBrace => depth -= 1,
+                Tok::Eof => return Err(diagnostic(t, i, "E_EOF", "unclosed ActorMail receive body")),
+                _ => {},
+            }
+            end += 1;
+        }
+        if depth != 0 { return Err(diagnostic(t, i, "E_EOF", "unclosed ActorMail receive body")); }
+        let mut saw_reply = false;
+        let mut first_kind = "";
+        let mut site_count = 0usize;
+        for j in body_start + 1..end.saturating_sub(2) {
+            if !is(t, j, mail) || !is_tok(t, j + 1, &Tok::Dot) { continue; }
+            let kind = if is(t, j + 2, "respond_with") { "unary" }
+                else if is(t, j + 2, "reply_stream") { "stream" }
+                else if is(t, j + 2, "send_back") { "alias" }
+                else { continue };
+            saw_reply = true;
+            site_count += 1;
+            if first_kind.is_empty() { first_kind = kind; }
+            if first_kind != kind {
+                return Err(diagnostic(t, j, "E_REPLY_LINEAR",
+                    "mixed reply primitives cannot claim multiple reply permissions"));
+            }
+            if !is_tok(t, j + 3, &Tok::LParen) {
+                return Err(diagnostic(t, j + 3, "E_REPLY_SIGNATURE",
+                    "reply method requires a parenthesized argument list"));
+            }
+            if kind == "unary" {
+                // Check literal/concrete constructor types, but do not guess
+                // the inferred type of a variable or arbitrary expression.
+                let candidate = if is(t, j + 4, "new") {
+                    match t.get(j + 5).map(|x| &x.tok) {
+                        Some(Tok::Ident(n)) => Some(n.clone()),
+                        _ => None,
+                    }
+                } else {
+                    match t.get(j + 4).map(|x| &x.tok) {
+                        Some(Tok::Int(_)) => Some("int".to_owned()),
+                        Some(Tok::Str(_)) => Some("string".to_owned()),
+                        Some(Tok::Ident(n)) if n == "true" || n == "false" =>
+                            Some("bool".to_owned()),
+                        _ => None,
+                    }
+                };
+                if let Some(ActorResponseMode::Unary(expected)) =
+                    resolve(message, &graph, &mut BTreeSet::new())? {
+                    if let Some(actual) = candidate {
+                        if expected != actual {
+                            return Err(diagnostic(t, j, "E_REPLY_TYPE",
+                                format!("respond_with expects {expected}, found {actual}")));
+                        }
+                    } else if is_tok(t, j + 4, &Tok::RParen) && expected != "Unit" {
+                        return Err(diagnostic(t, j, "E_REPLY_TYPE",
+                            "respond_with() is only valid for a unit-valued unary request"));
+                    }
+                }
+            }
+        }
+        if saw_reply {
+            let response = resolve(message, &graph, &mut BTreeSet::new())?;
+            match (&response, first_kind) {
+                (Some(ActorResponseMode::Unary(_)), "unary") => {},
+                (Some(ActorResponseMode::Stream(_)), "stream") => {},
+                (None, _) if !graph.contains_key(message) => {
+                    i = end; continue; // imported/unknown: no proven authority
+                }
+                _ => return Err(diagnostic(t, i, "E_REPLY_MODE",
+                    format!("ActorMail<{message}> has no matching {first_kind} reply permission"))),
+            }
+            // A second potential reply on a path requires ownership/CFG
+            // analysis. Reject conservatively without alleging that different
+            // match arms necessarily execute together.
+            if site_count > 1 {
+                return Err(diagnostic(t, i, "E_UNSUPPORTED",
+                    "multiple reply sites require a path-sensitive linearity checker"));
+            }
+            let actor = (0..i).rev().find_map(|k| {
+                if is(t, k, "define") && is(t, k + 1, "actor") {
+                    if let Some(Token { tok: Tok::Ident(name), .. }) = t.get(k + 2) {
+                        return Some(name.clone());
+                    }
+                }
+                None
+            }).unwrap_or_else(|| "<unlinked actor>".to_owned());
+            out.push(ActorMessageContract {
+                actor, message: message.to_owned(), response: response.unwrap(), pos: pos(t, i),
+            });
+        }
+        i = end;
+    }
+    Ok(out)
+}
