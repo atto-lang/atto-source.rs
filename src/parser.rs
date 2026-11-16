@@ -1108,6 +1108,13 @@ impl Parser {
                 self.terminator()?;
                 Ok(s)
             }
+            // 'mut' qualifies a declared binding's referent; it never
+            // implicitly supplies the compile-time 'const' qualifier.
+            Some("mut") => Err(Diagnostic::new(
+                pos,
+                "E_MUT_QUALIFIER",
+                "bare 'mut' is not a local declaration; write 'val mut', 'let mut' or explicit 'const mut'",
+            )),
             // Java Parser.looksLikePrimitiveTypeFirstImmutableBinding: exactly
             // `int|bool|string|String name = expr` is an immutable binding.
             Some("int" | "bool" | "string" | "String")
