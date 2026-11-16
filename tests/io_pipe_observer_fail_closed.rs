@@ -59,3 +59,18 @@ fn existing_non_pipe_guest_compilation_remains_unchanged() {
         .expect("existing scalar guest still compiles");
     assert!(binary.starts_with(b"\0asm\x01\0\0\0"));
 }
+
+#[test]
+fn actor_local_io_cannot_implicitly_gain_process_stdio_pipe_permission() {
+    let guest = r#"
+define actor Producer receives int emits int as
+    receive(ActorMail<int> mail): void {
+        val unexpected = io.pipe(io.in, io.out);
+        emit(mail.value);
+    }
+end
+pub fnc main(): int { return 0; }
+"#;
+    assert!(compile(guest).is_err(),
+        "implicit actor io must not become a general process stdio pipe");
+}
