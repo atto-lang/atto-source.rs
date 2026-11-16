@@ -278,6 +278,7 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             for arm in arms {
                 let bound = match &arm.pattern {
                     Pattern::Bind(n) | Pattern::Adt(_, Some(n)) => Some(n),
+                    Pattern::StructuralFields { bind: Some(n), .. } => Some(n),
                     _ => None,
                 };
                 if bound.is_some_and(|n| *n == d.source) {
