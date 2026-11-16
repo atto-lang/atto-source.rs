@@ -25,8 +25,37 @@ pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Compile one `.atto` source file to a guest WebAssembly module.
+/// Versioned callable-body grammar. This is a *draft* selector; the stable
+/// package-manifest/default-version policy is tracked separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LanguageVersion {
+    /// Historical optional-`::` comma body, with implicit tail return.
+    V1,
+    /// Explicit `::` comma body; unmarked `end` requires explicit return.
+    V2,
+}
+
+impl LanguageVersion {
+    pub const fn from_number(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::V1),
+            2 => Some(Self::V2),
+            _ => None,
+        }
+    }
+}
+
+/// Legacy browser/compiler entry point. The existing draft strict behavior
+/// remains unchanged until a coordinated, versioned default migration lands.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_with_language_version(source, LanguageVersion::V2)
+}
+
+/// Compile with an explicit language-version selection. Both paths share the
+/// same checker, ownership/effect verification and deterministic Wasm emitter.
+pub fn compile_with_language_version(
+    source: &str, language_version: LanguageVersion,
+) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -58,7 +87,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         }
     }
     let program = if target {
-        let headers = target_syntax::parse_target_declarations(&toks)?;
+        let headers = target_syntax::parse_target_declarations_with_language_version(&toks, language_version)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
             // receiver headers into equivalent in-class method tokens, then
@@ -66,7 +95,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             // Namespace, imports, actor receivers and mutable-self are gated
             // inside the lowering helper, never silently compiled as classes.
             let lowered = target_syntax::lower_class_receivers(&toks, &headers)?;
-            parser::Parser::new(lowered).parse_program()?
+            parser::Parser::with_language_version(lowered, language_version).parse_program()?
         } else {
             // Actor mtd stays strictly syntax/type preflight only. An ActorRef
             // must never acquire unverified synchronous method dispatch.
@@ -77,7 +106,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
                 "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
         }
     } else {
-        parser::Parser::new(toks).parse_program()?
+        parser::Parser::with_language_version(toks, language_version).parse_program()?
     };
     let typed = check::check(&program)?;
     let bytes = wasm::emit(&typed);
@@ -145,9 +174,16 @@ mod abi {
         STATE.with(|s| s.borrow().col)
     }
 
-    /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
+    /// Legacy ABI entry point (draft v2 behavior). No global version state.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_versioned(length, 2)
+    }
+
+    /// Versioned ABI entry point: 1 = historical comma tails; 2 = strict ::.
+    /// A rejected version returns E_LANGUAGE_VERSION with no guest artifact.
+    #[no_mangle]
+    pub extern "C" fn compile_versioned(length: i32, version: u32) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -164,6 +200,14 @@ mod abi {
                 st.line = d.pos.line;
                 st.col = d.pos.col;
                 1
+            };
+            let language_version = match LanguageVersion::from_number(version) {
+                Some(value) => value,
+                None => return fail(
+                    &mut st,
+                    Diagnostic::new(Pos { line: 1, col: 1 }, "E_LANGUAGE_VERSION",
+                        "unsupported language version (expected 1 or 2)"),
+                ),
             };
             if length < 0 || length as usize > SOURCE_CAP {
                 return fail(
@@ -186,7 +230,7 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            match super::compile_with_language_version(source, language_version) {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0

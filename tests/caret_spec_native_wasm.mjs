@@ -36,7 +36,8 @@ function compileWasmHost(input) {
   const b = encoder.encode(input);
   if(b.length > api.input_capacity()) return {ok:false,code:'E_SOURCE_LIMIT'};
   new Uint8Array(api.memory.buffer,api.input_ptr(),b.length).set(b);
-  const rc=api.compile(b.length);
+  assert.equal(typeof api.compile_versioned,'function','versioned Wasm compiler ABI is required');
+  const rc=api.compile_versioned(b.length,2);
   if(rc!==0){
     assert.equal(api.result_length(),0,'error emitted wasm artifact');
     const mem = new Uint8Array(api.memory.buffer);
@@ -73,7 +74,7 @@ try{
   for(const c of contract.cases) {
     const input=join(work,c.id+'.atto'), output=join(work,c.id+'.wasm');
     await writeFile(input,c.source,'utf8');
-    const native=spawnSync(binary,[input,'-o',output],{encoding:'utf8',timeout:30000,maxBuffer:1<<20});
+    const native=spawnSync(binary,[input,'-o',output,'--language-version','2'],{encoding:'utf8',timeout:30000,maxBuffer:1<<20});
     const wasmHost=compileWasmHost(c.source);
     const row={
       id:c.id,phase:c.phase,expect:c.expect,expectedReturn:c.expectedReturn,
@@ -132,7 +133,7 @@ const summary=Object.fromEntries(['passed','failed','unsupported','not_executed'
   [k,rows.filter(x=>x.status===k).length]));
 assert.equal(rows.length,49);
 const report={schema:'atto.caret.spec-audit.v1',specPullRequest:'atto-lang/atto-spec#35',
-  specGitBlob:sha,sourceVersioning:'unimplemented',
+  specGitBlob:sha,sourceVersioning:'explicit-v2-native-cli-and-wasm-abi',
   backendPair:'native-rust-attoc/wasm32-unknown-unknown-rust',
   diagnosticCategoryMapping:'unverified',
   compilerWasmSha256:createHash('sha256').update(compilerBytes).digest('hex'),
