@@ -24,6 +24,7 @@ pub const MAX_TREE_HEIGHT: u32 = 256;
 /// Words reserved by the reference lexer (spec chapter 16 keyword table).
 const RESERVED: &[&str] = &[
     "define",
+    "declare",
     "def",
     "module",
     "namespace",
@@ -97,6 +98,9 @@ const RESERVED: &[&str] = &[
     "shared",
     "untrusted",
     "spawn",
+    "receives",
+    "emits",
+    "sends",
     "stop",
     "rt",
     "await",
@@ -692,11 +696,45 @@ impl Parser {
             fields, ctor: None, methods })
     }
 
-    /// After `define actor` (`defined`) or a bare `actor`.
+    /// After `define actor` (`defined`) or a legacy bare `actor`.
+    /// Declaration signatures use the same role spelling as the namespace
+    /// target parser, but only inline definitions carry executable bodies.
     fn parse_actor(&mut self, defined: bool) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
         self.decl_head("actor")?;
+        let mut declared_receives = None;
+        let mut declared_emits = None;
+        let mut declared_sends = None;
+        let mut passed_output = false;
+        while let Some(clause) = self.word_at(0).filter(|w|
+            matches!(*w, "receives" | "emits" | "sends")
+        ).map(str::to_owned) {
+            let at = self.pos();
+            self.advance();
+            match clause.as_str() {
+                "receives" if declared_receives.is_none() && !passed_output =>
+                    declared_receives = Some(self.parse_type()?),
+                "emits" if declared_emits.is_none() => {
+                    passed_output = true;
+                    declared_emits = Some(self.parse_type()?);
+                }
+                "sends" if declared_sends.is_none() => {
+                    passed_output = true;
+                    declared_sends = Some(self.parse_type()?);
+                }
+                _ => return Err(Diagnostic::new(
+                    at, "E_PIPE_CONTRACT",
+                    "duplicate or out-of-order actor receives/emits/sends clause",
+                )),
+            }
+        }
         let close = if defined {
+            if *self.peek() == Tok::Semi {
+                return Err(Diagnostic::new(
+                    self.pos(), "E_ACTOR",
+                    "define actor requires 'as ... end'; use 'declare actor Foo;' for a nominal header",
+                ));
+            }
             self.expect_word("as")?;
             "end"
         } else if self.eat(&Tok::LBrace) {
@@ -708,6 +746,9 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
+            declared_receives,
+            declared_emits,
+            declared_sends,
             fields: m.fields,
             receive: m.receive,
             methods: m.methods,

@@ -2,7 +2,7 @@
 //! This is separate from executable check.rs. Forward-declared actors have no
 //! linked implementation, state layout, proven effects or borrow semantics.
 
-use crate::ast::{ActorInterface, ActorInterfaceMethod, Param, Program, Type};
+use crate::ast::{ActorInterface, ActorInterfaceMailboxIngress, ActorInterfaceMethod, ActorInterfacePort, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
 use crate::target_syntax::{ReceiverHeader, TargetHeaders};
 
@@ -27,6 +27,17 @@ pub struct TypedParam {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedActor {
     pub name: String,
+    pub public: bool,
+    pub receives: Option<String>,
+    pub emits: Option<String>,
+    pub sends: Option<String>,
+    pub implemented_contracts: Vec<String>,
+    /// Exactly one matching inline or attached receive(ActorMail<T>) was
+    /// admitted by the static namespace linker. This is NOT runtime authority.
+    pub inbox_witnessed: bool,
+    /// An emitted-output effect needs a separate checked implementation.
+    /// No target-only token scan can certify an emit effect.
+    pub emits_witnessed: bool,
     /// Concrete syntax definition linked to the forward declaration;
     /// this alone does NOT make the actor spawnable.
     pub has_definition: bool,
@@ -47,11 +58,22 @@ pub struct TypedReceiver {
     pub body_lowered: bool,
 }
 
+/// Private runtime ingress signature attached to a declared actor.
+/// Never resolved as a normal receiver method and never guest executable here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedMailboxIngress {
+    pub actor: usize,
+    pub payload: String,
+    pub pos: Pos,
+    pub body_lowered: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TypedActorModule {
     pub namespace: Option<String>,
     pub actors: Vec<TypedActor>,
     pub receivers: Vec<TypedReceiver>,
+    pub mailbox_ingresses: Vec<TypedMailboxIngress>,
 }
 
 fn type_error(pos: Pos, why: impl Into<String>) -> Diagnostic {
@@ -144,21 +166,167 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     -> Result<TypedActorModule, Diagnostic> {
     let mut module = TypedActorModule {
         namespace: headers.namespace.clone(),
-        actors: headers.actors.iter().map(|name| TypedActor {
-            name: name.clone(),
-            has_definition: headers.definitions.iter().any(|a| a.name == *name),
+        actors: headers.actor_ports.iter().map(|port| TypedActor {
+            name: port.name.clone(),
+            public: port.public,
+            receives: port.receives.clone(),
+            emits: port.emits.clone(),
+            sends: port.sends.clone(),
+            implemented_contracts: port.implements.clone(),
+            inbox_witnessed: false,
+            emits_witnessed: false,
+            has_definition: headers.definitions.iter().any(|a| a.name == port.name),
             defined: false,
         }).collect(),
         receivers: Vec::with_capacity(headers.receivers.len()),
+        mailbox_ingresses: Vec::new(),
     };
     for definition in &headers.definitions {
-        if !headers.actors.contains(&definition.name) {
+        let Some(header) = headers.actor_ports.iter().find(|h| h.name == definition.name) else {
             return Err(Diagnostic::new(definition.pos, "E_UNBOUND",
                 format!("concrete actor '{}' has no matching declare actor", definition.name)));
+        };
+        // A header is not a substitute for the mailbox handler. Check all
+        // three sources of truth: nominal declaration, concrete header,
+        // and the actual typed receive handler. Never select the first one
+        // and silently mask a contradictory receive body.
+        if let Some(concrete_input) = definition.declared_receives {
+            let has_attached_receive = headers.receivers.iter().any(|r|
+                r.owner == definition.name && r.name == "receive"
+            );
+            match definition.receive.as_ref() {
+                Some(receive) if receive.payload == concrete_input => {}
+                // An out-of-line private mtd receive may witness the inbox
+                // even when the concrete actor definition has no inline
+                // receive handler. Its payload is checked below, not guessed.
+                None if has_attached_receive => {}
+                _ => return Err(Diagnostic::new(definition.pos, "E_SIGNATURE",
+                    format!("actor '{}' concrete receives header requires one matching inline or attached receive(ActorMail<T>) handler",
+                        definition.name))),
+            }
+        }
+        if header.receives.is_some() && definition.receive.is_none() &&
+            !headers.receivers.iter().any(|r|
+                r.owner == definition.name && r.name == "receive"
+            ) {
+            return Err(Diagnostic::new(definition.pos, "E_SIGNATURE",
+                format!("actor '{}' declared receives but has no inline or attached receive(ActorMail<T>) handler",
+                    definition.name)));
+        }
+        // Match available primitive input/output/effect header types without
+        // inventing a runtime witness for arbitrary unresolved nominal types.
+        let actual_receive = definition.receive.as_ref().map(|r| r.payload);
+        for (kind, declared, concrete) in [
+            // A concrete receives clause must agree with the forward
+            // declaration even when the receiver body is out-of-line.
+            ("receives", header.receives.as_deref(),
+                definition.declared_receives.or(actual_receive)),
+            ("emits", header.emits.as_deref(), definition.declared_emits),
+            ("sends", header.sends.as_deref(), definition.declared_sends),
+        ] {
+            if let (Some(declared), Some(concrete)) = (declared, concrete) {
+                let actual = match concrete {
+                    Type::Int => "int",
+                    Type::Bool => "bool",
+                    Type::Float => "float",
+                    Type::Str => "string",
+                    Type::Void => "void",
+                    _ => return Err(Diagnostic::new(definition.pos, "E_UNSUPPORTED_TYPE",
+                        format!("cannot link unresolved {kind} type for actor '{}' without a verified namespace type graph",
+                            definition.name))),
+                };
+                let declared = match declared {
+                    "boolean" => "bool",
+                    "f64" => "float",
+                    "String" => "string",
+                    other => other,
+                };
+                if actual != declared {
+                    return Err(Diagnostic::new(definition.pos, "E_SIGNATURE",
+                        format!("actor '{}' {kind} contract mismatch: declaration {declared}, definition {actual}",
+                            definition.name)));
+                }
+            }
         }
     }
     for header in &headers.receivers {
-        module.receivers.push(module.lower_one(header)?);
+        if header.name != "receive" {
+            if header.params.iter().any(|p| p.type_name.starts_with("ActorMail<")) {
+                return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                    "ActorMail<T> is sealed to a private actor receive handler"));
+            }
+            module.receivers.push(module.lower_one(header)?);
+            continue;
+        }
+        // A method called receive on a class is ordinary (not an actor ingress).
+        if !headers.actors.contains(&header.owner) {
+            module.receivers.push(module.lower_one(header)?);
+            continue;
+        }
+        let actor = module.actor_index(&header.owner, header.pos)?;
+        if header.public || header.mutable || header.arity != 1 ||
+            header.return_type != "void" {
+            return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                "actor receive ingress must be private, non-mutating, void and accept exactly one ActorMail<T>"));
+        }
+        let Some(param) = header.params.first() else {
+            return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                "actor receive requires one ActorMail<T> parameter"));
+        };
+        let Some(payload) = param.type_name.strip_prefix("ActorMail<")
+            .and_then(|t| t.strip_suffix('>')) else {
+            return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                "actor receive requires exactly one ActorMail<T> parameter"));
+        };
+        fn normalize(name: &str) -> &str {
+            match name {
+                "boolean" => "bool", "String" => "string", "f64" => "float",
+                other => other,
+            }
+        }
+        if let Some(expected) = module.actors[actor].receives.as_deref() {
+            if normalize(expected) != normalize(payload) {
+                return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                    format!("actor '{}' receives {expected} but attached receive(ActorMail<{payload}>) disagrees",
+                        header.owner)));
+            }
+        }
+        // A declaration might omit receives while its concrete definition
+        // specifies it. The attached witness must satisfy that contract too.
+        if let Some(concrete) = headers.definitions.iter()
+            .find(|d| d.name == header.owner)
+            .and_then(|d| d.declared_receives) {
+            let concrete_name = match concrete {
+                Type::Int => "int",
+                Type::Bool => "bool",
+                Type::Float => "float",
+                Type::Str => "string",
+                _ => return Err(Diagnostic::new(header.pos, "E_UNSUPPORTED_TYPE",
+                    "cannot verify a non-primitive concrete receives clause against an attached mailbox ingress in this frontend")),
+            };
+            if normalize(concrete_name) != normalize(payload) {
+                return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                    format!("actor '{}' concrete receives {concrete_name} but attached receive(ActorMail<{payload}>) disagrees", header.owner)));
+            }
+        }
+        if headers.definitions.iter().any(|d| d.name == header.owner && d.receive.is_some()) {
+            return Err(Diagnostic::new(header.pos, "E_DUPLICATE",
+                format!("actor '{}' has both an inline receive handler and an attached mtd receive", header.owner)));
+        }
+        if module.mailbox_ingresses.iter().any(|i| i.actor == actor) {
+            return Err(Diagnostic::new(header.pos, "E_DUPLICATE",
+                format!("duplicate private receive handler for actor '{}'", header.owner)));
+        }
+        module.mailbox_ingresses.push(TypedMailboxIngress {
+            actor, payload: payload.to_owned(), pos: header.pos, body_lowered: false,
+        });
+    }
+    for (i, actor) in module.actors.iter_mut().enumerate() {
+        actor.inbox_witnessed = module.mailbox_ingresses.iter().any(|m| m.actor == i) ||
+            headers.definitions.iter().any(|d| d.name == actor.name && d.receive.is_some());
+        // Even a syntactically present emit() does not prove its type, effect,
+        // backpressure or ownership semantics. Do not infer a pipe source.
+        actor.emits_witnessed = false;
     }
     Ok(module)
 }
@@ -184,6 +352,17 @@ pub fn build_actor_program(headers: &TargetHeaders, module: &TypedActorModule) -
     let interface = ActorInterface {
         namespace: module.namespace.clone(),
         forwards: module.actors.iter().map(|a| a.name.clone()).collect(),
+        ports: module.actors.iter().enumerate().map(|(i, a)| ActorInterfacePort {
+            actor: i as u32,
+            public: a.public,
+            receives: a.receives.clone(),
+            emits: a.emits.clone(),
+            sends: a.sends.clone(),
+            implemented_contracts: a.implemented_contracts.clone(),
+        }).collect(),
+        mailbox_ingresses: module.mailbox_ingresses.iter().map(|i| ActorInterfaceMailboxIngress {
+            owner: i.actor as u32, payload: i.payload.clone(), pos: i.pos,
+        }).collect(),
         methods: module.receivers.iter().map(|m| ActorInterfaceMethod {
             owner: m.actor as u32,
             name: m.method.clone(),

@@ -982,6 +982,26 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
             None => Type::Void,
         };
+        if let Some(receives) = a.declared_receives {
+            let declared = res(receives)?;
+            if declared == Type::Void || receive_idx.is_none() || declared != payload {
+                return Err(type_err(a.pos,
+                    format!("actor '{}' receives declaration must match receive(ActorMail<T>)",
+                        a.name)));
+            }
+        }
+        if let Some(sends) = a.declared_sends {
+            let _ = res(sends)?;
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED",
+                format!("actor '{}' sends clause requires transitive application-message effect checking",
+                    a.name)));
+        }
+        if let Some(emits) = a.declared_emits {
+            let _ = res(emits)?;
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED",
+                format!("actor '{}' emits clause requires checked pipeline event forwarding ABI",
+                    a.name)));
+        }
         actors.push(ActorInfo {
             name: a.name.clone(),
             fields,
@@ -3909,6 +3929,40 @@ impl<'a> FnCx<'a> {
 /// It prevents duplicate or incompatible in-actor/out-of-line declarations.
 pub fn check_target_actor_interface(program: &Program) -> R<()> {
     let Some(interface) = &program.actor_interface else { return Ok(()); };
+    if interface.ports.len() != interface.forwards.len() ||
+        interface.ports.iter().enumerate().any(|(i, port)| port.actor as usize != i) {
+        return Err(Diagnostic::new(Pos::default(), "E_SIGNATURE",
+            "nominal actor pipe port metadata must match the declared actor index"));
+    }
+    // A receive(ActorMail<T>) out-of-line handler is sealed runtime ingress.
+    // Its namespace signature lives in a separate noncallable descriptor;
+    // no normal actor method table or ActorRef dynamic dispatch may expose it.
+    for (i, ingress) in interface.mailbox_ingresses.iter().enumerate() {
+        let Some(port) = interface.ports.get(ingress.owner as usize) else {
+            return Err(Diagnostic::new(ingress.pos, "E_UNBOUND",
+                "out-of-line receive ingress has an unknown actor owner"));
+        };
+        if interface.mailbox_ingresses[..i].iter().any(|other| other.owner == ingress.owner) {
+            return Err(Diagnostic::new(ingress.pos, "E_DUPLICATE",
+                "actor cannot have more than one mailbox receive ingress"));
+        }
+        if let Some(declared) = port.receives.as_deref() {
+            fn canonical(name: &str) -> &str {
+                match name {
+                    "boolean" => "bool", "String" => "string", "f64" => "float",
+                    other => other,
+                }
+            }
+            if canonical(declared) != canonical(&ingress.payload) {
+                return Err(Diagnostic::new(ingress.pos, "E_SIGNATURE",
+                    "attached mailbox ingress does not match declared receives type"));
+            }
+        }
+        if interface.methods.iter().any(|m| m.owner == ingress.owner && m.name == "receive") {
+            return Err(Diagnostic::new(ingress.pos, "E_SIGNATURE",
+                "sealed receive ingress must not appear in callable actor method table"));
+        }
+    }
     for (i, name) in interface.forwards.iter().enumerate() {
         if interface.forwards[..i].contains(name) {
             return Err(Diagnostic::new(Pos::default(), "E_DUPLICATE",

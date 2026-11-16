@@ -33,12 +33,27 @@ pub struct ReceiverSite {
     pub end: usize,
 }
 
+/// Non-executable nominal actor header with explicit application and pipe roles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActorPortHeader {
+    pub name: String,
+    pub public: bool,
+    pub receives: Option<String>,
+    pub emits: Option<String>,
+    pub sends: Option<String>,
+    /// Unverified nominal actor-targeted contract references.
+    pub implements: Vec<String>,
+    pub pos: Pos,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TargetHeaders {
     pub namespace: Option<String>,
     /// Imported module aliases. Imports are not resolved or linked here.
     pub imports: Vec<String>,
     pub actors: Vec<String>,
+    /// One-to-one metadata for `actors`, in declaration order.
+    pub actor_ports: Vec<ActorPortHeader>,
     /// Class owners found in concrete class definitions.
     pub classes: Vec<String>,
     /// Parsed class definitions; mtd linking/typing remains unsupported.
@@ -91,13 +106,13 @@ impl Cursor<'_> {
             _ => return Err(self.err("E_SYNTAX", "expected a type name")),
         };
         if self.take(&Tok::Lt) {
-            if name != "ActorRef" {
+            if !matches!(name.as_str(), "ActorRef" | "ActorMail") {
                 return Err(self.err("E_UNSUPPORTED_TYPE",
-                    "target receiver generics admit only ActorRef<Actor>"));
+                    "target receiver generic types admit only ActorRef<Actor> and sealed ActorMail<T>"));
             }
-            let actor = self.ident()?;
-            self.expect(&Tok::Gt, "expected '>' in ActorRef<Actor>")?;
-            return Ok(format!("ActorRef<{actor}>"));
+            let inner = self.ident()?;
+            self.expect(&Tok::Gt, "expected '>' in actor generic type")?;
+            return Ok(format!("{name}<{inner}>"));
         }
         Ok(name)
     }
@@ -217,6 +232,9 @@ impl Cursor<'_> {
         let name = self.ident()?;
         let params = self.params()?;
         let arity = params.len();
+        // Sealed mailbox ingress is validated *after* resolving the owner
+        // against actor or class declarations. A class may have an ordinary
+        // receive(...) method; only actor receive(ActorMail<T>) is privileged.
         let arrow_type = *self.tok() == Tok::Arrow;
         let colon_type = *self.tok() == Tok::Colon;
         let return_type = if self.take(&Tok::Colon) || self.take(&Tok::Arrow) {
@@ -316,18 +334,84 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 return Err(c.err("E_SYNTAX", "expected 'class' or 'actor' after define"));
             }
         } else if c.take_word("declare") {
+            let public = if c.take_word("pub") {
+                true
+            } else {
+                c.take_word("private");
+                false
+            };
             c.expect_word("actor")?;
             let name = c.ident()?;
             if out.actors.contains(&name) || out.classes.contains(&name) {
                 return Err(c.err("E_DUPLICATE", format!("duplicate actor or class '{name}'")));
             }
+            let mut contracts = Vec::new();
+            if c.take_word("implements") {
+                loop {
+                    let contract = c.ident()?;
+                    if contracts.contains(&contract) {
+                        return Err(c.err("E_DUPLICATE",
+                            format!("duplicate actor contract '{contract}'")));
+                    }
+                    contracts.push(contract);
+                    if contracts.len() > 16 {
+                        return Err(c.err("E_SOURCE_LIMIT", "actor contract reference limit exceeded"));
+                    }
+                    if !c.take(&Tok::Comma) {
+                        break;
+                    }
+                }
+            }
+            let mut receives = None;
+            let mut emits = None;
+            let mut sends = None;
+            let mut passed_output = false;
+            while let Some(clause) = c.word().filter(|w|
+                matches!(*w, "receives" | "emits" | "sends")
+            ).map(str::to_owned) {
+                let clause_pos = c.pos();
+                c.next();
+                match clause.as_str() {
+                    "receives" if receives.is_none() && !passed_output =>
+                        receives = Some(c.type_name()?),
+                    "emits" if emits.is_none() => {
+                        passed_output = true;
+                        emits = Some(c.type_name()?);
+                    }
+                    "sends" if sends.is_none() => {
+                        passed_output = true;
+                        sends = Some(c.type_name()?);
+                    }
+                    _ => return Err(Diagnostic::new(
+                        clause_pos, "E_PIPE_CONTRACT",
+                        "duplicate or out-of-order actor receives/emits/sends clause",
+                    )),
+                }
+            }
+            c.expect(&Tok::Semi, "expected ';' after declared actor header")?;
+            out.actor_ports.push(ActorPortHeader {
+                name: name.clone(), public, receives, emits, sends,
+                implements: contracts, pos,
+            });
             out.actors.push(name);
-            c.expect(&Tok::Semi, "expected ';' after actor")?;
         } else {
             let declaration_start = c.i;
             let public = c.take_word("pub");
+            if public && c.word() == Some("declare") {
+                return Err(c.err("E_ACTOR",
+                    "actor visibility must follow declare: use 'declare pub actor Foo;'"));
+            }
+            // The historical Java prototype used explicit 'external mtd'
+            // for trusted mailbox ingress. The plain 'mtd' syntax is now
+            // contextual for a declared actor's sealed receive signature;
+            // retain 'external mtd receive' as a restricted migration alias.
+            let explicit_ingress = c.take_word("external");
             if c.take_word("mtd") {
                 let (method, start, end, method_start) = c.receiver(pos, public)?;
+                if explicit_ingress && method.name != "receive" {
+                    return Err(Diagnostic::new(pos, "E_SIGNATURE",
+                        "external mtd is reserved for private actor receive ingress"));
+                }
                 if out.receivers.iter().any(|m: &ReceiverHeader| m.owner == method.owner
                     && m.name == method.name && m.arity == method.arity) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE",
@@ -527,6 +611,13 @@ pub fn resolve_receiver_header<'a>(
         return Err(Diagnostic::new(pos, "E_UNBOUND",
             format!("unknown actor receiver type '{actor}'")));
     }
+    // A private mailbox entrypoint is a runtime ingress, not a callable
+    // receiver-targeted method. Never resolve it through self.receive(...) or
+    // normal namespace method lookup, even from within the actor itself.
+    if symbols.actors.iter().any(|a| a == actor) && name == "receive" {
+        return Err(Diagnostic::new(pos, "E_ISOLATION",
+            "actor receive(ActorMail<T>) is sealed runtime ingress, not a callable mtd"));
+    }
     let Some(method) = symbols.receivers.iter().find(|m|
         m.owner == actor && m.name == name && m.arity == arity) else {
         return Err(Diagnostic::new(pos, "E_UNBOUND",
@@ -672,6 +763,22 @@ fn validate_receiver_body(
         start + 1
     } else { start };
     while i < end.saturating_sub(1) {
+        // The actor's sealed ingress is runtime-owned. Even its own attached
+        // method cannot enter it by a plain call, nominal Foo.receive(), or
+        // a super.receive() bypass. Typed dispatcher admission comes later.
+        let direct_receive_call = word_at(toks, i, "receive") &&
+            at(toks, i+1, &Tok::LParen) &&
+            (i == 0 || !at(toks, i-1, &Tok::Dot));
+        let nominal_receive_call = word_at(toks, i, &receiver.owner) &&
+            at(toks, i+1, &Tok::Dot) && word_at(toks, i+2, "receive") &&
+            at(toks, i+3, &Tok::LParen);
+        let super_receive_call = word_at(toks, i, "super") &&
+            at(toks, i+1, &Tok::Dot) && word_at(toks, i+2, "receive") &&
+            at(toks, i+3, &Tok::LParen);
+        if direct_receive_call || nominal_receive_call || super_receive_call {
+            return Err(diagnostic(toks, i, "E_ISOLATION",
+                "actor receive ingress is not callable; use typed ActorRef.send"));
+        }
         if word_at(toks, i, "handle_state") &&
             !(i >= 2 && word_at(toks, i-2, "self") && at(toks, i-1, &Tok::Dot)) {
             return Err(diagnostic(toks, i, "E_SEALED",
