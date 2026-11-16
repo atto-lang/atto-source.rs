@@ -1,0 +1,16 @@
+// expect-exit: 42
+// Both explicit instance-method spellings retain @Override semantics.
+define class Parent as
+  pub compute(): int { return 1; }
+  pub value(): int { return 2; }
+end
+define class Child extends Parent as
+  @Override
+  pub fnc compute(): int { return 20; }
+  @Override
+  pub method value(): int { return 22; }
+end
+pub fnc main(): int {
+  val child = new Child();
+  return child.compute() + child.value();
+}
