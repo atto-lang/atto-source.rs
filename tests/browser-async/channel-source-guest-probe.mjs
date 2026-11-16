@@ -74,7 +74,44 @@ self.onmessage=async()=>{
     if(zero.kind!=='Some'||zero.value!==0n)throw Error('Some(0) conflated with EOF');
     host.close(ready.value);host.release(ready.value);
     if(cooperativeYields!==3)throw Error('exact cooperative yield count '+cooperativeYields);
+
+    // Independently compile the declaration-first read from Atto source.
+    // Same checked guest ABI, no synthetic Wasm, and a separate Worker-local
+    // channel adapter/handle namespace; one read must dequeue one value.
+    const declSource=source.replace('return << c;', 'val item << c; return item;');
+    if(declSource===source)throw Error('declaration-first source not constructed');
+    const declEncoded=new TextEncoder().encode(declSource);
+    new Uint8Array(compiler.memory.buffer,compiler.input_ptr(),declEncoded.length).set(declEncoded);
+    if(compiler.compile(declEncoded.length)!==0)throw Error('declaration-first guest compilation rejected');
+    const declWasm=new Uint8Array(compiler.memory.buffer,compiler.result_ptr(),compiler.result_length()).slice();
+    const declModule=new WebAssembly.Module(declWasm);
+    if(!verifyChannelIntGuestV1(declWasm,declModule))throw Error('declaration-first guest lacks checked marker');
+    let declInstance,declYields=0;
+    const {imports:declImports,host:declHost}=createChannelIntGuestV1({
+      getMemory:()=>declInstance.exports.memory});
+    declInstance=new WebAssembly.Instance(declModule,{atto:{
+      ...declImports,
+      channel_int_await_read_v1:new WebAssembly.Suspending(declImports.channel_int_await_read_v1),
+      cooperate:new WebAssembly.Suspending(async()=>{await pause();declYields++;})
+    }});
+    const declChannel=declHost.open(1);
+    if(!declChannel.ok||!declHost.send(declChannel.value,42n).ok)
+      throw Error('declaration-first channel admission failed');
+    const declPtr=await WebAssembly.promising(declInstance.exports.read_channel_guest_v1)(declChannel.value);
+    const declView=new DataView(declInstance.exports.memory.buffer);
+    if(!Number.isInteger(declPtr)||declPtr<0||declPtr%8||declPtr+16>declView.byteLength)
+      throw Error('declaration-first malformed result pointer');
+    if(declView.getInt32(declPtr,true)!==0)
+      throw Error('declaration-first result was not Ok');
+    const optionPtr=declView.getInt32(declPtr+8,true);
+    if(optionPtr<0||optionPtr%8||optionPtr+16>declView.byteLength
+        ||declView.getInt32(optionPtr,true)!==1
+        ||declView.getBigInt64(optionPtr+8,true)!==42n)
+      throw Error('declaration-first read did not return Some(42)');
+    if(declYields!==1)throw Error('declaration-first read must cooperate once');
+    declHost.close(declChannel.value);declHost.release(declChannel.value);
     self.postMessage({ok:true,sourceCompiled:true,pendingSome:41,eof:true,
-      invalidHandle:'Err',zeroSome:true,cooperativeYields});
+      invalidHandle:'Err',zeroSome:true,cooperativeYields,
+      declarationFirstSome:42,declarationFirstYields:declYields});
   }catch(e){self.postMessage({ok:false,error:String(e?.stack||e)})}
 };
