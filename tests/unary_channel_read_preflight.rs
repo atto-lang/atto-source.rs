@@ -64,8 +64,8 @@ fn undefined_channel_receiver_never_emits_guest_wasm() {
         "return << c;",
         "val result = trap << c;",
     ] {
-        let src = format!("pub suspends fnc main(): int using io, suspend {{ {expression} return 42; }}");
-        let err = compile(&src).expect_err("typed read import not implemented");
+        let src = format!("pub suspends fnc main(): int {{ {expression} return 42; }}");
+        let err = compile(&src).expect_err("unknown read source cannot emit Wasm");
         assert_eq!(err.code, "E_UNBOUND", "{expression}: {err}");
     }
 }
@@ -112,8 +112,8 @@ fn prefix_and_declaration_first_variants_do_not_emit_guest_read_wasm() {
         "let total = 0; total += << c; return total;",
         "let total = 0; total += (<< c); return total;",
     ] {
-        let source = format!("pub suspends fnc main(): int using io, suspend {{ {body} }}");
-        let error = compile(&source).expect_err("guest channel reads are not yet lowered");
+        let source = format!("pub suspends fnc main(): int {{ {body} }}");
+        let error = compile(&source).expect_err("unknown c must not emit guest module");
         assert!(matches!(error.code, "E_UNBOUND" | "E_UNSUPPORTED"), "{body}: {error}");
     }
 }
@@ -126,13 +126,13 @@ fn direct_reads_require_an_explicit_suspending_callable() {
         "val a = trap << c; return 0;",
         "if true { val a = << c; } return 0;",
     ] {
-        let source = format!("pub fnc main(): int using io {{ {body} }}");
+        let source = format!("pub fnc main(): int {{ {body} }}");
         let err = compile(&source).expect_err("direct read must not silently make fnc suspending");
         assert_eq!(err.code, "E_SUSPENDS_REQUIRED", "{body}: {err}");
     }
     // A suspend effect import without an explicit suspending signature
     // must not silently turn the enclosing fnc into a coroutine.
-    let err = compile("pub fnc main(): int using io, suspend { val a = << c; return 0; }")
+    let err = compile("pub fnc main(): int { val a = << c; return 0; }")
         .expect_err("missing suspends modifier");
     assert_eq!(err.code, "E_SUSPENDS_REQUIRED");
 }
@@ -141,16 +141,16 @@ fn direct_reads_require_an_explicit_suspending_callable() {
 fn susp_and_suspends_still_require_a_resolved_channel() {
     for modifier in ["susp", "suspends"] {
         let source = format!(
-            "pub {modifier} fnc main(): int using io, suspend {{ val a = << c; return 0; }}"
+            "pub {modifier} fnc main(): int {{ val a = << c; return 0; }}"
         );
-        let err = compile(&source).expect_err("guest read ABI still pending");
+        let err = compile(&source).expect_err("unknown channel handle must fail checked typing");
         assert_eq!(err.code, "E_UNBOUND", "{source}: {err}");
     }
 }
 
 #[test]
 fn nested_non_suspending_lambda_does_not_inherit_outer_suspension() {
-    let source = "pub susp fnc main(): int using io, suspend { val cb = || -> { val a = << c; }; return 0; }";
+    let source = "pub susp fnc main(): int { val cb = || -> { val a = << c; }; return 0; }";
     let err = compile(source).expect_err("direct receive in plain lambda must fail");
     assert_eq!(err.code, "E_SUSPENDS_REQUIRED", "{err}");
 }
