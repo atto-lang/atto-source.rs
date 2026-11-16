@@ -61,7 +61,19 @@ fn source_limit_is_enforced() {
 fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
     let chain = |n: usize, op: &str| format!("pub fnc main(): int {{ return {}; }}", vec!["1"; n].join(op));
     eprintln!("depth probe: 250 plus operators");
-    assert!(atto_compiler::compile(&chain(250, " + ")).is_ok());
+    let candidate = chain(250, " + ");
+    let tokens = atto_compiler::lexer::lex(&candidate).expect("lexed 250 additions");
+    eprintln!("depth stage: lexed");
+    let parsed = atto_compiler::parser::Parser::new(tokens).parse_program().expect("parsed 250 additions");
+    eprintln!("depth stage: parsed");
+    let typed = atto_compiler::check::check(&parsed).expect("typed 250 additions");
+    eprintln!("depth stage: typed");
+    let bytes = atto_compiler::wasm::emit(&typed);
+    eprintln!("depth stage: emitted wasm {} bytes", bytes.len());
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
+    eprintln!("depth stage: re-enter compile");
+    assert!(atto_compiler::compile(&candidate).is_ok());
+    eprintln!("depth stage: complete");
     for op in [" + ", " * ", " - ", " == ", " < "] {
         eprintln!("depth probe: 3000 operators {op:?}");
         assert_eq!(atto_compiler::compile(&chain(3_000, op)).unwrap_err().code, "E_NESTING", "{op}");
