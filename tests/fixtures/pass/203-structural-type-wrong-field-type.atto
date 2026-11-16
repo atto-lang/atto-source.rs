@@ -1,0 +1,17 @@
+// expect-exit: 42
+// java: rejects
+define class Shape as
+    pub int x = 10;
+    pub int y = 32;
+end
+define class Different as
+    pub int x = 10;
+    pub bool y: true;
+end
+pub fnc main(): int {
+    val value = new Different();
+    match value over
+        on is structural Shape -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
