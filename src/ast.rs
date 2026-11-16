@@ -407,7 +407,7 @@ pub enum ExprKind {
     /// A checked suspend point. The browser MVP uses JSPI stack switching.
     Await(Box<Expr>),
     /// A capture-free, structured child task whose body is a synthetic Wasm function.
-    Task(String),
+    Task(String, Option<String>),
     /// `base.name`: field read, `Enum.Variant`, or `mail.value`.
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
