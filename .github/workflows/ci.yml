@@ -50,6 +50,11 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/callable_guest_execution.mjs
 
+      - name: Execute type tests, capture guards, and unsafe-cast negative controls in guest Wasm
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/type_casting_guest_execution.mjs
+
       - name: Execute defer/recover/try/raise unwind guests against spec trace oracles
         env:
           ATTOC: target/release/attoc
