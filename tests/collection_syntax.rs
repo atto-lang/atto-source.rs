@@ -23,7 +23,7 @@ fn spread_is_atomic_and_member_dot_and_floats_still_lex() {
     let tokens = lexer::lex("[...items, value.field, 1.5]").unwrap();
     assert!(tokens.iter().any(|t| t.tok == Tok::Spread));
     assert!(tokens.iter().any(|t| t.tok == Tok::Dot));
-    assert!(tokens.iter().any(|t| matches!(t.tok, Tok::Float(_))));
+    assert!(tokens.iter().any(|t| matches!(&t.tok, Tok::Float(_))));
 }
 #[test]
 fn index_and_all_slice_forms_have_distinct_ast_nodes() {
@@ -55,7 +55,7 @@ fn index_and_all_slice_forms_have_distinct_ast_nodes() {
         assert_eq!((s.is_some(), e.is_some(), k.is_some()), (start,end,step), "{name}");
     }
     assert!(matches!(init(&stmts, "chained"), ExprKind::Index(base, _) if
-        matches!(base.kind, ExprKind::Slice { .. })));
+        matches!(&base.kind, ExprKind::Slice { .. })));
 }
 #[test]
 fn spread_only_parses_in_collection_and_call_contexts() {
@@ -67,11 +67,11 @@ fn spread_only_parses_in_collection_and_call_contexts() {
     ").unwrap();
     let ExprKind::Array(items) = init(&stmts, "joined") else { panic!("array"); };
     assert_eq!(items.len(), 3);
-    assert!(matches!(items[1].kind, ExprKind::Spread(..)));
+    assert!(matches!(&items[1].kind, ExprKind::Spread(..)));
     let ExprKind::Array(items) = init(&stmts, "projected") else { panic!("array"); };
-    assert!(matches!(items[0].kind, ExprKind::Spread(..)));
+    assert!(matches!(&items[0].kind, ExprKind::Spread(..)));
     assert!(matches!(init(&stmts, "called"), ExprKind::Call(_, args) if
-        matches!(args[0].kind, ExprKind::Spread(..))));
+        matches!(&args[0].kind, ExprKind::Spread(..))));
 }
 #[test]
 fn Unicode_scalar_slice_is_recognized_without_claiming_execution() {
