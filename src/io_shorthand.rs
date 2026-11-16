@@ -201,10 +201,22 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
     let mut found = Vec::new();
     for i in 0..tokens.len().saturating_sub(1) {
         let Some(operator) = op_at(tokens, i) else { continue; };
-        // Prefix << is an expression and must not be treated as a binary
-        // write. The actual Readable type/effects are checked by the parser.
+        // Prefix << is an expression, but a declaration-first binder
+        // wins even if its invalid NAME is itself a keyword ("return",
+        // "await", "trap", etc.). Do not skip its reserved-binder
+        // diagnostic just because the token before << looks unary.
         if operator == Direction::Write && unary_read_start(tokens, i) {
-            continue;
+            let statement_start = (0..i).rev().find(|&j| matches!(
+                tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow
+            )).map_or(0, |j| j + 1);
+            let declaration_without_initializer =
+                matches!(tokens.get(statement_start).and_then(word),
+                    Some("val" | "let" | "const"))
+                && !tokens[statement_start..i].iter()
+                    .any(|t| matches!(&t.tok, Tok::Assign));
+            if !declaration_without_initializer {
+                continue;
+            }
         }
         // Locate the beginning of the containing statement or select arm.
         // This deliberately does not reinterpret embedded numeric operators.
