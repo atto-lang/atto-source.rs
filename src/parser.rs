@@ -455,6 +455,16 @@ impl Parser {
                         "browser ADT admits only Option<int> and Option<Result<int,string>>")),
                 }
             }
+            "Future" => {
+                self.expect(Tok::Lt, "'<' after Future")?;
+                let payload = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Future payload")?;
+                if payload != Type::Int {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "the checked JSPI task profile currently admits only Future<int>"));
+                }
+                Type::FutureInt
+            }
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
                 let inner = self.parse_type()?;
