@@ -45,6 +45,13 @@ pub enum Import {
     ActorSpawn,
     /// `actor_send(ref: i32, value: i64)`: enqueue one message
     ActorSend,
+    /// Browser JSPI interop: nonblocking timer, forked task start and await.
+    SleepMs,
+    Barrier,
+    TaskStart,
+    TaskAwait,
+    /// Mandatory cooperative scheduler turn for every source await.
+    Cooperate,
     /// Private Worker-owned state-container creation/lexical admission hooks.
     StateRegister,
     StateEnter,
@@ -52,7 +59,7 @@ pub enum Import {
 }
 
 impl Import {
-    pub const ALL: [Import; 10] = [
+    pub const ALL: [Import; 15] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -60,6 +67,11 @@ impl Import {
         Import::PrintF64,
         Import::ActorSpawn,
         Import::ActorSend,
+        Import::SleepMs,
+        Import::Barrier,
+        Import::TaskStart,
+        Import::TaskAwait,
+        Import::Cooperate,
         Import::StateRegister,
         Import::StateEnter,
         Import::StateLeave,
@@ -73,6 +85,11 @@ impl Import {
             Import::PrintF64 => "print_f64",
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
+            Import::SleepMs => "sleep_ms",
+            Import::Barrier => "barrier",
+            Import::TaskStart => "task_start",
+            Import::TaskAwait => "task_await",
+            Import::Cooperate => "cooperate",
             Import::StateRegister => "state_register",
             Import::StateEnter => "state_enter",
             Import::StateLeave => "state_leave",
@@ -183,6 +200,15 @@ pub enum TExpr {
         target: Box<TE>,
         value: Box<TE>,
     },
+    /// JSPI stack suspension, returning i64 once the host timer/barrier fires.
+    SleepMs(Box<TE>),
+    Barrier(Box<TE>),
+    /// Capture-free task body index; the Wasm host schedules task_invoke(index).
+    TaskStart(u32),
+    /// Consume one typed future handle and yield until the task finishes.
+    TaskAwait(Box<TE>),
+    /// Preserve evaluated value and release the worker carrier at least one event-loop turn.
+    AwaitYield(Box<TE>),
     /// print an object; `tmp` is an i32 scratch local holding it
     PrintObj {
         obj: Box<TE>,
@@ -304,6 +330,8 @@ pub struct TActor {
 #[derive(Clone, Debug)]
 pub struct TProgram {
     pub funcs: Vec<TFunc>,
+    /// Indices of compiler-generated task bodies.
+    pub tasks: Vec<u32>,
     pub generators: Vec<TGenerator>,
     pub main: u32,
     pub imports: Vec<Import>,
@@ -336,6 +364,7 @@ struct MethodInfo {
     name: String,
     public: bool,
     is_static: bool,
+    suspends: bool,
     idx: u32,
     params: Vec<Type>,
     ret: Type,
@@ -363,6 +392,7 @@ struct ActorInfo {
 /// Program-wide declaration tables shared by every body check.
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
+    suspends: BTreeSet<(String, usize)>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -404,6 +434,8 @@ struct ScopedLoan { owner: u32, mutable: bool }
 
 struct FnCx<'a> {
     g: &'a Globals<'a>,
+    suspends: bool,
+    awaiting: bool,
     owner: Owner,
     ret: Type,
     scopes: Vec<Vec<Local>>,
@@ -798,6 +830,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     // ---- top-level signatures keep indices 0..funcs.len()
     let mut sigs = BTreeMap::new();
+    let suspends: BTreeSet<(String, usize)> = p.funcs.iter().filter(|f| f.suspends)
+        .map(|f| (f.name.clone(), f.params.len())).collect();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None") {
@@ -844,6 +878,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 name: m.name.clone(),
                 public: m.public,
                 is_static: m.is_static,
+                suspends: m.suspends,
                 idx: 0,
                 params: m.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
                 ret: res(m.ret)?,
@@ -960,6 +995,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     let g = Globals {
         sigs,
+        suspends,
         names,
         classes,
         enums: &p.enums,
@@ -1051,6 +1087,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             &named,
             None,
             ret,
+            f.suspends,
             &f.body,
             &f.name,
             f.pos,
@@ -1094,6 +1131,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &named,
                 None,
                 Type::Void,
+                false,
                 &k.body,
                 "constructor",
                 k.pos,
@@ -1165,7 +1203,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
             named.extend(m.params.iter().zip(&mi.params).map(|(q, t)| (q.name.as_str(), *t, q.mutable)));
             let label = format!("{}.{}", c.name, m.name);
-            let body = body_check(&g, owner, &named, None, mi.ret, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            let body = body_check(&g, owner, &named, None, mi.ret, m.suspends, &m.body, &label, m.pos, &mut imports, &mut data)?;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: named.iter().map(|x| x.1).collect(),
@@ -1194,6 +1232,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &named,
                 Some((r.mail.as_str(), info.payload)),
                 Type::Void,
+                false,
                 &r.body,
                 &label,
                 r.pos,
@@ -1227,7 +1266,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 .map(|(q, t)| (q.name.as_str(), *t, q.mutable))
                 .collect();
             let label = format!("{}.{}", a.name, m.name);
-            let body = body_check(&g, owner, &named, None, mi.ret, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            let body = body_check(&g, owner, &named, None, mi.ret, false, &m.body, &label, m.pos, &mut imports, &mut data)?;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: mi.params.clone(),
@@ -1271,8 +1310,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
+    let tasks = p.funcs.iter().enumerate().filter(|(_, f)| f.name.starts_with("$atto_task_"))
+        .map(|(i, _)| i as u32).collect();
     Ok(TProgram {
         funcs,
+        tasks,
         main,
         imports,
         data,
@@ -1340,6 +1382,7 @@ fn body_check(
     named: &[(&str, Type, bool)],
     mail: Option<(&str, Type)>,
     ret: Type,
+    suspends: bool,
     body: &[Stmt],
     label: &str,
     pos: Pos,
@@ -1347,6 +1390,7 @@ fn body_check(
     data: &mut Vec<u8>,
 ) -> R<(Vec<TStmt>, Vec<Type>)> {
     let mut cx = FnCx::new(g, owner, ret, imports, data);
+    cx.suspends = suspends;
     cx.nparams = named.len() as u32;
     if let Some((mail_name, payload)) = mail {
         cx.scopes[0].push(Local {
@@ -1450,7 +1494,9 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
-        TExpr::AdtPropagate { .. } => false,
+        TExpr::AdtPropagate { .. } |
+        TExpr::SleepMs(_) | TExpr::Barrier(_) | TExpr::TaskStart(_) |
+        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) => false,
     }
 }
 
@@ -1501,7 +1547,9 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
-        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
+        TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a)
+        | TExpr::SleepMs(a) | TExpr::Barrier(a) | TExpr::TaskAwait(a)
+        | TExpr::AwaitYield(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
@@ -1555,6 +1603,8 @@ impl<'a> FnCx<'a> {
     fn new(g: &'a Globals<'a>, owner: Owner, ret: Type, imports: &'a mut Vec<Import>, data: &'a mut Vec<u8>) -> Self {
         FnCx {
             g,
+            suspends: false,
+            awaiting: false,
             owner,
             ret,
             scopes: vec![Vec::new()],
@@ -2499,7 +2549,7 @@ impl<'a> FnCx<'a> {
     /// assignment, argument, return): naming an object local moves it.
     fn consume(&mut self, e: &Expr) -> R<TE> {
         let v = self.value(e)?;
-        if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
+        if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_) | Type::FutureInt) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
             if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
                 return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
@@ -2568,6 +2618,34 @@ impl<'a> FnCx<'a> {
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
+            ExprKind::Await(inner) => {
+                if !self.suspends {
+                    return Err(Diagnostic::new(e.pos, "E_EFFECT",
+                        "await requires a suspends fnc or suspends mtd"));
+                }
+                let prior = self.awaiting;
+                self.awaiting = true;
+                let checked = self.expr(inner);
+                self.awaiting = prior;
+                let v = checked?;
+                let typed = if v.ty == Type::FutureInt {
+                    if let ExprKind::Var(_) = &inner.kind {
+                        if let TExpr::Local(slot) = &v.e { self.moved.insert(*slot); }
+                    }
+                    self.imports.push(Import::TaskAwait);
+                    TE {e: TExpr::TaskAwait(Box::new(v)), ty: Type::Int}
+                } else if matches!(v.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    v
+                } else {
+                    return Err(type_err(e.pos,
+                        "await requires an owned scalar, Future<int>, or approved suspending call"));
+                };
+                // Required for BOTH pending and immediately-resolved awaits.
+                // No raw-value fast path may bypass the cooperative scheduler.
+                self.imports.push(Import::Cooperate);
+                let ty = typed.ty;
+                Ok(TE {e: TExpr::AwaitYield(Box::new(typed)), ty})
+            }
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
                 e: TExpr::I64(i64::MIN),
                 ty: Type::Int,
@@ -2919,6 +2997,15 @@ impl<'a> FnCx<'a> {
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
+            ExprKind::Task(name) => {
+                if !self.suspends { return Err(Diagnostic::new(pos, "E_EFFECT", "task requires a suspends fnc")); }
+                let (idx, params, ret) = self.g.sigs.get(&(name.clone(), 0)).ok_or_else(||
+                    Diagnostic::new(pos, "E_TASK", "internal task body not registered"))?;
+                if !params.is_empty() || *ret != Type::Int { return Err(type_err(pos, "task body must return int")); }
+                self.imports.push(Import::TaskStart);
+                TE {e: TExpr::TaskStart(*idx), ty: Type::FutureInt}
+            },
+            ExprKind::Await(..) => unreachable!("handled by expr"),
             ExprKind::StateRead(field) => {
                 let c = match self.owner {
                     Owner::Class { c, ctor: false, is_static: false }
@@ -3268,6 +3355,10 @@ impl<'a> FnCx<'a> {
                         ));
                     }
                     let label = format!("{n}.{name}");
+                    if m.suspends && (!self.suspends || !self.awaiting) {
+                        return Err(Diagnostic::new(pos, "E_EFFECT",
+                            "suspends mtd requires await inside a suspends fnc/mtd"));
+                    }
                     self.arity(&label, m.params.len(), args.len(), pos)?;
                     let targs = self.args(&label, args, &m.params)?;
                     return Ok(TE {
@@ -3310,6 +3401,10 @@ impl<'a> FnCx<'a> {
                         }
                     };
                     let label = format!("{}.{name}", actor.name);
+                    if m.suspends {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "suspends actor mtd requires an actor-owned scheduler and non-reentrancy enforcement"));
+                    }
                     self.arity(&label, m.params.len(), args.len(), pos)?;
                     let targs = self.args(&label, args, &m.params)?;
                     return Ok(TE {
@@ -3417,6 +3512,10 @@ impl<'a> FnCx<'a> {
             ));
         }
         let label = format!("{cname}.{name}");
+        if m.suspends && (!self.suspends || !self.awaiting) {
+            return Err(Diagnostic::new(pos, "E_EFFECT",
+                "suspends mtd requires await inside a suspends fnc/mtd"));
+        }
         self.arity(&label, m.params.len(), args.len(), pos)?;
         let mut targs = vec![recv];
         targs.extend(self.args(&label, args, &m.params)?);
@@ -3429,6 +3528,19 @@ impl<'a> FnCx<'a> {
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
+        }
+        if matches!(name, "rt.sleep" | "rt.barrier") {
+            if !self.suspends || !self.awaiting {
+                return Err(Diagnostic::new(pos, "E_EFFECT", "runtime suspension requires await in a suspends fnc"));
+            }
+            if args.len() != 1 { return Err(Diagnostic::new(pos, "E_ARITY", "runtime suspension takes one int argument")); }
+            let arg = self.value(&args[0])?;
+            if arg.ty != Type::Int { return Err(type_err(args[0].pos, "timer/barrier argument must be int")); }
+            self.imports.push(if name == "rt.sleep" { Import::SleepMs } else { Import::Barrier });
+            return Ok(TE {
+                e: if name == "rt.sleep" {TExpr::SleepMs(Box::new(arg))} else {TExpr::Barrier(Box::new(arg))},
+                ty: Type::Int,
+            });
         }
         if let Some(b) = match name {
             "And" => Some(Builtin::And),
@@ -3567,6 +3679,9 @@ impl<'a> FnCx<'a> {
             if self.g.names.contains_key(name) {
                 return Err(isolation(pos, me, "file/module callable", name));
             }
+        }
+        if self.g.suspends.contains(&(name.to_string(), args.len())) && (!self.suspends || !self.awaiting) {
+            return Err(Diagnostic::new(pos, "E_EFFECT", "a suspends fnc must be invoked using await in a suspends fnc"));
         }
         let (idx, params, ret) = match self.g.sigs.get(&(name.to_string(), args.len())) {
             Some(s) => s.clone(),
