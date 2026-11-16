@@ -1,0 +1,10 @@
+// expect-error: E_ANNOTATION_TARGET
+// An override annotation must not disappear while parsing a constructor.
+define class Parent as
+  constructor() {}
+end
+define class Child extends Parent as
+  @Override
+  constructor() {}
+end
+pub fnc main(): int { return 0; }
