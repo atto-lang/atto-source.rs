@@ -4,7 +4,7 @@
 
 use super::{TExpr, TE, TStmt, TFunc};
 use crate::ast::Program;
-use crate::diag::{Diagnostic, Pos};
+use crate::diag::Diagnostic;
 
 const THROW: u8 = 1;
 const RAISE: u8 = 2;
