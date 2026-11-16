@@ -1088,7 +1088,10 @@ impl Parser {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
             }
-            self.eat(&Tok::ColonColon);
+            if self.eat(&Tok::ColonColon) && *self.peek() == Tok::LBrace {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "'::' requires a comma/end body, not a brace block"));
+            }
             return self.parse_erlang_body(ret);
         }
         if colon_type && self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
