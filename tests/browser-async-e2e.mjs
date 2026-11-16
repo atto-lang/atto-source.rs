@@ -120,7 +120,7 @@ try{
   // guest Wasm in Chromium Worker, and prove the existing JSPI await
   // and cooperative scheduler path is used (not a host JS mock).
   const piped='fnc transform_result(int v): int { return v + 1; } pub suspends fnc main(): int { val future=task { return 41; }; return future |> suspends |v| -> await v |> transform_result; }';
-  assert.match(await run(piped,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.match(await run(piped,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
     'the explicit suspends lambda stage must cooperatively await exactly once');
   console.log('PASS integration: explicit suspends identity-await stage executes real guest Future<int> and named transform');
