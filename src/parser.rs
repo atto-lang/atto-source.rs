@@ -742,22 +742,45 @@ impl Parser {
                     format!("more than {MAX_MEMBERS} members in {kind} '{owner}'"),
                 ));
             }
-            if *self.peek() == Tok::At {
-                return Err(unsupported(self.pos(), "annotations"));
-            }
+            // @Override is the canonical spelling. The legacy 'override'
+            // modifier remains accepted for source compatibility, but cannot
+            // be combined with the annotation. Only this compiler-checked
+            // annotation is admitted in the current executable subset.
             let mpos = self.pos();
+            let mut annotated_override = false;
+            if self.eat(&Tok::At) {
+                let (annotation, _) = self.ident("an annotation name after '@'")?;
+                if annotation != "Override" {
+                    return Err(Diagnostic::new(mpos, "E_UNSUPPORTED",
+                        format!("annotation '@{annotation}' has no verified compiler lowering")));
+                }
+                if *self.peek() == Tok::LParen {
+                    return Err(Diagnostic::new(mpos, "E_ANNOTATION_ARGUMENT",
+                        "@Override is a zero-argument annotation; remove its argument list"));
+                }
+                if *self.peek() == Tok::At {
+                    return Err(Diagnostic::new(self.pos(), "E_DUPLICATE_ANNOTATION",
+                        "@Override may appear only once on a method"));
+                }
+                annotated_override = true;
+            }
             let public = if self.eat_word("pub") {
                 true
             } else {
                 self.eat_word("private");
                 false
             };
-            let override_member = self.eat_word("override");
+            let keyword_override = self.eat_word("override");
+            if annotated_override && keyword_override {
+                return Err(Diagnostic::new(mpos, "E_DUPLICATE_ANNOTATION",
+                    "use @Override alone, not @Override with the legacy override modifier"));
+            }
+            let override_member = annotated_override || keyword_override;
             if override_member && (actor ||
                 !matches!(self.word_at(0), Some("fnc" | "method")) &&
                 *self.peek_at(1) != Tok::LParen) {
-                return Err(Diagnostic::new(mpos, "E_OVERRIDE",
-                    "override requires a class instance method declaration"));
+                return Err(Diagnostic::new(mpos, "E_ANNOTATION_TARGET",
+                    "@Override requires a non-static class instance method declaration"));
             }
             let word = self.word_at(0).map(str::to_owned);
             match word.as_deref() {
