@@ -60,7 +60,7 @@ fn immutable_function_parameter_and_val_alias_capture_as_definition_snapshot() {
     assert_eq!(checked.funcs[2].params, [Type::Int, Type::Int]);
     let wasm = atto_compiler::compile(src).unwrap();
     assert_eq!(wasm, atto_compiler::compile(src).unwrap());
-    assert!(wasm.starts_with(b"\\0asm"));
+    assert!(wasm.starts_with(b"\0asm"));
 }
 #[test]
 fn mutable_source_cannot_be_promoted_through_an_immutable_alias() {
