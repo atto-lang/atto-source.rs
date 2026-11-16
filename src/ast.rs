@@ -210,6 +210,10 @@ pub struct Receive {
     pub pos: Pos,
     pub mail: String,
     pub payload: Type,
+    /// Return-value response for a unary actor, or void for ordinary actors.
+    pub ret: Type,
+    /// Suspend capability requested; guest scheduling still needs lowering.
+    pub suspends: bool,
     pub body: Vec<Stmt>,
 }
 
@@ -218,6 +222,10 @@ pub struct Receive {
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    /// Unary constrains admitted request modes, not scheduling seriality.
+    pub is_unary: bool,
+    /// HTTP is an adapter contract, not an implicit reply-mode inference.
+    pub is_http: bool,
     /// Typed actor application inbox (not a supervisor CONTROL path).
     pub declared_receives: Option<Type>,
     /// Typed explicit pipe output. Not inferred from ordinary sends.
