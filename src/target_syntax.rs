@@ -401,8 +401,17 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 return Err(c.err("E_ACTOR",
                     "actor visibility must follow declare: use 'declare pub actor Foo;'"));
             }
+            // The historical Java prototype used explicit 'external mtd'
+            // for trusted mailbox ingress. The plain 'mtd' syntax is now
+            // contextual for a declared actor's sealed receive signature;
+            // retain 'external mtd receive' as a restricted migration alias.
+            let explicit_ingress = c.take_word("external");
             if c.take_word("mtd") {
                 let (method, start, end, method_start) = c.receiver(pos, public)?;
+                if explicit_ingress && method.name != "receive" {
+                    return Err(Diagnostic::new(pos, "E_SIGNATURE",
+                        "external mtd is reserved for private actor receive ingress"));
+                }
                 if out.receivers.iter().any(|m: &ReceiverHeader| m.owner == method.owner
                     && m.name == method.name && m.arity == method.arity) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE",
