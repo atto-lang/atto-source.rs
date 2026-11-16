@@ -88,7 +88,7 @@ fn first_callback(t: &[Token], f: &Func) -> R<Option<Template>> {
         Tok::Ident("Fnc".into()), Tok::Lt, Tok::Ident("int".into()),
         Tok::Comma, Tok::Ident("int".into()), Tok::Gt
     ];
-    if i + 6 >= t.len() || t[i..i + 6].iter().map(|x| x.tok.clone()).collect::<Vec<_>>() != code {
+    if i + 6 >= t.len() || t[i..i + 6].iter().map(|x| x.tok.clone()).collect::<Vec<_>>().as_slice() != code.as_slice() {
         return Err(fail(t[start].pos, "E_UNSUPPORTED_TYPE",
             "direct Fnc callback profile admits only Fnc<int,int>"));
     }
@@ -143,8 +143,9 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     }
 
     let templates = known.values()
-        .filter_map(|f| first_callback(&t, f).transpose())
-        .collect::<R<Vec<_>>>()?;
+        .map(|f| first_callback(&t, f))
+        .collect::<R<Vec<_>>>()?
+        .into_iter().flatten().collect::<Vec<_>>();
     if templates.is_empty() { return Ok(t); }
     if templates.len() != 1 {
         return Err(fail(t[0].pos, "E_UNSUPPORTED", "one statically specialized callback declaration per source file"));
@@ -186,6 +187,10 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         }
         out.push(t[i].clone());
         i += 1;
+    }
+    if callbacks.is_empty() {
+        return Err(fail(t[tpl.func.start].pos, "E_UNSUPPORTED",
+            "unused higher-order templates are not checked by direct specialization"));
     }
     let eof = out.pop().ok_or_else(|| fail(t[0].pos, "E_EOF", "empty source"))?;
     if eof.tok != Tok::Eof { return Err(fail(eof.pos, "E_SYNTAX", "missing source end token")); }
