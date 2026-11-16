@@ -142,6 +142,6 @@ fn single_public_scalar_formal_is_no_longer_an_unsupported_signature() {
     for spelling in ["~{x: int} p", "p: ~ {x: int}", "p: {x: int}"] {
         let src = format!("pub fnc read({spelling}): int {{ return p.x; }} pub fnc main(): int {{ return 42; }}");
         let guest = compile(&src).expect("one-scalar readonly shape ABI must compile");
-        assert_eq!(&guest[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
     }
 }
