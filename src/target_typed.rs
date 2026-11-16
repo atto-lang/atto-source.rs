@@ -2,7 +2,7 @@
 //! This is separate from executable check.rs. Forward-declared actors have no
 //! linked implementation, state layout, proven effects or borrow semantics.
 
-use crate::ast::{ActorInterface, ActorInterfaceMethod, ActorInterfacePort, Param, Program, Type};
+use crate::ast::{ActorInterface, ActorInterfaceMailboxIngress, ActorInterfaceMethod, ActorInterfacePort, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
 use crate::target_syntax::{ReceiverHeader, TargetHeaders};
 
@@ -52,11 +52,22 @@ pub struct TypedReceiver {
     pub body_lowered: bool,
 }
 
+/// Private runtime ingress signature attached to a declared actor.
+/// Never resolved as a normal receiver method and never guest executable here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedMailboxIngress {
+    pub actor: usize,
+    pub payload: String,
+    pub pos: Pos,
+    pub body_lowered: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TypedActorModule {
     pub namespace: Option<String>,
     pub actors: Vec<TypedActor>,
     pub receivers: Vec<TypedReceiver>,
+    pub mailbox_ingresses: Vec<TypedMailboxIngress>,
 }
 
 fn type_error(pos: Pos, why: impl Into<String>) -> Diagnostic {
@@ -160,6 +171,7 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
             defined: false,
         }).collect(),
         receivers: Vec::with_capacity(headers.receivers.len()),
+        mailbox_ingresses: Vec::new(),
     };
     for definition in &headers.definitions {
         let Some(header) = headers.actor_ports.iter().find(|h| h.name == definition.name) else {
@@ -217,7 +229,56 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
         }
     }
     for header in &headers.receivers {
-        module.receivers.push(module.lower_one(header)?);
+        if header.name != "receive" {
+            if header.params.iter().any(|p| p.type_name.starts_with("ActorMail<")) {
+                return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                    "ActorMail<T> is sealed to a private actor receive handler"));
+            }
+            module.receivers.push(module.lower_one(header)?);
+            continue;
+        }
+        // A method called receive on a class is ordinary (not an actor ingress).
+        if !headers.actors.contains(&header.owner) {
+            module.receivers.push(module.lower_one(header)?);
+            continue;
+        }
+        let actor = module.actor_index(&header.owner, header.pos)?;
+        if header.public || header.mutable || header.arity != 1 ||
+            header.return_type != "void" {
+            return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                "actor receive ingress must be private, non-mutating, void and accept exactly one ActorMail<T>"));
+        }
+        let Some(param) = header.params.first() else {
+            return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                "actor receive requires one ActorMail<T> parameter"));
+        };
+        let Some(payload) = param.type_name.strip_prefix("ActorMail<")
+            .and_then(|t| t.strip_suffix('>')) else {
+            return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                "actor receive requires exactly one ActorMail<T> parameter"));
+        };
+        let normalize = |name: &str| match name {
+            "boolean" => "bool", "String" => "string", "f64" => "float",
+            other => other,
+        };
+        if let Some(expected) = module.actors[actor].receives.as_deref() {
+            if normalize(expected) != normalize(payload) {
+                return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                    format!("actor '{}' receives {expected} but attached receive(ActorMail<{payload}>) disagrees",
+                        header.owner)));
+            }
+        }
+        if headers.definitions.iter().any(|d| d.name == header.owner && d.receive.is_some()) {
+            return Err(Diagnostic::new(header.pos, "E_DUPLICATE",
+                format!("actor '{}' has both an inline receive handler and an attached mtd receive", header.owner)));
+        }
+        if module.mailbox_ingresses.iter().any(|i| i.actor == actor) {
+            return Err(Diagnostic::new(header.pos, "E_DUPLICATE",
+                format!("duplicate private receive handler for actor '{}'", header.owner)));
+        }
+        module.mailbox_ingresses.push(TypedMailboxIngress {
+            actor, payload: payload.to_owned(), pos: header.pos, body_lowered: false,
+        });
     }
     Ok(module)
 }
@@ -250,6 +311,9 @@ pub fn build_actor_program(headers: &TargetHeaders, module: &TypedActorModule) -
             emits: a.emits.clone(),
             sends: a.sends.clone(),
             implemented_contracts: a.implemented_contracts.clone(),
+        }).collect(),
+        mailbox_ingresses: module.mailbox_ingresses.iter().map(|i| ActorInterfaceMailboxIngress {
+            owner: i.actor as u32, payload: i.payload.clone(), pos: i.pos,
         }).collect(),
         methods: module.receivers.iter().map(|m| ActorInterfaceMethod {
             owner: m.actor as u32,
