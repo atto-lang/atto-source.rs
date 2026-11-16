@@ -17,6 +17,12 @@ pub mod detached_io;
 pub mod parser;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
+/// Checked source-local trait and class composition.
+pub mod nominal_lower;
+/// Explicitly unlinked foreign prototypes and source-only exports.
+pub mod visibility_lower;
+/// Direct routine-only and statically specialized named callbacks.
+pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
@@ -38,7 +44,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let toks = module_lower::lower(lexer::lex(source)?)?;
+    let visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    let toks = routine_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
@@ -106,7 +113,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         parser::Parser::new(toks).parse_program()?
     };
     let typed = check::check(&program)?;
-    let bytes = wasm::emit(&typed);
+    let mut bytes = wasm::emit(&typed);
+    visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
