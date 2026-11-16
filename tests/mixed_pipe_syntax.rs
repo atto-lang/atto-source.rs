@@ -318,11 +318,12 @@ fn a_class_instance_is_not_an_inferred_pipe_endpoint() {
 
 #[test]
 fn known_actor_ref_edges_are_checked_across_three_stage_graph() {
-    let source = program("source pipe middle pipe sink", "int")
-        .replacen("define actor Validate receives int emits int",
-                  "define actor Validate receives int emits bool", 1)
-        .replacen("receive(ActorMail<int> mail): void { emit(mail.value); }\n         end\n         define actor Sink",
-                  "receive(ActorMail<int> mail): void { emit(true); }\n         end\n         define actor Sink", 1);
+    // The first edge is bool -> bool, but the second is bool -> int.
+    // This must fail at the middle->sink edge, not only at stage one.
+    let source = program("source pipe middle pipe sink", "bool")
+        .replacen("define actor Parse receives int emits int",
+                  "define actor Parse receives int emits bool", 1)
+        .replacen("emit(mail.value);", "emit(true);", 1);
     let err = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(err.code, "E_TYPE", "{err}");
     assert!(err.message.contains("emitted"), "{err}");
