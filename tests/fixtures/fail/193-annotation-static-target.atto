@@ -1,0 +1,6 @@
+// expect-error: E_ANNOTATION_TARGET
+define class Root as
+  @Override
+  pub static fnc value(): int { return 2; }
+end
+pub fnc main(): int { return 0; }
