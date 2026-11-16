@@ -1,0 +1,14 @@
+// expect-exit: 42
+// java: rejects
+fnc result(): Option<Result<int,string>> { return Some(Ok(41)); }
+pub fnc main(): int {
+    return match<int> result() over
+        on None : int -> 0,
+        on Some(r) : int -> {
+            return match<int> r over
+                on Err(error) : int -> -3,
+                on Ok(n) : int -> n + 1,
+            end;
+        },
+    end;
+}
