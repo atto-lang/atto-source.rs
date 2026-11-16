@@ -1,0 +1,9 @@
+// Binding patterns are scoped to their arm and can be read as results.
+// java: rejects
+// expect-exit: 10
+pub fnc main(): int {
+  val v = 300;
+  return match 5 over
+    on v -> v * 2,
+  end
+}

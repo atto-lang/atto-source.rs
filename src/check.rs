@@ -45,10 +45,14 @@ pub enum Import {
     ActorSpawn,
     /// `actor_send(ref: i32, value: i64)`: enqueue one message
     ActorSend,
+    /// Private Worker-owned state-container creation/lexical admission hooks.
+    StateRegister,
+    StateEnter,
+    StateLeave,
 }
 
 impl Import {
-    pub const ALL: [Import; 7] = [
+    pub const ALL: [Import; 10] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -56,6 +60,9 @@ impl Import {
         Import::PrintF64,
         Import::ActorSpawn,
         Import::ActorSend,
+        Import::StateRegister,
+        Import::StateEnter,
+        Import::StateLeave,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -66,6 +73,9 @@ impl Import {
             Import::PrintF64 => "print_f64",
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
+            Import::StateRegister => "state_register",
+            Import::StateEnter => "state_enter",
+            Import::StateLeave => "state_leave",
         }
     }
 }
@@ -151,8 +161,14 @@ pub enum TExpr {
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
-    /// load a field of a class instance
+    /// ordinary class field read
     FieldGet {
+        obj: Box<TE>,
+        offset: u32,
+    },
+    /// A compiler-authorized state field read; never fold into FieldGet
+    /// without checking the protected receiver and lexical lease authority.
+    StateFieldRead {
         obj: Box<TE>,
         offset: u32,
     },
@@ -185,13 +201,26 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
-    /// store `value` into the field at `offset` of `obj`
+    /// ordinary class field initialization / assignment
     FieldSet {
         obj: TE,
         offset: u32,
         ty: Type,
         value: TE,
     },
+    /// Protected state write: verified lexical exclusive access to `obj`.
+    StateFieldWrite {
+        obj: TE,
+        offset: u32,
+        ty: Type,
+        value: TE,
+    },
+    /// Retain lexical protected authority through typed IR.
+    /// Single-Worker Wasm emits the body inline pending scheduler integration.
+    StateCriticalWrite(Vec<TStmt>),
+    /// Register a freshly allocated protected state object with the trusted
+    /// Worker host BEFORE returning it. Constructors cannot forge a lease.
+    StateRegister(TE),
     /// assign an actor-state global
     GlobalSet(u32, TE),
     Expr(TE),
@@ -314,6 +343,8 @@ struct MethodInfo {
 
 struct ClassInfo {
     name: String,
+    /// Distinct protected-state nominal declaration (single Worker-local profile).
+    state_container: bool,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
@@ -368,6 +399,9 @@ struct Local {
     mail: Option<Type>,
 }
 
+#[derive(Clone, Copy)]
+struct ScopedLoan { owner: u32, mutable: bool }
+
 struct FnCx<'a> {
     g: &'a Globals<'a>,
     owner: Owner,
@@ -380,6 +414,11 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Borrowed class locals keyed by their own slot.
+    loans: BTreeMap<u32, ScopedLoan>,
+    /// Compiler-issued lexical protected state permissions.
+    state_write_scope: bool,
+    state_read_scope: bool,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -867,6 +906,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         };
         classes.push(ClassInfo {
             name: c.name.clone(),
+            state_container: c.state_container,
             fields,
             methods,
             new_idx,
@@ -1102,6 +1142,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ty: Type::Void,
             }));
         }
+        if c.state_container {
+            body.push(TStmt::StateRegister(obj.clone()));
+        }
         body.push(TStmt::Return(Some(obj)));
         funcs[info.new_idx as usize] = Some(TFunc {
             name: format!("{}.new", c.name),
@@ -1201,6 +1244,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     }
 
     validate_generator_graph(&generators, p)?;
+    if p.classes.iter().any(|c| c.state_container) {
+        imports.extend([Import::StateRegister, Import::StateEnter, Import::StateLeave]);
+    }
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
@@ -1342,7 +1388,7 @@ fn returns(body: &[TStmt]) -> bool {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
-        TStmt::Block(b) => returns(b),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
         _ => false,
     })
 }
@@ -1401,7 +1447,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         // propagation. Keep these explicit when evolving the language.
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
-        TExpr::FieldGet { .. } | TExpr::GlobalGet(_) |
+        TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } => false,
@@ -1423,7 +1469,9 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
             pure_stmts(body, pure_indices) && pure_stmts(update, pure_indices),
         TStmt::Block(body) => pure_stmts(body, pure_indices),
         TStmt::Break | TStmt::Continue | TStmt::Unreachable => true,
-        TStmt::FieldSet { .. } | TStmt::GlobalSet(_, _) |
+        TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
+        TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
+        TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
     })
 }
@@ -1431,8 +1479,10 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
 /// Whether any expression node in `body` satisfies `f`.
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
-        TStmt::FieldSet { obj, value, .. } => any_in(obj, f) || any_in(value, f),
+        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
+        TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
+            any_in(obj, f) || any_in(value, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
         }
@@ -1440,7 +1490,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
-        TStmt::Block(b) => any_in_stmts(b, f),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => any_in_stmts(b, f),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
     })
 }
@@ -1460,7 +1510,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
-        TExpr::FieldGet { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
+        TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
+        TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
     }
@@ -1475,7 +1526,7 @@ fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
         TStmt::Loop { body, update, .. } =>
             guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
         TStmt::ForIn { body, .. } => guest_eh_in_stmts(body),
-        TStmt::Block(b) => guest_eh_in_stmts(b),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => guest_eh_in_stmts(b),
         _ => false,
     })
 }
@@ -1495,7 +1546,7 @@ fn breaks(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Break => true,
         TStmt::If(arms, other) => arms.iter().any(|(_, b)| breaks(b)) || other.as_ref().is_some_and(|b| breaks(b)),
-        TStmt::Block(b) => breaks(b),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => breaks(b),
         _ => false,
     })
 }
@@ -1512,6 +1563,9 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            loans: BTreeMap::new(),
+            state_write_scope: false,
+            state_read_scope: false,
             imports,
             data,
         }
@@ -1574,10 +1628,19 @@ impl<'a> FnCx<'a> {
         Ok(slot)
     }
 
+    fn pop_scope(&mut self) {
+        if let Some(ended) = self.scopes.pop() {
+            for l in ended {
+                self.loans.remove(&l.slot);
+                self.moved.remove(&l.slot);
+            }
+        }
+    }
+
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.scopes.push(Vec::new());
         let r = self.stmts(body);
-        self.scopes.pop();
+        self.pop_scope();
         r
     }
 
@@ -1588,6 +1651,18 @@ impl<'a> FnCx<'a> {
         self.loop_floors.pop();
         self.loops -= 1;
         r
+    }
+
+    /// A loop condition is evaluated before EACH iteration, not once.
+    /// Reject ownership moves from already-live locals even if a conditional
+    /// branch, break, or early return would make the second evaluation rare.
+    /// Evaluating it without a loop floor would silently permit repeated
+    /// take! owner and repeated implicit class transfers.
+    fn repeated_cond(&mut self, e: &Expr, what: &str) -> R<TE> {
+        self.loop_floors.push(self.nparams + self.locals.len() as u32);
+        let checked = self.cond(e, what);
+        self.loop_floors.pop();
+        checked
     }
 
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
@@ -1608,6 +1683,9 @@ impl<'a> FnCx<'a> {
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
+                if let ExprKind::Ownership(OwnershipOp::Borrow, mutable, inner) = &init.kind {
+                    return self.borrow_binding(*kind, name, *ty, inner, *mutable, *pos);
+                }
                 let want = match ty {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
@@ -1648,6 +1726,9 @@ impl<'a> FnCx<'a> {
                         format!("cannot reassign val binding '{name}'"),
                     ));
                 }
+                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed local or owner while the loan is live"));
+                }
                 let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
                     return Err(type_err(
@@ -1658,6 +1739,19 @@ impl<'a> FnCx<'a> {
                 // a reassigned object binding owns a value again
                 self.moved.remove(&slot);
                 TStmt::Set(slot, v)
+            }
+            Stmt::StateWrite { body, pos } => {
+                let allowed = matches!(self.owner,
+                    Owner::Class { c, ctor: false, is_static: false }
+                    if self.g.classes[c as usize].state_container);
+                if !allowed || self.state_write_scope {
+                    return Err(Diagnostic::new(*pos, "E_STATE_BORROW",
+                        "critical-write requires a non-nested protected state container method"));
+                }
+                self.state_write_scope = true;
+                let checked = self.scoped(body);
+                self.state_write_scope = false;
+                TStmt::StateCriticalWrite(checked?)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => {
@@ -1696,7 +1790,7 @@ impl<'a> FnCx<'a> {
                     let body = self.looped(body)?;
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
                 })();
-                self.scopes.pop();
+                self.pop_scope();
                 checked?
             }
             Stmt::Return(v, pos) => match (v, self.ret) {
@@ -1752,7 +1846,7 @@ impl<'a> FnCx<'a> {
                 TStmt::If(out, other)
             }
             Stmt::While { cond, body, .. } => {
-                let c = self.cond(cond, "while")?;
+                let c = self.repeated_cond(cond, "while")?;
                 let body = self.looped(body)?;
                 TStmt::Loop {
                     cond: Some(c),
@@ -1777,15 +1871,23 @@ impl<'a> FnCx<'a> {
                     if let Some(i) = init {
                         out.push(self.stmt(i)?);
                     }
+                    // The initializer executes once. By contrast the
+                    // condition and update are re-evaluated every iteration,
+                    // including after continue; they must not transfer
+                    // locals allocated before the loop's repeated region.
+                    let repeated_floor = self.nparams + self.locals.len() as u32;
                     let c = match cond {
-                        Some(c) => Some(self.cond(c, "for")?),
+                        Some(c) => Some(self.repeated_cond(c, "for")?),
                         None => None,
                     };
                     let b = self.looped(body)?;
-                    let u = match update {
-                        Some(u) => vec![self.stmt(u)?],
-                        None => Vec::new(),
+                    self.loop_floors.push(repeated_floor);
+                    let update_result = match update {
+                        Some(u) => self.stmt(u).map(|u| vec![u]),
+                        None => Ok(Vec::new()),
                     };
+                    self.loop_floors.pop();
+                    let u = update_result?;
                     out.push(TStmt::Loop {
                         cond: c,
                         body: b,
@@ -1793,7 +1895,7 @@ impl<'a> FnCx<'a> {
                     });
                     Ok(TStmt::Block(out))
                 })();
-                self.scopes.pop();
+                self.pop_scope();
                 r?
             }
             Stmt::Break(pos) | Stmt::Continue(pos) => {
@@ -1973,7 +2075,7 @@ impl<'a> FnCx<'a> {
                 };
                 Ok((cond, body))
             })();
-            self.scopes.pop();
+            self.pop_scope();
             let (cond, body) = r?;
             if arm.guard.is_none() {
                 match key {
@@ -2091,7 +2193,7 @@ impl<'a> FnCx<'a> {
                 };
                 Ok((cond, body))
             })();
-            self.scopes.pop();
+            self.pop_scope();
             let (cond, body) = r?;
             if arm.guard.is_none() {
                 match key {
@@ -2116,6 +2218,36 @@ impl<'a> FnCx<'a> {
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
+        if let ExprKind::Var(name) = &target.kind {
+            if let Some(local) = self.lookup(name) {
+                if let Some(loan) = self.loans.get(&local.slot).copied() {
+                    if !loan.mutable {
+                        return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
+                    }
+                    let Type::Class(c) = local.ty else { unreachable!("tracked loans must be class typed") };
+                    let class = &self.g.classes[c as usize];
+                    let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
+                        Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
+                    if !f.public && self.inside_class() != Some(c) {
+                        return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
+                    }
+                    if f.mode == FieldMode::Final {
+                        return Err(Diagnostic::new(pos, "E_IMMUTABLE", "cannot mutate final field through borrow! mut"));
+                    }
+                    let (slot, offset, fty) = (local.slot, f.slot, f.ty);
+                    // A class-valued field write would install an untracked owned
+                    // handle through an alias. Lower only copyable field storage.
+                    if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            "borrow! mut does not yet admit fields requiring owned-handle transfer"));
+                    }
+                    let checked = self.consume_expected(value, fty)?;
+                    if checked.ty != fty { return Err(type_err(value.pos, "borrowed field assignment type mismatch")); }
+                    return Ok(TStmt::FieldSet { obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
+                        offset, ty: fty, value: checked });
+                }
+            }
+        }
         if !matches!(target.kind, ExprKind::SelfRef) {
             return Err(Diagnostic::new(
                 pos,
@@ -2150,12 +2282,17 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
-                if !ctor {
-                    return Err(Diagnostic::new(
-                        pos,
-                        "E_OWNERSHIP",
-                        format!("cannot mutate field '{field}' through read-only binding 'self'"),
-                    ));
+                // Never grant mutable state authority from a field mode alone.
+                // The declaration must be a protected state container AND the
+                // typed checker must be inside the lexical critical-write AST.
+                if mode == FieldMode::ActorState {
+                    if !class.state_container || !self.state_write_scope {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                            "mutable state requires a checked critical-write scope"));
+                    }
+                } else if !ctor {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                        format!("cannot mutate field '{field}' through read-only binding 'self'")));
                 }
                 let v = self.value(value)?;
                 if v.ty != fty {
@@ -2164,15 +2301,15 @@ impl<'a> FnCx<'a> {
                         format!("cannot assign {} to field '{field}' of type {}", self.tn(v.ty), self.tn(fty)),
                     ));
                 }
-                Ok(TStmt::FieldSet {
-                    obj: TE {
-                        e: TExpr::Local(0),
-                        ty: Type::Class(c),
-                    },
-                    offset,
-                    ty: fty,
-                    value: v,
-                })
+                let obj = TE {
+                    e: TExpr::Local(0),
+                    ty: Type::Class(c),
+                };
+                if mode == FieldMode::ActorState && class.state_container {
+                    Ok(TStmt::StateFieldWrite { obj, offset, ty: fty, value: v })
+                } else {
+                    Ok(TStmt::FieldSet { obj, offset, ty: fty, value: v })
+                }
             }
             Owner::Actor { a } => {
                 let actor = &self.g.actors[a as usize];
@@ -2261,12 +2398,100 @@ impl<'a> FnCx<'a> {
         Ok(v)
     }
 
+    /// Class loans are bound to lexical locals; no owner transfer or escape.
+    fn borrow_binding(&mut self, kind: BindKind, name: &str, annotation: Option<Type>,
+                      inner: &Expr, mutable: bool, pos: Pos) -> R<TStmt> {
+        let ExprKind::Var(owner_name) = &inner.kind else {
+            return Err(Diagnostic::new(inner.pos, "E_BORROW", "borrow! requires a named owner"));
+        };
+        let (owner, owner_ty) = match self.lookup(owner_name) {
+            Some(l) => (l.slot, l.ty),
+            None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
+        };
+        if self.loans.contains_key(&owner) {
+            return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
+        }
+        if let Some(loan) = self.loans.values().find(|loan| loan.owner == owner) {
+            if mutable || loan.mutable {
+                return Err(Diagnostic::new(pos, "E_BORROW", "conflicting loans: mutable borrowing must be exclusive"));
+            }
+        }
+        let value = self.value(inner)?;
+        if let Some(annotation) = annotation {
+            let expected = self.resolve(annotation, pos)?;
+            if expected != value.ty {
+                return Err(type_err(pos, format!("borrowed binding '{name}' expects {}, found {}", self.tn(expected), self.tn(value.ty))));
+            }
+        }
+        if !matches!(owner_ty, Type::Class(_)) {
+            if mutable {
+                return Err(Diagnostic::new(pos, "E_BORROW", "mutable scalar loans require reference storage lowering; not yet supported"));
+            }
+            if !matches!(owner_ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                return Err(Diagnostic::new(pos, "E_BORROW", "borrowing this type is not supported by the guest Wasm backend"));
+            }
+            let slot = self.declare(name, value.ty, kind == BindKind::Let, pos)?;
+            return Ok(TStmt::Set(slot, value));
+        }
+        let slot = self.declare(name, value.ty, false, pos)?;
+        self.loans.insert(slot, ScopedLoan { owner, mutable });
+        Ok(TStmt::Set(slot, value))
+    }
+
+    fn explicit_ownership(&mut self, action: OwnershipOp, mutable: bool, inner: &Expr, pos: Pos) -> R<TE> {
+        if mutable && action != OwnershipOp::Borrow {
+            return Err(Diagnostic::new(pos, "E_SYNTAX", "mut is only valid after borrow!"));
+        }
+        match action {
+            OwnershipOp::Borrow => {
+                if mutable {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
+                }
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding"));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Copy | OwnershipOp::Share => {
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    let name = if action == OwnershipOp::Copy { "copy!" } else { "share!" };
+                    return Err(Diagnostic::new(pos, if action == OwnershipOp::Copy { "E_COPY" } else { "E_SHARE" },
+                        format!("{name} requires a verified immutable copyable scalar; class, actor and generator handles are not shareable")));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Take => {
+                let ExprKind::Var(name) = &inner.kind else {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a named owned local"));
+                };
+                let value = self.value(inner)?;
+                let TExpr::Local(slot_ref) = &value.e else {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
+                };
+                let slot = *slot_ref;
+                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "take! is forbidden while an owner is borrowed"));
+                }
+                if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
+                    return Err(Diagnostic::new(pos, "E_MOVED", format!("cannot take '{name}' from outside a loop")));
+                }
+                self.moved.insert(slot);
+                Ok(value)
+            }
+        }
+    }
+
     /// A value in an ownership-transferring position (binding initializer,
     /// assignment, argument, return): naming an object local moves it.
     fn consume(&mut self, e: &Expr) -> R<TE> {
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
+            if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
+            }
             if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                 return Err(Diagnostic::new(
                     e.pos,
@@ -2337,6 +2562,7 @@ impl<'a> FnCx<'a> {
             }),
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
+            ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
@@ -2652,6 +2878,9 @@ impl<'a> FnCx<'a> {
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
+                    if self.loans.values().any(|loan| loan.owner == l.slot && loan.mutable) {
+                        return Err(Diagnostic::new(pos, "E_BORROW", format!("owner '{name}' is exclusively mutably borrowed")));
+                    }
                     TE {
                         e: TExpr::Local(l.slot),
                         ty: l.ty,
@@ -2673,11 +2902,30 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
+            ExprKind::StateRead(field) => {
+                let c = match self.owner {
+                    Owner::Class { c, ctor: false, is_static: false }
+                        if self.g.classes[c as usize].state_container => c,
+                    _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "critical-read requires a protected instance state container")),
+                };
+                if self.state_read_scope || self.state_write_scope {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "protected state read cannot nest with another active lease"));
+                }
+                self.state_read_scope = true;
+                let checked = self.field_get(TE {
+                    e: TExpr::Local(0),
+                    ty: Type::Class(c),
+                }, field, pos);
+                self.state_read_scope = false;
+                checked?
+            }
             ExprKind::SelfRef => {
                 return Err(match self.owner {
                     Owner::Class { is_static: false, .. } | Owner::Actor { .. } => Diagnostic::new(
@@ -2947,10 +3195,32 @@ impl<'a> FnCx<'a> {
                 ),
             ));
         }
+        // A borrowed aggregate cannot yield an independently owned handle.
+        // Without a nested-loan provenance IR, such a field could escape
+        // the original owner's lifetime by ordinary binding or return.
+        if matches!(&obj.e, TExpr::Local(slot) if self.loans.contains_key(slot))
+            && matches!(f.ty, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt)
+        {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "borrowed object field cannot yield an owned handle without nested-loan provenance"));
+        }
+        // Class privacy does not grant sealed state access: require a
+        // compiler-recognized lease on the exact receiver instance.
+        let protected = f.mode == FieldMode::ActorState && class.state_container;
+        if protected {
+            let same_receiver = matches!(&obj.e, TExpr::Local(0))
+                && matches!(self.owner,
+                    Owner::Class { c: owner, ctor: false, is_static: false } if owner == c);
+            if !same_receiver || !(self.state_read_scope || self.state_write_scope) {
+                return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                    "protected state read requires critical-read or critical-write on this receiver"));
+            }
+        }
         Ok(TE {
-            e: TExpr::FieldGet {
-                obj: Box::new(obj),
-                offset: f.slot,
+            e: if protected {
+                TExpr::StateFieldRead { obj: Box::new(obj), offset: f.slot }
+            } else {
+                TExpr::FieldGet { obj: Box::new(obj), offset: f.slot }
             },
             ty: f.ty,
         })
@@ -3048,7 +3318,19 @@ impl<'a> FnCx<'a> {
             return self.string_method(recv, name, args, pos);
         }
         match recv.ty {
-            Type::Class(c) => self.instance_call(recv, c, name, args, pos),
+            Type::Class(c) => {
+                // Calls on a loan may only return copyable, lifetime-independent
+                // values. Owned object returns need result-lifetime provenance.
+                if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot)) {
+                    if let Some(m) = self.g.classes[c as usize].methods.iter().find(|m| m.name == name) {
+                        if matches!(m.ret, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt) {
+                            return Err(Diagnostic::new(pos, "E_BORROW",
+                                "borrowed receiver cannot return an owned handle without result provenance"));
+                        }
+                    }
+                }
+                self.instance_call(recv, c, name, args, pos)
+            }
             Type::ActorRef(a) => {
                 let actor = &self.g.actors[a as usize];
                 if name != "send" {

@@ -62,6 +62,7 @@ const RESERVED: &[&str] = &[
     "let",
     "mut",
     "if",
+    "guard",
     "then",
     "else",
     "elif",
@@ -139,7 +140,6 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "import",
     "async",
     "yield",
-    "guard",
     "nb",
     "cb",
     "readch",
@@ -209,6 +209,8 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    state_method: bool,
+    state_binder: Option<String>,
 }
 
 struct TypeFirstField {
@@ -232,6 +234,23 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
     Diagnostic::new(pos, "E_UNSUPPORTED", format!("{what} is not supported by the browser compiler yet"))
 }
 
+/// Conservative control-flow proof for guard's failure path. In particular,
+/// a break/continue, an if without else, or a match without exhaustiveness
+/// evidence cannot stand in for a guaranteed enclosing-function exit.
+/// Later checker stages may admit richer terminal constructs only after
+/// proving they cannot fall through.
+fn guard_failure_exits(stmts: &[Stmt]) -> bool {
+    match stmts.last() {
+        Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
+        Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
+            !arms.is_empty()
+                && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
+                && guard_failure_exits(other),
+        _ => false,
+    }
+}
+
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
         Parser {
@@ -243,6 +262,8 @@ impl Parser {
             type_names: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            state_method: false,
+            state_binder: None,
         }
     }
 
@@ -531,6 +552,10 @@ impl Parser {
                     self.i += at + 2;
                     prog.classes.push(self.parse_class(public)?);
                 }
+                (Some("define"), Some("state")) => {
+                    self.i += at + 2;
+                    prog.classes.push(self.parse_state_container(public)?);
+                }
                 (Some("define"), Some("actor")) => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
@@ -581,10 +606,89 @@ impl Parser {
             name,
             pos,
             public,
+            state_container: false,
             fields: m.fields,
             ctor: m.ctor,
             methods: m.methods,
         })
+    }
+
+
+    /// Browser-only single-worker state profile; class instances cannot cross
+    /// guest Wasm memories. This does not provide a cross-worker RW lock.
+    fn parse_state_container(&mut self, public: bool) -> R<ClassDecl> {
+        self.eat_word("container"); // Java-canonical long spelling; short form is an Atto alias
+        let (name, pos) = self.ident("a state container name")?;
+        self.decl_head("state container")?;
+        self.expect_word("as")?;
+        let (mut fields, mut methods) = (Vec::new(), Vec::new());
+        let mut seen = false;
+        while !self.eat_word("end") {
+            if *self.peek() == Tok::Eof {
+                return Err(self.expected("'end' to close state container"));
+            }
+            if fields.len() >= 128 || methods.len() >= 64 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "protected state fields (128) or methods (64) exceed Java reference budget"));
+            }
+            if self.eat_word("state") {
+                if seen { return Err(Diagnostic::new(self.pos(), "E_DUPLICATE", "duplicate state {} block")); }
+                seen = true;
+                self.expect(Tok::LBrace, "'{' after state")?;
+                while !self.eat(&Tok::RBrace) {
+                    if *self.peek() == Tok::Eof { return Err(self.expected("'}' after state fields")); }
+                    if fields.len() >= 128 {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "protected state field budget exceeded (128)"));
+                    }
+                    if !self.eat_word("let") {
+                        return Err(Diagnostic::new(self.pos(), "E_STATE",
+                            "protected state fields must start with let, as in Java"));
+                    }
+                    let parsed = self.parse_type_first_field(false, FieldMode::ActorState)?;
+                    if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
+                        return Err(Diagnostic::new(parsed.field.pos, "E_UNSUPPORTED_TYPE",
+                            "Worker-local state container admits only owned int/bool fields"));
+                    }
+                    if fields.iter().any(|f: &Field| f.name == parsed.field.name) {
+                        return Err(Diagnostic::new(parsed.field.pos, "E_DUPLICATE", "duplicate state field"));
+                    }
+                    fields.push(parsed.field);
+                }
+                continue;
+            }
+            if !seen {
+                return Err(Diagnostic::new(self.pos(), "E_STATE",
+                    "protected state {} schema must precede instance methods"));
+            }
+            let method_public = self.eat_word("pub");
+            self.eat_word("fnc");
+            self.eat_word("method");
+            if self.is_word("handle_state") {
+                return Err(Diagnostic::new(self.pos(), "E_STATE",
+                    "handle_state is compiler-owned and cannot be overridden"));
+            }
+            if *self.peek_at(1) != Tok::LParen {
+                return Err(Diagnostic::new(self.pos(), "E_STATE",
+                    "state container supports only a state {} block and instance methods"));
+            }
+            self.state_method = true;
+            let result = self.parse_method(method_public, false);
+            self.state_method = false;
+            let method = result?;
+            if method.params.iter().any(|p| p.name == "s") {
+                return Err(Diagnostic::new(method.pos, "E_STATE_BORROW",
+                    "parameter s would shadow the critical lease binder"));
+            }
+            if methods.iter().any(|m: &Method| m.name == method.name) {
+                return Err(Diagnostic::new(method.pos, "E_DUPLICATE", "duplicate state method"));
+            }
+            methods.push(method);
+        }
+        if !seen { return Err(Diagnostic::new(pos, "E_STATE", "define state requires state {}")); }
+        if fields.is_empty() {
+            return Err(Diagnostic::new(pos, "E_STATE", "protected state requires at least one scalar field"));
+        }
+        Ok(ClassDecl { name, pos, public, state_container: true,
+            fields, ctor: None, methods })
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
@@ -1281,6 +1385,8 @@ impl Parser {
         }
         let word = self.word_at(0).map(str::to_owned);
         match word.as_deref() {
+            Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
+                self.parse_state_critical_stmt(),
             Some("val" | "const" | "let") => {
                 let s = self.parse_binding()?;
                 self.terminator()?;
@@ -1321,6 +1427,15 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
+                if self.is_word("match") {
+                    // Return-position match is a value. Generators cannot
+                    // return values, including an exhaustive match.
+                    if self.in_generator {
+                        return Err(Diagnostic::new(pos, "E_RETURN",
+                            "generator cannot return a match value"));
+                    }
+                    return self.parse_return_match(pos);
+                }
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
                 let value = if at_end { None } else { Some(self.parse_expr()?) };
@@ -1340,6 +1455,7 @@ impl Parser {
                 Ok(Stmt::Throw(error, pos))
             }
             Some("if") => self.parse_if(),
+            Some("guard") => self.parse_guard(),
             Some("while") => {
                 self.advance();
                 let cond = self.parse_cond_head()?;
@@ -1515,6 +1631,125 @@ impl Parser {
         }
     }
 
+
+    /// The Java/LLVM compound-keyword contract requires exactly adjacent
+    /// ASCII critical-read / critical-write, not spaced subtraction tokens.
+    /// The lexer intentionally keeps '-' separate for arithmetic; this
+    /// contextual check preserves the original byte columns and diagnostics.
+    fn parse_state_critical_mode(&mut self, read_only: bool) -> R<bool> {
+        let keyword_pos = self.pos();
+        self.expect_word("critical")?;
+        if self.peek() != &Tok::Minus {
+            if read_only {
+                return Err(Diagnostic::new(keyword_pos, "E_SYNTAX",
+                    "critical-read must use one contiguous compound keyword"));
+            }
+            return Ok(true); // bare critical is the exclusive write alias
+        }
+        let minus_pos = self.pos();
+        if minus_pos.line != keyword_pos.line ||
+            minus_pos.col != keyword_pos.col + 8 {
+            return Err(Diagnostic::new(minus_pos, "E_SYNTAX",
+                "critical-read / critical-write must not contain whitespace around '-'"));
+        }
+        self.advance();
+        let suffix_pos = self.pos();
+        if suffix_pos.line != minus_pos.line ||
+            suffix_pos.col != minus_pos.col + 1 {
+            return Err(Diagnostic::new(suffix_pos, "E_SYNTAX",
+                "critical-read / critical-write must not contain whitespace around '-'"));
+        }
+        if self.eat_word("read") {
+            return Ok(false);
+        }
+        if self.eat_word("write") && !read_only {
+            return Ok(true);
+        }
+        Err(Diagnostic::new(suffix_pos, "E_SYNTAX",
+            "expected a contiguous critical-read or critical-write state mode"))
+    }
+
+    /// A lexical, non-suspending state loan. Syntactic admission is deliberately
+    /// narrower than arbitrary closures: mutation only, pure scalar RHS, no
+    /// early return, IO, allocations, calls, loops or nested state access.
+    fn parse_state_critical_stmt(&mut self) -> R<Stmt> {
+        let pos = self.pos();
+        if self.state_binder.is_some() {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "nested critical scopes cannot mint a second state loan"));
+        }
+        self.expect_word("handle_state")?;
+        self.expect(Tok::LParen, "'('")?;
+        let write = self.parse_state_critical_mode(false)?;
+        // A read-only block cannot become StateWrite: that AST always
+        // requests an exclusive write ticket from the trusted Worker host.
+        // Reads are accepted only as nonescaping by-value s.field projections.
+        if !write {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "critical-read is by-value s.field only; block scopes cannot request a write lease"));
+        }
+        self.expect(Tok::Pipe, "'|' before lease binder")?;
+        let (binder, _) = self.ident("state lease binder")?;
+        if binder != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+            "this browser profile uses the binder s")); }
+        self.expect(Tok::Pipe, "'|' after lease binder")?;
+        self.expect(Tok::Arrow, "'->' after lease binder")?;
+        self.state_binder = Some(binder);
+        let result = self.parse_block();
+        self.state_binder = None;
+        let body = result?;
+        for stmt in &body {
+            match stmt {
+                Stmt::FieldAssign { target, value, .. }
+                    if write && matches!(target.kind, ExprKind::SelfRef)
+                        && Self::pure_state_value(value) => {}
+                _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                    "critical block permits only pure state assignments (no calls, return, await or escapes)")),
+            }
+        }
+        self.expect(Tok::RParen, "')' after critical scope")?;
+        self.terminator()?;
+        Ok(Stmt::StateWrite { body, pos })
+    }
+
+    fn pure_state_value(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) => true,
+            ExprKind::Var(name) => name != "s",
+            ExprKind::Member(base, _) => matches!(base.kind, ExprKind::SelfRef),
+            ExprKind::Unary(_, v) => Self::pure_state_value(v),
+            ExprKind::Binary(_, a, b) => Self::pure_state_value(a) && Self::pure_state_value(b),
+            _ => false,
+        }
+    }
+
+    /// A single by-value immutable state projection, not a reference loan.
+    fn parse_state_critical_read(&mut self) -> R<ExprKind> {
+        if self.state_binder.is_some() {
+            return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
+                "critical-read cannot nest inside an active critical state write"));
+        }
+        self.expect_word("handle_state")?;
+        self.expect(Tok::LParen, "'('")?;
+        if self.parse_state_critical_mode(true)? {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "critical-read must be immutable"));
+        }
+        self.expect(Tok::Pipe, "'|' before lease binder")?;
+        let (binder, _) = self.ident("state lease binder")?;
+        if binder != "s" { return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
+            "this browser profile uses the binder s")); }
+        self.expect(Tok::Pipe, "'|' after lease binder")?;
+        self.expect(Tok::Arrow, "'->' after lease binder")?;
+        let (projector, pos) = self.ident("s.field state projection")?;
+        if projector != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+            "critical-read requires s.field")); }
+        self.expect(Tok::Dot, "'.' in s.field")?;
+        let (field, _) = self.ident("state field")?;
+        self.expect(Tok::RParen, "')' after critical-read")?;
+        Ok(ExprKind::StateRead(field))
+    }
+
     /// grammar.ebnf `binding_decl`: `("val"|"const"|"let") (IDENT ":" type_ref | [type_ref] IDENT) "=" expression`.
     fn parse_binding(&mut self) -> R<Stmt> {
         let pos = self.pos();
@@ -1558,6 +1793,10 @@ impl Parser {
             let (name, _) = self.ident("a variable name")?;
             (name, None)
         };
+        if self.state_method && name == "s" {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "a local named s would shadow the critical lease binder"));
+        }
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
         }
@@ -1571,6 +1810,37 @@ impl Parser {
         self.advance();
         let init = self.parse_expr()?;
         Ok(Stmt::Bind { kind, name, ty, init, pos })
+    }
+
+    /// A guard is an else-free early-exit check. Its failure branch runs only
+    /// when the predicate is false, and every path through that branch must
+    /// leave the enclosing function. Lower to an ordinary typed 'if !cond'
+    /// so the existing Rust/Wasm checker and emitter enforce bool typing,
+    /// checked effects, lexical scoping, and exactly-once predicate evaluation.
+    fn parse_guard(&mut self) -> R<Stmt> {
+        let pos = self.pos();
+        self.expect_word("guard")?;
+        let predicate = self.parse_cond_head()?;
+        if *self.peek() != Tok::LBrace {
+            return Err(Diagnostic::new(self.pos(), "E_GUARD",
+                "guard requires a braced failure branch"));
+        }
+        let failure = self.parse_block()?;
+        if !guard_failure_exits(&failure) {
+            return Err(Diagnostic::new(pos, "E_GUARD",
+                "guard failure branch must exit the enclosing function on every path"));
+        }
+        Ok(Stmt::If {
+            arms: vec![(
+                Expr {
+                    kind: ExprKind::Unary(UnOp::Not, Box::new(predicate)),
+                    pos,
+                },
+                failure,
+            )],
+            otherwise: None,
+            pos,
+        })
     }
 
     fn parse_if(&mut self) -> R<Stmt> {
@@ -1724,6 +1994,53 @@ impl Parser {
         if arms.is_empty() {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "match requires at least one arm"));
         }
+        Ok(Stmt::Match { subject, arms, pos })
+    }
+
+    /// A return-position match expression:
+    /// `return match value over on P -> expr, default -> expr, end`.
+    ///
+    /// Lowering to statement match deliberately reuses the existing
+    /// once-only subject evaluation, exhaustive pattern checker, strict return
+    /// typing, unreachable-arm detection and Wasm branches. It does not
+    /// pretend that arbitrary expressions are value matches.
+    fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
+        self.expect_word("match")?;
+        let subject = self.parse_expr()?;
+        self.expect_word("over")?;
+        let mut arms = Vec::new();
+        while !self.is_word("end") {
+            if *self.peek() == Tok::Eof {
+                return Err(Diagnostic::new(self.pos(), "E_EOF", "expected 'end' to close return match"));
+            }
+            self.grow(1)?;
+            let apos = self.pos();
+            let pattern = if self.eat_word("default") {
+                Pattern::Wild
+            } else {
+                self.expect_word("on")?;
+                self.parse_pattern()?
+            };
+            self.expect(Tok::Arrow, "'->' in a return match arm")?;
+            let value = self.parse_expr()?;
+            arms.push(MatchArm {
+                pattern,
+                guard: None,
+                body: vec![Stmt::Return(Some(value), apos)],
+                pos: apos,
+            });
+            // A final comma before 'end' is valid, and separators are
+            // mandatory between adjacent value arms.
+            if !self.eat(&Tok::Comma) && !self.is_word("end") {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "expected ',' between return match arms"));
+            }
+        }
+        self.expect_word("end")?;
+        self.height -= arms.len() as u32;
+        if arms.is_empty() {
+            return Err(Diagnostic::new(pos, "E_SYNTAX", "return match requires at least one arm"));
+        }
+        self.terminator()?;
         Ok(Stmt::Match { subject, arms, pos })
     }
 
@@ -2137,6 +2454,28 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            // Ownership is a prefix unary expression, like trap. Its operand
+            // may be a name, postfix chain, or a grouped expression; the
+            // canonical spelling never requires parentheses around a name.
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
+                && *self.peek_at(1) == Tok::Bang =>
+            {
+                let action = match s.as_str() {
+                    "borrow" => OwnershipOp::Borrow,
+                    "copy" => OwnershipOp::Copy,
+                    "take" => OwnershipOp::Take,
+                    "share" => OwnershipOp::Share,
+                    _ => unreachable!(),
+                };
+                self.advance(); // name
+                self.advance(); // !
+                let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
+                if action != OwnershipOp::Borrow && self.is_word("mut") {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
+                }
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
+            },
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
@@ -2451,6 +2790,9 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
+                }
                 "true" => {
                     self.advance();
                     ExprKind::Bool(true)
@@ -2461,9 +2803,14 @@ impl Parser {
                 }
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
                 "self" => {
+                    if self.state_method {
+                        return Err(Diagnostic::new(pos, "E_STATE_ACCESS",
+                            "state fields are sealed; use a critical state lease"));
+                    }
                     self.advance();
                     ExprKind::SelfRef
                 }
+                "handle_state" if self.state_method => self.parse_state_critical_read()?,
                 "new" => {
                     self.advance();
                     let (class, _) = self.ident("a class name after 'new'")?;
@@ -2501,6 +2848,14 @@ impl Parser {
                         "E_SYNTAX",
                         format!("expected an expression, found keyword '{w}'"),
                     ))
+                }
+                _ if self.state_binder.as_deref() == Some(s.as_str()) => {
+                    if *self.peek_at(1) != Tok::Dot {
+                        return Err(Diagnostic::new(pos, "E_ESCAPE",
+                            "state borrow cannot escape or be passed by value"));
+                    }
+                    self.advance();
+                    ExprKind::SelfRef
                 }
                 _ => {
                     self.advance();
