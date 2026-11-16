@@ -26,6 +26,12 @@ jobs:
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
           rustup default 1.85.1
           rustc --version
+      - name: Check actor declaration parser/linker regression gates
+        run: |
+          cargo test --locked --test declared_actor_ports -- --nocapture
+          cargo test --locked --test target_syntax
+          cargo test --locked --test target_typed
+          cargo test --locked --test target_link
       - name: Test native compiler core over the fixture corpus
         run: cargo test --locked --verbose
       - name: Build native attoc host
