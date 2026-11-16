@@ -207,7 +207,7 @@ pub fn lower(input: &Program) -> R<Program> {
                 params: d.params.into_iter().chain(
                     d.captures.into_iter().map(|c| c.source)
                 ).zip(all_types).map(|(name, ty)| Param {
-                    name, ty, mutable: false, pos: d.lambda.pos,
+                    name, ty, mutable: false, omittable: false, pos: d.lambda.pos,
                 }).collect(),
                 ret: callable.signature().result,
                 body: lambda_body,
