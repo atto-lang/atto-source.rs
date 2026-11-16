@@ -82,8 +82,8 @@ test('cancel before commit never sends queued payload and is exactly-once',async
   }});
   const first=submit(q,'first');await afterTurn();
   const second=submit(q,'second');
-  assert.equal(q.cancel(second.ticket),true);
-  assert.equal(q.cancel(second.ticket),false);
+  assert.equal(q.cancel(second.ticket,{owner:'actor-1',generation:1}),true);
+  assert.equal(q.cancel(second.ticket,{owner:'actor-1',generation:1}),false);
   assert.deepEqual(await second.future,{ok:false,error:{code:'E_IO_CANCELLED',
     message:'write cancelled before commit'}});
   release.resolve();await first.future;await afterTurn();
@@ -98,7 +98,7 @@ test('cancel after commit returns false and cannot pretend to roll back external
     return{ok:true,written:b.length};
   }});
   const value=submit(q,'sent');await afterTurn();
-  assert.equal(q.cancel(value.ticket),false);
+  assert.equal(q.cancel(value.ticket,{owner:'actor-1',generation:1}),false);
   release.resolve();
   assert.equal((await value.future).ok,true);
   assert.deepEqual(delivered,['sent']);
@@ -219,7 +219,7 @@ test('repeated cancel/re-admit while one committed write stalls cannot grow FIFO
   const first=submit(q,'x');await afterTurn();
   for(let n=0;n<1000;n++){
     const t=submit(q,'z');assert.equal(t.ok,true);
-    assert.equal(q.cancel(t.ticket),true);
+    assert.equal(q.cancel(t.ticket,{owner:'actor-1',generation:1}),true);
     assert.equal((await t.future).error.code,'E_IO_CANCELLED');
     assert.equal(q.stats.queued,0);
   }
@@ -268,4 +268,177 @@ test('invalid callback and owner combinations fail synchronously without registr
     assert.equal(q.submitWrite(fields).error.code,'E_IO_SYNTAX');
   }
   assert.equal(q.stats.pending,0);
+});
+
+
+test('cancel demands correct owner and generation, not an unprotected ticket id',async()=>{
+  const release=gate(),sent=[];
+  const q=new CheckedWriteQueue({slots:2,maxBytes:50,sink:async bytes=>{
+    sent.push(new TextDecoder().decode(bytes));
+    await release.promise;return{ok:true,written:bytes.length};
+  }});
+  const a=submit(q,'first');await afterTurn();
+  const b=submit(q,'second');
+  assert.equal(q.cancel(b.ticket),false);
+  assert.equal(q.cancel(b.ticket,{owner:'another-actor',generation:1}),false);
+  assert.equal(q.cancel(b.ticket,{owner:'actor-1',generation:2}),false);
+  assert.equal(q.cancel(b.ticket,null),false);
+  assert.equal(q.stats.pending,2);
+  assert.equal(q.cancel(b.ticket,{owner:'actor-1',generation:1}),true);
+  assert.equal((await b.future).error.code,'E_IO_CANCELLED');
+  release.resolve();await a.future;await afterTurn();
+  assert.deepEqual(sent,['first']);
+});
+
+test('cancel between queue selection and adapter invocation commits nothing',async()=>{
+  let calls=0;
+  const q=new CheckedWriteQueue({sink:async bytes=>{
+    calls++;return{ok:true,written:bytes.length};
+  }});
+  const pending=submit(q,'precommit');
+  let cancelled=false;
+  queueMicrotask(()=>{cancelled=q.cancel(pending.ticket,{owner:'actor-1',generation:1})});
+  const outcome=await pending.future;
+  await afterTurn();
+  assert.equal(cancelled,true);
+  assert.equal(outcome.error.code,'E_IO_CANCELLED');
+  assert.equal(calls,0);
+  assert.equal(q.stats.pending,0);
+});
+
+test('stop after selection and before adapter call prevents a ghost write',async()=>{
+  let calls=0;
+  const q=new CheckedWriteQueue({sink:async bytes=>{
+    calls++;return{ok:true,written:bytes.length};
+  }});
+  const pending=submit(q,'never');
+  queueMicrotask(()=>q.stopOwner('actor-1',1));
+  assert.equal((await pending.future).error.code,'E_IO_CANCELLED');
+  await afterTurn();
+  assert.equal(calls,0);
+  assert.equal(q.stats.pending,0);
+  assert.equal(q.stats.owners,1);
+});
+
+test('a stopped newer generation fences all earlier generations, not later ones',async()=>{
+  const release=gate(),sent=[];
+  const q=new CheckedWriteQueue({slots:4,sink:async bytes=>{
+    sent.push(new TextDecoder().decode(bytes));
+    await release.promise;return{ok:true,written:bytes.length};
+  }});
+  const one=submit(q,'committed',{generation:5});await afterTurn();
+  const older=submit(q,'old',{generation:6});
+  assert.equal(q.stopOwner('actor-1',7),true);
+  assert.equal((await older.future).error.code,'E_IO_CANCELLED');
+  assert.equal(submit(q,'older-replay',{generation:4}).error.code,'E_IO_OWNER');
+  assert.equal(submit(q,'same-replay',{generation:7}).error.code,'E_IO_OWNER');
+  const newer=submit(q,'new',{generation:8});
+  assert.equal(newer.ok,true);
+  release.resolve();
+  assert.equal((await one.future).ok,true);
+  assert.equal((await newer.future).ok,true);
+  assert.deepEqual(sent,['committed','new']);
+});
+
+test('owner registry enforces finite memory, rejects stale owner IDs and clears after close',async()=>{
+  const q=new CheckedWriteQueue({slots:4,maxOwners:2,sink:okSink});
+  const a=q.submitWrite({owner:'A',generation:1,payload:'a'});
+  const b=q.submitWrite({owner:'B',generation:1,payload:'b'});
+  assert.equal(a.ok,true);assert.equal(b.ok,true);
+  assert.equal(q.stats.owners,2);
+  assert.equal(q.submitWrite({owner:'C',generation:1,payload:'c'}).error.code,'E_IO_QUOTA');
+  assert.equal(q.stopOwner('C',1),false);
+  await Promise.all([a.future,b.future]);
+  assert.equal(q.stats.owners,2); // history needed to reject stale replay
+  q.close();
+  assert.equal(q.stats.owners,0);
+  assert.equal(q.submitWrite({owner:'A',generation:2,payload:'d'}).error.code,'E_IO_CLOSED');
+});
+
+test('invalid and detached payload bytes produce checked rejection and no ticket leak',()=>{
+  const q=new CheckedWriteQueue({sink:okSink});
+  for(const value of [null,42,{},Symbol('invalid')]){
+    const a=submit(q,value);
+    assert.equal(a.ok,false);
+    assert.equal(a.error.code,'E_IO_PAYLOAD');
+    assert.equal(a.payload,value);
+  }
+  const fragile=new Proxy(new Uint8Array([1,2]),{get(){throw new Error('detached bytes')}});
+  const reject=submit(q,fragile);
+  assert.equal(reject.error.code,'E_IO_PAYLOAD');
+  assert.equal(reject.payload,fragile);
+  assert.equal(q.stats.pending,0);
+  assert.equal(q.stats.bytes,0);
+});
+
+test('sink success object getters cannot strand pending credits or raise unhandled rejection',async()=>{
+  let fail=true;
+  const q=new CheckedWriteQueue({sink:async b=>{
+    if(fail) return {get ok(){throw new Error('hostile success getter')}};
+    return{ok:true,written:b.length};
+  }});
+  const r=submit(q,'first');
+  const a=await r.future;
+  assert.equal(a.error.code,'E_IO_ADAPTER');
+  assert.match(a.error.message,/hostile success getter/);
+  await afterTurn();
+  assert.equal(q.stats.pending,0);
+  fail=false;
+  const ok=submit(q,'second');
+  assert.equal((await ok.future).ok,true);
+});
+
+test('thenable assimilation rejection is a checked I/O adapter outcome',async()=>{
+  const q=new CheckedWriteQueue({sink:()=>({get then(){throw new Error('bad thenable')}})});
+  const r=submit(q,'hello');
+  assert.equal((await r.future).error.code,'E_IO_ADAPTER');
+  await afterTurn();
+  assert.equal(q.stats.pending,0);
+});
+
+test('supervisor failure permanently closes writer with bounded failure storage',async()=>{
+  const q=new CheckedWriteQueue({
+    slots:2,sink:async()=>({ok:false,error:{code:'E_IO_CLOSED',message:'lost'}}),
+    supervisor:()=>{throw new Error('CONTROL unavailable')},
+  });
+  const a=q.submitWrite({owner:'A',generation:1,mode:'do',payload:'a'});
+  const b=q.submitWrite({owner:'A',generation:1,mode:'do',payload:'b'});
+  assert.equal(a.ok,true);assert.equal(b.ok,true);
+  await afterTurn();await afterTurn();
+  assert.equal(q.closed,true);
+  assert.equal(q.stats.fatalSupervisor,true);
+  assert(q.stats.supervisorFailures<=q.slots);
+  assert.equal(q.submitWrite({owner:'A',generation:2,payload:'again'}).error.code,'E_IO_CLOSED');
+  assert.equal(q.takeSupervisorFailures().length,2);
+  assert.equal(q.stats.supervisorFailures,0);
+});
+
+test('async supervisor cannot silently lose terminal error or unhandled rejection',async()=>{
+  const q=new CheckedWriteQueue({
+    slots:1,sink:async()=>({ok:false,error:{code:'E_IO_CLOSED',message:'lost'}}),
+    supervisor:async()=>{throw new Error('async CONTROL failed')},
+  });
+  submit(q,'payload',{mode:'do'});
+  await afterTurn();await afterTurn();
+  assert.equal(q.closed,true);
+  const errors=q.takeSupervisorFailures();
+  assert.equal(errors.length,1);
+  assert.match(String(errors[0]),/must not return a pending Promise/);
+});
+
+test('non-suspending callback Promise rejection creates exactly one supervisor notice',async()=>{
+  const notices=[];
+  const q=new CheckedWriteQueue({sink:okSink,supervisor:e=>notices.push(e)});
+  submit(q,'value',{mode:'do',onOutcome:async()=>{throw new Error('ignored async error')}});
+  await afterTurn();await afterTurn();
+  assert.equal(notices.length,1);
+  assert.equal(notices[0].outcome.error.code,'E_IO_CALLBACK');
+});
+
+test('invalid stopOwner does not poison owner ledger',()=>{
+  const q=new CheckedWriteQueue({sink:okSink,maxOwners:1});
+  for(const [owner,generation] of [['',1],['A',-1],['A',1.5],['A\0B',1]]) {
+    assert.equal(q.stopOwner(owner,generation),false);
+  }
+  assert.equal(q.stats.owners,0);
 });
