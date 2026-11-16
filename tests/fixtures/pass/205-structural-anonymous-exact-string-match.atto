@@ -1,0 +1,14 @@
+// expect-exit: 42
+// java: rejects
+// Bare value-shape pattern: public string equality uses content, not identity.
+define class Pet as
+    pub string foo = "dog";
+    pub int n = 42;
+end
+pub fnc main(): int {
+    val value = new Pet();
+    match value over
+        on {foo: "dog", n: _} as val p -> { return p.n; }
+        on _ -> { return 0; }
+    end
+}
