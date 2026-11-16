@@ -1,0 +1,9 @@
+// expect-error: E_PRIVATE
+// java: rejects
+define class Point as pub int x=0; end
+define class Hidden as int x=42; end
+pub fnc read(~Point p): int { return p.x; }
+pub fnc main(): int {
+    val a = new Hidden();
+    return read(a);
+}
