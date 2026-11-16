@@ -125,11 +125,11 @@ try{
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected switch case awaits once');
   console.log('PASS integration: typed switch<int> case executes awaited task with one scheduler handoff');
   const capturedMatch='fnc checked(): Option<int> { return Some(41); } pub suspends fnc main(): int { return match<int> checked() over on Some(n) : int -> await task { return n + 1; }, on None : int -> 0, end; }';
-  assert.match(await run(capturedMatch,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.match(await run(capturedMatch,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured match must yield once');
   console.log('PASS JSPI v3: typed match arm copies i64 payload into scheduled task');
   const capturedSwitch='fnc checked(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> checked() over case Err(message) : int -> 0, case Ok(value) : int -> await task { return value + 1; }, end; }';
-  assert.match(await run(capturedSwitch,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.match(await run(capturedSwitch,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured switch must yield once');
   console.log('PASS JSPI v3: typed switch arm copies i64 payload into scheduled task');
   const badCaptured='fnc checked(): Result<int,string> { return Err("no"); } pub suspends fnc main(): int { return match<int> checked() over on Err(error) : int -> await task { return error; }, on Ok(value) : int -> value, end; }';
