@@ -1,4 +1,4 @@
-// expect-error: E_DUPLICATE
+// expect-error: E_RESERVED
 define enum Panicable as
     A
 end
