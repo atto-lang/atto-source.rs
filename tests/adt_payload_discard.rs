@@ -197,3 +197,51 @@ fn discards_cannot_bind_in_guards_or_other_arms() {
         }
     "#, "E_TYPE");
 }
+
+#[test]
+fn guarded_named_result_binding_can_cross_await_task_as_copied_int() {
+    accepted(r#"
+        fnc checked(): Result<int,string> { return Ok(41); }
+        pub suspends fnc main(): int {
+            return match<int> checked() over
+                on Err() : int -> 0,
+                on Ok(value) when value > 5 : int ->
+                    await task { return value + 1; },
+                on Ok(_) : int -> 10,
+            end;
+        }
+    "#);
+    accepted(r#"
+        fnc checked(): Result<int,string> { return Ok(2); }
+        pub suspends fnc main(): int {
+            return switch<int> checked() over
+                case Err(_) : int -> 0,
+                case Ok(value) when value > 5 : int ->
+                    await task { return value + 1; },
+                case Ok() : int -> await task { return 42; },
+            end;
+        }
+    "#);
+}
+
+#[test]
+fn discard_arms_cannot_implicitly_capture_value_or_error_into_tasks() {
+    rejected(r#"
+        fnc checked(): Result<int,string> { return Ok(41); }
+        pub suspends fnc main(): int {
+            return match<int> checked() over
+                on Err(_) : int -> 0,
+                on Ok() : int -> await task { return value + 1; },
+            end;
+        }
+    "#, "E_UNBOUND");
+    rejected(r#"
+        fnc checked(): Result<int,string> { return Err("bad"); }
+        pub suspends fnc main(): int {
+            return switch<int> checked() over
+                case Err() : int -> await task { return error; },
+                case Ok(_) : int -> 0,
+            end;
+        }
+    "#, "E_UNBOUND");
+}

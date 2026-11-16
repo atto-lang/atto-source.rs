@@ -140,6 +140,21 @@ try{
   const guardedErrDiscard='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return switch<int> checked() over case Err(message) when message == "wrong" : int -> 1, case Err() : int -> 0, case Ok(_) : int -> 42, end; }';
   assert.match(await run(guardedErrDiscard,'main() -> 42'),/^main\(\) -> 42$/);
   console.log('PASS browser: unselected guarded Err does not read the active Ok payload');
+
+  // A named guard must observe its initialized Ok payload; the selected
+  // awaited task captures only the copied int, and no unselected task runs.
+  const guardedCapturedTask='fnc checked(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return match<int> checked() over on Err() : int -> 0, on Ok(value) when value > 5 : int -> await task { return value + 1; }, on Ok(_) : int -> 10, end; }';
+  assert.match(await run(guardedCapturedTask,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'guarded named capture must suspend once');
+  console.log('PASS browser: guarded Ok(value) copies int into selected awaited task');
+  const guardedDiscardTask='fnc checked(): Result<int,string> { return Ok(2); } pub suspends fnc main(): int { return switch<int> checked() over case Err(_) : int -> 0, case Ok(value) when value > 5 : int -> await task { return value + 1; }, case Ok() : int -> await task { return 42; }, end; }';
+  assert.match(await run(guardedDiscardTask,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'failed guard must not schedule an unselected task');
+  console.log('PASS browser: guarded fallthrough to Ok() schedules only selected task');
+  const invalidDiscardTask='fnc checked(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return match<int> checked() over on Err() : int -> 0, on Ok() : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(invalidDiscardTask,'E_UNBOUND'),/E_UNBOUND/);
+  console.log('PASS browser: Ok() does not create a capture for an awaited task');
+
   const capturedMatch='fnc checked(): Option<int> { return Some(41); } pub suspends fnc main(): int { return match<int> checked() over on Some(n) : int -> await task { return n + 1; }, on None : int -> 0, end; }';
   assert.match(await run(capturedMatch,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured match must yield once');
