@@ -1429,6 +1429,11 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Ternary(c, a, b) =>
             pure_expr(c, pure_indices) &&
             pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
+        // A scoped sequence is pure only when every earlier action and
+        // its final value are independently pure. A new value-producing
+        // wrapper must not conceal observable side effects.
+        TExpr::Sequence(steps, tail) =>
+            pure_stmts(steps, pure_indices) && pure_expr(tail, pure_indices),
         TExpr::Call(target, args) =>
             pure_indices.contains(target) &&
             args.iter().all(|arg| pure_expr(arg, pure_indices)),
