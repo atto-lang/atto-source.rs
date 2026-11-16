@@ -202,8 +202,8 @@ try{
 
   const unguarded = await readFile(new URL('./fixtures/fail/196-state-same-class-access.atto',import.meta.url),'utf8');
   assert.match(await run(unguarded,'E_STATE_BORROW'), /^E_STATE_BORROW:/);
-  const lexical = await readFile(new URL('./fixtures/fail/188-state-spaced-critical-read.atto',import.meta.url),'utf8');
-  assert.match(await run(lexical,'E_SYNTAX'), /^E_SYNTAX:/);
+  const spacedCriticalRead = await readFile(new URL('./fixtures/fail/188-state-spaced-critical-read.atto',import.meta.url),'utf8');
+  assert.match(await run(spacedCriticalRead,'E_SYNTAX'), /^E_SYNTAX:/);
   assert.equal(await run(stateSource,'main() -> 0'),'2\n0\nmain() -> 0',
     'invalid code must not poison the next Worker or leave stale guest bytes');
   console.log('PASS browser: state capability bypass and malformed keyword fail closed; recovery executes');
