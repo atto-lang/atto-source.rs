@@ -8,7 +8,7 @@ pub susp fnc main(): int {
   match opened over
     on Err(error) -> { return -1; }
     on Ok(channel) -> {
-      {
+      block {
         val pending = nb readch channel;
       }
       val closed = channel.close();
@@ -28,7 +28,7 @@ pub susp fnc main(): int {
   match opened over
     on Err(error) -> { return -1; }
     on Ok(channel) -> {
-      {
+      block {
         val pending = nb readch channel;
         val sent = channel.send(41);
       }
