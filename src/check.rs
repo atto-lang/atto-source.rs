@@ -2623,6 +2623,14 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(e.pos, "E_EFFECT",
                         "await requires a suspends fnc or suspends mtd"));
                 }
+                // A lexical class loan cannot outlive a carrier suspension:
+                // the owner may be moved/reloaded or written in another
+                // resumed task. Reject both shared and exclusive loans here.
+                // Scalar copies do not enter this table and remain legal.
+                if !self.loans.is_empty() {
+                    return Err(Diagnostic::new(e.pos, "E_BORROW",
+                        "await cannot suspend while a borrowed object loan is live"));
+                }
                 let prior = self.awaiting;
                 self.awaiting = true;
                 let checked = self.expr(inner);
