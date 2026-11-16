@@ -121,7 +121,7 @@ self.onmessage=async()=>{
     results.push('readch-i64-min');
 
     for(const [body,error] of [
-      ['return << 42;', 'E_TYPE'],
+      ['return << 42;', 'E_IO_READABLE'],
       ['val int x = << c; return << c;', 'E_TYPE'],
     ]){
       const bad=compile(src(body));

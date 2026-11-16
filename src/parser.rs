@@ -2935,7 +2935,7 @@ impl Parser {
         for _ in 0..prefix_tokens { self.advance(); }
         let readable = self.parse_unary()?;
         Ok(Expr {
-            kind: ExprKind::Call("\u{0}atto_channel_read".to_owned(), vec![readable]),
+            kind: ExprKind::PrefixRead(Box::new(readable)),
             pos,
         })
     }

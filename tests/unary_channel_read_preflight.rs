@@ -189,7 +189,7 @@ fn real_channel_int_guest_imports_and_checked_result_compile_to_wasm() {
 fn real_channel_read_rejects_unsuspending_and_incorrect_source_type() {
     let bad = [
         ("pub fnc channel_read_guest(Channel<int> c): Result<Option<int>,IoError> { return << c; }", "E_SUSPENDS_REQUIRED"),
-        ("pub susp fnc channel_read_guest(int c): Result<Option<int>,IoError> { return << c; }", "E_TYPE"),
+        ("pub susp fnc channel_read_guest(int c): Result<Option<int>,IoError> { return << c; }", "E_IO_READABLE"),
         ("pub susp fnc channel_read_guest(Channel<int> c): int { return << c; }", "E_TYPE"),
     ];
     for (function, expected) in bad {
@@ -206,6 +206,6 @@ fn numeric_literal_receiver_fails_with_capability_type_error_not_syntax_error() 
             "pub susp fnc channel_read_guest(): Result<Option<int>,IoError> {{ return << {operand}; }} pub fnc main(): int {{ return 0; }}"
         );
         let err = compile(&source).expect_err("non-readable literal must never emit guest");
-        assert_eq!(err.code, "E_TYPE", "{source}: {err}");
+        assert_eq!(err.code, "E_IO_READABLE", "{source}: {err}");
     }
 }

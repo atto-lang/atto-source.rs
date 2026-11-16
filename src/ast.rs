@@ -391,6 +391,9 @@ pub enum ExprKind {
     Bool(bool),
     Str(String),
     Var(String),
+    /// Value-producing unary `<< readable`: one checked receive, no user-visible
+    /// temporary. Kept distinct from binary writes and declaration-first reads.
+    PrefixRead(Box<Expr>),
     Unary(UnOp, Box<Expr>),
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
