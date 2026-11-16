@@ -71,7 +71,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'result-option-end': { value: 0n, stdout: '8080\n' },
       'modules': { value: 0n, stdout: '42\n' },
       'callable-body-styles': { value: 0n, stdout: '15\n10\n10\n5\n5\n' },
-      'routine': { value: 0n, stdout: '49\n40\n' },
+      'routine': { value: 0n, stdout: '49\n42\n' },
       'trap': { value: 7n, stdout: '5\nid must be nonnegative\nan ordinary throw was caught\n' },
       'borrow-checking': { value: 63n, stdout: '84\n43\n' },
       'closures-functors': { value: 84n, stdout: '' },
