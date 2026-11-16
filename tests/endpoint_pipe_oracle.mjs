@@ -8,14 +8,11 @@ const source = (name = 'stdio.in', type = 'string') =>
 const sink = (name = 'stdio.out', type = 'string') =>
   ({ name, writable: true, type });
 
-function normalized(direction, left, right) {
-  if (direction !== '>>' && direction !== '<<') throw Error('E_IO_SYNTAX');
-  const [from, to] = direction === '>>' ? [left, right] : [right, left];
+function normalized(keyword, from, to) {
+  if (keyword !== 'pipe') throw Error('E_IO_SYNTAX');
   if (!from.readable || !to.writable) throw Error('E_IO_CAPABILITY');
   if (from.type !== to.type) throw Error('E_IO_TYPE');
-  if (direction === '<<' && left.valueType === right.valueType &&
-      right.valueType !== undefined) throw Error('E_IO_AMBIGUOUS');
-  return { kind: 'IoPump', source: from.name, sink: to.name, type: from.type };
+  return { kind: 'PipeConnect', source: from.name, sink: to.name, type: from.type };
 }
 
 class Reader {
@@ -85,35 +82,27 @@ function prng(seed) {
   return () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0);
 }
 
-test('both spellings normalize to one typed readable-to-writable operation', () => {
-  assert.deepEqual(normalized('>>', source(), sink()), normalized('<<', sink(), source()));
-  assert.deepEqual(normalized('>>', source(), sink()),
-    { kind: 'IoPump', source: 'stdio.in', sink: 'stdio.out', type: 'string' });
+test('pipe keyword normalizes exactly one producer to consumer connection', () => {
+  assert.deepEqual(normalized('pipe', source(), sink()),
+    { kind: 'PipeConnect', source: 'stdio.in', sink: 'stdio.out', type: 'string' });
 });
-test('invalid directions and element types fail, without reversing data', () => {
-  assert.throws(() => normalized('>>', sink(), source()), /E_IO_CAPABILITY/);
-  assert.throws(() => normalized('<<', source(), sink()), /E_IO_CAPABILITY/);
-  assert.throws(() => normalized('>>', source('a', 'string'), sink('b', 'int')), /E_IO_TYPE/);
-  assert.throws(() => normalized('<<', sink('b', 'int'), source('a', 'string')), /E_IO_TYPE/);
-});
-test('ambiguous value write vs readable pump requires an explicit operation', () => {
-  const dst = { ...sink(), valueType: 'Readable<string>' };
-  const src = { ...source(), valueType: 'Readable<string>' };
-  assert.throws(() => normalized('<<', dst, src), /E_IO_AMBIGUOUS/);
-});
-test('both spellings preserve empty message, Unicode, ordering and EOF', () => {
-  for (const direction of ['>>', '<<']) {
-    const result = direction === '>>'
-      ? normalized(direction, source(), sink())
-      : normalized(direction, sink(), source());
-    assert.equal(result.source, 'stdio.in');
-    const reader = new Reader(['', 'hello', '🦀 café', 'bye']);
-    const writer = new Writer();
-    assert.deepEqual(run(new Pump(reader, writer)), { state: 'done', admitted: 4 });
-    assert.deepEqual(writer.values, ['', 'hello', '🦀 café', 'bye']);
-    assert.equal(reader.reads, 5);
-    assert.equal(reader.closed + writer.closed, 0);
+test('directional operators are never implicit continuous connections', () => {
+  for (const op of ['>>', '<<']) {
+    assert.throws(() => normalized(op, source(), sink()), /E_IO_SYNTAX/);
+    assert.throws(() => normalized(op, sink(), source()), /E_IO_SYNTAX/);
   }
+  assert.throws(() => normalized('pipe', sink(), source()), /E_IO_CAPABILITY/);
+  assert.throws(() => normalized('pipe', source('a', 'string'), sink('b', 'int')), /E_IO_TYPE/);
+});
+test('keyword pipe preserves empty message, Unicode, ordering and EOF', () => {
+  const result = normalized('pipe', source(), sink());
+  assert.equal(result.source, 'stdio.in');
+  const reader = new Reader(['', 'hello', '🦀 café', 'bye']);
+  const writer = new Writer();
+  assert.deepEqual(run(new Pump(reader, writer)), { state: 'done', admitted: 4 });
+  assert.deepEqual(writer.values, ['', 'hello', '🦀 café', 'bye']);
+  assert.equal(reader.reads, 5);
+  assert.equal(reader.closed + writer.closed, 0);
 });
 test('empty EOF and subsequent polls never consume or close anything', () => {
   const reader = new Reader([]), writer = new Writer();
