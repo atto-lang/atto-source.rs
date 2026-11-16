@@ -3443,7 +3443,7 @@ impl<'a> FnCx<'a> {
                 let values: &[Expr] = if args.len() == 1 {
                     match &args[0].kind {
                         ExprKind::Array(items) => {
-                            if items.iter().any(|e| !matches!(e.kind,
+                            if items.iter().any(|e| !matches!(&e.kind,
                                 ExprKind::Bool(_) | ExprKind::Var(_))) {
                                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                                     "boolean array gate pack admits only immutable bool literals or bindings"));
