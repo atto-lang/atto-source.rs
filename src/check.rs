@@ -2740,7 +2740,7 @@ impl<'a> FnCx<'a> {
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
-            ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
+            ExprKind::Binary(..) => self.binary_chain(e),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
@@ -2822,11 +2822,32 @@ impl<'a> FnCx<'a> {
     }
 
     #[inline(never)]
-    fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+    /// Preserve exact left-associative evaluation without recursion over
+    /// an expression's left spine. A 250-term checked arithmetic chain is
+    /// admitted by the parser, and must not exhaust the native Rust or
+    /// browser/Wasm compiler stack while checking types.
+    fn binary_chain(&mut self, expr: &Expr) -> R<TE> {
+        let mut links: Vec<(BinOp, &Expr, Pos)> = Vec::new();
+        let mut current = expr;
+        while let ExprKind::Binary(op, lhs, rhs) = &current.kind {
+            if links.len() >= crate::parser::MAX_TREE_HEIGHT as usize {
+                return Err(Diagnostic::new(current.pos, "E_NESTING",
+                    "binary expression exceeds the checked tree-height bound"));
+            }
+            links.push((*op, rhs.as_ref(), current.pos));
+            current = lhs;
+        }
+        let mut left = self.value(current)?;
+        for (op, rhs, pos) in links.into_iter().rev() {
+            let right = self.value(rhs)?;
+            left = self.binary_values(op, left, right, pos)?;
+        }
+        Ok(left)
+    }
+
+    fn binary_values(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
                 let both = a.ty == Type::Str && b.ty == Type::Str;
                 return match op {
