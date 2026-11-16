@@ -1,0 +1,9 @@
+// expect-error: E_TYPE
+define class Missing as
+    pub int bar = 42;
+end
+fnc inspect(p: {foo: int}): int { return p.foo; }
+pub fnc main(): int {
+    val value = new Missing();
+    return inspect(value);
+}
