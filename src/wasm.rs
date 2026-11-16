@@ -1112,7 +1112,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     let task_invoke_idx = layout.func(p.funcs.len() as u32 + if has_actors { 2 } else { 0 });
     if has_tasks {
         func_types.push(types.idx(Sig(vec![I32], vec![I64])));
-        let mut e = Emit { l: &layout, code: vec![0], frames: Vec::new(), void_main: false };
+        let mut e = Emit { l: &layout, code: vec![0], frames: Vec::new(), void_main: false, active_iterators: Vec::new() };
         for task in &p.tasks {
             e.op(0x20); e.op(0);
             e.i32c(*task as i32);
