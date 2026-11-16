@@ -18,6 +18,9 @@ not yet admit guest actor/class allocation or ownership syntax.
 - Reset requires exclusive mutable access, reinitializes allocated bytes
   (including padding) to zero, then returns the cursor to zero. This is
   deterministic bulk reclamation, not tracing or reference-counting.
+- Permanent retirement requires proven actor quiescence, clears the buffer
+  and rejects every subsequent read, write, allocation or reset; repeated
+  retirement cannot reopen a retired arena.
   Memory clearance is for safe reuse, **not cryptographic secure erasure**.
 - Allocations and reads/writes are bounds-checked; capacity, lengths,
   offset alignments, additions and epoch increments fail closed.
@@ -34,7 +37,8 @@ not yet admit guest actor/class allocation or ownership syntax.
 
 The Rust tests cover unique arenas, foreign handles, reset and stale leases,
 zeroed reuse, nonmoving allocation offsets, invalid sizes/alignments, bounded
-capacity, failure atomicity, epoch exhaustion and concurrent distinct arenas.
+capacity, failure atomicity, epoch exhaustion, terminal retirement,
+reused-backing ABA defense and concurrent distinct arenas.
 
 This work alone is **not** proof of no GC in the Java, LLVM, Wasm, .NET or Rust
 guest runtimes. No full AOT guest allocation is emitted and no real actor
