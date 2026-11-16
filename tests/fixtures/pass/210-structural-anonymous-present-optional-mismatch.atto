@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+// Optional permits absence; it must not accept the wrong PRESENT value.
+define class Pet as
+    pub string foo = "cat";
+end
+pub fnc main(): int {
+    val p = new Pet();
+    match p over
+        on {foo?: "dog"} -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
