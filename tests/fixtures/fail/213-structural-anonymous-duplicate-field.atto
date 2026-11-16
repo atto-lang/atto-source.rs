@@ -1,0 +1,11 @@
+// expect-error: E_DUPLICATE
+define class Pet as
+    pub string foo = "dog";
+end
+pub fnc main(): int {
+    val p = new Pet();
+    match p over
+        on {foo?: "dog", foo: _} -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
