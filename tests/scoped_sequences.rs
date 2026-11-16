@@ -58,3 +58,15 @@ fn expression_delimiters_stay_distinct() {
     assert!(lex("pub fnc main(): int { ^ 1 ^^ 0; }").is_err(),
         "reserved XOR must not lex as two caret returns");
 }
+
+#[test]
+fn pure_sequence_checks_every_step_and_tail() {
+    accepted("pure fnc f(): int { ^ (> let x = 5, x + 3); } pub fnc main(): int { ^ f(); }");
+    for src in [
+        "pure fnc f(): int { ^ (> stdio.println(5), 42); } pub fnc main(): int { ^ f(); }",
+        "pure fnc f(): int { ^ begin stdio.println(5), 42 end; } pub fnc main(): int { ^ f(); }",
+        "pure fnc f(): int { ^ seq stdio.println(5), 42; } pub fnc main(): int { ^ f(); }",
+    ] {
+        assert!(compile(src).is_err(), "effectful operation hidden inside pure sequence: {src}");
+    }
+}
