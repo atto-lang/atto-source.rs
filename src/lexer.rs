@@ -14,6 +14,8 @@ pub enum Tok {
     /// Decimal integer literal. `None` means it exceeds 2^63 (only valid
     /// directly after unary minus as `-9223372036854775808`).
     Int(Option<u64>),
+    /// Exact nanoseconds for checked, contiguous duration literals; only admitted by timer APIs in this preview.
+    Duration(u64),
     /// Float literal, stored as `f64::to_bits` so `Tok` stays `Eq`.
     Float(u64),
     Str(String),
@@ -139,6 +141,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             continue;
         }
         if c.is_ascii_digit() {
+            let number_start = i;
             let mut digits = String::new();
             while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
                 if chars[i] != '_' {
@@ -193,6 +196,29 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 ));
             }
             if i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_') {
+                let mut end = i;
+                while end < chars.len() && (chars[end].is_alphabetic() || chars[end] == '_') { end += 1; }
+                let suffix: String = chars[i..end].iter().collect();
+                let multiplier: Option<u64> = match suffix.as_str() {
+                    "ns" => Some(1), "us" => Some(1_000), "ms" => Some(1_000_000),
+                    "s" => Some(1_000_000_000), "min" => Some(60_000_000_000),
+                    "h" => Some(3_600_000_000_000), _ => None,
+                };
+                if let Some(multiplier) = multiplier {
+                    let raw: String = chars[number_start..i].iter().collect();
+                    if floating || raw.ends_with('_') || raw.contains("__")
+                        || chars.get(end).is_some_and(|ch| ch.is_alphanumeric() || *ch == '_') {
+                        return Err(Diagnostic::new(pos, "E_DURATION_LITERAL",
+                            "duration must have an integral, contiguous suffix and valid separators"));
+                    }
+                    let nanos = digits.parse::<u64>().ok()
+                        .and_then(|n| n.checked_mul(multiplier))
+                        .ok_or_else(|| Diagnostic::new(pos, "E_DURATION_RANGE",
+                            "duration literal exceeds unsigned 64-bit nanoseconds"))?;
+                    while i < end { bump!(); }
+                    out.push(Token { tok: Tok::Duration(nanos), pos });
+                    continue;
+                }
                 return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL", "malformed integer literal"));
             }
             if floating {
