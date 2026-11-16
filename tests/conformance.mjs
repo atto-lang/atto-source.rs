@@ -527,7 +527,10 @@ check('robustness/adversarial-shapes-never-trap-compiler', () => {
         const r = compile(t.join(''));
         if (r.ok) {
           accepted++;
-          assert.ok(WebAssembly.validate(r.wasm), 'accepted mutant produced invalid wasm');
+          assert.ok(WebAssembly.validate(r.wasm),
+            'accepted mutant produced invalid wasm: fixture=' + f.name +
+            ' mutant=' + k + ' source=' + JSON.stringify(t.join('')) +
+            ' guest_bytes=' + r.wasm.length);
         } else {
           assert.match(r.code, /^E_[A-Z_]+$/);
           assert.ok(r.line >= 1 && r.col >= 1, `diagnostic has a position: ${r.message}`);
