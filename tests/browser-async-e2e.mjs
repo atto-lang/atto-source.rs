@@ -147,6 +147,53 @@ pub suspends fnc main(): int {
     'caret await-transform-capture must suspend exactly once');
   console.log('PASS integration: exact multiline caret-return pipeline compiles and runs as a guest returning 42');
 
+  // Guard and caret integration: real source-compiled guests (not a JS
+  // evaluator) must select the proper early-return branch and retain exactly
+  // the suspension count of the Future work that actually ran.
+  const guardPredicate='fnc ready(): bool { stdio.println("guard-predicate-once"); ^ true; } pub fnc main(): int { guard ready() { ^ -1; } ^ 42; }';
+  assert.match(await run(guardPredicate,'guard-predicate-once\nmain() -> 42'),
+    /^guard-predicate-once\nmain\(\) -> 42$/);
+  console.log('PASS guard: boolean predicate executes once and true path falls through');
+
+  const guardPreTask='pub susp fnc main(): int { guard false { stdio.println("guard-no-task"); ^ 7; } val pending=task {return 41;}; ^ pending |> susp |f| -> await f >> val result: int; }';
+  assert.match(await run(guardPreTask,'guard-no-task\nmain() -> 7'),
+    /^guard-no-task\nmain\(\) -> 7$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),0,
+    'guard fail-arm must return before creating or awaiting any task');
+  console.log('PASS guard: failure return skips task creation and does not suspend');
+
+  const guardPostCapture='fnc transform_result(int x): int { ^ x + 1; } pub susp fnc main(): int { val p=task{return 41;}; p |> susp |f| -> await f |> transform_result >> val result: int; guard result > 0 { ^ -1; } stdio.println("guard-positive"); ^ result; }';
+  assert.match(await run(guardPostCapture,'guard-positive\nmain() -> 42'),
+    /^guard-positive\nmain\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'guard after a pipeline capture must not await a Future twice');
+  console.log('PASS guard: post-capture positive guard returns transformed 42');
+
+  const guardPostFailure='fnc transform_result(int x): int { ^ x + 1; } pub susp fnc main(): int { val p=task{return -43;}; p |> susp |f| -> await f |> transform_result >> val result: int; guard result > 0 { stdio.println("guard-negative"); ^ -1; } ^ result; }';
+  assert.match(await run(guardPostFailure,'guard-negative\nmain() -> -1'),
+    /^guard-negative\nmain\(\) -> -1$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'guard failure after a captured Future still awaits precisely once');
+  console.log('PASS guard: post-capture false guard exits with -1');
+
+  const guardAsyncFallback='fnc transform_result(int x): int { ^ x + 1; } pub susp fnc main(): int { val p=task {return 41;}; guard false { stdio.println("guard-async-fallback"); ^ p |> susp |f| -> await f |> transform_result >> val answer: int; } ^ 0; }';
+  assert.match(await run(guardAsyncFallback,'guard-async-fallback\nmain() -> 42'),
+    /^guard-async-fallback\nmain\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'return-position capture inside guard failure must be a single checked await');
+  console.log('PASS guard: caret awaited pipeline inside failure branch returns 42');
+
+  for(const [source,code] of [
+    ['pub fnc main(): int { guard 12 { ^ -1; } ^ 42; }','E_TYPE'],
+    ['pub fnc main(): int { guard true { val x=1; } ^ 42; }','E_GUARD'],
+    ['pub fnc main(): int { guard false { ^ -1; } else { ^ 0; } ^ 42; }','E_GUARD_ELSE_NOT_REQUIRED'],
+    ['pub fnc main(): int { val p=task{return 41;}; guard false { ^ p |> susp |f| -> await f >> val n: int; } ^ 0; }','E_EFFECT'],
+  ]){
+    assert.match(await run(source,code),new RegExp(code),
+      'malformed guard must reject at compilation, never execute guest code');
+  }
+  console.log('PASS guard: false-branch, bool, else, and async effects reject before guest execution');
+
   const captureDirect='pub suspends fnc main(): int { val pending=task { return 42; }; pending |> suspends |p| -> await p >> val answer: int; return answer; }';
   assert.match(await run(captureDirect,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
