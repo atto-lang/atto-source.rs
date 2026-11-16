@@ -1177,18 +1177,26 @@ impl Parser {
 
     // ----------------------------------------------------------- statements
 
-    /// C-style braces remain the default. The extra -> after : Type is an
-    /// explicit body marker; a -> Type header also admits comma/end bodies.
+    /// Callable body choice is explicit and never inferred from commas:
+    /// `-> T { ... }` is a brace statement body.
+    /// `-> T ... end` is a semicolon statement body (explicit return).
+    /// `-> T :: ..., tail end` is a comma body (implicit tail return).
+    /// This is a deliberate tightening of the earlier optional-:: contract.
     fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type) -> R<Vec<Stmt>> {
         if arrow_type {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
             }
-            if self.eat(&Tok::ColonColon) && *self.peek() == Tok::LBrace {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "'::' requires a comma/end body, not a brace block"));
+            if self.eat(&Tok::ColonColon) {
+                if *self.peek() == Tok::LBrace {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "'::' requires a comma/end body, not a brace block"));
+                }
+                return self.parse_erlang_body(ret);
             }
-            return self.parse_erlang_body(ret);
+            let statements = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            return Ok(statements);
         }
         if colon_type && self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
             return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
