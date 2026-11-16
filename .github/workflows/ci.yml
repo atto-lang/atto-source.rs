@@ -28,6 +28,10 @@ jobs:
           rustc --version
       - name: Test native compiler core over the fixture corpus
         run: cargo test --locked --verbose
+      - name: Verify Worker-owned Channel<int> host contract and keyword-only pipe reference oracle
+        run: |
+          node --version
+          node --test tests/channel_int_host_v1.test.mjs tests/endpoint_pipe_oracle.mjs
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
       - name: Execute real native-compiled output I/O shorthand guest in Wasm
