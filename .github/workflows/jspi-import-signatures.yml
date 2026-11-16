@@ -6,6 +6,8 @@ on:
       - 'tests/guest_import_admission_v2.test.mjs'
       - 'tests/browser-async/channel-source-guest-probe.mjs'
       - 'tests/browser-async/worker.mjs'
+      - 'tests/browser/worker.mjs'
+      - 'tests/browser-e2e.mjs'
       - 'tests/browser-async-e2e.mjs'
       - '.github/workflows/jspi-import-signatures.yml'
   workflow_dispatch:
@@ -36,6 +38,11 @@ jobs:
         run: cargo test --locked
       - name: Compile actual wasm32 compiler
         run: cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+      - name: Verify synchronous v1 guest Worker with exact import admission
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          test -x "$CHROME_BIN"
+          node tests/browser-e2e.mjs
       - name: Execute source-compiled Channel<int> JSPI guest in real Chromium Worker
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
