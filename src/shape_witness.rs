@@ -501,7 +501,7 @@ mod tests {
         let p = prove_readonly_projection(
             &source(SourceKind::Class), &[required("foo", ShapeTy::String)]
         ).unwrap();
-        assert!(matches!(p.field("foo").unwrap().access, ReadAccess::SourceOffset(24)));
+        assert!(matches!(&p.field("foo").unwrap().access, ReadAccess::SourceOffset(24)));
         // Only a read plan exists: no mutable pointer, setter or move operator
         // is exposed. The future ABI must preserve the region_loan_id.
         assert_eq!(p.region_loan_id, 22);
