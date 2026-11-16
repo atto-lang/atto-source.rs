@@ -113,8 +113,19 @@ impl Cursor<'_> {
                 return Err(self.err("E_SOURCE_LIMIT", "too many parameters"));
             }
             let pos = self.pos();
-            let type_name = self.type_name()?;
-            let name = self.ident()?;
+            // Match the ordinary fnc/routine formal grammar: both
+            // `Type name` and `name: Type` are accepted in mtd signatures.
+            // The ':' is consumed only at the immediate formal boundary.
+            let name_first = matches!(self.tok(), Tok::Ident(_))
+                && matches!(self.toks.get(self.i + 1).map(|t| &t.tok), Some(Tok::Colon));
+            let (type_name, name) = if name_first {
+                let name = self.ident()?;
+                self.expect(&Tok::Colon, "expected ':' after parameter name")?;
+                (self.type_name()?, name)
+            } else {
+                let type_name = self.type_name()?;
+                (type_name, self.ident()?)
+            };
             if params.iter().any(|p: &ReceiverParam| p.name == name) {
                 return Err(Diagnostic::new(pos, "E_DUPLICATE",
                     format!("duplicate method parameter '{name}'")));
