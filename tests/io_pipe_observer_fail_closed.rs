@@ -74,3 +74,14 @@ pub fnc main(): int { return 0; }
     assert!(compile(guest).is_err(),
         "implicit actor io must not become a general process stdio pipe");
 }
+
+
+#[test]
+fn unresolved_io_pipe_namespace_has_a_precise_fail_closed_diagnostic() {
+    // No io namespace/bound local exists here. This is NOT a general
+    // instance method named pipe and must not silently emit a host pump.
+    let source = "pub fnc main(): int { val g = io.pipe(1, 2); return 0; }";
+    let diagnostic = compile(source).expect_err("missing owned io.pipe ABI");
+    assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{diagnostic}");
+    assert!(diagnostic.message.contains("PipeHandle"), "{diagnostic}");
+}
