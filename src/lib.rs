@@ -42,6 +42,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         if io.source_or_sink == "stdio.out"
             && io.direction == io_shorthand::Direction::Write
             && io.context == io_shorthand::Context::Standalone
+            && io.mode == io_shorthand::Mode::Direct
             && !io.read_binder_on_left
         {
             continue;
