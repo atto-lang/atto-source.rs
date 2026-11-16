@@ -208,8 +208,10 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
-    /// Compiler-synthesized capture-free task functions.
+    /// Compiler-synthesized task functions (optional single scalar arm capture).
     task_funcs: Vec<Func>,
+    /// One lexically available match/switch arm binder for task-by-value capture.
+    task_arm_capture: Option<String>,
     /// Scope of an explicit generator function body.
     in_generator: bool,
     /// Only the outer Erlang-style callable sequence accepts commas as
@@ -271,6 +273,7 @@ impl Parser {
             cond: 0,
             type_names: Vec::new(),
             task_funcs: Vec::new(),
+            task_arm_capture: None,
             in_generator: false,
             erlang_body: false,
             state_method: false,
@@ -2098,7 +2101,14 @@ impl Parser {
             if !self.eat(&Tok::Arrow) && (!braced || switch) {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "match arms in 'over ... end' use '->'"));
             }
-            let body = self.parse_block()?;
+            let prior_capture = self.task_arm_capture.take();
+            self.task_arm_capture = match &pattern {
+                Pattern::Bind(name) | Pattern::Adt(_, Some(name)) => Some(name.clone()),
+                _ => None,
+            };
+            let parsed_body = self.parse_block();
+            self.task_arm_capture = prior_capture;
+            let body = parsed_body?;
             arms.push(MatchArm {
                 pattern,
                 guard,
@@ -2182,17 +2192,26 @@ impl Parser {
             let result_type = annotated.or(match_type);
             self.expect(Tok::Arrow, "'->' in a return match/switch arm")?;
             let braced = *self.peek() == Tok::LBrace;
-            let body = if braced {
-                let body = self.parse_block()?;
-                if !guard_failure_exits(&body) {
-                    return Err(Diagnostic::new(apos, "E_RETURN",
-                        "braced return match arm must return or throw on every path"));
-                }
-                body
-            } else {
-                let value = self.parse_expr()?;
-                vec![Stmt::Return(Some(value), apos)]
+            let prior_capture = self.task_arm_capture.take();
+            self.task_arm_capture = match &pattern {
+                Pattern::Bind(name) | Pattern::Adt(_, Some(name)) => Some(name.clone()),
+                _ => None,
             };
+            let parsed_body: R<Vec<Stmt>> = (|| {
+                if braced {
+                    let body = self.parse_block()?;
+                    if !guard_failure_exits(&body) {
+                        return Err(Diagnostic::new(apos, "E_RETURN",
+                            "braced return match arm must return or throw on every path"));
+                    }
+                    Ok(body)
+                } else {
+                    let value = self.parse_expr()?;
+                    Ok(vec![Stmt::Return(Some(value), apos)])
+                }
+            })();
+            self.task_arm_capture = prior_capture;
+            let body = parsed_body?;
             arms.push(MatchArm {
                 pattern,
                 guard,
@@ -3008,11 +3027,32 @@ impl Parser {
                 "task" => {
                     self.advance();
                     if *self.peek() != Tok::LBrace {return Err(self.expected("a task block '{ ... }'"));}
-                    let body = self.parse_block()?;
+                    // Snapshot only one arm-local scalar by value at task creation.
+                    // Nested tasks cannot borrow the enclosing task's lexical frame.
+                    let start = self.i;
+                    let outer_capture = self.task_arm_capture.take();
+                    let parsed_body = self.parse_block();
+                    self.task_arm_capture = outer_capture.clone();
+                    let body = parsed_body?;
                     if self.task_funcs.len() >= MAX_FUNCS {return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many task blocks"));}
+                    let capture = outer_capture.filter(|candidate| {
+                        self.toks[start..self.i].iter().enumerate().any(|(offset, token)| {
+                            matches!(&token.tok, Tok::Ident(name) if name == candidate)
+                                && !(offset > 0 && self.toks[start + offset - 1].tok == Tok::Dot)
+                        })
+                    });
+                    if let Some(candidate) = &capture {
+                        if body.iter().any(|stmt| matches!(stmt, Stmt::Bind { name, .. } if name == candidate)) {
+                            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                                "captured task binder shadowing requires full lexical closure analysis"));
+                        }
+                    }
+                    let params = capture.iter().map(|name| Param {
+                        name: name.clone(), ty: Type::Int, mutable: false, pos
+                    }).collect();
                     let name = format!("$atto_task_{}", self.task_funcs.len());
-                    self.task_funcs.push(Func {name: name.clone(), suspends: true, pos, is_generator: false, is_pure: false, params: Vec::new(), ret: Type::Int, body});
-                    ExprKind::Task(name)
+                    self.task_funcs.push(Func {name: name.clone(), suspends: true, pos, is_generator: false, is_pure: false, params, ret: Type::Int, body});
+                    ExprKind::Task(name, capture)
                 }
                 "rt" => { self.advance(); ExprKind::Var(s) }
                 "spawn" => {
