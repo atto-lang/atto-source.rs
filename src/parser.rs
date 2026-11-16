@@ -592,10 +592,12 @@ impl Parser {
         let mut emits = None;
         let mut sends = None;
         let mut passed_first_output = false;
-        while let Some(clause @ ("receives" | "emits" | "sends")) = self.word_at(0) {
+        while let Some(clause) = self.word_at(0).filter(|c|
+            matches!(*c, "receives" | "emits" | "sends")
+        ).map(str::to_owned) {
             let at = self.pos();
             self.advance();
-            match clause {
+            match clause.as_str() {
                 "receives" => {
                     if receives.is_some() || passed_first_output {
                         return Err(Diagnostic::new(
@@ -655,6 +657,12 @@ impl Parser {
         let (name, pos, declared_receives, declared_emits, declared_sends, implemented_contracts) =
             self.parse_actor_header(false)?;
         let close = if defined {
+            if *self.peek() == Tok::Semi {
+                return Err(Diagnostic::new(
+                    self.pos(), "E_ACTOR",
+                    "define actor requires 'as ... end'; use 'declare actor Foo;' for a body-free nominal header",
+                ));
+            }
             self.expect_word("as")?;
             "end"
         } else if self.eat(&Tok::LBrace) {
