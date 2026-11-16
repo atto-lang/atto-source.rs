@@ -189,8 +189,9 @@ impl Resolver<'_> {
                 continue;
             }
             let inherited = methods.remove(&slot).unwrap_or_default();
+            let override_pos = method.override_annotation.unwrap_or(method.pos);
             if inherited.is_empty() && method.override_member {
-                return Err(fail(method.pos, "E_OVERRIDE",
+                return Err(fail(override_pos, "E_OVERRIDE",
                     format!("'{}' has no inherited method to override", method.name)));
             }
             if !inherited.is_empty() && !method.override_member {
@@ -199,11 +200,11 @@ impl Resolver<'_> {
             }
             for candidate in distinct(inherited) {
                 if !compatible(method, &candidate.value, self.program) {
-                    return Err(fail(method.pos, "E_OVERRIDE_SIGNATURE",
+                    return Err(fail(override_pos, "E_OVERRIDE_SIGNATURE",
                         format!("'{}' must preserve every inherited method signature", method.name)));
                 }
                 if candidate.value.public && !method.public {
-                    return Err(fail(method.pos, "E_OVERRIDE_VISIBILITY",
+                    return Err(fail(override_pos, "E_OVERRIDE_VISIBILITY",
                         format!("'{}' cannot reduce inherited method visibility", method.name)));
                 }
             }
@@ -285,6 +286,7 @@ pub fn lower(input: &Program) -> R<Program> {
             // The override has already been checked. A copied implementation
             // is now an ordinary concrete method on this exact receiver type.
             m.value.override_member = false;
+            m.value.override_annotation = None;
             m.value
         }).collect();
         class.bases.clear();
