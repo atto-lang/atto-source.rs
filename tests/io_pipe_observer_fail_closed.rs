@@ -85,3 +85,28 @@ fn unresolved_io_pipe_namespace_has_a_precise_fail_closed_diagnostic() {
     assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{diagnostic}");
     assert!(diagnostic.message.contains("PipeHandle"), "{diagnostic}");
 }
+
+
+#[test]
+fn io_pipe_parses_as_a_qualified_call_not_as_infix_pipe() {
+    use atto_compiler::{lexer, parser::Parser};
+    use atto_compiler::ast::{ExprKind, Stmt};
+    let source = "pub fnc main(): int { val g = io.pipe(1, 2); return 0; }";
+    let ast = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    let function = ast.funcs.iter().find(|f| f.name == "main").unwrap();
+    let Stmt::Bind { init, .. } = &function.body[0] else { panic!("binding") };
+    let ExprKind::MethodCall(receiver, member, args) = &init.kind else {
+        panic!("io.pipe should be a method-call AST, not a pipeline AST");
+    };
+    assert!(matches!(&receiver.kind, ExprKind::Var(name) if name == "io"));
+    assert_eq!(member, "pipe");
+    assert_eq!(args.len(), 2);
+    // No guest transport has been implemented, even though grammar is known.
+    assert_eq!(compile(source).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn reserved_pipe_does_not_turn_into_a_general_member_name() {
+    let source = "pub fnc main(): int { val g = other.pipe(1, 2); return 0; }";
+    assert!(compile(source).is_err());
+}
