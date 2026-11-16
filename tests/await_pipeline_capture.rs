@@ -135,7 +135,11 @@ fn caret_return_is_a_statement_marker_not_an_expression_or_an_operator() {
     ] {
         assert!(compile(src).is_err(),"infix/nested caret forbidden: {src}");
     }
-    compile_ok("pub fnc main(): int { ^ 42; }");
+    // Ordinary caret return is not an async Future program; do not require
+    // task_await or cooperate imports in its guest Wasm.
+    let guest=compile("pub fnc main(): int { ^ 42; }")
+        .expect("ordinary caret return must compile");
+    assert_eq!(&guest[..8],b"\0asm\x01\0\0\0");
 }
 
 #[test]
