@@ -167,6 +167,7 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
     let mut any_locals = BTreeMap::<String, &'static str>::new();
     let mut any_params = Vec::<(usize, String, String)>::new();
     let mut replacement = Vec::<(usize, &'static str)>::new();
+    let mut original_any_local_binder: Option<usize> = None;
     for i in 0..t.len() {
         if !word(&t, i, "Any") { continue; }
         // Exact, immutable, literal-evaluable binding: val x: Any = 42;
@@ -186,6 +187,7 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
                 return Err(fail(t[i].pos, "E_DUPLICATE",
                     "multiple Any bindings of the same name require lexical type analysis"));
             }
+            original_any_local_binder = Some(i - 2);
             replacement.push((i, type_name));
             continue;
         }
@@ -235,6 +237,30 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
                 return Err(fail(t[i].pos, "E_UNSUPPORTED",
                     "Any monomorphization only supports direct calls using the proven immutable binding"));
             }
+        }
+    }
+    // Prevent a token-level scalar proof for one variable name from being
+    // applied to a different lexical variable sharing that spelling.
+    // General Any requires an AST/dataflow environment, so shadowing and
+    // unrelated parameters are deliberately fail-closed in this subset.
+    for (i, token) in t.iter().enumerate() {
+        let Tok::Ident(name) = &token.tok else { continue; };
+        if name != param_name && name != local_name { continue; }
+        let prev = i.checked_sub(1);
+        let bound_by_keyword = prev.is_some_and(|at|
+            word(&t, at, "val") || word(&t, at, "let") ||
+            word(&t, at, "const") || word(&t, at, "mut") ||
+            word(&t, at, "for") || word(&t, at, "on") ||
+            word(&t, at, "case"));
+        let is_other_param = i >= 2 &&
+            matches!(&t[i - 1].tok, Tok::Ident(ty) if scalar_type(ty).is_some()) &&
+            matches!(t[i - 2].tok, Tok::LParen | Tok::Comma);
+        let allowed_local = original_any_local_binder == Some(i) &&
+            prev.is_some_and(|at| word(&t, at, "val"));
+        let allowed_param = i == *index + 1;
+        if (bound_by_keyword || is_other_param) && !allowed_local && !allowed_param {
+            return Err(fail(token.pos, "E_UNSUPPORTED",
+                "monomorphic Any type proof cannot cross a shadowing binding or unrelated parameter"));
         }
     }
     replacement.push((*index, concrete));
