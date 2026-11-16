@@ -6,7 +6,7 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Direction { Read, Write, Pump }
+pub enum Direction { Read, Write }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Context { Standalone, SelectArm }
@@ -22,13 +22,8 @@ pub struct IoShorthand {
     pub mode: Mode,
     pub source_or_sink: String,
     pub binder: Option<String>,
-    /// Right-side sink for the forward `source >> sink` pump candidate.
-    /// Capability typechecking, not spelling, must validate this role.
-    pub pipe_sink: Option<String>,
-    /// Qualified right operand of a `sink << value` candidate.
-    /// If it is Readable<T> and the sink is Writable<T>, typechecking
-    /// selects a reverse-spelled pump; if it is T, a single write.
-    /// If both match, typechecking must reject the ambiguity.
+    /// Qualified RHS of one checked write: never a hidden stream pump.
+    /// The guest must reject known stream handles (e.g. stdio.in) as values.
     pub readable_rhs_candidate: Option<String>,
     /// True for reversed read-binding syntax with the binder on the left.
     pub read_binder_on_left: bool,
@@ -260,32 +255,22 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             return Err(Diagnostic::new(op_pos, "E_IO_DISCARD",
                 "detached read cannot bind to the caller; use do readch channel, |outcome| -> void { ... }"));
         }
-        let (direction, subject, binder, pipe_sink, readable_rhs_candidate) = if reversed_read {
+        let (direction, subject, binder, readable_rhs_candidate) = if reversed_read {
             let binding = read_binder(tokens, lhs_start, i, op_pos)?;
             let source = path(tokens, rhs_start, end)
                 .ok_or_else(|| syntax(op_pos,
                     "reversed read requires a qualified readable source; computed expressions are not yet supported"))?;
-            (Direction::Read, source, Some(binding), None, None)
+            (Direction::Read, source, Some(binding), None)
         } else if operator == Direction::Read {
             if matches!(tokens.get(rhs_start).and_then(word), Some("val" | "let" | "const")) {
                 let binding = read_binder(tokens, rhs_start, end, op_pos)?;
-                (Direction::Read, lhs_path.unwrap(), Some(binding), None, None)
+                (Direction::Read, lhs_path.unwrap(), Some(binding), None)
             } else {
-                // A bare right-hand path is not an existing-local read binder.
-                // It is a candidate for continuous readable -> writable piping.
-                // The preflight cannot prove the receiver capabilities.
-                if context == Context::SelectArm {
-                    return Err(syntax(op_pos,
-                        "a stream pump cannot register as one atomic select guard; use a val/let read binder"));
-                }
-                if mode != Mode::Direct {
-                    return Err(syntax(op_pos,
-                        "nb/try/do endpoint pumps require a separate checked task lifecycle; direct pump only"));
-                }
-                let sink = path(tokens, rhs_start, end)
-                    .ok_or_else(|| syntax(op_pos,
-                        "endpoint pump requires a qualified writable sink (no chained operators)"))?;
-                (Direction::Pump, lhs_path.unwrap(), None, Some(sink), None)
+                // '>>' is always ONE read to a fresh val/let binder.
+                // Continuous connections use the 'pipe' keyword, not
+                // a bare source >> sink or an existing-local assignment.
+                return Err(syntax(op_pos,
+                    "read shorthand requires val/let binder; use 'pipe' for a continuous connection"));
             }
         } else {
             for j in rhs_start..end {
@@ -293,16 +278,74 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
                     return Err(syntax(op_pos, "chained I/O direction operators are not allowed in v1"));
                 }
             }
-            // May be a scalar write or a reversed endpoint pump: only the
-            // typechecker may select between these two checked operations.
+            // Exactly one write. A readable endpoint must not be promoted
+            // to an implicit continuous pump by the capability checker.
             let candidate = path(tokens, rhs_start, end);
-            (Direction::Write, lhs_path.unwrap(), None, None, candidate)
+            (Direction::Write, lhs_path.unwrap(), None, candidate)
         };
         found.push(IoShorthand {
             direction, context, mode, source_or_sink: subject, binder,
-            pipe_sink, readable_rhs_candidate,
+            readable_rhs_candidate,
             read_binder_on_left: reversed_read, pos: op_pos,
         });
     }
     Ok(found)
+}
+
+
+/// Parse-only continuous connection. The complete typed and cancellable
+/// guest runtime is not available in the browser compiler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipeCandidate {
+    pub source: String,
+    pub sink: String,
+    pub pos: Pos,
+}
+
+/// A pure endpoint path or capture-free actor spawn candidate. This is
+/// syntactic recognition only; typechecking must prove send/receive or
+/// readable/writable contracts before the runtime may execute a pipe.
+fn pipe_endpoint(tokens: &[Token], start: usize, end: usize) -> Option<String> {
+    if let Some(v) = path(tokens, start, end) { return Some(v); }
+    if end == start + 4
+        && word(&tokens[start]) == Some("spawn")
+        && matches!(tokens[start+1].tok, Tok::Ident(_))
+        && matches!(tokens[start+2].tok, Tok::LParen)
+        && matches!(tokens[start+3].tok, Tok::RParen) {
+        return Some(format!("spawn {}()", word(&tokens[start+1])?));
+    }
+    None
+}
+
+/// The single keyword 'pipe' connects producer -> consumer. Unlike '>>'
+/// and '<<', it is not a one-shot value operation. The browser subset
+/// recognizes exactly one pair, then fails closed before Wasm emission.
+pub fn inspect_pipe(tokens: &[Token]) -> Result<Vec<PipeCandidate>, Diagnostic> {
+    let mut out = Vec::new();
+    for (i, t) in tokens.iter().enumerate() {
+        if word(t) != Some("pipe") { continue; }
+        let mut start = i;
+        while start > 0 && !matches!(tokens[start-1].tok,
+            Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow) {
+            start -= 1;
+        }
+        let pos = t.pos;
+        if matches!(tokens.get(start).and_then(word),
+            Some("nb" | "try" | "do" | "when" | "return")) {
+            return Err(syntax(pos,
+                "continuous 'pipe' cannot be detached, used as a select guard, or returned implicitly"));
+        }
+        let end = end_at(tokens, i+1, Context::Standalone).ok_or_else(|| syntax(pos,
+            "continuous 'pipe' requires a complete standalone ';'-terminated statement"))?;
+        if tokens[i+1..end].iter().any(|token| word(token) == Some("pipe")) {
+            return Err(syntax(pos,
+                "chained continuous pipes require a separately checked actor/stream graph"));
+        }
+        let source = pipe_endpoint(tokens,start,i).ok_or_else(||syntax(pos,
+            "left pipe endpoint must be a qualified readable/channel path or spawn Actor()"));
+        let sink = pipe_endpoint(tokens,i+1,end).ok_or_else(||syntax(pos,
+            "right pipe endpoint must be a qualified writable/channel path or spawn Actor()"));
+        out.push(PipeCandidate { source: source?, sink: sink?, pos });
+    }
+    Ok(out)
 }
