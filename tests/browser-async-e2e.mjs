@@ -149,6 +149,58 @@ try{
     'abandoned committed value must be read once, with one cooperative await');
   console.log('PASS compiled guest: pending.abandon() consumes ticket and rehomes committed value');
 
+  // One compiled guest exercises both 64-bit extrema and two independent
+  // pending readers. The return value verifies FIFO *ordering*, not just
+  // a commutative checksum, and confirms no sentinel/precision truncation.
+  const channelFifoI64=`pub susp fnc main(): int {
+    val opened = Channel<int>.bounded(0);
+    match opened over
+      on Err(error) -> { return -1; }
+      on Ok(channel) -> {
+        val first = nb readch channel;
+        val second = nb readch channel;
+        val upper: int = 9223372036854775807;
+        val lower: int = -9223372036854775807 - 1;
+        val sent_upper = channel.send(upper);
+        val sent_lower = channel.send(lower);
+        val first_result = await first;
+        val second_result = await second;
+        match first_result over
+          on Err(error) -> { return -2; }
+          on Ok(first_option) -> {
+            match first_option over
+              on None -> { return -3; }
+              on Some(a) -> {
+                match second_result over
+                  on Err(error) -> { return -4; }
+                  on Ok(second_option) -> {
+                    match second_option over
+                      on None -> { return -5; }
+                      on Some(b) -> {
+                        if a == upper then
+                          if b == lower then
+                            return 42;
+                          fi
+                        fi
+                        return -6;
+                      }
+                    end
+                  }
+                end
+              }
+            end
+          }
+        end
+      }
+    end
+  }`;
+  assert.equal((await run(channelFifoI64,'main() -> 42')).trim(),'main() -> 42');
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),2,
+    'each of two pending channel Futures must cooperate once');
+  console.log('PASS compiled guest: two-reader FIFO preserves both signed i64 extrema');
+
+
+
 
   // Distinct compiled guest outcomes: EOF != Some(0); ordinary I/O errors
   // are tagged Results, and explicit release succeeds after draining.
