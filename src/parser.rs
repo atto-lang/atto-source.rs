@@ -941,8 +941,9 @@ impl Parser {
                 format!("actor mailbox handler '{owner}.receive' must return void"),
             ));
         }
+        let failure_effects = self.parse_failure_effects()?;
         let body = self.parse_block()?;
-        Ok(Receive { pos, mail, payload, body })
+        Ok(Receive { pos, mail, payload, failure_effects, body })
     }
 
     /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.
