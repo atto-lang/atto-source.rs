@@ -225,7 +225,12 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             return Err(syntax(op_pos,
                 "do not append << or >> to readch/writech; bind the returned value or Future with val/let"));
         }
-        let reversed_read = operator == Direction::Write
+        // A declaration with an initializer is NOT a reverse read binding.
+        // In particular, const x: int = 1 << 3 remains an ordinary expression
+        // and must not be mistaken for an effectful const I/O read.
+        let has_assignment = tokens[lhs_start..i].iter()
+            .any(|token| matches!(token.tok, Tok::Assign));
+        let reversed_read = operator == Direction::Write && !has_assignment
             && matches!(tokens.get(lhs_start).and_then(word), Some("const" | "val" | "let"));
         if reversed_read && mode != Mode::Direct {
             return Err(syntax(op_pos,
