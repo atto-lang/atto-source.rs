@@ -31,10 +31,15 @@ self.onmessage=async ({data})=>{
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
     const asyncSections=WebAssembly.Module.customSections(guest,'atto.async');
-    const useAsync=asyncSections.length===1&&new Uint8Array(asyncSections[0]).length===1&&new Uint8Array(asyncSections[0])[0]===2;
+    const abi=asyncSections.length===1&&new Uint8Array(asyncSections[0]).length===1
+      ? new Uint8Array(asyncSections[0])[0] : 0;
+    const useAsync=abi===2||abi===3;
+    const useTaskCapture=abi===3;
     if(asyncSections.length&&!useAsync)throw new Error('invalid async marker');
     if(useAsync&&(typeof WebAssembly.Suspending!=='function'||typeof WebAssembly.promising!=='function'))throw new Error('JSPI unsupported');
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',...(useAsync?['sleep_ms','barrier','task_start','task_await','cooperate']:[])]);
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',
+      ...(useAsync?['sleep_ms','barrier','task_start','task_await','cooperate']:[]),
+      ...(useTaskCapture?['task_start_i64']:[])]);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
@@ -69,7 +74,7 @@ self.onmessage=async ({data})=>{
           }
         });
       });
-      atto.task_start=id=>{
+      const launch=(id,invoke)=>{
         if(jobs.size>=64||id<0||id>1024)throw new Error('task quota/index violation');
         const handle=nextJob++;
         let ok,bad;
@@ -77,11 +82,18 @@ self.onmessage=async ({data})=>{
         p.catch(()=>{});
         jobs.set(handle,{p});
         queueMicrotask(async()=>{
-          try{const result=await WebAssembly.promising(instance.exports.task_invoke)(id);ok(result)}
+          try{const result=await invoke();ok(result)}
           catch(error){bad(error)}
         });
         return handle;
       };
+      atto.task_start=id=>launch(id,()=>WebAssembly.promising(instance.exports.task_invoke)(id));
+      if(useTaskCapture){
+        atto.task_start_i64=(id,value)=>{
+          if(typeof value!=='bigint')throw new Error('malformed task i64 capture');
+          return launch(id,()=>WebAssembly.promising(instance.exports.task_invoke_i64)(id,value));
+        };
+      }
       atto.task_await=new WebAssembly.Suspending(async handle=>{
         const job=jobs.get(handle);
         if(!job)throw new Error('bad/consumed task handle');
