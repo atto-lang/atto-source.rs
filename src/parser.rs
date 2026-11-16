@@ -1157,9 +1157,14 @@ impl Parser {
     fn parse_param_type(&mut self) -> R<(Type, bool)> {
         let pos = self.pos();
         let structural = self.eat(&Tok::Tilde) || self.eat_word("structural");
-        if structural && *self.peek() == Tok::LBrace {
+        if *self.peek() == Tok::LBrace {
+            // Bare anonymous {field: Type} is structural by default, like
+            // ~{field: Type}. The source-only grammar can validate it, but
+            // production Type has no checked ShapeType/loan ABI yet. Reject
+            // explicitly rather than interpreting the braces as a body or
+            // manufacturing a nominal class pointer.
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                "inline structural parameter shapes need verified shape ABI lowering"));
+                "anonymous structural shape parameter requires checked shape type IR and readonly projected-field ABI"));
         }
         let ty = self.parse_type()?;
         if structural && !matches!(ty, Type::Named(_)) {
