@@ -96,6 +96,8 @@ const RESERVED: &[&str] = &[
     "untrusted",
     "spawn",
     "pipe",
+    "receives",
+    "emits",
     "stop",
     "rt",
     "await",
@@ -524,6 +526,25 @@ impl Parser {
     fn parse_actor(&mut self, defined: bool) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
         self.decl_head("actor")?;
+        // Header clauses derive typed pipe endpoint roles. Canonical order:
+        // receives Input, then emits Output. No declaration means no
+        // *explicit* capability, even if the body happens to emit.
+        let declared_receives = if self.eat_word("receives") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let declared_emits = if self.eat_word("emits") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        if self.is_word("receives") || self.is_word("emits") {
+            return Err(Diagnostic::new(
+                self.pos(), "E_PIPE_CONTRACT",
+                "actor pipe header clauses must be unique and ordered: receives T emits U",
+            ));
+        }
         let close = if defined {
             self.expect_word("as")?;
             "end"
@@ -536,6 +557,8 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
+            declared_receives,
+            declared_emits,
             fields: m.fields,
             receive: m.receive,
             methods: m.methods,
