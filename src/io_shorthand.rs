@@ -196,6 +196,21 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         {
             start -= 1;
         }
+        // This narrowly-scoped syntax family has its own complete parser:
+        // nb source >> Future<T> x | await x >> val T resolved;
+        // nb source >> (val T resolved << await Future<T>);
+        // Otherwise this legacy direction scanner would diagnose the nested
+        // operators as illegal chains before the checked continuation parser
+        // can validate them. Skipping this *preflight* does not authorize I/O:
+        // the browser compiler still returns E_UNSUPPORTED before guest Wasm.
+        let is_typed_nb_continuation = tokens.get(start).and_then(word) == Some("nb")
+            && !matches!(tokens.get(start + 1).and_then(word), Some("readch" | "writech"))
+            && tokens.iter().skip(start)
+                .take_while(|token| !matches!(token.tok, Tok::Semi | Tok::LBrace | Tok::RBrace))
+                .any(|token| word(token) == Some("Future"));
+        if is_typed_nb_continuation {
+            continue;
+        }
         let is_when = tokens.get(start).and_then(word) == Some("when");
         let context = if is_when {
             if !select_body_for_when(tokens, start) {
