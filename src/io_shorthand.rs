@@ -203,11 +203,19 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         // operators as illegal chains before the checked continuation parser
         // can validate them. Skipping this *preflight* does not authorize I/O:
         // the browser compiler still returns E_UNSUPPORTED before guest Wasm.
+        // Merely annotating a normal nonblocking binder as Future<T>
+        // must NOT bypass the directional scanner. A continuation has both
+        // a Future<T> slot AND an explicit await stage in this statement.
+        // Otherwise the ordinary 'nb inbox >> val p: Future<T>;' must
+        // remain visible as one nonblocking read (and be capability checked).
+        let continuation_tokens = tokens.iter().skip(start)
+            .take_while(|token| !matches!(token.tok,
+                Tok::Semi | Tok::LBrace | Tok::RBrace))
+            .collect::<Vec<_>>();
         let is_typed_nb_continuation = tokens.get(start).and_then(word) == Some("nb")
             && !matches!(tokens.get(start + 1).and_then(word), Some("readch" | "writech"))
-            && tokens.iter().skip(start)
-                .take_while(|token| !matches!(token.tok, Tok::Semi | Tok::LBrace | Tok::RBrace))
-                .any(|token| word(token) == Some("Future"));
+            && continuation_tokens.iter().any(|token| word(token) == Some("Future"))
+            && continuation_tokens.iter().any(|token| word(token) == Some("await"));
         if is_typed_nb_continuation {
             continue;
         }
