@@ -1,0 +1,2 @@
+// expect-error: E_TYPE
+pub fnc main(): int { val a = [1,2]; return a[true]; }
