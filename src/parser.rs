@@ -1870,8 +1870,10 @@ impl Parser {
         };
         // String and string are accepted surface aliases. Do not erase
         // Result/Option/EOF/error information from future payload types.
-        let normalized = |s: &str| if s == "String" { "string" } else { s };
-        if normalized(&future_inner) != normalized(&bound_inner) {
+        let same_inner = future_inner == bound_inner
+            || (future_inner == "String" && bound_inner == "string")
+            || (future_inner == "string" && bound_inner == "String");
+        if !same_inner {
             return Err(Diagnostic::new(at, "E_TYPE",
                 "resolved binder must match the entire Future payload type (including Result/Option/EOF/errors)"));
         }
