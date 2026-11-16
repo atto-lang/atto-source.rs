@@ -111,6 +111,45 @@ try{
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
     'channel read await must yield cooperatively once');
   console.log('PASS compiled AttoLang Channel<int> read Future, Some(41) -> 42');
+
+  const channelAbandonSource=`pub susp fnc main(): int {
+    val opened = Channel<int>.bounded(0);
+    match opened over
+      on Err(error) -> { return -1; }
+      on Ok(channel) -> {
+        val pending = nb readch channel;
+        val sent = channel.send(41);
+        match sent over
+          on Err(error) -> { return -2; }
+          on Ok -> {
+            val abandoned: Result<void,IoError> = pending.abandon();
+            match abandoned over
+              on Err(error) -> { return -3; }
+              on Ok -> {
+                val read_again = nb readch channel;
+                val outcome: Result<Option<int>,IoError> = await read_again;
+                match outcome over
+                  on Err(error) -> { return -4; }
+                  on Ok(item) -> {
+                    match item over
+                      on None -> { return -5; }
+                      on Some(n) -> { return n + 1; }
+                    end
+                  }
+                end
+              }
+            end
+          }
+        end
+      }
+    end
+  }`;
+  assert.match(await run(channelAbandonSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'abandoned committed value must be read once, with one cooperative await');
+  console.log('PASS compiled guest: pending.abandon() consumes ticket and rehomes committed value');
+
+
   // Distinct compiled guest outcomes: EOF != Some(0); ordinary I/O errors
   // are tagged Results, and explicit release succeeds after draining.
   const channelEofSource="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(0);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val closed: Result<void,IoError> = channel.close();\n      val pending: Future<Result<Option<int>,IoError>> = nb readch channel;\n      val outcome: Result<Option<int>,IoError> = await pending;\n      val released: Result<void,IoError> = channel.release();\n      ^ match released over\n        on Err(error) -> { return -11; }\n        on Ok -> {\n          ^ match outcome over\n            on Err(error) -> { return -12; }\n            on Ok(item) -> {\n              ^ match item over\n                on None -> { return 42; }\n                on Some(value) -> { return -13; }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";

@@ -42,22 +42,25 @@ impl<'a> FnCx<'a> {
     pub(super) fn channel_cancel(&mut self,ticket:TE,name:&str,args:&[Expr],pos:Pos)->R<TE> {
         if self.owner!=Owner::TopLevel || !self.suspends {
             return Err(Diagnostic::new(pos,"E_EFFECT",
-                "Future read cancellation is Worker-local and requires susp fnc"));
+                "Future read lifecycle is Worker-local and requires susp fnc"));
         }
-        if name!="cancel" {
-            return Err(type_err(pos,format!(
-                "Future<Result<Option<int>,IoError>> has no method '{name}'")));
+        // cancel leaves the Future owned and awaitable as Err(Cancelled).
+        // abandon retires the unclaimed ticket and rehomes any committed value.
+        let operation=match name {
+            "cancel"=>Import::ChannelCancel,
+            "abandon"=>Import::ChannelAbandon,
+            _=>return Err(type_err(pos,format!(
+                "Future<Result<Option<int>,IoError>> has no method '{name}'"))),
+        };
+        self.arity(&format!("Future<Result<Option<int>,IoError>>.{name}"),0,args.len(),pos)?;
+        if operation==Import::ChannelAbandon {
+            if let TExpr::Local(slot)=&ticket.e { self.moved.insert(*slot); }
         }
-        self.arity("Future<Result<Option<int>,IoError>>.cancel",0,args.len(),pos)?;
-        self.imports.push(Import::ChannelCancel);
+        self.imports.push(operation);
         let status=self.temp(Type::IoError,pos)?;
         let result=self.temp(Type::ResultVoidIoError,pos)?;
-        // Cancellation changes the pending registration to Err(Cancelled).
-        // The original Future stays owned by the caller and MUST be awaited
-        // exactly once to retire the host ticket before channel release.
         Ok(TE{e:TExpr::ChannelFinish{
-            channel:Box::new(ticket),
-            operation:Import::ChannelCancel,status,result
+            channel:Box::new(ticket),operation,status,result
         },ty:Type::ResultVoidIoError})
     }
 

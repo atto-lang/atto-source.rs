@@ -187,3 +187,36 @@ An abandoned Future without awaiting or explicit drop remains a lifecycle
 gap; the compiler does not yet enforce linear cleanup on all return paths.
 Keep the language/runtime contract in draft until that ownership obligation
 is checked and tested across all exit/throw/cancellation paths.
+
+
+## Consuming read abandonment and Worker teardown (draft extension)
+
+Beyond `pending.cancel()`, a typed pending future now supports
+`pending.abandon(): Result<void,IoError>` in the Rust/Wasm profile.
+**Cancel does not consume** a future: the owner can still await the checked
+`Err(Cancelled)` outcome, and `release()` remains `Busy` until the ticket
+retires. **Abandon consumes** the unclaimed Future immediately, freeing a
+pending ticket quota slot. If a send already linearized, the admitted value
+is not dropped: it is handed to the oldest waiting reader, or returned to
+the head of the channel queue. This also applies to closed and rendezvous
+channels. Reusing an abandoned named future is `E_MOVED`.
+
+The optional `atto.channel_int_abandon_v1(ticket: i32) -> i32` import has
+the same checked status type as `channel_int_cancel_v1`, but different
+ownership semantics. It requires `atto.channel_int` v1 and `atto.async`
+v2 markers, a verified signature, and a Worker-local ticket. A ticket
+already claimed by an in-flight await cannot be abandoned and returns
+`Busy`. The original host-only `abandon_read` hook remains conservative
+for compatibility, refusing to discard committed payloads.
+
+After every guest run (success, guest panic, or host exception) the owning
+Worker invokes the host runtime `dispose()` in `finally`: claimed pending
+awaiters receive `Err(Cancelled)` once, unclaimed tickets retire, queues
+are erased and handles are revoked. This provides deterministic run-lifetime
+cleanup without waiting on garbage collection. Long-lived guests still
+need explicit await/abandon on their own paths; general lexical automatic
+destructor insertion across all AttoLang control-flow constructs is
+not yet proven. Java/LLVM/.NET parity is also not yet established.
+
+This extension must pass exact-tree Rust, host-ABI, native/Wasm and real
+Chromium tests before it can be called verified.

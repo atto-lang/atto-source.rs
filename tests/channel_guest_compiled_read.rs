@@ -72,3 +72,83 @@ fn unsupported_channel_profiles_fail_closed() {
   assert!(compile(src).is_err(),"{src} emitted unsupported guest Wasm");
  }
 }
+
+const CANCEL_SOURCE: &str = r#"
+pub susp fnc main(): int {
+    val opened = Channel<int>.bounded(0);
+    match opened over
+        on Err(error) -> { return -1; }
+        on Ok(channel) -> {
+            val pending = nb readch channel;
+            val cancelled: Result<void,IoError> = pending.cancel();
+            match cancelled over
+                on Err(error) -> { return -2; }
+                on Ok -> {
+                    val outcome: Result<Option<int>,IoError> = await pending;
+                    match outcome over
+                        on Err(error) -> { return 42; }
+                        on Ok(item) -> { return -3; }
+                    end
+                }
+            end
+        }
+    end
+}
+"#;
+const ABANDON_SOURCE: &str = r#"
+pub susp fnc main(): int {
+    val opened = Channel<int>.bounded(0);
+    match opened over
+        on Err(error) -> { return -1; }
+        on Ok(channel) -> {
+            val pending = nb readch channel;
+            val sent: Result<void,IoError> = channel.send(41);
+            match sent over
+                on Err(error) -> { return -2; }
+                on Ok -> {
+                    val discarded: Result<void,IoError> = pending.abandon();
+                    match discarded over
+                        on Err(error) -> { return -3; }
+                        on Ok -> {
+                            val reread = nb readch channel;
+                            val outcome = await reread;
+                            match outcome over
+                                on Err(error) -> { return -4; }
+                                on Ok(item) -> {
+                                    match item over
+                                        on None -> { return -5; }
+                                        on Some(n) -> { return n + 1; }
+                                    end
+                                }
+                            end
+                        }
+                    end
+                }
+            end
+        }
+    end
+}
+"#;
+#[test]
+fn explicit_cancel_and_abandon_emit_only_checked_versioned_imports() {
+    for (source, imported) in [
+        (CANCEL_SOURCE, "channel_int_cancel_v1"),
+        (ABANDON_SOURCE, "channel_int_abandon_v1"),
+    ] {
+        let wasm = compile(source).unwrap_or_else(|e| panic!("{imported}: {e}"));
+        assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+        for name in ["atto.channel_int","atto.async","channel_int_nb_read_v1",imported] {
+            assert!(has(&wasm,name.as_bytes()), "missing {name}");
+        }
+        assert_eq!(wasm, compile(source).expect("deterministic compiled channel lifecycle"));
+    }
+}
+#[test]
+fn use_after_explicit_abandon_never_emits_guest_wasm() {
+    let invalid = ABANDON_SOURCE.replace(
+        "val reread = nb readch channel;",
+        "val reread = await pending;",
+    );
+    let error=compile(&invalid).expect_err("abandoned ticket must be a moved linear capability");
+    assert_eq!(error.code,"E_MOVED","{error}");
+}

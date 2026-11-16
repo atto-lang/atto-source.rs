@@ -169,3 +169,35 @@ test('guest ABI: close preserves buffered values until explicitly drained',async
   assert.equal(i.channel_int_release_v1(ch),E.Ok);
   assert.equal(i.channel_int_nb_read_v1(ch,4),E.InvalidHandle);
 });
+
+test('guest ABI: explicit abandon import rehomes a committed i64 without consuming it',async()=>{
+  const {imports:i,v}=fresh();
+  assert.equal(i.channel_int_open_v1(0,0),E.Ok);
+  const ch=v.getInt32(0,true);
+  assert.equal(i.channel_int_nb_read_v1(ch,4),E.Ok);
+  const ticket=v.getInt32(4,true);
+  assert.equal(i.channel_int_send_v1(ch,9223372036854775807n),E.Ok);
+  assert.equal(i.channel_int_abandon_v1(ticket),E.Ok);
+  assert.equal(i.channel_int_abandon_v1(ticket),E.AlreadyConsumed);
+  assert.equal(i.channel_int_close_v1(ch),E.Ok);
+  assert.equal(i.channel_int_release_v1(ch),E.Busy);
+  assert.equal(i.channel_int_nb_read_v1(ch,4),E.Ok);
+  assert.equal(await i.channel_int_await_read_v1(v.getInt32(4,true),32),E.Ok);
+  assert.deepEqual(outcome(v),{tag:T.Some,error:0,value:9223372036854775807n});
+  assert.equal(i.channel_int_release_v1(ch),E.Ok);
+});
+
+test('guest ABI: explicit cancel leaves Err(Cancelled) awaitable, abandon consumes it',async()=>{
+  const {imports:i,v,host}=fresh();
+  assert.equal(i.channel_int_open_v1(0,0),E.Ok);
+  const ch=v.getInt32(0,true);
+  assert.equal(i.channel_int_nb_read_v1(ch,4),E.Ok);
+  const ticket=v.getInt32(4,true);
+  assert.equal(i.channel_int_cancel_v1(ticket),E.Ok);
+  assert.equal(i.channel_int_abandon_v1(ticket),E.Ok);
+  assert.equal(host.snapshot(ch).value.outstanding,0);
+  assert.equal(await i.channel_int_await_read_v1(ticket,32),E.Ok);
+  assert.deepEqual(outcome(v),{tag:T.Error,error:E.AlreadyConsumed,value:0n});
+  assert.equal(i.channel_int_close_v1(ch),E.Ok);
+  assert.equal(i.channel_int_release_v1(ch),E.Ok);
+});

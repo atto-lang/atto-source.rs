@@ -1083,7 +1083,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::ChannelOpen | Import::ChannelNbRead | Import::ChannelAwaitRead =>
                 Sig(vec![I32,I32], vec![I32]),
             Import::ChannelSend => Sig(vec![I32,I64], vec![I32]),
-            Import::ChannelCancel | Import::ChannelClose | Import::ChannelRelease =>
+            Import::ChannelCancel | Import::ChannelAbandon | Import::ChannelClose | Import::ChannelRelease =>
                 Sig(vec![I32],vec![I32]),
         };
         name(&mut import_sec, "atto");
@@ -1394,7 +1394,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     // remains unchanged for programs without actual async imports.
     let use_channel=p.imports.iter().any(|i| matches!(i,
         Import::ChannelOpen | Import::ChannelSend | Import::ChannelNbRead |
-        Import::ChannelAwaitRead | Import::ChannelCancel |
+        Import::ChannelAwaitRead | Import::ChannelCancel | Import::ChannelAbandon |
         Import::ChannelClose | Import::ChannelRelease));
     if use_channel || p.imports.iter().any(|i| matches!(i,
         Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate)) {

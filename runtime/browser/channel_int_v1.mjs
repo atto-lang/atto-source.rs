@@ -1,9 +1,7 @@
 // Worker-owned, typed Channel<int> host runtime contract v1.
 //
-// This is a real bounded FIFO scheduler *on the host*, not an AttoLang guest
-// import. The compiler MUST continue to reject guest Channel<T>/nb readch
-// until the versioned Result<Option<int>,IoError> Wasm representation exists.
-// No child actor, network sender, or second Worker shares these handles.
+// This is the Worker-local FIFO scheduler behind checked versioned AttoLang
+// guest imports. Handles/tickets never cross Workers, tenants or processes.
 
 const MIN_I64 = -(1n << 63n);
 const MAX_I64 = (1n << 63n) - 1n;
@@ -16,6 +14,7 @@ export class ChannelIntHostV1 {
   #retired = new Set();
   #nextChannel = 1;
   #nextTicket = 1;
+  #disposed = false;
   #maxChannels;
   #maxTickets;
   #maxCapacity;
@@ -32,6 +31,7 @@ export class ChannelIntHostV1 {
   }
 
   open(capacity) {
+    if (this.#disposed) return err('Closed');
     if (!Number.isSafeInteger(capacity) || capacity<0 || capacity>this.#maxCapacity)
       return err('InvalidCapacity');
     if (this.#channels.size>=this.#maxChannels || this.#nextChannel>0x7fffffff)
@@ -135,6 +135,53 @@ export class ChannelIntHostV1 {
     // notifying that continuation. Without a waiter, remove the ticket now.
     if (this.#tickets.has(ticketId)) this.#retire(ticket);
     return ok({abandoned:true});
+  }
+
+  // Consume an UNCLAIMED read Future. Unlike cancellation, abandonment
+  // retires the ticket and frees quota immediately. A previously committed
+  // message is never erased: deliver it to the oldest pending read or put
+  // it back at the head of the queue, even for capacity-zero/closed channels.
+  abandon(ticketId) {
+    const ticket=this.#tickets.get(ticketId);
+    if (!ticket) return err(this.#retired.has(ticketId)
+      ? 'AlreadyConsumed' : 'InvalidHandle');
+    if (ticket.claimed) return err('Busy');
+    const channel=this.#channels.get(ticket.channel);
+    if (!channel) throw Error('read ticket outlived its owner channel');
+    if (!ticket.settled) {
+      const idx=channel.pending.indexOf(ticketId);
+      if (idx<0) throw Error('broken pending read invariant');
+      channel.pending.splice(idx,1);
+    } else if (ticket.outcome.ok && ticket.outcome.value.some) {
+      const value=ticket.outcome.value.value;
+      if (channel.pending.length) {
+        const next=this.#tickets.get(channel.pending.shift());
+        if (!next || next.settled) throw Error('broken channel admission invariant');
+        this.#settle(next,ok({some:true,value}));
+      } else {
+        channel.items.unshift(value);
+      }
+    }
+    this.#retire(ticket);
+    return ok({abandoned:true});
+  }
+
+  // The Worker owns every runtime; finalize it on every guest exit, including
+  // exceptions. This wakes each claimed pending await exactly once and
+  // retires all unclaimed tickets without depending on GC timing.
+  dispose() {
+    if (this.#disposed) return ok({alreadyDisposed:true,channels:0,tickets:0});
+    this.#disposed=true;
+    const channels=this.#channels.size,tickets=this.#tickets.size;
+    for (const ticket of [...this.#tickets.values()]) {
+      if (!ticket.settled && ticket.claimed) {
+        this.#settle(ticket,err('Cancelled'));
+      } else {
+        this.#retire(ticket);
+      }
+    }
+    this.#channels.clear();
+    return ok({alreadyDisposed:false,channels,tickets});
   }
 
   close(handle) {

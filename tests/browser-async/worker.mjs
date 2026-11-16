@@ -12,6 +12,7 @@ function javaDouble(x){
   return (m.includes('.')?m:m+'.0')+'E'+e.replace('+','');
 }
 self.onmessage=async ({data})=>{
+  let channelRuntime;
   try{
     const bytes=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
     if(!WebAssembly.validate(bytes))throw new Error('invalid compiler wasm');
@@ -93,9 +94,9 @@ self.onmessage=async ({data})=>{
       });
     }
     if(useChannel){
-      const runtime=createChannelIntGuestV1({getMemory:()=>instance?.exports?.memory});
-      Object.assign(atto,runtime.imports);
-      atto.channel_int_await_read_v1=new WebAssembly.Suspending(runtime.imports.channel_int_await_read_v1);
+      channelRuntime=createChannelIntGuestV1({getMemory:()=>instance?.exports?.memory});
+      Object.assign(atto,channelRuntime.imports);
+      atto.channel_int_await_read_v1=new WebAssembly.Suspending(channelRuntime.imports.channel_int_await_read_v1);
     }
     instance=new WebAssembly.Instance(guest,{atto});
     let value;
@@ -107,4 +108,10 @@ self.onmessage=async ({data})=>{
     }
     self.postMessage({ok:true,value:String(value),stdout,cooperativeYields});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
+  finally {
+    // A guest can return/throw before awaiting a registered read. Dispose
+    // synchronously on every exit, including panic and host error, rather
+    // than leaving unclaimed tickets alive until garbage collection.
+    channelRuntime?.host.dispose();
+  }
 };

@@ -57,11 +57,11 @@ pub enum Import {
     StateRegister,
     StateEnter,
     StateLeave,
-    ChannelOpen,ChannelSend,ChannelNbRead,ChannelAwaitRead,ChannelCancel,ChannelClose,ChannelRelease,
+    ChannelOpen,ChannelSend,ChannelNbRead,ChannelAwaitRead,ChannelCancel,ChannelAbandon,ChannelClose,ChannelRelease,
 }
 
 impl Import {
-    pub const ALL: [Import; 22] = [
+    pub const ALL: [Import; 23] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -78,7 +78,7 @@ impl Import {
         Import::StateEnter,
         Import::StateLeave,
         Import::ChannelOpen,Import::ChannelSend,Import::ChannelNbRead,
-        Import::ChannelAwaitRead,Import::ChannelCancel,Import::ChannelClose,
+        Import::ChannelAwaitRead,Import::ChannelCancel,Import::ChannelAbandon,Import::ChannelClose,
         Import::ChannelRelease,
     ];
     pub fn name(self) -> &'static str {
@@ -103,6 +103,7 @@ impl Import {
             Import::ChannelNbRead => "channel_int_nb_read_v1",
             Import::ChannelAwaitRead => "channel_int_await_read_v1",
             Import::ChannelCancel => "channel_int_cancel_v1",
+            Import::ChannelAbandon => "channel_int_abandon_v1",
             Import::ChannelClose => "channel_int_close_v1",
             Import::ChannelRelease => "channel_int_release_v1",
         }
@@ -1328,7 +1329,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let channel_heap=imports.iter().any(|i| matches!(i,Import::ChannelOpen | Import::ChannelSend |
-        Import::ChannelNbRead | Import::ChannelAwaitRead | Import::ChannelCancel |
+        Import::ChannelNbRead | Import::ChannelAwaitRead | Import::ChannelCancel | Import::ChannelAbandon |
         Import::ChannelClose | Import::ChannelRelease));
     let tasks = p.funcs.iter().enumerate().filter(|(_, f)| f.name.starts_with("$atto_task_"))
         .map(|(i, _)| i as u32).collect();

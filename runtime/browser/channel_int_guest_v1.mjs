@@ -41,6 +41,7 @@ export const CHANNEL_INT_V1_IMPORTS = Object.freeze([
   'channel_int_nb_read_v1',
   'channel_int_await_read_v1',
   'channel_int_cancel_v1',
+  'channel_int_abandon_v1',
   'channel_int_close_v1',
   'channel_int_release_v1',
 ]);
@@ -52,6 +53,7 @@ const types = Object.freeze({
   channel_int_nb_read_v1: {params: [0x7f,0x7f], results:[0x7f]},
   channel_int_await_read_v1: {params: [0x7f,0x7f], results:[0x7f]},
   channel_int_cancel_v1: {params: [0x7f], results:[0x7f]},
+  channel_int_abandon_v1: {params: [0x7f], results:[0x7f]},
   channel_int_close_v1: {params: [0x7f], results:[0x7f]},
   channel_int_release_v1: {params: [0x7f], results:[0x7f]},
 });
@@ -118,6 +120,9 @@ export function createChannelIntGuestV1({getMemory,host=new ChannelIntHostV1()}=
     },
     channel_int_cancel_v1(ticket) {
       return status(host.cancel(ticket));
+    },
+    channel_int_abandon_v1(ticket) {
+      return status(host.abandon(ticket));
     },
     channel_int_close_v1(channel) {
       return status(host.close(channel));
