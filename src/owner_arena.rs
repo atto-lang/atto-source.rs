@@ -165,23 +165,9 @@ impl OwnerArena {
         Ok(&mut self.bytes[range])
     }
 
-    /// Deterministic bulk reclamation at the actor's explicit quiescent point.
-    /// All allocated bytes, including padding, are reinitialized to zero for
-    /// reuse. This is not guaranteed cryptographic secure erasure.
-    ///
-    /// The epoch must advance BEFORE previously issued handles could be reused.
-    /// Refuse to reset on epoch exhaustion rather than wrapping to a stale ID.
-    /// Permanently end access to this arena after the trusted owner has
-    /// established quiescence. Existing handles become unusable even if a
-    /// caller retains their values. The arena cannot be reopened.
-    pub fn retire(&mut self) {
-        if !self.retired {
-            self.bytes.fill(0);
-            self.used = 0;
-            self.retired = true;
-        }
-    }
-
+    /// Deterministic bulk reclamation at the owner's explicit quiescent point.
+    /// All allocated bytes, including padding, are reinitialized for reuse.
+    /// This is not cryptographic secure erasure. Old epochs never revalidate.
     pub fn reset(&mut self) -> Result<(), ArenaError> {
         if self.retired {
             return Err(ArenaError::Retired);
@@ -191,6 +177,17 @@ impl OwnerArena {
         self.used = 0;
         self.epoch = next_epoch;
         Ok(())
+    }
+
+    /// Permanently retire the owned arena after proven quiescence. Subsequent
+    /// allocations, reads, writes and resets all fail, including stale handles.
+    /// Repeated retirement is harmless and does not reopen access.
+    pub fn retire(&mut self) {
+        if !self.retired {
+            self.bytes.fill(0);
+            self.used = 0;
+            self.retired = true;
+        }
     }
 }
 
