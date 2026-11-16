@@ -65,6 +65,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             "unary actor signature recognized, but nominal UnaryRequest<R>, suspend semantics and authenticated one-shot reply ABI are not implemented"));
     }
     if actor_reply_syntax::uses_reply_intrinsic(&raw_tokens) {
+        let _explicit_contracts = actor_reply_contract::check_explicit_replies(&raw_tokens)?;
         return Err(Diagnostic::new(raw_tokens[0].pos, "E_UNSUPPORTED",
             "ActorMail.respond_with/send_back/reply_stream requires a typed authenticated reply sidecar; unavailable in this browser backend"));
     }
