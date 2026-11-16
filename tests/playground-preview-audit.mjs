@@ -8,7 +8,10 @@ import { fileURLToPath } from 'node:url';
 const corpus = new URL('./playground_previews/', import.meta.url);
 const imports = new Set([
   'print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64',
-  'actor_spawn', 'actor_send', 'state_register', 'state_enter', 'state_leave'
+  'actor_spawn', 'actor_send', 'state_register', 'state_enter', 'state_leave',
+  // Node capture-free guest adapter for exact stdout/exit oracle only.
+  // Real JSPI cooperative scheduling is asserted in Chromium.
+  'task_start', 'task_await', 'cooperate'
 ]);
 function gitBlobSha(bytes) {
   return createHash('sha1').update(Buffer.from('blob ' + bytes.length + '\0'))
@@ -76,6 +79,8 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'visibility-modifiers': { value: 7n, stdout: '0\n' },
       'routine': { value: 0n, stdout: '49\n42\n' },
       'boolean-operators': { value: 0n, stdout: 'false\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\n' },
+      'suspends': { value: 42n, stdout: '42\n' },
+      'match-types-is': { value: 0n, stdout: 'positive integer\n' },
       'trap': { value: 7n, stdout: '5\nid must be nonnegative\nan ordinary throw was caught\n' },
       'borrow-checking': { value: 63n, stdout: '84\n43\n' },
       'closures-functors': { value: 84n, stdout: '' },
@@ -102,8 +107,8 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
      'fib-match', 'guard', 'match-values', 'closures-functors',
      'result-option-end', 'modules', 'callable-body-styles',
      'traits-interfaces', 'diamond-inheritance', 'visibility-modifiers',
-     'routine', 'boolean-operators'].sort(),
-    'the nineteen requested compiled guest candidates must execute');
+     'routine', 'boolean-operators', 'suspends', 'match-types-is'].sort(),
+    'the twenty-one independently reviewed guest candidates must execute');
   outcome.executionCoverage.verified = outcome.guestExecuted.length;
   outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
   console.log('PLAYGROUND_PREVIEW_EXECUTION_COVERAGE ' + JSON.stringify({
