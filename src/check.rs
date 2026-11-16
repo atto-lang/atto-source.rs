@@ -1551,6 +1551,15 @@ impl<'a> FnCx<'a> {
                         ));
                     }
                 }
+                // An immutable scalar has no interior to mutate. 'const mut'
+                // is reserved for fresh owned mutable aggregate instances,
+                // not a loophole for rebinding a compile-time scalar.
+                if *kind == BindKind::Const && *referent_mutable
+                    && matches!(v.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))
+                {
+                    return Err(Diagnostic::new(*pos, "E_CONST_MUT_TARGET",
+                        "'const mut' needs a writable owned aggregate; immutable scalar values have no mutable interior"));
+                }
                 // Unowned generator-valued locals could escape a close path.
                 if v.ty == Type::GeneratorInt {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
