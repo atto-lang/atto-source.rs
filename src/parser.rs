@@ -2243,22 +2243,24 @@ impl Parser {
                     let kind = if method == "buffered" {
                         PipeEndpointKind::StreamBuffered
                     } else {
-                        self.expect(Tok::Dot, "'.sink()' for Stream.port<T>")?;
-                        let (name, _) = self.ident("the writable stream port selector")?;
-                        if name != "sink" {
-                            return Err(Diagnostic::new(
+                        self.expect(Tok::Dot, "'.sink()' or '.stream()' for Stream.port<T>")?;
+                        let (name, _) = self.ident("the directional stream port selector")?;
+                        let selected = match name.as_str() {
+                            "sink" => PipeEndpointKind::StreamSink,
+                            "stream" => PipeEndpointKind::StreamReadable,
+                            _ => return Err(Diagnostic::new(
                                 pos, "E_PIPE_CONTRACT",
-                                "Stream.port<T> must select .sink() for writable pipe endpoint",
-                            ));
-                        }
+                                "Stream.port<T> must select .sink() or .stream()",
+                            )),
+                        };
                         let args = self.parse_args()?;
                         if !args.is_empty() {
                             return Err(Diagnostic::new(
                                 pos, "E_PIPE_CONTRACT",
-                                "Stream.port<T>.sink() takes no arguments",
+                                "Stream.port<T>.sink()/stream() takes no arguments",
                             ));
                         }
-                        PipeEndpointKind::StreamSink
+                        selected
                     };
                     ExprKind::PipeEndpoint(kind, item, cap)
                 }
