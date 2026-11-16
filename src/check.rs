@@ -691,6 +691,20 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // Retain the structural marker in the production AST, but DO NOT
+    // silently lower it as a nominal class pointer. A structural formal
+    // requires the proof of a readonly borrowing ABI and a public shape
+    // projection adapter (field offsets can differ between nominal classes).
+    // Perform this gate *before* generated lambdas and signature registration.
+    let marked = p.funcs.iter().flat_map(|f| &f.params)
+        .chain(p.classes.iter().flat_map(|c| c.methods.iter().flat_map(|m| &m.params)))
+        .chain(p.classes.iter().filter_map(|c| c.ctor.as_ref()).flat_map(|c| &c.params))
+        .chain(p.actors.iter().flat_map(|a| a.methods.iter().flat_map(|m| &m.params)))
+        .find(|p| p.structural);
+    if let Some(param) = marked {
+        return Err(Diagnostic::new(param.pos, "E_UNSUPPORTED",
+            "structural formal is parsed, but requires a verified readonly projected-class ABI; nominal class pointer coercion is forbidden"));
+    }
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
@@ -1216,6 +1230,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 &Param {
                     name: String::new(),
                     ty: mi.ret,
+                    structural: false,
                     mutable: false,
                     pos: m.pos,
                 },
