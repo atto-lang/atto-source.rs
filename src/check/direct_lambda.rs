@@ -201,6 +201,7 @@ pub fn lower(input: &Program) -> R<Program> {
             };
             generated.push(Func {
                 name: d.hidden,
+                suspends: false,
                 pos: d.lambda.pos,
                 is_generator: false,
                 is_pure: true,
@@ -350,7 +351,7 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         // escape. Traverse their operand before the ordinary ownership checker
         // validates move/borrow/copy semantics.
         ExprKind::Ownership(_, _, x) | ExprKind::Unary(_, x) |
-        ExprKind::Trap(x) | ExprKind::Propagate(x) => rewrite_expr(x, d),
+        ExprKind::Trap(x) | ExprKind::Propagate(x) | ExprKind::Await(x) => rewrite_expr(x, d),
         ExprKind::Binary(_, x, y) => {
             rewrite_expr(x, d)?;
             rewrite_expr(y, d)
@@ -381,7 +382,7 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         // require a compiler review of its lexical binding behaviour.
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
         ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef |
-        ExprKind::Spawn(_) => Ok(()),
+        ExprKind::Spawn(_) | ExprKind::Task(_) => Ok(()),
     }
 }
 
@@ -409,7 +410,7 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // otherwise a missed free-variable use could escape capture analysis.
         ExprKind::Int(_) | ExprKind::Float(_) |
         ExprKind::Bool(_) | ExprKind::Str(_) => {},
-        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) =>
+        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Await(a) | ExprKind::Member(a, _) =>
             free_names(a, names, depth + 1)?,
         ExprKind::Call(_, args) | ExprKind::New(_, args) |
         ExprKind::Array(args) => {
@@ -429,7 +430,7 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
             "explicit ownership inside a direct lambda requires verified capture lifetimes")),
         ExprKind::StateRead(_) => return Err(error(e.pos, "E_UNSUPPORTED",
             "protected state projection inside a direct lambda is not lifetime-verified")),
-        ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Lambda { .. } => {},
+        ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Task(_) | ExprKind::Lambda { .. } => {},
     }
     Ok(())
 }
