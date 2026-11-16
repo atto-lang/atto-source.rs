@@ -1,0 +1,12 @@
+// expect-error: E_SYNTAX
+// A type name in a VALUE pattern cannot be admitted without 'is'.
+define class Pet as
+    pub string foo = "dog";
+end
+pub fnc main(): int {
+    val p = new Pet();
+    match p over
+        on {foo: string} -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
