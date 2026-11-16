@@ -3529,6 +3529,24 @@ impl<'a> FnCx<'a> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
         }
+        if name == "sleep" {
+            if !self.suspends || !self.awaiting {
+                return Err(Diagnostic::new(pos, "E_EFFECT",
+                    "sleep requires await inside a suspending function"));
+            }
+            if args.len() != 1 {
+                return Err(Diagnostic::new(pos, "E_ARITY", "sleep takes one Duration argument"));
+            }
+            // The parser admits a Duration literal only in the canonical
+            // sleep call, lowers it to checked ceil(milliseconds), and never
+            // exposes that i64 as a general user-facing Duration or int.
+            let millis = self.value(&args[0])?;
+            if millis.ty != Type::Int {
+                return Err(type_err(args[0].pos, "internal sleep duration lowering must be int"));
+            }
+            self.imports.push(Import::SleepMs);
+            return Ok(TE { e: TExpr::SleepMs(Box::new(millis)), ty: Type::Int });
+        }
         if matches!(name, "rt.sleep" | "rt.barrier") {
             if !self.suspends || !self.awaiting {
                 return Err(Diagnostic::new(pos, "E_EFFECT", "runtime suspension requires await in a suspends fnc"));
