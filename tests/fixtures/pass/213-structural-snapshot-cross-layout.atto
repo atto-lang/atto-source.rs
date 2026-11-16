@@ -1,0 +1,19 @@
+// expect-exit: 41
+// java: rejects
+// A scalar snapshot reads the ACTUAL class offsets, not nominal Point offsets.
+define class Point as
+    pub int x = 0;
+    pub int y = 0;
+end
+define class Shifted as
+    pub int padding = 17;
+    pub int y = 5;
+    pub int x = 4;
+end
+pub fnc length_squared(~Point p): int {
+    return p.x * p.x + p.y * p.y;
+}
+pub fnc main(): int {
+    val other = new Shifted();
+    return length_squared(other);
+}
