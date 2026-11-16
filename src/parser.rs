@@ -1178,9 +1178,15 @@ impl Parser {
                 Tok::Ident(s) => s.clone(),
                 Tok::Str(s) => format!("{s:?}"),
                 Tok::Int(Some(n)) => n.to_string(),
+                Tok::Int(None) if self.i > 0 &&
+                    matches!(self.toks[self.i - 1].tok, Tok::Minus) => {
+                    // Exactly 2^63 is a valid singleton magnitude only as
+                    // -9223372036854775808 (the signed i64 minimum).
+                    "9223372036854775808".to_string()
+                }
                 Tok::Int(None) => {
                     return Err(Diagnostic::new(self.pos(), "E_INTEGER_RANGE",
-                        "anonymous shape singleton is out of integer range"));
+                        "positive anonymous shape singleton is out of i64 range"));
                 }
                 Tok::Colon => ":".to_string(),
                 Tok::Comma => ",".to_string(),
@@ -2114,18 +2120,11 @@ impl Parser {
                 }
                 Tok::Minus => {
                     self.advance();
-                    let n = match self.peek().clone() {
-                        Tok::Int(Some(n)) => n,
+                    let value = match self.peek().clone() {
+                        Tok::Int(None) => i64::MIN,
+                        Tok::Int(Some(n)) => -(n as i64),
                         _ => return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                             "minus in structural value pattern must precede an integer literal")),
-                    };
-                    let value = if n == (i64::MAX as u64) + 1 {
-                        i64::MIN
-                    } else if n <= i64::MAX as u64 {
-                        -(n as i64)
-                    } else {
-                        return Err(Diagnostic::new(self.pos(), "E_INTEGER_RANGE",
-                            "structural pattern integer is out of range"));
                     };
                     self.advance();
                     ScalarPattern::Int(value)
