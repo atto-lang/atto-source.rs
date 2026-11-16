@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+// Optional field may be absent while a required field must be present.
+define class Pet as
+    pub int n = 42;
+end
+pub fnc main(): int {
+    val value = new Pet();
+    match value over
+        on {foo?: "dog", n: _} as val p -> { return p.n; }
+        on _ -> { return 0; }
+    end
+}
