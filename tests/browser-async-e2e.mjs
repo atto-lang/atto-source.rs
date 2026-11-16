@@ -115,6 +115,23 @@ try{
   assert.match(await run(combined,'main() -> 42'),/^directmain\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'combined stdout/Future guest must yield exactly once');
   console.log('PASS integration: direct stdio.out << and awaited Future<int> execute together inside Chromium Worker');
+
+  // Compile the new pipeline in the actual wasm32 compiler, execute its
+  // guest Wasm in Chromium Worker, and prove the existing JSPI await
+  // and cooperative scheduler path is used (not a host JS mock).
+  const piped='fnc transform_result(int v): int { return v + 1; } pub suspends fnc main(): int { val future=task { return 41; }; return future |> suspends |v| -> await v |> transform_result; }';
+  assert.match(await run(piped,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'the explicit suspends lambda stage must cooperatively await exactly once');
+  console.log('PASS integration: explicit suspends identity-await stage executes real guest Future<int> and named transform');
+  for (const source of [
+    'pub suspends fnc main(): int { nb stdio.in >> (val String line << await Future<string>); return 42; }',
+    'pub suspends fnc main(): int { nb stdio.in >> Future<string> x | await x >> val String line; return 42; }',
+  ]) {
+    assert.match(await run(source,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  }
+  console.log('PASS integration: both contextual nb stdin read-await spellings fail closed until guest I/O ABI');
+
   for(const [source,code] of [
     ['pub suspends fnc main(): int { nb stdio.out << "queued"; return await 42; }','E_UNSUPPORTED'],
     ['pub suspends fnc main(): int { do writech stdio.out, "queued"; return await 42; }','E_UNSUPPORTED'],
