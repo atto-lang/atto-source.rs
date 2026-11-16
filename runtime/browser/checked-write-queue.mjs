@@ -140,6 +140,9 @@ export class CheckedWriteQueue {
   }
   _settle(x,outcome) {
     if(x.state==='settled')return;
+    // Remove queued tombstones immediately. Repeated cancel/re-admit with
+    // one stalled committed write cannot grow an unbounded FIFO array.
+    if(x.state==='queued') this._fifo=this._fifo.filter(y=>y!==x);
     x.state='settled';
     this._entries.delete(x.id);
     this._usedBytes-=x.size;
@@ -150,9 +153,18 @@ export class CheckedWriteQueue {
         if(!outcome.ok)this._supervise(x,outcome);
       } else {
         try {
-          if(x.onOutcome) x.onOutcome(outcome);
-          else if(outcome.ok) x.onSuccess?.();
+          let returned;
+          if(x.onOutcome) returned=x.onOutcome(outcome);
+          else if(outcome.ok) returned=x.onSuccess?.();
           else this._supervise(x,outcome);
+          // Language callbacks are non-suspending unless explicitly declared.
+          // Do not allow an ignored Promise to create an unobserved failure.
+          if(returned && typeof returned.then==='function') {
+            Promise.resolve(returned).catch(err=>
+              this._supervise(x,failed('E_IO_CALLBACK',String(err?.message??err))));
+            this._supervise(x,failed('E_IO_CALLBACK',
+              'detached callback must not return a pending Promise'));
+          }
         } catch(err) {
           this._supervise(x,failed('E_IO_CALLBACK',String(err?.message??err)));
         }
