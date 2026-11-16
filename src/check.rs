@@ -2047,10 +2047,10 @@ impl<'a> FnCx<'a> {
                         let field_slot = info.slot;
                         let lit = match &field.value {
                             ScalarPattern::Any => continue,
-                            ScalarPattern::Int(v) if info.ty == Type::Int => TE {
+                            ScalarPattern::Int(v) if field_ty == Type::Int => TE {
                                 e: TExpr::I64(*v), ty: Type::Int,
                             },
-                            ScalarPattern::Bool(v) if info.ty == Type::Bool => TE {
+                            ScalarPattern::Bool(v) if field_ty == Type::Bool => TE {
                                 e: TExpr::Bool(*v), ty: Type::Bool,
                             },
                             ScalarPattern::Str(v) if field_ty == Type::Str => {
@@ -2059,7 +2059,7 @@ impl<'a> FnCx<'a> {
                             },
                             _ => return Err(type_err(arm.pos,
                                 format!("structural field '{}' has type {} incompatible with its value pattern",
-                                    field.name, self.tn(info.ty)))),
+                                    field.name, self.tn(field_ty)))),
                         };
                         let read = TE {
                             e: TExpr::FieldGet { obj: Box::new(get()), offset: field_slot },
