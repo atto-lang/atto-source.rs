@@ -25,6 +25,8 @@ pub mod visibility_lower;
 pub mod routine_lower;
 /// Bounded nonescaping suspending lambda -> checked direct JSPI helper.
 pub mod suspending_lambda;
+/// Bounded immutable monomorphic Any type-test specialization, not dynamic Any.
+pub mod static_any_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
@@ -47,7 +49,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
-    let toks = suspending_lambda::lower(routine_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?;
+    let toks = static_any_lower::lower(suspending_lambda::lower(routine_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
