@@ -10,7 +10,7 @@ fn source(action: &str) -> String {
 fn built_in_error_is_currently_the_only_admitted_throw_payload() {
     let bytes = compile(&source("throw Error(\"guest failure\");"))
         .expect("built-in Error plus implicit Throwable is executable");
-    assert_eq!(&bytes[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
 
     for action in [
         "throw 42;",
