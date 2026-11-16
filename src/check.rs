@@ -2496,10 +2496,13 @@ impl<'a> FnCx<'a> {
                                 PipePort { input: Some(*item), output: Some(*item) },
                             PipeEndpointKind::StreamSink =>
                                 PipePort { input: Some(*item), output: None },
+                            PipeEndpointKind::StreamReadable =>
+                                PipePort { input: None, output: Some(*item) },
                         }, match kind {
                             PipeEndpointKind::ChannelBounded => "Channel<T>.bounded",
                             PipeEndpointKind::StreamBuffered => "Stream.buffered<T>",
                             PipeEndpointKind::StreamSink => "Stream.port<T>.sink()",
+                            PipeEndpointKind::StreamReadable => "Stream.port<T>.stream()",
                         })),
                         _ => None,
                     };
