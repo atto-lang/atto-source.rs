@@ -1958,18 +1958,41 @@ impl Parser {
                 self.expect_word("on")?;
                 self.parse_pattern()?
             };
+            // The guard sees a pattern binding only after that pattern
+            // matches. A guarded catch-all does not prove exhaustiveness.
+            // The existing match type checker enforces these properties.
+            let guard = if self.eat_word("when") {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
             self.expect(Tok::Arrow, "'->' in a return match arm")?;
-            let value = self.parse_expr()?;
+            let braced = *self.peek() == Tok::LBrace;
+            let body = if braced {
+                let body = self.parse_block()?;
+                if !guard_failure_exits(&body) {
+                    return Err(Diagnostic::new(apos, "E_RETURN",
+                        "braced return match arm must return or throw on every path"));
+                }
+                body
+            } else {
+                let value = self.parse_expr()?;
+                vec![Stmt::Return(Some(value), apos)]
+            };
             arms.push(MatchArm {
                 pattern,
-                guard: None,
-                body: vec![Stmt::Return(Some(value), apos)],
+                guard,
+                body,
                 pos: apos,
             });
-            // A final comma before 'end' is valid, and separators are
-            // mandatory between adjacent value arms.
-            if !self.eat(&Tok::Comma) && !self.is_word("end") {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "expected ',' between return match arms"));
+            // Expression arms require comma separators. Braced arms are
+            // self-delimiting, including before another 'on' or 'default'.
+            // A trailing comma is permitted in either form.
+            if braced {
+                self.eat(&Tok::Comma);
+            } else if !self.eat(&Tok::Comma) && !self.is_word("end") {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "expected ',' between return match value arms"));
             }
         }
         self.expect_word("end")?;
@@ -2043,15 +2066,6 @@ impl Parser {
                     if let Tok::Ident(next) = self.peek() {
                         if next != "when" && next != "_" {
                             return Err(unsupported(pos, "typed binding patterns ('Type name')"));
-                        }
-                        if next == "when" {
-                            // Java parses `name when` as the typed binding
-                            // pattern `name when` and then fails; mirror that.
-                            return Err(Diagnostic::new(
-                                self.pos(),
-                                "E_SYNTAX",
-                                "a binding pattern cannot take a 'when' guard",
-                            ));
                         }
                     }
                     if w.chars().next().is_some_and(|c| c.is_uppercase()) {
