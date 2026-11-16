@@ -15,16 +15,16 @@ sample and requires deterministic guest output or a positioned diagnostic.
 `ATTOC=<native-attoc> node tests/conformance.mjs` runs the same exact sources
 through the **real Rust compiler built for wasm32**, verifies no guest artifact
 on rejection, checks emitted guests and compares native/Wasm compiler bytes.
-Twenty-one candidate previews have independent guest-execution oracles:
+Twenty-two candidate previews have independent guest-execution oracles:
 function-pipeline, generators, result-option, trap, borrow-checking,
 lexical-scope-pure, state-containers, fib-match, guard, match-values, closures-functors, result-option-end, modules, callable-body-styles, traits-interfaces,
-diamond-inheritance, visibility-modifiers, routine, boolean-operators, match-types-is, and data-shapes. All must be
+diamond-inheritance, visibility-modifiers, routine, boolean-operators, match-types-is, data-shapes, and defer-recover. All must be
 compiled by the real wasm32 Rust compiler, executed in a genuine guest with
 exact stdout/return values, and compared byte-for-byte with native Rust.
 The other previews
 are **not yet certified executable**. The modules profile supports direct
 file-local qualified function calls only, not importing other files, module
-values, generic members, or a cross-file visibility/linker model. Executing twenty-one candidate
+values, generic members, or a cross-file visibility/linker model. Executing twenty-two candidate
 samples does not establish complete ownership, actor, ADT or effect semantics.
 
 The site has **nine** ordinary examples and **42** previews (**51 total**).
@@ -91,3 +91,41 @@ structural subtyping, record equality/copy, generic collection or
 cross-actor transport ABI; those require separate runtime contracts.
 Preview 21 is **not certified** until exact-source Rust, wasm32 compiler,
 independent guest stdout/return oracle and Chromium tests complete.
+
+## Deferred cleanup, recovery and escalated failure (preview 22 candidate)
+
+`defer-recover.atto` executes the atto-spec
+`language/defer-recover-unwind-v1.md` trace contract on legacy Wasm EH with two
+module-private tags: tag 0 (ordinary `throw`) and tag 1 (`raise`). `catch
+(Error e)` and `trap` match only tag 0, so `raise` always bypasses them.
+`finally` runs once on fallthrough, on a pending return, and on any escaping
+exception (catch_all + rethrow of the original exception). Return values are
+snapshotted before finally/defer.
+
+`defer` and `recover` register only at a `fnc` body's top level, so static
+reverse source order equals dynamic LIFO registration order; per-registration
+flags mean a cleanup registered after an early return never runs. On unwind,
+a function's defers run before its recover callbacks.
+
+**Two-phase catch precedence.** A guest-global active-catch counter (emitted
+only when the program uses `recover`) is incremented by every active `catch`
+and `trap` and restored from per-handler snapshots on every resumption path.
+On an ordinary throw, a recover boundary first runs its defers, then rethrows
+if any outer catch/trap is active, so a callee's recover never takes a throw
+that a caller's catch or trap will handle. This is precise because the guest is
+synchronous and this slice only admits the built-in `Error`, so every active
+catch matches. Recover callbacks then run newest first; `c.next()` delegates to
+the next older one; if all decline, the original tag and message escape.
+
+Fail-closed limits: defer/recover bodies cannot see enclosing locals (no
+capture lifetime proof), cannot throw/raise/return/try/defer, and finally
+cannot return/throw/raise. `break`/`continue` cannot cross a handler. Methods,
+actors and generators reject. The pending `err` and cursor are not
+first-class values. `throws/raises/panics(Error)` clauses are syntax-validated
+but not yet transitively effect-checked. Panics/engine traps bypass all
+handlers and cleanup (the instance is dead). Programs without these constructs
+keep byte-identical guests.
+
+Preview 22 is **not certified** until CI-executed exact-source native and wasm32
+compiler parity, `tests/defer_recover_guest.mjs`, and Chromium E2E pass on the
+exact head, and a public compiler is promoted through the reviewed release gate.

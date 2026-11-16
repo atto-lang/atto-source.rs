@@ -50,6 +50,11 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/callable_guest_execution.mjs
 
+      - name: Execute defer/recover/try/raise unwind guests against spec trace oracles
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/defer_recover_guest.mjs
+
       - name: Target-only actor receiver Wasm ABI rejects unsupported code
         run: node tests/target_syntax_wasm.mjs
 

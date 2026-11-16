@@ -136,6 +136,10 @@ struct Layout {
     /// Function index within source funcs+runtime helpers: first appended
     /// generator operation is new(); then checked_ptr, next, close.
     gen_first_func: u32,
+    /// Guest-global active-catch counter for two-phase recover dispatch.
+    catch_depth: Option<u32>,
+    /// Module-private escalated-failure tag (index 1) exists.
+    raise_tag: bool,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -174,6 +178,14 @@ enum Frame {
     Top,
     Continue,
     Other,
+    /// Normal function exit that still runs registered defers.
+    Ret,
+    /// Function exit after defers already ran (recovered result).
+    Done,
+    /// Landing block before a `finally` body on a pending return.
+    FinallyExit,
+    /// Terminal `c.next()` target: the next older recovery callback.
+    RecoverNext,
 }
 
 struct Emit<'a> {
@@ -189,6 +201,10 @@ struct Emit<'a> {
     /// Scratch i64 local for an opaque host-issued admission ticket.
     state_ticket_slot: Option<u32>,
     state_write_depth: u32,
+    /// Unwind slots of a try/defer/recover function: (ret, saved, msg, kind, pending).
+    uw: Option<(Option<u32>, u32, u32, u32, u32)>,
+    /// Emitting a recovery callback body: `return` exits after defers ran.
+    in_recover: bool,
 }
 
 impl Emit<'_> {
@@ -262,6 +278,202 @@ impl Emit<'_> {
         panic(&mut self.code, PANIC_GENERATOR);
     }
 
+    fn depth_save(&mut self, slot: u32) {
+        if let Some(g) = self.l.catch_depth {
+            self.global_get(g);
+            self.set(slot);
+        }
+    }
+    fn depth_restore(&mut self, slot: u32) {
+        if let Some(g) = self.l.catch_depth {
+            self.get(slot);
+            self.global_set(g);
+        }
+    }
+    fn depth_add(&mut self, delta: i32) {
+        if let Some(g) = self.l.catch_depth {
+            self.global_get(g);
+            self.i32c(delta);
+            self.op(0x6A); // i32.add
+            self.global_set(g);
+        }
+    }
+
+    /// Leave the function after the return value was stored: a recovered
+    /// result skips defers (they already ran); otherwise run the innermost
+    /// pending `finally`, or the function's defers.
+    fn return_path(&mut self) {
+        if self.in_recover {
+            self.br_to(Frame::Done);
+        } else if self.frames.contains(&Frame::FinallyExit) {
+            self.i32c(1);
+            self.set(self.uw.expect("unwind slots").4);
+            self.br_to(Frame::FinallyExit);
+        } else {
+            self.br_to(Frame::Ret);
+        }
+    }
+
+    /// try / catch (Error) / finally on legacy Wasm EH.
+    ///
+    /// The catch matches only private tag 0 (ordinary throw). `finally`
+    /// runs once on fallthrough, on a pending return (via FinallyExit),
+    /// and on any escaping exception (catch_all + rethrow, preserving the
+    /// original tag and payload). Engine traps are never Wasm exceptions.
+    fn try_stmt(&mut self, saved: u32, body: &[TStmt], catch: Option<&[TStmt]>, finally: Option<&[TStmt]>) {
+        self.depth_save(saved);
+        if finally.is_some() {
+            self.open(0x02, 0x40, Frame::FinallyExit);
+            self.open(0x06, 0x40, Frame::Other);
+        }
+        if let Some(handler) = catch {
+            self.depth_add(1); // an active catch outranks every callee recover
+            self.open(0x06, 0x40, Frame::Other);
+            self.stmts(body);
+            self.op(0x07); // catch private ordinary-throw tag 0
+            uleb(&mut self.code, 0);
+            self.op(0x1A); // drop the i64 Error message
+            self.depth_restore(saved);
+            self.stmts(handler);
+            self.close();
+            self.depth_restore(saved);
+        } else {
+            self.stmts(body);
+        }
+        if let Some(cleanup) = finally {
+            self.op(0x19); // catch_all: raise, uncaught throw or rethrown failure
+            self.depth_restore(saved);
+            self.stmts(cleanup);
+            self.op(0x09); // rethrow the caught exception unchanged
+            uleb(&mut self.code, 0);
+            self.close(); // end try
+            self.close(); // end FinallyExit
+            self.depth_restore(saved);
+            self.stmts(cleanup);
+            let pending = self.uw.expect("unwind slots").4;
+            self.get(pending);
+            self.open(0x04, 0x40, Frame::Other);
+            self.return_path();
+            self.close();
+        }
+    }
+
+    fn run_defers(&mut self, defers: &[(u32, &[TStmt])]) {
+        for (flag, body) in defers.iter().rev() {
+            self.get(*flag);
+            self.open(0x04, 0x40, Frame::Other);
+            self.stmts(body);
+            self.close();
+        }
+    }
+
+    /// Function body with compiler-owned unwind metadata
+    /// (atto-spec language/defer-recover-unwind-v1.md):
+    ///
+    /// ```text
+    /// block $done
+    ///   block $ret
+    ///     try                       ;; only with defers or recovers
+    ///       body                    ;; return => ret := v; br $ret (or finally)
+    ///     catch 0 | catch 1         ;; msg/kind := pending failure
+    ///     end
+    ///     restore depth; defers LIFO
+    ///     throw && active outer catch => rethrow (caller catch has priority)
+    ///     recovers LIFO             ;; return => br $done, c.next() => next
+    ///     rethrow original failure
+    ///   end
+    ///   restore depth; defers LIFO
+    /// end
+    /// ```
+    fn unwind_body(&mut self, body: &[TStmt], is_void_main: bool, ret: Type) {
+        let (ret_slot, saved, msg, kind, _) = self.uw.expect("unwind slots");
+        let defers: Vec<(u32, &[TStmt])> = body.iter().filter_map(|s| match s {
+            TStmt::Defer { flag, body } => Some((*flag, body.as_slice())),
+            _ => None,
+        }).collect();
+        let recovers: Vec<(u32, &[TStmt])> = body.iter().filter_map(|s| match s {
+            TStmt::Recover { flag, body, .. } => Some((*flag, body.as_slice())),
+            _ => None,
+        }).collect();
+        let boundary = !defers.is_empty() || !recovers.is_empty();
+        self.depth_save(saved);
+        self.open(0x02, 0x40, Frame::Done);
+        self.open(0x02, 0x40, Frame::Ret);
+        if boundary {
+            self.open(0x06, 0x40, Frame::Other);
+        }
+        self.stmts(body);
+        if ret == Type::Void {
+            self.br_to(Frame::Ret);
+        } else {
+            self.op(0x00); // definite-return analysis proved every path returns
+        }
+        if boundary {
+            self.op(0x07);
+            uleb(&mut self.code, 0);
+            self.set(msg);
+            self.i32c(0);
+            self.set(kind);
+            if self.l.raise_tag {
+                self.op(0x07);
+                uleb(&mut self.code, 1);
+                self.set(msg);
+                self.i32c(1);
+                self.set(kind);
+            }
+            self.close();
+            self.depth_restore(saved);
+            self.run_defers(&defers);
+            if !recovers.is_empty() {
+                let g = self.l.catch_depth.expect("recover implies a catch-depth global");
+                // Phase one: an ordinary throw with any active outer catch
+                // or trap is NOT ours; the caller's handler wins.
+                self.get(kind);
+                self.op(0x45); // i32.eqz: ordinary throw
+                self.global_get(g);
+                self.i32c(0);
+                self.op(0x4A); // i32.gt_s
+                self.op(0x71); // i32.and
+                self.open(0x04, 0x40, Frame::Other);
+                self.get(msg);
+                self.op(0x08);
+                uleb(&mut self.code, 0);
+                self.close();
+                // Phase two: newest registered callback first.
+                for (flag, handler) in recovers.iter().rev() {
+                    self.get(*flag);
+                    self.open(0x04, 0x40, Frame::Other);
+                    self.open(0x02, 0x40, Frame::RecoverNext);
+                    self.in_recover = true;
+                    self.stmts(handler);
+                    self.in_recover = false;
+                    self.close();
+                    self.close();
+                }
+            }
+            if self.l.raise_tag {
+                self.get(kind);
+                self.open(0x04, 0x40, Frame::Other);
+                self.get(msg);
+                self.op(0x08);
+                uleb(&mut self.code, 1);
+                self.close();
+            }
+            self.get(msg);
+            self.op(0x08);
+            uleb(&mut self.code, 0);
+        }
+        self.close(); // end $ret
+        self.depth_restore(saved);
+        self.run_defers(&defers);
+        self.close(); // end $done
+        if is_void_main {
+            self.i64c(0);
+        } else if let Some(slot) = ret_slot {
+            self.get(slot);
+        }
+    }
+
     fn stmts(&mut self, s: &[TStmt]) {
         for st in s {
             self.stmt(st);
@@ -327,6 +539,39 @@ impl Emit<'_> {
                 self.op(0x08); // throw tag 0
                 uleb(&mut self.code, 0);
             }
+            TStmt::Return(v) if self.uw.is_some() => {
+                // Snapshot the value before any finally/defer runs, then
+                // leave through the compiler-owned cleanup path.
+                if let Some(v) = v {
+                    self.expr(v);
+                    self.set(self.uw.unwrap().0.expect("non-void unwind function has a ret slot"));
+                }
+                for handle in self.active_iterators.clone().into_iter().rev() {
+                    self.get(handle);
+                    self.call(self.l.func(self.l.gen_first_func + 3));
+                }
+                self.return_path();
+            }
+            TStmt::Raise(message) => {
+                self.expr(message);
+                self.op(0x08); // throw escalated tag 1: never matched by catch/trap
+                uleb(&mut self.code, 1);
+            }
+            TStmt::UnwindFrame { .. } => {}
+            TStmt::Defer { flag, .. } => {
+                self.i32c(1);
+                self.set(*flag);
+            }
+            TStmt::Recover { flag, args, .. } => {
+                for (slot, value) in args {
+                    self.expr(value);
+                    self.set(*slot);
+                }
+                self.i32c(1);
+                self.set(*flag);
+            }
+            TStmt::RecoverNext => self.br_to(Frame::RecoverNext),
+            TStmt::Try { saved, body, catch, finally } => self.try_stmt(*saved, body, catch.as_deref(), finally.as_deref()),
             TStmt::Return(v) => {
                 if let Some(v) = v {
                     self.expr(v);
@@ -544,10 +789,14 @@ impl Emit<'_> {
                 // The only caught signal is our private ordinary-throw tag.
                 // WebAssembly engine traps, arithmetic panic, cancellation,
                 // host exceptions, and any other tag bypass this catch.
+                // A trap is an active ordinary-throw handler: a callee recover
+                // must defer to it (two-phase dispatch). No-op without recover.
+                self.depth_add(1);
                 self.open(0x06, I32, Frame::Other); // try (result i32)
                 self.expr(value); // evaluate once, before any Some allocation
                 self.op(0x21); // local.set value_tmp
                 uleb(&mut self.code, *value_tmp as u64);
+                self.depth_add(-1);
                 self.i32c(16);
                 self.call(self.l.helper(H_ALLOC));
                 self.op(0x21);
@@ -563,6 +812,7 @@ impl Emit<'_> {
                 self.op(0x07); // catch private tag 0
                 uleb(&mut self.code, 0);
                 self.op(0x1A); // drop i64 Error message (not a panic)
+                self.depth_add(-1);
                 self.i32c(16);
                 self.call(self.l.helper(H_ALLOC));
                 self.op(0x21); uleb(&mut self.code, *none_tmp as u64);
@@ -1024,6 +1274,10 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             1 + u32::from(p.heap) + p.globals.len() as u32
         ),
         gen_first_func: p.funcs.len() as u32,
+        catch_depth: p.catch_depth.then_some(
+            1 + u32::from(p.heap) + p.globals.len() as u32 + u32::from(!p.generators.is_empty())
+        ),
+        raise_tag: p.raise_tag,
     };
     let mut types = Types(Vec::new());
 
@@ -1083,6 +1337,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             active_iterators: Vec::new(),
             state_ticket_slot: state_hooks.then_some((f.params.len()+f.locals.len()) as u32),
             state_write_depth: 0,
+            uw: None,
+            in_recover: false,
         };
         if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
             // Creator is lazy: allocate a 56-byte checked continuation frame
@@ -1092,10 +1348,15 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             else { e.i64c(0); }
             e.call(layout.func(layout.gen_first_func));
             e.op(0x0F); // return the generation-fenced handle; never hit unreachable
+        } else if let Some(TStmt::UnwindFrame { ret, saved, msg, kind, pending }) = f.body.first() {
+            e.uw = Some((*ret, *saved, *msg, *kind, *pending));
+            e.unwind_body(&f.body, is_void_main, f.ret);
         } else {
             e.stmts(&f.body);
         }
-        if is_void_main {
+        if e.uw.is_some() {
+            // unwind_body left the snapshotted result on the stack
+        } else if is_void_main {
             e.i64c(0);
         } else if f.ret != Type::Void {
             e.op(0x00); // unreachable: definite-return analysis proved every path returns
@@ -1126,6 +1387,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             active_iterators: Vec::new(),
             state_ticket_slot: None,
             state_write_depth: 0,
+            uw: None,
+            in_recover: false,
         };
         for (ai, a) in p.actors.iter().enumerate() {
             e.code.extend_from_slice(&[0x20, 0]);
@@ -1198,15 +1461,21 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     if let Some(tag_ty) = guest_error_tag_type {
         // Legacy WebAssembly EH: section 13 is ordered between memory (5)
         // and globals (6). One private tag: (i64 error_message) -> ().
-        let mut tags = vec![1, 0]; // count=1, attribute=exception
-        uleb(&mut tags, tag_ty as u64);
+        // Tag 1 (same signature) is the escalated `raise` failure.
+        let count = 1 + u8::from(p.raise_tag);
+        let mut tags = vec![count];
+        for _ in 0..count {
+            tags.push(0); // attribute=exception
+            uleb(&mut tags, tag_ty as u64);
+        }
         section(&mut out, 13, tags);
     }
 
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
     let mut gsec = Vec::new();
     uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
-        + u64::from(!p.generators.is_empty()));
+        + u64::from(!p.generators.is_empty())
+        + u64::from(p.catch_depth));
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
         let heap_start = ((p.data.len() as i64 + 7) & !7)
@@ -1221,6 +1490,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     if !p.generators.is_empty() {
         gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // frame freelist head
+    }
+    if p.catch_depth {
+        gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // active catch/trap depth
     }
     section(&mut out, 6, gsec);
 

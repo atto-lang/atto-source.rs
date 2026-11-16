@@ -226,6 +226,29 @@ pub enum TStmt {
     Expr(TE),
     /// A guest Error(message) carried by a private Wasm exception tag.
     Throw(TE),
+    /// Escalated failure on the separate module-private raise tag. It is
+    /// never matched by `catch`/`trap`; only `recover` or the root sees it.
+    Raise(TE),
+    /// First statement of a top-level body that uses try/defer/recover:
+    /// compiler-owned unwind slots (defer-recover-unwind-v1). `ret` holds
+    /// the snapshotted return value, `msg`/`kind` the pending failure.
+    UnwindFrame { ret: Option<u32>, saved: u32, msg: u32, kind: u32, pending: u32 },
+    /// `try`/`catch (Error)`/`finally`; `saved` snapshots the catch depth.
+    Try {
+        saved: u32,
+        body: Vec<TStmt>,
+        catch: Option<Vec<TStmt>>,
+        finally: Option<Vec<TStmt>>,
+    },
+    /// Registration point of a top-level `defer`: sets `flag`. The body
+    /// runs LIFO at every function exit after registration.
+    Defer { flag: u32, body: Vec<TStmt> },
+    /// Registration of a recovery callback: evaluates factory arguments into
+    /// `args` slots once, sets `flag`. The body runs only while unwinding.
+    Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt> },
+    /// Terminal `c.next()`: delegate the unchanged failure to the next
+    /// older recovery callback or the outer boundary.
+    RecoverNext,
     Return(Option<TE>),
     /// Pull-driven iterator loop; handle is owned by this loop, and closed
     /// at DONE, early break, or before a function-level return.
@@ -317,6 +340,11 @@ pub struct TProgram {
     pub strings: bool,
     /// Emit one module-private Wasm EH tag only when ordinary throw/trap exists.
     pub guest_eh: bool,
+    /// A second private tag for `raise` (escalated failure).
+    pub raise_tag: bool,
+    /// A guest-global active-catch counter exists because some `recover`
+    /// must defer to an outer caller's catch or trap (two-phase dispatch).
+    pub catch_depth: bool,
 }
 
 /// Size in bytes of every field slot in a class instance.
@@ -421,6 +449,12 @@ struct FnCx<'a> {
     state_read_scope: bool,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
+    /// Unwind slots, allocated on the first try/defer/recover.
+    unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
+    /// > 0 while checking an isolated defer/recover body.
+    cleanup_depth: u32,
+    /// Cursor binder of the recovery callback being checked.
+    recover_cursor: Option<String>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -1271,6 +1305,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
+    let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
+    let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
     Ok(TProgram {
         funcs,
         main,
@@ -1282,6 +1318,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         actors: tactors,
         strings,
         guest_eh,
+        raise_tag,
+        catch_depth,
     })
 }
 
@@ -1368,7 +1406,10 @@ fn body_check(
         }
     }
     cx.scopes.push(Vec::new());
-    let tbody = cx.stmts(body)?;
+    let mut tbody = cx.stmts(body)?;
+    if let Some((ret, saved, msg, kind, pending)) = cx.unwind {
+        tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
+    }
     if ret != Type::Void && !returns(&tbody) {
         let what = if matches!(owner, Owner::TopLevel) { "fnc" } else { "method" };
         return Err(Diagnostic::new(
@@ -1386,6 +1427,10 @@ fn body_check(
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
+        TStmt::Raise(_) | TStmt::RecoverNext => true,
+        TStmt::Try { body, catch, finally, .. } =>
+            finally.as_ref().is_some_and(|f| returns(f))
+                || (returns(body) && catch.as_ref().is_none_or(|c| returns(c))),
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
@@ -1473,6 +1518,8 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
+        TStmt::Raise(_) | TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
+        TStmt::Defer { .. } | TStmt::Recover { .. } | TStmt::RecoverNext => false,
     })
 }
 
@@ -1490,6 +1537,13 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
+        TStmt::Raise(e) => any_in(e, f),
+        TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
+            || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
+            || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
+        TStmt::Defer { body, .. } => any_in_stmts(body, f),
+        TStmt::Recover { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
+        TStmt::UnwindFrame { .. } | TStmt::RecoverNext => false,
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => any_in_stmts(b, f),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
     })
@@ -1521,6 +1575,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
 fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Throw(_) => true,
+        TStmt::Raise(_) | TStmt::Try { .. } | TStmt::UnwindFrame { .. } => true,
         TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b))
             || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
         TStmt::Loop { body, update, .. } =>
@@ -1568,7 +1623,92 @@ impl<'a> FnCx<'a> {
             state_read_scope: false,
             imports,
             data,
+            unwind: None,
+            cleanup_depth: 0,
+            recover_cursor: None,
         }
+    }
+
+    /// Allocate the function's unwind slots once (top-level `fnc` only).
+    fn unwind_frame(&mut self, pos: Pos, what: &str) -> R<()> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("'{what}' in class and actor methods needs supervisor/cleanup integration")));
+        }
+        if self.cleanup_depth > 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("'{what}' inside a defer/recover body is not admitted: cleanup must not unwind")));
+        }
+        if self.unwind.is_none() {
+            let ret = if self.ret == Type::Void { None } else { Some(self.temp(self.ret, pos)?) };
+            let saved = self.temp(Type::Bool, pos)?;
+            let msg = self.temp(Type::Int, pos)?;
+            let kind = self.temp(Type::Bool, pos)?;
+            let pending = self.temp(Type::Bool, pos)?;
+            self.unwind = Some((ret, saved, msg, kind, pending));
+        }
+        Ok(())
+    }
+
+    /// defer/recover register only at the function's top-level scope, so
+    /// the static LIFO order equals the dynamic registration order.
+    fn top_registration(&self, pos: Pos, what: &str) -> R<()> {
+        if self.scopes.len() != 2 || self.loops != 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("'{what}' is admitted only at the top level of a fnc body, not in a nested block or loop")));
+        }
+        Ok(())
+    }
+
+    /// Check a cleanup/recovery body in an isolated scope: it cannot see the
+    /// enclosing locals (no by-reference capture lifetime is verified), only
+    /// the explicit factory parameters in `bound`.
+    fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
+        let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
+        let loops = std::mem::replace(&mut self.loops, 0);
+        let moved = std::mem::take(&mut self.moved);
+        let loans = std::mem::take(&mut self.loans);
+        let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
+        self.cleanup_depth += 1;
+        let r = self.stmts(body);
+        self.cleanup_depth -= 1;
+        self.recover_cursor = prev_cursor;
+        self.loans = loans;
+        self.moved = moved;
+        self.loops = loops;
+        self.scopes = scopes;
+        r
+    }
+
+    /// The message of an admitted `throw`/`raise` operand:
+    /// `Error(message)` or `new Error(message)`.
+    fn guest_error_message(&mut self, error: &Expr, what: &str, pos: Pos) -> R<TE> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("ordinary {what} in class and actor methods needs supervisor/cleanup integration")));
+        }
+        if self.cleanup_depth > 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("'{what}' inside a defer/recover body would replace the pending failure")));
+        }
+        let args = match &error.kind {
+            ExprKind::Call(name, args) | ExprKind::New(name, args) if name == "Error" => args,
+            _ => return Err(type_err(error.pos,
+                format!("{what} requires an Error subclass; this browser slice admits only {what} Error(message)"))),
+        };
+        if args.len() != 1 {
+            return Err(Diagnostic::new(error.pos, "E_ARITY",
+                "Error(message) requires exactly one string argument"));
+        }
+        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
+            return Err(Diagnostic::new(error.pos, "E_RESERVED",
+                "the guest Error constructor cannot be shadowed"));
+        }
+        let msg = self.value(&args[0])?;
+        if msg.ty != Type::Str {
+            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
+        }
+        Ok(msg)
     }
 
     fn tn(&self, t: Type) -> String {
@@ -1754,6 +1894,85 @@ impl<'a> FnCx<'a> {
                 TStmt::StateCriticalWrite(checked?)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
+            Stmt::Expr(Expr { kind: ExprKind::MethodCall(base, method, args), pos })
+                if method == "next" && args.is_empty()
+                    && matches!(&base.kind, ExprKind::Var(n) if self.recover_cursor.as_deref() == Some(n.as_str())) =>
+            {
+                let _ = pos;
+                TStmt::RecoverNext
+            }
+            Stmt::Raise(error, pos) => {
+                let msg = self.guest_error_message(error, "raise", *pos)?;
+                TStmt::Raise(msg)
+            }
+            Stmt::Try { body, catch, finally, pos } => {
+                self.unwind_frame(*pos, "try")?;
+                let saved = self.temp(Type::Bool, *pos)?;
+                // break/continue may not bypass a handler or finally block.
+                let loops = std::mem::replace(&mut self.loops, 0);
+                let checked = (|| -> R<TStmt> {
+                    let body = self.scoped(body)?;
+                    // Conservative ownership: the handler and finally see
+                    // every move the body might have made before failing.
+                    let catch = match catch {
+                        Some((_binder, handler)) => Some(self.scoped(handler)?),
+                        None => None,
+                    };
+                    let finally = match finally {
+                        Some(cleanup) => {
+                            let cleanup = self.scoped(cleanup)?;
+                            if exits_anywhere(&cleanup) {
+                                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                                    "a finally block must not return, throw or raise: it would replace the pending outcome"));
+                            }
+                            Some(cleanup)
+                        }
+                        None => None,
+                    };
+                    Ok(TStmt::Try { saved, body, catch, finally })
+                })();
+                self.loops = loops;
+                checked?
+            }
+            Stmt::Defer { body, pos } => {
+                self.top_registration(*pos, "defer")?;
+                self.unwind_frame(*pos, "defer")?;
+                let flag = self.temp(Type::Bool, *pos)?;
+                let body = self.isolated(Vec::new(), None, body)?;
+                TStmt::Defer { flag, body }
+            }
+            Stmt::Recover { params, err: _, cursor, body, args, pos } => {
+                self.top_registration(*pos, "recover")?;
+                self.unwind_frame(*pos, "recover")?;
+                if params.len() != args.len() {
+                    return Err(Diagnostic::new(*pos, "E_ARITY", format!(
+                        "recovery factory expects {} argument(s), found {}", params.len(), args.len())));
+                }
+                let mut sets = Vec::new();
+                let mut bound = Vec::new();
+                for ((name, ty, ppos), arg) in params.iter().zip(args) {
+                    let ty = self.resolve(*ty, *ppos)?;
+                    if !matches!(ty, Type::Int | Type::Bool | Type::Str | Type::Float) {
+                        return Err(Diagnostic::new(*ppos, "E_UNSUPPORTED_TYPE",
+                            "recovery factory parameters are restricted to scalar and string values"));
+                    }
+                    let v = self.consume_expected(arg, ty)?;
+                    if v.ty != ty {
+                        return Err(type_err(arg.pos, format!(
+                            "recovery factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty))));
+                    }
+                    let slot = self.temp(ty, *ppos)?;
+                    sets.push((slot, v));
+                    bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
+                }
+                let flag = self.temp(Type::Bool, *pos)?;
+                let body = self.isolated(bound, Some(cursor.clone()), body)?;
+                if !returns(&body) {
+                    return Err(Diagnostic::new(*pos, "E_RETURN",
+                        "a recovery handler must return a value or call the cursor's next() on every path"));
+                }
+                TStmt::Recover { flag, args: sets, body }
+            }
             Stmt::Expr(e) => {
                 let v = self.expr(e)?;
                 if v.ty == Type::GeneratorInt {
@@ -1792,6 +2011,10 @@ impl<'a> FnCx<'a> {
                 })();
                 self.pop_scope();
                 checked?
+            }
+            Stmt::Return(_, pos) if self.cleanup_depth > 0 && self.recover_cursor.is_none() => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "a defer body cannot return: cleanup must not replace the pending outcome"));
             }
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
@@ -2542,28 +2765,7 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn guest_throw(&mut self, error: &Expr, pos: Pos) -> R<TStmt> {
-        if self.owner != Owner::TopLevel {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "ordinary throw in class and actor methods needs supervisor/cleanup integration"));
-        }
-        let args = match &error.kind {
-            ExprKind::Call(name, args) if name == "Error" => args,
-            _ => return Err(type_err(error.pos,
-                "throw requires an Error subclass; this browser slice admits only throw Error(message)")),
-        };
-        if args.len() != 1 {
-            return Err(Diagnostic::new(error.pos, "E_ARITY",
-                "Error(message) requires exactly one string argument"));
-        }
-        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
-            return Err(Diagnostic::new(error.pos, "E_RESERVED",
-                "the guest Error constructor cannot be shadowed"));
-        }
-        let msg = self.value(&args[0])?;
-        if msg.ty != Type::Str {
-            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
-        }
-        Ok(TStmt::Throw(msg))
+        Ok(TStmt::Throw(self.guest_error_message(error, "throw", pos)?))
     }
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
@@ -3747,4 +3949,27 @@ pub fn check_target_actor_interface(program: &Program) -> R<()> {
         }
     }
     Ok(())
+}
+
+/// Any return/throw/raise/cursor delegation anywhere in `body`, including
+/// nested blocks: a finally block must never replace the pending outcome.
+fn exits_anywhere(body: &[TStmt]) -> bool {
+    stmt_exists(body, &|s| matches!(s,
+        TStmt::Return(_) | TStmt::Throw(_) | TStmt::Raise(_) | TStmt::RecoverNext))
+}
+
+/// Whether any statement in `body` (recursively) satisfies `f`.
+fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
+    body.iter().any(|s| f(s) || match s {
+        TStmt::If(arms, other) => arms.iter().any(|(_, b)| stmt_exists(b, f))
+            || other.as_ref().is_some_and(|b| stmt_exists(b, f)),
+        TStmt::Loop { body, update, .. } => stmt_exists(body, f) || stmt_exists(update, f),
+        TStmt::ForIn { body, .. } => stmt_exists(body, f),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => stmt_exists(b, f),
+        TStmt::Try { body, catch, finally, .. } => stmt_exists(body, f)
+            || catch.as_ref().is_some_and(|b| stmt_exists(b, f))
+            || finally.as_ref().is_some_and(|b| stmt_exists(b, f)),
+        TStmt::Defer { body, .. } | TStmt::Recover { body, .. } => stmt_exists(body, f),
+        _ => false,
+    })
 }
