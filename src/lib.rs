@@ -15,6 +15,8 @@ pub mod lexer;
 pub mod parser;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
+/// Syntax-only structural tilde and named-call binder; not guest lowering.
+pub mod structural_syntax;
 pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;
