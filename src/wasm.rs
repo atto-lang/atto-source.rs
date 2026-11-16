@@ -27,6 +27,7 @@ use crate::ast::{BinOp, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
+mod channel_guest;
 
 pub const MAX_OUTPUT: usize = 1 << 20;
 pub const PANIC_OVERFLOW: i32 = 1;
@@ -511,6 +512,16 @@ impl Emit<'_> {
             TExpr::Barrier(count) => {self.expr(count);self.call(self.l.import(Import::Barrier));}
             TExpr::TaskStart(idx) => {self.i32c(*idx as i32);self.call(self.l.import(Import::TaskStart));}
             TExpr::TaskAwait(handle) => {self.expr(handle);self.call(self.l.import(Import::TaskAwait));}
+            TExpr::ChannelOpen {capacity,scratch,status,result} =>
+                self.channel_open(*capacity,*scratch,*status,*result),
+            TExpr::ChannelRead {channel,scratch,status} =>
+                self.channel_read(channel,*scratch,*status),
+            TExpr::ChannelSend {channel,value,status,result} =>
+                self.channel_send(channel,value,*status,*result),
+            TExpr::ChannelFinish {channel,operation,status,result} =>
+                self.channel_finish(channel,*operation,*status,*result),
+            TExpr::ChannelAwait {ticket,scratch,status,result,option} =>
+                self.channel_await(ticket,*scratch,*status,*result,*option),
             // Value stays on the Wasm stack over the void JSPI host call.
             TExpr::AwaitYield(value) => {self.expr(value);self.call(self.l.import(Import::Cooperate));}
             TExpr::Call(f, args) => {
@@ -1055,6 +1066,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::StateRegister => Sig(vec![I32], vec![]),
             Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
             Import::StateLeave => Sig(vec![I64], vec![]),
+            Import::ChannelOpen | Import::ChannelNbRead | Import::ChannelAwaitRead =>
+                Sig(vec![I32,I32], vec![I32]),
+            Import::ChannelSend => Sig(vec![I32,I64], vec![I32]),
+            Import::ChannelCancel | Import::ChannelClose | Import::ChannelRelease =>
+                Sig(vec![I32],vec![I32]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1362,11 +1378,22 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     // Deliberately versioned and opt-in: the public guest.v2 contract
     // remains unchanged for programs without actual async imports.
-    if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate)) {
+    let use_channel=p.imports.iter().any(|i| matches!(i,
+        Import::ChannelOpen | Import::ChannelSend | Import::ChannelNbRead |
+        Import::ChannelAwaitRead | Import::ChannelCancel |
+        Import::ChannelClose | Import::ChannelRelease));
+    if use_channel || p.imports.iter().any(|i| matches!(i,
+        Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.async");
         marker.push(2); // JSPI + mandatory cooperative yield; old v1 guests must fail closed
         section(&mut out, 0, marker);
+    }
+    if use_channel {
+        let mut marker=Vec::new();
+        name(&mut marker,"atto.channel_int");
+        marker.push(1);
+        section(&mut out,0,marker);
     }
     out
 }

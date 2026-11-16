@@ -106,6 +106,11 @@ try{
     },expected+' (last browser output: '+lastOutput+')');
     return state;
   };
+  const channelGuest="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(0);\n  match opened over\n    on Err(error) -> { return -3; }\n    on Ok(channel) -> {\n      val pending: Future<Result<Option<int>,IoError>> = nb readch channel;\n      val sent: Result<void,IoError> = channel.send(41);\n      match sent over\n        on Err(error) -> { return -2; }\n        on Ok -> {\n          val read_result: Result<Option<int>,IoError> = await pending;\n          match read_result over\n            on Err(error) -> { return -1; }\n            on Ok(item) -> {\n              match item over\n                on None -> { return 0; }\n                on Some(value) -> { return value + 1; }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelGuest,'main() -> 42'),/main\(\) -> 42/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'channel read await must yield cooperatively once');
+  console.log('PASS compiled AttoLang Channel<int> read Future, Some(41) -> 42');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);

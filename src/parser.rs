@@ -2199,7 +2199,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Channel" | "Future"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -2521,6 +2521,7 @@ impl Parser {
                 }
                 "Some" | "Ok" | "Err" => {
                     self.advance();
+                    if w=="Ok" && *self.peek()!=Tok::LParen {return Ok(Pattern::Adt(w,None));}
                     self.expect(Tok::LParen, "'(' after payload variant")?;
                     let (name, _) = self.ident("a payload binding name")?;
                     self.expect(Tok::RParen, "')' after payload binding")?;
@@ -2964,6 +2965,11 @@ impl Parser {
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
             },
+            Tok::Ident(s) if s == "nb" && self.word_at(1)==Some("readch") => {
+                self.advance();self.advance();
+                let ch=self.parse_postfix()?;
+                return Ok(Expr {kind:ExprKind::Call("$atto_ch_read".into(),vec![ch]),pos});
+            },
             Tok::Ident(s) if s == "await" => {
                 self.advance();
                 let inner = self.parse_unary()?;
@@ -3295,6 +3301,12 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "Channel" if *self.peek_at(1)==Tok::Lt => {
+                    self.advance();self.expect(Tok::Lt,"'<'")?;
+                    self.expect_word("int")?;self.expect(Tok::Gt,"'>'")?;
+                    self.expect(Tok::Dot,"'.'")?;self.expect_word("bounded")?;
+                    ExprKind::Call("$atto_ch_open".into(),self.parse_args()?)
+                },
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }

@@ -1,3 +1,4 @@
+import {createChannelIntGuestV1,verifyChannelIntGuestV1,CHANNEL_INT_V1_IMPORTS} from '/runtime/browser/channel_int_guest_v1.mjs';
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
 function javaDouble(x){
@@ -34,7 +35,9 @@ self.onmessage=async ({data})=>{
     const useAsync=asyncSections.length===1&&new Uint8Array(asyncSections[0]).length===1&&new Uint8Array(asyncSections[0])[0]===2;
     if(asyncSections.length&&!useAsync)throw new Error('invalid async marker');
     if(useAsync&&(typeof WebAssembly.Suspending!=='function'||typeof WebAssembly.promising!=='function'))throw new Error('JSPI unsupported');
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',...(useAsync?['sleep_ms','barrier','task_start','task_await','cooperate']:[])]);
+    const useChannel=WebAssembly.Module.customSections(guest,'atto.channel_int').length>0;
+    if(useChannel&&!verifyChannelIntGuestV1(out,guest))throw new Error('invalid channel ABI marker');
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',...(useAsync?['sleep_ms','barrier','task_start','task_await','cooperate']:[]),...(useChannel?CHANNEL_INT_V1_IMPORTS:[])]);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
@@ -88,6 +91,11 @@ self.onmessage=async ({data})=>{
         jobs.delete(handle);
         return await job.p;
       });
+    }
+    if(useChannel){
+      const runtime=createChannelIntGuestV1({getMemory:()=>instance?.exports?.memory});
+      Object.assign(atto,runtime.imports);
+      atto.channel_int_await_read_v1=new WebAssembly.Suspending(runtime.imports.channel_int_await_read_v1);
     }
     instance=new WebAssembly.Instance(guest,{atto});
     let value;
