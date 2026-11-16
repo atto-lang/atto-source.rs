@@ -48,6 +48,7 @@ const RESERVED: &[&str] = &[
     "pure",
     "async",
     "suspends",
+    "susp",
     "generator",
     "yield",
     "nlex",
@@ -391,15 +392,22 @@ impl Parser {
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
         ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+            || (matches!(self.word_at(n), Some("susp" | "suspends"))
+                && self.word_at(n + 1) == Some("fnc"))
     }
 
     fn parse_type(&mut self) -> R<Type> {
         let pos = self.pos();
+        let suspends = self.eat_word("susp") || self.eat_word("suspends");
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
             _ => return Err(self.expected("a type")),
         };
         self.advance();
+        if suspends && name != "fnc" {
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                "susp requires a callable type: susp fnc(...) -> T"));
+        }
         let ty = match name.as_str() {
             "int" => Type::Int,
             "fnc" => {
@@ -433,7 +441,8 @@ impl Parser {
                     return Err(Diagnostic::new(result_pos, "E_UNSUPPORTED_TYPE",
                         "callable return type must be scalar or void"));
                 }
-                let spelling = format!("fnc({})->{}",
+                let spelling = format!("{}fnc({})->{}",
+                    if suspends { "susp " } else { "" },
                     params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
                     result.name());
                 // Identical contracts have identical Type identity across
@@ -821,7 +830,7 @@ impl Parser {
                         return Err(unsupported(self.pos(), "static functions in actors"));
                     }
                     self.advance();
-                    let suspends = self.eat_word("suspends");
+                    let suspends = self.eat_word("susp") || self.eat_word("suspends");
                     if let Some(w @ ("async" | "structural")) = self.word_at(0) {
                         return Err(unsupported(self.pos(), &format!("'{w}' static functions")));
                     }
@@ -896,7 +905,7 @@ impl Parser {
                     let method = self.parse_method(public, false, false)?;
                     m.methods.push(method);
                 }
-                Some("suspends") => {
+                Some("susp" | "suspends") => {
                     self.advance();
                     if !(self.eat_word("fnc") || self.eat_word("mtd") || self.eat_word("method")) {
                         return Err(self.expected("'fnc' or 'mtd' after 'suspends'"));
@@ -1117,7 +1126,7 @@ impl Parser {
         let start = self.pos();
         self.eat_word("pub");
         let is_pure = self.eat_word("pure");
-        let suspends = self.eat_word("suspends");
+        let suspends = self.eat_word("susp") || self.eat_word("suspends");
         if is_pure && suspends {
             return Err(Diagnostic::new(self.pos(), "E_PURE", "pure fnc cannot declare suspends"));
         }
@@ -1128,6 +1137,7 @@ impl Parser {
             "async",
             "suspend",
             "suspends",
+            "susp",
             "nlex",
             "abstract",
             "structural",
@@ -1139,7 +1149,9 @@ impl Parser {
             }
         }
         if suspends {
-            self.expect_word("fnc")?;
+            if !(self.eat_word("fnc") || self.eat_word("routine")) {
+                return Err(self.expected("'fnc' or 'routine' after susp"));
+            }
         } else if !(self.eat_word("fnc") || self.eat_word("routine")) {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
@@ -3089,7 +3101,7 @@ impl Parser {
         result
     }
 
-    fn parse_lambda(&mut self) -> R<ExprKind> {
+    fn parse_lambda(&mut self, suspends: bool) -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
@@ -3165,7 +3177,7 @@ impl Parser {
         } else {
             LambdaBody::Expression(Box::new(self.parse_expr()?))
         };
-        Ok(ExprKind::Lambda { params, return_type, body })
+        Ok(ExprKind::Lambda { params, return_type, body, suspends })
     }
 
     fn parse_array_literal(&mut self) -> R<ExprKind> {
@@ -3244,6 +3256,14 @@ impl Parser {
                     let args = self.parse_args()?;
                     ExprKind::New(class, args)
                 }
+                "susp" | "suspends" => {
+                    self.advance();
+                    if *self.peek() != Tok::Pipe {
+                        return Err(Diagnostic::new(pos, "E_SYNTAX",
+                            "susp must precede a lambda: susp |args| -> ..."));
+                    }
+                    self.parse_lambda(true)?
+                }
                 "task" => {
                     self.advance();
                     if *self.peek() != Tok::LBrace {return Err(self.expected("a task block '{ ... }'"));}
@@ -3296,7 +3316,7 @@ impl Parser {
                     ExprKind::Var(s)
                 }
             },
-            Tok::Pipe => self.parse_lambda()?,
+            Tok::Pipe => self.parse_lambda(false)?,
             Tok::LBracket => self.parse_array_literal()?,
             Tok::LBrace => return Err(unsupported(pos, "record literals")),
             _ => return Err(self.expected("an expression")),
