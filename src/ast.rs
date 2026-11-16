@@ -59,6 +59,25 @@ impl Type {
     }
 }
 
+/// Nominal application-message reply mode. Never inferred from handler return
+/// type, ordinary sends, pipeline emits or supervisor CONTROL traffic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActorResponseMode {
+    OneWay,
+    Unary(String),
+    Stream(String),
+}
+
+/// Compiler-visible contract IR for a specific actor's admitted message.
+/// SOURCE_ONLY until guest runtime correlation and suspension are wired.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActorMessageContract {
+    pub actor: String,
+    pub message: String,
+    pub response: ActorResponseMode,
+    pub pos: Pos,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Program {
     pub funcs: Vec<Func>,
