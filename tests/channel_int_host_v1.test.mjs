@@ -165,3 +165,29 @@ test('delayed read resumes through Worker event loop and preserves checked resul
   assert.deepEqual(settled,item(41));
   assert.equal(settled.value.value+1n,42n);
 });
+
+
+test('release reclaims channel quota only after closing and consuming EOF Future',async()=>{
+  const rt=new ChannelIntHostV1({maxChannels:1,maxTickets:2,maxCapacity:1});
+  const a=rt.open(1).value;
+  assert.deepEqual(rt.open(1),error('Quota'));
+  assert.deepEqual(rt.release(a),error('NotClosed'));
+  const ticket=rt.nb_read(a).value;
+  rt.close(a);
+  assert.deepEqual(rt.release(a),error('Busy'));
+  assert.deepEqual(await rt.await_read(ticket),eof);
+  assert.deepEqual(rt.release(a),{ok:true,value:{released:true}});
+  assert.deepEqual(rt.release(a),error('InvalidHandle'));
+  assert.deepEqual(rt.send(a,42n),error('InvalidHandle'));
+  const b=rt.open(1);
+  assert.equal(b.ok,true);
+  assert.notEqual(b.value,a,'closed capabilities must never recycle');
+});
+
+test('release does not discard buffered payloads after close',async()=>{
+  const {rt,ch}=fresh(2);
+  rt.send(ch,41n);rt.close(ch);
+  assert.deepEqual(rt.release(ch),error('Busy'));
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(41));
+  assert.deepEqual(rt.release(ch),{ok:true,value:{released:true}});
+});
