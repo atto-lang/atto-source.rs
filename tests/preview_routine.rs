@@ -57,3 +57,37 @@ fn generated_callback_names_cannot_be_forged() {
     "#, "E_RESERVED");
     pass("pub fnc main(): int { return 42; }");
 }
+
+#[test]
+fn mutually_recursive_routines_fail_closed_even_without_direct_self_calls() {
+    fail(r#"
+        routine even(int n): int {
+            if n == 0 then return 1; fi
+            return odd(n - 1);
+        }
+        routine odd(int n): int {
+            if n == 0 then return 0; fi
+            return even(n - 1);
+        }
+        pub fnc main(): int { return even(4); }
+    "#, "E_ROUTINE_RECURSION");
+}
+
+#[test]
+fn indirect_routine_recursion_through_ordinary_function_is_forbidden() {
+    fail(r#"
+        routine start(int n): int { return bridge(n); }
+        fnc bridge(int n): int { return start(n); }
+        pub fnc main(): int { return start(2); }
+    "#, "E_ROUTINE_RECURSION");
+}
+
+#[test]
+fn acyclic_routine_call_chain_still_compiles_without_false_recursion() {
+    pass(r#"
+        routine increment(int n): int { return n + 1; }
+        fnc bridge(int n): int { return increment(n); }
+        routine double_bridge(int n): int { return bridge(n) * 2; }
+        pub fnc main(): int { return double_bridge(20); }
+    "#);
+}
