@@ -224,6 +224,53 @@ try{
   assert.match(await run(channelCancelAfterSend,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
   console.log('PASS compiled guest Channel<int>: send-before-cancel preserves Some(41) and returns AlreadySettled');
+
+  // These execute actual compiler-emitted guest Wasm; release must succeed
+  // before Worker teardown so the test detects missing lexical cleanup.
+  const lexicalCleanup = `pub susp fnc main(): int {
+    val opened = Channel<int>.bounded(0);
+    match opened over
+      on Err(error) -> { return -1; }
+      on Ok(channel) -> {
+        { val pending = nb readch channel; }
+        val closed = channel.close();
+        val released = channel.release();
+        match released over
+          on Err(error) -> { return -2; }
+          on Ok -> { return 42; }
+        end
+      }
+    end
+  }`;
+  assert.match(await run(lexicalCleanup,'main() -> 42'),/main\\(\\) -> 42/);
+  console.log('PASS compiled guest: lexical Future cleanup releases channel before teardown');
+
+  const rehomeCleanup = `pub susp fnc main(): int {
+    val opened = Channel<int>.bounded(0);
+    match opened over
+      on Err(error) -> { return -1; }
+      on Ok(channel) -> {
+        {
+          val pending = nb readch channel;
+          val sent = channel.send(41);
+        }
+        val second = nb readch channel;
+        val outcome = await second;
+        match outcome over
+          on Err(error) -> { return -2; }
+          on Ok(item) -> {
+            match item over
+              on None -> { return -3; }
+              on Some(value) -> { return value + 1; }
+            end
+          }
+        end
+      }
+    end
+  }`;
+  assert.match(await run(rehomeCleanup,'main() -> 42'),/main\\(\\) -> 42/);
+  console.log('PASS compiled guest: auto drop rehomes committed Some(41) without data loss');
+
   assert.match(await run('pub fnc main(): int { val pending = nb readch 41; return 0; }','E_EFFECT'),/E_EFFECT/);
   console.log('PASS compiled guest negative: nb readch without susp fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
