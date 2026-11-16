@@ -159,24 +159,37 @@ fn verify(headers: &[TypeDeclaration]) -> R<()> {
                 format!("inline nominal '{nominal}' conflicts with a type alias")));
         }
     }
-    // Reject local cycles made only of aliases, including those declared
-    // before their definitions. Unknown names remain unresolved until linking.
-    let mut aliases = BTreeMap::<&str, &str>::new();
+    // Check all local alias dependencies, including references inside unions.
+    // Nominal definitions terminate the graph; unknown imported/forward names
+    // are intentionally left unresolved for the later linker.
+    let mut aliases: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (name, (decl, def)) in &slots {
         let expr = def.or(*decl).expect("type group has a declaration");
-        if let TypeExpression::Name(to) = &expr.expression {
-            aliases.insert(name, to);
-        }
+        let edges = match &expr.expression {
+            TypeExpression::Name(n) => vec![n.as_str()],
+            TypeExpression::Union(items) => items.iter().map(String::as_str).collect(),
+            TypeExpression::Interface(_) | TypeExpression::Trait(_) => Vec::new(),
+        };
+        aliases.insert(name, edges);
     }
-    for name in aliases.keys() {
-        let mut seen = BTreeSet::new();
-        let mut at = *name;
-        while let Some(next) = aliases.get(at) {
-            if !seen.insert(at) {
-                return Err(Diagnostic::new(Pos::default(), "E_TYPE_CYCLE",
-                    format!("cyclic type alias involving '{at}'")));
+    // Iterative DFS avoids recursion and remains bounded by MAX_FUNCS and
+    // the lexer token budget, even with adversarial deep alias chains.
+    for root in aliases.keys() {
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![*root];
+        while let Some(at) = pending.pop() {
+            if !visited.insert(at) { continue; }
+            if let Some(edges) = aliases.get(at) {
+                for next in edges {
+                    if next == root {
+                        return Err(Diagnostic::new(Pos::default(), "E_TYPE_CYCLE",
+                            format!("cyclic type alias involving '{root}'")));
+                    }
+                    if aliases.contains_key(next) {
+                        pending.push(next);
+                    }
+                }
             }
-            at = next;
         }
     }
     Ok(())
