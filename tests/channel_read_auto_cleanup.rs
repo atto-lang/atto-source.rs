@@ -73,7 +73,7 @@ pub susp fnc main(): int {
 fn lexical_early_exit_and_committed_rehoming_emit_guest_abandon_import() {
     for source in [SCOPED, COMMITTED, BREAK] {
         let wasm = compile(source).unwrap_or_else(|e| panic!("cleanup source must compile: {e}"));
-        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
         assert!(wasm.windows(b"channel_int_abandon_v1".len())
             .any(|w| w == b"channel_int_abandon_v1"), "no compiler-generated abandon ABI");
         assert_eq!(wasm, compile(source).expect("deterministic cleanup lowering"));
