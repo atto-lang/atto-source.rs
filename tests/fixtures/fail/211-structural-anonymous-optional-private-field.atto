@@ -1,0 +1,12 @@
+// expect-error: E_PRIVATE
+// Optional presence never permits inspection of a private field.
+define class Pet as
+    string foo = "dog";
+end
+pub fnc main(): int {
+    val p = new Pet();
+    match p over
+        on {foo?: "dog"} -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
