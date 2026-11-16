@@ -7,6 +7,7 @@
 pub enum ArenaError {
     InvalidOwner,
     InvalidArena,
+    CapacityTooLarge,
     CapacityExhausted,
     WrongOwner,
     WrongArena,
@@ -62,6 +63,10 @@ struct Slot<T> {
 /// arena IDs, and never reuse a full identity triple while handles may exist.
 /// Memory isolation, FFI provenance, scheduling and cross-actor sharing are
 /// enforced by future runtime contracts, not by these identifiers alone.
+/// Limit fixed slot count and inline bytes even before the allocator is integrated.
+pub const MAX_ARENA_SLOTS: usize = 4096;
+pub const MAX_ARENA_INLINE_BYTES: usize = 4 * 1024 * 1024;
+
 #[derive(Debug)]
 pub struct FixedActorArena<T, const N: usize> {
     actor_id: u64,
@@ -78,6 +83,12 @@ impl<T, const N: usize> FixedActorArena<T, N> {
         }
         if arena_id == 0 {
             return Err(ArenaError::InvalidArena);
+        }
+        let inline_bytes = std::mem::size_of::<Slot<T>>()
+            .checked_mul(N)
+            .ok_or(ArenaError::CapacityTooLarge)?;
+        if N > MAX_ARENA_SLOTS || inline_bytes > MAX_ARENA_INLINE_BYTES {
+            return Err(ArenaError::CapacityTooLarge);
         }
         Ok(Self {
             actor_id,
