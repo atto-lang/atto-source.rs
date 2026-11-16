@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+// Literal mismatch must fall through, not return a shape/type false positive.
+define class Pet as
+    pub string foo = "cat";
+end
+pub fnc main(): int {
+    val value = new Pet();
+    match value over
+        on {foo: "dog"} -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
