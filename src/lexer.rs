@@ -18,6 +18,8 @@ pub enum Tok {
     Float(u64),
     Str(String),
     LParen,
+    /// Contiguous `(>` opens a scoped comma sequence expression.
+    SequenceOpen,
     RParen,
     LBrace,
     RBrace,
@@ -282,6 +284,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         }
         let next = chars.get(i + 1).copied();
         let (tok, len) = match (c, next) {
+            ('(', Some('>')) => (Tok::SequenceOpen, 2),
             ('(', _) => (Tok::LParen, 1),
             (')', _) => (Tok::RParen, 1),
             ('{', _) => (Tok::LBrace, 1),
