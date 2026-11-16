@@ -63,6 +63,8 @@ impl Type {
 pub struct Program {
     pub funcs: Vec<Func>,
     pub classes: Vec<ClassDecl>,
+    /// Interface requirements and trait default methods; lowered before codegen.
+    pub contracts: Vec<ContractDecl>,
     pub enums: Vec<EnumDecl>,
     pub actors: Vec<ActorDecl>,
     /// Optional non-executable out-of-line actor interface in the production AST.
@@ -125,6 +127,8 @@ pub struct Method {
     pub pos: Pos,
     pub public: bool,
     pub is_static: bool,
+    /// True only for a source-declared explicit instance override.
+    pub override_member: bool,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
@@ -137,7 +141,17 @@ pub struct Constructor {
     pub body: Vec<Stmt>,
 }
 
-/// `[pub] define class Name as { member } end` (grammar.ebnf `class_decl`).
+/// Interface requirements and reusable trait method defaults.
+#[derive(Clone, Debug)]
+pub struct ContractDecl {
+    pub name: String,
+    pub pos: Pos,
+    pub public: bool,
+    pub interface: bool,
+    pub methods: Vec<Method>,
+}
+
+/// `define class Name [extends Bases] [implements Contracts] as ... end`.
 #[derive(Clone, Debug)]
 pub struct ClassDecl {
     pub name: String,
@@ -146,6 +160,9 @@ pub struct ClassDecl {
     /// Distinct nominal protected-state declaration, never an ordinary class.
     /// Only a restricted Worker-local scalar backend has executable lowering.
     pub state_container: bool,
+    /// Named superclasses and interface/trait contracts, checked and flattened.
+    pub bases: Vec<(String, Pos)>,
+    pub implements: Vec<(String, Pos)>,
     pub fields: Vec<Field>,
     pub ctor: Option<Constructor>,
     pub methods: Vec<Method>,
