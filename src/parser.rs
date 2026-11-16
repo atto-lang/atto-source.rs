@@ -2218,15 +2218,34 @@ impl Parser {
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
         }
-        if *self.peek() != Tok::Assign {
+        // Declaration-first directional binding is sugar for a single
+        // value-producing prefix receive. Build the SAME AST node as
+        // `val name = << c`, so type/effect/borrow/runtime checks cannot drift.
+        // Numeric shifts and nested generic closing delimiters are not read
+        // operators; the pair must be adjacent on the same source line.
+        let read_pair = *self.peek() == Tok::Lt && *self.peek_at(1) == Tok::Lt
+            && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+            && self.toks[self.i].pos.col.checked_add(1)
+                == Some(self.toks[self.i + 1].pos.col);
+        let init = if self.eat(&Tok::Assign) {
+            self.parse_expr()?
+        } else if read_pair {
+            if kind == BindKind::Const {
+                return Err(Diagnostic::new(self.pos(), "E_CONST_EFFECT",
+                    "runtime channel reads cannot initialize const; use val or let"));
+            }
+            let op_pos = self.pos();
+            self.advance();
+            self.advance();
+            let source = self.parse_expr()?;
+            Expr { kind: ExprKind::PrefixRead(Box::new(source)), pos: op_pos }
+        } else {
             return Err(Diagnostic::new(
                 self.pos(),
                 "E_UNINITIALIZED",
-                format!("binding '{name}' needs an initializer"),
+                format!("binding '{name}' needs '=' or a contiguous '<<' readable initializer"),
             ));
-        }
-        self.advance();
-        let init = self.parse_expr()?;
+        };
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
