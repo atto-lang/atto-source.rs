@@ -1,0 +1,10 @@
+// expect-error: E_UNBOUND
+// Ok() is a discard and does not manufacture a value variable for its guard.
+fnc checked(): Result<int,string> { return Ok(41); }
+pub fnc main(): int {
+    return match<int> checked() over
+        on Ok() when value > 0 : int -> 42,
+        on Ok(_) : int -> 1,
+        on Err(_) : int -> 0,
+    end;
+}
