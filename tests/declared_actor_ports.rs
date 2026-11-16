@@ -384,3 +384,41 @@ fn external_ingress_marker_never_grants_an_ordinary_public_method() {
         assert_eq!(diagnostic(source), "E_SIGNATURE", "{source}");
     }
 }
+
+#[test]
+fn attached_receive_is_never_a_direct_self_method_call() {
+    let source = "declare actor Foo receives int;
+        mtd (Foo self) receive(ActorMail<int> m): void {}
+        mtd (Foo self) retry(): void { self.receive(42); }";
+    assert_eq!(diagnostic(source), "E_ISOLATION");
+}
+
+#[test]
+fn declared_receive_is_sealed_even_when_namespace_lookup_has_matching_arity() {
+    use atto_compiler::target_syntax::resolve_receiver_header;
+    let source = "use namespace workers;
+        declare actor Foo receives int;
+        mtd (Foo self) receive(ActorMail<int> m): void {}";
+    let (headers, _) = target(source).unwrap();
+    let err = resolve_receiver_header(&headers, Some("workers"), "Foo", "receive", 1,
+                                      false, Pos::default()).unwrap_err();
+    assert_eq!(err.code, "E_ISOLATION");
+    let err = resolve_receiver_header(&headers, Some("workers"), "Foo", "receive", 1,
+                                      true, Pos::default()).unwrap_err();
+    assert_eq!(err.code, "E_ISOLATION");
+}
+
+#[test]
+fn ordinary_attached_methods_remain_resolvable_without_exposing_receive() {
+    use atto_compiler::target_syntax::resolve_receiver_header;
+    let source = "declare actor Foo receives int;
+        mtd (Foo self) receive(ActorMail<int> m): void {}
+        mtd (Foo self) count(): int { return 1; }";
+    let (headers, typed) = target(source).unwrap();
+    assert_eq!(typed.mailbox_ingresses.len(), 1);
+    assert_eq!(typed.receivers.len(), 1);
+    assert_eq!(resolve_receiver_header(&headers, None, "Foo", "count", 0,
+                                      false, Pos::default()).unwrap().name, "count");
+    assert_eq!(resolve_receiver_header(&headers, None, "Foo", "receive", 1,
+                                      false, Pos::default()).unwrap_err().code, "E_ISOLATION");
+}
