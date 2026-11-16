@@ -1794,7 +1794,18 @@ impl Parser {
     fn parse_nb_await_read_continuation(&mut self) -> R<Stmt> {
         let at = self.pos();
         self.expect_word("nb")?;
-        let _source = self.parse_postfix()?;
+        // The restricted browser parser intentionally rejects stdio.in as
+        // an executable ordinary member expression. Admit this *syntactic*
+        // receiver only here, without bypassing eventual lexical shadowing
+        // or pretending stdin has a guest host adapter.
+        if self.word_at(0) == Some("stdio")
+            && *self.peek_at(1) == Tok::Dot
+            && self.word_at(2) == Some("in")
+        {
+            for _ in 0..3 { self.advance(); }
+        } else {
+            let _source = self.parse_postfix()?;
+        }
         if *self.peek() != Tok::Gt {
             return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
         }
