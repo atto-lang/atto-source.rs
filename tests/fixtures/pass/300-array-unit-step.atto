@@ -1,0 +1,3 @@
+// expect-exit: 3
+// java: target-only
+pub fnc main(): int { val a = [1,2,3]; return a[::1][-1]; }
