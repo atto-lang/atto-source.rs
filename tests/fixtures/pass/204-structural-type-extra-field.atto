@@ -1,0 +1,18 @@
+// expect-exit: 42
+// java: rejects
+define class Tiny as
+    pub int x = 0;
+end
+define class Wide as
+    pub int x = 42;
+    pub int y = 3;
+end
+pub fnc main(): int {
+    val value = new Wide();
+    match value over
+        on is ~ Tiny as val p ->
+            return p.x;
+        end
+        on _ -> { return 0; }
+    end
+}
