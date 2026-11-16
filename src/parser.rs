@@ -497,6 +497,15 @@ impl Parser {
                 ));
             }
             decls += 1;
+            if *self.peek() == Tok::At {
+                let pos = self.pos();
+                if matches!(self.peek_at(1), Tok::Ident(name) if name == "Override") {
+                    return Err(Diagnostic::new(pos, "E_ANNOTATION_TARGET",
+                        "@Override applies only to an inherited class instance method, not a top-level class, actor, fnc or routine"));
+                }
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "top-level annotations require verified semantic lowering"));
+            }
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
