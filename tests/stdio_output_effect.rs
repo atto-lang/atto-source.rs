@@ -46,7 +46,7 @@ fn stdout_non_suspending_exception_is_not_generalized_to_other_streams() {
     ] {
         let source = format!("pub fnc main(): int {{ {statement} return 7; }}");
         let err = compile(&source).expect_err("other transports are not browser-backed");
-        assert!(matches!(err.code.as_str(), "E_UNSUPPORTED" | "E_SYNTAX"),
+        assert!(matches!(err.code, "E_UNSUPPORTED" | "E_SYNTAX"),
             "{statement}: {err}");
     }
 }

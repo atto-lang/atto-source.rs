@@ -147,9 +147,9 @@ impl Builder {
             Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } => {
                 self.push(Instruction::Evaluate(stmt.clone()), *pos)?;
             }
-            Stmt::FieldAssign { pos, .. } => {
+            Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } => {
                 return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    "generator field mutation requires an owned frame and borrow analysis"));
+                    "generator mutation and state loans require an owned frame and borrow analysis"));
             }
             Stmt::Expr(expr) => {
                 self.push(Instruction::Evaluate(stmt.clone()), expr.pos)?;

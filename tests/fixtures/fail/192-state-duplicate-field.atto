@@ -1,0 +1,8 @@
+// expect-error: E_DUPLICATE
+define state container Counter as
+  state {
+    let int count: 0;
+    let int count: 10;
+  }
+end
+pub fnc main(): int { return 0; }
