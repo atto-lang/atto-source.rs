@@ -1,0 +1,16 @@
+// expect-exit: 83
+define class Dog as
+    pub int foo = 41;
+end
+define class Cat as
+    pub int age = 5;
+    pub int foo = 42;
+end
+fnc inspect(p: {foo: int}): int {
+    return p.foo;
+}
+pub fnc main(): int {
+    val dog = new Dog();
+    val cat = new Cat();
+    return inspect(dog) + inspect(cat);
+}
