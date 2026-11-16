@@ -3084,6 +3084,25 @@ impl<'a> FnCx<'a> {
             }
             ExprKind::Member(base, name) => self.member(base, name, pos)?,
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
+            ExprKind::PrefixRead(source) => {
+                // The AST preserves the read as an effectful expression; there
+                // is deliberately no fake scalar or unchecked read import.
+                if !self.suspends {
+                    return Err(Diagnostic::new(pos, "E_SUSPENDS_REQUIRED",
+                        "unary << readable can suspend; declare susp/suspends"));
+                }
+                if !self.loans.is_empty() {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "unary << cannot suspend with a live object loan"));
+                }
+                let value = self.expr(source)?;
+                if value.ty != Type::ChannelInt {
+                    return Err(Diagnostic::new(pos, "E_IO_READABLE",
+                        "unary << requires a statically readable Channel<int> in the browser subset"));
+                }
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "typed guest channel read, checked Result<Option<int>, IoError> and JSPI resume ABI are not implemented"));
+            }
             ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "array literals are parsed but not yet lowered to browser Wasm")),
             ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
