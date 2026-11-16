@@ -743,6 +743,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
     }
     for c in &p.classes {
+        if c.ctor.as_ref().is_some_and(|ctor| ctor.params.iter().any(|p| p.omittable)) {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED",
+                "omittable constructors require verified constructor call binding; no implicit defaults are injected"));
+        }
         if c.methods.iter().any(|m| m.ret == Type::GeneratorInt
             || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
             || c.ctor.as_ref().is_some_and(|ctor|
@@ -801,7 +805,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     // ---- top-level signatures keep indices 0..funcs.len()
     let mut sigs = BTreeMap::new();
-    let mut min_arities = BTreeMap::new();
+    let mut min_arities: BTreeMap<(String, usize), usize> = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None") {
