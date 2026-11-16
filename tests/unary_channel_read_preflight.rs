@@ -55,19 +55,31 @@ fn incomplete_discarded_and_const_runtime_reads_have_stable_diagnostics() {
 }
 
 #[test]
-fn currently_unimplemented_guest_channel_read_must_never_emit_wasm() {
-    for expression in [
-        "val x = << c;",
-        "total += (<< c);",
-        "val sum = (<< c) + (<< c);",
-        "process(<< c);",
-        "return << c;",
-        "val result = trap << c;",
+fn production_read_emits_checked_guest_abi_and_preserves_type() {
+    for modifier in ["susp", "suspends"] {
+        let src = format!(
+            "pub {modifier} fnc read_channel_guest_v1(Channel<int> c): Result<Option<int>,IoError> {{ return << c; }} pub fnc main(): int {{ return 0; }}"
+        );
+        let wasm = compile(&src).expect("a real checked guest channel read must compile");
+        assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+        for marker in [b"atto.channel_int".as_slice(), b"atto.async",
+            b"channel_int_nb_read_v1", b"channel_int_await_read_v1", b"cooperate"] {
+            assert!(wasm.windows(marker.len()).any(|x| x == marker),
+                "missing checked guest ABI marker: {:?}", marker);
+        }
+    }
+}
+
+#[test]
+fn incomplete_and_illtyped_channel_reads_do_not_emit_wasm() {
+    for (source, code) in [
+        ("pub susp fnc read_channel_guest_v1(Channel<int> c): int { return << c; } pub fnc main(): int { return 0; }", "E_TYPE"),
+        ("pub susp fnc read_channel_guest_v1(int c): Result<Option<int>,IoError> { return << c; } pub fnc main(): int { return 0; }", "E_IO_READABLE"),
+        ("pub susp fnc read_channel_guest_v1(Channel<int> c): Result<Option<int>,IoError> { const r = << c; return r; } pub fnc main(): int { return 0; }", "E_CONST_EFFECT"),
+        ("pub fnc read_channel_guest_v1(Channel<int> c): Result<Option<int>,IoError> { return << c; } pub fnc main(): int { return 0; }", "E_SUSPENDS_REQUIRED"),
     ] {
-        let src = format!("pub suspends fnc main(): int using io, suspend {{ {expression} return 42; }}");
-        let err = compile(&src).expect_err("typed read import not implemented");
-        assert_eq!(err.code, "E_UNSUPPORTED", "{expression}: {err}");
-        assert!(err.message.contains("typed guest"), "{expression}: {err}");
+        let err = compile(source).expect_err("invalid reads never emit guest Wasm");
+        assert_eq!(err.code, code, "{source}: {err}");
     }
 }
 
@@ -105,17 +117,13 @@ fn type_first_bindings_preserve_const_and_complete_type_errors() {
 }
 
 #[test]
-fn prefix_and_declaration_first_variants_do_not_emit_guest_read_wasm() {
-    for body in [
-        "val int a = << c; return 0;",
-        "val int a = (<< c); return 0;",
-        "val int a << c; return 0;",
-        "let total = 0; total += << c; return total;",
-        "let total = 0; total += (<< c); return total;",
-    ] {
-        let source = format!("pub suspends fnc main(): int using io, suspend {{ {body} }}");
-        let error = compile(&source).expect_err("guest channel reads are not yet lowered");
-        assert_eq!(error.code, "E_UNSUPPORTED", "{body}: {error}");
+fn typed_channel_read_is_not_an_implicit_int_even_with_parentheses() {
+    for expr in ["<< c", "(<< c)"] {
+        let src = format!(
+            "pub susp fnc read_channel_guest_v1(Channel<int> c): int {{ val int x = {expr}; return x; }} pub fnc main(): int {{ return 0; }}"
+        );
+        let err = compile(&src).expect_err("Result<Option<int>,IoError> cannot become int");
+        assert_eq!(err.code, "E_TYPE", "{src}: {err}");
     }
 }
 
@@ -139,13 +147,12 @@ fn direct_reads_require_an_explicit_suspending_callable() {
 }
 
 #[test]
-fn susp_and_suspends_keep_the_guest_read_abi_gate_in_place() {
+fn direct_read_requires_the_suspending_effect_but_not_an_implicit_await_keyword() {
     for modifier in ["susp", "suspends"] {
-        let source = format!(
-            "pub {modifier} fnc main(): int using io, suspend {{ val a = << c; return 0; }}"
+        let src = format!(
+            "pub {modifier} fnc read_channel_guest_v1(Channel<int> c): Result<Option<int>,IoError> {{ val result = << c; return result; }} pub fnc main(): int {{ return 0; }}"
         );
-        let err = compile(&source).expect_err("guest read ABI still pending");
-        assert_eq!(err.code, "E_UNSUPPORTED", "{source}: {err}");
+        assert!(compile(&src).is_ok(), "{modifier} is accepted");
     }
 }
 
