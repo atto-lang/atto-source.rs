@@ -1957,6 +1957,89 @@ impl Parser {
         Ok(Stmt::Match { subject, arms, pos })
     }
 
+    /// Admit only closed, literal structural value-field patterns in the
+    /// executable class-matching slice. This is not a structural TYPE test.
+    /// The same FieldPattern AST is used by the syntax-only preflight parser.
+    fn parse_structural_value_fields(&mut self, pos: Pos) -> R<Pattern> {
+        use crate::structural_syntax::{FieldPattern, ScalarPattern};
+        self.expect(Tok::LBrace, "'{' after structural value-pattern prefix")?;
+        if *self.peek() == Tok::RBrace {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "empty structural value pattern; use 'on _' instead"));
+        }
+        let mut fields = Vec::new();
+        let mut names = std::collections::HashSet::new();
+        loop {
+            if fields.len() >= 32 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "structural value pattern has more than 32 fields"));
+            }
+            let (name, at) = self.ident("a structural value-pattern field")?;
+            if !names.insert(name.clone()) {
+                return Err(Diagnostic::new(at, "E_DUPLICATE",
+                    format!("duplicate structural pattern field '{name}'")));
+            }
+            let optional = self.eat(&Tok::Question);
+            self.expect(Tok::Colon, "':' after structural pattern field")?;
+            let value = match self.peek().clone() {
+                Tok::Ident(s) if s == "_" => {
+                    self.advance();
+                    ScalarPattern::Any
+                }
+                Tok::Ident(s) if s == "true" || s == "false" => {
+                    self.advance();
+                    ScalarPattern::Bool(s == "true")
+                }
+                Tok::Int(Some(n)) if n <= i64::MAX as u64 => {
+                    self.advance();
+                    ScalarPattern::Int(n as i64)
+                }
+                Tok::Minus => {
+                    self.advance();
+                    let n = match self.peek().clone() {
+                        Tok::Int(Some(n)) => n,
+                        _ => return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                            "minus in structural value pattern must precede an integer literal")),
+                    };
+                    let value = if n == (i64::MAX as u64) + 1 {
+                        i64::MIN
+                    } else if n <= i64::MAX as u64 {
+                        -(n as i64)
+                    } else {
+                        return Err(Diagnostic::new(self.pos(), "E_INTEGER_RANGE",
+                            "structural pattern integer is out of range"));
+                    };
+                    self.advance();
+                    ScalarPattern::Int(value)
+                }
+                Tok::Int(_) => return Err(Diagnostic::new(self.pos(), "E_INTEGER_RANGE",
+                    "structural pattern integer is out of range")),
+                Tok::Str(s) => {
+                    self.advance();
+                    ScalarPattern::Str(s)
+                }
+                _ => return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "structural value pattern expects a literal or '_'; types belong after 'is'")),
+            };
+            fields.push(FieldPattern { name, optional, value });
+            if !self.eat(&Tok::Comma) { break; }
+            if *self.peek() == Tok::RBrace {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "trailing comma in structural value pattern"));
+            }
+        }
+        self.expect(Tok::RBrace, "'}' to close structural value pattern")?;
+        let bind = if self.eat_word("as") {
+            if self.eat_word("let") {
+                return Err(unsupported(self.pos(),
+                    "mutable structural pattern bindings require loan/ownership lowering"));
+            }
+            self.expect_word("val")?;
+            Some(self.ident("a structural pattern binding")?.0)
+        } else { None };
+        Ok(Pattern::StructuralFields { fields, bind })
+    }
+
     /// Java Parser.parsePattern, restricted to the forms this compiler lowers.
     fn parse_pattern(&mut self) -> R<Pattern> {
         let pos = self.pos();
@@ -1973,7 +2056,14 @@ impl Parser {
             Tok::Float(_) => Err(unsupported(pos, "float literal patterns")),
             Tok::Str(_) => Err(unsupported(pos, "string literal patterns")),
             Tok::LParen => Err(unsupported(pos, "tuple patterns")),
-            Tok::Tilde => Err(unsupported(pos, "structural (~ / structural) type patterns")),
+            Tok::Tilde => {
+                self.advance();
+                if *self.peek() == Tok::LBrace {
+                    self.parse_structural_value_fields(pos)
+                } else {
+                    Err(unsupported(pos, "structural value-constant/type patterns; use '~{field: literal}' for executable class matching"))
+                }
+            },
             Tok::LBracket => Err(Diagnostic::new(
                 pos,
                 "E_SYNTAX",
@@ -2003,7 +2093,15 @@ impl Parser {
                     self.advance();
                     Ok(Pattern::Wild)
                 }
-                "is" | "structural" => Err(unsupported(pos, "type patterns, including structural type patterns")),
+                "is" => Err(unsupported(pos, "structural type tests (on is ~Type)")),
+                "structural" => {
+                    self.advance();
+                    if *self.peek() == Tok::LBrace {
+                        self.parse_structural_value_fields(pos)
+                    } else {
+                        Err(unsupported(pos, "structural named constant patterns"))
+                    }
+                },
                 _ => {
                     self.advance();
                     if *self.peek() == Tok::Dot {
