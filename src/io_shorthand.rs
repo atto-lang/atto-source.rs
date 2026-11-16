@@ -233,6 +233,10 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             .any(|token| matches!(token.tok, Tok::Assign));
         let reversed_read = operator == Direction::Write && !has_assignment
             && matches!(tokens.get(lhs_start).and_then(word), Some("const" | "val" | "let"));
+        if reversed_read && mode == Mode::Detached {
+            return Err(Diagnostic::new(op_pos, "E_IO_DISCARD",
+                "detached read cannot bind to caller-local storage; use do readch channel, |outcome| -> void { ... }"));
+        }
         if reversed_read && mode != Mode::Direct {
             return Err(syntax(op_pos,
                 "nonblocking/immediate reversed read is not in v1; use nb/try source >> val binding"));
