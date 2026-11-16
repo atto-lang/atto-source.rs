@@ -1,0 +1,11 @@
+// expect-error: E_UNSUPPORTED
+define class Shape as
+    pub int x = 42;
+end
+pub fnc main(): int {
+    val v = new Shape();
+    match v over
+        on is ~Shape as let p -> { return p.x; }
+        on _ -> { return 0; }
+    end
+}
