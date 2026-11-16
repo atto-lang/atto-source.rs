@@ -25,7 +25,7 @@ fn bare_shapes_and_explicit_structural_shapes_have_identical_type_identity() {
 
 #[test]
 fn literal_and_union_types_do_not_collapse_to_broad_field_types() {
-    let ty = |s: &str| syn::parse_formals(s).unwrap()[0].ty.canonical;
+    let ty = |s: &str| syn::parse_formals(s).unwrap()[0].ty.canonical.clone();
     assert_ne!(ty("(p: {foo: \"dog\"})"), ty("(p: {foo: string})"));
     assert_ne!(ty("(p: {foo: string | int})"), ty("(p: {foo: string})"));
     assert_ne!(ty("(p: {foo: 42})"), ty("(p: {foo: int})"));
@@ -68,7 +68,7 @@ fn optional_presence_stays_distinct_from_type_shapes() {
 
 #[test]
 fn structural_row_fields_and_union_arms_canonicalize_as_unordered_sets() {
-    let ty = |src: &str| syn::parse_formals(src).unwrap()[0].ty.canonical;
+    let ty = |src: &str| syn::parse_formals(src).unwrap()[0].ty.canonical.clone();
     assert_eq!(ty("(p: {a: int, b: string})"),
                ty("(p: {b: string, a: int})"));
     assert_eq!(ty("(p: {foo: string | int})"),
