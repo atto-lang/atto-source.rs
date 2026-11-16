@@ -260,10 +260,12 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
             return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
                 "actor receive requires exactly one ActorMail<T> parameter"));
         };
-        let normalize = |name: &str| match name {
-            "boolean" => "bool", "String" => "string", "f64" => "float",
-            other => other,
-        };
+        fn normalize(name: &str) -> &str {
+            match name {
+                "boolean" => "bool", "String" => "string", "f64" => "float",
+                other => other,
+            }
+        }
         if let Some(expected) = module.actors[actor].receives.as_deref() {
             if normalize(expected) != normalize(payload) {
                 return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
