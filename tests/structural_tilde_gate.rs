@@ -74,6 +74,8 @@ fn structural_patterns_and_projections_cannot_fall_through_to_value_matching() {
         "fnc main(): int { match 1 over on ~Point -> { return 42; } on _ -> { return 0; } end }",
         "fnc main(): int { match 1 over on is ~Point -> { return 42; } on _ -> { return 0; } end }",
         "fnc main(): int { match 1 over on ~{x: 10, y: _} -> { return 42; } on _ -> { return 0; } end }",
+        "fnc main(): int { match 1 over on ~{ x?: 10, y: _ } as val p -> { return 42; } on _ -> { return 0; } end }",
+        "fnc main(): int { match 1 over on ~ { x?: 10, y: _ } as val p -> { return 42; } on _ -> { return 0; } end }",
         "fnc main(): int { match 1 over on structural Point -> { return 42; } on _ -> { return 0; } end }",
         "fnc main(): int { match 1 over on is structural Point -> { return 42; } on _ -> { return 0; } end }",
         "fnc main(): int { return ~candidate; }",
