@@ -749,6 +749,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
     }
     for a in &p.actors {
+        if a.is_unary || a.is_http ||
+            a.receive.as_ref().is_some_and(|r| r.suspends || r.ret != Type::Void) {
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED",
+                "unary/http/suspended actor receive has typed AST but no authenticated guest reply and scheduler ABI"));
+        }
         if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
             || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
             return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
