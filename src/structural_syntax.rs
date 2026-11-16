@@ -21,9 +21,16 @@ pub enum PatternKind {
     /// Name resolved later to an immutable, statically known pattern constant.
     /// A type name alone is *not* a valid constant pattern.
     ValueConstant(String),
-    /// Every listed field must exist and its value pattern must succeed.
-    /// Subject-only extra fields do not affect matching.
-    ValueFields(Vec<(String, ScalarPattern)>),
+    /// Each field independently tracks presence plus the value pattern that
+    /// must succeed if present. Subject-only extra fields pass.
+    ValueFields(Vec<FieldPattern>),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldPattern {
+    pub name: String,
+    /// The optional-marker permits absence but checks the value if present.
+    pub optional: bool,
+    pub value: ScalarPattern,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScalarPattern { Any, Int(i64), Bool(bool), Str(String) }
@@ -253,6 +260,9 @@ pub fn parse_pattern(src: &str) -> R<Pattern> {
                 if !names.insert(name.clone()) {
                     return Err(c.err("E_DUPLICATE", "duplicate value pattern field"));
                 }
+                // Question modifies field PRESENCE only, not its value test.
+                // Delimiters are separate tokens; trivia makes no difference.
+                let optional = c.eat(Tok::Question);
                 c.expect(Tok::Colon)?;
                 let value = match c.tok().clone() {
                     Tok::Ident(w) if w == "_" => {
@@ -280,7 +290,7 @@ pub fn parse_pattern(src: &str) -> R<Pattern> {
                     _ => return Err(c.err("E_SYNTAX",
                         "field value must be a literal or '_'; use 'is ~' for type fields")),
                 };
-                fields.push((name, value));
+                fields.push(FieldPattern { name, optional, value });
                 if !c.eat(Tok::Comma) { break; }
                 if c.tok() == &Tok::RBrace {
                     return Err(c.err("E_SYNTAX", "trailing value pattern comma"));
@@ -401,8 +411,8 @@ mod tests {
         let fields = parse_pattern("on ~{x: 10, y: _} as let p when p.x > 0").unwrap();
         assert!(fields.guarded);
         assert_eq!(fields.kind, PatternKind::ValueFields(vec![
-            ("x".into(), ScalarPattern::Int(10)),
-            ("y".into(), ScalarPattern::Any),
+            FieldPattern { name: "x".into(), optional: false, value: ScalarPattern::Int(10) },
+            FieldPattern { name: "y".into(), optional: false, value: ScalarPattern::Any },
         ]));
         for bad in ["on ~{x: int}", "on ~{}", "on ~{x: 1, x: 2}",
                     "on is ~{x: 10}", "on is ~Point as p"] {
@@ -411,6 +421,52 @@ mod tests {
         assert!(parse_pattern("on Point").is_err());
         assert!(parse_pattern("on ~").is_err());
     }
+    #[test] fn optional_value_fields_preserve_presence_bit_and_value_pattern() {
+        let target = parse_pattern("on ~{ x?: 10, y: _ } as val p").unwrap();
+        assert_eq!(target.kind, PatternKind::ValueFields(vec![
+            FieldPattern { name: "x".into(), optional: true, value: ScalarPattern::Int(10) },
+            FieldPattern { name: "y".into(), optional: false, value: ScalarPattern::Any },
+        ]));
+        // Whitespace/comments cannot change operator or presence meaning.
+        for alias in [
+            "on ~ {x?: 10, y: _} as val p",
+            "on ~{x? : 10, y: _} as val p",
+            "on structural { x?: 10, y: _ } as val p",
+            "on ~/*c*/{ x? /*c*/ : 10, y: _ } as val p",
+        ] {
+            assert_eq!(target, parse_pattern(alias).unwrap(), "{alias}");
+        }
+        assert_eq!(
+            parse_pattern("on ~{x?: _, y: _}").unwrap().kind,
+            PatternKind::ValueFields(vec![
+                FieldPattern { name: "x".into(), optional: true, value: ScalarPattern::Any },
+                FieldPattern { name: "y".into(), optional: false, value: ScalarPattern::Any },
+            ])
+        );
+        assert_eq!(
+            parse_pattern("on ~{x: 10, y?: _}").unwrap().kind,
+            PatternKind::ValueFields(vec![
+                FieldPattern { name: "x".into(), optional: false, value: ScalarPattern::Int(10) },
+                FieldPattern { name: "y".into(), optional: true, value: ScalarPattern::Any },
+            ])
+        );
+    }
+
+    #[test] fn optional_field_syntax_rejects_duplicate_unknown_or_missing_value() {
+        for bad in [
+            "on ~{x?:}",
+            "on ~{x?: int}",
+            "on ~{x??: 10}",
+            "on ~{x?: 10, x: 10}",
+            "on ~{x: 10, x?: 10}",
+            "on ~{x?: effectful()}",
+            "on ~{?: 10}",
+            "on is ~{x?: 10}",
+        ] {
+            assert!(parse_pattern(bad).is_err(), "{bad}");
+        }
+    }
+
     #[test] fn positional_named_binding_preserves_source_order() {
         let formals = parse_formals("(~Point p, int count, bool verbose)").unwrap();
         let args = parse_arguments("(~p, verbose: true, count: plus(1, 2))").unwrap();
