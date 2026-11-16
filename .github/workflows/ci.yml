@@ -21,6 +21,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git rev-parse HEAD
           git rev-parse HEAD^{tree}
+      - name: Execute endpoint pipe reference-model contract (not guest transport)
+        run: node --test tests/endpoint_pipe_oracle.mjs
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
