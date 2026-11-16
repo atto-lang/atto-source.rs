@@ -52,6 +52,8 @@ const RESERVED: &[&str] = &[
     "yield",
     "nlex",
     "return",
+    "seq",
+    "begin",
     "self",
     "super",
     "static",
