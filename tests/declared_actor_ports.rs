@@ -360,3 +360,27 @@ fn attached_receive_does_not_satisfy_declared_emits_effect_by_itself() {
     assert!(!typed.actors[0].defined);
     assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_UNSUPPORTED");
 }
+
+#[test]
+fn historical_external_mtd_receive_and_contextual_mtd_share_a_private_sealed_ingress() {
+    let plain = "declare actor Foo receives int;
+        mtd (Foo self) receive(ActorMail<int> m): void {}";
+    let old = "declare actor Foo receives int;
+        external mtd (Foo self) receive(ActorMail<int> m): void {}";
+    let (_, p) = target(plain).unwrap();
+    let (_, e) = target(old).unwrap();
+    assert_eq!(p.mailbox_ingresses.len(), 1);
+    assert_eq!(e.mailbox_ingresses.len(), 1);
+    assert_eq!(p.mailbox_ingresses[0].payload, e.mailbox_ingresses[0].payload);
+    assert!(p.receivers.is_empty() && e.receivers.is_empty());
+}
+
+#[test]
+fn external_ingress_marker_never_grants_an_ordinary_public_method() {
+    for source in [
+        "declare actor Foo; external mtd (Foo self) ordinary(): void {}",
+        "declare pub actor Foo receives int; pub external mtd (Foo self) receive(ActorMail<int> m): void {}",
+    ] {
+        assert_eq!(diagnostic(source), "E_SIGNATURE", "{source}");
+    }
+}
