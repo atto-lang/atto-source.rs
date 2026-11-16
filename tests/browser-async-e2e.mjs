@@ -242,7 +242,7 @@ try{
       }
     end
   }`;
-  assert.match(await run(lexicalCleanup,'main() -> 42'),/main\\(\\) -> 42/);
+  assert.match(await run(lexicalCleanup,'main() -> 42'),/main\(\) -> 42/);
   console.log('PASS compiled guest: lexical Future cleanup releases channel before teardown');
 
   const rehomeCleanup = `pub susp fnc main(): int {
@@ -268,7 +268,7 @@ try{
       }
     end
   }`;
-  assert.match(await run(rehomeCleanup,'main() -> 42'),/main\\(\\) -> 42/);
+  assert.match(await run(rehomeCleanup,'main() -> 42'),/main\(\) -> 42/);
   console.log('PASS compiled guest: auto drop rehomes committed Some(41) without data loss');
 
   assert.match(await run('pub fnc main(): int { val pending = nb readch 41; return 0; }','E_EFFECT'),/E_EFFECT/);
