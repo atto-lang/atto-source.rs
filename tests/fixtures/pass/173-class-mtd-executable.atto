@@ -1,0 +1,18 @@
+// expect-exit: 20
+// Concrete class mtd calls compile through the same checked instance-method path.
+define class Counter as
+    int value: 10;
+end
+
+pub mtd (self: Counter) get_value() -> int ::
+    self.value
+end
+
+pub mtd (self: Counter) double_value() -> int ::
+    self.get_value() * 2
+end
+
+pub fnc main(): int {
+    val counter = new Counter();
+    return counter.double_value();
+}

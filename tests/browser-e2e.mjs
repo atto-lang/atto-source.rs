@@ -77,6 +77,12 @@ try{
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
+  const linkedMtdSource = await readFile(new URL('./fixtures/pass/173-class-mtd-executable.atto', import.meta.url), 'utf8');
+  assert.equal(await run(linkedMtdSource, 'main() -> 20'), 'main() -> 20');
+  console.log('PASS browser: compiled native class mtd methods dispatch and return 20');
+  const illegalMtd = 'define class C as int value: 1; end mtd (self: C) update() -> int { self.value = 2; return 2; } pub fnc main(): int { return 0; }';
+  assert.match(await run(illegalMtd, 'E_OWNERSHIP'), /E_OWNERSHIP/);
+  console.log('PASS browser: immutable class receiver mutation fails closed');
   // Exercise the exact lexically captured, pure-function sample from the
   // public playground through Chromium's real Wasm compiler and guest workers.
   const lexical = await readFile(new URL('./fixtures/pass/playground-lexical-scope-pure.atto', import.meta.url), 'utf8');
@@ -107,6 +113,7 @@ try{
     assert.match(await run(source, expected), new RegExp(expected));
   }
   console.log('PASS browser: effects and invalid captures cannot masquerade as pure or lexical');
+
 
 
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
