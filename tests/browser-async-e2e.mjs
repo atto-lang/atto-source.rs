@@ -154,6 +154,17 @@ try{
   const conflictingCase='pub suspends fnc main(): int { return switch<int> 1 over case 1 : bool -> true, default : int -> 0, end; }';
   assert.match(await run(conflictingCase,'E_TYPE'),/E_TYPE/);
   console.log('PASS integration: typed switch case mismatch fails closed without a guest');
+  // The latest switch integration must not regress scalar arm-local task captures.
+  const legacySwitch='pub fnc main(): int { switch 1 case 1 -> { return 42; } default -> { return 0; } end }';
+  assert.match(await run(legacySwitch,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS integration: Java-compatible untyped legacy switch remains supported');
+  const guardedCaptureCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(guardedCaptureCase,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'selected ADT case captures one int and awaits exactly once');
+  console.log('PASS integration: updated typed switch, scalar captured Result payload and JSPI handoff');
+  const unsupportedTaskCall='pub suspends fnc main(): int { return await task(); }';
+  assert.match(await run(unsupportedTaskCall,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
+  console.log('PASS integration: task() remains unsupported, not a task block');
   const combined='pub suspends fnc main(): int { val a=task { return 42; }; stdio.out << "direct"; return await a; }';
   assert.match(await run(combined,'main() -> 42'),/^directmain\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'combined stdout/Future guest must yield exactly once');

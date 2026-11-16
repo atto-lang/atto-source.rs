@@ -2047,11 +2047,13 @@ impl Parser {
         let over = self.eat_word("over");
         if !over && !switch { self.eat(&Tok::Semi); }
         let braced = over && self.eat(&Tok::LBrace);
-        if (procedural || switch) && !over {
+        // Legacy untyped switch permits "switch x case ... end".
+        // Typed switch<T> and procedural match require "over".
+        if (procedural && !switch && !over) || (switch && switch_type.is_some() && !over) {
             return Err(Diagnostic::new(
                 self.pos(),
                 "E_SYNTAX",
-                "switch and procedural match require 'over' before their arms",
+                "typed switch and procedural match require 'over' before their arms",
             ));
         }
         let mut arms = Vec::new();
@@ -2068,7 +2070,7 @@ impl Parser {
             } else if over {
                 self.eat_word("on")
             } else { false };
-            if over && !default_case && !labelled {
+            if (over || switch) && !default_case && !labelled {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     if switch { "switch arms require 'case', 'on', or 'default'" }
                     else { "every match arm requires 'on' (use 'on _' for default)" }));
@@ -3038,6 +3040,10 @@ impl Parser {
                 }
                 "task" => {
                     self.advance();
+                    // task() is not a task block or an admitted call.
+                    if *self.peek() == Tok::LParen {
+                        return Err(unsupported(pos, "'task(...)' calls; use 'task { ... }'"));
+                    }
                     if *self.peek() != Tok::LBrace {return Err(self.expected("a task block '{ ... }'"));}
                     // Snapshot only one arm-local scalar by value at task creation.
                     // Nested tasks cannot borrow the enclosing task's lexical frame.
