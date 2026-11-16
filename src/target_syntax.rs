@@ -33,12 +33,27 @@ pub struct ReceiverSite {
     pub end: usize,
 }
 
+/// Non-executable nominal actor header with explicit application and pipe roles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActorPortHeader {
+    pub name: String,
+    pub public: bool,
+    pub receives: Option<String>,
+    pub emits: Option<String>,
+    pub sends: Option<String>,
+    /// Unverified nominal actor-targeted contract references.
+    pub implements: Vec<String>,
+    pub pos: Pos,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TargetHeaders {
     pub namespace: Option<String>,
     /// Imported module aliases. Imports are not resolved or linked here.
     pub imports: Vec<String>,
     pub actors: Vec<String>,
+    /// One-to-one metadata for `actors`, in declaration order.
+    pub actor_ports: Vec<ActorPortHeader>,
     /// Class owners found in concrete class definitions.
     pub classes: Vec<String>,
     /// Parsed class definitions; mtd linking/typing remains unsupported.
@@ -316,16 +331,73 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 return Err(c.err("E_SYNTAX", "expected 'class' or 'actor' after define"));
             }
         } else if c.take_word("declare") {
+            let public = if c.take_word("pub") {
+                true
+            } else {
+                c.take_word("private");
+                false
+            };
             c.expect_word("actor")?;
             let name = c.ident()?;
             if out.actors.contains(&name) || out.classes.contains(&name) {
                 return Err(c.err("E_DUPLICATE", format!("duplicate actor or class '{name}'")));
             }
+            let mut contracts = Vec::new();
+            if c.take_word("implements") {
+                loop {
+                    let contract = c.ident()?;
+                    if contracts.contains(&contract) {
+                        return Err(c.err("E_DUPLICATE",
+                            format!("duplicate actor contract '{contract}'")));
+                    }
+                    contracts.push(contract);
+                    if contracts.len() > 16 {
+                        return Err(c.err("E_SOURCE_LIMIT", "actor contract reference limit exceeded"));
+                    }
+                    if !c.take(&Tok::Comma) {
+                        break;
+                    }
+                }
+            }
+            let mut receives = None;
+            let mut emits = None;
+            let mut sends = None;
+            let mut passed_output = false;
+            while let Some(clause) = c.word().filter(|w|
+                matches!(*w, "receives" | "emits" | "sends")
+            ).map(str::to_owned) {
+                let clause_pos = c.pos();
+                c.next();
+                match clause.as_str() {
+                    "receives" if receives.is_none() && !passed_output =>
+                        receives = Some(c.type_name()?),
+                    "emits" if emits.is_none() => {
+                        passed_output = true;
+                        emits = Some(c.type_name()?);
+                    }
+                    "sends" if sends.is_none() => {
+                        passed_output = true;
+                        sends = Some(c.type_name()?);
+                    }
+                    _ => return Err(Diagnostic::new(
+                        clause_pos, "E_PIPE_CONTRACT",
+                        "duplicate or out-of-order actor receives/emits/sends clause",
+                    )),
+                }
+            }
+            c.expect(&Tok::Semi, "expected ';' after declared actor header")?;
+            out.actor_ports.push(ActorPortHeader {
+                name: name.clone(), public, receives, emits, sends,
+                implements: contracts, pos,
+            });
             out.actors.push(name);
-            c.expect(&Tok::Semi, "expected ';' after actor")?;
         } else {
             let declaration_start = c.i;
             let public = c.take_word("pub");
+            if public && c.word() == Some("declare") {
+                return Err(c.err("E_ACTOR",
+                    "actor visibility must follow declare: use 'declare pub actor Foo;'"));
+            }
             if c.take_word("mtd") {
                 let (method, start, end, method_start) = c.receiver(pos, public)?;
                 if out.receivers.iter().any(|m: &ReceiverHeader| m.owner == method.owner
