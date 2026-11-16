@@ -52,6 +52,9 @@ pub enum Import {
     TaskAwait,
     /// Mandatory cooperative scheduler turn for every source await.
     Cooperate,
+    /// Versioned checked Channel<int> registration and JSPI one-shot completion.
+    ChannelNbRead,
+    ChannelAwaitRead,
     /// Private Worker-owned state-container creation/lexical admission hooks.
     StateRegister,
     StateEnter,
@@ -59,7 +62,7 @@ pub enum Import {
 }
 
 impl Import {
-    pub const ALL: [Import; 15] = [
+    pub const ALL: [Import; 17] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -72,6 +75,8 @@ impl Import {
         Import::TaskStart,
         Import::TaskAwait,
         Import::Cooperate,
+        Import::ChannelNbRead,
+        Import::ChannelAwaitRead,
         Import::StateRegister,
         Import::StateEnter,
         Import::StateLeave,
@@ -90,6 +95,8 @@ impl Import {
             Import::TaskStart => "task_start",
             Import::TaskAwait => "task_await",
             Import::Cooperate => "cooperate",
+            Import::ChannelNbRead => "channel_int_nb_read_v1",
+            Import::ChannelAwaitRead => "channel_int_await_read_v1",
             Import::StateRegister => "state_register",
             Import::StateEnter => "state_enter",
             Import::StateLeave => "state_leave",
@@ -207,6 +214,16 @@ pub enum TExpr {
     TaskStart(u32),
     /// Consume one typed future handle and yield until the task finishes.
     TaskAwait(Box<TE>),
+    /// One checked Channel<int> read. Uses a fresh 16-byte host slot and
+    /// converts the flat Some/None/IoError ABI into nested immutable
+    /// Result<Option<int>, IoError> tagged ADTs after resumption.
+    ChannelRead {
+        source: Box<TE>,
+        scratch: u32,
+        status: u32,
+        option: u32,
+        result: u32,
+    },
     /// Preserve evaluated value and release the worker carrier at least one event-loop turn.
     AwaitYield(Box<TE>),
     /// print an object; `tmp` is an i32 scratch local holding it
@@ -1307,7 +1324,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ChannelRead { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let tasks = p.funcs.iter().enumerate().filter(|(_, f)| f.name.starts_with("$atto_task_"))
@@ -1496,7 +1513,8 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } |
         TExpr::SleepMs(_) | TExpr::Barrier(_) | TExpr::TaskStart(_) |
-        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) => false,
+        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) |
+        TExpr::ChannelRead { .. } => false,
     }
 }
 
@@ -1547,6 +1565,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
+        TExpr::ChannelRead { source, .. } => any_in(source, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a)
         | TExpr::SleepMs(a) | TExpr::Barrier(a) | TExpr::TaskAwait(a)
         | TExpr::AwaitYield(a) => any_in(a, f),
@@ -2629,6 +2648,41 @@ impl<'a> FnCx<'a> {
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
+            ExprKind::Call(name, args) if name == "\u{0}atto_channel_read" => {
+                if !self.suspends {
+                    return Err(Diagnostic::new(e.pos, "E_SUSPENDS_REQUIRED",
+                        "channel read requires susp/suspends and the io/suspend effect contract"));
+                }
+                if self.owner != Owner::TopLevel {
+                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+                        "channel reads in class/actor methods require checked lifecycle integration"));
+                }
+                if !self.loans.is_empty() || self.state_read_scope || self.state_write_scope {
+                    return Err(Diagnostic::new(e.pos, "E_BORROW",
+                        "channel read cannot suspend with live ownership loans or protected actor state"));
+                }
+                if args.len() != 1 {
+                    return Err(Diagnostic::new(e.pos, "E_ARITY", "channel read requires one readable"));
+                }
+                let channel = self.value(&args[0])?;
+                if channel.ty != Type::ChannelInt {
+                    return Err(type_err(args[0].pos,
+                        format!("readch/<< requires Channel<int>, got {}", self.tn(channel.ty))));
+                }
+                let scratch = self.temp(Type::ChannelInt, e.pos)?;
+                let status = self.temp(Type::IoError, e.pos)?;
+                let option = self.temp(Type::OptionInt, e.pos)?;
+                let result = self.temp(Type::ResultOptionIntIoError, e.pos)?;
+                self.imports.extend([
+                    Import::ChannelNbRead, Import::ChannelAwaitRead, Import::Cooperate,
+                ]);
+                Ok(TE {
+                    e: TExpr::ChannelRead {
+                        source: Box::new(channel), scratch, status, option, result,
+                    },
+                    ty: Type::ResultOptionIntIoError,
+                })
+            }
             ExprKind::Await(inner) => {
                 if !self.suspends {
                     return Err(Diagnostic::new(e.pos, "E_EFFECT",
