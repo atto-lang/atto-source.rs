@@ -34,11 +34,20 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
-    // Recognize I/O shorthand without pretending the browser subset supports
-    // channels, streams, or atomic select yet. Fail closed before guest emit.
-    if let Some(io) = io_shorthand::inspect(&toks)?.first() {
+    // The browser guest already has a typed stdio.print output import.
+    // Permit the exact stdio.out << value statement form to lower through
+    // that existing checked path. All other channels, streams, read
+    // directions and select registrations fail closed until implemented.
+    for io in io_shorthand::inspect(&toks)? {
+        if io.source_or_sink == "stdio.out"
+            && io.direction == io_shorthand::Direction::Write
+            && io.context == io_shorthand::Context::Standalone
+            && !io.read_binder_on_left
+        {
+            continue;
+        }
         return Err(Diagnostic::new(io.pos, "E_UNSUPPORTED",
-            "I/O << / >> shorthand parsed, but typed read/write and select runtime lowering are not implemented in the browser compiler"));
+            "I/O direction shorthand recognized, but this capability is not supported by the browser compiler; only standalone stdio.out writes are executable"));
     }
     // Detect target declarations at any file-scope position, not only at
     // source byte zero. Ignore comments/strings (the lexer already tokenizes
