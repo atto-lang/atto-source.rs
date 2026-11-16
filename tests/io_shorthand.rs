@@ -89,23 +89,50 @@ fn malformed_io_shorthand_diagnostics() {
 }
 
 #[test]
-fn compiler_fail_closed_for_recognized_io_with_precise_position() {
-    let src = "pub fnc main(): void {\n  stdio.out << \"Hello\";\n}";
-    let err = atto_compiler::compile(src).expect_err("no channel/stream runtime in browser subset");
-    assert_eq!(err.code, "E_UNSUPPORTED");
-    assert_eq!((err.pos.line, err.pos.col), (2, 13));
-    assert!(err.message.contains("I/O << / >> shorthand parsed"));
+fn stdout_shorthand_and_explicit_write_compile_to_same_guest_as_print() {
+    let source = r#"pub fnc main(): int {
+        val x: int = 42;
+        stdio.out << "effectful output";
+        writech stdio.out, "!";
+        stdio.out << x;
+        return 7;
+    }"#;
+    let explicit = r#"pub fnc main(): int {
+        val x: int = 42;
+        stdio.print("effectful output");
+        stdio.print("!");
+        stdio.print(x);
+        return 7;
+    }"#;
+    let a = atto_compiler::compile(source).expect("standalone stdout shorthand executes");
+    let b = atto_compiler::compile(explicit).expect("explicit stdout print executes");
+    assert_eq!(&a[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(a, b, "the typed checked guest I/O lowering must be identical");
 }
 
 #[test]
-fn explicit_channel_forms_still_fail_closed_in_browser_subset() {
+fn unsupported_channel_stream_and_select_io_fail_closed() {
     for src in [
-        "pub fnc main(): void { writech stdio.out, \"msg\"; }",
         "pub fnc main(): void { readch inbox; }",
+        "pub fnc main(): void { writech outgoing, \"msg\"; }",
+        "pub fnc main(): void { output_stream << \"msg\"; }",
+        "pub fnc main(): void { stdio.in >> val line; }",
+        "pub fnc main(): void { stdio.in << \"bad direction\"; }",
+        "pub fnc main(): void { do select { when inbox >> val msg -> {} } }",
     ] {
-        let err = atto_compiler::compile(src).expect_err("browser subset does not implement channels");
-        assert_eq!(err.code, "E_UNSUPPORTED");
+        let err = atto_compiler::compile(src).expect_err("unsupported guest I/O must never emit Wasm");
+        assert_eq!(err.code, "E_UNSUPPORTED", "{src}: {err}");
     }
+}
+
+#[test]
+fn stdout_shorthand_has_typechecker_and_lexical_guards() {
+    let invalid_type = r#"pub fnc main(): void { stdio.out << Option.Some(42); }"#;
+    assert!(atto_compiler::compile(invalid_type).is_err(),
+        "unsupported payloads never bypass typed stdio.print");
+    let spaced = "pub fnc main(): void { stdio.out < < 42; }";
+    assert!(atto_compiler::compile(spaced).is_err(),
+        "whitespace-separated comparisons must not become I/O");
 }
 
 #[test]
