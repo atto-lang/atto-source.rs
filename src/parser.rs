@@ -1651,6 +1651,11 @@ impl Parser {
                     pos,
                 }))
             }
+            // Contextual nb-read then await forms. Both intentionally fail
+            // closed until the typed Readable/Future guest ABI exists; this
+            // parser nevertheless verifies their complete syntax and the
+            // binder/await type-slot relationships.
+            Some("nb") => self.parse_nb_await_read_continuation(),
             Some("trap") => {
                 // Caller-side trap also works in expression-statement position.
                 let e = self.parse_expr()?;
@@ -1728,6 +1733,105 @@ impl Parser {
         }
     }
 
+
+    /// A contiguous directional operator in I/O syntax. Numeric shifts,
+    /// generic type closers, and separated '< <' / '> >' are NOT aliases.
+    fn expect_io_double(&mut self, op: Tok, spelling: &str) -> R<()> {
+        let first = self.pos();
+        if !self.eat(&op) {
+            return Err(Diagnostic::new(first, "E_IO_SYNTAX",
+                format!("expected '{spelling}' in a read–await continuation")));
+        }
+        let second = self.pos();
+        if *self.peek() != op || first.line != second.line
+            || first.col.checked_add(1) != Some(second.col)
+        {
+            return Err(Diagnostic::new(second, "E_IO_SYNTAX",
+                format!("'{spelling}' must be contiguous in an I/O continuation")));
+        }
+        self.advance();
+        Ok(())
+    }
+
+    /// Full type grammar is necessary to distinguish nested '>>' generic
+    /// delimiters from a subsequent I/O direction operator.
+    fn parse_io_future_slot(&mut self) -> R<String> {
+        let at = self.pos();
+        let type_name = self.parse_lambda_type()?;
+        match type_name.strip_prefix("Future<").and_then(|x| x.strip_suffix('>')) {
+            Some(inner) if !inner.is_empty() && inner != "void" => Ok(inner.to_owned()),
+            _ => Err(Diagnostic::new(at, "E_IO_SYNTAX",
+                "read–await continuation requires a complete Future<T> type slot")),
+        }
+    }
+
+    /// val T name / val name: T, and the corresponding let forms. A runtime
+    /// read may not initialize the compile-time-only const binder.
+    fn parse_io_resolved_binder_type(&mut self) -> R<String> {
+        if self.eat_word("const") {
+            return Err(Diagnostic::new(self.pos(), "E_CONST_EFFECT",
+                "runtime reads cannot initialize a const binding"));
+        }
+        if !(self.eat_word("val") || self.eat_word("let")) {
+            return Err(Diagnostic::new(self.pos(), "E_IO_SYNTAX",
+                "expected val/let resolved read binder"));
+        }
+        if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+            self.ident("read-result binder")?;
+            self.advance(); // colon
+            self.parse_lambda_type()
+        } else {
+            let name = self.parse_lambda_type()?;
+            self.ident("read-result binder")?;
+            Ok(name)
+        }
+    }
+
+    /// This is a *syntax* contract, not an executable read. The initial nb
+    /// registration cannot park; the explicit await can suspend the caller.
+    /// In the first form Future<T> is a contextual TYPE SLOT, never a runtime
+    /// value manufactured by the parser or an implicit unwrap.
+    fn parse_nb_await_read_continuation(&mut self) -> R<Stmt> {
+        let at = self.pos();
+        self.expect_word("nb")?;
+        let _source = self.parse_postfix()?;
+        if *self.peek() != Tok::Gt {
+            return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
+        }
+        self.expect_io_double(Tok::Gt, ">>")?;
+        let (future_inner, bound_inner) = if self.eat(&Tok::LParen) {
+            let bound = self.parse_io_resolved_binder_type()?;
+            self.expect_io_double(Tok::Lt, "<<")?;
+            self.expect_word("await")?;
+            let future = self.parse_io_future_slot()?;
+            self.expect(Tok::RParen, "')' after read–await continuation")?;
+            (future, bound)
+        } else if self.is_word("Future") {
+            let future = self.parse_io_future_slot()?;
+            let (pending, _) = self.ident("intermediate Future binder")?;
+            self.expect(Tok::Pipe, "'|' before an awaited read continuation")?;
+            self.expect_word("await")?;
+            let (awaited, awaited_pos) = self.ident("awaited Future binder")?;
+            if awaited != pending {
+                return Err(Diagnostic::new(awaited_pos, "E_PIPE_BIND",
+                    "await must consume the Future bound by this read"));
+            }
+            self.expect_io_double(Tok::Gt, ">>")?;
+            let bound = self.parse_io_resolved_binder_type()?;
+            (future, bound)
+        } else {
+            return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
+        };
+        // String and string are accepted surface aliases. Do not erase
+        // Result/Option/EOF/error information from future payload types.
+        let normalized = |s: &str| if s == "String" { "string" } else { s };
+        if normalized(&future_inner) != normalized(&bound_inner) {
+            return Err(Diagnostic::new(at, "E_TYPE",
+                "resolved binder must match the entire Future payload type (including Result/Option/EOF/errors)"));
+        }
+        self.terminator()?;
+        Err(unsupported(at, "typed nonblocking read–await continuation guest ABI"))
+    }
 
     /// The Java/LLVM compound-keyword contract requires exactly adjacent
     /// ASCII critical-read / critical-write, not spaced subtraction tokens.
