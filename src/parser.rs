@@ -1806,6 +1806,25 @@ impl Parser {
         Ok(Stmt::Bind { kind, name, ty, init: value, pos: at })
     }
 
+    /// Canonicalize only the builtin String/string spelling, including
+    /// nested generic arguments, without rewriting qualified user types
+    /// such as lib.String or identifiers containing the same substring.
+    fn canonical_io_type(spelling: &str) -> String {
+        let mut out = String::with_capacity(spelling.len());
+        let mut segment = String::new();
+        for ch in spelling.chars().chain(std::iter::once('\0')) {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
+                segment.push(ch);
+            } else {
+                if segment == "String" { out.push_str("string"); }
+                else { out.push_str(&segment); }
+                segment.clear();
+                if ch != '\0' { out.push(ch); }
+            }
+        }
+        out
+    }
+
     /// A contiguous directional operator in I/O syntax. Numeric shifts,
     /// generic type closers, and separated '< <' / '> >' are NOT aliases.
     fn expect_io_double(&mut self, op: Tok, spelling: &str) -> R<()> {
@@ -1942,10 +1961,7 @@ impl Parser {
         };
         // String and string are accepted surface aliases. Do not erase
         // Result/Option/EOF/error information from future payload types.
-        let same_inner = future_inner == bound_inner
-            || (future_inner == "String" && bound_inner == "string")
-            || (future_inner == "string" && bound_inner == "String");
-        if !same_inner {
+        if Self::canonical_io_type(&future_inner) != Self::canonical_io_type(&bound_inner) {
             return Err(Diagnostic::new(at, "E_TYPE",
                 "resolved binder must match the entire Future payload type (including Result/Option/EOF/errors)"));
         }
