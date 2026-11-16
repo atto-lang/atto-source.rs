@@ -19,7 +19,8 @@ const pass = [
   ['conditional-val-capture', program('if v is int as val n then return n + 1; fi return 0;')],
   ['conditional-negated-capture', program('if v is !string as val n then return n + 1; fi return 0;')],
   ['conditional-capture-mismatch', program('if v is string as val s then return 0; fi return v + 1;')],
-  ['conditional-capture-nested', program('if v is int as val n then if n > 0 then return n + 1; fi fi return 0;')]
+  ['conditional-capture-nested', program('if v is int as val n then if n > 0 then return n + 1; fi fi return 0;')],
+  ['guarded-wildcard-fallthrough', program('match v over on _ when v > 100 -> { return 0; } on is int as val n -> { return n + 1; } end')]
 ];
 const fail = [
   ['missing-capture-qualifier', 'E_SYNTAX', program('match v over on is int as n -> { return n; } on _ -> { return 0; } end')],
@@ -36,7 +37,11 @@ const fail = [
   ['conditional-binder-not-in-else', 'E_UNBOUND', program('if v is string as val n then return 0; else return n; fi')],
   ['reject-shadowing-local-type-facts', 'E_UNSUPPORTED', program('if true then val v: int = 10; fi if v is int then return 42; fi return 0;')],
   ['reject-unrelated-function-param-proof', 'E_UNSUPPORTED',
-    'fnc f(Any v): int { if v is int then return 42; fi return 0; } fnc g(int v): int { return v; } pub fnc main(): int { val value: Any = 41; return f(value); }']
+    'fnc f(Any v): int { if v is int then return 42; fi return 0; } fnc g(int v): int { return v; } pub fnc main(): int { val value: Any = 41; return f(value); }'],
+  ['duplicate-unconditional-positive-tag', 'E_MATCH', program('match v over on is int -> { return 42; } on is int -> { return 0; } on _ -> { return -1; } end')],
+  ['duplicate-unconditional-negated-tag', 'E_MATCH', program('match v over on is !string -> { return 42; } on is !string -> { return 0; } end')],
+  ['unreachable-after-unconditional-wildcard', 'E_MATCH', program('match v over on _ -> { return 42; } on is int -> { return 0; } end')],
+  ['duplicate-mismatched-tag', 'E_MATCH', program('match v over on is string -> { return 0; } on is String -> { return 0; } on is int -> { return 42; } end')]
 ];
 const noIo = () => { throw Error('unexpected host capability'); };
 const imports = {atto: {
