@@ -152,7 +152,7 @@ fn anonymous_bare_value_shapes_and_exact_string_fields_emit_deterministic_wasm()
            }"#,
     ] {
         let wasm = compile(sample).unwrap_or_else(|e| panic!("{sample}: {e}"));
-        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
         assert_eq!(wasm, compile(sample).unwrap(), "Wasm output must be stable");
     }
 }
@@ -167,7 +167,7 @@ fn anonymous_shapes_reject_private_and_wrong_typed_strings() {
           "define class Pet as {field}; end pub fnc main(): int {{
              val p = new Pet();
              match p over
-               on {{foo: \\"dog\\"}} -> {{ return 1; }}
+               on {{foo: \"dog\"}} -> {{ return 1; }}
                on _ -> {{ return 42; }}
              end
            }}"
