@@ -1,0 +1,8 @@
+// expect-error: E_TYPE
+define state container Metrics as
+  state { let int total: 0; let bool ready: true; }
+  pub bad(): void {
+    handle_state(critical-write |s| -> { s.total = s.ready; });
+  }
+end
+pub fnc main(): int { return 0; }

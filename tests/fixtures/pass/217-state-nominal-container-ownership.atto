@@ -1,0 +1,23 @@
+// Different mutable state-container types retain independent lease authority.
+// expect-exit: 0
+// expect-stdout: 6
+// expect-stdout: false
+define state Counter as
+  state { let int count: 4; }
+  pub increment(): void { handle_state(critical |s| -> { s.count = s.count + 2; }); }
+  pub value(): int { return handle_state(critical-read |s| -> s.count); }
+end
+define state container Toggle as
+  state { let bool enabled: true; }
+  pub disable(): void { handle_state(critical-write |s| -> { s.enabled = false; }); }
+  pub active(): bool { return handle_state(critical-read |s| -> s.enabled); }
+end
+pub fnc main(): int {
+  val counter = new Counter();
+  val toggle = new Toggle();
+  counter.increment();
+  toggle.disable();
+  stdio.println(counter.value());
+  stdio.println(toggle.active());
+  return 0;
+}

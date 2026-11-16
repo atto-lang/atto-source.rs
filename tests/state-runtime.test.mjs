@@ -66,3 +66,36 @@ test('bounded instances and forged pointer fail closed', () => {
   runtime.imports.state_leave(t);
   runtime.complete();
 });
+
+test('distinct mutable containers hold simultaneous independent write leases', () => {
+  const runtime = createStateRuntime();
+  const host = runtime.imports;
+  host.state_register(0);
+  host.state_register(8);
+  const left = host.state_enter(0, 1);
+  const right = host.state_enter(8, 1);
+  assert.equal(runtime.snapshot().active, 2);
+  assert.throws(() => host.state_enter(0, 0), /contention/);
+  assert.throws(() => host.state_enter(8, 1), /contention/);
+  host.state_leave(right);
+  host.state_leave(left);
+  runtime.complete();
+  assert.equal(runtime.snapshot().quiescent, true);
+});
+
+test('read-only tickets do not upgrade and cannot replay into a write lease', () => {
+  const runtime = createStateRuntime();
+  const host = runtime.imports;
+  host.state_register(0);
+  const readA = host.state_enter(0, 0);
+  const readB = host.state_enter(0, 0);
+  assert.throws(() => host.state_enter(0, 1), /contention/);
+  assert.throws(() => host.state_leave(readA + 5000n), /missing or replayed/);
+  host.state_leave(readA);
+  host.state_leave(readB);
+  const write = host.state_enter(0, 1);
+  assert.notEqual(write, readA);
+  assert.throws(() => host.state_leave(readA), /replayed/);
+  host.state_leave(write);
+  runtime.complete();
+});

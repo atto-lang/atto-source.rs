@@ -43,3 +43,19 @@ synchronous tickets are not a cross-Worker RW lock and do not provide
 suspending reads, asynchronous lock upgrades, actor migration, or general
 lifecycle/cancellation/reclamation guarantees. This document is an audit
 contract, not evidence that any unexecuted CI test passed.
+
+## Follow-up: ten more mutable-container scenarios
+
+The additional `tests/critical_mutable_containers.rs` suite adds five
+positive, executable `.atto` cases covering multiple mutable scalar fields,
+read snapshots, per-instance isolation, nominal type isolation, and multiple
+writes within a single lease; plus five fail-closed cases covering reference
+fields, duplicate schemas, wrong scalar type, cross-instance access, and
+impure helper calls. This gives **20 source-level scenarios** (ten original
+plus ten supplementary), without claiming that unsupported `Array`, `Map`,
+`Set` or `Pointer` state fields work.
+
+The supplementary Rust test also checks that four generic mutable/reference
+field shapes are rejected without producing executable guest output.
+These are *pending executed CI* until the runner starts; compiler-positive
+outcomes are expectations, not observed results.

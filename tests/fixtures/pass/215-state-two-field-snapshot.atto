@@ -1,0 +1,28 @@
+// Read-only projections produce independent by-value snapshots.
+// expect-exit: 0
+// expect-stdout: 3
+// expect-stdout: true
+// expect-stdout: 12
+// expect-stdout: false
+define state container Metrics as
+  state { let int total: 3; let bool enabled: true; }
+  pub update(): void {
+    handle_state(critical |s| -> {
+      s.total = 12;
+      s.enabled = false;
+    });
+  }
+  pub total_value(): int { return handle_state(critical-read |s| -> s.total); }
+  pub active(): bool { return handle_state(critical-read |s| -> s.enabled); }
+end
+pub fnc main(): int {
+  val item = new Metrics();
+  val old_total = item.total_value();
+  val old_active = item.active();
+  item.update();
+  stdio.println(old_total);
+  stdio.println(old_active);
+  stdio.println(item.total_value());
+  stdio.println(item.active());
+  return 0;
+}
