@@ -126,6 +126,7 @@ fn same_actor_and_incarnation_cannot_borrow_from_another_arena() {
 #[test]
 fn rejected_admission_returns_unconsumed_owned_value() {
     use std::{cell::Cell, rc::Rc};
+    #[derive(Debug)]
     struct DropProbe(Rc<Cell<u32>>);
     impl Drop for DropProbe {
         fn drop(&mut self) {
