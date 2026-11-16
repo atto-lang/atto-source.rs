@@ -272,3 +272,26 @@ fn declared_input_cannot_claim_a_missing_receive_handler() {
     assert_eq!(err.code, "E_TYPE", "{err}");
     assert!(err.message.contains("declared receives"), "{err}");
 }
+
+#[test]
+fn actor_transform_may_emit_multiple_values_of_declared_type() {
+    let source = program("source pipe middle pipe sink", "int")
+        .replacen("emit(mail.value);", "emit(mail.value); emit(mail.value);", 1);
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+    assert!(err.message.contains("mixed pipe"), "{err}");
+}
+
+#[test]
+fn stored_actor_refs_can_form_a_typed_mixed_graph_without_dynamic_casts() {
+    let source = program("source pipe middle pipe sink", "int");
+    let parsed = parser::Parser::new(lexer::lex(&source).unwrap())
+        .parse_program().unwrap();
+    let main = parsed.funcs.iter().find(|f| f.name == "main").unwrap();
+    let Stmt::Bind { init, .. } = &main.body[3] else { panic!("pipe binding"); };
+    let ExprKind::MixedPipeline(stages) = &init.kind else { panic!("mixed pipeline"); };
+    assert_eq!(stages.len(), 3);
+    assert!(stages.iter().all(|stage| matches!(stage, PipeStage::Endpoint(_))));
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+}
