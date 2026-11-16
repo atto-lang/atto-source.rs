@@ -127,6 +127,7 @@ pub enum TExpr {
     /// operand type is the type of `l`
     Bin(BinOp, Box<TE>, Box<TE>),
     Ternary(Box<TE>, Box<TE>, Box<TE>),
+    Sequence(Vec<TStmt>, Box<TE>),
     Call(u32, Vec<TE>),
     Builtin(Builtin, Box<TE>, Box<TE>),
     /// `stdio.print` / `stdio.println` of an int or bool value
@@ -2554,6 +2555,31 @@ impl<'a> FnCx<'a> {
         Ok(TStmt::Throw(msg))
     }
 
+
+    /// Check a comma sequence as a proper lexical scope. Discarded expression
+    /// steps still run all effect, generator and ownership admission checks.
+    /// The tail is consumed before the temporary bindings leave scope.
+    #[inline(never)]
+    fn sequence(&mut self, steps: &[Stmt], tail: &Expr, pos: Pos) -> R<TE> {
+        self.scopes.push(Vec::new());
+        let result = (|| -> R<TE> {
+            let mut checked = Vec::with_capacity(steps.len());
+            for step in steps {
+                checked.push(self.stmt(step)?);
+            }
+            let value = self.consume(tail)?;
+            // Initial browser admission is scalar and immutable-string only.
+            // Object/actor/resource tails need owned cleanup and escape proofs.
+            if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    "sequence result needs owned, escape-safe lowering for this type"));
+            }
+            Ok(TE { ty: value.ty, e: TExpr::Sequence(checked, Box::new(value)) })
+        })();
+        self.pop_scope();
+        result
+    }
+
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
@@ -2565,6 +2591,7 @@ impl<'a> FnCx<'a> {
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
+            ExprKind::Sequence(steps, tail) => self.sequence(steps, tail, e.pos),
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
                 let success_tag = match value.ty {
@@ -2902,7 +2929,7 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..) | ExprKind::Sequence(..)
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
