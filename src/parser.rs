@@ -370,6 +370,8 @@ impl Parser {
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
         ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+            || (matches!(self.word_at(n), Some("susp" | "suspends"))
+                && self.word_at(n + 1) == Some("fnc"))
     }
 
     fn parse_type(&mut self) -> R<Type> {
