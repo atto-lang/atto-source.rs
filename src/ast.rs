@@ -335,6 +335,9 @@ pub enum ExprKind {
     New(String, Vec<Expr>),
     /// `spawn Actor()`
     Spawn(String),
+    /// Typed bounded channel/stream adapter constructor recognized for pipe
+    /// contracts only. No allocator, scheduler or guest ABI is exposed.
+    PipeEndpoint(PipeEndpointKind, Type, u32),
     /// Two or more static spawned actor stages composed using actor pipe.
     /// Parsed and type-admitted; lowering requires actor forwarding support.
     ActorPipeline(Vec<String>),
@@ -345,6 +348,14 @@ pub enum ExprKind {
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
     MethodCall(Box<Expr>, String, Vec<Expr>),
+}
+
+/// Explicitly named endpoint constructors with directionally typed ports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipeEndpointKind {
+    ChannelBounded,
+    StreamBuffered,
+    StreamSink,
 }
 
 /// One stage in a continuous typed data-flow connection.
