@@ -378,3 +378,78 @@ fn lexically_shadowed_stdio_cannot_bypass_typed_receiver_resolution() {
         assert_eq!(err.code, "E_IO_SHADOW", "{src}: {err}");
     }
 }
+
+
+#[test]
+fn nb_and_try_preserve_mode_and_future_binding_without_conflating_plain_io() {
+    use atto_compiler::io_shorthand::Mode;
+    let src = r#"
+nb inbox >> val pending: Future<Result<Option<string>, IoError>>;
+nb outgoing << "hi";
+try inbox >> let immediate;
+try outgoing << "hi";
+inbox >> val completed;
+outgoing << "synchronous";
+do nb select {
+    when inbox >> val selected -> {}
+    when outgoing << "ready" -> {}
+}
+"#;
+    let parsed = parse(src);
+    assert_eq!(parsed.len(), 8, "{parsed:?}");
+    assert_eq!(parsed[0].mode, Mode::Nonblocking);
+    assert_eq!(parsed[0].direction, Direction::Read);
+    assert_eq!(parsed[0].binder.as_deref(), Some("pending"));
+    assert_eq!(parsed[1].mode, Mode::Nonblocking);
+    assert_eq!(parsed[1].direction, Direction::Write);
+    assert_eq!(parsed[2].mode, Mode::TryImmediate);
+    assert_eq!(parsed[2].binder.as_deref(), Some("immediate"));
+    assert_eq!(parsed[3].mode, Mode::TryImmediate);
+    for i in [4, 5, 6, 7] {
+        assert_eq!(parsed[i].mode, Mode::Direct);
+    }
+    assert_eq!(parsed[6].context, Context::SelectArm);
+    assert_eq!(parsed[7].context, Context::SelectArm);
+}
+
+#[test]
+fn nb_try_explicit_channel_operations_and_select_guard_restrictions() {
+    for src in [
+        "nb readch foo >> Future<string> foo;",
+        "nb readch foo >> val pending;",
+        "when nb inbox >> val x -> {}",
+        "do select { when nb inbox >> val x -> {} }",
+        "do select { when try inbox >> val x -> {} }",
+        "do nb select { when nb outgoing << 1 -> {} }",
+        "nb val pending << inbox;",
+        "try val item << inbox;",
+        "nb inbox >> const pending;",
+        "try inbox >> const immediate;",
+    ] {
+        let d = inspect(&lex(src).unwrap()).expect_err(src);
+        assert!(matches!(d.code, "E_IO_SYNTAX" | "E_CONST_EFFECT"), "{src}: {d}");
+    }
+}
+
+#[test]
+fn nb_syntax_cannot_emit_a_fake_guest_wasm_artifact() {
+    for src in [
+        "pub fnc main(): void { nb stdio.out << \"hi\"; }",
+        "pub fnc main(): void { try stdio.out << \"hi\"; }",
+        "pub fnc main(): void { nb stdio.in >> val pending; }",
+        "pub fnc main(): void { nb writech foo, \"hi\"; }",
+        "pub fnc main(): void { val pending = nb readch foo; }",
+    ] {
+        let err = atto_compiler::compile(src).expect_err(src);
+        assert_eq!(err.code, "E_UNSUPPORTED", "{src}: {err}");
+    }
+}
+
+#[test]
+fn deeply_generic_future_annotations_are_not_direction_operators() {
+    use atto_compiler::io_shorthand::Mode;
+    let parsed = parse("nb inbox >> val p: Future<Result<Option<Result<string, IoError>>, Error>>;");
+    assert_eq!(parsed.len(), 1, "{parsed:?}");
+    assert_eq!(parsed[0].mode, Mode::Nonblocking);
+    assert_eq!(parsed[0].binder.as_deref(), Some("p"));
+}
