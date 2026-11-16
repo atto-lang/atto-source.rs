@@ -410,7 +410,8 @@ fn stream_readable_view_must_not_implicitly_be_a_writable_sink() {
     let err = atto_compiler::compile(&program(
         "spawn Parse() pipe Stream.port<int>(2).stream()", "int"
     )).unwrap_err();
-    assert_eq!(err.code, "E_PIPE_CONTRACT", "{err}");
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("PipeSink"), "{err}");
 }
 
 #[test]
@@ -429,4 +430,22 @@ fn standalone_channel_constructor_is_not_a_guest_allocation_yet() {
     let err = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
     assert!(err.message.contains("owned guest transport"), "{err}");
+}
+
+#[test]
+fn read_only_stream_port_is_a_typed_source_into_actor() {
+    let err = atto_compiler::compile(&program(
+        "Stream.port<int>(0).stream() pipe spawn Sink()", "int"
+    )).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+    assert!(err.message.contains("mixed pipe"), "{err}");
+}
+
+#[test]
+fn stream_readable_view_to_wrong_actor_type_is_rejected() {
+    let err = atto_compiler::compile(&program(
+        "Stream.port<bool>(2).stream() pipe spawn Sink()", "int"
+    )).unwrap_err();
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("emitted"), "{err}");
 }
