@@ -1,0 +1,24 @@
+// Distinct mutable state containers never share protected backing fields.
+// expect-exit: 0
+// expect-stdout: 8
+// expect-stdout: 13
+// expect-stdout: 8
+define state Counter as
+  state { let int count: 1; }
+  pub add(int n): void {
+    handle_state(critical |s| -> { s.count = s.count + n; });
+  }
+  pub value(): int {
+    return handle_state(critical-read |s| -> s.count);
+  }
+end
+pub fnc main(): int {
+  val left = new Counter();
+  val right = new Counter();
+  left.add(7);
+  right.add(12);
+  stdio.println(left.value());
+  stdio.println(right.value());
+  stdio.println(left.value());
+  return 0;
+}

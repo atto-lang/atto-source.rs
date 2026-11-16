@@ -1,0 +1,24 @@
+// A write on one mutable state container never changes another instance.
+// expect-exit: 0
+// expect-stdout: 9
+// expect-stdout: false
+// expect-stdout: 0
+// expect-stdout: true
+define state container Metrics as
+  state { let int total: 0; let bool enabled: true; }
+  pub set_total(int amount): void {
+    handle_state(critical-write |s| -> { s.total = amount; s.enabled = false; });
+  }
+  pub total_value(): int { return handle_state(critical-read |s| -> s.total); }
+  pub active(): bool { return handle_state(critical-read |s| -> s.enabled); }
+end
+pub fnc main(): int {
+  val left = new Metrics();
+  val right = new Metrics();
+  left.set_total(9);
+  stdio.println(left.total_value());
+  stdio.println(left.active());
+  stdio.println(right.total_value());
+  stdio.println(right.active());
+  return 0;
+}

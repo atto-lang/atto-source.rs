@@ -1,0 +1,21 @@
+// A critical-read result is an owned scalar snapshot, not an escaping loan.
+// expect-exit: 0
+// expect-stdout: 4
+// expect-stdout: 9
+define state Counter as
+  state { let int count: 4; }
+  pub change(): void {
+    handle_state(critical-write |s| -> { s.count = 9; });
+  }
+  pub value(): int {
+    return handle_state(critical-read |s| -> s.count);
+  }
+end
+pub fnc main(): int {
+  val item = new Counter();
+  val snapshot = item.value();
+  item.change();
+  stdio.println(snapshot);
+  stdio.println(item.value());
+  return 0;
+}

@@ -1,0 +1,5 @@
+// expect-error: E_DUPLICATE
+define state container Metrics as
+  state { let int value: 1; let bool value: true; }
+end
+pub fnc main(): int { return 0; }

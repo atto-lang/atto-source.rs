@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// A mutable state container must not acquire a string/reference field by accident.
+define state container Unsafe as
+  state { let string value: "secret"; }
+end
+pub fnc main(): int { return 0; }

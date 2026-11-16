@@ -1,0 +1,7 @@
+// expect-error: E_STATE_BORROW
+// Sharing a nominal type does not authenticate another instance's storage.
+define state container Metrics as
+  state { let int total: 0; let bool ready: true; }
+  pub steal(Metrics other): int { return other.total; }
+end
+pub fnc main(): int { return 0; }

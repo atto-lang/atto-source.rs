@@ -1,0 +1,9 @@
+// expect-error: E_STATE_BORROW
+// Synchronous state mutation may not invoke arbitrary code inside a lease.
+define state container Metrics as
+  state { let int total: 0; }
+  pub bad(): void {
+    handle_state(critical |s| -> { s.total = random_value(); });
+  }
+end
+pub fnc main(): int { return 0; }

@@ -1,0 +1,6 @@
+// expect-error: E_STATE_ACCESS
+define state Counter as
+  state { let int count: 0; }
+  pub bad(): int { return self.count; }
+end
+pub fnc main(): int { return 0; }

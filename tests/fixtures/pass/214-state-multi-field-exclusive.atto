@@ -1,0 +1,25 @@
+// Two mutable scalar fields change under one exclusive critical lease.
+// expect-exit: 0
+// expect-stdout: 7
+// expect-stdout: false
+define state container Metrics as
+  state {
+    let int total: 2;
+    let bool enabled: true;
+  }
+  pub update(int delta): void {
+    handle_state(critical-write |s| -> {
+      s.total = s.total + delta;
+      s.enabled = false;
+    });
+  }
+  pub total_value(): int { return handle_state(critical-read |s| -> s.total); }
+  pub active(): bool { return handle_state(critical-read |s| -> s.enabled); }
+end
+pub fnc main(): int {
+  val item = new Metrics();
+  item.update(5);
+  stdio.println(item.total_value());
+  stdio.println(item.active());
+  return 0;
+}

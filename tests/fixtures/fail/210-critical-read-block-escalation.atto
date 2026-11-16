@@ -1,0 +1,9 @@
+// expect-error: E_STATE_BORROW
+// Even an empty critical-read block must not mint an exclusive write ticket.
+define state Counter as
+  state { let int count: 0; }
+  pub bad(): void {
+    handle_state(critical-read |s| -> {});
+  }
+end
+pub fnc main(): int { return 0; }

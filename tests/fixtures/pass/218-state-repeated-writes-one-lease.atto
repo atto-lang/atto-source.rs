@@ -1,0 +1,23 @@
+// Sequential writes to a protected field remain inside one write lease.
+// expect-exit: 0
+// expect-stdout: 4
+// expect-stdout: false
+define state Counter as
+  state { let int count: 1; let bool ready: true; }
+  pub update(): void {
+    handle_state(critical |s| -> {
+      s.count = s.count + 1;
+      s.count = s.count + 2;
+      s.ready = false;
+    });
+  }
+  pub value(): int { return handle_state(critical-read |s| -> s.count); }
+  pub is_ready(): bool { return handle_state(critical-read |s| -> s.ready); }
+end
+pub fnc main(): int {
+  val item = new Counter();
+  item.update();
+  stdio.println(item.value());
+  stdio.println(item.is_ready());
+  return 0;
+}
