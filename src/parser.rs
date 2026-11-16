@@ -652,7 +652,8 @@ impl Parser {
             }
             methods.push(Method {
                 name: method_name, pos: mpos, public: true,
-                is_static: false, override_member: false, params, ret, body,
+                is_static: false, override_member: false, override_annotation: None,
+                params, ret, body,
             });
         }
         Ok(ContractDecl { name, pos, public, interface, methods })
@@ -799,6 +800,7 @@ impl Parser {
                     "use @Override alone, not @Override with the legacy override modifier"));
             }
             let override_member = annotated_override || keyword_override;
+            let override_annotation = if annotated_override { Some(mpos) } else { None };
             // Only actual methods can consume the override marker. Checking
             // for '(' alone is unsafe: constructor(...) and receive(...) also
             // have parameter lists and must never silently drop @Override.
@@ -823,7 +825,7 @@ impl Parser {
                         return Err(unsupported(self.pos(), &format!("'{w}' static functions")));
                     }
                     self.expect_word("fnc")?;
-                    let method = self.parse_method(public, true, false)?;
+                    let method = self.parse_method(public, true, false, None)?;
                     m.methods.push(method);
                 }
                 Some("constructor") => {
@@ -890,7 +892,7 @@ impl Parser {
                 }
                 Some("fnc" | "method") => {
                     self.advance();
-                    let method = self.parse_method(public, false, override_member)?;
+                    let method = self.parse_method(public, false, override_member, override_annotation)?;
                     m.methods.push(method);
                 }
                 Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
@@ -915,7 +917,7 @@ impl Parser {
                     m.receive = Some(r);
                 }
                 Some(_) if *self.peek_at(1) == Tok::LParen => {
-                    let method = self.parse_method(public, false, override_member)?;
+                    let method = self.parse_method(public, false, override_member, override_annotation)?;
                     m.methods.push(method);
                 }
                 Some(_) if *self.peek_at(1) == Tok::Colon && !actor => {
@@ -985,7 +987,8 @@ impl Parser {
     }
 
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
-    fn parse_method(&mut self, public: bool, is_static: bool, override_member: bool) -> R<Method> {
+    fn parse_method(&mut self, public: bool, is_static: bool, override_member: bool,
+                    override_annotation: Option<Pos>) -> R<Method> {
         let (name, pos) = self.ident("a method name")?;
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic methods"));
@@ -1009,6 +1012,7 @@ impl Parser {
             public,
             is_static,
             override_member,
+            override_annotation,
             params,
             ret,
             body,
