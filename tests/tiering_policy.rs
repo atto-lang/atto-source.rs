@@ -189,3 +189,35 @@ fn lane_admission_rejects_zero_nonpowers_and_oversized_lanes() {
         );
     }
 }
+
+#[test]
+fn column_only_low_sample_count_is_not_misclassified_as_aos() {
+    for column_reads in [1, 2, 3] {
+        assert_eq!(
+            recommend_layout(
+                TypeShape::OrdinaryClass,
+                LayoutEvidence {
+                    row_oriented_reads: 0,
+                    column_oriented_reads: column_reads,
+                },
+                None,
+            ),
+            Ok(LayoutKind::Soa),
+        );
+    }
+}
+
+#[test]
+fn sparse_column_evidence_still_preserves_row_first_choice() {
+    assert_eq!(
+        recommend_layout(
+            TypeShape::OrdinaryClass,
+            LayoutEvidence {
+                row_oriented_reads: 1,
+                column_oriented_reads: 1,
+            },
+            None,
+        ),
+        Ok(LayoutKind::Aos),
+    );
+}
