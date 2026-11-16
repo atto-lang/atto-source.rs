@@ -689,7 +689,7 @@ impl Parser {
                     "state container supports only a state {} block and instance methods"));
             }
             self.state_method = true;
-            let result = self.parse_method(method_public, false);
+            let result = self.parse_method(method_public, false, false);
             self.state_method = false;
             let method = result?;
             if method.params.iter().any(|p| p.name == "s") {
@@ -2100,53 +2100,6 @@ impl Parser {
             } else if !self.eat(&Tok::Comma) && !self.is_word("end") {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     "expected ',' between return match value arms"));
-            }
-        }
-        self.expect_word("end")?;
-        self.height -= arms.len() as u32;
-        if arms.is_empty() {
-            return Err(Diagnostic::new(pos, "E_SYNTAX", "return match requires at least one arm"));
-        }
-        self.terminator()?;
-        Ok(Stmt::Match { subject, arms, pos })
-    }
-
-    /// A return-position match expression:
-    /// `return match value over on P -> expr, default -> expr, end`.
-    ///
-    /// Lowering to statement match deliberately reuses the existing
-    /// once-only subject evaluation, exhaustive pattern checker, strict return
-    /// typing, unreachable-arm detection and Wasm branches. It does not
-    /// pretend that arbitrary expressions are value matches.
-    fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
-        self.expect_word("match")?;
-        let subject = self.parse_expr()?;
-        self.expect_word("over")?;
-        let mut arms = Vec::new();
-        while !self.is_word("end") {
-            if *self.peek() == Tok::Eof {
-                return Err(Diagnostic::new(self.pos(), "E_EOF", "expected 'end' to close return match"));
-            }
-            self.grow(1)?;
-            let apos = self.pos();
-            let pattern = if self.eat_word("default") {
-                Pattern::Wild
-            } else {
-                self.expect_word("on")?;
-                self.parse_pattern()?
-            };
-            self.expect(Tok::Arrow, "'->' in a return match arm")?;
-            let value = self.parse_expr()?;
-            arms.push(MatchArm {
-                pattern,
-                guard: None,
-                body: vec![Stmt::Return(Some(value), apos)],
-                pos: apos,
-            });
-            // A final comma before 'end' is valid, and separators are
-            // mandatory between adjacent value arms.
-            if !self.eat(&Tok::Comma) && !self.is_word("end") {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "expected ',' between return match arms"));
             }
         }
         self.expect_word("end")?;
