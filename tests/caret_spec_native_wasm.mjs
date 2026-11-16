@@ -145,15 +145,18 @@ console.log('CARET_SPEC_AUDIT',JSON.stringify(summary),
 if(process.env.ATTO_CARET_ENFORCE_ALL==='1'){
   if(summary.passed!==49)process.exitCode=1;
 } else {
-  // These 41 exact IDs passed on real native+wasm32 CI run 43823854425.
+  // These 42 exact IDs passed real native+wasm32 CI (runs 43823854425 and
+  // 43825249538). E_UNSUPPORTED_TYPE is not proof of type mismatch.
   // Keep each as a hard regression gate; all remaining proposed cases must
   // appear in the report as failed/unsupported until separately fixed.
   const priorPassed = new Set([
     "caret-scalar",
     "caret-no-whitespace-lexing",
     "caret-nested-if",
+    "caret-nested-loop",
     "caret-method",
     "caret-return-match",
+    "caret-void",
     "caret-return-seq",
     "caret-return-paren-sequence",
     "paren-sequence-nested",
@@ -176,7 +179,6 @@ if(process.env.ATTO_CARET_ENFORCE_ALL==='1'){
     "reject-sequence-duplicate-bind",
     "reject-sequence-binding-leak",
     "paren-comparison-not-sequence",
-    "paren-sequence-no-tuple",
     "end-statement-method-explicit-return",
     "double-colon-method-implicit-return",
     "end-statement-free-fnc",
@@ -197,5 +199,5 @@ if(process.env.ATTO_CARET_ENFORCE_ALL==='1'){
       process.exitCode=1;
     }
   }
-  assert.equal(priorPassed.size,41);
+  assert.equal(priorPassed.size,42);
 }
