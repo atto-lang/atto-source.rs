@@ -11,11 +11,11 @@ import {join, resolve} from 'node:path';
 const path = new URL('./contracts/caret-return-sequences-v1.json', import.meta.url);
 const bytes = await readFile(path);
 const sha = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
-assert.equal(sha, 'a60128931556c770c00f232cc6cc861518fe82bc',
+assert.equal(sha, '0fad4e5a6047e748f657c93cb79d0e4860416b71',
   'Spec snapshot changed without updating upstream Git-blob receipt');
 const contract = JSON.parse(bytes.toString('utf8'));
 assert.equal(contract.cases.length, 49);
-assert.equal(contract.corpusRevision, 2);
+assert.equal(contract.corpusRevision, 3);
 const ids = new Set();
 for(const c of contract.cases) {
   assert.ok(!ids.has(c.id), 'duplicate normative case '+c.id); ids.add(c.id);
@@ -97,12 +97,13 @@ try{
         assert.equal(nativeCode,wasmHost.code,'hosts disagree on rejected diagnostic code');
         // Rejection itself is verified. The prose diagnostic category is NOT
         // yet mapped to a stable E_CODE: keep diagnostic_category_checked=false.
-        row.status=wasmHost.code==='E_UNSUPPORTED'?'unsupported':'passed';
+        row.status=['E_UNSUPPORTED','E_UNSUPPORTED_TYPE'].includes(wasmHost.code)?'unsupported':'passed';
         row.detail=row.status==='passed'?'both hosts reject without artifact; code agrees (category unverified)':
           'both hosts reject via E_UNSUPPORTED';
       } else {
         if(native.status!==0 || !wasmHost.ok) {
-          row.status=nativeCode==='E_UNSUPPORTED'&&wasmHost.code==='E_UNSUPPORTED'?'unsupported':'failed';
+          row.status=['E_UNSUPPORTED','E_UNSUPPORTED_TYPE'].includes(nativeCode) &&
+            nativeCode===wasmHost.code?'unsupported':'failed';
           row.detail='expected acceptance; native/wasm compiler returned rejection';
         } else {
           const nativeBytes=await readFile(output);
@@ -122,6 +123,9 @@ try{
     }
     rows.push(row);
     console.log('CARET_SPEC_CASE',row.id,row.status,row.detail);
+    if(row.status!=='passed') console.log('CARET_SPEC_DIAGNOSTIC',row.id,
+      'native='+String(row.nativeCode),'wasm='+String(wasmHost.code),
+      row.nativeDiagnostic.replace(/\s+/g,' ').slice(0,400));
   }
 }finally{await rm(work,{recursive:true,force:true});}
 const summary=Object.fromEntries(['passed','failed','unsupported','not_executed'].map(k=>
@@ -140,12 +144,57 @@ console.log('CARET_SPEC_AUDIT',JSON.stringify(summary),
 if(process.env.ATTO_CARET_ENFORCE_ALL==='1'){
   if(summary.passed!==49)process.exitCode=1;
 } else {
-  // Baseline only: failing proposed cases are visible in the artifact; they
-  // cannot silently be counted as passing. Mandatory minimal safety checks.
-  for(const id of ['caret-scalar','caret-return-seq','caret-return-paren-sequence']) {
+  // These 41 exact IDs passed on real native+wasm32 CI run 43823854425.
+  // Keep each as a hard regression gate; all remaining proposed cases must
+  // appear in the report as failed/unsupported until separately fixed.
+  const priorPassed = new Set([
+    "caret-scalar",
+    "caret-no-whitespace-lexing",
+    "caret-nested-if",
+    "caret-method",
+    "caret-return-match",
+    "caret-return-seq",
+    "caret-return-paren-sequence",
+    "paren-sequence-nested",
+    "paren-sequence-call-argument",
+    "paren-sequence-outer-binding",
+    "begin-sequence-equivalent",
+    "caret-from-sequence-step",
+    "reject-caret-infix",
+    "reject-caret-as-initializer",
+    "reject-caret-as-call-argument",
+    "reject-caret-type-mismatch",
+    "reject-caret-empty-nonvoid",
+    "reject-caret-top-level",
+    "reject-caret-xor-ambiguity",
+    "reject-unterminated-paren-seq",
+    "reject-trailing-seq-comma",
+    "reject-empty-sequence",
+    "reject-sequence-ending-binding",
+    "reject-seq-no-implicit-return",
+    "reject-sequence-duplicate-bind",
+    "reject-sequence-binding-leak",
+    "paren-comparison-not-sequence",
+    "paren-sequence-no-tuple",
+    "end-statement-method-explicit-return",
+    "double-colon-method-implicit-return",
+    "end-statement-free-fnc",
+    "double-colon-free-fnc",
+    "double-colon-nested-final-sequence",
+    "reject-double-colon-caret-binding",
+    "reject-unmarked-comma-body",
+    "reject-unmarked-final-expr-implicit-return",
+    "reject-double-colon-semicolon-body",
+    "reject-double-colon-no-tail-expression",
+    "reject-double-colon-braces",
+    "reject-double-colon-after-colon-type",
+    "double-colon-early-return-arm"
+]);
+  for(const id of priorPassed) {
     if(rows.find(x=>x.id===id)?.status!=='passed') {
-      console.error('Mandatory caret regression failed:',id);
+      console.error('Previously passing normative vector regressed:',id);
       process.exitCode=1;
     }
   }
+  assert.equal(priorPassed.size,41);
 }
