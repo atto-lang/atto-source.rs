@@ -19,6 +19,8 @@ pub mod parser;
 pub mod module_lower;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
+/// Source-local scalar products use the checked class/constructor guest ABI.
+pub mod shape_lower;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
 /// Explicitly unlinked foreign prototypes and source-only exports.
@@ -47,7 +49,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
-    let toks = any_type_lower::lower(routine_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?;
+    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
