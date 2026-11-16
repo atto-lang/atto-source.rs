@@ -55,3 +55,19 @@ fn await_is_not_a_function_and_future_type_is_not_a_reverse_pipe_value() {
         );
     }
 }
+
+#[test]
+fn nested_builtin_string_aliases_are_canonical_but_nominal_names_remain_distinct() {
+    let good = "nb stdio.in >> val pending: Future<Result<Option<String>,IoError>> |> susp |v| -> await v >> val result: Result<Option<string>,IoError>;";
+    let diag = compile(&program(good)).expect_err("typed stdin ABI is still absent");
+    assert_eq!(diag.code, "E_UNSUPPORTED", "nested String aliases must unify: {diag}");
+
+    for bad in [
+        "nb stdio.in >> val pending: Future<Result<Option<MyString>,IoError>> |> susp |v| -> await v >> val result: Result<Option<string>,IoError>;",
+        "nb stdio.in >> val pending: Future<Result<Option<lib.String>,IoError>> |> susp |v| -> await v >> val result: Result<Option<string>,IoError>;",
+        "nb stdio.in >> val pending: Future<Result<Option<string>,IoError>> |> susp |v| -> await v >> val result: Result<Option<int>,IoError>;",
+    ] {
+        let diag = compile(&program(bad)).expect_err("different nominal type must not unify");
+        assert_eq!(diag.code, "E_TYPE", "{bad}: {diag}");
+    }
+}
