@@ -226,3 +226,21 @@ fn old_declared_actor_plus_concrete_target_linker_still_accepts_actor_mtd() {
     assert!(m.actors[0].has_definition);
     assert_eq!(h.receivers.len(), 1);
 }
+
+#[test]
+fn declared_and_concrete_headers_cannot_hide_a_different_mail_handler_type() {
+    let source = "use namespace workers;
+        declare actor Foo receives int;
+        define actor Foo receives int as
+           receive(ActorMail<bool> mail): void { return; }
+        end";
+    assert_eq!(diagnostic(source), "E_SIGNATURE");
+}
+
+#[test]
+fn typed_declaration_plus_empty_definition_is_not_a_verified_receiver() {
+    let source = "use namespace workers;
+        declare actor Foo receives int;
+        define actor Foo as end";
+    assert_eq!(diagnostic(source), "E_SIGNATURE");
+}
