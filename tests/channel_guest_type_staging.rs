@@ -1,5 +1,6 @@
-//! Stage-1 typed, checked Channel<int> ADT profiles.
-//! No source-level channel imports are allowed until JSPI lowering exists.
+//! Checked Channel<int> ADT profiles and negative source diagnostics.
+//! Valid guest channel imports are covered by channel_guest_compiled_read.rs;
+//! this suite keeps unbound/ill-typed sources fail-closed.
 use atto_compiler::compile;
 
 fn contains(bytes:&[u8],needle:&[u8])->bool {
@@ -27,13 +28,13 @@ pub fnc main(): int {
     assert!(!contains(&wasm,b"channel_int_"),"no guest channel import admitted");
 }
 #[test]
-fn typed_channel_future_read_still_rejects_unsupported_lowering() {
-    for src in [
-        r#"pub susp fnc main(): int { val pending: Future<Result<Option<int>,IoError>> = nb readch inbox; return await 42; }"#,
-        r#"pub susp fnc main(): int { val ch: Channel<int> = 42; return 0; }"#,
-        r#"pub susp fnc main(): int { val pending: Future<Result<Option<int>,string>> = task { return 42; }; return 0; }"#,
+fn channel_read_rejects_unbound_receiver_and_invalid_types() {
+    for (src, expected) in [
+        (r#"pub susp fnc main(): int { val pending: Future<Result<Option<int>,IoError>> = nb readch inbox; return await 42; }"#, "E_UNBOUND"),
+        (r#"pub susp fnc main(): int { val ch: Channel<int> = 42; return 0; }"#, "E_TYPE"),
+        (r#"pub susp fnc main(): int { val pending: Future<Result<Option<int>,string>> = task { return 42; }; return 0; }"#, "E_UNSUPPORTED_TYPE"),
     ] {
-        let error=compile(src).expect_err("unsupported guest reads must not emit Wasm");
-        assert!(matches!(error.code,"E_UNSUPPORTED"|"E_UNSUPPORTED_TYPE"|"E_TYPE"),"{src}: {error}");
+        let error=compile(src).expect_err("invalid channel source must not emit guest Wasm");
+        assert_eq!(error.code, expected, "{src}: {error}");
     }
 }
