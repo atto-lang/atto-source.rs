@@ -3,11 +3,11 @@
 This integration candidate pins the Git blob SHA-1 and exact UTF-8 source of all 42
 website previews. The earlier `callable-body-styles.atto` public-access fix is
 merged in website commit `67282439d97dcb76ec17b30cfa1177aad12c3ce7`.
-The `boolean-operators.atto` source is pinned to companion website draft
-[PR #147](https://github.com/atto-lang/atto-lang.github.io/pull/147), head
-`2544bfc3e55d38b9f726fa4195bb0cd600eb64de`, which removes the reserved
-executable `^^` operator in favor of `Xor(a,b)`. The remaining 41 blobs
-match the published website main branch. The manifest verifies source bytes,
+The `boolean-operators.atto` source is pinned to the website correction
+[merged PR #147](https://github.com/atto-lang/atto-lang.github.io/pull/147),
+public source merge commit `ca3d55cd43470cd49cd6206b0e87f256112f84b9`,
+which removes the reserved executable `^^` operator in favor of `Xor(a,b)`.
+All 42 Git blobs now match website `main` at that source commit. The manifest verifies source bytes,
 not executable support; this integration has not yet passed CI.
 
 `cargo test --locked` runs the native source-to-Wasm compiler on every
