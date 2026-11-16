@@ -41,8 +41,8 @@ as a hard-real-time proof.
 ## Fixed actor-owned arena (experimental)
 
 `src/actor_arena.rs` provides an allocation-free, fixed-capacity Rust
-slot store with actor/incarnation identity checks, generation-fenced
-handles and fail-closed capacity exhaustion. This is host-side substrate
+slot store with actor/incarnation/arena identity checks, generation-fenced
+handles, return-on-denial ownership and fail-closed capacity exhaustion. This is host-side substrate
 only: it does **not** implement guest actor state, a general zero-GC
 heap, source borrow checking or cross-actor memory isolation. See
 [docs/RS_ACTOR_ARENA.md](docs/RS_ACTOR_ARENA.md).
