@@ -1830,6 +1830,41 @@ impl Parser {
             self.expect_io_double(Tok::Gt, ">>")?;
             let bound = self.parse_io_resolved_binder_type()?;
             (future, bound)
+        } else if self.is_word("val") || self.is_word("let") || self.is_word("const") {
+            // Directional read-to-future-to-await flow (syntax only):
+            //
+            // nb stdio.in >> val pending: Future<Outcome>
+            //     |> susp |f| -> await f
+            //     >> val resolved: Outcome;
+            //
+            // The first '>>' is an nb read that binds its Future, '|>' is
+            // callable application, and the final '>>' binds the value. This
+            // must not be generalized into assignment or another stream read.
+            let typed_future = self.parse_io_resolved_binder_type()?;
+            let inner = typed_future.strip_prefix("Future<")
+                .and_then(|s| s.strip_suffix('>'))
+                .filter(|s| !s.is_empty() && *s != "void")
+                .ok_or_else(|| Diagnostic::new(at, "E_IO_SYNTAX",
+                    "a directional nonblocking read pipeline needs a Future<T> binder"))?
+                .to_owned();
+            self.expect(Tok::PipeGt, "'|>' after a Future<T> read binder")?;
+            if !(self.eat_word("susp") || self.eat_word("suspends")) {
+                return Err(unsupported(self.pos(),
+                    "directional read pipeline requires 'susp |v| -> await v'"));
+            }
+            self.expect(Tok::Pipe, "'|' before suspending lambda parameter")?;
+            let (parameter, _) = self.ident("suspending lambda parameter")?;
+            self.expect(Tok::Pipe, "'|' after suspending lambda parameter")?;
+            self.expect(Tok::Arrow, "'->' in suspending lambda")?;
+            self.expect_word("await")?;
+            let (awaited, awaited_pos) = self.ident("awaited Future parameter")?;
+            if parameter != awaited {
+                return Err(Diagnostic::new(awaited_pos, "E_PIPE_BIND",
+                    "suspending stage must await its own lambda parameter"));
+            }
+            self.expect_io_double(Tok::Gt, ">>")?;
+            let resolved = self.parse_io_resolved_binder_type()?;
+            (inner, resolved)
         } else {
             return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
         };
