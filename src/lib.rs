@@ -13,6 +13,7 @@ pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
 pub mod io_shorthand;
+pub mod detached_io;
 pub mod parser;
 pub mod target_syntax;
 pub mod target_typed;
@@ -34,6 +35,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
+    // Detached tasks require ownership, completion callbacks and supervisor
+    // error routing. Parse-check early; NEVER execute them as synchronous I/O.
+    if let Some(detached) = detached_io::inspect(&toks)?.first() {
+        return Err(Diagnostic::new(detached.pos, "E_UNSUPPORTED",
+            "supervised do readch/writech syntax recognized, but detached I/O scheduling and completion callbacks are not implemented"));
+    }
     // The browser guest already has a typed stdio.print output import.
     // Permit the exact stdio.out << value statement form to lower through
     // that existing checked path. All other channels, streams, read
