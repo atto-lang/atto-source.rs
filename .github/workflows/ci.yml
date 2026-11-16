@@ -29,6 +29,7 @@ jobs:
       - name: Check actor declaration parser/linker regression gates
         run: |
           cargo test --locked --test declared_actor_ports -- --nocapture
+          cargo test --locked --test actor_unary_reply_frontend -- --nocapture
           cargo test --locked --test target_syntax
           cargo test --locked --test target_typed
           cargo test --locked --test target_link
