@@ -1209,12 +1209,14 @@ impl Parser {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     "'::' requires a comma/end body, not a brace block"));
             }
-            if !explicit_comma {
-                let mut trial = self.clone();
-                if let Ok(body) = trial.parse_explicit_end_body() {
-                    *self = trial;
-                    return Ok(body);
-                }
+            // The pinned website also uses '::' as an optional header
+            // separator before explicit semicolon/return statements. Until
+            // the versioned header migration (#185), preserve both spellings
+            // without relaxing the checked return contract.
+            let mut trial = self.clone();
+            if let Ok(body) = trial.parse_explicit_end_body() {
+                *self = trial;
+                return Ok(body);
             }
             return self.parse_erlang_body(ret);
         }
