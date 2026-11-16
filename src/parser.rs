@@ -2088,10 +2088,14 @@ impl Parser {
                 if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                     return Err(unsupported(self.pos(), "named arguments"));
                 }
-                if *self.peek() == Tok::Dot {
-                    return Err(unsupported(self.pos(), "spread arguments"));
+                if *self.peek() == Tok::Spread {
+                    let pos = self.pos();
+                    self.advance();
+                    let item = self.parse_unary()?;
+                    args.push(Expr { kind: ExprKind::Spread(Box::new(item)), pos });
+                } else {
+                    args.push(self.parse_expr()?);
                 }
-                args.push(self.parse_expr()?);
                 if args.len() > MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
                 }
@@ -2102,6 +2106,67 @@ impl Parser {
         }
         self.expect(Tok::RParen, "')' to close the call")?;
         Ok(args)
+    }
+
+    /// Parse one postfix checked index or half-open slice without lowering it.
+    /// ColonColon also represents adjacent stride colons (e.g. a[::2]).
+    fn parse_index_or_slice(&mut self, base: Expr) -> R<Expr> {
+        let pos = self.pos();
+        self.expect(Tok::LBracket, "'[' for indexing or slicing")?;
+        if *self.peek() == Tok::RBracket {
+            return Err(Diagnostic::new(self.pos(), "E_SLICE_SYNTAX",
+                "empty brackets are not a valid index or slice; use [:]"));
+        }
+        let start = if matches!(self.peek(), Tok::Colon | Tok::ColonColon) {
+            None
+        } else {
+            Some(Box::new(self.parse_expr()?))
+        };
+        if self.eat(&Tok::RBracket) {
+            let index = start.expect("nonempty index expression");
+            return Ok(Expr { kind: ExprKind::Index(Box::new(base), index), pos });
+        }
+        let adjacent = if self.eat(&Tok::ColonColon) {
+            true
+        } else {
+            if !self.eat(&Tok::Colon) {
+                return Err(Diagnostic::new(self.pos(), "E_SLICE_SYNTAX",
+                    "expected ':' or ']' after index expression"));
+            }
+            false
+        };
+        let end = if adjacent || matches!(self.peek(), Tok::Colon | Tok::ColonColon | Tok::RBracket) {
+            None
+        } else {
+            Some(Box::new(self.parse_expr()?))
+        };
+        let step = if adjacent || self.eat(&Tok::Colon) {
+            if matches!(self.peek(), Tok::RBracket | Tok::Colon | Tok::ColonColon) {
+                return Err(Diagnostic::new(self.pos(), "E_SLICE_SYNTAX",
+                    "a second ':' requires a stride expression"));
+            }
+            let stride = self.parse_expr()?;
+            let zero = match &stride.kind {
+                ExprKind::Int(Some(0)) => true,
+                ExprKind::Unary(UnOp::Neg | UnOp::Plus, inner) =>
+                    matches!(inner.kind, ExprKind::Int(Some(0))),
+                _ => false,
+            };
+            if zero {
+                return Err(Diagnostic::new(stride.pos, "E_SLICE_STEP_ZERO",
+                    "slice stride must not be zero"));
+            }
+            Some(Box::new(stride))
+        } else {
+            None
+        };
+        if !self.eat(&Tok::RBracket) {
+            return Err(Diagnostic::new(self.pos(), "E_SLICE_SYNTAX",
+                "expected ']' after slice bounds; at most two ':' separators are permitted"));
+        }
+        Ok(Expr { kind: ExprKind::Slice {
+            base: Box::new(base), start, end, step,
+        }, pos })
     }
 
     fn parse_postfix(&mut self) -> R<Expr> {
@@ -2195,7 +2260,11 @@ impl Parser {
                         };
                     }
                 }
-                Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
+                Tok::LBracket => {
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = self.parse_index_or_slice(e)?;
+                },
                 Tok::Question if !self.question_opens_ternary() => {
                     let question = self.pos();
                     self.advance();
@@ -2343,7 +2412,14 @@ impl Parser {
                 if items.len() >= 1024 {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "array literal exceeds 1024 elements"));
                 }
-                items.push(self.parse_expr()?);
+                if *self.peek() == Tok::Spread {
+                    let pos = self.pos();
+                    self.advance();
+                    let source = self.parse_unary()?;
+                    items.push(Expr { kind: ExprKind::Spread(Box::new(source)), pos });
+                } else {
+                    items.push(self.parse_expr()?);
+                }
                 if !self.eat(&Tok::Comma) { break; }
                 if *self.peek() == Tok::RBracket { break; }
             }
@@ -2491,6 +2567,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Arrow => "->",
                 Tok::FatArrow => "=>",
                 Tok::Dot => ".",
+                Tok::Spread => "...",
                 Tok::Assign => "=",
                 Tok::EqEq => "==",
                 Tok::NotEq => "!=",
