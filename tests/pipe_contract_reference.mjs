@@ -180,3 +180,48 @@ test('actor ordinary sends and supervisor CONTROL do not enter emit data path', 
   assert.deepEqual(applicationSends, [5]);
   assert.deepEqual(supervisorControls, ['PANIC']);
 });
+
+
+test('stream-to-actor transform allows zero-to-many emitted values', async () => {
+  const sink = new BoundedSink(3);
+  async function* transform(input) {
+    for await (const value of input) {
+      if (value === 1) { yield 10; yield 11; }
+      if (value === 3) yield 30;
+    }
+  }
+  const done = await connect(transform(producer([1, 2, 3])), sink).get_done();
+  assert.equal(done.admitted, 3);
+  assert.deepEqual([(await sink.read()).value, (await sink.read()).value,
+    (await sink.read()).value], [10, 11, 30]);
+});
+
+test('a channel can bridge generator source to an actor sink without unbounded reads', async () => {
+  const middle = new BoundedSink(1);
+  const output = new BoundedSink(2);
+  const up = connect(producer([41, 42]), middle);
+  const fromChannel = async function* () {
+    yield (await middle.read()).value;
+    yield (await middle.read()).value;
+  };
+  const down = connect(fromChannel(), output);
+  const results = await Promise.all([up.get_done(), down.get_done()]);
+  assert.deepEqual(results.map(x => x.admitted), [2, 2]);
+  assert.deepEqual([(await output.read()).value, (await output.read()).value], [41, 42]);
+  assert.equal(middle.maxBuffered, 1);
+  assert.equal(middle.externalClosed, false);
+});
+
+test('two consumers competing for one channel never receive implicit broadcast', async () => {
+  const sink = new BoundedSink(2);
+  const done = await connect(producer([10, 20]), sink).get_done();
+  const [a, b] = await Promise.all([sink.read(), sink.read()]);
+  assert.equal(done.admitted, 2);
+  assert.deepEqual([a.value, b.value].sort((x, y) => x - y), [10, 20]);
+  assert.equal(sink.buffer.length, 0);
+});
+
+test('stream readable view cannot masquerade as writable pipe sink', () => {
+  const readable = producer([1, 2]);
+  assert.throws(() => connect(producer([3]), readable), /PipeSink/);
+});
