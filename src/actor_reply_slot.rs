@@ -18,6 +18,19 @@ pub struct Ticket {
     caller_incarnation: u64,
     callee_incarnation: u64,
 }
+impl Ticket {
+    /// Create one separate dispatcher permit for a trusted, in-process
+    /// mailbox admission. This is NOT a public Clone implementation and
+    /// is never serialized to untrusted guest code.
+    pub(crate) fn for_dispatch(&self) -> Self {
+        Self {
+            index: self.index,
+            generation: self.generation,
+            caller_incarnation: self.caller_incarnation,
+            callee_incarnation: self.callee_incarnation,
+        }
+    }
+}
 enum Phase<T> { Free, Open, Staged(T), Settled(ReplyOutcome<T>), PermanentlyRetired }
 struct Slot<T> {
     generation: u64,
