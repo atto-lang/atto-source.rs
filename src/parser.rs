@@ -388,6 +388,9 @@ impl Parser {
 
     fn parse_type(&mut self) -> R<Type> {
         let pos = self.pos();
+        if *self.peek() == Tok::Tilde || self.is_word("structural") {
+            return Err(unsupported(pos, "structural type references (~ / structural)"));
+        }
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
             _ => return Err(self.expected("a type")),
@@ -1096,6 +1099,9 @@ impl Parser {
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
         }
+        if *self.peek() == Tok::Tilde {
+            return Err(unsupported(self.pos(), "structural (~) callables"));
+        }
         for m in [
             "async",
             "suspend",
@@ -1163,8 +1169,8 @@ impl Parser {
 
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
-        if self.is_word("structural") {
-            return Err(unsupported(pos, "structural parameters"));
+        if self.is_word("structural") || *self.peek() == Tok::Tilde {
+            return Err(unsupported(pos, "structural (~ / structural) parameters"));
         }
         // compatibility form `name: type [mut]`
         if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
@@ -1855,8 +1861,27 @@ impl Parser {
         Ok(Stmt::If { arms, otherwise, pos })
     }
 
-    /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
-    /// (or `over { on P { } }`); legacy `match [first] x [;] P -> { } end`
+    /// Parse an individual statement-match arm body. Braced arms close with
+    /// '}', while end-delimited arms consume their *own* 'end'. The enclosing
+    /// match parser must still consume a separate final 'end'.
+    ///
+    /// Nested if/fi, match/end and other compound statements are parsed
+    /// recursively, rather than counting 'end' tokens lexically.
+    fn parse_match_arm_body(&mut self) -> R<Vec<Stmt>> {
+        if *self.peek() == Tok::LBrace {
+            return self.parse_block();
+        }
+        // Empty arms are permitted in both spellings: '{}' and 'end'.
+        // Even an empty end-delimited arm must consume its *own* end,
+        // leaving the enclosing match end for parse_match().
+        let body = self.parse_stmts_until(&["end"])?;
+        self.expect_word("end")?;
+        Ok(body)
+    }
+
+    /// Statement match arms use `on P -> { stmts }` or
+    /// `on P -> stmts end`; the outer match still requires its own `end`.
+    /// Legacy `over { on P { } }` and `match [first] x [;] P -> { } end`
     /// with `else` as the catch-all. `do match` requires `over`.
     fn parse_match(&mut self, procedural: bool) -> R<Stmt> {
         let pos = self.pos();
@@ -1910,7 +1935,7 @@ impl Parser {
             if !self.eat(&Tok::Arrow) && !braced {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "match arms in 'over ... end' use '->'"));
             }
-            let body = self.parse_block()?;
+            let body = self.parse_match_arm_body()?;
             arms.push(MatchArm {
                 pattern,
                 guard,
@@ -2020,6 +2045,7 @@ impl Parser {
             Tok::Float(_) => Err(unsupported(pos, "float literal patterns")),
             Tok::Str(_) => Err(unsupported(pos, "string literal patterns")),
             Tok::LParen => Err(unsupported(pos, "tuple patterns")),
+            Tok::Tilde => Err(unsupported(pos, "structural (~ / structural) type patterns")),
             Tok::LBracket => Err(Diagnostic::new(
                 pos,
                 "E_SYNTAX",
@@ -2049,7 +2075,7 @@ impl Parser {
                     self.advance();
                     Ok(Pattern::Wild)
                 }
-                "is" | "structural" => Err(unsupported(pos, "type patterns")),
+                "is" | "structural" => Err(unsupported(pos, "type patterns, including structural type patterns")),
                 _ => {
                     self.advance();
                     if *self.peek() == Tok::Dot {
@@ -2790,7 +2816,7 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "await" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" | "structural" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
@@ -2819,6 +2845,16 @@ impl Parser {
             Tok::Pipe => self.parse_lambda()?,
             Tok::LBracket => self.parse_array_literal()?,
             Tok::LBrace => return Err(unsupported(pos, "record literals")),
+            Tok::Tilde => {
+                // `~(key => value)` and `~(field: value)` are aggregate
+                // forms, not structural casts. Neither is silently lowered.
+                let kind = if *self.peek_at(1) == Tok::LParen {
+                    "tilde Map/Record aggregates (not structural projections)"
+                } else {
+                    "structural (~ / structural) value projections"
+                };
+                return Err(unsupported(pos, kind));
+            },
             _ => return Err(self.expected("an expression")),
         };
         Ok(Expr { kind, pos })
@@ -2891,6 +2927,7 @@ fn describe(t: &Tok) -> String {
                 Tok::PipeGt => "|>",
                 Tok::Amp => "&",
                 Tok::At => "@",
+                Tok::Tilde => "~",
                 _ => "?",
             };
             format!("'{s}'")
