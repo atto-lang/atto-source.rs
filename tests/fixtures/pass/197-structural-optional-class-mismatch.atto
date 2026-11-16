@@ -1,0 +1,17 @@
+// expect-exit: 42
+// Optional x exists but does not equal 10: the wildcard fallback runs.
+define class WrongX as
+    pub int x = 11;
+    pub int y = 8;
+end
+pub fnc main(): int {
+    val value = new WrongX();
+    match value over
+        on ~{ x?: 10, y: _ } -> {
+            return 1;
+        }
+        on _ -> {
+            return 42;
+        }
+    end
+}
