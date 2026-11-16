@@ -1,0 +1,22 @@
+// expect-exit: 42
+// java: rejects
+// A typed nominal parameter is a stable, single-evaluation structural source.
+define class Point as
+    pub int x = 0;
+    pub int y = 0;
+end
+define class Shifted as
+    pub int padding = 9;
+    pub int y = 32;
+    pub int x = 10;
+end
+pub fnc sum(~Point p): int {
+    return p.x + p.y;
+}
+pub fnc forward(Shifted obj): int {
+    return sum(obj);
+}
+pub fnc main(): int {
+    val obj = new Shifted();
+    return forward(obj);
+}
