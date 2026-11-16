@@ -1812,8 +1812,29 @@ impl Parser {
         Ok(Stmt::If { arms, otherwise, pos })
     }
 
-    /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
-    /// (or `over { on P { } }`); legacy `match [first] x [;] P -> { } end`
+    /// Parse an individual statement-match arm body. Braced arms close with
+    /// '}', while end-delimited arms consume their *own* 'end'. The enclosing
+    /// match parser must still consume a separate final 'end'.
+    ///
+    /// Nested if/fi, match/end and other compound statements are parsed
+    /// recursively, rather than counting 'end' tokens lexically.
+    fn parse_match_arm_body(&mut self) -> R<Vec<Stmt>> {
+        if *self.peek() == Tok::LBrace {
+            return self.parse_block();
+        }
+        let body = self.parse_stmts_until(&["end"])?;
+        if body.is_empty() {
+            return Err(Diagnostic::new(
+                self.pos(), "E_SYNTAX", "match arm requires at least one statement",
+            ));
+        }
+        self.expect_word("end")?;
+        Ok(body)
+    }
+
+    /// Statement match arms use `on P -> { stmts }` or
+    /// `on P -> stmts end`; the outer match still requires its own `end`.
+    /// Legacy `over { on P { } }` and `match [first] x [;] P -> { } end`
     /// with `else` as the catch-all. `do match` requires `over`.
     fn parse_match(&mut self, procedural: bool) -> R<Stmt> {
         let pos = self.pos();
@@ -1867,7 +1888,7 @@ impl Parser {
             if !self.eat(&Tok::Arrow) && !braced {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "match arms in 'over ... end' use '->'"));
             }
-            let body = self.parse_block()?;
+            let body = self.parse_match_arm_body()?;
             arms.push(MatchArm {
                 pattern,
                 guard,
