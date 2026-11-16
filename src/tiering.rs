@@ -161,7 +161,8 @@ pub fn recommend_layout(
             return Err(PlanError::NoLayoutEvidence);
         }
         evidence.column_oriented_reads > 0
-            && evidence.column_oriented_reads / 2 >= evidence.row_oriented_reads
+            && (evidence.row_oriented_reads == 0
+                || evidence.column_oriented_reads / 2 >= evidence.row_oriented_reads)
     };
 
     if !prefer_columns {
