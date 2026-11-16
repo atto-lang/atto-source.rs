@@ -356,6 +356,7 @@ pub enum PipeEndpointKind {
     ChannelBounded,
     StreamBuffered,
     StreamSink,
+    StreamReadable,
 }
 
 /// One stage in a continuous typed data-flow connection.
