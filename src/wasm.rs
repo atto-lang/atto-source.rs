@@ -658,6 +658,9 @@ impl Emit<'_> {
                 self.open(0x04, 0x40, Frame::Other); // if (void)
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
+                // The '?' early exit is a real return and must run ticket
+                // cleanup just like a source-level return.
+                self.channel_cleanup(&self.read_slots.clone());
                 self.op(0x0F); // return original Err/None tagged pointer
                 self.close();
                 self.op(0x20);
