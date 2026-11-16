@@ -11,7 +11,7 @@ pub struct TypeUse { pub canonical: String, pub structural: bool }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Formal { pub name: String, pub ty: TypeUse }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ArgKind { Ordinary, StructuralProjection, RecordAggregate, MapAggregate }
+pub enum ArgKind { Ordinary, StructuralProjection }
 #[derive(Clone, Debug)]
 pub struct Argument {
     pub label: Option<String>,
@@ -316,33 +316,14 @@ fn classify(expr: &[Token]) -> R<ArgKind> {
         return Err(Diagnostic::new(first.pos, "E_SYNTAX", "structural shape is a type, not a value"));
     }
     if tilde && expr.get(1).is_some_and(|t| t.tok == Tok::LParen) {
-        if expr.get(2).is_none_or(|t| t.tok == Tok::RParen) {
-            return Err(Diagnostic::new(first.pos, "E_SYNTAX", "ambiguous empty aggregate"));
-        }
-        let mut depth = 0usize;
-        let (mut map, mut record) = (false, false);
-        for t in expr.iter().skip(2) {
-            match t.tok {
-                Tok::LParen | Tok::LBrace | Tok::LBracket => depth += 1,
-                Tok::RParen if depth == 0 => break,
-                Tok::RParen | Tok::RBrace | Tok::RBracket => depth = depth.saturating_sub(1),
-                Tok::FatArrow if depth == 0 => map = true,
-                Tok::Colon if depth == 0 => record = true,
-                _ => {}
-            }
-        }
-        if map && !record { return Ok(ArgKind::MapAggregate); }
-        if record && !map && expr.get(2).is_some_and(|t| matches!(t.tok, Tok::Ident(_)))
-            && expr.get(3).is_some_and(|t| t.tok == Tok::Colon) {
-            return Ok(ArgKind::RecordAggregate);
-        }
-        return Err(Diagnostic::new(first.pos, "E_SYNTAX", "invalid tilde aggregate; use ~name for structural projection"));
+        return Err(Diagnostic::new(first.pos, "E_SYNTAX",
+            "tilde collection constructors have been removed; use Map.of/Record.of/etc"));
     }
     if tilde || matches!(&first.tok, Tok::Ident(w) if w == "structural") {
         if expr.len() == 1 { return Err(Diagnostic::new(first.pos, "E_SYNTAX", "missing structural operand")); }
         if matches!(expr[1].tok, Tok::LBrace | Tok::LParen) {
             return Err(Diagnostic::new(first.pos, "E_SYNTAX",
-                "structural argument projection needs a value; brace shapes are types and parenthesized aggregates use '~' only"));
+                "structural projection needs an ordinary value; brace shapes are types and tilde constructors are removed"));
         }
         check_projection_operand(expr, first.pos)?;
         return Ok(ArgKind::StructuralProjection);
@@ -544,25 +525,21 @@ mod tests {
             assert_eq!(target, parse_pattern(comment).unwrap(), "{comment}");
         }
 
-        // In ordinary argument expressions, '~ (' remains a Map/Record
-        // aggregate, and whitespace cannot turn it into a type cast.
-        for (compact, spaced, kind) in [
-            ("(payload: ~(field: 42))",
-             "(payload: ~ (field: 42))", ArgKind::RecordAggregate),
-            ("(payload: ~(key => 42))",
-             "(payload: ~ (key => 42))", ArgKind::MapAggregate),
-            ("(~point, other: ~value)",
-             "(~ point, other: ~ value)", ArgKind::StructuralProjection),
+        // No tilde-prefixed Map/Record constructors survive, regardless
+        // of spacing, comments or the enclosing call's named label.
+        for rejected in [
+            "(payload: ~(field: 42))", "(payload: ~ (field: 42))",
+            "(payload: ~(key => 42))", "(payload: ~ (key => 42))",
+            "(~(field: 42))", "(~ (key => 42))",
         ] {
-            let left = parse_arguments(compact).unwrap();
-            let right = parse_arguments(spaced).unwrap();
-            assert_eq!(left.len(), right.len());
-            assert_eq!(left[0].kind, kind);
-            for (l, r) in left.iter().zip(right.iter()) {
-                assert_eq!(l.kind, r.kind);
-                assert_eq!(l.label, r.label);
-            }
+            assert!(parse_arguments(rejected).is_err(), "{rejected}");
         }
+        let a = parse_arguments("(~point, other: ~value)").unwrap();
+        let b = parse_arguments("(~ point, other: ~ value)").unwrap();
+        assert_eq!(a.len(), b.len());
+        assert_eq!(a[0].kind, ArgKind::StructuralProjection);
+        assert_eq!(a[0].kind, b[0].kind);
+        assert_eq!(a[1].kind, b[1].kind);
 
         // Both spellings of a shape in expression position stay invalid.
         for invalid in ["(~{x: 10})", "(~ {x: 10})",
@@ -670,16 +647,22 @@ mod tests {
         assert!(bind_resolved(&formals, &parse_arguments("(p: 1, count: 2)").unwrap()).is_err());
         assert!(bind_resolved(&formals, &parse_arguments("(p: 1, count: 2, unknown: 3)").unwrap()).is_err());
     }
-    #[test] fn record_map_aggregates_are_not_structural_projections() {
-        assert_eq!(parse_arguments("(arg: ~(x: 1))").unwrap()[0].kind, ArgKind::RecordAggregate);
-        assert_eq!(parse_arguments("(arg: ~(k => 1))").unwrap()[0].kind, ArgKind::MapAggregate);
-        assert_eq!(parse_arguments("(arg: ~point)").unwrap()[0].kind, ArgKind::StructuralProjection);
-        assert_eq!(parse_arguments("(arg: structural point)").unwrap()[0].kind, ArgKind::StructuralProjection);
-        for bad in ["(~())", "(~ (point))", "(~(x: 1, y => 2))", "(~{x: int})"] {
+    #[test] fn removed_tilde_aggregate_shortcuts_stay_rejected() {
+        for bad in [
+            "(arg: ~(x: 1))", "(arg: ~ (x: 1))",
+            "(arg: ~(k => 1))", "(arg: ~ (k => 1))",
+            "(~())", "(~ (point))", "(~(x: 1, y => 2))",
+            "(~{x: int})", "(arg: ~ /*c*/ (x: 1))",
+        ] {
             assert!(parse_arguments(bad).is_err(), "{bad}");
         }
+        assert_eq!(parse_arguments("(arg: ~point)").unwrap()[0].kind,
+                   ArgKind::StructuralProjection);
+        assert_eq!(parse_arguments("(arg: structural point)").unwrap()[0].kind,
+                   ArgKind::StructuralProjection);
         let args = parse_arguments("(a: p ? x : y, b: nested(u: 1, v: 2))").unwrap();
         assert_eq!(args.len(), 2);
         assert_eq!(args[0].label.as_deref(), Some("a"));
     }
+
 }
