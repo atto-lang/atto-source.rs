@@ -117,7 +117,7 @@ try{
   console.log('PASS integration: direct stdio.out << and awaited Future<int> execute together inside Chromium Worker');
   // Exact published 42-preview source, not a reduced fixture or parser-only test.
   const publicSuspends = await readFile(new URL('./playground_previews/suspends.atto',import.meta.url),'utf8');
-  assert.match(await run(publicSuspends,'main() -> 42'),/^42\\nmain\\(\\) -> 42$/);
+  assert.match(await run(publicSuspends,'main() -> 42'),/^42\nmain\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),3,
     'published suspends preview must yield for task Future, caller, and suspending lambda');
   console.log('PASS exact website suspends.atto: real native-equivalent guest prints 42 and returns 42 with 3 cooperative JSPI yields');
