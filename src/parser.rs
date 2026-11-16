@@ -1366,7 +1366,14 @@ impl Parser {
             self.terminator()?;
             return Ok(Stmt::YieldFrom(source, pos));
         }
-        let word = self.word_at(0).map(str::to_owned);
+        // `^` is a statement-position alias for `return`, never a unary
+        // or binary expression operator. Reuse the existing return-match,
+        // generator, terminator and type-checking paths.
+        let word = if *self.peek() == Tok::Caret {
+            Some("return".to_owned())
+        } else {
+            self.word_at(0).map(str::to_owned)
+        };
         match word.as_deref() {
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
@@ -2613,7 +2620,7 @@ impl Parser {
         }
         let body = if *self.peek() == Tok::LBrace {
             LambdaBody::Block(self.parse_block()?)
-        } else if self.is_word("return") {
+        } else if self.is_word("return") || *self.peek() == Tok::Caret {
             // Unlike ordinary statements, a braceless lambda's return must
             // have a literal semicolon. A newline before the closing ')' does
             // not terminate this lambda body.
