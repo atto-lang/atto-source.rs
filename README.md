@@ -1,3 +1,9 @@
+> **Canonical home moved (2026-11-16):** this compiler now lives in
+> [atto-lang/atto-source.rs](https://github.com/atto-lang/atto-source.rs) at the native/ (subtree, full history),
+> merged in atto-lang commit `60dbf3160d`. All commits up to `e0b8124c69`
+> are preserved there. **Open new work and pull requests in atto-lang**; open PRs
+> here must be re-opened against atto-lang before they can land.
+
 # Oreslang Rust compiler
 
 Independent Oreslang frontend, MIR and native code generation with Cranelift; neither LLVM nor GraalVM is a dependency.
