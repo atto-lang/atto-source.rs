@@ -258,8 +258,21 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
         }
         Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
             "direct lambda rewriting cannot cross a protected state loan")),
-        Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
+        Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
             rewrite_expr(e, d),
+        Stmt::Try { body, catch, finally, .. } => {
+            rewrite_statements(body, d)?;
+            if let Some((_, handler)) = catch { rewrite_statements(handler, d)?; }
+            if let Some(cleanup) = finally { rewrite_statements(cleanup, d)?; }
+            Ok(())
+        }
+        // Cleanup/recovery bodies are checked in an isolated scope that cannot
+        // see enclosing locals, so a direct lambda never reaches them.
+        Stmt::Defer { .. } => Ok(()),
+        Stmt::Recover { args, .. } => {
+            for arg in args { rewrite_expr(arg, d)?; }
+            Ok(())
+        }
         Stmt::Return(Some(e), _) => rewrite_expr(e, d),
         Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => Ok(()),
         Stmt::Block(b) | Stmt::Loop { body: b, .. } => rewrite_statements(b, d),
@@ -441,6 +454,7 @@ fn stmt_pos(s: &Stmt) -> Pos {
         Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
+        Stmt::Raise(_, pos) | Stmt::Try { pos, .. } | Stmt::Defer { pos, .. } | Stmt::Recover { pos, .. } |
         Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) |
         Stmt::Return(_, pos) | Stmt::Break(pos) |
         Stmt::Continue(pos) => *pos,

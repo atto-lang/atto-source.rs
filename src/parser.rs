@@ -1139,6 +1139,7 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
+        self.parse_effect_clauses()?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1160,6 +1161,120 @@ impl Parser {
             ret,
             body,
         })
+    }
+
+    /// Proposed exceptional effect clauses after the result type:
+    /// `throws(Error)`, `raises(Error)`, `panics(Error)`. This browser slice
+    /// validates the syntax and admits only the built-in `Error`. The clause
+    /// is a declared upper bound; it is not yet transitively effect-checked
+    /// and never grants or suppresses any failure path.
+    fn parse_effect_clauses(&mut self) -> R<()> {
+        let mut seen: Vec<&'static str> = Vec::new();
+        loop {
+            let kind = match self.word_at(0) {
+                Some("throws") => "throws",
+                Some("raises") => "raises",
+                Some("panics") => "panics",
+                _ => return Ok(()),
+            };
+            if *self.peek_at(1) != Tok::LParen {
+                return Ok(());
+            }
+            let pos = self.pos();
+            if seen.contains(&kind) {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate '{kind}' effect clause")));
+            }
+            seen.push(kind);
+            self.advance();
+            self.advance();
+            loop {
+                let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
+                if ty != "Error" {
+                    return Err(Diagnostic::new(ty_pos, "E_TYPE",
+                        format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
+                }
+                if !self.eat(&Tok::Comma) { break; }
+            }
+            self.expect(Tok::RParen, "')' to close the effect clause")?;
+            // `throws(Error), raises(Error)`: a comma may separate clauses.
+            if *self.peek() == Tok::Comma
+                && matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
+                && *self.peek_at(2) == Tok::LParen
+            {
+                self.advance();
+            }
+        }
+    }
+
+    /// `try { } [catch (Error e) { }] [finally { }]`, at least one handler.
+    fn parse_try(&mut self, pos: Pos) -> R<Stmt> {
+        self.advance();
+        let body = self.parse_block()?;
+        let catch = if self.eat_word("catch") {
+            self.expect(Tok::LParen, "'(' after 'catch'")?;
+            let (ty, ty_pos) = self.ident("the caught Error type")?;
+            if ty != "Error" {
+                return Err(Diagnostic::new(ty_pos, "E_TYPE",
+                    "this browser slice catches only the built-in Error"));
+            }
+            let (binder, _) = self.ident("a catch binding name")?;
+            self.expect(Tok::RParen, "')' after the catch binding")?;
+            Some((binder, self.parse_block()?))
+        } else {
+            None
+        };
+        if self.is_word("catch") {
+            return Err(unsupported(self.pos(), "multiple catch clauses"));
+        }
+        let finally = if self.eat_word("finally") { Some(self.parse_block()?) } else { None };
+        if catch.is_none() && finally.is_none() {
+            return Err(Diagnostic::new(pos, "E_SYNTAX", "'try' requires a 'catch' or 'finally' clause"));
+        }
+        Ok(Stmt::Try { body, catch, finally, pos })
+    }
+
+    /// `recover (|T a, ...| -> |err, c| -> { body })(args);`
+    fn parse_recover(&mut self, pos: Pos) -> R<Stmt> {
+        self.advance();
+        self.expect(Tok::LParen, "'(' after 'recover'")?;
+        self.expect(Tok::Pipe, "'|' to open the recovery factory parameters")?;
+        let mut params: Vec<(String, Type, Pos)> = Vec::new();
+        if !self.eat(&Tok::Pipe) {
+            loop {
+                if params.len() >= MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many recovery factory parameters"));
+                }
+                let ty = self.parse_type()?;
+                let (name, p) = self.ident("a recovery factory parameter name")?;
+                if params.iter().any(|(n, ..)| *n == name) {
+                    return Err(Diagnostic::new(p, "E_DUPLICATE", format!("duplicate parameter '{name}'")));
+                }
+                params.push((name, ty, p));
+                if self.eat(&Tok::Pipe) { break; }
+                self.expect(Tok::Comma, "',' or '|' after a factory parameter")?;
+            }
+        }
+        self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
+        self.expect(Tok::Pipe, "'|err, c|' recovery handler parameters")?;
+        let (err, _) = self.ident("the recovery error parameter")?;
+        self.expect(Tok::Comma, "',' between the error and cursor parameters")?;
+        let (cursor, cursor_pos) = self.ident("the recovery cursor parameter")?;
+        if cursor == err || params.iter().any(|(n, ..)| *n == err || *n == cursor) {
+            return Err(Diagnostic::new(cursor_pos, "E_DUPLICATE", "recovery parameter names must be distinct"));
+        }
+        self.expect(Tok::Pipe, "'|' after the recovery cursor")?;
+        self.expect(Tok::Arrow, "'->' before the recovery handler body")?;
+        if *self.peek() != Tok::LBrace {
+            return Err(self.expected("'{' to open the recovery handler body"));
+        }
+        let body = self.parse_block()?;
+        self.expect(Tok::RParen, "')' to close the recovery factory")?;
+        if *self.peek() != Tok::LParen {
+            return Err(self.expected("'(' with the recovery factory arguments"));
+        }
+        let args = self.parse_args()?;
+        self.terminator()?;
+        Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
 
     fn parse_param(&mut self) -> R<Param> {
@@ -1518,6 +1633,26 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Throw(error, pos))
             }
+            Some("raise") => {
+                self.advance();
+                let error = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Raise(error, pos))
+            }
+            Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
+            Some("defer") if *self.peek_at(1) == Tok::Pipe && *self.peek_at(2) == Tok::Pipe => {
+                self.advance();
+                self.advance();
+                self.advance();
+                self.expect(Tok::Arrow, "'->' after 'defer ||'")?;
+                if *self.peek() != Tok::LBrace {
+                    return Err(self.expected("'{' to open the deferred cleanup body"));
+                }
+                let body = self.parse_block()?;
+                self.terminator()?;
+                Ok(Stmt::Defer { body, pos })
+            }
+            Some("recover") if *self.peek_at(1) == Tok::LParen => self.parse_recover(pos),
             Some("if") => self.parse_if(),
             Some("guard") => self.parse_guard(),
             Some("while") => {

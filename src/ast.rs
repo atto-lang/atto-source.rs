@@ -242,6 +242,29 @@ pub enum Stmt {
     /// Ordinary guest failure. The checker admits only throw Error(string).
     /// Wasm's fatal traps, panics and host exceptions are never this signal.
     Throw(Expr, Pos),
+    /// Escalated failure (`raise Error(..)`): bypasses ordinary `catch`
+    /// and `trap`; only a registered `recover` or the root boundary sees it.
+    Raise(Expr, Pos),
+    /// `try { } [catch (Error e) { }] [finally { }]` (defer-recover-unwind-v1).
+    Try {
+        body: Vec<Stmt>,
+        /// Binder name and handler of the single admitted `catch (Error e)`.
+        catch: Option<(String, Vec<Stmt>)>,
+        finally: Option<Vec<Stmt>>,
+        pos: Pos,
+    },
+    /// `defer || -> { ... };` registers a LIFO cleanup without running it.
+    Defer { body: Vec<Stmt>, pos: Pos },
+    /// `recover (|T a, ..| -> |err, c| -> { ... })(args);` registers a
+    /// recovery callback whose factory arguments are evaluated once, now.
+    Recover {
+        params: Vec<(String, Type, Pos)>,
+        err: String,
+        cursor: String,
+        body: Vec<Stmt>,
+        args: Vec<Expr>,
+        pos: Pos,
+    },
     Yield(Expr, Pos),
     YieldFrom(Expr, Pos),
     Return(Option<Expr>, Pos),
