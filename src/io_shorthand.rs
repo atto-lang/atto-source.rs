@@ -41,6 +41,16 @@ fn op_at(tokens: &[Token], i: usize) -> Option<Direction> {
 
 fn path(tokens: &[Token], start: usize, end: usize) -> Option<String> {
     if start >= end { return None; }
+    // Parenthesized, side-effect-free path receivers are valid in v1.
+    // Complex computed expressions need the real AST parser/typechecker.
+    let (start, end) = if matches!(&tokens[start].tok, Tok::LParen)
+        && matches!(&tokens[end - 1].tok, Tok::RParen)
+    {
+        (start + 1, end - 1)
+    } else {
+        (start, end)
+    };
+    if start >= end { return None; }
     let mut components = Vec::new();
     let mut i = start;
     while i < end {
@@ -86,26 +96,26 @@ fn type_ref(tokens: &[Token], cursor: &mut usize, end: usize, depth: usize) -> b
     }
     *cursor += 1;
     while *cursor + 1 < end
-        && matches!(tokens[*cursor].tok, Tok::Dot | Tok::ColonColon)
+        && matches!(&tokens[*cursor].tok, Tok::Dot | Tok::ColonColon)
     {
         if word(&tokens[*cursor + 1]).is_none() { return false; }
         *cursor += 2;
     }
-    if *cursor < end && matches!(tokens[*cursor].tok, Tok::Lt) {
+    if *cursor < end && matches!(&tokens[*cursor].tok, Tok::Lt) {
         *cursor += 1;
         if !type_ref(tokens, cursor, end, depth + 1) { return false; }
-        while *cursor < end && matches!(tokens[*cursor].tok, Tok::Comma) {
+        while *cursor < end && matches!(&tokens[*cursor].tok, Tok::Comma) {
             *cursor += 1;
             if !type_ref(tokens, cursor, end, depth + 1) { return false; }
         }
-        if *cursor >= end || !matches!(tokens[*cursor].tok, Tok::Gt) { return false; }
+        if *cursor >= end || !matches!(&tokens[*cursor].tok, Tok::Gt) { return false; }
         *cursor += 1;
     }
     true
 }
 
 fn valid_read_annotation(tokens: &[Token], start: usize, end: usize) -> bool {
-    if start >= end || !matches!(tokens[start].tok, Tok::Colon) { return false; }
+    if start >= end || !matches!(&tokens[start].tok, Tok::Colon) { return false; }
     let mut cursor = start + 1;
     type_ref(tokens, &mut cursor, end, 0) && cursor == end
 }
