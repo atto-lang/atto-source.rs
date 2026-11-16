@@ -1,0 +1,11 @@
+// expect-error: E_DUPLICATE
+define class Value as
+    pub int x = 10;
+end
+pub fnc main(): int {
+    val value = new Value();
+    match value over
+        on ~{ x?: 10, x: 10 } -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
