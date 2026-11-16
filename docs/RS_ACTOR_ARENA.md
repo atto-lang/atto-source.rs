@@ -16,6 +16,10 @@ no-allocation guarantee.
 - Each slot has an independent, monotonically increasing generation.
   `take` advances it, and overflow permanently retires a slot instead
   of letting a stale generation wrap and regain authority.
+- Construction also rejects more than 4,096 inline slots or more than 4 MiB
+  of inline slot storage, using checked multiplication before initializing the
+  array. This does not certify a total actor-memory budget for dynamically
+  allocating values of type `T`.
 - All admission is bounded by a compile-time capacity. Exhaustion
   returns `(CapacityExhausted, original_value)` so a failed transfer retains
   caller ownership instead of silently dropping or evicting an object.
