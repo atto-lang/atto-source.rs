@@ -1,9 +1,9 @@
 //! Bounded byte arena for future actor-owned, non-tracing memory.
- //!
- //! This is a host substrate, not a compiled guest heap or an actor borrow
- //! checker. The arena reserves storage once at construction and uses a bump
- //! cursor thereafter. All handles are opaque, region-specific and epoch-bound.
- //! No handle exposes an address or grants cross-actor send authority.
+//!
+//! This is a host substrate, not a compiled guest heap or an actor borrow
+//! checker. The arena reserves storage once at construction and uses a bump
+//! cursor thereafter. All handles are opaque, region-specific and epoch-bound.
+//! No handle exposes an address or grants cross-actor send authority.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -60,17 +60,16 @@ impl OwnerArena {
         if capacity > MAX_ARENA_BYTES {
             return Err(ArenaError::InvalidCapacity);
         }
-        // Never wrap the ID. A surviving handle cannot be mistaken for a
-        // handle from a newly constructed arena even if memory is reused.
-        let id = NEXT_ARENA_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-            .map_err(|_| ArenaError::IdExhausted)?;
-
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(capacity)
             .map_err(|_| ArenaError::OutOfSpace)?;
         bytes.resize(capacity, 0);
+        // Never wrap the ID. A surviving handle cannot be mistaken for a
+        // handle from a newly constructed arena even if memory is reused.
+        let id = NEXT_ARENA_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .map_err(|_| ArenaError::IdExhausted)?;
         Ok(Self {
             bytes: bytes.into_boxed_slice(),
             used: 0,
