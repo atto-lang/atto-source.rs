@@ -1416,6 +1416,9 @@ fn body_check(
     let mut cx = FnCx::new(g, owner, ret, imports, data);
     cx.suspends = suspends;
     cx.nparams = named.len() as u32;
+    if named.iter().any(|(_,ty,_)| *ty == Type::FutureReadInt) {
+        cx.imports.push(Import::ChannelAbandon);
+    }
     if let Some((mail_name, payload)) = mail {
         cx.scopes[0].push(Local {
             name: mail_name.to_string(),
