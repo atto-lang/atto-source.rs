@@ -396,6 +396,8 @@ pub enum ExprKind {
         params: Vec<String>,
         return_type: Option<String>,
         body: LambdaBody,
+        /// Explicit `susp` / `suspends` effect; must not be erased by lowering.
+        suspends: bool,
     },
 }
 
