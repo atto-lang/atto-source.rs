@@ -1,0 +1,17 @@
+// expect-exit: 42
+// Literal bool equality checks a present optional public field.
+define class Flags as
+    pub bool enabled: true;
+    pub int y = 40;
+end
+pub fnc main(): int {
+    val value = new Flags();
+    match value over
+        on ~{ enabled?: true, y: _ } as val p -> {
+            return p.y + 2;
+        }
+        on _ -> {
+            return 0;
+        }
+    end
+}
