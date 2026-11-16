@@ -1,0 +1,14 @@
+// expect-exit: 42
+// java: rejects
+// Missing required field causes arm mismatch; extra subject fields are fine.
+define class Pet as
+    pub int n = 42;
+end
+pub fnc main(): int {
+    val p = new Pet();
+    match p over
+        on {foo: "dog"} -> { return 1; }
+        on {n: _} as val v -> { return v.n; }
+        on _ -> { return 0; }
+    end
+}
