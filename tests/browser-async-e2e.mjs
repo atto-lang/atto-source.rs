@@ -104,8 +104,9 @@ try{
   assert.deepEqual(sourceProbe,{ok:true,sourceCompiled:true,pendingSome:41,
     eof:true,invalidHandle:'Err',zeroSome:true,cooperativeYields:3,
     declarationFirstSome:42,declarationFirstYields:1,
-    explicitReadchSome:43,directionalSome:44});
-  console.log('PASS compiled source: <<, val <<, readch c, and c >> val all execute checked JSPI Channel<int> reads');
+    explicitReadchSome:43,directionalSome:44,
+    sourceLifecycleSome:45,sourceLifecycleYields:1,sourceLifecycleReleased:true});
+  console.log('PASS compiled Atto source: checked Channel<int>.bounded -> try_send -> readch -> close -> release');
 
 
 
