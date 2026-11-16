@@ -209,10 +209,14 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             let statement_start = (0..i).rev().find(|&j| matches!(
                 tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow
             )).map_or(0, |j| j + 1);
+            // In a select arm, the declaration follows the 'when'
+            // prefix, but it is still a binder rather than a return expr.
+            let binder_start = statement_start +
+                usize::from(tokens.get(statement_start).and_then(word) == Some("when"));
             let declaration_without_initializer =
-                matches!(tokens.get(statement_start).and_then(word),
+                matches!(tokens.get(binder_start).and_then(word),
                     Some("val" | "let" | "const"))
-                && !tokens[statement_start..i].iter()
+                && !tokens[binder_start..i].iter()
                     .any(|t| matches!(&t.tok, Tok::Assign));
             if !declaration_without_initializer {
                 continue;
