@@ -321,11 +321,10 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                 additions.extend(method.tokens);
             }
         }
-        let mut output = vec![
-            Token { pos: d.pos, tok: Tok::Ident("define".into()) },
-        ];
+        let mut output = Vec::new();
         if d.export { output.push(Token { pos: d.pos, tok: Tok::Ident("pub".into()) }); }
         output.extend([
+            Token { pos: d.pos, tok: Tok::Ident("define".into()) },
             Token { pos: d.pos, tok: Tok::Ident("class".into()) },
             Token { pos: d.pos, tok: Tok::Ident(d.name.clone()) },
             Token { pos: d.pos, tok: Tok::Ident("as".into()) },
