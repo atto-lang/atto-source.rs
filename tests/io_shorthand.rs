@@ -9,7 +9,7 @@ fn parse(input: &str) -> Vec<atto_compiler::io_shorthand::IoShorthand> {
 fn recognizes_standalone_channel_and_stream_io() {
     let sample = r#"
 stdio.out << "Hello";
-stdio.in >> const line;
+stdio.in >> val line;
 output_stream << payload;
 input_stream >> let chunk;
 "#;
@@ -28,7 +28,7 @@ input_stream >> let chunk;
 fn recognizes_select_arms_and_body_writes() {
     let src = r#"
 do select {
-    when inbox >> const message -> {
+    when inbox >> val message -> {
         stdio.out << message;
     }
     when outgoing << "ready" -> {
@@ -76,12 +76,12 @@ fn spaced_directions_do_not_match() {
 fn malformed_io_shorthand_diagnostics() {
     for src in [
         "inbox >> message;",
-        "inbox >> const ;",
+        "inbox >> val ;",
         "outgoing << ;",
         "outgoing << value << other;",
         "do select { when inbox >> message -> {} }",
         "do select { when outgoing << -> {} }",
-        "do select { when incoming >> const -> {} }",
+        "do select { when incoming >> val -> {} }",
     ] {
         let diag = inspect(&lex(src).unwrap()).expect_err(src);
         assert_eq!(diag.code, "E_IO_SYNTAX", "{src}: {diag}");
@@ -111,7 +111,7 @@ fn explicit_channel_forms_still_fail_closed_in_browser_subset() {
 #[test]
 fn read_annotation_requires_complete_nested_generic_type() {
     for src in [
-        "inbox >> const value: Result<Option<int>, Error>;",
+        "inbox >> val value: Result<Option<int>, Error>;",
         "inbox >> val value: io.Result<core.Option<bytes.Buffer>>;",
         "source >> let part: Package::Buffer;",
     ] {
@@ -123,17 +123,17 @@ fn read_annotation_requires_complete_nested_generic_type() {
 #[test]
 fn incomplete_generic_annotation_and_trailing_tokens_fail_closed() {
     for src in [
-        "inbox >> const x: ;",
-        "inbox >> const x: Result<int;",
-        "inbox >> const x: Result<int,>;",
-        "inbox >> const x: Result<>;",
-        "inbox >> const x: Result<Option<int>> extra;",
-        "inbox >> const x: Thing bad;",
-        "inbox >> const x: Thing<Other>>;",
-        "inbox >> const x: Thing<Other,>;",
-        "inbox >> const x: A::;",
-        "inbox >> const x: A..B;",
-        "inbox >> const x: A<B<C>;",
+        "inbox >> val x: ;",
+        "inbox >> val x: Result<int;",
+        "inbox >> val x: Result<int,>;",
+        "inbox >> val x: Result<>;",
+        "inbox >> val x: Result<Option<int>> extra;",
+        "inbox >> val x: Thing bad;",
+        "inbox >> val x: Thing<Other>>;",
+        "inbox >> val x: Thing<Other,>;",
+        "inbox >> val x: A::;",
+        "inbox >> val x: A..B;",
+        "inbox >> val x: A<B<C>;",
     ] {
         let diag = inspect(&lex(src).unwrap()).expect_err(src);
         assert_eq!(diag.code, "E_IO_SYNTAX", "{src}: {diag}");
@@ -143,10 +143,85 @@ fn incomplete_generic_annotation_and_trailing_tokens_fail_closed() {
 #[test]
 fn incomplete_select_binding_never_silently_emits_guest_code() {
     for src in [
-        "do select { when inbox >> const x: Result<Option<int>> extra -> {} }",
-        "do select { when inbox >> const x: Result<> -> {} }",
+        "do select { when inbox >> val x: Result<Option<int>> extra -> {} }",
+        "do select { when inbox >> val x: Result<> -> {} }",
     ] {
         let diagnostic = atto_compiler::compile(src).expect_err(src);
         assert_eq!(diagnostic.code, "E_IO_SYNTAX");
+    }
+}
+
+#[test]
+fn reversed_bindings_read_from_rhs_without_becoming_writes() {
+    let src = r#"
+val line << stdio.in;
+let chunk: Buffer << file.input;
+stdio.in >> val second;
+do select {
+    when val received << inbox -> {
+        stdio.out << received;
+    }
+    when let update: int << changes -> {
+        output << update;
+    }
+}
+"#;
+    let ops = parse(src);
+    assert_eq!(ops.len(), 7, "{ops:?}");
+    for i in [0, 1, 3, 5] {
+        assert_eq!(ops[i].direction, Direction::Read, "{ops:?}");
+        assert!(ops[i].read_binder_on_left);
+    }
+    assert_eq!(ops[0].source_or_sink, "stdio.in");
+    assert_eq!(ops[0].binder.as_deref(), Some("line"));
+    assert_eq!(ops[1].source_or_sink, "file.input");
+    assert_eq!(ops[1].binder.as_deref(), Some("chunk"));
+    assert_eq!(ops[2].direction, Direction::Read);
+    assert!(!ops[2].read_binder_on_left);
+    assert_eq!(ops[3].context, Context::SelectArm);
+    assert_eq!(ops[4].direction, Direction::Write);
+    assert_eq!(ops[5].context, Context::SelectArm);
+    assert_eq!(ops[6].direction, Direction::Write);
+}
+
+#[test]
+fn runtime_const_reads_are_rejected_in_both_directions() {
+    for src in [
+        "stdio.in >> const line;",
+        "const line << stdio.in;",
+        "do select { when inbox >> const message -> {} }",
+        "do select { when const message << inbox -> {} }",
+        "const line: string << stdio.in;",
+    ] {
+        let diag = inspect(&lex(src).unwrap()).expect_err(src);
+        assert_eq!(diag.code, "E_CONST_EFFECT", "{src}: {diag}");
+        assert!(diag.message.contains("compile-time"), "{src}: {diag}");
+    }
+}
+
+#[test]
+fn malformed_reversed_read_binding_fails_closed() {
+    for src in [
+        "val << stdio.in;",
+        "val line << ;",
+        "val line << input() ;",
+        "val line << input << other;",
+        "do select { when val << inbox -> {} }",
+        "do select { when let line << -> {} }",
+        "val line: Result<int,> << inbox;",
+        "val line: Option<int>> << inbox;",
+    ] {
+        let diag = inspect(&lex(src).unwrap()).expect_err(src);
+        assert_eq!(diag.code, "E_IO_SYNTAX", "{src}: {diag}");
+    }
+}
+
+#[test]
+fn nested_generic_closers_without_io_do_not_trigger_preflight() {
+    for src in [
+        "pub fnc main(): void { val x: A<B<C>> = new Something(); }",
+        "pub fnc main(): int { return f<A<B<C>>>(1); }",
+    ] {
+        assert!(parse(src).is_empty(), "{src}");
     }
 }
