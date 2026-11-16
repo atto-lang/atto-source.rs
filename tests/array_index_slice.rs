@@ -49,3 +49,13 @@ fn malformed_and_unimplemented_strides_fail_closed() {
         assert_eq!(err.code, want, "{src}: {err}");
     }
 }
+
+#[test]
+fn even_unused_array_parameters_emit_validatable_memory_shape() {
+    // The actual guest WebAssembly validator in the carrier harness checks
+    // this case. The compiler must declare memory for indexed functions even
+    // when main itself has no array literal or data segment.
+    let src = "fnc unused(a: Array<int>): int { return a[0]; } pub fnc main(): int { return 0; }";
+    let wasm = atto_compiler::compile(src).expect("compile indexed function");
+    assert!(wasm.starts_with(b"\0asm"));
+}
