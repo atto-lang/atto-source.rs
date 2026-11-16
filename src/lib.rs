@@ -30,6 +30,8 @@ pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
+/// Proposed unary actor signatures: parse/type preflight, guest ABI unavailable.
+pub mod actor_reply_syntax;
 pub mod target_typed;
 pub mod wasm;
 
@@ -48,7 +50,19 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    let raw_tokens = lexer::lex(source)?;
+    // Detect proposed unary request/reply source before general-purpose lowerers.
+    // This scanner proves only a bounded signature; no nominal protocol,
+    // linear reply slot, suspending handler or compiled guest behavior exists.
+    if let Some(unary) = actor_reply_syntax::inspect(&raw_tokens)?.first() {
+        return Err(Diagnostic::new(unary.pos, "E_UNSUPPORTED",
+            "unary actor signature recognized, but nominal UnaryRequest<R>, suspend semantics and authenticated one-shot reply ABI are not implemented"));
+    }
+    if actor_reply_syntax::uses_reply_intrinsic(&raw_tokens) {
+        return Err(Diagnostic::new(raw_tokens[0].pos, "E_UNSUPPORTED",
+            "ActorMail.respond_with/send_back/reply_stream requires a typed authenticated reply sidecar; unavailable in this browser backend"));
+    }
+    let mut visibility = visibility_lower::lower(raw_tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
