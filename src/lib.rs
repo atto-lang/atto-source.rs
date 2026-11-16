@@ -45,6 +45,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         return Err(Diagnostic::new(detached.pos, "E_UNSUPPORTED",
             "supervised do readch/writech syntax recognized, but detached I/O scheduling and completion callbacks are not implemented"));
     }
+    // The keyword 'pipe' means a continuous typed connection, not a
+    // single direction read/write. Parse preflight cannot grant stream or
+    // actor capabilities: no guest pipe ABI exists in this compiler yet.
+    if let Some(pipe) = io_shorthand::inspect_pipe(&toks)?.first() {
+        return Err(Diagnostic::new(pipe.pos, "E_UNSUPPORTED",
+            "continuous 'pipe' is recognized, but typed channel/actor/stream transport is not implemented in the browser guest"));
+    }
     // The browser guest already has a typed stdio.print output import.
     // Permit the exact stdio.out << value statement form to lower through
     // that existing checked path. All other channels, streams, read
@@ -56,7 +63,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             && io.mode == io_shorthand::Mode::Direct
             && !io.read_binder_on_left
             // The browser compiler lacks stdin and stream I/O imports.
-            // Never miscompile a known reverse pump as stdio.print(input).
+            // Never miscompile stdin as a printable value or an implicit pipe.
             && io.readable_rhs_candidate.as_deref() != Some("stdio.in")
         {
             continue;
