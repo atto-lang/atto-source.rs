@@ -111,6 +111,14 @@ try{
   const barrier='pub suspends fnc main(): int { val a=task { await rt.barrier(2); return 20; }; val b=task { await rt.barrier(2); return 22; }; return await a + await b; }';
   assert.match(await run(barrier,'main() -> 42'),/^main\(\) -> 42$/);
   console.log('PASS JSPI: two Wasm task continuations overlap at strict two-party barrier (not eager/sequential)');
+  // New typed-arm JSPI admission: selected arm launches/awaits exactly one task.
+  const typedArm='pub suspends fnc main(): int { return match<int> 1 over on 1 : int -> await task { return 42; }, on _ : int -> await task { return 0; }, end; }';
+  assert.match(await run(typedArm,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected typed arm awaits once');
+  console.log('PASS integration: typed match<int> arm executes awaited task with one scheduler handoff');
+  const badTypedArm='pub suspends fnc main(): int { return match<int> 1 over on 1 : bool -> true, on _ : int -> 0, end; }';
+  assert.match(await run(badTypedArm,'E_TYPE'),/E_TYPE/);
+  console.log('PASS integration: conflicting typed arm fails closed without a guest');
   const combined='pub suspends fnc main(): int { val a=task { return 42; }; stdio.out << "direct"; return await a; }';
   assert.match(await run(combined,'main() -> 42'),/^directmain\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'combined stdout/Future guest must yield exactly once');
