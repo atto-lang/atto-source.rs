@@ -147,6 +147,25 @@ pub suspends fnc main(): int {
     'caret await-transform-capture must suspend exactly once');
   console.log('PASS integration: exact multiline caret-return pipeline compiles and runs as a guest returning 42');
 
+  // The compiler-owned std.await adapter must run the same real JSPI
+  // suspension as the explicit 'susp |f| -> await f' stage.
+  const coreAwaitCapture=`fnc transform_result(int v): int { return v + 1; }
+pub susp fnc main(): int {
+  val pending = task { return 41; };
+  ^ pending |> std.await |> transform_result >> val answer: int;
+}`;
+  assert.match(await run(coreAwaitCapture,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'std.await must suspend exactly once and must not create another task');
+  console.log('PASS std.await: compiler-owned core adapter executes a single real Future<int> JSPI suspension');
+
+  const shadowedStd='pub susp fnc main(): int { val std=99; val pending=task {return 41;}; return pending |> std.await; }';
+  assert.match(await run(shadowedStd,'E_PIPE_ADAPTER'),/E_PIPE_ADAPTER/);
+  const reusedFuture='pub susp fnc main(): int { val pending=task {return 41;}; val first=pending |> std.await; return pending |> std.await; }';
+  assert.match(await run(reusedFuture,'E_MOVED'),/E_MOVED/);
+  console.log('PASS std.await: namespace shadowing and double-consumption rejected before guest execution');
+
+
   const captureDirect='pub suspends fnc main(): int { val pending=task { return 42; }; pending |> suspends |p| -> await p >> val answer: int; return answer; }';
   assert.match(await run(captureDirect,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,

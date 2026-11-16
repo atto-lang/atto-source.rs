@@ -1804,6 +1804,7 @@ impl Parser {
     fn checked_await_pipe_value(e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Await(_) => true,
+            ExprKind::Call(name, args) if name == "$atto_core_await" && args.len() == 1 => true,
             ExprKind::Call(_, args) => args.first()
                 .is_some_and(Self::checked_await_pipe_value),
             _ => false,
@@ -1818,10 +1819,17 @@ impl Parser {
         // Require an actual explicit suspension lambda in this statement.
         // A bare 'await future >> val x' cannot silently become pipeline
         // syntax just because both constructs may suspend.
-        let has_explicit_stage = self.toks[start..self.i].windows(2).any(|pair|
+        let tokens = &self.toks[start..self.i];
+        let has_lambda_stage = tokens.windows(2).any(|pair|
             pair[0].tok == Tok::PipeGt
                 && matches!(&pair[1].tok, Tok::Ident(w)
                     if w == "susp" || w == "suspends"));
+        let has_core_adapter = tokens.windows(4).any(|stage|
+            stage[0].tok == Tok::PipeGt
+                && matches!(&stage[1].tok, Tok::Ident(w) if w == "std")
+                && stage[2].tok == Tok::Dot
+                && matches!(&stage[3].tok, Tok::Ident(w) if w == "await"));
+        let has_explicit_stage = has_lambda_stage || has_core_adapter;
         if !has_explicit_stage || !Self::checked_await_pipe_value(&value) {
             return Err(Diagnostic::new(at, "E_IO_SYNTAX",
                 "terminal '>> val/let' requires an explicit suspending await pipeline"));
@@ -2696,6 +2704,40 @@ impl Parser {
         while *self.peek() == Tok::PipeGt {
             let pos = self.pos();
             self.advance();
+            // A compiler-owned, capture-free alias for the exact identity-await
+            // adapter. The general first-class callable ABI is not yet
+            // available in this browser backend. Suspension stays in the caller.
+            //   pending |> std.await |> transform_result
+            if self.word_at(0) == Some("std") && *self.peek_at(1) == Tok::Dot
+                && self.word_at(2) == Some("await")
+            {
+                self.advance(); // std
+                self.advance(); // .
+                self.advance(); // await
+                if *self.peek() == Tok::LParen {
+                    return Err(Diagnostic::new(self.pos(), "E_PIPE_ADAPTER",
+                        "std.await is a unary pipeline adapter; use '|> std.await', not '|> std.await()'"));
+                }
+                let terminal_capture = *self.peek() == Tok::Gt
+                    && *self.peek_at(1) == Tok::Gt
+                    && matches!(self.word_at(2), Some("val" | "let" | "const"))
+                    && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+                    && self.toks[self.i].pos.col.checked_add(1) ==
+                       Some(self.toks[self.i + 1].pos.col);
+                let boundary = terminal_capture || matches!(self.peek(),
+                    Tok::PipeGt | Tok::Semi | Tok::RParen | Tok::RBracket |
+                    Tok::RBrace | Tok::Comma | Tok::Eof | Tok::Question);
+                let newline = self.i > 0
+                    && self.toks[self.i - 1].pos.line < self.pos().line;
+                if !boundary && !newline {
+                    return Err(unsupported(self.pos(), "postfix operations on std.await pipeline adapters"));
+                }
+                self.grow(1)?;
+                links += 1;
+                // The '$' prefix cannot appear in a user source identifier.
+                c = Expr { kind: ExprKind::Call("$atto_core_await".into(), vec![c]), pos };
+                continue;
+            }
             // A suspending closure is not a function named "await". Admit the
             // exact identity-await lambda as a narrow executable pipeline
             // stage until general first-class closures are lowered.

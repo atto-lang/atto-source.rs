@@ -3004,6 +3004,34 @@ impl<'a> FnCx<'a> {
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
+            // Compiler-owned unary adapter, produced only by '|> std.await'.
+            // Keep the existing checked await lowering (loans, moves, effects,
+            // task tracking and cooperative yield), but reject non-Future
+            // operands rather than inheriting direct await's scalar fast path.
+            ExprKind::Call(name, args) if name == "$atto_core_await" => {
+                // 'std' is a compiler-owned namespace here, not a local
+                // receiver. Do not reinterpret a shadowed local as the
+                // privileged core adapter; reject instead of laundering it.
+                if self.lookup("std").is_some() {
+                    return Err(Diagnostic::new(pos, "E_PIPE_ADAPTER",
+                        "std.await is a core adapter, but 'std' is shadowed by a local binding"));
+                }
+                if args.len() != 1 {
+                    return Err(Diagnostic::new(pos, "E_PIPE_ADAPTER",
+                        "internal std.await adapter arity mismatch"));
+                }
+                let awaited = Expr {
+                    kind: ExprKind::Await(Box::new(args[0].clone())),
+                    pos,
+                };
+                let checked = self.expr(&awaited)?;
+                if !matches!(&checked.e, TExpr::AwaitYield(inner)
+                    if matches!(&inner.e, TExpr::TaskAwait(_)))
+                {
+                    return Err(type_err(pos, "std.await requires a Future<T>, not a scalar"));
+                }
+                checked
+            },
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
             ExprKind::Task(name) => {
                 if !self.suspends { return Err(Diagnostic::new(pos, "E_EFFECT", "task requires a suspends fnc")); }
