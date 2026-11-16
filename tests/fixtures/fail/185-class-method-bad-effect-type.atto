@@ -1,0 +1,7 @@
+// expect-error: E_EFFECT_TYPE
+define class Bad as
+    run(): int throws(int) {
+        return 42;
+    }
+end
+pub fnc main(): int { return 0; }
