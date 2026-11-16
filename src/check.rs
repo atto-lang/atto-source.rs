@@ -99,6 +99,15 @@ pub enum TExpr {
     StrConst(u32, u32),
     /// Immutable contiguous Array<int> descriptor: data offset and length.
     ArrayConst(u32, u32),
+    /// Runtime checked access to an Array<int> descriptor; bounds are normalized
+    /// exactly once and the owner stays in static readonly Wasm data.
+    ArrayIndex { source: Box<TE>, index: Box<TE>, array_slot: u32, index_slot: u32 },
+    /// Immutable, contiguous Array<int> view over the SAME backing data.
+    /// Endpoints are checked and normalized before forming a new descriptor.
+    ArraySlice {
+        source: Box<TE>, start: Option<Box<TE>>, end: Option<Box<TE>>,
+        array_slot: u32, start_slot: u32, end_slot: u32,
+    },
     /// `int` widened to `float` (Java numeric promotion)
     IntToFloat(Box<TE>),
     FNeg(Box<TE>),
@@ -1372,6 +1381,10 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
+        TExpr::ArrayIndex { source, index, .. } => any_in(source, f) || any_in(index, f),
+        TExpr::ArraySlice { source, start, end, .. } => any_in(source, f)
+            || start.as_ref().is_some_and(|a| any_in(a, f))
+            || end.as_ref().is_some_and(|b| any_in(b, f)),
         TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::AdtPropagate { source, .. } => any_in(source, f),
@@ -2738,6 +2751,60 @@ impl<'a> FnCx<'a> {
                 e: TExpr::F64(f64::from_bits(*bits)),
                 ty: Type::Float,
             },
+            ExprKind::Index(base, index) => {
+                let source = self.value(base)?;
+                if source.ty != Type::ArrayInt {
+                    return Err(Diagnostic::new(base.pos, "E_NOT_INDEXABLE",
+                        format!("checked indexing currently requires Array<int>, found {}", self.tn(source.ty))));
+                }
+                let position = self.value(index)?;
+                if position.ty != Type::Int {
+                    return Err(type_err(index.pos, "array index must be int"));
+                }
+                let array_slot = self.temp(Type::ArrayInt, pos)?;
+                let index_slot = self.temp(Type::Int, pos)?;
+                TE { e: TExpr::ArrayIndex {
+                    source: Box::new(source), index: Box::new(position), array_slot, index_slot,
+                }, ty: Type::Int }
+            }
+            ExprKind::Slice { base, start, end, step } => {
+                let source = self.value(base)?;
+                if source.ty != Type::ArrayInt {
+                    return Err(Diagnostic::new(base.pos, "E_NOT_SLICEABLE",
+                        format!("contiguous slicing currently requires Array<int>, found {}", self.tn(source.ty))));
+                }
+                let lo = match start {
+                    Some(expr) => {
+                        let v = self.value(expr)?;
+                        if v.ty != Type::Int { return Err(type_err(expr.pos, "slice start must be int")); }
+                        Some(Box::new(v))
+                    }
+                    None => None,
+                };
+                let hi = match end {
+                    Some(expr) => {
+                        let v = self.value(expr)?;
+                        if v.ty != Type::Int { return Err(type_err(expr.pos, "slice end must be int")); }
+                        Some(Box::new(v))
+                    }
+                    None => None,
+                };
+                // Stage one is a contiguous view only. Do not pretend a stride
+                // other than one can be represented by the compact ptr/len ABI.
+                if let Some(stride) = step {
+                    if !matches!(&stride.kind, ExprKind::Int(Some(1))) {
+                        return Err(Diagnostic::new(stride.pos, "E_UNSUPPORTED",
+                            "non-unit and computed slice strides need a strided-view ABI"));
+                    }
+                }
+                let array_slot = self.temp(Type::ArrayInt, pos)?;
+                let start_slot = self.temp(Type::Int, pos)?;
+                let end_slot = self.temp(Type::Int, pos)?;
+                TE { e: TExpr::ArraySlice {
+                    source: Box::new(source), start: lo, end: hi,
+                    array_slot, start_slot, end_slot,
+                }, ty: Type::ArrayInt }
+            }
             ExprKind::ArrayLit(items) => {
                 // First executable array profile: constant i64 values only.
                 // Static data is contiguous, 8-byte aligned and readonly from
