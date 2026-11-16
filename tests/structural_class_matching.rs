@@ -99,11 +99,11 @@ fn class_match_rejects_private_field_access_and_escaping_borrow() {
                pub fnc main(): int {
                  val v = new Point();
                  match v over
-                   on is ~Point as val p -> { return 42; }
+                   on is ~UnknownPoint as val p -> { return 42; }
                    on _ -> { return 0; }
                  end
                }"#,
-            "E_UNSUPPORTED",
+            "E_UNKNOWN_TYPE",
         ),
     ] {
         let d = compile(src).expect_err("unproven class pattern must fail closed");
