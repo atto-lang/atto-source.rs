@@ -619,6 +619,15 @@ impl Emit<'_> {
                 uleb(&mut self.code, *tmp as u64);
                 field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
             },
+            TExpr::ShapeFieldAddress { obj, offset } => {
+                // Lower a checked class-local projection to the address of
+                // its public scalar field. In the callee the hidden one-field
+                // view loads from offset zero. Never reinterpret nominal
+                // class layouts or permit an address to escape.
+                self.expr(obj);
+                self.i32c(*offset as i32);
+                self.op(0x6A); // i32.add
+            }
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
