@@ -70,12 +70,6 @@ export function createChannelIntGuestV1({getMemory,host=new ChannelIntHostV1()}=
     if (out>buffer.byteLength||len>buffer.byteLength-out) return null;
     return {memory,buffer,view:new DataView(buffer)};
   }
-  function putHandle(out,handle) {
-    const slot=view(out,4,4);
-    if (!slot) return ERR.InvalidPointer;
-    slot.view.setInt32(out,handle,true);
-    return ERR.Ok;
-  }
   function writeOutcome(out,answer,slot) {
     if (!slot||slot.memory!==getMemory()) return ERR.InvalidPointer;
     // Guest memory may have grown while suspended; revalidate immediately
@@ -98,7 +92,10 @@ export function createChannelIntGuestV1({getMemory,host=new ChannelIntHostV1()}=
       if (!slot) return ERR.InvalidPointer;
       const r=host.open(capacity);
       if (!r.ok) return status(r);
-      return putHandle(out,r.value);
+      // Validation and admission are synchronous; commit to that same
+      // checked memory view, avoiding a second capability lookup.
+      slot.view.setInt32(out,r.value,true);
+      return ERR.Ok;
     },
     channel_int_send_v1(channel,value) {
       return status(host.send(channel,value));
@@ -108,7 +105,10 @@ export function createChannelIntGuestV1({getMemory,host=new ChannelIntHostV1()}=
       if (!slot) return ERR.InvalidPointer;
       const r=host.nb_read(channel);
       if (!r.ok) return status(r);
-      return putHandle(out,r.value);
+      // Validation and admission are synchronous; commit to that same
+      // checked memory view, avoiding a second capability lookup.
+      slot.view.setInt32(out,r.value,true);
+      return ERR.Ok;
     },
     async channel_int_await_read_v1(ticket,out) {
       const slot=view(out,16,8);

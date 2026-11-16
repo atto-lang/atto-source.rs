@@ -102,3 +102,70 @@ test('guest ABI: unrelated modules remain unchanged, no marker means no permissi
   const minimal=Uint8Array.from([0,97,115,109,1,0,0,0]);
   assert.equal(verifyChannelIntGuestV1(minimal),false);
 });
+
+const uleb=n=>{const a=[];do{let b=n&127;n=Math.floor(n/128);if(n)b|=128;a.push(b)}while(n);return a};
+const bytesName=s=>{const a=[...new TextEncoder().encode(s)];return [...uleb(a.length),...a]};
+const section=(id,data)=>[id,...uleb(data.length),...data];
+const func=(params,results)=>[0x60,...uleb(params.length),...params,...uleb(results.length),...results];
+function tinyGuest({
+  importName='channel_int_open_v1',namespace='atto',
+  signature=[0x7f,0x7f],marker=1,asyncMarker=2,
+  duplicateMarker=false,includeMain=true,duplicateImport=false,
+}={}) {
+  const markers=[
+    ...(marker===null?[]:[section(0,[...bytesName('atto.channel_int'),marker])]),
+    ...(duplicateMarker?[section(0,[...bytesName('atto.channel_int'),1])]:[]),
+    ...(asyncMarker===null?[]:[section(0,[...bytesName('atto.async'),asyncMarker])]),
+  ];
+  const imports=[
+    ...bytesName(namespace),...bytesName(importName),0,0,
+    ...(duplicateImport?[...bytesName(namespace),...bytesName(importName),0,0]:[]),
+  ];
+  const typeSec=section(1,[includeMain?2:1,...func(signature,[0x7f]),...(includeMain?func([],[0x7f]):[])]);
+  const importSec=section(2,[duplicateImport?2:1,...imports]);
+  const base=[0,97,115,109,1,0,0,0,...markers.flat(),...typeSec,...importSec];
+  if(!includeMain) return new Uint8Array(base);
+  const body=[0,0x41,1,0x41,0,0x10,0,0x0b];
+  return new Uint8Array([...base,...section(3,[1,1]),
+    ...section(7,[1,...bytesName('main'),0,1]),
+    ...section(10,[1,...uleb(body.length),...body])]);
+}
+test('guest ABI: signature verifier accepts genuine executable Wasm import',()=>{
+  const bytes=tinyGuest();
+  const module=new WebAssembly.Module(bytes);
+  assert.equal(verifyChannelIntGuestV1(bytes,module),true);
+  const {imports,memory}=fresh();
+  const instance=new WebAssembly.Instance(module,{atto:imports});
+  assert.equal(instance.exports.main(),E.Ok);
+  assert.equal(new DataView(memory.buffer).getInt32(0,true),1);
+});
+test('guest ABI: unmarked/duplicated/unsupported version is rejected',()=>{
+  for(const opts of [{marker:null},{marker:3},{duplicateMarker:true},{asyncMarker:null},{asyncMarker:1}]) {
+    const bytes=tinyGuest({...opts,includeMain:false});
+    assert.throws(()=>verifyChannelIntGuestV1(bytes),/marker|unmarked|version/i);
+  }
+});
+test('guest ABI: reject forged import namespace/name/signature and duplicate slots',()=>{
+  for(const opts of [
+    {namespace:'forged'},
+    {importName:'channel_int_fake_v1'},
+    {signature:[0x7e,0x7f]},
+    {duplicateImport:true},
+  ]) {
+    const bytes=tinyGuest({...opts,includeMain:false});
+    assert.throws(()=>verifyChannelIntGuestV1(bytes),/import|signature|duplicate/i);
+  }
+});
+test('guest ABI: close preserves buffered values until explicitly drained',async()=>{
+  const {imports:i,v}=fresh();
+  assert.equal(i.channel_int_open_v1(2,0),E.Ok);
+  const ch=v.getInt32(0,true);
+  assert.equal(i.channel_int_send_v1(ch,9223372036854775807n),E.Ok);
+  assert.equal(i.channel_int_close_v1(ch),E.Ok);
+  assert.equal(i.channel_int_release_v1(ch),E.Busy);
+  assert.equal(i.channel_int_nb_read_v1(ch,4),E.Ok);
+  assert.equal(await i.channel_int_await_read_v1(v.getInt32(4,true),32),E.Ok);
+  assert.deepEqual(outcome(v),{tag:T.Some,error:0,value:9223372036854775807n});
+  assert.equal(i.channel_int_release_v1(ch),E.Ok);
+  assert.equal(i.channel_int_nb_read_v1(ch,4),E.InvalidHandle);
+});
