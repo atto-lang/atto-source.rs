@@ -1,0 +1,54 @@
+//! Stacked Rust/Wasm JSPI integration candidate: typed arms with await task.
+//! Host compilation checks do not establish browser execution or parity.
+use atto_compiler::compile;
+
+fn has(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|window| window == needle)
+}
+
+#[test]
+fn typed_awaited_task_match_emits_async_guest_abi() {
+    let source = r#"
+        pub suspends fnc main(): int {
+            return match<int> 1 over
+                on 1 : int -> await task { return 42; },
+                on _ : int -> await task { return 0; },
+            end;
+        }
+    "#;
+    let wasm = compile(source).unwrap_or_else(|e| panic!("typed await task match: {e}"));
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+    for marker in [b"atto.async".as_slice(), b"task_start", b"task_await", b"cooperate"] {
+        assert!(has(&wasm, marker), "missing async ABI marker {:?}", marker);
+    }
+    assert_eq!(wasm, compile(source).unwrap(), "nondeterministic typed arm Wasm");
+}
+
+#[test]
+fn bad_task_types_and_unmarked_suspension_fail_closed() {
+    let tests = [
+        (r#"pub suspends fnc main(): int {
+            return match<int> 1 over
+                on 1 : int -> task { return 42; },
+                on _ : int -> 0,
+            end;
+        }"#, "E_TYPE"),
+        (r#"pub fnc main(): int {
+            return match<int> 1 over
+                on 1 : int -> await task { return 42; },
+                on _ : int -> 0,
+            end;
+        }"#, "E_EFFECT"),
+        (r#"pub suspends fnc main(): int {
+            val x = 42;
+            return match<int> 1 over
+                on 1 : int -> await task { return x; },
+                on _ : int -> 0,
+            end;
+        }"#, "E_UNBOUND"),
+    ];
+    for (source, wanted) in tests {
+        let diag = compile(source).expect_err(source);
+        assert_eq!(diag.code, wanted, "{source}: {diag}");
+    }
+}
