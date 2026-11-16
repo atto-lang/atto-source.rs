@@ -70,6 +70,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'result-option': { value: 0n, stdout: '8080\n' },
       'result-option-end': { value: 0n, stdout: '8080\n' },
       'modules': { value: 0n, stdout: '42\n' },
+      'callable-body-styles': { value: 0n, stdout: '15\n10\n10\n5\n5\n' },
       'trap': { value: 7n, stdout: '5\nid must be nonnegative\nan ordinary throw was caught\n' },
       'borrow-checking': { value: 63n, stdout: '84\n43\n' },
       'closures-functors': { value: 84n, stdout: '' },
@@ -94,8 +95,8 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
     ['function-pipeline', 'generators', 'result-option', 'trap',
      'borrow-checking', 'lexical-scope-pure', 'state-containers',
      'fib-match', 'guard', 'match-values', 'closures-functors',
-     'result-option-end', 'modules'].sort(),
-    'the thirteen currently compiled preview guests must execute');
+     'result-option-end', 'modules', 'callable-body-styles'].sort(),
+    'the fourteen currently compiled preview guests must execute');
   outcome.executionCoverage.verified = outcome.guestExecuted.length;
   outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
   console.log('PLAYGROUND_PREVIEW_EXECUTION_COVERAGE ' + JSON.stringify({
