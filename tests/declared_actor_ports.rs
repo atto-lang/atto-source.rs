@@ -255,6 +255,8 @@ fn exact_out_of_line_receive_example_satisfies_declared_input_signature_metadata
     assert_eq!(headers.actor_ports[0].emits.as_deref(), Some("Output"));
     assert!(typed.receivers.is_empty(), "receive is not callable as an ordinary mtd");
     assert_eq!(typed.mailbox_ingresses.len(), 1);
+    assert!(typed.actors[0].inbox_witnessed);
+    assert!(!typed.actors[0].emits_witnessed);
     assert_eq!(typed.mailbox_ingresses[0].actor, 0);
     assert_eq!(typed.mailbox_ingresses[0].payload, "Input");
     let program = build_actor_program(&headers, &typed);
@@ -421,4 +423,27 @@ fn ordinary_attached_methods_remain_resolvable_without_exposing_receive() {
                                       false, Pos::default()).unwrap().name, "count");
     assert_eq!(resolve_receiver_header(&headers, None, "Foo", "receive", 1,
                                       false, Pos::default()).unwrap_err().code, "E_ISOLATION");
+}
+
+#[test]
+fn declared_only_inbox_is_unfulfilled_until_a_matching_receiver_is_attached() {
+    let (_, without_handler) = target("declare actor Foo receives int emits bool;").unwrap();
+    assert!(!without_handler.actors[0].inbox_witnessed);
+    assert!(!without_handler.actors[0].emits_witnessed);
+    let (_, with_handler) = target("declare actor Foo receives int emits bool;
+        mtd (Foo self) receive(ActorMail<int> msg): void {}").unwrap();
+    assert!(with_handler.actors[0].inbox_witnessed);
+    assert!(!with_handler.actors[0].emits_witnessed);
+    assert_eq!(with_handler.require_spawnable("Foo", Pos::default()).unwrap_err().code, "E_UNLINKED");
+}
+
+#[test]
+fn inline_handler_satisfies_same_nominal_inbox_witness_without_attached_mtd() {
+    let (_, module) = target("declare actor Foo receives int;
+        define actor Foo as
+            receive(ActorMail<int> m): void { return; }
+        end").unwrap();
+    assert!(module.actors[0].inbox_witnessed);
+    assert!(module.mailbox_ingresses.is_empty());
+    assert!(!module.actors[0].defined);
 }
