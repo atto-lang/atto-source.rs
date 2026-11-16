@@ -14,7 +14,12 @@ fn compile_checked(src:&str)->Vec<u8> {
 #[test]
 fn caret_and_return_match_lower_to_exactly_the_same_guest() {
     let canonical=COMPLEX.replace("^ match", "return match");
-    assert_eq!(COMPLEX.matches("^ match").count(),2);
+    // Count executable return statements, not text inside documentation
+    // comments mentioning the syntax.
+    assert_eq!(
+        COMPLEX.lines().filter(|line| line.trim_start().starts_with("^ match ")).count(),
+        2,
+    );
     let a=compile_checked(COMPLEX);
     let b=compile_checked(&canonical);
     assert_eq!(a,b,"^/return must share parser, match coverage and Wasm lowering");
