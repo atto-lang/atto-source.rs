@@ -616,6 +616,15 @@ impl Parser {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
                     "too many trait/interface members"));
             }
+            if *self.peek() == Tok::At {
+                let annotation_pos = self.pos();
+                if matches!(self.peek_at(1), Tok::Ident(name) if name == "Override") {
+                    return Err(Diagnostic::new(annotation_pos, "E_ANNOTATION_TARGET",
+                        "@Override requires a class instance method, not a trait or interface member"));
+                }
+                return Err(Diagnostic::new(annotation_pos, "E_UNSUPPORTED",
+                    "trait/interface annotations require verified semantic lowering"));
+            }
             self.eat_word("pub");
             if self.eat_word("private") || self.is_word("static") || self.is_word("override") {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
@@ -785,9 +794,16 @@ impl Parser {
                     "use @Override alone, not @Override with the legacy override modifier"));
             }
             let override_member = annotated_override || keyword_override;
-            if override_member && (actor ||
-                !matches!(self.word_at(0), Some("fnc" | "method")) &&
-                *self.peek_at(1) != Tok::LParen) {
+            // Only actual methods can consume the override marker. Checking
+            // for '(' alone is unsafe: constructor(...) and receive(...) also
+            // have parameter lists and must never silently drop @Override.
+            let is_method_target = match self.word_at(0) {
+                Some("fnc" | "method") => true,
+                Some("constructor" | "receive" | "static") => false,
+                Some(_) => *self.peek_at(1) == Tok::LParen,
+                None => false,
+            };
+            if override_member && (actor || !is_method_target) {
                 return Err(Diagnostic::new(mpos, "E_ANNOTATION_TARGET",
                     "@Override requires a non-static class instance method declaration"));
             }
