@@ -2734,12 +2734,37 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    // Binary ASTs are left-associative (e.g. 250 additions). Re-entering
+    // FnCx::expr for every left child exhausts the default 2 MiB Rust test
+    // thread even though the parser's 256-link budget is respected.
+    // Flatten only the left spine: the original evaluation order, exact
+    // operator associations, overflow checks and effects are unchanged.
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+        let mut pending: Vec<(BinOp, &Expr, Pos)> = vec![(op, r, pos)];
+        let mut root = l;
+        while let ExprKind::Binary(next, left, right) = &root.kind {
+            if pending.len() >= crate::parser::MAX_TREE_HEIGHT as usize {
+                return Err(Diagnostic::new(root.pos, "E_NESTING",
+                    "binary expression chain exceeds the checked tree budget"));
+            }
+            pending.push((*next, right, root.pos));
+            root = left;
+        }
+        let mut value = self.value(root)?;
+        for (op, right, at) in pending.into_iter().rev() {
+            let next = self.value(right)?;
+            value = self.binary_typed(op, value, next, at)?;
+        }
+        Ok(value)
+    }
+
+    // The type-checking rules remain exactly the previous binary rules; only
+    // the traversal over the already-parsed left spine changes above.
+    #[inline(never)]
+    fn binary_typed(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
                 let both = a.ty == Type::Str && b.ty == Type::Str;
                 return match op {
