@@ -25,6 +25,7 @@ pub enum ArenaError {
     ForeignArena,
     StaleHandle,
     InvalidHandle,
+    Retired,
 }
 
 /// An offset/length lease, not a native pointer or transferable actor token.
@@ -53,6 +54,7 @@ pub struct OwnerArena {
     used: usize,
     id: usize,
     epoch: u64,
+    retired: bool,
 }
 
 impl OwnerArena {
@@ -75,7 +77,12 @@ impl OwnerArena {
             used: 0,
             id,
             epoch: 1,
+            retired: false,
         })
+    }
+
+    pub fn is_retired(&self) -> bool {
+        self.retired
     }
 
     pub fn capacity(&self) -> usize {
@@ -94,6 +101,9 @@ impl OwnerArena {
     /// This does not guarantee native pointer alignment of the backing Vec,
     /// and cannot be cast to a Rust struct or FFI pointer.
     pub fn allocate(&mut self, len: usize, alignment: usize) -> Result<ArenaHandle, ArenaError> {
+        if self.retired {
+            return Err(ArenaError::Retired);
+        }
         if len == 0 {
             return Err(ArenaError::InvalidAllocation);
         }
@@ -124,6 +134,9 @@ impl OwnerArena {
     }
 
     fn range(&self, handle: ArenaHandle) -> Result<std::ops::Range<usize>, ArenaError> {
+        if self.retired {
+            return Err(ArenaError::Retired);
+        }
         if handle.arena_id != self.id {
             return Err(ArenaError::ForeignArena);
         }
@@ -158,7 +171,21 @@ impl OwnerArena {
     ///
     /// The epoch must advance BEFORE previously issued handles could be reused.
     /// Refuse to reset on epoch exhaustion rather than wrapping to a stale ID.
+    /// Permanently end access to this arena after the trusted owner has
+    /// established quiescence. Existing handles become unusable even if a
+    /// caller retains their values. The arena cannot be reopened.
+    pub fn retire(&mut self) {
+        if !self.retired {
+            self.bytes.fill(0);
+            self.used = 0;
+            self.retired = true;
+        }
+    }
+
     pub fn reset(&mut self) -> Result<(), ArenaError> {
+        if self.retired {
+            return Err(ArenaError::Retired);
+        }
         let next_epoch = self.epoch.checked_add(1).ok_or(ArenaError::EpochExhausted)?;
         self.bytes[..self.used].fill(0);
         self.used = 0;
