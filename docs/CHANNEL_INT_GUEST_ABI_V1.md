@@ -1,9 +1,12 @@
-# Worker-owned `Channel<int>` guest ABI — staged v1 contract
+# Worker-owned `Channel<int>` guest ABI — compiled Rust/Wasm v1 draft
 
-**Status: host runtime plus checked Worker-owned versioned import bridge implemented and tested; compiler-to-guest
-channel ABI NOT yet admitted.** A passing JavaScript host model is not a
-compiled AttoLang guest execution receipt. Avoid falsely promoting this to
-`atto.browser.guest.v2`.
+**Status: Rust/Wasm compiler-generated channel imports and typed guest await
+executed successfully in a real Chromium Worker on 2026-11-16.**
+Source commit `9863f417cbd012d08312385e2262d2737bba5624`, exact source Git tree
+`b5aa99efa84b53eac3c6ff0626a27a0cb5d5614f`, verified private runner
+`anticaptrad/atto-ci` Actions #43949956999. This is a draft, opt-in
+`atto.channel_int` v1 plus `atto.async` v2 profile, not stable public ABI
+or cross-backend parity.
 
 ## Source behavior to implement
 
@@ -21,8 +24,10 @@ pub susp fnc main(): int {
 }
 ```
 
-This example is **proposed**, not supported source syntax on the current
-browser compiler. The existing `Future<int>` task handle is NOT a substitute
+This example remains **proposed surface syntax**: the browser currently
+supports explicit `Channel<int>.bounded(literal)`, `nb readch`,
+`await` and nested `match` on typed Result/Option, but does not yet
+admit this example's `?`, nested `Ok(Some(...))` arm or `raise` syntax. The existing `Future<int>` task handle is NOT a substitute
 for `Future<Result<Option<int>, IoError>>`: it cannot faithfully distinguish
 EOF, cancellation, closed channels, quotas, and read errors.
 
@@ -40,8 +45,9 @@ of bounded FIFO admission, pending read registration, checked ticket
 consumption, EOF, closed-channel errors, cancellation, and quotas.
 `tests/channel_int_host_v1.test.mjs` proves the corresponding host contract
 with real asynchronous Promise continuations and i64 BigInt payloads.
-The runtime is **not imported by guest Wasm yet**; there are no silent
-channel imports exposed to unversioned guests.
+Compiler-emitted guests now import this runtime only after opt-in marker
+and exact Wasm function-signature validation; unversioned guests remain
+unable to acquire channel imports.
 
 A closed channel is not automatically destroyed, because queued payloads
 remain readable until EOF. The host exposes explicit `release(handle)` only
@@ -60,9 +66,9 @@ cannot retroactively revoke a committed value. Read ticket IDs are local
 to one Worker runtime and never reused; no cross-Worker or actor isolation
 permission is conveyed by a numeric ID.
 
-## Proposed versioned Wasm import bridge — NOT yet exposed
+## Implemented versioned Wasm import bridge — draft opt-in
 
-A future accepted guest carries a custom capability marker
+A compiled guest that uses channel operations carries a custom capability marker
 `atto.channel_int` with version 1 and adds only explicitly used imports.
 The existing async marker `atto.async` version 2 must remain compatible.
 The bridge requires a concrete, stable type representation before admission:
@@ -75,8 +81,10 @@ The bridge requires a concrete, stable type representation before admission:
 | `atto.channel_int_await_read_v1` | `ticket: i32, out: i32` | `status: i32` | JSPI one-shot await/settlement |
 | `atto.channel_int_cancel_v1` | `ticket: i32` | `status: i32` | Checked cancellation |
 | `atto.channel_int_close_v1` | `channel: i32` | `status: i32` | EOF while preserving queued values |
+| `atto.channel_int_release_v1` | `channel: i32` | `status: i32` | Release a closed, fully drained capability |
 
-Names and layouts are **candidate designs**, not a shipped public ABI.
+Names and layouts are **implemented in this Rust/Wasm draft** but have not
+yet been declared a stable public ABI or proven on Java, LLVM, or .NET.
 Every output pointer must be bounds/alignment checked against the same
 Worker-owned guest linear memory, with integer overflow guards. The
 read-result slot must encode exactly one tag from
@@ -84,7 +92,9 @@ read-result slot must encode exactly one tag from
 replace the tag. Errors are typed, versioned and nonthrowing for ordinary
 closed, cancelled, quota, or invalid-capability results.
 
-Do not add imports or the marker to guest modules before:
+Release/merge gates (the source typing, tagged Wasm lowering, marker checks,
+and single-fixture Chromium execution have passed; the broader lifecycle and
+cross-backend gates remain):
 1. The checker can represent `Channel<int>`,
    `Future<Result<Option<int>,IoError>>` and the complete awaited
    `Result<Option<int>,IoError>` ADT type.
@@ -140,7 +150,10 @@ safety, lifecycle and a genuine Wasm import module. The dedicated
 Chromium Worker probe uses a synthetic Wasm import module, not an
 AttoLang-compiled Channel<int> guest. This distinction is intentional.
 
-Future compiler work must implement Channel<int> and
-Future<Result<Option<int>,IoError>> source typing, JSPI await lowering,
-ADT construction, source-level nb readch and compiler-generated markers.
-The bridge is not a substitute for any of those acceptance gates.
+Since source commit 9863f417, compiler source typing, JSPI await lowering,
+tagged ADT construction, source-level `nb readch`, and versioned import
+markers are executable and CI-verified in Chromium. The next gates include
+compiler-generated error/EOF/cancellation/close/release adversarial execution,
+linear ownership and abandoned-Future cleanup, and separately verified
+Java/LLVM/.NET semantics. The host synthetic-Wasm probe is additional
+evidence, not a substitute for the compiled guest test.

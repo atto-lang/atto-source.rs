@@ -111,6 +111,22 @@ try{
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
     'channel read await must yield cooperatively once');
   console.log('PASS compiled AttoLang Channel<int> read Future, Some(41) -> 42');
+  // Distinct compiled guest outcomes: EOF != Some(0); ordinary I/O errors
+  // are tagged Results, and explicit release succeeds after draining.
+  const channelEofSource="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(0);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val closed: Result<void,IoError> = channel.close();\n      val pending: Future<Result<Option<int>,IoError>> = nb readch channel;\n      val outcome: Result<Option<int>,IoError> = await pending;\n      val released: Result<void,IoError> = channel.release();\n      ^ match released over\n        on Err(error) -> { return -11; }\n        on Ok -> {\n          ^ match outcome over\n            on Err(error) -> { return -12; }\n            on Ok(item) -> {\n              ^ match item over\n                on None -> { return 42; }\n                on Some(value) -> { return -13; }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelEofSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
+  console.log('PASS compiled guest Channel<int>: EOF is None, release succeeds');
+  const channelClosedSource="pub fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(0);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val closed: Result<void,IoError> = channel.close();\n      val sent: Result<void,IoError> = channel.send(41);\n      val released: Result<void,IoError> = channel.release();\n      ^ match released over\n        on Err(error) -> { return -11; }\n        on Ok -> {\n          ^ match sent over\n            on Err(error) -> { return 42; }\n            on Ok -> { return -12; }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelClosedSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),0);
+  console.log('PASS compiled guest Channel<int>: send-after-close is Err, release succeeds');
+  const channelFullSource="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(1);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val first: Result<void,IoError> = channel.send(41);\n      val overflow: Result<void,IoError> = channel.send(99);\n      val pending: Future<Result<Option<int>,IoError>> = nb readch channel;\n      val outcome: Result<Option<int>,IoError> = await pending;\n      val closed: Result<void,IoError> = channel.close();\n      val released: Result<void,IoError> = channel.release();\n      ^ match released over\n        on Err(error) -> { return -11; }\n        on Ok -> {\n          ^ match overflow over\n            on Ok -> { return -12; }\n            on Err(error) -> {\n              ^ match outcome over\n                on Err(error) -> { return -13; }\n                on Ok(item) -> {\n                  ^ match item over\n                    on None -> { return -14; }\n                    on Some(value) -> { return value + 1; }\n                  end\n                }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(channelFullSource,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
+  console.log('PASS compiled guest Channel<int>: Full Err preserves queued i64 and release succeeds');
+  assert.match(await run('pub fnc main(): int { val pending = nb readch 41; return 0; }','E_EFFECT'),/E_EFFECT/);
+  console.log('PASS compiled guest negative: nb readch without susp fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);

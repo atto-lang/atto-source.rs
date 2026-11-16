@@ -1,8 +1,8 @@
 // Checked, Worker-local Wasm import adapter for Channel<int> v1.
 //
-// STAGING: this adapter does not grant the imports to compiled AttoLang
-// sources. The Rust checker/emitter must first generate the v1 marker and
-// typed Future<Result<Option<int>, IoError>> result representation.
+// Versioned compiler-emitted AttoLang guest imports are admitted only with
+// the atto.channel_int v1 and atto.async v2 markers, exact Wasm function
+// signatures, Worker-local ownership and checked tagged result slots.
 //
 // All operation failures are numeric statuses; await_read results use the
 // checked 16-byte tagged payload:
