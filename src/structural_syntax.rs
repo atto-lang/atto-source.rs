@@ -147,26 +147,18 @@ impl Cursor {
             Tok::Minus if allow_literal && !explicit &&
                 matches!(self.next(), Tok::Int(_)) => {
                 self.i += 1;
-                // The lexer encodes exactly 2^63 as Int(None), reserved
-                // for the negated i64::MIN boundary. Preserve it as a
-                // singleton only when the minus is part of this field type.
-                let v = match self.tok().clone() {
-                    Tok::Int(Some(v)) => v,
-                    Tok::Int(None) => 1u64 << 63,
-                    _ => unreachable!(),
+                // The lexer deliberately stores exactly 2^63 as Int(None):
+                // it is valid ONLY when directly preceded by unary minus.
+                // Do not treat this boundary as an arbitrary over-range int.
+                let canonical = match self.tok().clone() {
+                    Tok::Int(None) => i64::MIN.to_string(),
+                    Tok::Int(Some(0)) => "0".to_owned(),
+                    Tok::Int(Some(v)) if v <= i64::MAX as u64 => format!("-{v}"),
+                    _ => return Err(self.err("E_INTEGER_RANGE",
+                        "singleton integer magnitude is out of signed i64 range")),
                 };
-                if v > i64::MAX as u64 + 1 {
-                    return Err(self.err("E_INTEGER_RANGE", "singleton integer out of range"));
-                }
                 self.i += 1;
-                if v == i64::MAX as u64 + 1 {
-                    i64::MIN.to_string()
-                } else if v == 0 {
-                    // Integer -0 and 0 are the same singleton type.
-                    "0".to_owned()
-                } else {
-                    format!("-{v}")
-                }
+                canonical
             }
             Tok::Ident(ref w) if w == "true" || w == "false" => {
                 if !allow_literal || explicit {
@@ -459,18 +451,19 @@ pub fn parse_pattern(src: &str) -> R<Pattern> {
                     Tok::Ident(w) if w == "true" || w == "false" => {
                         c.i += 1; ScalarPattern::Bool(w == "true")
                     }
-                    Tok::Int(Some(n)) if n <= i64::MAX as u64 => {
+                    Tok::Int(Some(n)) => {
                         c.i += 1; ScalarPattern::Int(n as i64)
                     }
-                    Tok::Minus if matches!(c.next(), Tok::Int(Some(_))) => {
+                    Tok::Int(None) => {
+                        return Err(c.err("E_INTEGER_RANGE",
+                            "positive pattern integer is out of signed i64 range"));
+                    }
+                    Tok::Minus if matches!(c.next(), Tok::Int(_)) => {
                         c.i += 1;
-                        let Tok::Int(Some(magnitude)) = c.tok().clone() else { unreachable!() };
-                        let value = if magnitude == i64::MAX as u64 + 1 {
-                            i64::MIN
-                        } else if magnitude <= i64::MAX as u64 {
-                            -(magnitude as i64)
-                        } else {
-                            return Err(c.err("E_INTEGER_RANGE", "negative pattern integer out of range"));
+                        let value = match c.tok().clone() {
+                            Tok::Int(None) => i64::MIN,
+                            Tok::Int(Some(n)) => -(n as i64),
+                            _ => unreachable!(),
                         };
                         c.i += 1; ScalarPattern::Int(value)
                     }

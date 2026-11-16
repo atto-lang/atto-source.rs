@@ -1,6 +1,7 @@
-//! Anonymous structural shapes: syntax-only admission and production fail-closed.
+//! Anonymous structural shapes: production AST retention and checked fail-closed ABI.
 //! These tests do NOT claim compiled/guest-executed shape formals or maps.
-use atto_compiler::{compile, structural_syntax as syn};
+use atto_compiler::{compile, lexer::lex, parser::Parser, structural_syntax as syn};
+use atto_compiler::ast::Type;
 
 #[test]
 fn bare_shapes_and_explicit_structural_shapes_have_identical_type_identity() {
@@ -133,7 +134,80 @@ fn production_compiler_rejects_unlowered_shape_call_abi_before_wasm() {
             "pub fnc inspect({formal}): int {{ return 42; }} pub fnc main(): int {{ return 42; }}"
         );
         let error = compile(&source).expect_err("shape ABI not available yet");
-        assert_eq!(error.code, "E_UNSUPPORTED_TYPE", "{formal}: {error}");
-        assert!(error.message.contains("shape"), "{formal}: {error}");
+        assert_eq!(error.code, "E_UNSUPPORTED", "{formal}: {error}");
+        assert!(error.message.contains("projected-class ABI"), "{formal}: {error}");
+    }
+}
+
+
+#[test]
+fn production_parser_preserves_anonymous_formals_without_nominal_erasure() {
+    for spelling in [
+        "{foo: string} p",
+        "p: {foo: \"dog\"}",
+        "p: {foo: string | int}",
+        "p: ~ {foo: string}",
+        "p: structural {foo: string}",
+        "p: {foo: {bar: bool}}",
+    ] {
+        let src = format!(
+            "pub fnc inspect({spelling}): int {{ return 42; }} pub fnc main(): int {{ return 42; }}"
+        );
+        let program = Parser::new(lex(&src).unwrap()).parse_program().unwrap();
+        let p = &program.funcs[0].params[0];
+        assert!(p.structural, "{spelling}");
+        let Type::Named(i) = p.ty else { panic!("shape must retain a reserved, unresolved type identity"); };
+        let canonical = &program.type_names[i as usize].0;
+        assert!(canonical.starts_with("~{"), "{spelling}: {canonical}");
+        assert_eq!(canonical,
+            &syn::parse_formals(&format!("({spelling})")).unwrap()[0].ty.canonical);
+        let err = compile(&src).expect_err("no projected shape ABI may emit a guest");
+        assert_eq!(err.code, "E_UNSUPPORTED", "{spelling}: {err}");
+    }
+}
+
+#[test]
+fn production_shape_identity_is_order_independent_and_literal_preserving() {
+    let src = "pub fnc a(p: {b: int | string, a: \"dog\"}): int { return 1; }
+               pub fnc b(p: ~{a: \"dog\", b: string | int}): int { return 2; }
+               pub fnc c(p: {a: string, b: int | string}): int { return 3; }
+               pub fnc main(): int { return 42; }";
+    let program = Parser::new(lex(src).unwrap()).parse_program().unwrap();
+    let ids = program.funcs.iter().take(3).map(|f| match f.params[0].ty {
+        Type::Named(i) => i,
+        _ => panic!("shape formal must retain a canonical identity"),
+    }).collect::<Vec<_>>();
+    assert_eq!(ids[0], ids[1], "field/union order and tilde must not change identity");
+    assert_ne!(ids[0], ids[2], "singleton string may not widen to string implicitly");
+    let err = compile(src).expect_err("unlowered ABI must fail closed");
+    assert_eq!(err.code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn production_shape_syntax_validates_fields_before_abi_gate() {
+    for (formal, code) in [
+        ("p: {foo: int, foo: string}", "E_DUPLICATE"),
+        ("p: {foo?: string}", "E_UNSUPPORTED_TYPE"),
+        ("p: {foo: _}", "E_TYPE"),
+        ("p: {}", "E_SYNTAX"),
+        ("p: {foo: string |}", "E_SYNTAX"),
+        ("p: {foo: 9223372036854775808}", "E_INTEGER_RANGE"),
+    ] {
+        let src = format!("pub fnc test({formal}): int {{ return 42; }}");
+        let err = compile(&src).expect_err("malformed shape must not reach runtime ABI gate");
+        assert_eq!(err.code, code, "{formal}: {err}");
+    }
+}
+
+#[test]
+fn production_routine_and_method_accept_syntax_but_not_unproved_abi() {
+    for src in [
+        "routine inspect(p: {foo: string}): int { return 42; } pub fnc main(): int { return 42; }",
+        "define class Service as pub evaluate(p: {foo: string | int}): int { return 42; } end pub fnc main(): int { return 42; }",
+        "define class Service as pub static fnc evaluate({foo: \"dog\"} p): int { return 42; } end pub fnc main(): int { return 42; }",
+    ] {
+        let err = compile(src).expect_err("class/record/map projected view ABI not yet proven");
+        assert_eq!(err.code, "E_UNSUPPORTED", "{src}: {err}");
+        assert!(err.message.contains("projected-class ABI"));
     }
 }

@@ -703,7 +703,7 @@ pub fn check(p: &Program) -> R<TProgram> {
         .find(|p| p.structural);
     if let Some(param) = marked {
         return Err(Diagnostic::new(param.pos, "E_UNSUPPORTED",
-            "structural formal is parsed, but requires a verified readonly projected-class ABI; nominal class pointer coercion is forbidden"));
+            "structural formal is parsed, but requires a verified readonly projected-class ABI for structural shapes; nominal class pointer coercion is forbidden"));
     }
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
