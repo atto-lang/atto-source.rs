@@ -26,7 +26,7 @@ fn both_spelling_variants_emit_deterministic_genuine_wasm() {
     for query in ["typeof x", "typeof(x)"] {
         let source = main_with(query);
         let wasm = compile(&source).unwrap_or_else(|e| panic!("{query}: {e}"));
-        assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"), "{query}: not a Wasm guest");
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "{query}: not a Wasm guest");
         assert_eq!(wasm, compile(&source).unwrap(), "{query}: nondeterministic AOT lowering");
     }
 }
