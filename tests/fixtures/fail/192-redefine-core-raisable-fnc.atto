@@ -1,0 +1,3 @@
+// expect-error: E_DUPLICATE
+fnc Raisable(): int { return 1; }
+pub fnc main(): int { return 0; }
