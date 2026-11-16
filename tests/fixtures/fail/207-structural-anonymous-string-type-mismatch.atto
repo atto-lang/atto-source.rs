@@ -1,0 +1,11 @@
+// expect-error: E_TYPE
+define class Pet as
+    pub int foo = 42;
+end
+pub fnc main(): int {
+    val value = new Pet();
+    match value over
+        on {foo: "dog"} -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
