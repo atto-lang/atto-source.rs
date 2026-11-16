@@ -1,10 +1,11 @@
 # Cross-backend diamond inheritance and dispatch contract v1
 
-This folder contains a **byte-identical copy of the unmodified playground example**
-from [atto-lang.github.io PR #130](https://github.com/atto-lang/atto-lang.github.io/pull/130):
+This folder contains a **byte-identical copy of the canonical @Override playground example**
+proposed in [atto-lang.github.io PR #149](https://github.com/atto-lang/atto-lang.github.io/pull/149)
+(the previous `pub override` preview landed in site PR #130):
 
 - `playground-exact.atto`: Git blob SHA-1
-  `05814acb37c0335c03294875b870560a2839031d`.
+  `91cdb52d2b099c1fe1892d9960866be5d011a076`.
 - Identical source Git blobs must be checked across the Rust/Wasm, Java and LLVM
   branches. **Source agreement is not evidence of executable backend parity.**
 
@@ -14,8 +15,8 @@ from [atto-lang.github.io PR #130](https://github.com/atto-lang/atto-lang.github
    through two diamond paths are **one origin**, not two conflicting members.
 2. Unrelated implementations of the same **name + source-visible arity + member
    kind** are ambiguous. No implicit left-to-right, C3 or hash-order winner.
-   The child must provide its own explicit resolution; the intended playground
-   spelling is `pub override describe(): string`.
+   The child must provide its own explicit resolution; the canonical playground
+   spelling is `@Override` on the preceding line, followed by `pub describe(): string`.
 3. Different explicit arities may coexist. Argument types alone do not create
    additional same-arity overloads. Override signatures and public visibility
    must be preserved; invalid attempts reject before emitting artifacts.
@@ -29,6 +30,21 @@ from [atto-lang.github.io PR #130](https://github.com/atto-lang/atto-lang.github
    method visibility and eventual dynamic vtable/witness ABI must be verified
    before enabling unsupported shapes. An unimplemented backend must
    reject **without generated guest Wasm, LLVM IR, or a native binary**.
+
+## Migration and current verification status (2026-11-16)
+
+The branch parser now maps source-level `@Override` onto the same existing
+`override_member` AST flag used by the already-tested legacy modifier. The
+legacy `pub override` spelling remains accepted for compatibility; writing
+both or repeating `@Override` is rejected. `@Override` on actor members,
+static methods, fields, top-level class/actor/fnc/routine or otherwise
+non-overriding methods is rejected. Unregistered annotations are still
+fail-closed: this does not establish general annotation compiler support.
+
+**The previous executed 2026-11-15 CI evidence below applies to the older
+`pub override` fixture SHA only.** The new `@Override` source has not
+yet passed a fresh exact-tree Rust/Wasm guest run. It must not be marked
+executable or released until that evidence exists.
 
 ## Current evidence and non-parity boundaries (2026-11-15)
 
