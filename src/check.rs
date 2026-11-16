@@ -2236,9 +2236,13 @@ impl<'a> FnCx<'a> {
                         _ => return Err(type_err(arm.pos,
                             format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
-                    if bind.is_some() != needed.is_some() {
+                    // A tagged variant can be tested without extracting its
+                    // payload: Ok() / Err() / Some() and their (_) spellings.
+                    // Only *binding* a non-existent payload is an arity error.
+                    // No implicit 'value' or 'error' local is manufactured.
+                    if needed.is_none() && bind.is_some() {
                         return Err(Diagnostic::new(arm.pos, "E_ARITY",
-                            format!("pattern '{name}' has incorrect payload arity")));
+                            format!("pattern '{name}' has no payload to bind")));
                     }
                     (Some(tag), bind.as_deref(), needed)
                 }
