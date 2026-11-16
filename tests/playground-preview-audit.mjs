@@ -73,6 +73,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'closures-functors': { value: 84n, stdout: '' },
       'lexical-scope-pure': { value: 0n, stdout: '42\n42\n2\n42\n' },
       'state-containers': { value: 0n, stdout: '2\n0\n' },
+      'fib-match': { value: 144n, stdout: '0 1 1 2 3 5 8 13 21 34 \n' },
     }[name];
     if (expected) {
       const guest = runGuest(result.wasm);
@@ -87,8 +88,9 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
   assert.equal(outcome.admitted.length + outcome.unsupported.length, 42);
   assert.deepEqual(outcome.guestExecuted.slice().sort(),
     ['function-pipeline', 'generators', 'result-option', 'trap',
-     'borrow-checking', 'closures-functors', 'lexical-scope-pure', 'state-containers'].sort(),
-    'all eight previously implemented preview guest oracles must execute');
+     'borrow-checking', 'closures-functors', 'lexical-scope-pure', 'state-containers',
+     'fib-match'].sort(),
+    'all nine targeted preview guest oracles must execute');
   outcome.executionCoverage.verified = outcome.guestExecuted.length;
   outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
   // Opt-in strict release gate: no unsupported/unexecuted examples permitted.
