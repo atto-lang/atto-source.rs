@@ -24,7 +24,6 @@ pub const MAX_TREE_HEIGHT: u32 = 256;
 /// Words reserved by the reference lexer (spec chapter 16 keyword table).
 const RESERVED: &[&str] = &[
     "define",
-    "declare",
     "def",
     "module",
     "namespace",
@@ -99,7 +98,6 @@ const RESERVED: &[&str] = &[
     "pipe",
     "receives",
     "emits",
-    "sends",
     "stop",
     "rt",
     "await",
@@ -468,29 +466,6 @@ impl Parser {
                     self.i += at + 2;
                     prog.classes.push(self.parse_class(public)?);
                 }
-                (Some("declare"), _) if public => {
-                    return Err(Diagnostic::new(
-                        start, "E_ACTOR", "actor declaration visibility must follow 'declare' (declare pub actor Foo;)",
-                    ));
-                }
-                (Some("declare"), Some("actor")) => {
-                    self.i += 2;
-                    prog.actors.push(self.parse_actor_declaration(false)?);
-                }
-                (Some("declare"), Some("pub" | "private")) => {
-                    self.i += 1;
-                    let is_public = self.eat_word("pub");
-                    if !is_public {
-                        self.expect_word("private")?;
-                    }
-                    self.expect_word("actor")?;
-                    prog.actors.push(self.parse_actor_declaration(is_public)?);
-                }
-                (Some("declare"), _) => {
-                    return Err(Diagnostic::new(
-                        start, "E_ACTOR", "expected 'actor' after declare",
-                    ));
-                }
                 (Some("define"), Some("actor")) => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
@@ -547,122 +522,30 @@ impl Parser {
         })
     }
 
-    /// Shared actor header semantics for inline definitions and nominal
-    /// semicolon declarations. A contract reference does not prove a witness.
-    fn parse_actor_header(
-        &mut self,
-        permit_contracts: bool,
-    ) -> R<(String, Pos, Option<Type>, Option<Type>, Option<Type>, Vec<String>)> {
-        let (name, pos) = self.ident("an actor name")?;
-        if *self.peek() == Tok::Lt {
-            return Err(unsupported(self.pos(), "generic actors"));
-        }
-        if self.is_word("extends") {
-            return Err(unsupported(self.pos(), "actor inheritance"));
-        }
-        let mut implemented_contracts = Vec::new();
-        if self.eat_word("implements") {
-            if !permit_contracts {
-                return Err(unsupported(self.pos(), "inline actor implements clauses"));
-            }
-            loop {
-                let (contract, at) = self.ident("an actor-targeted contract name")?;
-                if implemented_contracts.contains(&contract) {
-                    return Err(Diagnostic::new(
-                        at, "E_DUPLICATE",
-                        format!("duplicate actor contract '{contract}'"),
-                    ));
-                }
-                implemented_contracts.push(contract);
-                if implemented_contracts.len() > 16 {
-                    return Err(Diagnostic::new(
-                        at, "E_SOURCE_LIMIT", "more than 16 actor contract references",
-                    ));
-                }
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
-            }
-        }
-        // The canonical output order is receives, emits, sends. Both
-        // receives/sends and receives/emits combinations remain accepted.
-        // The order of emits/sends is accepted in either sequence, with a
-        // formatter expected to normalize to receives/emits/sends.
-        let mut receives = None;
-        let mut emits = None;
-        let mut sends = None;
-        let mut passed_first_output = false;
-        while let Some(clause) = self.word_at(0).filter(|c|
-            matches!(*c, "receives" | "emits" | "sends")
-        ).map(str::to_owned) {
-            let at = self.pos();
-            self.advance();
-            match clause.as_str() {
-                "receives" => {
-                    if receives.is_some() || passed_first_output {
-                        return Err(Diagnostic::new(
-                            at, "E_PIPE_CONTRACT",
-                            "receives must occur once and before emits/sends",
-                        ));
-                    }
-                    receives = Some(self.parse_type()?);
-                }
-                "emits" => {
-                    if emits.is_some() {
-                        return Err(Diagnostic::new(
-                            at, "E_PIPE_CONTRACT", "duplicate actor emits clause",
-                        ));
-                    }
-                    passed_first_output = true;
-                    emits = Some(self.parse_type()?);
-                }
-                "sends" => {
-                    if sends.is_some() {
-                        return Err(Diagnostic::new(
-                            at, "E_PIPE_CONTRACT", "duplicate actor sends clause",
-                        ));
-                    }
-                    passed_first_output = true;
-                    sends = Some(self.parse_type()?);
-                }
-                _ => unreachable!(),
-            }
-        }
-        Ok((name, pos, receives, emits, sends, implemented_contracts))
-    }
-
-    /// After `declare [pub|private] actor` — a **nominal** declaration.
-    /// This header never creates a body or a runnable actor instance.
-    fn parse_actor_declaration(&mut self, public: bool) -> R<ActorDecl> {
-        let (name, pos, declared_receives, declared_emits, declared_sends, implemented_contracts) =
-            self.parse_actor_header(true)?;
-        self.expect(Tok::Semi, "';' to terminate a declared actor")?;
-        Ok(ActorDecl {
-            name,
-            pos,
-            declaration_only: true,
-            public,
-            implemented_contracts,
-            declared_receives,
-            declared_emits,
-            declared_sends,
-            fields: Vec::new(),
-            receive: None,
-            methods: Vec::new(),
-        })
-    }
-
-    /// After `define actor` (`defined`) or a legacy bare `actor`.
+    /// After `define actor` (`defined`) or a bare `actor`.
     fn parse_actor(&mut self, defined: bool) -> R<ActorDecl> {
-        let (name, pos, declared_receives, declared_emits, declared_sends, implemented_contracts) =
-            self.parse_actor_header(false)?;
+        let (name, pos) = self.ident("an actor name")?;
+        self.decl_head("actor")?;
+        // Header clauses derive typed pipe endpoint roles. Canonical order:
+        // receives Input, then emits Output. No declaration means no
+        // *explicit* capability, even if the body happens to emit.
+        let declared_receives = if self.eat_word("receives") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let declared_emits = if self.eat_word("emits") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        if self.is_word("receives") || self.is_word("emits") {
+            return Err(Diagnostic::new(
+                self.pos(), "E_PIPE_CONTRACT",
+                "actor pipe header clauses must be unique and ordered: receives T emits U",
+            ));
+        }
         let close = if defined {
-            if *self.peek() == Tok::Semi {
-                return Err(Diagnostic::new(
-                    self.pos(), "E_ACTOR",
-                    "define actor requires 'as ... end'; use 'declare actor Foo;' for a body-free nominal header",
-                ));
-            }
             self.expect_word("as")?;
             "end"
         } else if self.eat(&Tok::LBrace) {
@@ -674,12 +557,8 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
-            declaration_only: false,
-            public: false,
-            implemented_contracts,
             declared_receives,
             declared_emits,
-            declared_sends,
             fields: m.fields,
             receive: m.receive,
             methods: m.methods,
