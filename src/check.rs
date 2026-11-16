@@ -735,7 +735,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         ) {
             return Err(Diagnostic::new(
                 pos,
-                "E_DUPLICATE",
+                if matches!(name, "Error" | "Throwable" | "Raisable" | "Panicable") {
+                    "E_RESERVED"
+                } else {
+                    "E_DUPLICATE"
+                },
                 format!("'{name}' is a builtin and cannot be redefined"),
             ));
         }
@@ -768,7 +772,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             "Some" | "None" | "Error" | "Throwable" | "Raisable" | "Panicable") {
             return Err(Diagnostic::new(
                 f.pos,
-                "E_DUPLICATE",
+                if matches!(f.name.as_str(), "Error" | "Throwable" | "Raisable" | "Panicable") {
+                    "E_RESERVED"
+                } else {
+                    "E_DUPLICATE"
+                },
                 format!("'{}' is a builtin and cannot be redefined", f.name),
             ));
         }
