@@ -27,7 +27,7 @@ jobs:
           rustup default 1.85.1
           rustc --version
       - name: Test native compiler core over the fixture corpus
-        run: cargo test --locked --verbose
+        run: cargo test --locked --verbose --no-fail-fast
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
       - name: Build actual Wasm compiler
