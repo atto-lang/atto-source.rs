@@ -6,8 +6,10 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ArenaError {
     InvalidOwner,
+    InvalidArena,
     CapacityExhausted,
     WrongOwner,
+    WrongArena,
     WrongIncarnation,
     InvalidSlot,
     StaleGeneration,
@@ -19,6 +21,7 @@ pub enum ArenaError {
 pub struct ArenaHandle {
     actor_id: u64,
     incarnation: u64,
+    arena_id: u64,
     slot: usize,
     generation: u64,
 }
@@ -30,6 +33,10 @@ impl ArenaHandle {
 
     pub fn incarnation(self) -> u64 {
         self.incarnation
+    }
+
+    pub fn arena_id(self) -> u64 {
+        self.arena_id
     }
 
     pub fn slot(self) -> usize {
@@ -48,27 +55,34 @@ struct Slot<T> {
 }
 
 /// A zero-GC slot store with one authoritative copy of each value.
+/// Every arena in an actor incarnation requires a distinct, non-reused ID.
 ///
 /// No global registry or runtime memory allocation is used by this structure.
-/// A supervisor must allocate unique, nonzero actor IDs and incarnation IDs.
+/// A supervisor must allocate unique, nonzero actor IDs, incarnation IDs and
+/// arena IDs, and never reuse a full identity triple while handles may exist.
 /// Memory isolation, FFI provenance, scheduling and cross-actor sharing are
 /// enforced by future runtime contracts, not by these identifiers alone.
 #[derive(Debug)]
 pub struct FixedActorArena<T, const N: usize> {
     actor_id: u64,
     incarnation: u64,
+    arena_id: u64,
     slots: [Slot<T>; N],
     live: usize,
 }
 
 impl<T, const N: usize> FixedActorArena<T, N> {
-    pub fn new(actor_id: u64, incarnation: u64) -> Result<Self, ArenaError> {
+    pub fn new(actor_id: u64, incarnation: u64, arena_id: u64) -> Result<Self, ArenaError> {
         if actor_id == 0 || incarnation == 0 {
             return Err(ArenaError::InvalidOwner);
+        }
+        if arena_id == 0 {
+            return Err(ArenaError::InvalidArena);
         }
         Ok(Self {
             actor_id,
             incarnation,
+            arena_id,
             slots: std::array::from_fn(|_| Slot {
                 value: None,
                 generation: 1,
@@ -89,9 +103,10 @@ impl<T, const N: usize> FixedActorArena<T, N> {
         N
     }
 
-    /// Move a value into one free slot. Retired, overflowed generations
+    /// Move a value into one free slot. A failed admission returns the original
+    /// value without dropping or consuming caller ownership. Retired generations
     /// are never reused, preventing stale-handle resurrection by wraparound.
-    pub fn insert(&mut self, value: T) -> Result<ArenaHandle, ArenaError> {
+    pub fn try_insert(&mut self, value: T) -> Result<ArenaHandle, (ArenaError, T)> {
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.value.is_none() && slot.generation != u64::MAX {
                 slot.value = Some(value);
@@ -99,12 +114,13 @@ impl<T, const N: usize> FixedActorArena<T, N> {
                 return Ok(ArenaHandle {
                     actor_id: self.actor_id,
                     incarnation: self.incarnation,
+                    arena_id: self.arena_id,
                     slot: index,
                     generation: slot.generation,
                 });
             }
         }
-        Err(ArenaError::CapacityExhausted)
+        Err((ArenaError::CapacityExhausted, value))
     }
 
     fn validate(&self, handle: ArenaHandle) -> Result<usize, ArenaError> {
@@ -113,6 +129,9 @@ impl<T, const N: usize> FixedActorArena<T, N> {
         }
         if handle.incarnation != self.incarnation {
             return Err(ArenaError::WrongIncarnation);
+        }
+        if handle.arena_id != self.arena_id {
+            return Err(ArenaError::WrongArena);
         }
         let slot = self.slots.get(handle.slot).ok_or(ArenaError::InvalidSlot)?;
         if handle.generation != slot.generation {
@@ -152,19 +171,19 @@ mod tests {
 
     #[test]
     fn generation_exhaustion_retires_slot_instead_of_wrapping() {
-        let mut arena = FixedActorArena::<u64, 1>::new(10, 1).unwrap();
+        let mut arena = FixedActorArena::<u64, 1>::new(10, 1, 1).unwrap();
         arena.slots[0].generation = u64::MAX - 1;
-        let handle = arena.insert(42).unwrap();
+        let handle = arena.try_insert(42).unwrap();
         assert_eq!(handle.generation(), u64::MAX - 1);
         assert_eq!(arena.take(handle), Ok(42));
         assert_eq!(arena.slots[0].generation, u64::MAX);
-        assert_eq!(arena.insert(7), Err(ArenaError::CapacityExhausted));
+        assert_eq!(arena.try_insert(7), Err((ArenaError::CapacityExhausted, 7)));
     }
 
     #[test]
     fn zero_capacity_fails_closed() {
-        let mut arena = FixedActorArena::<u8, 0>::new(1, 1).unwrap();
-        assert_eq!(arena.insert(4), Err(ArenaError::CapacityExhausted));
+        let mut arena = FixedActorArena::<u8, 0>::new(1, 1, 1).unwrap();
+        assert_eq!(arena.try_insert(4), Err((ArenaError::CapacityExhausted, 4)));
         assert_eq!(arena.len(), 0);
     }
 }
