@@ -1,0 +1,6 @@
+// expect: 42
+// Declaring upper bounds does not itself perform an effect.
+fnc no_failure(): int raises(Error) panics(Error) {
+  return 42;
+}
+pub fnc main(): int { return no_failure(); }
