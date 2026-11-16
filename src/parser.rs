@@ -2511,7 +2511,6 @@ impl Parser {
                     "'++' and '--' exist only in a for update clause",
                 ))
             }
-            Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
