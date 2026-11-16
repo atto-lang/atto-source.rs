@@ -191,3 +191,6 @@ test('release does not discard buffered payloads after close',async()=>{
   assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(41));
   assert.deepEqual(rt.release(ch),{ok:true,value:{released:true}});
 });
+
+// Keep v1 checked guest ABI probes in the existing channel CI gate.
+import './channel_int_guest_v1.test.mjs';
