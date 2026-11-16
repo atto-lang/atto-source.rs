@@ -6,7 +6,7 @@ use atto_compiler::compile;
 fn accepted(source: &str) {
     let wasm = compile(source).unwrap_or_else(|e| panic!(
         "unexpected {}: {} at {:?}", e.code, e.message, e.pos));
-    assert!(wasm.starts_with(b"\\0asm"), "expected genuine Wasm emission");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "expected genuine Wasm emission");
 }
 
 fn rejected(source: &str, code: &str) {
