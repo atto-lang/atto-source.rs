@@ -16,8 +16,8 @@ fn native_trusted_jit_request_is_admitted_as_a_policy_only() {
             true,
         )
         .unwrap();
-        assert!(plan.aot_baseline_required);
-        assert_eq!(plan.optimization, OptimizationMode::AdaptiveJit);
+        assert!(plan.requires_aot_baseline());
+        assert_eq!(plan.optimization(), OptimizationMode::AdaptiveJit);
     }
 }
 
@@ -95,7 +95,7 @@ fn offline_pgo_and_aot_keep_baseline_on_all_targets() {
                 false,
             )
             .unwrap();
-            assert!(plan.aot_baseline_required);
+            assert!(plan.requires_aot_baseline());
         }
     }
 }
