@@ -53,8 +53,12 @@ export function compile(source) {
 // main returns, mailboxes drain FIFO, actor by actor in spawn order: one
 // valid schedule of the concurrent browser runtime.
 const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send',
-  'state_register', 'state_enter', 'state_leave']);
-const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', 'actor_receive']);
+  'state_register', 'state_enter', 'state_leave',
+  // Deterministic, strictly capture-free guest task adapter used for the
+  // executable preview output oracle. Real suspension is proved separately
+  // in Chromium JSPI (browser-async-e2e.mjs).
+  'task_start', 'task_await', 'cooperate']);
+const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', 'actor_receive', 'task_invoke']);
 export const MAX_ACTORS = BROWSER_MAX_ACTORS;
 export const MAX_MAILBOX = BROWSER_MAX_MAILBOX;
 
@@ -84,13 +88,44 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
   assert.ok(exportNames.every(n => ALLOWED_EXPORTS.has(n)), 'no extra exports');
   const names = actorNames(module);
   assert.equal(exportNames.includes('actor_receive'), names.length > 0, 'actor exports iff actor table');
+  const isAsync = WebAssembly.Module.imports(module).some(x =>
+    ['task_start','task_await','cooperate'].includes(x.name));
+  if (isAsync) {
+    const marker=WebAssembly.Module.customSections(module,'atto.async');
+    assert.equal(marker.length,1,'guest async import requires a single versioned JSPI marker');
+    assert.deepEqual([...new Uint8Array(marker[0])],[2],'only the checked JSPI async ABI v2 is admitted');
+    assert.ok(exportNames.includes('task_invoke'),'real guest task dispatcher export required');
+  }
   let out = '';
   const actors = [];
   const runtimes = new WeakMap();
   const instantiate = inActor => {
     let instance;
     const state = createStateRuntime();
+    const tasks = new Map();
+    let nextTaskId = 1;
     const atto = {
+      // The Node conformance host executes only ready, capture-free task
+      // functions. It verifies actual compiled Wasm stdout/result; the
+      // independent Chromium harness verifies cooperative stack switching,
+      // timers, two-task barriers and cancellation semantics.
+      task_start: index => {
+        if (inActor || tasks.size >= 128) throw new Error('task capacity/actor ownership violation');
+        if (!Number.isInteger(index) || index < 0) throw new Error('bad task index');
+        if (typeof instance?.exports.task_invoke !== 'function') throw new Error('missing verified task dispatcher');
+        const value=instance.exports.task_invoke(index);
+        if (typeof value !== 'bigint') throw new Error('task must return typed int');
+        const id=nextTaskId++;
+        tasks.set(id,value);
+        return id;
+      },
+      task_await: id => {
+        if (!tasks.has(id)) throw new Error('unknown or consumed task handle');
+        const value=tasks.get(id);
+        tasks.delete(id); // linear single-use Future<int>
+        return value;
+      },
+      cooperate: () => { /* JSPI yielding checked in Chromium, not emulated here */ },
       print_i64: v => { out += String(v); },
       print_bool: v => { out += v ? 'true' : 'false'; },
       print_str: (ptr, len) => { out += decoder.decode(new Uint8Array(instance.exports.memory.buffer, ptr, len)); },
