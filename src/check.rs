@@ -2454,10 +2454,11 @@ impl<'a> FnCx<'a> {
             }
             ExprKind::New(class, args) => self.new_object(class, args, pos)?,
             ExprKind::MixedPipeline(stages) => {
-                // A mixed pipe is not a chain of ordinary actor mailbox sends:
-                // actors source only explicitly emitted application values.
-                // Channel/stream/generator capability types and connection
-                // ownership are not available in this browser ABI yet.
+                // A pipe is a typed continuous graph, NEVER a single I/O
+                // operator or a collection of ordinary actor.send() calls.
+                // No mixed graph can reach guest code until PipeHandle and
+                // the structured transport ABI have been implemented.
+                use crate::pipe_contract::{PipeContractError, PipePort, StageContract};
                 if let Some(me) = self.actor_name() {
                     return Err(Diagnostic::new(
                         pos, "E_UNSUPPORTED",
@@ -2466,22 +2467,21 @@ impl<'a> FnCx<'a> {
                 }
                 if matches!(self.owner, Owner::FieldInit { .. }) {
                     return Err(Diagnostic::new(
-                        pos, "E_UNSUPPORTED",
-                        "mixed pipeline in a field initializer",
+                        pos, "E_UNSUPPORTED", "mixed pipeline in a field initializer",
                     ));
                 }
                 if !(2..=16).contains(&stages.len()) {
                     return Err(Diagnostic::new(
-                        pos, "E_SOURCE_LIMIT",
-                        "mixed pipeline must have 2 to 16 stages",
+                        pos, "E_SOURCE_LIMIT", "mixed pipeline must have 2 to 16 stages",
                     ));
                 }
-                let mut previous_actor_emit = None;
-                let mut previous_is_actor = false;
-                for (i, stage) in stages.iter().enumerate() {
-                    // Named ActorRef locals expose their declared actor ports,
-                    // not an untyped variable-to-variable pipe. Unknown
-                    // channel/stream/generator endpoints remain ABI-gated.
+                let mut contracts = Vec::with_capacity(stages.len());
+                let mut actor_names = Vec::with_capacity(stages.len());
+                let mut seen_refs = BTreeSet::new();
+                for stage in stages {
+                    // Only *typed ActorRef* values prove actor port roles.
+                    // Other values remain unavailable in the current browser
+                    // subset; do not infer an endpoint from the name alone.
                     let actor_index = match stage {
                         PipeStage::Actor(name) => Some(self.g.actor(name).ok_or_else(|| {
                             Diagnostic::new(pos, "E_UNBOUND",
@@ -2494,62 +2494,69 @@ impl<'a> FnCx<'a> {
                                         format!("unknown pipe endpoint '{name}'"))
                                 })?;
                                 match ty {
-                                    Type::ActorRef(index) => Some(index),
-                                    Type::Int | Type::Bool | Type::Float | Type::Str
-                                    | Type::Void | Type::Enum(_) => return Err(type_err(
+                                    Type::ActorRef(index) => {
+                                        // Reusing an identical actor reference
+                                        // in the same chain would silently
+                                        // introduce cycles or duplicated edges.
+                                        if !seen_refs.insert(name.clone()) {
+                                            return Err(Diagnostic::new(
+                                                endpoint.pos, "E_PIPE_CONTRACT",
+                                                format!("actor reference '{name}' occurs more than once in one pipe graph"),
+                                            ));
+                                        }
+                                        Some(index)
+                                    }
+                                    Type::GeneratorInt => None, // guest iterator ABI is separately gated
+                                    _ => return Err(type_err(
                                         endpoint.pos,
-                                        format!("pipe endpoint '{name}' is a scalar, not a PipeSource/PipeSink"),
+                                        format!("pipe endpoint '{name}' is not a typed PipeSource/PipeSink"),
                                     )),
-                                    _ => None,
                                 }
                             }
-                            _ => None,
+                            _ => None, // unresolved constructor/port: deferred, never executable
                         },
                     };
                     if let Some(index) = actor_index {
                         let actor = &self.g.actors[index as usize];
-                        let name = actor.name.as_str();
                         if actor.receive_idx.is_none() {
                             return Err(type_err(
                                 pos,
-                                format!("actor pipeline stage '{name}' has no receive(ActorMail<T>) handler"),
+                                format!("actor pipeline stage '{}' has no receive(ActorMail<T>) handler", actor.name),
                             ));
                         }
-                        if i > 0 && actor.declared_receives.is_none() {
-                            return Err(type_err(pos,
-                                format!("actor '{name}' needs an explicit receives T pipe-input declaration")));
-                        }
-                        if i + 1 < stages.len() && actor.declared_emits.is_none() {
-                            return Err(type_err(pos,
-                                format!("actor '{name}' needs an explicit emits T pipe-output declaration")));
-                        }
-                        if i != 0 && previous_is_actor {
-                            match previous_actor_emit {
-                                Some(expected) if expected == actor.payload => {}
-                                Some(expected) => return Err(type_err(pos, format!(
-                                    "actor pipeline emitted {} cannot enter '{name}' receiving {}",
-                                    self.tn(expected), self.tn(actor.payload)
-                                ))),
-                                None => return Err(type_err(pos,
-                                    format!("actor pipeline stage before '{name}' does not emit"))),
-                            }
-                        }
-                        previous_actor_emit = actor.emitted;
-                        previous_is_actor = true;
+                        contracts.push(StageContract::Known(PipePort {
+                            input: actor.declared_receives,
+                            output: actor.declared_emits,
+                        }));
+                        actor_names.push(actor.name.as_str());
                     } else {
-                        // The type system must not infer channel/stream roles
-                        // from identifier spelling or perform a hidden pump.
-                        if previous_is_actor && previous_actor_emit.is_none() {
-                            return Err(type_err(pos,
-                                "actor pipeline stage before endpoint does not emit"));
-                        }
-                        previous_actor_emit = None;
-                        previous_is_actor = false;
+                        contracts.push(StageContract::Deferred);
+                        actor_names.push("unresolved endpoint");
                     }
                 }
+                // Reuse the same edge checker for actor-only segments and,
+                // eventually, statically resolved Channel/Stream adapters.
+                // A Deferred endpoint never means a dynamically typed Any.
+                crate::pipe_contract::validate_known_edges(&contracts).map_err(|problem| {
+                    match problem {
+                        PipeContractError::MissingSink { stage } => type_err(
+                            pos,
+                            format!("actor '{}' needs an explicit receives T pipe-input declaration", actor_names[stage]),
+                        ),
+                        PipeContractError::MissingSource { stage } => type_err(
+                            pos,
+                            format!("actor '{}' needs an explicit emits T pipe-output declaration", actor_names[stage]),
+                        ),
+                        PipeContractError::TypeMismatch { from, to, emitted, received } => type_err(
+                            pos,
+                            format!("actor pipeline emitted {} from '{}' cannot enter '{}' receiving {}",
+                                self.tn(emitted), actor_names[from], actor_names[to], self.tn(received)),
+                        ),
+                    }
+                })?;
                 return Err(Diagnostic::new(
                     pos, "E_UNSUPPORTED",
-                    "mixed pipe parsed with actor emission checks; typed PipeSource/PipeSink, backpressure, cancellation and guest ABI are not implemented",
+                    "mixed pipe static actor ports checked; typed channel/stream endpoints, backpressure, cancellation and guest ABI are not implemented",
                 ));
             }
             ExprKind::ActorPipeline(stages) => {
