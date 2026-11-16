@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-stdout: 42
+define actor Worker as
+    compute(int x): int panics(Error) raises(Error) {
+        return x + 2;
+    }
+    receive(ActorMail<int> msg): void {
+        stdio.println(self.compute(msg.value));
+        return;
+    }
+end
+pub fnc main(): int {
+    val w = spawn Worker();
+    w.send(40);
+    return 0;
+}
