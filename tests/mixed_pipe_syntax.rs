@@ -328,3 +328,105 @@ fn known_actor_ref_edges_are_checked_across_three_stage_graph() {
     assert_eq!(err.code, "E_TYPE", "{err}");
     assert!(err.message.contains("emitted"), "{err}");
 }
+
+#[test]
+fn bounded_channel_stage_has_explicit_duplex_int_contract() {
+    use atto_compiler::ast::{PipeEndpointKind, Type};
+    let src = program("spawn Parse() pipe Channel<int>.bounded(2) pipe spawn Sink()", "int");
+    let parsed = parser::Parser::new(lexer::lex(&src).unwrap()).parse_program().unwrap();
+    let main = parsed.funcs.iter().find(|f| f.name == "main").unwrap();
+    let Stmt::Bind { init, .. } = &main.body[3] else { panic!("pipe binding"); };
+    let ExprKind::MixedPipeline(stages) = &init.kind else { panic!("mixed pipe"); };
+    assert_eq!(stages.len(), 3);
+    match &stages[1] {
+        PipeStage::Endpoint(expr) => assert!(matches!(
+            &expr.kind,
+            ExprKind::PipeEndpoint(PipeEndpointKind::ChannelBounded, Type::Int, 2)
+        )),
+        _ => panic!("expected channel port"),
+    }
+    let err = atto_compiler::compile(&src).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+    assert!(err.message.contains("mixed pipe"), "{err}");
+}
+
+#[test]
+fn buffered_stream_adapter_is_a_typed_midstage_not_a_single_write() {
+    let err = atto_compiler::compile(&program(
+        "spawn Parse() pipe Stream.buffered<int>(0) pipe spawn Sink()", "int"
+    )).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+    assert!(err.message.contains("mixed pipe"), "{err}");
+}
+
+#[test]
+fn explicit_stream_port_sink_admits_matching_emission_only() {
+    for expression in [
+        "spawn Parse() pipe Stream.port<int>(8).sink()",
+        "spawn Parse() pipe Channel<int>.bounded(8)",
+    ] {
+        let err = atto_compiler::compile(&program(expression, "int")).unwrap_err();
+        assert_eq!(err.code, "E_UNSUPPORTED", "{expression}: {err}");
+    }
+}
+
+#[test]
+fn stream_sink_must_not_be_used_as_an_implicit_source() {
+    let err = atto_compiler::compile(&program(
+        "spawn Parse() pipe Stream.port<int>(2).sink() pipe spawn Sink()", "int"
+    )).unwrap_err();
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("PipeSource"), "{err}");
+}
+
+#[test]
+fn actor_and_channel_element_type_mismatch_is_statically_rejected() {
+    for expression in [
+        "spawn Parse() pipe Channel<bool>.bounded(2)",
+        "spawn Parse() pipe Stream.buffered<bool>(2) pipe spawn Sink()",
+        "spawn Parse() pipe Stream.port<bool>(2).sink()",
+    ] {
+        let err = atto_compiler::compile(&program(expression, "int")).unwrap_err();
+        assert_eq!(err.code, "E_TYPE", "{expression}: {err}");
+        assert!(err.message.contains("emitted"), "{expression}: {err}");
+    }
+}
+
+#[test]
+fn literal_channel_and_stream_capacity_is_bounded_and_nonnegative() {
+    for (expression, want) in [
+        ("spawn Parse() pipe Channel<int>.bounded(4097)", "E_SOURCE_LIMIT"),
+        ("spawn Parse() pipe Channel<int>.bounded(-1)", "E_PIPE_CONTRACT"),
+        ("spawn Parse() pipe Stream.buffered<int>(true)", "E_PIPE_CONTRACT"),
+        ("spawn Parse() pipe Stream.port<int>(2).sink(1)", "E_PIPE_CONTRACT"),
+    ] {
+        let err = atto_compiler::compile(&program(expression, "int")).unwrap_err();
+        assert_eq!(err.code, want, "{expression}: {err}");
+    }
+}
+
+#[test]
+fn stream_readable_view_must_not_implicitly_be_a_writable_sink() {
+    let err = atto_compiler::compile(&program(
+        "spawn Parse() pipe Stream.port<int>(2).stream()", "int"
+    )).unwrap_err();
+    assert_eq!(err.code, "E_PIPE_CONTRACT", "{err}");
+}
+
+#[test]
+fn unsupported_stream_item_type_rejects_before_guest_allocation() {
+    let err = atto_compiler::compile(&program(
+        "spawn Parse() pipe Stream.buffered<string>(2)", "int"
+    )).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED_TYPE", "{err}");
+}
+
+#[test]
+fn standalone_channel_constructor_is_not_a_guest_allocation_yet() {
+    let source = program("spawn Parse() pipe sink", "int")
+        .replacen("val connection = spawn Parse() pipe sink;",
+                  "val connection = Channel<int>.bounded(2);", 1);
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+    assert!(err.message.contains("owned guest transport"), "{err}");
+}
