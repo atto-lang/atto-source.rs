@@ -2,7 +2,7 @@
 //! This is separate from executable check.rs. Forward-declared actors have no
 //! linked implementation, state layout, proven effects or borrow semantics.
 
-use crate::ast::{ActorInterface, ActorInterfaceMethod, Param, Program, Type};
+use crate::ast::{ActorInterface, ActorInterfaceMethod, ActorInterfacePort, Param, Program, Type};
 use crate::diag::{Diagnostic, Pos};
 use crate::target_syntax::{ReceiverHeader, TargetHeaders};
 
@@ -27,6 +27,11 @@ pub struct TypedParam {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedActor {
     pub name: String,
+    pub public: bool,
+    pub receives: Option<String>,
+    pub emits: Option<String>,
+    pub sends: Option<String>,
+    pub implemented_contracts: Vec<String>,
     /// Concrete syntax definition linked to the forward declaration;
     /// this alone does NOT make the actor spawnable.
     pub has_definition: bool,
@@ -144,17 +149,66 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     -> Result<TypedActorModule, Diagnostic> {
     let mut module = TypedActorModule {
         namespace: headers.namespace.clone(),
-        actors: headers.actors.iter().map(|name| TypedActor {
-            name: name.clone(),
-            has_definition: headers.definitions.iter().any(|a| a.name == *name),
+        actors: headers.actor_ports.iter().map(|port| TypedActor {
+            name: port.name.clone(),
+            public: port.public,
+            receives: port.receives.clone(),
+            emits: port.emits.clone(),
+            sends: port.sends.clone(),
+            implemented_contracts: port.implements.clone(),
+            has_definition: headers.definitions.iter().any(|a| a.name == port.name),
             defined: false,
         }).collect(),
         receivers: Vec::with_capacity(headers.receivers.len()),
     };
     for definition in &headers.definitions {
-        if !headers.actors.contains(&definition.name) {
+        let Some(header) = headers.actor_ports.iter().find(|h| h.name == definition.name) else {
             return Err(Diagnostic::new(definition.pos, "E_UNBOUND",
                 format!("concrete actor '{}' has no matching declare actor", definition.name)));
+        };
+        // Match available primitive input/output/effect header types without
+        // inventing a runtime witness for arbitrary unresolved nominal types.
+        // Actual mailbox receives may satisfy a forward declaration even if
+        // the concrete definition omits a redundant receives header.
+        let actual_receive = definition.declared_receives
+            .or_else(|| definition.receive.as_ref().map(|r| r.payload));
+        for (kind, declared, concrete) in [
+            ("receives", header.receives.as_deref(), actual_receive),
+            ("emits", header.emits.as_deref(), definition.declared_emits),
+            ("sends", header.sends.as_deref(), definition.declared_sends),
+        ] {
+            if let (Some(declared), Some(concrete)) = (declared, concrete) {
+                let actual = match concrete {
+                    Type::Int => "int",
+                    Type::Bool => "bool",
+                    Type::Float => "float",
+                    Type::Str => "string",
+                    Type::Void => "void",
+                    _ => return Err(Diagnostic::new(definition.pos, "E_UNSUPPORTED_TYPE",
+                        format!("cannot link unresolved {kind} type for actor '{}' without a verified namespace type graph",
+                            definition.name))),
+                };
+                let declared = match declared {
+                    "boolean" => "bool",
+                    "f64" => "float",
+                    "String" => "string",
+                    other => other,
+                };
+                if actual != declared {
+                    return Err(Diagnostic::new(definition.pos, "E_SIGNATURE",
+                        format!("actor '{}' {kind} contract mismatch: declaration {declared}, definition {actual}",
+                            definition.name)));
+                }
+            }
+        }
+        if let Some(input) = header.receives.as_deref() {
+            if actual_receive.is_none() {
+                // A declared namespace actor may provide an out-of-line
+                // runtime-only receive hook later; this target compiler has
+                // no authenticated ingress binder, so do not reject metadata
+                // solely due to the absence of an inline handler.
+                let _ = input;
+            }
         }
     }
     for header in &headers.receivers {
@@ -184,6 +238,14 @@ pub fn build_actor_program(headers: &TargetHeaders, module: &TypedActorModule) -
     let interface = ActorInterface {
         namespace: module.namespace.clone(),
         forwards: module.actors.iter().map(|a| a.name.clone()).collect(),
+        ports: module.actors.iter().enumerate().map(|(i, a)| ActorInterfacePort {
+            actor: i as u32,
+            public: a.public,
+            receives: a.receives.clone(),
+            emits: a.emits.clone(),
+            sends: a.sends.clone(),
+            implemented_contracts: a.implemented_contracts.clone(),
+        }).collect(),
         methods: module.receivers.iter().map(|m| ActorInterfaceMethod {
             owner: m.actor as u32,
             name: m.method.clone(),
