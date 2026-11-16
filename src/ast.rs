@@ -138,6 +138,10 @@ pub struct Receive {
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    /// Explicit application mailbox type. Independent of ordinary sends.
+    pub declared_receives: Option<Type>,
+    /// Explicit pipeline event type, distinct from sends/replies/CONTROL.
+    pub declared_emits: Option<Type>,
     pub fields: Vec<Field>,
     pub receive: Option<Receive>,
     pub methods: Vec<Method>,
