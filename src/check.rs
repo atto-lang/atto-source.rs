@@ -2053,9 +2053,10 @@ impl<'a> FnCx<'a> {
                             ScalarPattern::Bool(v) if info.ty == Type::Bool => TE {
                                 e: TExpr::Bool(*v), ty: Type::Bool,
                             },
-                            ScalarPattern::Str(_) => return Err(Diagnostic::new(arm.pos,
-                                "E_UNSUPPORTED_TYPE",
-                                "structural string value matching needs verified string equality lowering")),
+                            ScalarPattern::Str(v) if field_ty == Type::Str => {
+                                let (offset, len) = self.string(v, arm.pos)?;
+                                TE { e: TExpr::StrConst(offset, len), ty: Type::Str }
+                            },
                             _ => return Err(type_err(arm.pos,
                                 format!("structural field '{}' has type {} incompatible with its value pattern",
                                     field.name, self.tn(info.ty)))),
