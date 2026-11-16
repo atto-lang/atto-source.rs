@@ -8,7 +8,7 @@
 use crate::ref_layout::{LayoutKind, RefError};
 
 const MAX_FIELDS: usize = 64;
-const MAX_LANES: usize = 256;
+const MAX_LANES: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FieldSpec {
