@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+// A present string field matches the wildcard regardless of its value.
+define class Pet as
+    pub string foo = "cat";
+end
+pub fnc main(): int {
+    val value = new Pet();
+    match value over
+        on {foo: _} -> { return 42; }
+        on _ -> { return 0; }
+    end
+}
