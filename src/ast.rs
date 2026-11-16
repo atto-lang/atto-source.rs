@@ -382,6 +382,9 @@ pub enum ExprKind {
     Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Lexically scoped comma chain, yielding only its final expression.
+    /// Independent of control-flow return; `^` lowers through Stmt::Return.
+    Sequence(Vec<Stmt>, Box<Expr>),
     /// Postfix `?`: unwrap Ok/Some or propagate Err/None from the caller.
     Propagate(Box<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
