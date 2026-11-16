@@ -201,6 +201,11 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
     let mut found = Vec::new();
     for i in 0..tokens.len().saturating_sub(1) {
         let Some(operator) = op_at(tokens, i) else { continue; };
+        // Prefix << is an expression and must not be treated as a binary
+        // write. The actual Readable type/effects are checked by the parser.
+        if operator == Direction::Write && unary_read_start(tokens, i) {
+            continue;
+        }
         // Locate the beginning of the containing statement or select arm.
         // This deliberately does not reinterpret embedded numeric operators.
         let mut start = i;
