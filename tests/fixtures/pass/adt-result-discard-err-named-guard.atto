@@ -1,0 +1,10 @@
+// expect-exit: 42
+// The Err string binding must be initialized before a when guard reads it.
+fnc checked(): Result<int,string> { return Err("bad"); }
+pub fnc main(): int {
+    return match<int> checked() over
+        on Ok() : int -> 0,
+        on Err(message) when message == "bad" : int -> 42,
+        on Err(_) : int -> 1,
+    end;
+}

@@ -1,0 +1,10 @@
+// expect-exit: 42
+// A guarded Err binder must never read payload from an Ok tag.
+fnc checked(): Result<int,string> { return Ok(41); }
+pub fnc main(): int {
+    return switch<int> checked() over
+        case Err(message) when message == "wrong" : int -> 1,
+        case Err() : int -> 0,
+        case Ok(_) : int -> 42,
+    end;
+}
