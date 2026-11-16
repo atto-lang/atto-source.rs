@@ -91,12 +91,18 @@ fn missing_arm_end_and_missing_match_end_fail_closed() {
         }"#.to_owned(),
         fixture(r#"on 4 -> stdio.println("hit"); end
                     on _ -> stdio.println("fallback");"#),
-        fixture(r#"on 4 -> end
-                    on _ -> { stdio.println("fallback"); }"#),
     ] {
         let d = compile(&src).expect_err("unbalanced match must not compile");
         assert!(matches!(d.code, "E_SYNTAX" | "E_EOF"), "{src}: {d}");
     }
+}
+
+#[test]
+fn empty_braced_and_end_delimited_arms_have_matching_syntax() {
+    let a = fixture("on 4 -> { } on _ -> { }");
+    let b = fixture("on 4 -> end on _ -> end");
+    assert!(compile(&a).is_ok(), "{a}");
+    assert!(compile(&b).is_ok(), "{b}");
 }
 
 #[test]
