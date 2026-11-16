@@ -559,6 +559,24 @@ check('robustness/random-garbage-never-traps-compiler', () => {
   }
 });
 
+check('boolean/short-circuit-vs-eager-builtin-real-guest', () => {
+  const source = [
+    'fnc touched(): bool { stdio.println("RHS"); return true; }',
+    'pub fnc main(): int {',
+    '  stdio.println(false && touched());',
+    '  stdio.println(true || touched());',
+    '  stdio.println(true && touched());',
+    '  stdio.println(false || touched());',
+    '  stdio.println(And(false, touched()));',
+    '  return 0;',
+    '}',
+  ].join('\n');
+  const compiled = compile(source);
+  assert.equal(compiled.ok, true, compiled.message);
+  const result = runGuest(compiled.wasm);
+  assert.equal(result.value, 0n);
+  assert.equal(result.stdout, 'false\ntrue\nRHS\ntrue\nRHS\ntrue\nRHS\nfalse\n');
+});
 check('formal/compiled-guest-trace-nonvacuous', () => {
   assert.ok(tracedActorInstances >= 1, 'no compiled actor guest actually executed');
   assert.ok(tracedActorMessages >= 2, 'no compiled mailbox deliveries actually executed');
