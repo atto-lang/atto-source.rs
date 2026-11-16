@@ -2094,7 +2094,9 @@ impl Parser {
                     }
                     self.advance();
                     let member = match self.peek().clone() {
-                        Tok::Ident(m) if !is_reserved(&m) => m,
+                        Tok::Ident(m) if !is_reserved(&m)
+                            || (m == "pipe"
+                                && matches!(&e.kind, ExprKind::Var(n) if n == "io")) => m,
                         _ => return Err(self.expected("a member name after '.'")),
                     };
                     self.advance();
