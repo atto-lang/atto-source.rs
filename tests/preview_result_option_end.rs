@@ -52,6 +52,14 @@ fn legacy_comma_implicit_tail_remains_supported() {
 }
 
 #[test]
+fn double_colon_implicit_tail_keeps_its_original_return_type_check() {
+    let error = compile("fnc wrong() -> int :: true end pub fnc main(): int { return wrong(); }")
+        .expect_err("bool tail cannot be typed as int");
+    assert_eq!(error.code, "E_TYPE", "{error}");
+    compiled("fnc answer() -> int :: 42 end pub fnc main(): int { return answer(); }");
+}
+
+#[test]
 fn invalid_end_body_never_emits_an_artifact_and_compiler_recovers() {
     for source in [
         "fnc bad() -> int return \"no\"; end pub fnc main(): int { return bad(); }",
