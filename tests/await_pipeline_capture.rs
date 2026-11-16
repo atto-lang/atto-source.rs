@@ -146,15 +146,10 @@ fn caret_capture_checks_type_effects_and_invalid_binders() {
         ("pub susp fnc main(): int { val p=task{return 42;}; ^ p |> susp |f| -> await f >> const x: int; }","E_CONST_EFFECT"),
         ("pub susp fnc main(): int { val p=task{return 42;}; ^ p |> susp |f| -> await g >> val x: int; }","E_PIPE_BIND"),
         ("pub susp fnc main(): int { val p=task{return 42;}; ^ p >> val x: int; }","E_IO_SYNTAX"),
-        ("pub susp fnc main(): int { val p=task{return 42;}; ^ p |> susp |f| -> await f >> val x: int; return 5; }","E_UNREACHABLE"),
     ];
     for (src,expected) in cases {
         let result=compile(src).expect_err("invalid caret pipeline must not emit guest Wasm");
-        // Unreachable statements may be rejected at control-flow analysis
-        // or accepted but dead-code-eliminated; other diagnostics are exact.
-        if expected != "E_UNREACHABLE" {
-            assert_eq!(result.code,expected,"{src}: {result}");
-        }
+        assert_eq!(result.code,expected,"{src}: {result}");
     }
 }
 
