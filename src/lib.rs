@@ -43,6 +43,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         return Err(Diagnostic::new(detached.pos, "E_UNSUPPORTED",
             "supervised do readch/writech syntax recognized, but detached I/O scheduling and completion callbacks are not implemented"));
     }
+    // 'pipe' is continuous transport. It never reuses one-shot '>>'
+    // or '<<' and must not manufacture a channel/actor graph without
+    // typed capabilities, bounded backpressure and supervisor ownership.
+    if let Some(pipe) = io_shorthand::inspect_pipe(&toks)?.first() {
+        return Err(Diagnostic::new(pipe.pos, "E_UNSUPPORTED",
+            "continuous pipe requires a typed channel/stream/actor transport runtime; syntax is recognized but the browser guest ABI is not implemented"));
+    }
     // The browser guest already has a typed stdio.print output import.
     // Permit the exact stdio.out << value statement form to lower through
     // that existing checked path. All other channels, streams, read
