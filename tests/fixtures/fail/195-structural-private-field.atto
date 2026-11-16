@@ -1,0 +1,12 @@
+// expect-error: E_PRIVATE
+define class Secret as
+    int x = 10;
+    pub int y = 42;
+end
+pub fnc main(): int {
+    val value = new Secret();
+    match value over
+        on ~{ x?: 10, y: _ } -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
