@@ -31,6 +31,7 @@ jobs:
           cargo test --locked --test declared_actor_ports -- --nocapture
           cargo test --locked --test actor_unary_reply_frontend -- --nocapture
           cargo test --locked --test actor_reply_nominal -- --nocapture
+          cargo test --locked --test actor_reply_explicit -- --nocapture
           cargo test --locked --test actor_reply_slot -- --nocapture
           cargo test --locked --test target_syntax
           cargo test --locked --test target_typed
