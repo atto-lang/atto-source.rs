@@ -111,6 +111,18 @@ try{
   const barrier='pub suspends fnc main(): int { val a=task { await rt.barrier(2); return 20; }; val b=task { await rt.barrier(2); return 22; }; return await a + await b; }';
   assert.match(await run(barrier,'main() -> 42'),/^main\(\) -> 42$/);
   console.log('PASS JSPI: two Wasm task continuations overlap at strict two-party barrier (not eager/sequential)');
+  const combined='pub suspends fnc main(): int { val a=task { return 42; }; stdio.out << "direct"; return await a; }';
+  assert.match(await run(combined,'main() -> 42'),/^directmain\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'combined stdout/Future guest must yield exactly once');
+  console.log('PASS integration: direct stdio.out << and awaited Future<int> execute together inside Chromium Worker');
+  for(const [source,code] of [
+    ['pub suspends fnc main(): int { nb stdio.out << "queued"; return await 42; }','E_UNSUPPORTED'],
+    ['pub suspends fnc main(): int { do writech stdio.out, "queued"; return await 42; }','E_UNSUPPORTED'],
+    ['pub suspends fnc main(): int { do readch stdio.in; return await 42; }','E_IO_DISCARD'],
+  ]){
+    assert.match(await run(source,code),new RegExp(code));
+  }
+  console.log('PASS integration: unsupported nb/do guests and discarded reads fail closed');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
