@@ -107,3 +107,46 @@ fn explicit_channel_forms_still_fail_closed_in_browser_subset() {
         assert_eq!(err.code, "E_UNSUPPORTED");
     }
 }
+
+#[test]
+fn read_annotation_requires_complete_nested_generic_type() {
+    for src in [
+        "inbox >> const value: Result<Option<int>, Error>;",
+        "inbox >> val value: io.Result<core.Option<bytes.Buffer>>;",
+        "source >> let part: Package::Buffer;",
+    ] {
+        let ops = parse(src);
+        assert_eq!(ops.len(), 1, "{src}: {ops:?}");
+    }
+}
+
+#[test]
+fn incomplete_generic_annotation_and_trailing_tokens_fail_closed() {
+    for src in [
+        "inbox >> const x: ;",
+        "inbox >> const x: Result<int;",
+        "inbox >> const x: Result<int,>;",
+        "inbox >> const x: Result<>;",
+        "inbox >> const x: Result<Option<int>> extra;",
+        "inbox >> const x: Thing bad;",
+        "inbox >> const x: Thing<Other>>;",
+        "inbox >> const x: Thing<Other,>;",
+        "inbox >> const x: A::;",
+        "inbox >> const x: A..B;",
+        "inbox >> const x: A<B<C>;",
+    ] {
+        let diag = inspect(&lex(src).unwrap()).expect_err(src);
+        assert_eq!(diag.code, "E_IO_SYNTAX", "{src}: {diag}");
+    }
+}
+
+#[test]
+fn incomplete_select_binding_never_silently_emits_guest_code() {
+    for src in [
+        "do select { when inbox >> const x: Result<Option<int>> extra -> {} }",
+        "do select { when inbox >> const x: Result<> -> {} }",
+    ] {
+        let diagnostic = atto_compiler::compile(src).expect_err(src);
+        assert_eq!(diagnostic.code, "E_IO_SYNTAX");
+    }
+}
