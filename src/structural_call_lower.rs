@@ -17,6 +17,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use std::collections::BTreeMap;
+use std::cell::Cell;
 
 type R<T> = Result<T, Diagnostic>;
 
@@ -28,6 +29,7 @@ struct Profile {
     fields: Vec<String>,
     replacements: BTreeMap<String, String>,
     pos: Pos,
+    rewrites: Cell<usize>,
 }
 
 fn unsupported(pos: Pos, detail: &str) -> Diagnostic {
@@ -86,7 +88,7 @@ fn profile(p: &Program) -> R<Option<Profile>> {
     }
     Ok(Some(Profile {
         name: f.name.clone(), formal: param.name.clone(),
-        fields, replacements, pos: param.pos
+        fields, replacements, pos: param.pos, rewrites: Cell::new(0)
     }))
 }
 
@@ -172,9 +174,9 @@ fn replace_formal_stmts(body: &mut [Stmt], s: &Profile) -> R<()> {
             Stmt::Loop { body, .. } | Stmt::Block(body) |
             Stmt::StateWrite { body, .. } => replace_formal_stmts(body, s)?,
             Stmt::For { init, cond, update, body, .. } => {
-                if let Some(init) = init { replace_formal_stmts(std::slice::from_mut(init), s)?; }
+                if let Some(init) = init { replace_formal_stmts(std::slice::from_mut(init.as_mut()), s)?; }
                 if let Some(cond) = cond { replace_formal_expr(cond, s)?; }
-                if let Some(update) = update { replace_formal_stmts(std::slice::from_mut(update), s)?; }
+                if let Some(update) = update { replace_formal_stmts(std::slice::from_mut(update.as_mut()), s)?; }
                 replace_formal_stmts(body, s)?;
             }
             Stmt::ForIn { name, source, body, pos } => {
@@ -257,6 +259,7 @@ fn rewrite_calls_expr(
                 pos: arg.pos,
             }).collect();
             e.kind = ExprKind::Call(name.clone(), expanded);
+            s.rewrites.set(s.rewrites.get() + 1);
             return Ok(());
         }
     }
@@ -337,11 +340,11 @@ fn rewrite_calls_stmts(
             Stmt::For { init, cond, update, body, .. } => {
                 let mut loop_env = env.clone();
                 if let Some(init) = init {
-                    rewrite_calls_stmts(p, std::slice::from_mut(init), s, &mut loop_env)?;
+                    rewrite_calls_stmts(p, std::slice::from_mut(init.as_mut()), s, &mut loop_env)?;
                 }
                 if let Some(cond) = cond { rewrite_calls_expr(p, cond, s, &loop_env)?; }
                 if let Some(update) = update {
-                    rewrite_calls_stmts(p, std::slice::from_mut(update), s, &mut loop_env)?;
+                    rewrite_calls_stmts(p, std::slice::from_mut(update.as_mut()), s, &mut loop_env)?;
                 }
                 rewrite_calls_stmts(p, body, s, &mut loop_env)?;
             }
@@ -438,5 +441,8 @@ pub fn lower(p: &Program) -> R<Program> {
             rewrite_calls_stmts(p, &mut m.body, &s, &mut env)?;
         }
     }
+    // No checked static call witness: retain the pre-existing unsupported
+    // formal, rather than changing the ABI of an otherwise unproven export.
+    if s.rewrites.get() == 0 { return Ok(p.clone()); }
     Ok(out)
 }
