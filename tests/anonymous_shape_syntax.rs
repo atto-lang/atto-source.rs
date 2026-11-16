@@ -67,6 +67,59 @@ fn optional_presence_stays_distinct_from_type_shapes() {
 }
 
 #[test]
+fn structural_row_fields_and_union_arms_canonicalize_as_unordered_sets() {
+    let ty = |src: &str| syn::parse_formals(src).unwrap()[0].ty.canonical;
+    assert_eq!(ty("(p: {a: int, b: string})"),
+               ty("(p: {b: string, a: int})"));
+    assert_eq!(ty("(p: {foo: string | int})"),
+               ty("(p: {foo: int | string})"));
+    assert_eq!(ty("(p: {foo: int | int | string})"),
+               ty("(p: {foo: string | int})"));
+    assert_eq!(ty("(p: {foo: {z: string, a: bool} | string})"),
+               ty("(p: {foo: string | {a: bool, z: string}})"));
+    assert_ne!(ty("(p: {foo: int})"), ty("(p: {bar: int})"));
+    assert_ne!(ty("(p: {foo: int})"), ty("(p: {foo: string})"));
+}
+
+#[test]
+fn singleton_types_cannot_leak_into_unrelated_type_positions() {
+    for invalid in [
+        "(p: \"dog\")", "(p: 42)", "(p: -1)", "(p: true)",
+        "(p: ~int)", "(p: structural bool)", "(p: ~\"dog\")",
+        "(p: {foo: ~\"dog\"})", "(p: {foo: string | })",
+        "(p: {foo: \"dog\" | })", "(p: {foo: 9223372036854775808})",
+        "(p: {foo: -9223372036854775809})",
+    ] {
+        assert!(syn::parse_formals(invalid).is_err(), "{invalid}");
+    }
+    let got = syn::parse_formals("(p: {foo: -9223372036854775808})").unwrap();
+    assert!(got[0].ty.canonical.contains("-9223372036854775808"));
+    assert_eq!(
+        syn::parse_formals("(p: {foo: \"dog\" | string})").unwrap()[0].ty.canonical,
+        syn::parse_formals("(p: {foo: string | \"dog\"})").unwrap()[0].ty.canonical
+    );
+}
+
+#[test]
+fn syntax_only_shape_parser_rejects_deeply_nested_or_oversized_types() {
+    let deep = format!("(p: {}int{})", "{x: ".repeat(48), "}".repeat(48));
+    assert_eq!(syn::parse_formals(&deep).unwrap_err().code, "E_NESTING");
+    let many = (0..34).map(|i| format!("f{i}: int"))
+        .collect::<Vec<_>>().join(", ");
+    assert_eq!(
+        syn::parse_formals(&format!("(p: {{{many}}})")).unwrap_err().code,
+        "E_SOURCE_LIMIT"
+    );
+    let huge_union = (0..34).map(|i| format!("T{i}"))
+        .collect::<Vec<_>>().join(" | ");
+    assert_eq!(
+        syn::parse_formals(&format!("(p: {{foo: {huge_union}}})"))
+            .unwrap_err().code,
+        "E_SOURCE_LIMIT"
+    );
+}
+
+#[test]
 fn production_compiler_rejects_unlowered_shape_call_abi_before_wasm() {
     for formal in [
         "{foo: string} p",
