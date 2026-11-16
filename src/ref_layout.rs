@@ -204,6 +204,62 @@ pub fn aosoa_field_offset(
         .ok_or(RefError::Overflow)
 }
 
+/// Bounds-checked AoSoA field byte span for a single logical row.
+///
+/// Unlike `aosoa_field_offset`, this validates physical field extents,
+/// nonoverlapping lanes, logical row count and the actual backing allocation.
+/// Returns a byte range only; it never creates a pointer or Rust reference.
+/// Caller must still prove ownership, allocation provenance and generation.
+pub fn checked_aosoa_field_span(
+    row: usize,
+    row_count: usize,
+    lanes: usize,
+    block_stride: usize,
+    field_base: usize,
+    field_element_stride: usize,
+    field_width: usize,
+    backing_byte_len: usize,
+) -> Result<std::ops::Range<usize>, RefError> {
+    if lanes == 0
+        || !lanes.is_power_of_two()
+        || block_stride == 0
+        || field_element_stride == 0
+        || field_width == 0
+        || field_width > field_element_stride
+    {
+        return Err(RefError::InvalidLayout);
+    }
+
+    if row >= row_count {
+        return Err(RefError::OutOfRange);
+    }
+
+    // Ensure the final lane does not overlap the next block. Checking only
+    // the selected lane would permit a malformed layout when another row
+    // eventually accesses that same block.
+    let block_field_end = (lanes - 1)
+        .checked_mul(field_element_stride)
+        .and_then(|offset| field_base.checked_add(offset))
+        .and_then(|start| start.checked_add(field_width))
+        .ok_or(RefError::Overflow)?;
+    if block_field_end > block_stride {
+        return Err(RefError::InvalidLayout);
+    }
+
+    let start = aosoa_field_offset(
+        row,
+        lanes,
+        block_stride,
+        field_base,
+        field_element_stride,
+    )?;
+    let end = start.checked_add(field_width).ok_or(RefError::Overflow)?;
+    if end > backing_byte_len {
+        return Err(RefError::OutOfRange);
+    }
+    Ok(start..end)
+}
+
 /// ECS generational handle; this is an identity, not a memory address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntityHandle {
