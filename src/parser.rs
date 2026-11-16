@@ -3009,6 +3009,13 @@ impl Parser {
                 }
                 "task" => {
                     self.advance();
+                    // A task block creates a Future; `task()` is neither
+                    // that block nor a supported callable. Fail closed with
+                    // the legacy unsupported diagnostic instead of confusing
+                    // an unimplemented call with a malformed task literal.
+                    if *self.peek() == Tok::LParen {
+                        return Err(unsupported(pos, "'task(...)' calls; use 'task { ... }'"));
+                    }
                     if *self.peek() != Tok::LBrace {return Err(self.expected("a task block '{ ... }'"));}
                     let body = self.parse_block()?;
                     if self.task_funcs.len() >= MAX_FUNCS {return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many task blocks"));}
