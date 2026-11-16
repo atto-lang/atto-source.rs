@@ -159,3 +159,14 @@ fn rejects_zero_arena_id() {
         Err(ArenaError::InvalidArena)
     ));
 }
+
+#[test]
+fn excessive_inline_slot_capacity_is_rejected_before_initialization() {
+    use oreslang_source_rs::actor_arena::{MAX_ARENA_INLINE_BYTES, MAX_ARENA_SLOTS};
+    assert_eq!(MAX_ARENA_SLOTS, 4096);
+    assert_eq!(MAX_ARENA_INLINE_BYTES, 4 * 1024 * 1024);
+    assert!(matches!(
+        FixedActorArena::<u8, 4097>::new(11, 1, 1),
+        Err(ArenaError::CapacityTooLarge)
+    ));
+}
