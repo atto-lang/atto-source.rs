@@ -32,7 +32,7 @@ fn only_statically_known_matching_callback_functions_are_lowered() {
     fail(&SITE.replace("Fnc<int, int>", "Fnc<int, bool>"), "E_UNSUPPORTED_TYPE");
 }
 #[test]
-fn generated_callback_names_cannot_be forged() {
+fn generated_callback_names_cannot_be_forged() {
     fail(r#"
         pub fnc main(): int {
             val __atto_internal_direct_cb_5_apply_5_twice = 0;
