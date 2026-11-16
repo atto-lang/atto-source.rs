@@ -165,6 +165,9 @@ pub struct Receive {
     pub pos: Pos,
     pub mail: String,
     pub payload: Type,
+    /// Receive handlers may state bounds, but the browser runtime must refuse
+    /// any escaping failure before supervisor CONTROL dispatch is implemented.
+    pub failure_effects: FailureEffects,
     pub body: Vec<Stmt>,
 }
 
