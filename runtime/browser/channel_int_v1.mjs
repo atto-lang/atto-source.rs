@@ -126,6 +126,21 @@ export class ChannelIntHostV1 {
     return ok({alreadyClosed:false});
   }
 
+  // Final owner-controlled drop. Closing is NOT equivalent to destroying
+  // the channel: buffered items must remain retrievable until explicitly
+  // drained. Outstanding ticket owners also prohibit quota reclamation.
+  release(handle) {
+    const channel=this.#channels.get(handle);
+    if (!channel) return err('InvalidHandle');
+    if (!channel.closed) return err('NotClosed');
+    if (channel.items.length || channel.pending.length ||
+        [...this.#tickets.values()].some(ticket=>ticket.channel===handle)) {
+      return err('Busy');
+    }
+    this.#channels.delete(handle);
+    return ok({released:true});
+  }
+
   #settle(ticket,outcome) {
     if (ticket.settled) throw Error('Future settled twice');
     ticket.settled=true;
