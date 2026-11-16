@@ -10,6 +10,8 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser-async/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser-async/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/channel-host-probe.mjs',[new URL('./browser-async/channel-host-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/channel-int-v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -65,6 +67,21 @@ try{
   assert.ok(!navigation.errorText,navigation.errorText||'navigation');
   await until(async()=>evaluate("!!document.querySelector('#source')"),'editor load');
   await until(async()=>evaluate('window.__attoReady===true'),'module script ready');
+  // Test the actual Worker host channel runtime independently of guest
+  // compilation. This must NEVER count as the missing Channel<T> guest ABI.
+  const hostProbe=await evaluate(`new Promise((resolve,reject)=>{
+    const worker=new Worker('/channel-host-probe.mjs',{type:'module'});
+    const timeout=setTimeout(()=>{worker.terminate();reject(new Error('channel host timeout'))},5000);
+    worker.onmessage=e=>{clearTimeout(timeout);worker.terminate();resolve(e.data)};
+    worker.onerror=e=>{clearTimeout(timeout);worker.terminate();reject(new Error('channel host worker error'))};
+    worker.postMessage({});
+  })`);
+  assert.deepEqual(hostProbe,{
+    ok:true,answer:'42',singleConsumption:'AlreadyConsumed',
+    cancellation:'Cancelled',eof:true,sendAfterClose:'Closed'
+  });
+  console.log('PASS browser host: Channel<int> checked Future, cancellation and EOF in actual Worker (NOT guest ABI)');
+
   const run=async(src,expected)=>{
     await evaluate("(()=>{let e=document.querySelector('#source');e.value="+JSON.stringify(src)+";document.querySelector('#run').click()})()");
     let lastOutput='not yet available';
