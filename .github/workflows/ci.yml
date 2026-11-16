@@ -71,8 +71,20 @@ jobs:
           const module = new WebAssembly.Module(bytes);
           const imports = WebAssembly.Module.imports(module);
           const exports = WebAssembly.Module.exports(module).map(x => x.name);
-          const required = ['memory','abi_version','input_ptr','input_capacity','compile','result_ptr','result_length','error_ptr','error_line_number','error_column_number'];
+          const required = ['memory','abi_version','input_ptr','input_capacity','compile','compile_versioned','result_ptr','result_length','error_ptr','error_line_number','error_column_number'];
           if (imports.length || required.some(x => !exports.includes(x))) throw new Error('unexpected compiler ABI');
+          const versions = JSON.parse(fs.readFileSync('dist/callable_version_matrix.json', 'utf8'));
+          if (versions.schema !== 'atto.callable-language-versions.v1' ||
+              versions.summary.passed !== 14 || versions.summary.failed !== 0 ||
+              versions.rows.length !== 14 || versions.rows.some(x => x.status !== 'passed')) {
+            throw new Error('versioned native/Wasm compatibility matrix is missing or not fully passing');
+          }
+          const normative = JSON.parse(fs.readFileSync('dist/caret_spec_audit.json', 'utf8'));
+          if (normative.schema !== 'atto.caret.spec-audit.v1' ||
+              normative.summary.passed + normative.summary.failed +
+              normative.summary.unsupported + normative.summary.not_executed !== 49) {
+            throw new Error('49-case normative corpus receipt missing or incomplete');
+          }
           const git = (...args) => execFileSync('git', args, {encoding:'utf8'}).trim();
           const receipt = {
             schema:'atto.browser.compiler.artifact.v1',
@@ -81,6 +93,13 @@ jobs:
             target:'wasm32-unknown-unknown',
             abi:'atto-playground-v2',
             guest_abi:'atto.browser.guest.v2',
+            language_mode:'explicit-v1-v2-draft',
+            compatibility_matrix:{...versions.summary,
+              sha256:crypto.createHash('sha256')
+                .update(fs.readFileSync('dist/callable_version_matrix.json')).digest('hex')},
+            normative_corpus_status:{...normative.summary,
+              sha256:crypto.createHash('sha256')
+                .update(fs.readFileSync('dist/caret_spec_audit.json')).digest('hex')},
             compiler_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),
             compiler_bytes:bytes.length,
             import_count:imports.length,

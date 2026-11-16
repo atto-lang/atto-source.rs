@@ -8,6 +8,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use crate::LanguageVersion;
 
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
@@ -197,6 +198,7 @@ pub fn is_reserved(name: &str) -> bool {
 
 pub struct Parser {
     toks: Vec<Token>,
+    language_version: LanguageVersion,
     i: usize,
     depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
@@ -238,8 +240,13 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
+        Self::with_language_version(toks, LanguageVersion::V2)
+    }
+
+    pub fn with_language_version(toks: Vec<Token>, language_version: LanguageVersion) -> Self {
         Parser {
             toks,
+            language_version,
             i: 0,
             depth: 0,
             height: 0,
@@ -1202,7 +1209,18 @@ impl Parser {
                 }
                 return self.parse_erlang_body(ret);
             }
-            let statements = self.parse_stmts_until(&["end"])?;
+            if self.language_version == LanguageVersion::V1 {
+                // Historical contract: unmarked comma items and implicit tail.
+                return self.parse_erlang_body(ret);
+            }
+            let statements = match self.parse_stmts_until(&["end"]) {
+                Ok(statements) => statements,
+                Err(_diagnostic) if *self.peek() == Tok::Comma => {
+                    return Err(Diagnostic::new(self.pos(), "E_LANGUAGE_VERSION",
+                        "unmarked comma-tail body uses language version 1;                          in version 2 add '::' after the return type, or                          convert commas to statements with an explicit return"));
+                }
+                Err(diagnostic) => return Err(diagnostic),
+            };
             self.expect_word("end")?;
             return Ok(statements);
         }

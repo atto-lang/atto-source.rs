@@ -50,7 +50,7 @@ fn mtd_erlang_syntax_fails_closed() {
         ("declare actor A; mtd (self: A) a() -> int :: 5; end", "E_SYNTAX"),
         ("declare actor A; mtd (self: A) a() -> int ^ const z: int = 5; end", "E_SYNTAX"),
         ("declare actor A; mtd (self: A) a() -> int :: ^ const z: int = 5, z + 5 end", "E_SYNTAX"),
-        ("declare actor A; mtd (self: A) a() -> int let z: int = 5, z + 5 end", "E_SYNTAX"),
+        ("declare actor A; mtd (self: A) a() -> int let z: int = 5, z + 5 end", "E_LANGUAGE_VERSION"),
         ("declare actor A; mtd (self: A) a(): int :: 5 end", "E_SYNTAX"),
         ("declare actor A; mtd (self: A) a(): int -> 5 end", "E_SYNTAX"),
         ("declare actor A; mtd (self: A) a() -> int :: if true then 5 end", "E_SYNTAX"),
