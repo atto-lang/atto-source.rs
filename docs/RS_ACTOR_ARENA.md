@@ -10,13 +10,15 @@ no-allocation guarantee.
 ## Proven properties
 
 - Slot handles are opaque Rust values, not host pointers or ActorRefs.
-- The owner actor and incarnation are checked on every access. A
-  different incarnation rejects old handles after an actor restart.
+- The owner actor, incarnation and arena ID are checked on every access. A
+  different incarnation rejects old handles after an actor restart, and two
+  arenas belonging to the same actor incarnation cannot exchange handles.
 - Each slot has an independent, monotonically increasing generation.
   `take` advances it, and overflow permanently retires a slot instead
   of letting a stale generation wrap and regain authority.
 - All admission is bounded by a compile-time capacity. Exhaustion
-  returns `CapacityExhausted`, never silently evicts an object.
+  returns `(CapacityExhausted, original_value)` so a failed transfer retains
+  caller ownership instead of silently dropping or evicting an object.
 - `get_mut` follows Rust's exclusive mutable borrowing rules within
   one arena instance. Removing a middle slot does not move neighbors.
 - No `unsafe` code, pointer arithmetic, hidden mirroring or runtime
@@ -27,7 +29,9 @@ no-allocation guarantee.
 This is **not** a secure capability system or complete zero-GC Oreslang
 runtime. Actor IDs are supplied by the caller and not cryptographic;
 the supervisor must guarantee unique, nonzero incarnation IDs.
-The module does not validate source `rt borrow`, `rt take`, `critical-read`
+Each arena ID must be nonzero and distinct for an actor incarnation; the
+runtime must never reuse an identity triple while handles from that identity
+may remain accessible. The module does not validate source `rt borrow`, `rt take`, `critical-read`
 or `critical-write`, integrate compressed references, transmit values
 across trust domains, check stack bounds, enforce actor scheduling or
 prove hard-real-time deadlines. Actor lifecycle and cross-thread
