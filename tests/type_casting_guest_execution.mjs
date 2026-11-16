@@ -15,7 +15,11 @@ const pass = [
   ['negated-is-expression', program('if v is !string && v == 41 then return v + 1; fi return 0;')],
   ['guard-fallback', program('match v over on is int as val n when n > 90 -> { return 0; } on is int as val m -> { return m + 1; } on _ -> { return -1; } end')],
   ['negated-nonmatch', program('match v over on is !int -> { return 0; } on is int as val n -> { return n + 1; } end')],
-  ['mismatch-else', program('if v is string then return 0; fi return 42;')]
+  ['mismatch-else', program('if v is string then return 0; fi return 42;')],
+  ['conditional-val-capture', program('if v is int as val n then return n + 1; fi return 0;')],
+  ['conditional-negated-capture', program('if v is !string as val n then return n + 1; fi return 0;')],
+  ['conditional-capture-mismatch', program('if v is string as val s then return 0; fi return v + 1;')],
+  ['conditional-capture-nested', program('if v is int as val n then if n > 0 then return n + 1; fi fi return 0;')]
 ];
 const fail = [
   ['missing-capture-qualifier', 'E_SYNTAX', program('match v over on is int as n -> { return n; } on _ -> { return 0; } end')],
@@ -23,7 +27,13 @@ const fail = [
   ['unknown-runtime-type', 'E_UNSUPPORTED_TYPE', program('match v over on is Widget -> { return 0; } on _ -> { return 1; } end')],
   ['no-dynamic-any', 'E_UNSUPPORTED_TYPE', 'fnc f(Any v): int { return 42; } pub fnc main(): int { val value: Any = 40 + 1; return f(value); }'],
   ['using-is-not-cast', 'E_UNSUPPORTED', 'pub fnc main(): int { using 41 as r { return 42; } return 0; }'],
-  ['as-type-cast-not-admitted', 'E_UNSUPPORTED', program('return v as int;')]
+  ['as-type-cast-not-admitted', 'E_UNSUPPORTED', program('return v as int;')],
+  ['conditional-capture-no-implicit-qualifier', 'E_SYNTAX', program('if v is int as n then return n; fi return 0;')],
+  ['conditional-capture-no-let-substitution', 'E_SYNTAX', program('if v is int as let n then return n; fi return 0;')],
+  ['conditional-capture-fresh-name', 'E_DUPLICATE', program('if v is int as val v then return v; fi return 0;')],
+  ['conditional-capture-requires-then', 'E_SYNTAX', program('if v is int as val n { return n; } return 0;')],
+  ['conditional-binder-never-escapes-fi', 'E_UNBOUND', program('if v is int as val n then val x = n + 1; fi return n;')],
+  ['conditional-binder-not-in-else', 'E_UNBOUND', program('if v is string as val n then return 0; else return n; fi')]
 ];
 const noIo = () => { throw Error('unexpected host capability'); };
 const imports = {atto: {
