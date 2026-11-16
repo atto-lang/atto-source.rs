@@ -13,10 +13,10 @@ end
 pub fnc sum(~Point p): int {
     return p.x + p.y;
 }
-pub fnc forward(Shifted obj): int {
-    return sum(obj);
+pub fnc forward(Shifted source_value): int {
+    return sum(source_value);
 }
 pub fnc main(): int {
-    val obj = new Shifted();
-    return forward(obj);
+    val source_value = new Shifted();
+    return forward(source_value);
 }
