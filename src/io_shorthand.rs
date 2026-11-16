@@ -212,9 +212,11 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         // 'val return << inbox' is a malformed declaration: despite the
         // preceding reserved word, this must NOT turn into an expression.
         // Preserve the read-binder validator's E_IO_SYNTAX diagnostic.
-        let declaration_head = matches!(tokens.get(statement_start).and_then(word),
+        let declaration_start = statement_start
+            + usize::from(tokens.get(statement_start).and_then(word) == Some("when"));
+        let declaration_head = matches!(tokens.get(declaration_start).and_then(word),
             Some("val" | "let" | "const"))
-            && !tokens[statement_start..i].iter().any(|t| matches!(t.tok, Tok::Assign));
+            && !tokens[declaration_start..i].iter().any(|t| matches!(t.tok, Tok::Assign));
         if operator == Direction::Write && unary_read_start(tokens, i)
             && !declaration_head {
             continue;
