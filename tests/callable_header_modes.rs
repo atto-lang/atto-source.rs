@@ -12,11 +12,11 @@ fn compiles(source: &str) {
 fn semicolon_end_mode_and_explicit_caret_return() {
     let src = r#"
         define class Foo as
-            rec1() -> int
+            pub rec1() -> int
                 const z: int = 5;
                 ^ z + 3;
             end
-            rec2() -> int ::
+            pub rec2() -> int ::
                 const z: int = 5,
                 z + 5
             end
