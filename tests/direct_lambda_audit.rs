@@ -1,6 +1,6 @@
 //! Fail-closed tests for direct lambda desugaring and public AST entry point.
 use atto_compiler::{
-    ast::{Expr, ExprKind, Func, Stmt, Type, UnOp},
+    ast::{Expr, ExprKind, FailureEffects, Func, Stmt, Type, UnOp},
     check, lexer, parser::Parser, Pos,
 };
 
