@@ -1,0 +1,9 @@
+// expect-error: E_TYPE
+define class Wrong as
+    pub bool foo = true;
+end
+fnc inspect(p: {foo: int}): int { return p.foo; }
+pub fnc main(): int {
+    val value = new Wrong();
+    return inspect(value);
+}
