@@ -1825,7 +1825,14 @@ impl Parser {
         // Empty arms are permitted in both spellings: '{}' and 'end'.
         // Even an empty end-delimited arm must consume its *own* end,
         // leaving the enclosing match end for parse_match().
-        let body = self.parse_stmts_until(&["end"])?;
+        // Stop at the next arm head as well: an omitted arm-local 'end'
+        // must not leak into generic expression/semicolon diagnostics.
+        // Nested matches consume their own 'on' tokens recursively.
+        let body = self.parse_stmts_until(&["end", "on"])?;
+        if self.is_word("on") {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "match arm requires its own 'end' before the next 'on'"));
+        }
         self.expect_word("end")?;
         Ok(body)
     }
