@@ -152,11 +152,41 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     }
     let known = funcs(&t)?;
     let routines: BTreeSet<String> = known.values().filter(|f| f.routine).map(|f| f.name.clone()).collect();
-    for f in known.values().filter(|f| f.routine) {
+    // Nonrecursive routine contracts must be checked across the entire
+    // *known* call graph, not only by searching for direct self-calls.
+    // Otherwise two routines (or a routine and a normal fnc) can recurse
+    // indirectly while still being classified as nonrecursive.
+    // Traverse iteratively: adversarial deep call chains must not grow the
+    // Rust compiler stack, and each source-visible edge stays within the
+    // bounded file-local named callable registry.
+    let mut edges = BTreeMap::<String, BTreeSet<String>>::new();
+    for f in known.values() {
+        let mut calls = BTreeSet::new();
         for j in f.body_start + 1..f.body_end {
-            if is(&t, j, &f.name) && t.get(j + 1).map(|x| &x.tok) == Some(&Tok::LParen) {
-                return Err(fail(t[j].pos, "E_ROUTINE_RECURSION",
-                    format!("routine '{}' must not be recursively called", f.name)));
+            let Tok::Ident(target) = &t[j].tok else { continue };
+            if known.contains_key(target) &&
+                t.get(j + 1).is_some_and(|x| x.tok == Tok::LParen) &&
+                (j == 0 || t[j - 1].tok != Tok::Dot)
+            {
+                calls.insert(target.clone());
+            }
+        }
+        edges.insert(f.name.clone(), calls);
+    }
+    for routine in &routines {
+        let mut seen = BTreeSet::<String>::new();
+        let mut pending = edges.get(routine).map(|s| s.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        while let Some(next) = pending.pop() {
+            if next == *routine {
+                let pos = known.get(routine).map(|f| t[f.start].pos).unwrap_or(t[0].pos);
+                return Err(fail(pos, "E_ROUTINE_RECURSION",
+                    format!("routine '{routine}' participates in a recursive call cycle")));
+            }
+            if seen.insert(next.clone()) {
+                if let Some(deps) = edges.get(&next) {
+                    pending.extend(deps.iter().cloned());
+                }
             }
         }
     }
