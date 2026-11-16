@@ -2132,6 +2132,10 @@ impl Parser {
             Tok::Float(_) => Err(unsupported(pos, "float literal patterns")),
             Tok::Str(_) => Err(unsupported(pos, "string literal patterns")),
             Tok::LParen => Err(unsupported(pos, "tuple patterns")),
+            // Anonymous field-value patterns are structural by default.
+            // Reuse the existing typed matcher; do not reinterpret braces
+            // as a record allocation or a nominal class pattern.
+            Tok::LBrace => self.parse_structural_value_fields(pos),
             Tok::Tilde => {
                 self.advance();
                 if *self.peek() == Tok::LBrace {
