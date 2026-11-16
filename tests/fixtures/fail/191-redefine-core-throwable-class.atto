@@ -1,4 +1,4 @@
-// expect-error: E_DUPLICATE
+// expect-error: E_RESERVED
 define class Throwable as
 end
 pub fnc main(): int { return 0; }
