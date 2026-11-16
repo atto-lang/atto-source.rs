@@ -1398,6 +1398,31 @@ impl Parser {
                     pos,
                 }))
             }
+            // Parentheses around a qualified handle do not change its
+            // identity or I/O capability. This mirrors the preflight's
+            // conservative (stdio.out) path recognition, without admitting
+            // arbitrary computed receivers or dynamic dispatch.
+            _ if *self.peek() == Tok::LParen
+                && self.word_at(1) == Some("stdio")
+                && *self.peek_at(2) == Tok::Dot
+                && self.word_at(3) == Some("out")
+                && *self.peek_at(4) == Tok::RParen
+                && *self.peek_at(5) == Tok::Lt
+                && *self.peek_at(6) == Tok::Lt
+                && {
+                    let a = self.toks[self.i + 5].pos;
+                    let b = self.toks[self.i + 6].pos;
+                    a.line == b.line && a.col.checked_add(1) == Some(b.col)
+                } =>
+            {
+                for _ in 0..7 { self.advance(); }
+                let value = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(Expr {
+                    kind: ExprKind::Call("stdio.print".to_owned(), vec![value]),
+                    pos,
+                }))
+            }
             // Explicit spelling is retained alongside the shorthand.
             // Other writech/readch targets must not be mistaken for stdout.
             Some("writech") if self.word_at(1) == Some("stdio")
