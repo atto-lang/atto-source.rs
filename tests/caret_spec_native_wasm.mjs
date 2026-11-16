@@ -32,12 +32,12 @@ assert.equal(WebAssembly.Module.imports(compilerModule).length, 0, 'compiler mus
 const api = new WebAssembly.Instance(compilerModule, {}).exports;
 assert.equal(api.abi_version(),2);
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf8',{fatal:true});
-function compileWasmHost(input) {
+function compileWasmHost(input, languageVersion = 2) {
   const b = encoder.encode(input);
   if(b.length > api.input_capacity()) return {ok:false,code:'E_SOURCE_LIMIT'};
   new Uint8Array(api.memory.buffer,api.input_ptr(),b.length).set(b);
   assert.equal(typeof api.compile_versioned,'function','versioned Wasm compiler ABI is required');
-  const rc=api.compile_versioned(b.length,2);
+  const rc=api.compile_versioned(b.length,languageVersion);
   if(rc!==0){
     assert.equal(api.result_length(),0,'error emitted wasm artifact');
     const mem = new Uint8Array(api.memory.buffer);
@@ -201,3 +201,101 @@ if(process.env.ATTO_CARET_ENFORCE_ALL==='1'){
   }
   assert.equal(priorPassed.size,42);
 }
+
+
+// In addition to the proposed v2 normative corpus, require actual executed
+// v1/v2 compatibility for the same native and browser compiler builds.
+// These regressions must never be counted as part of the 49 normative rows.
+const versionMatrix = [
+  {id:'v1-unmarked-free',version:1,accept:true,value:42,
+    source:'pub fnc main() -> int let int x = 5, x + 37 end'},
+  {id:'v1-explicit-colon-colon',version:1,accept:true,value:42,
+    source:'pub fnc main() -> int :: let int x = 5, x + 37 end'},
+  {id:'v2-explicit-colon-colon',version:2,accept:true,value:42,
+    source:'pub fnc main() -> int :: let int x = 5, x + 37 end'},
+  {id:'v2-unmarked-statements',version:2,accept:true,value:42,
+    source:'pub fnc main() -> int const x: int = 5; ^ x + 37; end'},
+  {id:'v1-unmarked-routine',version:1,accept:true,value:42,
+    source:'routine answer() -> int let int x = 5, x + 37 end pub fnc main(): int { ^ answer(); }'},
+  {id:'v1-unmarked-inline-method',version:1,accept:true,value:42,
+    source:'define class C as pub answer() -> int let int x = 5, x + 37 end end pub fnc main(): int { val c = new C(); ^ c.answer(); }'},
+  {id:'v1-unmarked-receiver',version:1,accept:true,value:42,
+    source:'define class C as final int seed: 40; end pub mtd (self: C) answer() -> int let int x = self.seed, x + 2 end pub fnc main(): int { val c = new C(); ^ c.answer(); }'},
+  {id:'v1-nested-call-commas',version:1,accept:true,value:42,
+    source:'fnc add(int a, int b): int { ^ a + b; } pub fnc main() -> int let int x = 5, add(x, 37) end'},
+  {id:'v2-reject-v1-unmarked-free',version:2,accept:false,diagnostic:'E_LANGUAGE_VERSION',
+    source:'pub fnc main() -> int let int x = 5, x + 37 end'},
+  {id:'v2-reject-v1-unmarked-routine',version:2,accept:false,diagnostic:'E_LANGUAGE_VERSION',
+    source:'routine answer() -> int let int x = 5, x + 37 end pub fnc main(): int { ^ answer(); }'},
+  {id:'v2-reject-v1-unmarked-inline-method',version:2,accept:false,diagnostic:'E_LANGUAGE_VERSION',
+    source:'define class C as pub answer() -> int let int x = 5, x + 37 end end pub fnc main(): int { val c = new C(); ^ c.answer(); }'},
+  {id:'v2-reject-v1-unmarked-receiver',version:2,accept:false,diagnostic:'E_LANGUAGE_VERSION',
+    source:'define class C as final int seed: 40; end pub mtd (self: C) answer() -> int let int x = self.seed, x + 2 end pub fnc main(): int { val c = new C(); ^ c.answer(); }'},
+  {id:'v2-reject-unmarked-with-nested-call',version:2,accept:false,diagnostic:'E_LANGUAGE_VERSION',
+    source:'fnc add(int a, int b): int { ^ a + b; } pub fnc main() -> int let int x = 5, add(x, 37) end'},
+  {id:'v2-reject-colon-colon-semicolon',version:2,accept:false,diagnostic:'E_SYNTAX',
+    source:'pub fnc main() -> int :: const x: int = 5; x + 37 end'}
+];
+const versionRows=[];
+const versionWork=await mkdtemp(join(tmpdir(),'atto-callable-versions-'));
+try {
+  for(const c of versionMatrix) {
+    const input=join(versionWork,c.id+'.atto');
+    const output=join(versionWork,c.id+'.wasm');
+    await writeFile(input,c.source+'\n','utf8');
+    const native=spawnSync(binary,[input,'-o',output,'--language-version',String(c.version)],
+      {encoding:'utf8',timeout:30000,maxBuffer:1<<20});
+    const wasmHost=compileWasmHost(c.source+'\n',c.version);
+    const detail={id:c.id,version:c.version,accept:c.accept,
+      nativeExit:native.status,wasmOk:wasmHost.ok,wasmCode:wasmHost.code,
+      nativeCode:(native.stderr||'').match(/\bE_[A-Z0-9_]+\b/)?.[0],
+      guestReturn:null,status:'failed'};
+    try {
+      assert.ifError(native.error);
+      if(c.accept) {
+        assert.equal(native.status,0,'native compiler rejected valid versioned source');
+        assert.equal(wasmHost.ok,true,'browser compiler rejected valid versioned source');
+        const nativeGuest=await readFile(output);
+        assert.ok(WebAssembly.validate(nativeGuest),'invalid native guest');
+        assert.deepEqual(nativeGuest,wasmHost.wasm,'native/browser compiler bytes differ');
+        const actual=guestRun(wasmHost.wasm);
+        detail.guestReturn=String(actual);
+        assert.equal(actual,BigInt(c.value),'wrong guest result');
+      } else {
+        assert.equal(native.status,1,'native accepted invalid body mode');
+        assert.equal(wasmHost.ok,false,'browser accepted invalid body mode');
+        let exists=false;
+        try {await stat(output);exists=true;}catch(e){if(e.code!=='ENOENT')throw e;}
+        assert.equal(exists,false,'invalid source produced native artifact');
+        assert.equal(detail.nativeCode,c.diagnostic,'wrong native diagnostic');
+        assert.equal(wasmHost.code,c.diagnostic,'wrong browser diagnostic');
+        assert.equal(api.result_length(),0,'failed browser compile retained a guest artifact');
+      }
+      detail.status='passed';
+    } catch(err) {
+      detail.error=String(err?.message||err).slice(0,512);
+    }
+    versionRows.push(detail);
+    console.log('CALLABLE_VERSION_CASE',c.id,detail.status,detail.error||'');
+  }
+  // Reject unknown versions, no fallback to current default and no artifact.
+  for(const unsupportedVersion of [0,3,4294967295]) {
+    const bad=compileWasmHost('pub fnc main(): int { ^ 42; }',unsupportedVersion);
+    assert.equal(bad.ok,false);
+    assert.equal(bad.code,'E_LANGUAGE_VERSION');
+    assert.equal(api.result_length(),0);
+  }
+  const invalid=spawnSync(binary,['--language-version','3',join(versionWork,'missing.atto')],
+    {encoding:'utf8',timeout:30000,maxBuffer:1<<20});
+  assert.equal(invalid.status,2,'CLI must reject unrecognized language version');
+} finally { await rm(versionWork,{recursive:true,force:true}); }
+const versionReport={schema:'atto.callable-language-versions.v1',
+  sourceVersions:['1','2'],sourceVersioning:'explicit-only',
+  normativeCorpusBlobSha:sha,compilerWasmSha256:report.compilerWasmSha256,
+  summary:{passed:versionRows.filter(x=>x.status==='passed').length,
+           failed:versionRows.filter(x=>x.status==='failed').length},
+  rows:versionRows};
+await writeFile('dist/callable_version_matrix.json',JSON.stringify(versionReport,null,2)+'\n');
+console.log('CALLABLE_VERSION_MATRIX',JSON.stringify(versionReport.summary));
+assert.equal(versionReport.summary.failed,0,'versioned native/wasm execution or no-artifact proof failed');
+assert.equal(versionReport.summary.passed,versionMatrix.length);
