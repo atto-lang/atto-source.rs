@@ -75,7 +75,6 @@ fn spaced_directions_do_not_match() {
 #[test]
 fn malformed_io_shorthand_diagnostics() {
     for src in [
-        "inbox >> message;",
         "inbox >> val ;",
         "outgoing << ;",
         "outgoing << value << other;",
@@ -453,3 +452,53 @@ fn deeply_generic_future_annotations_are_not_direction_operators() {
     assert_eq!(parsed[0].mode, Mode::Nonblocking);
     assert_eq!(parsed[0].binder.as_deref(), Some("p"));
 }
+
+#[test]
+fn directional_endpoint_pump_candidates_preserve_operands_and_roles() {
+    let ops = parse(r#"
+        stdio.in >> stdio.out;
+        stdio.out << stdio.in;
+        input_stream >> output_stream;
+        output_stream << input_stream;
+    "#);
+    assert_eq!(ops.len(), 4, "{ops:?}");
+    assert_eq!(ops[0].direction, Direction::Pump);
+    assert_eq!(ops[0].source_or_sink, "stdio.in");
+    assert_eq!(ops[0].pipe_sink.as_deref(), Some("stdio.out"));
+    assert_eq!(ops[1].direction, Direction::Write); // needs static capability resolution
+    assert_eq!(ops[1].source_or_sink, "stdio.out");
+    assert_eq!(ops[1].readable_rhs_candidate.as_deref(), Some("stdio.in"));
+    assert_eq!(ops[2].direction, Direction::Pump);
+    assert_eq!(ops[2].pipe_sink.as_deref(), Some("output_stream"));
+    assert_eq!(ops[3].readable_rhs_candidate.as_deref(), Some("input_stream"));
+    assert!(ops.iter().all(|op| op.binder.is_none()));
+}
+
+#[test]
+fn endpoint_pumps_fail_closed_without_guest_stream_abi() {
+    for source in [
+        "pub fnc main(): void { stdio.in >> stdio.out; }",
+        "pub fnc main(): void { stdio.out << stdio.in; }",
+        "pub fnc main(): void { input_stream >> output_stream; }",
+    ] {
+        let error = atto_compiler::compile(source).expect_err("guest stream transport is not implemented");
+        assert_eq!(error.code, "E_UNSUPPORTED", "{source}: {error}");
+    }
+}
+
+#[test]
+fn endpoint_pump_syntax_rejects_unchecked_modes_guards_and_chains() {
+    for source in [
+        "nb stdio.in >> stdio.out;",
+        "try stdio.in >> stdio.out;",
+        "do stdio.in >> stdio.out;",
+        "do select { when stdio.in >> stdio.out -> {} }",
+        "stdio.in >> stdio.out >> extra;",
+        "stdio.out << stdio.in << extra;",
+        "stdio.in >> 42;",
+    ] {
+        let err = inspect(&lex(source).unwrap()).expect_err(source);
+        assert_eq!(err.code, "E_IO_SYNTAX", "{source}: {err}");
+    }
+}
+
