@@ -11,10 +11,15 @@ pub enum Direction { Read, Write }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Context { Standalone, SelectArm }
 
+/// Explicit execution mode. Direct operations may statically require suspends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode { Direct, Nonblocking, TryImmediate }
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IoShorthand {
     pub direction: Direction,
     pub context: Context,
+    pub mode: Mode,
     pub source_or_sink: String,
     pub binder: Option<String>,
     /// True for reversed read-binding syntax with the binder on the left.
@@ -176,14 +181,15 @@ fn read_binder(tokens: &[Token], start: usize, end: usize, pos: Pos) -> Result<S
     Ok(name.to_owned())
 }
 
-/// Bounded syntax preflight. Recognition is distinct from capability typing
-/// and guest execution; downstream browser compilation fails closed.
+/// Bounded syntax preflight. Recognition is distinct from capability typing,
+/// suspension-effect verification and guest execution. Unimplemented forms
+/// are subsequently rejected by the browser compiler before guest emission.
 pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
     let mut found = Vec::new();
     for i in 0..tokens.len().saturating_sub(1) {
         let Some(operator) = op_at(tokens, i) else { continue; };
-        // Only statement/when-arm leading expressions are admitted here.
-        // A real expression parser must handle parenthesized and computed IO.
+        // Locate the beginning of the containing statement or select arm.
+        // This deliberately does not reinterpret embedded numeric operators.
         let mut start = i;
         while start > 0 && !matches!(&tokens[start - 1].tok,
             Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow)
@@ -200,14 +206,31 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         } else {
             Context::Standalone
         };
-        let lhs_start = start + usize::from(is_when);
+        let after_when = start + usize::from(is_when);
+        let mode = match tokens.get(after_when).and_then(word) {
+            Some("nb") => Mode::Nonblocking,
+            Some("try") => Mode::TryImmediate,
+            _ => Mode::Direct,
+        };
+        if context == Context::SelectArm && mode != Mode::Direct {
+            return Err(syntax(tokens[after_when].pos,
+                "nb/try cannot prefix a select arm; use do nb select or ordinary when I/O"));
+        }
+        let lhs_start = after_when + usize::from(mode != Mode::Direct);
         let op_pos = tokens[i].pos;
         let rhs_start = i + 2;
-        // A leading declaration binder to the left of << means INPUT;
-        // an expression on the left of << means OUTPUT. Never guess from
-        // runtime values, type names, or operator overloading.
+        // Explicit readch and writech are complete operations; combining them
+        // with another direction guard is malformed, not an implicit cast.
+        if matches!(tokens.get(lhs_start).and_then(word), Some("readch" | "writech")) {
+            return Err(syntax(op_pos,
+                "do not append << or >> to readch/writech; bind the returned value or Future with val/let"));
+        }
         let reversed_read = operator == Direction::Write
             && matches!(tokens.get(lhs_start).and_then(word), Some("const" | "val" | "let"));
+        if reversed_read && mode != Mode::Direct {
+            return Err(syntax(op_pos,
+                "nonblocking/immediate reversed read is not in v1; use nb/try source >> val binding"));
+        }
         let lhs_path = if reversed_read { None } else { path(tokens, lhs_start, i) };
         if !reversed_read && lhs_path.is_none() { continue; }
         let end = end_at(tokens, rhs_start, context)
@@ -219,7 +242,7 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             let binding = read_binder(tokens, lhs_start, i, op_pos)?;
             let source = path(tokens, rhs_start, end)
                 .ok_or_else(|| syntax(op_pos,
-                    "reversed read shorthand requires a qualified readable source; computed expressions are not yet supported"))?;
+                    "reversed read requires a qualified readable source; computed expressions are not yet supported"))?;
             (Direction::Read, source, Some(binding))
         } else if operator == Direction::Read {
             let binding = read_binder(tokens, rhs_start, end, op_pos)?;
@@ -233,7 +256,7 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             (Direction::Write, lhs_path.unwrap(), None)
         };
         found.push(IoShorthand {
-            direction, context, source_or_sink: subject, binder,
+            direction, context, mode, source_or_sink: subject, binder,
             read_binder_on_left: reversed_read, pos: op_pos,
         });
     }
