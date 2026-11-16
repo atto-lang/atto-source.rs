@@ -60,8 +60,10 @@ fn source_limit_is_enforced() {
 #[test]
 fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
     let chain = |n: usize, op: &str| format!("pub fnc main(): int {{ return {}; }}", vec!["1"; n].join(op));
+    eprintln!("depth probe: 250 plus operators");
     assert!(atto_compiler::compile(&chain(250, " + ")).is_ok());
     for op in [" + ", " * ", " - ", " == ", " < "] {
+        eprintln!("depth probe: 3000 operators {op:?}");
         assert_eq!(atto_compiler::compile(&chain(3_000, op)).unwrap_err().code, "E_NESTING", "{op}");
     }
     let elif = |n: usize| {
@@ -71,6 +73,8 @@ fn long_operator_and_elif_chains_fail_closed_instead_of_overflowing() {
             .join("\n");
         format!("pub fnc main(): int {{\nval x = 1;\nif x eq 0 then return 0;\n{arms}\nfi\nreturn 0;\n}}")
     };
+    eprintln!("depth probe: 250 elif arms");
     assert!(atto_compiler::compile(&elif(250)).is_ok());
+    eprintln!("depth probe: 300 elif arms");
     assert_eq!(atto_compiler::compile(&elif(300)).unwrap_err().code, "E_NESTING");
 }
