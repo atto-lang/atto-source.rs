@@ -211,3 +211,35 @@ fn production_routine_and_method_accept_syntax_but_not_unproved_abi() {
         assert!(err.message.contains("projected-class ABI"));
     }
 }
+
+
+#[test]
+fn signed_i64_boundary_is_preserved_in_source_and_production_shapes() {
+    let min = "-9223372036854775808";
+    let formal = format!("(p: {{n: {min}}})");
+    let syntax = syn::parse_formals(&formal).unwrap();
+    assert_eq!(syntax[0].ty.canonical, format!("~{{n:{min}}}"));
+    let src = format!(
+        "pub fnc inspect(p: {{n: {min}}}): int {{ return 42; }} pub fnc main(): int {{ return 42; }}"
+    );
+    let program = Parser::new(lex(&src).unwrap()).parse_program().unwrap();
+    let param = &program.funcs[0].params[0];
+    assert!(param.structural);
+    let Type::Named(id) = param.ty else { panic!("unresolved structural type expected"); };
+    assert_eq!(program.type_names[id as usize].0, syntax[0].ty.canonical);
+    let err = compile(&src).expect_err("still no borrowed shape call ABI");
+    assert_eq!(err.code, "E_UNSUPPORTED");
+    for bad in ["(p: {n: 9223372036854775808})",
+                "(p: {n: -9223372036854775809})"] {
+        assert!(syn::parse_formals(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn signed_i64_boundary_is_preserved_in_exact_value_patterns() {
+    let parsed = syn::parse_pattern("on {n: -9223372036854775808}").unwrap();
+    assert!(matches!(parsed.kind, syn::PatternKind::ValueFields(ref fields)
+        if fields.len() == 1 && fields[0].value == syn::ScalarPattern::Int(i64::MIN)));
+    assert!(syn::parse_pattern("on {n: 9223372036854775808}").is_err());
+    assert!(syn::parse_pattern("on {n: -9223372036854775809}").is_err());
+}
