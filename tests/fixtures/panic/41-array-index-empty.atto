@@ -1,0 +1,3 @@
+// expect-panic: 6
+// java: target-only
+pub fnc main(): int { val a: Array<int> = []; return a[-1]; }
