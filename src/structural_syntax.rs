@@ -69,41 +69,105 @@ impl Cursor {
     }
     fn ty(&mut self, depth: usize) -> R<TypeUse> {
         if depth >= LIMIT { return Err(self.err("E_NESTING", "type nesting limit")); }
-        let structural = self.eat(Tok::Tilde) || self.eat_word("structural");
-        let mut name = if self.eat(Tok::LBrace) {
-            if !structural { return Err(self.err("E_SYNTAX", "shape requires structural")); }
+        let explicit = self.eat(Tok::Tilde) || self.eat_word("structural");
+        // An anonymous nonempty field type is already a structural type:
+        // {foo:string} and ~ {foo:string} must have IDENTICAL typed meaning.
+        let shape = self.eat(Tok::LBrace);
+        let mut name = if shape {
             let mut fields = Vec::new();
             let mut seen = HashSet::new();
+            if self.tok() == &Tok::RBrace {
+                return Err(self.err("E_SYNTAX", "empty structural shape is not a wildcard"));
+            }
             loop {
                 if fields.len() >= LIMIT { return Err(self.err("E_SOURCE_LIMIT", "too many fields")); }
                 let field = self.ident()?;
-                if !seen.insert(field.clone()) { return Err(self.err("E_DUPLICATE", "duplicate structural field")); }
+                if !seen.insert(field.clone()) {
+                    return Err(self.err("E_DUPLICATE", "duplicate structural field"));
+                }
+                // Optional presence belongs to value patterns; a typed
+                // projection with foo?:T needs a separately proven read ABI.
+                if self.tok() == &Tok::Question {
+                    return Err(self.err("E_UNSUPPORTED_TYPE",
+                        "optional type-shape fields require a checked presence/read contract"));
+                }
                 self.expect(Tok::Colon)?;
-                let ty = self.ty(depth+1)?;
+                let ty = self.ty(depth + 1)?;
                 fields.push(format!("{field}:{}", ty.canonical));
                 if !self.eat(Tok::Comma) { break; }
+                if self.tok() == &Tok::RBrace {
+                    return Err(self.err("E_SYNTAX", "trailing structural field comma"));
+                }
             }
             self.expect(Tok::RBrace)?;
             format!("{{{}}}", fields.join(","))
         } else {
-            let mut name = self.ident()?;
-            while self.eat(Tok::Dot) || self.eat(Tok::ColonColon) {
-                name.push('.');
-                name.push_str(&self.ident()?);
-            }
-            if self.eat(Tok::Lt) {
-                let mut args = Vec::new();
-                loop {
-                    if args.len() >= LIMIT { return Err(self.err("E_SOURCE_LIMIT", "too many generic args")); }
-                    args.push(self.ty(depth+1)?.canonical);
-                    if !self.eat(Tok::Comma) { break; }
+            match self.tok().clone() {
+                Tok::Str(s) => {
+                    self.i += 1;
+                    // Debug quoting is stable, escapes special characters,
+                    // and keeps singleton string types distinct from 'string'.
+                    format!("{s:?}")
                 }
-                self.expect(Tok::Gt)?;
-                name.push('<'); name.push_str(&args.join(",")); name.push('>');
+                Tok::Int(Some(v)) if v <= i64::MAX as u64 => {
+                    self.i += 1;
+                    v.to_string()
+                }
+                Tok::Minus if matches!(self.next(), Tok::Int(Some(_))) => {
+                    self.i += 1;
+                    let Tok::Int(Some(v)) = self.tok().clone() else { unreachable!() };
+                    self.i += 1;
+                    if v > i64::MAX as u64 + 1 {
+                        return Err(self.err("E_INTEGER_RANGE", "singleton type integer out of range"));
+                    }
+                    if v == i64::MAX as u64 + 1 {
+                        i64::MIN.to_string()
+                    } else {
+                        format!("-{v}")
+                    }
+                }
+                Tok::Ident(ref w) if w == "true" || w == "false" => {
+                    self.i += 1;
+                    w.clone()
+                }
+                Tok::Ident(_) => {
+                    let mut name = self.ident()?;
+                    if name == "_" {
+                        return Err(self.err("E_TYPE",
+                            "'_' is a value-pattern wildcard, not an implicit Any type"));
+                    }
+                    while self.eat(Tok::Dot) || self.eat(Tok::ColonColon) {
+                        name.push('.');
+                        name.push_str(&self.ident()?);
+                    }
+                    if self.eat(Tok::Lt) {
+                        let mut args = Vec::new();
+                        loop {
+                            if args.len() >= LIMIT {
+                                return Err(self.err("E_SOURCE_LIMIT", "too many generic args"));
+                            }
+                            args.push(self.ty(depth + 1)?.canonical);
+                            if !self.eat(Tok::Comma) { break; }
+                        }
+                        self.expect(Tok::Gt)?;
+                        name.push('<'); name.push_str(&args.join(",")); name.push('>');
+                    }
+                    name
+                }
+                _ => return Err(self.err("E_SYNTAX", "expected a shape field type")),
             }
-            name
         };
+        let structural = shape || explicit;
+        // Always normalize a bare structural shape to the explicit internal
+        // form so all three spellings compare equal across the AST.
         if structural { name.insert(0, '~'); }
+        if self.eat(Tok::Pipe) {
+            // Union alternatives carry type information. This is not the
+            // ordinary conditional OR expression operator.
+            let right = self.ty(depth + 1)?;
+            name.push('|');
+            name.push_str(&right.canonical);
+        }
         Ok(TypeUse { canonical: name, structural })
     }
     fn expr(&mut self) -> R<Vec<Token>> {
@@ -332,8 +396,10 @@ pub fn parse_pattern(src: &str) -> R<Pattern> {
         }
         PatternKind::TypeTest(ty)
     } else {
-        if !(c.eat(Tok::Tilde) || c.eat_word("structural")) {
-            return Err(c.err("E_SYNTAX", "value pattern needs ~ or structural"));
+        // Anonymous value patterns are structural by default. 'is' selects
+        // a type test; without 'is', field tokens denote VALUE patterns.
+        if !(c.eat(Tok::Tilde) || c.eat_word("structural")) && c.tok() != &Tok::LBrace {
+            return Err(c.err("E_SYNTAX", "value pattern needs ~, structural or a field shape"));
         }
         if c.eat(Tok::LBrace) {
             // Value patterns are deliberately not the same as structural
