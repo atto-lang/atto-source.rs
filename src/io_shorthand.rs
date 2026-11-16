@@ -6,7 +6,7 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Direction { Read, Write }
+pub enum Direction { Read, Write, Pump }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Context { Standalone, SelectArm }
@@ -22,6 +22,14 @@ pub struct IoShorthand {
     pub mode: Mode,
     pub source_or_sink: String,
     pub binder: Option<String>,
+    /// Right-side sink for the forward `source >> sink` pump candidate.
+    /// Capability typechecking, not spelling, must validate this role.
+    pub pipe_sink: Option<String>,
+    /// Qualified right operand of a `sink << value` candidate.
+    /// If it is Readable<T> and the sink is Writable<T>, typechecking
+    /// selects a reverse-spelled pump; if it is T, a single write.
+    /// If both match, typechecking must reject the ambiguity.
+    pub readable_rhs_candidate: Option<String>,
     /// True for reversed read-binding syntax with the binder on the left.
     pub read_binder_on_left: bool,
     /// Operator start position. Payload is intentionally not evaluated.
@@ -252,25 +260,47 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             return Err(Diagnostic::new(op_pos, "E_IO_DISCARD",
                 "detached read cannot bind to the caller; use do readch channel, |outcome| -> void { ... }"));
         }
-        let (direction, subject, binder) = if reversed_read {
+        let (direction, subject, binder, pipe_sink, readable_rhs_candidate) = if reversed_read {
             let binding = read_binder(tokens, lhs_start, i, op_pos)?;
             let source = path(tokens, rhs_start, end)
                 .ok_or_else(|| syntax(op_pos,
                     "reversed read requires a qualified readable source; computed expressions are not yet supported"))?;
-            (Direction::Read, source, Some(binding))
+            (Direction::Read, source, Some(binding), None, None)
         } else if operator == Direction::Read {
-            let binding = read_binder(tokens, rhs_start, end, op_pos)?;
-            (Direction::Read, lhs_path.unwrap(), Some(binding))
+            if matches!(tokens.get(rhs_start).and_then(word), Some("val" | "let" | "const")) {
+                let binding = read_binder(tokens, rhs_start, end, op_pos)?;
+                (Direction::Read, lhs_path.unwrap(), Some(binding), None, None)
+            } else {
+                // A bare right-hand path is not an existing-local read binder.
+                // It is a candidate for continuous readable -> writable piping.
+                // The preflight cannot prove the receiver capabilities.
+                if context == Context::SelectArm {
+                    return Err(syntax(op_pos,
+                        "a stream pump cannot register as one atomic select guard; use a val/let read binder"));
+                }
+                if mode != Mode::Direct {
+                    return Err(syntax(op_pos,
+                        "nb/try/do endpoint pumps require a separate checked task lifecycle; direct pump only"));
+                }
+                let sink = path(tokens, rhs_start, end)
+                    .ok_or_else(|| syntax(op_pos,
+                        "endpoint pump requires a qualified writable sink (no chained operators)"))?;
+                (Direction::Pump, lhs_path.unwrap(), None, Some(sink), None)
+            }
         } else {
             for j in rhs_start..end {
                 if op_at(tokens, j).is_some() {
                     return Err(syntax(op_pos, "chained I/O direction operators are not allowed in v1"));
                 }
             }
-            (Direction::Write, lhs_path.unwrap(), None)
+            // May be a scalar write or a reversed endpoint pump: only the
+            // typechecker may select between these two checked operations.
+            let candidate = path(tokens, rhs_start, end);
+            (Direction::Write, lhs_path.unwrap(), None, None, candidate)
         };
         found.push(IoShorthand {
             direction, context, mode, source_or_sink: subject, binder,
+            pipe_sink, readable_rhs_candidate,
             read_binder_on_left: reversed_read, pos: op_pos,
         });
     }
