@@ -105,7 +105,8 @@ export class CheckedWriteQueue {
   // after a successful pre-commit cancellation.
   // Cancellation is owner-scoped. A raw sequential ticket is not authority.
   // The caller MUST pass runtime-validated actor owner/generation identity.
-  cancel(ticket,{owner,generation}={}) {
+  cancel(ticket,identity={}) {
+    const owner=identity?.owner,generation=identity?.generation;
     const x=this._entries.get(ticket);
     if(!validOwner(owner,generation)||!x || x.owner!==owner ||
        x.generation!==generation || x.state!=='queued') return false;
@@ -139,6 +140,7 @@ export class CheckedWriteQueue {
     for(const x of [...this._entries.values()]) {
       if(x.state==='queued') this._settle(x,failed('E_IO_CLOSED','writer closed before commit'));
     }
+    if(this._entries.size===0) this._owners.clear();
   }
   _schedule() {
     if(this._scheduled||this._running!==null) return;
