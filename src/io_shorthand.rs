@@ -206,7 +206,17 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         // unary syntax preflight already validated its source-token shape.
         // Do not steal `return << c`, `x += << c`, or grouped `(<< c)`
         // as writes from a source named "return" or an incomplete sink.
-        if operator == Direction::Write && unary_read_start(tokens, i) {
+        let statement_start = (0..i).rev().find(|&j| matches!(
+            tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow
+        )).map_or(0, |j| j + 1);
+        // 'val return << inbox' is a malformed declaration: despite the
+        // preceding reserved word, this must NOT turn into an expression.
+        // Preserve the read-binder validator's E_IO_SYNTAX diagnostic.
+        let declaration_head = matches!(tokens.get(statement_start).and_then(word),
+            Some("val" | "let" | "const"))
+            && !tokens[statement_start..i].iter().any(|t| matches!(t.tok, Tok::Assign));
+        if operator == Direction::Write && unary_read_start(tokens, i)
+            && !declaration_head {
             continue;
         }
         // Locate the beginning of the containing statement or select arm.
