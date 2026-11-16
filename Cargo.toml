@@ -19,3 +19,7 @@ strip = true
 [[bin]]
 name = "attoc"
 path = "src/bin/attoc.rs"
+
+[[bin]]
+name = "attoaot"
+path = "src/bin/attoaot.rs"
