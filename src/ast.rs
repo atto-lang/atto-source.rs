@@ -297,6 +297,13 @@ pub enum Pattern {
     Variant(String, String),
     /// Tagged built-in ADT variant, optionally binding the payload.
     Adt(String, Option<String>),
+    /// Bounded, public-field structural value match for a statically known
+    /// class. A missing optional field vacuously passes; missing required
+    /// fields fail. The binding is a read-only scoped loan, not an owned copy.
+    StructuralFields {
+        fields: Vec<crate::structural_syntax::FieldPattern>,
+        bind: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
