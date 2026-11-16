@@ -188,6 +188,66 @@ function check(label, fn) {
 }
 const digests = [];
 
+
+// ---- reviewed site source: compiler byte parity and real guest outcomes ----
+const siteDir = join(here, 'playground_site_examples');
+const siteManifest = JSON.parse(await readFile(join(siteDir, 'manifest.json'), 'utf8'));
+assert.equal(siteManifest.schema, 'atto.compiler.playground-exact-source.v1');
+assert.equal(siteManifest.site_repository, 'atto-lang/atto-lang.github.io');
+assert.match(siteManifest.site_commit, /^[0-9a-f]{40}$/);
+assert.deepEqual(siteManifest.cases.map(row => row.name).sort(),
+  ['actors','classes','conditions','enums','error','fib','hello','overflow','primes']);
+assert.deepEqual((await readdir(siteDir)).filter(name => name.endsWith('.atto')).sort(),
+  siteManifest.cases.map(row => row.path).sort());
+let siteExecuted = 0;
+for (const row of siteManifest.cases) {
+  const path = join(siteDir, row.path);
+  const bytes = await readFile(path);
+  const source = decoder.decode(bytes);
+  check('playground-site/' + row.name, () => {
+    assert.match(row.site_blob, /^[a-f0-9]{40}$/, 'expected exact upstream Git blob');
+    const blobSha = createHash('sha1')
+      .update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
+    assert.equal(blobSha, row.site_blob, 'unreviewed source drift');
+    const compiled = compile(source);
+    if (row.kind === 'reject') {
+      assert.equal(compiled.ok, false, 'rejected source must fail to compile');
+      assert.equal(compiled.code, row.error_code);
+      assert.equal('wasm' in compiled, false, 'rejected source must emit no guest');
+      if (attoc) assert.equal(nativeBytes(path), null, 'native compiler must reject');
+      return;
+    }
+    assert.equal(compiled.ok, true, compiled.message);
+    assert.ok(WebAssembly.validate(compiled.wasm), 'real compiled guest module');
+    assert.deepEqual(compile(source).wasm, compiled.wasm, 'deterministic guest Wasm');
+    if (attoc) assert.deepEqual(nativeBytes(path), compiled.wasm,
+      'native and wasm32 compiler outputs must match byte for byte');
+    const actorTrace = [];
+    const guest = runGuest(compiled.wasm, {
+      onActorTrace: event => actorTrace.push(event)
+    });
+    if (row.kind === 'panic') {
+      assert.equal(guest.ok, false, 'checked arithmetic must panic, not wrap');
+      assert.equal(guest.panic, row.panic_code, 'guest panic category');
+      assert.ok(guest.stdout.endsWith(row.stdout_suffix), 'stdout before panic preserved');
+    } else {
+      assert.equal(row.kind, 'execute');
+      assert.equal(guest.ok, true, guest.error);
+      assert.equal(guest.value, BigInt(row.exit), 'main result');
+      assert.equal(guest.stdout, row.stdout, 'exact sample stdout');
+      if (row.actor_count !== undefined) {
+        const verified = verify_actor_trace(actorTrace);
+        assert.equal(verified.actor_count, row.actor_count, 'real actor instances');
+        assert.equal(verified.completed, row.actor_messages, 'real mailbox deliveries');
+      }
+    }
+    siteExecuted++;
+  });
+}
+console.log('SITE_PLAYGROUND_GUESTS_EXECUTED=' + siteExecuted +
+  ' upstream_site_sha=' + siteManifest.site_commit);
+
+
 for (const f of await fixtures('pass')) {
   check(`pass/${f.name}`, () => {
     const r = compile(f.source);

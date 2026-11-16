@@ -1,0 +1,9 @@
+// expect-error: E_MOVED
+// java: rejects
+pub fnc main(): int {
+ val value = 42;
+ if true then
+   val first = take! value;
+ fi
+ return value;
+}

@@ -228,7 +228,7 @@ The compiler does not define any syntax of its own:
 
 | Area | Admitted |
 | --- | --- |
-| Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
+| Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`; C brace bodies (`: T {}`, `: T -> {}`, `-> T {}`) or comma/`end` bodies (`-> T … end`, `-> T :: … end`); parameters `int a`, `int mut a`, `a: int`; arity overloads |
 | Entry point | zero-argument `main` returning `int` or `void` |
 | Generators (restricted) | One optional immutable `int` parameter, up to 16 persistent `int` locals and pure typed CFG `if`/`while`/`break`/`continue`, checked scalar arithmetic and computed `yield`; plus earlier canonical `CountTo`/limited lazy `yield*` profile. Owned fresh-handle `for ... in` and bounded guest-Wasm 65,536-step pull budgets. Borrowed objects, arbitrary effects, nested-scope binds and advanced cancellation remain gated. |
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
@@ -243,11 +243,48 @@ The compiler does not define any syntax of its own:
 | Actors | `define actor Name as … end` or `actor Name … end`. State `let T name = e` (mutable) and `val`/`const`/`final` (fixed), one `receive(ActorMail<int\|bool> mail): void` reading `mail.value` and `mail.sequence`, and helper methods called as `self.f(…)`. `val r = spawn Name();` gives a copyable `ActorRef<Name>`, and `r.send(v)` enqueues mail |
 | Enums | `define enum Name as A B C end` and `Name.A` values compared with `eq`/`neq`. This spelling comes from the oreslang-source.llvm v1 design contract (`contracts/v1/design/enum_pattern_cases.json`). The Java parser does not admit it yet, and the fixtures record that |
 
+### Confirmed callable body syntax (accepted by atto-spec #19)
+
+The five declaration-body forms below apply to `fnc`, direct-call-only `routine`,
+and inline instance methods (bare `method_name`, legacy `fnc method_name`
+or `method method_name`). These are alternatives, not simultaneous overloads:
+
+```atto
+fnc five(): int { return 5; }
+fnc five(): int -> { return 5; }
+fnc five() -> int { return 5; }
+fnc five() -> int let int x = 3, x + 2 end
+fnc five() -> int :: let int x = 3, x + 2 end
+```
+
+C bodies retain explicit returns; outer Erlang-like bodies use commas between
+statements and return their final expression, subject to the normal type,
+ownership and control-flow checks. Neither style changes the other style's
+terminators. A `->` after `: T` requires `{`. The `=>` fat arrow remains
+for *callable type* declarations, not these function body headers.
+
+Out-of-line `mtd` supports named receiver headers `(self: T)`,
+`(T self)`, implicit `(T)`, `(T _)`, and explicit `(mut self: T)`
+in the **target preflight**. The formatter contract prefers
+`(self: T)` for named receivers, `(T)` for implicit receivers and
+bare method names for inline instance methods.
+
+For a file containing only local classes and functions, **immutable class
+`mtd` receivers are executable**. The lowering reuses the full production
+class parser, typechecker, and guest Wasm emitter; each method has the same
+ABI and visibility as an equivalent inline method. `(mut self: T)` is
+recognized but **fails with `E_UNSUPPORTED`** until mutable-self ownership
+rules are implemented. Actor/namespace/import-linked receivers remain
+syntax-only and must not acquire unverified synchronous dispatch.
+Actor sealed-state restrictions remain unchanged. Executable support must
+be backed by actual Rust/Wasm guest tests rather than syntax acceptance.
+
 ### Class and actor rules (checked against the Java reference)
 
 - Members are private by default. A private field, method or static function is visible only to code inside its own class, which includes other instances of that class.
 - Instance methods see a read-only `self`. Only the constructor assigns fields (`E_OWNERSHIP`), and fixed fields reject even that (`E_IMMUTABLE`).
 - Objects move. `val b = a`, passing `a` as an argument and `return a` all transfer ownership. Using `a` afterwards is `E_MOVED`, and so is moving an outer object inside a loop. Field reads, method calls on `a` and printing `a` do not move it.
+- Explicit prefix `borrow! owner` and `borrow! mut owner` admit lexical class loans with simultaneous immutable readers or one exclusive mutable writer; `copy! value` and `share! value` accept only verified immutable scalars; `take! owner` invalidates named locals. Parenthesized operands (e.g. `borrow!(owner)`) remain accepted for compatibility, but the formatter's canonical syntax omits grouping around a bare name. Owned class loans cannot escape by return, argument, assignment or take. Moves from loop-external locals are checked in every repeated position, including `while` conditions and `for` condition/update expressions; a `for` initializer executes once and may transfer ownership. This is a bounded native/browser Wasm subset, **not** generalized inter-actor sharing, mutable scalar loans, Arc, suspension, or callable lifetime inference.
 - Actors are isolated. Their bodies cannot reach file-level functions, sibling classes or enums (`E_ISOLATION`). Actor state is private and changes only through mail.
 - `spawn` takes no arguments and actors have no constructor (`E_ACTOR`). `receive` is actor-local: it cannot be `pub`, takes exactly one `ActorMail<T>` and returns `void`.
 

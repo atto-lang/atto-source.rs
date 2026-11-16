@@ -1,0 +1,6 @@
+// expect-error: E_SYNTAX
+// ': int ->' is a brace-body introducer, not an end-body delimiter.
+fnc broken(): int ->
+  let int x = 3, x + 2
+end
+pub fnc main(): int { return broken(); }

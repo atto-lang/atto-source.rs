@@ -1,0 +1,11 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+ let parcel = new Parcel();
+ val reader = borrow! parcel;
+ val alias = reader;
+ return alias.value;
+}

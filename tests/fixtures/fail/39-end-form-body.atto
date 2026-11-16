@@ -1,5 +1,7 @@
-// spec 16 TARGET `::`/`end` bodies are rejected by the Java and LLVM parsers today
+// Erlang-style bodies require separators and a final value.
 // expect-error: E_SYNTAX
-// java: rejects
-fnc f(int a) -> int :: return a + 1; end
+fnc f(int a) -> int ::
+  let int x = a,
+  x + 1,
+end
 pub fnc main(): int { return f(4); }
