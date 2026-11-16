@@ -1,6 +1,7 @@
 # Exact public-site preview sources; every entry is a Git blob SHA-1
-# site_commit c188ecc95f7bea4d7c32c8bfaf60b671ec3e28f6
-# site_candidate_branch fix/play-callable-body-styles-public-access-20261115
+# site_commit 2544bfc3e55d38b9f726fa4195bb0cd600eb64de
+# site_candidate_branch fix/play-boolean-reserved-xor-20261116
+# callable-body-styles website correction merged in 67282439d97dcb76ec17b30cfa1177aad12c3ce7
 # site_root play/examples/preview
 actor-pipeline	7736f9710da491050fa5e71307eb933561791774
 actor-receiver-methods	aac346b631d1a0faf06b17d156c00c2ab54f39a2
