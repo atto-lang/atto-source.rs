@@ -74,6 +74,40 @@ fn end_at(tokens: &[Token], start: usize, context: Context) -> Option<usize> {
     None
 }
 
+/// Parse the entire optional type annotation, never just its first token.
+/// The preflight intentionally supports only path types with nested generic
+/// arguments. Unsupported richer type grammars must be implemented in the
+/// real parser instead of silently accepting unchecked trailing tokens.
+fn type_ref(tokens: &[Token], cursor: &mut usize, end: usize, depth: usize) -> bool {
+    if depth > 64 || *cursor >= end || word(&tokens[*cursor]).is_none() {
+        return false;
+    }
+    *cursor += 1;
+    while *cursor + 1 < end
+        && matches!(tokens[*cursor].tok, Tok::Dot | Tok::ColonColon)
+    {
+        if word(&tokens[*cursor + 1]).is_none() { return false; }
+        *cursor += 2;
+    }
+    if *cursor < end && matches!(tokens[*cursor].tok, Tok::Lt) {
+        *cursor += 1;
+        if !type_ref(tokens, cursor, end, depth + 1) { return false; }
+        while *cursor < end && matches!(tokens[*cursor].tok, Tok::Comma) {
+            *cursor += 1;
+            if !type_ref(tokens, cursor, end, depth + 1) { return false; }
+        }
+        if *cursor >= end || !matches!(tokens[*cursor].tok, Tok::Gt) { return false; }
+        *cursor += 1;
+    }
+    true
+}
+
+fn valid_read_annotation(tokens: &[Token], start: usize, end: usize) -> bool {
+    if start >= end || !matches!(tokens[start].tok, Tok::Colon) { return false; }
+    let mut cursor = start + 1;
+    type_ref(tokens, &mut cursor, end, 0) && cursor == end
+}
+
 /// Inspect recognized qualified-path shorthand forms without producing guest I/O.
 /// Returns an explicit parse diagnostic for malformed shorthand, and otherwise
 /// a list of typed-lowering candidates. This cannot prove the left operand has
@@ -113,14 +147,10 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             let name = tokens.get(rhs_start + 1).and_then(word)
                 .filter(|w| !matches!(*w, "const" | "val" | "let" | "when"))
                 .ok_or_else(|| syntax(op_pos, "read shorthand requires a binding name"))?;
-            if rhs_start + 2 != end {
-                if rhs_start + 4 > end || !matches!(&tokens[rhs_start + 2].tok, Tok::Colon)
-                    || tokens.get(rhs_start + 3).and_then(word).is_none()
-                {
-                    return Err(syntax(op_pos, "read shorthand accepts only an optional ': Type' annotation"));
-                }
-                // Generic types and nested qualifiers are checked by the real
-                // parser in future; this bounded preflight cannot typecheck.
+            if rhs_start + 2 != end
+                && !valid_read_annotation(tokens, rhs_start + 2, end)
+            {
+                return Err(syntax(op_pos, "read shorthand requires a complete ': Type' annotation (no trailing tokens)"));
             }
             Some(name.to_owned())
         } else {
