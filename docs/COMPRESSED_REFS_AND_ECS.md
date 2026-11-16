@@ -58,7 +58,7 @@ field_element_stride, field_width, backing_byte_len)`, returning a byte
 range or a typed `RefError`. This helper rejects:
 
 - out-of-range logical rows and accesses past the actual backing bytes;
-- zero/non-power-of-two lane counts, zero widths/strides and overlapping
+- zero/non-power-of-two lane counts or tile widths above the canonical 1024-lane maximum, zero widths/strides and overlapping
   lane elements (field width greater than element stride);
 - any layout whose **last lane** would exceed the physical block extent,
   even when the particular requested lane happens to fit;
