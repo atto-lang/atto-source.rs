@@ -244,6 +244,10 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
         Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        // A nested return-match is a definite exit only when each reachable
+        // arm exits; the type checker separately proves subject exhaustiveness.
+        Some(Stmt::Match { arms, .. }) => !arms.is_empty()
+            && arms.iter().all(|arm| guard_failure_exits(&arm.body)),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
