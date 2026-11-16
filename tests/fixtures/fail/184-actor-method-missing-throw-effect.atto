@@ -1,0 +1,18 @@
+// expect-error: E_EFFECT_TYPE
+define actor Worker as
+    inner(): int throws(Error) {
+        return 42;
+    }
+    outer(): int panics(Error) {
+        return self.inner();
+    }
+    receive(ActorMail<int> msg): void {
+        stdio.println(self.outer());
+        return;
+    }
+end
+pub fnc main(): int {
+    val a = spawn Worker();
+    a.send(1);
+    return 0;
+}
