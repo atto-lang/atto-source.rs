@@ -357,3 +357,92 @@ pub fn inspect_pipe(tokens: &[Token]) -> Result<Vec<PipeCandidate>, Diagnostic> 
     }
     Ok(out)
 }
+
+
+/// Prefix \`<< readable\` produces one I/O read outcome as an expression.
+/// This preflight does not execute I/O: the browser compiler rejects the
+/// candidate before emission until the typed guest read ABI exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnaryReadCandidate {
+    pub source: String,
+    pub pos: Pos,
+}
+
+/// Only expression-start positions may begin a unary receive. In particular,
+/// \`sink << value\`, \`val x << source\`, \`x << n\`, and a \`>>\` binding
+/// remain untouched. The real parser will eventually own this distinction.
+fn unary_read_start(tokens: &[Token], i: usize) -> bool {
+    if i == 0 { return true; }
+    match &tokens[i - 1].tok {
+        Tok::Assign | Tok::PlusAssign | Tok::LParen | Tok::LBracket |
+        Tok::Comma | Tok::Plus | Tok::Minus | Tok::Star | Tok::Slash |
+        Tok::Question | Tok::Colon | Tok::Arrow | Tok::FatArrow |
+        Tok::Semi | Tok::LBrace => true,
+        Tok::Ident(s) if matches!(s.as_str(),
+            "return" | "trap" | "await" | "throw" | "raise" | "panic" |
+            "then" | "else") => true,
+        _ => false,
+    }
+}
+
+/// Recognize unary channel/stream reads in expression position without
+/// treating a binary writer, reverse declaration, numeric shift, or generic
+/// delimiter as a read. This is a conservative browser-subset preflight;
+/// complex receiver expressions require the checked production AST.
+pub fn inspect_unary_reads(tokens: &[Token]) -> Result<Vec<UnaryReadCandidate>, Diagnostic> {
+    let mut reads = Vec::new();
+    for i in 0..tokens.len().saturating_sub(1) {
+        if op_at(tokens, i) != Some(Direction::Write) ||
+            !unary_read_start(tokens, i) { continue; }
+
+        let pos = tokens[i].pos;
+        let operand = i + 2;
+        let Some(first) = tokens.get(operand) else {
+            return Err(syntax(pos, "unary << requires a readable operand"));
+        };
+        let (start, end) = if matches!(first.tok, Tok::LParen) {
+            let mut cursor = operand + 1;
+            while cursor < tokens.len() &&
+                !matches!(tokens[cursor].tok, Tok::RParen | Tok::Semi | Tok::Eof) {
+                cursor += 1;
+            }
+            if cursor >= tokens.len() || !matches!(tokens[cursor].tok, Tok::RParen) {
+                return Err(syntax(pos, "unary << requires a complete parenthesized readable operand"));
+            }
+            (operand + 1, cursor)
+        } else {
+            let mut cursor = operand;
+            if tokens.get(cursor).and_then(word).is_none() {
+                return Err(syntax(pos, "unary << requires a readable operand"));
+            }
+            cursor += 1;
+            while cursor + 1 < tokens.len() &&
+                matches!(tokens[cursor].tok, Tok::Dot) &&
+                tokens.get(cursor + 1).and_then(word).is_some() {
+                cursor += 2;
+            }
+            (operand, cursor)
+        };
+        let source = path(tokens, start, end)
+            .ok_or_else(|| syntax(pos, "unary << requires a simple channel/stream path in the browser compiler"))?;
+
+        // Runtime I/O is not a compile-time constant, even when the channel
+        // binding itself is immutable. Preserve the normal const discipline.
+        let stmt_start = (0..i).rev().find(|&j| matches!(
+            tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace
+        )).map(|j| j + 1).unwrap_or(0);
+        if tokens.get(stmt_start).and_then(word) == Some("const") &&
+            tokens[stmt_start..i].iter().any(|t| matches!(t.tok, Tok::Assign)) {
+            return Err(Diagnostic::new(pos, "E_CONST_EFFECT",
+                "runtime channel reads cannot initialize const; use val or let"));
+        }
+
+        if i == stmt_start {
+            return Err(Diagnostic::new(pos, "E_IO_DISCARD",
+                "unary channel read outcome cannot be discarded; bind or handle it"));
+        }
+
+        reads.push(UnaryReadCandidate { source, pos });
+    }
+    Ok(reads)
+}
