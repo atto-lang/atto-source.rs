@@ -2043,6 +2043,8 @@ impl<'a> FnCx<'a> {
                         }
                         // A wildcard checks existence only; no field read,
                         // getter, or object handle materialization occurs.
+                        let field_ty = info.ty;
+                        let field_slot = info.slot;
                         let lit = match &field.value {
                             ScalarPattern::Any => continue,
                             ScalarPattern::Int(v) if info.ty == Type::Int => TE {
