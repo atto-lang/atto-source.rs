@@ -777,8 +777,13 @@ impl Parser {
                         "@Override is a zero-argument annotation; remove its argument list"));
                 }
                 if *self.peek() == Tok::At {
-                    return Err(Diagnostic::new(self.pos(), "E_DUPLICATE_ANNOTATION",
-                        "@Override may appear only once on a method"));
+                    let next_pos = self.pos();
+                    if matches!(self.peek_at(1), Tok::Ident(name) if name == "Override") {
+                        return Err(Diagnostic::new(next_pos, "E_DUPLICATE_ANNOTATION",
+                            "@Override may appear only once on a method"));
+                    }
+                    return Err(Diagnostic::new(next_pos, "E_UNSUPPORTED",
+                        "stacked annotations require verified compiler lowering"));
                 }
                 annotated_override = true;
             }
