@@ -1,0 +1,16 @@
+// expect-exit: 42
+// Optional x does not exist on the class; required y is present.
+define class OnlyY as
+    pub int y = 42;
+end
+pub fnc main(): int {
+    val value = new OnlyY();
+    match value over
+        on ~ { x?: 10, y: _ } as val p -> {
+            return p.y;
+        }
+        on _ -> {
+            return 0;
+        }
+    end
+}
