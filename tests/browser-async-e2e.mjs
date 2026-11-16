@@ -140,6 +140,15 @@ try{
   const guardedErrDiscard='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return switch<int> checked() over case Err(message) when message == "wrong" : int -> 1, case Err() : int -> 0, case Ok(_) : int -> 42, end; }';
   assert.match(await run(guardedErrDiscard,'main() -> 42'),/^main\(\) -> 42$/);
   console.log('PASS browser: unselected guarded Err does not read the active Ok payload');
+  // ADT case payload binding is lexical; the copied int capture ABI
+  // transfers the selected arm's value into the scheduled task frame.
+  const adtCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return 42; }, end; }';
+  assert.match(await run(adtCase,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'ADT selected case awaits exactly once');
+  const captureCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(captureCase,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured switch case yields exactly once');
+  console.log('PASS integration: ADT case selection and copied i64 task payload capture');
   const capturedMatch='fnc checked(): Option<int> { return Some(41); } pub suspends fnc main(): int { return match<int> checked() over on Some(n) : int -> await task { return n + 1; }, on None : int -> 0, end; }';
   assert.match(await run(capturedMatch,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured match must yield once');
