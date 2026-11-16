@@ -22,8 +22,9 @@ fn program(expression: &str, validate_payload: &str) -> String {
            receive(ActorMail<int> mail): void {{ }}\n\
          end\n\
          pub fnc main(): int {{\n\
-           val source: int = 0;\n\
-           val sink: int = 0;\n\
+           val source = spawn Parse();\n\
+           val sink = spawn Sink();\n\
+           val middle = spawn Validate();\n\\
            val connection = {expression};\n\
            return 0;\n\
          }}\n"
@@ -34,7 +35,7 @@ fn parsed_pipe(expression: &str) -> Vec<PipeStage> {
     let tokens = lexer::lex(&program(expression, "int")).unwrap();
     let parsed = parser::Parser::new(tokens).parse_program().unwrap();
     let main = parsed.funcs.iter().find(|f| f.name == "main").unwrap();
-    let Stmt::Bind { init, .. } = &main.body[2] else {
+    let Stmt::Bind { init, .. } = &main.body[3] else {
         panic!("expected pipeline binding");
     };
     let ExprKind::MixedPipeline(stages) = &init.kind else {
@@ -48,7 +49,7 @@ fn mixed_pipe_ast_preserves_endpoint_order_and_actor_roles() {
     for expression in [
         "spawn Parse() pipe sink",
         "source pipe spawn Sink()",
-        "spawn Parse() pipe sink pipe spawn Sink()",
+        "spawn Parse() pipe middle pipe spawn Sink()",
         "source pipe spawn Validate() pipe sink",
         "spawn Parse() | spawn Validate() pipe sink",
     ] {
@@ -74,7 +75,7 @@ fn mixed_pipe_compiler_fails_closed_without_guest_abi() {
     for expression in [
         "spawn Parse() pipe sink",
         "source pipe spawn Sink()",
-        "spawn Parse() pipe sink pipe spawn Sink()",
+        "spawn Parse() pipe middle pipe spawn Sink()",
         "spawn Parse() pipe spawn Validate() pipe sink",
     ] {
         let err = atto_compiler::compile(&program(expression, "int")).unwrap_err();
@@ -203,4 +204,48 @@ fn actor_only_legacy_pipeline_still_has_a_migration_path() {
     let err = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
     assert!(err.message.contains("actor pipeline"), "{err}");
+}
+
+#[test]
+fn scalar_endpoint_is_rejected_before_runtime_abi_admission() {
+    let source = program("source pipe spawn Sink()", "int")
+        .replacen("val source = spawn Parse();", "val source: int = 0;", 1);
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("scalar"), "{err}");
+}
+
+#[test]
+fn unbound_endpoint_is_not_accepted_as_a_channel_by_spelling() {
+    let source = program("source pipe spawn Sink()", "int")
+        .replacen("val source = spawn Parse();", "val another = spawn Parse();", 1);
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_UNBOUND", "{err}");
+    assert!(err.message.contains("unknown pipe endpoint"), "{err}");
+}
+
+#[test]
+fn actor_ref_sink_cannot_be_used_as_middle_transform_stage() {
+    let err = atto_compiler::compile(&program(
+        "spawn Parse() pipe sink pipe spawn Sink()", "int"
+    )).unwrap_err();
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("explicit emits"), "{err}");
+}
+
+#[test]
+fn actor_ref_source_is_checked_as_readable_not_duplex_by_default() {
+    let err = atto_compiler::compile(&program(
+        "sink pipe spawn Sink()", "int"
+    )).unwrap_err();
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("explicit emits"), "{err}");
+}
+
+#[test]
+fn direct_mixed_actor_ref_edges_check_emitted_payload_types() {
+    let source = program("source pipe spawn Validate() pipe sink", "bool");
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("emitted"), "{err}");
 }
