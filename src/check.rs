@@ -1384,7 +1384,7 @@ fn body_check(
 /// Conservative definite-return/non-fallthrough analysis: an `if`
 /// needs an exhaustive else; a loop is non-fallthrough only when its typed
 /// condition is literally `true` (or absent) and no break targets it.
-/// Do NOT treat a variable or computed condition as constant true: this
+/// For a conditional while, additionally require a proven return in its body\n/// rather than treating a bare infinite while as a function result.\n/// Do NOT treat a variable or computed condition as constant true: this
 /// would accept a function that can fall through without returning.
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
@@ -1392,7 +1392,7 @@ fn returns(body: &[TStmt]) -> bool {
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond, body, .. } =>
             (cond.is_none() || cond.as_ref().is_some_and(|c|
-                matches!(&c.e, TExpr::Bool(true)))) && !breaks(body),
+                matches!(&c.e, TExpr::Bool(true)) && returns(body))) && !breaks(body),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
         _ => false,
     })
