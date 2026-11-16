@@ -1,0 +1,4 @@
+// expect-error: E_ANNOTATION_TARGET
+@Override
+define actor C as end
+pub fnc main(): int { return 0; }
