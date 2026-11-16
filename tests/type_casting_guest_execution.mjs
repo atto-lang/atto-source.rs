@@ -30,7 +30,7 @@ const fail = [
   ['as-type-cast-not-admitted', 'E_UNSUPPORTED', program('return v as int;')],
   ['conditional-capture-no-implicit-qualifier', 'E_SYNTAX', program('if v is int as n then return n; fi return 0;')],
   ['conditional-capture-no-let-substitution', 'E_SYNTAX', program('if v is int as let n then return n; fi return 0;')],
-  ['conditional-capture-fresh-name', 'E_DUPLICATE', program('if v is int as val v then return v; fi return 0;')],
+  ['conditional-capture-fresh-name', 'E_UNSUPPORTED', program('if v is int as val v then return v; fi return 0;')],
   ['conditional-capture-requires-then', 'E_SYNTAX', program('if v is int as val n { return n; } return 0;')],
   ['conditional-binder-never-escapes-fi', 'E_UNBOUND', program('if v is int as val n then val x = n + 1; fi return n;')],
   ['conditional-binder-not-in-else', 'E_UNBOUND', program('if v is string as val n then return 0; else return n; fi')],
