@@ -63,3 +63,36 @@ fn async_pipe_cannot_escape_non_suspends_or_pure_boundaries() {
         assert!(matches!(diag.code, "E_EFFECT" | "E_PURE"), "{src}: {diag}");
     }
 }
+
+#[test]
+fn contextual_nb_stdin_read_await_forms_recognized_but_do_not_fake_guest_execution() {
+    for operation in [
+        "nb stdio.in >> (val String pending_line << await Future<string>);",
+        "nb stdio.in >> Future<string> x | await x >> val String pending_line;",
+        "nb stdio.in >> (val outcome: Result<Option<string>,IoError> << await Future<Result<Option<string>,IoError>>);",
+        "nb stdio.in >> Future<Result<Option<string>,IoError>> x | await x >> val outcome: Result<Option<string>,IoError>;",
+    ] {
+        let src = format!("pub suspends fnc main(): int {{ {operation} return 42; }}");
+        let diag = compile(&src).expect_err("typed stdin Future guest ABI remains unavailable");
+        assert_eq!(diag.code, "E_UNSUPPORTED", "{operation}: {diag}");
+        assert!(diag.message.contains("read") || diag.message.contains("nonblocking"),
+            "{operation}: expected fail-closed guest-ABI diagnostic, got {diag}");
+    }
+}
+
+#[test]
+fn contextual_read_await_rejects_binder_theft_and_lossy_future_payload_types() {
+    for (operation, expected) in [
+        ("nb stdio.in >> Future<string> x | await y >> val String line;", "E_PIPE_BIND"),
+        ("nb stdio.in >> Future<int> x | await x >> val String line;", "E_TYPE"),
+        ("nb stdio.in >> (val String line << await Future<int>);", "E_TYPE"),
+        ("nb stdio.in >> (const String line << await Future<string>);", "E_CONST_EFFECT"),
+        ("nb stdio.in >> Future<string> x | await x >> const String line;", "E_CONST_EFFECT"),
+        ("nb stdio.in >> (val String line << Future<string>);", "E_SYNTAX"),
+        ("nb stdio.in >> Future<string> x | await x >> val String;", "E_SYNTAX"),
+    ] {
+        let src = format!("pub suspends fnc main(): int {{ {operation} return 42; }}");
+        let diag = compile(&src).expect_err("malformed/lossy read await must fail without artifact");
+        assert_eq!(diag.code, expected, "{operation}: {diag}");
+    }
+}
