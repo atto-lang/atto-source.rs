@@ -1,0 +1,14 @@
+// expect-error: E_BORROW
+define class Shape as
+    pub int x = 42;
+    pub get(): int { return self.x; }
+end
+pub fnc main(): int {
+    val v = new Shape();
+    match v over
+        on is ~Shape as val p -> {
+            return p.get();
+        }
+        on _ -> { return 0; }
+    end
+}
