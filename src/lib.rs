@@ -44,7 +44,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
     let toks = routine_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
@@ -112,6 +112,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     } else {
         parser::Parser::new(toks).parse_program()?
     };
+    // Validate exports against the parsed top-level symbol table, never a
+    // lexical occurrence inside a class, nested method or foreign prototype.
+    visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
