@@ -1,0 +1,34 @@
+// Browser-v2 uses And/Or/Xor(a, b) compatibility functions.
+// Do not infer infix &&/||/^^ admission: Atto currently reserves ^^,
+// while the Oreslang Java Boolean contract uses it for XOR (parity unresolved).
+// Boolean conditions require bool operands; no implicit truthiness.
+fnc classify(int n): int {
+  if n < 0 then
+    return -1;
+  elif n eq 0 then
+    return 0;
+  else
+    return 1;
+  fi
+}
+
+fnc even(int n): bool {
+  let r = n;
+  while r >= 2 do
+    r = r - 2;
+  done
+  return r eq 0;
+}
+
+pub fnc main(): int {
+  val a = 7;
+  val b = 12;
+  if And(a > 0, b > 0) then
+    stdio.println("both positive");
+  fi
+  if Or(even(a), even(b)) then
+    stdio.println("at least one even");
+  fi
+  val bigger = a > b ? a : b;
+  return bigger + classify(-5);
+}

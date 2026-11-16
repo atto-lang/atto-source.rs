@@ -57,17 +57,28 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    if target {
+    let program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
-        // Type the declared method signatures without handing unlinked actor
-        // declarations to the executable check / Wasm backend.
-        let typed = target_typed::lower_target_signatures(&headers)?;
-        let actor_ast = target_typed::build_actor_program(&headers, &typed);
-        check::check_target_actor_interface(&actor_ast)?;
-        return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
-            "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
-    }
-    let program = parser::Parser::new(toks).parse_program()?;
+        if !headers.classes.is_empty() {
+            // Out-of-line *immutable class* mtd is executable: translate the
+            // receiver headers into equivalent in-class method tokens, then
+            // reuse the full production parser, checker and guest Wasm emitter.
+            // Namespace, imports, actor receivers and mutable-self are gated
+            // inside the lowering helper, never silently compiled as classes.
+            let lowered = target_syntax::lower_class_receivers(&toks, &headers)?;
+            parser::Parser::new(lowered).parse_program()?
+        } else {
+            // Actor mtd stays strictly syntax/type preflight only. An ActorRef
+            // must never acquire unverified synchronous method dispatch.
+            let typed = target_typed::lower_target_signatures(&headers)?;
+            let actor_ast = target_typed::build_actor_program(&headers, &typed);
+            check::check_target_actor_interface(&actor_ast)?;
+            return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
+                "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
+        }
+    } else {
+        parser::Parser::new(toks).parse_program()?
+    };
     let typed = check::check(&program)?;
     let bytes = wasm::emit(&typed);
     if bytes.len() > wasm::MAX_OUTPUT {

@@ -1,13 +1,17 @@
-//! Conservative direct-call lowering of capture-free lambdas to typed functions.
+//! Conservative direct-call lowering of bounded, immutable scalar-capturing lambdas.
 //!
 //! One immutable local lambda per source function is supported. Direct calls
-//! become named private Wasm function calls. This provides real execution
-//! without claiming callable values, captured environments or indirect tables.
+//! become named private Wasm function calls with frozen scalar capture parameters.
+//! Callable values, escaping closures, mutable captures and indirect tables
+//! remain unsupported.
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use super::callable_ir::{CallableSignature, CallableTarget, TypedCallable};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 type R<T> = Result<T, Diagnostic>;
+
+#[derive(Clone)]
+struct Capture { source: String, snapshot: String, ty: Type }
 
 struct Direct {
     source: String,
@@ -15,6 +19,7 @@ struct Direct {
     lambda: Expr,
     params: Vec<String>,
     inferred: Option<Vec<Type>>,
+    captures: Vec<Capture>,
     calls: usize,
     expression_depth: usize,
     statement_depth: usize,
@@ -44,6 +49,7 @@ pub fn lower(input: &Program) -> R<Program> {
         // the lambda declaration. The ordinary checker would otherwise miss
         // an earlier same-scope declaration with the identical name.
         let mut bindings_before_lambda = BTreeSet::<String>::new();
+        let mut scalar_immutables = BTreeMap::<String, Type>::new();
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
             if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
@@ -91,19 +97,53 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_DUPLICATE",
                             "compiler-generated lambda name collides with a declaration"));
                     }
+                    let mut free = BTreeSet::new();
+                    if let ExprKind::Lambda { body: LambdaBody::Expression(expression), .. } = &init.kind {
+                        free_names(expression, &mut free, 0)?;
+                    }
+                    for p in params { free.remove(p); }
+                    let mut captures = Vec::new();
+                    for candidate in free {
+                        if let Some(&ty) = scalar_immutables.get(&candidate) {
+                            if captures.len() == 8 || params.len() + captures.len() >= crate::parser::MAX_PARAMS {
+                                return Err(error(*pos, "E_SOURCE_LIMIT",
+                                    "direct scalar lambda capture budget exceeded"));
+                            }
+                            captures.push(Capture {
+                                source: candidate,
+                                snapshot: format!("$capture_{}_{}", idx, captures.len()),
+                                ty,
+                            });
+                        }
+                    }
+                    // Snapshot at the lexical definition point, not at a call
+                    // inside a shadowing block. Values are immutable scalars.
+                    for c in &captures {
+                        body.push(Stmt::Bind {
+                            kind: BindKind::Val, name: c.snapshot.clone(),
+                            ty: Some(c.ty),
+                            init: Expr { kind: ExprKind::Var(c.source.clone()), pos: *pos },
+                            pos: *pos,
+                        });
+                    }
                     direct = Some(Direct {
                         source: name.clone(),
                         hidden,
                         lambda: init.clone(),
-                        params: params.clone(), inferred: None, calls: 0,
+                        params: params.clone(), inferred: None, captures, calls: 0,
                         expression_depth: 0, statement_depth: 0,
                     });
                     continue;
                 }
             }
             if let Some(d) = &mut direct { rewrite_stmt(&mut stmt, d)?; }
-            if let Stmt::Bind { name, .. } = &stmt {
+            if let Stmt::Bind { kind, name, init, .. } = &stmt {
                 bindings_before_lambda.insert(name.clone());
+                if *kind == BindKind::Val {
+                    if let Some(ty @ (Type::Int | Type::Bool | Type::Float)) = literal_type(init) {
+                        scalar_immutables.insert(name.clone(), ty);
+                    }
+                }
             }
             body.push(stmt);
         }
@@ -114,7 +154,15 @@ pub fn lower(input: &Program) -> R<Program> {
             }
             let types = d.inferred.ok_or_else(|| error(d.lambda.pos, "E_INFER",
                 "lambda parameter types need a direct invocation"))?;
-            let signature = CallableSignature::from_noncapturing(&d.lambda, Some(&types), None)?;
+            let mut lifted = d.lambda.clone();
+            let mut all_types = types.clone();
+            if let ExprKind::Lambda { params, .. } = &mut lifted.kind {
+                for c in &d.captures {
+                    params.push(c.source.clone());
+                    all_types.push(c.ty);
+                }
+            }
+            let signature = CallableSignature::from_noncapturing(&lifted, Some(&all_types), None)?;
             let callable = TypedCallable::checked(
                 signature,
                 CallableTarget::Direct {
@@ -122,7 +170,7 @@ pub fn lower(input: &Program) -> R<Program> {
                 },
                 d.lambda.pos,
             )?;
-            callable.check_arguments(&types, d.lambda.pos)?;
+            callable.check_arguments(&all_types, d.lambda.pos)?;
             let inner = match d.lambda.kind {
                 ExprKind::Lambda { body, .. } => body,
                 _ => unreachable!(),
@@ -139,7 +187,10 @@ pub fn lower(input: &Program) -> R<Program> {
                 name: d.hidden,
                 pos: d.lambda.pos,
                 is_generator: false,
-                params: d.params.into_iter().zip(types).map(|(name, ty)| Param {
+                is_pure: true,
+                params: d.params.into_iter().chain(
+                    d.captures.into_iter().map(|c| c.source)
+                ).zip(all_types).map(|(name, ty)| Param {
                     name, ty, mutable: false, pos: d.lambda.pos,
                 }).collect(),
                 ret: callable.signature().result,
@@ -270,12 +321,20 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
                     d.inferred = Some(types);
                 }
                 *name = d.hidden.clone();
+                // Every call uses the definition-site snapshot, even if
+                // the source name is shadowed in the caller's nested block.
+                args.extend(d.captures.iter().map(|c| Expr {
+                    kind: ExprKind::Var(c.snapshot.clone()), pos: e.pos,
+                }));
                 d.calls += 1;
             }
             Ok(())
         }
-        ExprKind::Unary(_, x) | ExprKind::Trap(x) | ExprKind::Propagate(x) =>
-            rewrite_expr(x, d),
+        // Ownership wrappers may contain a direct lambda call or a value
+        // escape. Traverse their operand before the ordinary ownership checker
+        // validates move/borrow/copy semantics.
+        ExprKind::Ownership(_, _, x) | ExprKind::Unary(_, x) |
+        ExprKind::Trap(x) | ExprKind::Propagate(x) => rewrite_expr(x, d),
         ExprKind::Binary(_, x, y) => {
             rewrite_expr(x, d)?;
             rewrite_expr(y, d)
@@ -291,14 +350,72 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
             for a in args { rewrite_expr(a, d)?; }
             Ok(())
         }
-        ExprKind::Array(args) => {
+        ExprKind::Array(args) | ExprKind::New(_, args) => {
+            // Constructor arguments are genuine call arguments. Omitting
+            // them lets a direct lambda call bypass lexical snapshot rewriting
+            // (or silently resolve to a same-named top-level function).
             for a in args { rewrite_expr(a, d)?; }
             Ok(())
         }
         ExprKind::Lambda { .. } => Err(error(e.pos, "E_UNSUPPORTED",
             "nested or escaping lambda needs closure lowering")),
-        _ => Ok(()),
+        ExprKind::StateRead(_) => Err(error(e.pos, "E_UNSUPPORTED",
+            "protected state projections require a lexical state lease, not direct closure lowering")),
+        // Exhaustive AST traversal: introducing a new expression kind must
+        // require a compiler review of its lexical binding behaviour.
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef |
+        ExprKind::Spawn(_) => Ok(()),
     }
+}
+
+// Collect only simple expression-body free variables. Other lambda bodies
+// remain under the existing no-capture/effect checker until scoped capture
+// analysis and lifetime lowering are implemented.
+fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
+    if depth >= MAX_REWRITE_DEPTH {
+        return Err(error(e.pos, "E_NESTING", "lambda capture walk limit exceeded"));
+    }
+    match &e.kind {
+        ExprKind::Var(name) => { names.insert(name.clone()); }
+        ExprKind::Unary(_, a) => free_names(a, names, depth + 1)?,
+        ExprKind::Binary(_, a, b) => {
+            free_names(a, names, depth + 1)?;
+            free_names(b, names, depth + 1)?;
+        }
+        ExprKind::Ternary(c, a, b) => {
+            free_names(c, names, depth + 1)?;
+            free_names(a, names, depth + 1)?;
+            free_names(b, names, depth + 1)?;
+        }
+        // Keep this match exhaustive. Newly introduced AST expression forms
+        // must be reviewed here before direct closure conversion is enabled;
+        // otherwise a missed free-variable use could escape capture analysis.
+        ExprKind::Int(_) | ExprKind::Float(_) |
+        ExprKind::Bool(_) | ExprKind::Str(_) => {},
+        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) =>
+            free_names(a, names, depth + 1)?,
+        ExprKind::Call(_, args) | ExprKind::New(_, args) |
+        ExprKind::Array(args) => {
+            for arg in args { free_names(arg, names, depth + 1)?; }
+        }
+        ExprKind::MethodCall(recv, _, args) => {
+            free_names(recv, names, depth + 1)?;
+            for arg in args { free_names(arg, names, depth + 1)?; }
+        }
+        // A receiver and a nested lambda are outside the direct-call scalar
+        // capture profile. The noncapturing typechecker retains the precise
+        // E_CAPTURE/E_UNSUPPORTED failure classification for these forms.
+        // Capturing or moving ownership through a generated lambda requires
+        // a verified lifetime/effect model. Refuse rather than accidentally
+        // skipping an owned free variable during closure conversion.
+        ExprKind::Ownership(_, _, _) => return Err(error(e.pos, "E_UNSUPPORTED",
+            "explicit ownership inside a direct lambda requires verified capture lifetimes")),
+        ExprKind::StateRead(_) => return Err(error(e.pos, "E_UNSUPPORTED",
+            "protected state projection inside a direct lambda is not lifetime-verified")),
+        ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Lambda { .. } => {},
+    }
+    Ok(())
 }
 
 fn stmt_pos(s: &Stmt) -> Pos {
