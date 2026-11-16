@@ -124,3 +124,18 @@ pub fnc main(): int {
     let error = atto_compiler::compile(src).unwrap_err();
     assert_eq!(error.code, "E_UNSUPPORTED", "{error}");
 }
+
+#[test]
+fn ownership_wrapper_rewrites_direct_lambda_calls_before_typechecking() {
+    let source = "pub fnc main(): int { val f = |n| : int -> n + 1; return copy! f(41); }";
+    assert!(atto_compiler::compile(source).is_ok());
+}
+
+#[test]
+fn direct_lambda_cannot_hide_unverified_ownership_moves_or_borrows() {
+    for op in ["copy! n", "take! n", "borrow! n", "share! n"] {
+        let source = format!("pub fnc main(): int {{ val f = |n| : int -> {op}; return f(42); }}");
+        let error = atto_compiler::compile(&source).unwrap_err();
+        assert_eq!(error.code, "E_UNSUPPORTED", "{op}: {error}");
+    }
+}

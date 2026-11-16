@@ -350,6 +350,10 @@ pub enum LambdaBody {
     Block(Vec<Stmt>),
 }
 
+/// Explicit Atto ownership operators, not pointer address syntax.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnershipOp { Borrow, Copy, Take, Share }
+
 #[derive(Clone, Debug)]
 pub enum ExprKind {
     /// Integer literal. `None` is 2^63, only legal as the operand of unary minus.
@@ -363,6 +367,9 @@ pub enum ExprKind {
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
+    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, take! x,
+    /// share! x. Parentheses are optional grouping, not call arguments.
+    Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// Postfix `?`: unwrap Ok/Some or propagate Err/None from the caller.

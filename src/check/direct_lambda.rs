@@ -328,8 +328,11 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
             }
             Ok(())
         }
-        ExprKind::Unary(_, x) | ExprKind::Trap(x) | ExprKind::Propagate(x) =>
-            rewrite_expr(x, d),
+        // Ownership wrappers may contain a direct lambda call or a value
+        // escape. Traverse their operand before the ordinary ownership checker
+        // validates move/borrow/copy semantics.
+        ExprKind::Ownership(_, _, x) | ExprKind::Unary(_, x) |
+        ExprKind::Trap(x) | ExprKind::Propagate(x) => rewrite_expr(x, d),
         ExprKind::Binary(_, x, y) => {
             rewrite_expr(x, d)?;
             rewrite_expr(y, d)
@@ -399,6 +402,11 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // A receiver and a nested lambda are outside the direct-call scalar
         // capture profile. The noncapturing typechecker retains the precise
         // E_CAPTURE/E_UNSUPPORTED failure classification for these forms.
+        // Capturing or moving ownership through a generated lambda requires
+        // a verified lifetime/effect model. Refuse rather than accidentally
+        // skipping an owned free variable during closure conversion.
+        ExprKind::Ownership(_, _, _) => return Err(error(e.pos, "E_UNSUPPORTED",
+            "explicit ownership inside a direct lambda requires verified capture lifetimes")),
         ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Lambda { .. } => {},
     }
     Ok(())

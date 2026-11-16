@@ -2074,6 +2074,28 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
+            // Ownership is a prefix unary expression, like trap. Its operand
+            // may be a name, postfix chain, or a grouped expression; the
+            // canonical spelling never requires parentheses around a name.
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
+                && *self.peek_at(1) == Tok::Bang =>
+            {
+                let action = match s.as_str() {
+                    "borrow" => OwnershipOp::Borrow,
+                    "copy" => OwnershipOp::Copy,
+                    "take" => OwnershipOp::Take,
+                    "share" => OwnershipOp::Share,
+                    _ => unreachable!(),
+                };
+                self.advance(); // name
+                self.advance(); // !
+                let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
+                if action != OwnershipOp::Borrow && self.is_word("mut") {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
+                }
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
+            },
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
@@ -2388,6 +2410,9 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
+                }
                 "true" => {
                     self.advance();
                     ExprKind::Bool(true)
