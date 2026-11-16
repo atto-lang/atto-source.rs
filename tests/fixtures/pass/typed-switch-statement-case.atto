@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Statement form with declared result and checked definite exits.
+pub fnc main(): int {
+    switch<int> true over
+        case true : int -> { return 42; }
+        default : int -> { return 0; }
+    end
+}
