@@ -1,0 +1,14 @@
+// expect-error: E_UNSUPPORTED_TYPE
+define class EmptyShape as
+    int private_member = 10;
+end
+define class C as
+    pub int x = 42;
+end
+pub fnc main(): int {
+    val v = new C();
+    match v over
+        on is ~EmptyShape -> { return 42; }
+        on _ -> { return 0; }
+    end
+}
