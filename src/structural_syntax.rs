@@ -145,9 +145,16 @@ impl Cursor {
                 v.to_string()
             }
             Tok::Minus if allow_literal && !explicit &&
-                matches!(self.next(), Tok::Int(Some(_))) => {
+                matches!(self.next(), Tok::Int(_)) => {
                 self.i += 1;
-                let Tok::Int(Some(v)) = self.tok().clone() else { unreachable!() };
+                // The lexer encodes exactly 2^63 as Int(None), reserved
+                // for the negated i64::MIN boundary. Preserve it as a
+                // singleton only when the minus is part of this field type.
+                let v = match self.tok().clone() {
+                    Tok::Int(Some(v)) => v,
+                    Tok::Int(None) => 1u64 << 63,
+                    _ => unreachable!(),
+                };
                 if v > i64::MAX as u64 + 1 {
                     return Err(self.err("E_INTEGER_RANGE", "singleton integer out of range"));
                 }
