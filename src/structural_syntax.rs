@@ -317,6 +317,65 @@ pub fn parse_pattern(src: &str) -> R<Pattern> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn prefix_tilde_binding_ignores_whitespace_and_comments() {
+        // Type formals, including both type-first and name-first forms.
+        let a = parse_formals("(~{x: int, y: bool} point, other: ~Point)").unwrap();
+        let b = parse_formals("(~ {x: int, y: bool} point, other: ~ Point)").unwrap();
+        let spaced = parse_formals("(~
+          /* comment */ {x: int, y: bool} point, other: ~
+          Point)").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, spaced);
+
+        // Explicit 'is' is a type test. Bare '~' is a value pattern.
+        for (compact, spaced, comment) in [
+            ("on is ~{x: int} as val p",
+             "on is ~ {x: int} as val p",
+             "on is ~/*comment*/{x: int} as val p"),
+            ("on ~{x: 10, y: _} as val p",
+             "on ~ {x: 10, y: _} as val p",
+             "on ~\n{x: 10, y: _} as val p"),
+            ("on ~Point as val p",
+             "on ~ Point as val p",
+             "on ~/*comment*/Point as val p"),
+        ] {
+            let target = parse_pattern(compact).unwrap();
+            assert_eq!(target, parse_pattern(spaced).unwrap(), "{spaced}");
+            assert_eq!(target, parse_pattern(comment).unwrap(), "{comment}");
+        }
+
+        // In ordinary argument expressions, '~ (' remains a Map/Record
+        // aggregate, and whitespace cannot turn it into a type cast.
+        for (compact, spaced, kind) in [
+            ("(payload: ~(field: 42))",
+             "(payload: ~ (field: 42))", ArgKind::RecordAggregate),
+            ("(payload: ~(key => 42))",
+             "(payload: ~ (key => 42))", ArgKind::MapAggregate),
+            ("(~point, other: ~value)",
+             "(~ point, other: ~ value)", ArgKind::StructuralProjection),
+        ] {
+            let left = parse_arguments(compact).unwrap();
+            let right = parse_arguments(spaced).unwrap();
+            assert_eq!(left.len(), right.len());
+            assert_eq!(left[0].kind, kind);
+            for (l, r) in left.iter().zip(right.iter()) {
+                assert_eq!(l.kind, r.kind);
+                assert_eq!(l.label, r.label);
+            }
+        }
+
+        // Both spellings of a shape in expression position stay invalid.
+        for invalid in ["(~{x: 10})", "(~ {x: 10})",
+                        "(~{})", "(~ {})", "(payload: ~{x: 10})",
+                        "(payload: ~ {x: 10})"] {
+            assert!(parse_arguments(invalid).is_err(), "{invalid}");
+        }
+        // An empty match value-pattern is not the wildcard.
+        for invalid in ["on ~{}", "on ~ {}", "on ~ /*comment*/{}"] {
+            assert!(parse_pattern(invalid).is_err(), "{invalid}");
+        }
+    }
+
     #[test] fn keyword_and_tilde_have_identical_formal_ast() {
         assert_eq!(parse_formals("(~Point p, count: int)").unwrap(),
                    parse_formals("(structural Point p, count: int)").unwrap());
