@@ -160,8 +160,10 @@ export class CheckedWriteQueue {
           // Language callbacks are non-suspending unless explicitly declared.
           // Do not allow an ignored Promise to create an unobserved failure.
           if(returned && typeof returned.then==='function') {
-            Promise.resolve(returned).catch(err=>
-              this._supervise(x,failed('E_IO_CALLBACK',String(err?.message??err))));
+            // The caller attempted to suspend in a non-suspending callback.
+            // Report one policy failure, consume any later rejection to
+            // prevent a second supervisor notice or unhandled Promise.
+            Promise.resolve(returned).catch(()=>{});
             this._supervise(x,failed('E_IO_CALLBACK',
               'detached callback must not return a pending Promise'));
           }
