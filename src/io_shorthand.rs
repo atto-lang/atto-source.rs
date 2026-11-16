@@ -13,7 +13,7 @@ pub enum Context { Standalone, SelectArm }
 
 /// Explicit execution mode. Direct operations may statically require suspends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode { Direct, Nonblocking, TryImmediate }
+pub enum Mode { Direct, Nonblocking, TryImmediate, Detached }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IoShorthand {
@@ -210,6 +210,7 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         let mode = match tokens.get(after_when).and_then(word) {
             Some("nb") => Mode::Nonblocking,
             Some("try") => Mode::TryImmediate,
+            Some("do") => Mode::Detached,
             _ => Mode::Direct,
         };
         if context == Context::SelectArm && mode != Mode::Direct {
@@ -242,6 +243,10 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             .ok_or_else(|| syntax(op_pos, "I/O shorthand requires ';' or '->' after its operand"))?;
         if end == rhs_start {
             return Err(syntax(op_pos, "I/O shorthand requires a value or binding"));
+        }
+        if mode == Mode::Detached && (operator == Direction::Read || reversed_read) {
+            return Err(Diagnostic::new(op_pos, "E_IO_DISCARD",
+                "detached read cannot bind to the caller; use do readch channel, |outcome| -> void { ... }"));
         }
         let (direction, subject, binder) = if reversed_read {
             let binding = read_binder(tokens, lhs_start, i, op_pos)?;
