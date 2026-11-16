@@ -128,17 +128,6 @@ pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnosti
             break;
         }
     }
-    // A receive handler may not carry even a potential escaping failure
-    // through this runtime: there is no verified supervisor CONTROL channel
-    // for typed Error transport and no exception-safe actor teardown yet.
-    // This applies to inherited/transitive effects and bare declarations.
-    for (i, pos, actor) in receiver_indices {
-        if effects[i] != 0 {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                format!("actor '{}.receive' has escaping failure effects; supervisor CONTROL/error transport is not implemented for this browser target", actor)));
-        }
-    }
-
     for (i, bound) in bounds.iter().enumerate() {
         let Some((declared, pos)) = bound else { continue; };
         if !declared.explicit { continue; }
@@ -150,6 +139,18 @@ pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnosti
             return Err(Diagnostic::new(*pos, "E_EFFECT_TYPE",
                 format!("function/method '{}' has undeclared escaping {}(Error) effect",
                     funcs[i].name, name)));
+        }
+    }
+    // Type errors must take precedence over runtime-admission errors:
+    // otherwise a bad method's declared bound could be hidden behind an
+    // E_UNSUPPORTED receive gate.
+    // A receive handler may not carry even a potential escaping failure
+    // through this runtime: no verified supervisor priority CONTROL path
+    // or exception-safe teardown is implemented here.
+    for (i, pos, actor) in receiver_indices {
+        if effects[i] != 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("actor '{}.receive' has escaping failure effects; supervisor CONTROL/error transport is not implemented for this browser target", actor)));
         }
     }
     Ok(())
