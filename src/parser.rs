@@ -62,6 +62,7 @@ const RESERVED: &[&str] = &[
     "let",
     "mut",
     "if",
+    "guard",
     "then",
     "else",
     "elif",
@@ -139,7 +140,6 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "import",
     "async",
     "yield",
-    "guard",
     "nb",
     "cb",
     "readch",
@@ -232,6 +232,23 @@ type R<T> = Result<T, Diagnostic>;
 
 fn unsupported(pos: Pos, what: &str) -> Diagnostic {
     Diagnostic::new(pos, "E_UNSUPPORTED", format!("{what} is not supported by the browser compiler yet"))
+}
+
+/// Conservative control-flow proof for guard's failure path. In particular,
+/// a break/continue, an if without else, or a match without exhaustiveness
+/// evidence cannot stand in for a guaranteed enclosing-function exit.
+/// Later checker stages may admit richer terminal constructs only after
+/// proving they cannot fall through.
+fn guard_failure_exits(stmts: &[Stmt]) -> bool {
+    match stmts.last() {
+        Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
+        Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
+            !arms.is_empty()
+                && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
+                && guard_failure_exits(other),
+        _ => false,
+    }
 }
 
 impl Parser {
@@ -1438,6 +1455,7 @@ impl Parser {
                 Ok(Stmt::Throw(error, pos))
             }
             Some("if") => self.parse_if(),
+            Some("guard") => self.parse_guard(),
             Some("while") => {
                 self.advance();
                 let cond = self.parse_cond_head()?;
@@ -1729,6 +1747,37 @@ impl Parser {
         self.advance();
         let init = self.parse_expr()?;
         Ok(Stmt::Bind { kind, name, ty, init, pos })
+    }
+
+    /// A guard is an else-free early-exit check. Its failure branch runs only
+    /// when the predicate is false, and every path through that branch must
+    /// leave the enclosing function. Lower to an ordinary typed 'if !cond'
+    /// so the existing Rust/Wasm checker and emitter enforce bool typing,
+    /// checked effects, lexical scoping, and exactly-once predicate evaluation.
+    fn parse_guard(&mut self) -> R<Stmt> {
+        let pos = self.pos();
+        self.expect_word("guard")?;
+        let predicate = self.parse_cond_head()?;
+        if *self.peek() != Tok::LBrace {
+            return Err(Diagnostic::new(self.pos(), "E_GUARD",
+                "guard requires a braced failure branch"));
+        }
+        let failure = self.parse_block()?;
+        if !guard_failure_exits(&failure) {
+            return Err(Diagnostic::new(pos, "E_GUARD",
+                "guard failure branch must exit the enclosing function on every path"));
+        }
+        Ok(Stmt::If {
+            arms: vec![(
+                Expr {
+                    kind: ExprKind::Unary(UnOp::Not, Box::new(predicate)),
+                    pos,
+                },
+                failure,
+            )],
+            otherwise: None,
+            pos,
+        })
     }
 
     fn parse_if(&mut self) -> R<Stmt> {
