@@ -1428,6 +1428,13 @@ impl Parser {
                 }
                 if self.is_word("seq") {
                     self.advance();
+                    // A single value-match is also a degenerate one-step
+                    // sequence. Preserve return-match's exhaustiveness and
+                    // once-only subject evaluation until value-match AST
+                    // lowering is implemented for general sequence tails.
+                    if self.is_word("match") {
+                        return self.parse_return_match(pos);
+                    }
                     let value = self.parse_comma_sequence(Tok::Semi, pos)?;
                     self.terminator()?;
                     return Ok(Stmt::Return(Some(value), pos));
