@@ -1825,16 +1825,36 @@ impl Parser {
         // Empty arms are permitted in both spellings: '{}' and 'end'.
         // Even an empty end-delimited arm must consume its *own* end,
         // leaving the enclosing match end for parse_match().
-        // Stop at the next arm head as well: an omitted arm-local 'end'
-        // must not leak into generic expression/semicolon diagnostics.
-        // Nested matches consume their own 'on' tokens recursively.
-        let body = self.parse_stmts_until(&["end", "on"])?;
-        if self.is_word("on") {
-            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                "match arm requires its own 'end' before the next 'on'"));
-        }
-        self.expect_word("end")?;
-        Ok(body)
+        // Parse this arm in its own bounded scope. Unlike an ordinary
+        // statement block, a missing arm-local 'end' can be followed by
+        // another arm introduced either by 'on' (current grammar) or by
+        // a bare pattern and '->' (legacy non-over match). Detect both
+        // before the generic expression/semicolon parser consumes tokens.
+        // Nested match / if / loops are parsed recursively by parse_stmt().
+        self.enter()?;
+        let previous = self.erlang_body;
+        self.erlang_body = false;
+        let parsed = (|| -> R<Vec<Stmt>> {
+            let mut body = Vec::new();
+            loop {
+                if self.is_word("end") {
+                    break;
+                }
+                if self.is_word("on") || *self.peek_at(1) == Tok::Arrow {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "match arm requires its own 'end' before the next arm"));
+                }
+                if *self.peek() == Tok::Eof || *self.peek() == Tok::RBrace {
+                    return Err(self.expected("'end'"));
+                }
+                body.push(self.parse_stmt()?);
+            }
+            self.expect_word("end")?;
+            Ok(body)
+        })();
+        self.erlang_body = previous;
+        self.leave();
+        parsed
     }
 
     /// Statement match arms use `on P -> { stmts }` or
