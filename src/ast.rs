@@ -81,7 +81,20 @@ pub struct Program {
 pub struct ActorInterface {
     pub namespace: Option<String>,
     pub forwards: Vec<String>,
+    /// Declared actor port contracts are metadata; no guest authority.
+    pub ports: Vec<ActorInterfacePort>,
     pub methods: Vec<ActorInterfaceMethod>,
+}
+
+/// A declared nominal actor's capabilities, without a proven implementation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActorInterfacePort {
+    pub actor: u32,
+    pub public: bool,
+    pub receives: Option<String>,
+    pub emits: Option<String>,
+    pub sends: Option<String>,
+    pub implemented_contracts: Vec<String>,
 }
 
 /// Typed out-of-line receiver signature; its body is not lowered.
