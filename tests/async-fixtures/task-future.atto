@@ -1,0 +1,12 @@
+// The task body is compiled into a separate, capture-free Wasm function.
+pub suspends fnc main(): int {
+  val first = task {
+    return 20;
+  };
+  val second = task {
+    return 22;
+  };
+  val result = await first + await second;
+  stdio.println(result);
+  return result;
+}

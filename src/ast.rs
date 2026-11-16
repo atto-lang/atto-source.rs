@@ -12,6 +12,8 @@ pub enum Type {
     /// `string` / `String`: immutable UTF-8 text, a view into the module's
     /// string data (no heap).
     Str,
+    /// Browser async MVP: an owned, single-use Future<int> task handle.
+    FutureInt,
     /// Unresolved user type name: index into [`Program::type_names`].
     /// The checker replaces it with `Class` or `Enum`.
     Named(u32),
@@ -49,6 +51,7 @@ impl Type {
             Type::Void => "void",
             Type::Float => "float",
             Type::Str => "string",
+            Type::FutureInt => "Future<int>",
             Type::OptionInt => "Option<int>",
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
@@ -121,6 +124,7 @@ pub struct Field {
 #[derive(Clone, Debug)]
 pub struct Method {
     pub name: String,
+    pub suspends: bool,
     pub pos: Pos,
     pub public: bool,
     pub is_static: bool,
@@ -179,6 +183,7 @@ pub struct ActorDecl {
 #[derive(Clone, Debug)]
 pub struct Func {
     pub name: String,
+    pub suspends: bool,
     pub pos: Pos,
     /// Explicit `fnc *gen` modifier; not inferred from `yield`.
     pub is_generator: bool,
@@ -375,6 +380,10 @@ pub enum ExprKind {
     New(String, Vec<Expr>),
     /// `spawn Actor()`
     Spawn(String),
+    /// A checked suspend point. The browser MVP uses JSPI stack switching.
+    Await(Box<Expr>),
+    /// A capture-free, structured child task whose body is a synthetic Wasm function.
+    Task(String),
     /// `base.name`: field read, `Enum.Variant`, or `mail.value`.
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
