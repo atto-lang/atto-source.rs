@@ -145,21 +145,20 @@ impl Cursor {
                 v.to_string()
             }
             Tok::Minus if allow_literal && !explicit &&
-                matches!(self.next(), Tok::Int(Some(_))) => {
+                matches!(self.next(), Tok::Int(_)) => {
                 self.i += 1;
-                let Tok::Int(Some(v)) = self.tok().clone() else { unreachable!() };
-                if v > i64::MAX as u64 + 1 {
-                    return Err(self.err("E_INTEGER_RANGE", "singleton integer out of range"));
-                }
+                // The lexer deliberately stores exactly 2^63 as Int(None):
+                // it is valid ONLY when directly preceded by unary minus.
+                // Do not treat this boundary as an arbitrary over-range int.
+                let canonical = match self.tok().clone() {
+                    Tok::Int(None) => i64::MIN.to_string(),
+                    Tok::Int(Some(0)) => "0".to_owned(),
+                    Tok::Int(Some(v)) if v <= i64::MAX as u64 => format!("-{v}"),
+                    _ => return Err(self.err("E_INTEGER_RANGE",
+                        "singleton integer magnitude is out of signed i64 range")),
+                };
                 self.i += 1;
-                if v == i64::MAX as u64 + 1 {
-                    i64::MIN.to_string()
-                } else if v == 0 {
-                    // Integer -0 and 0 are the same singleton type.
-                    "0".to_owned()
-                } else {
-                    format!("-{v}")
-                }
+                canonical
             }
             Tok::Ident(ref w) if w == "true" || w == "false" => {
                 if !allow_literal || explicit {
