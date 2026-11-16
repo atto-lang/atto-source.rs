@@ -2400,6 +2400,43 @@ impl Parser {
         while *self.peek() == Tok::PipeGt {
             let pos = self.pos();
             self.advance();
+            // A suspending closure is not a function named "await". Admit the
+            // exact identity-await lambda as a narrow executable pipeline
+            // stage until general first-class closures are lowered.
+            //
+            //   pending |> suspends |value| -> await value |> transform
+            //
+            // Desugars to transform(await pending); await still belongs to the
+            // current execution context and the checker enforces suspends.
+            if self.eat_word("suspends") {
+                self.expect(Tok::Pipe, "'|' before the suspending pipeline binder")?;
+                let (binder, _) = self.ident("a suspending pipeline binder")?;
+                self.expect(Tok::Pipe, "'|' after the suspending pipeline binder")?;
+                self.expect(Tok::Arrow, "'->' after a suspending pipeline binder")?;
+                if !self.eat_word("await") {
+                    return Err(unsupported(self.pos(), "suspending pipeline lambdas other than '|v| -> await v'"));
+                }
+                let (awaited, at) = self.ident("the awaited pipeline binder")?;
+                if awaited != binder {
+                    return Err(Diagnostic::new(at, "E_PIPE_BIND",
+                        "a suspending identity-await stage must await its own parameter"));
+                }
+                // Do not reinterpret a lambda tail such as "await v + 1"
+                // as arithmetic performed *outside* the lambda. General
+                // lambda bodies require real callable-value semantics.
+                let stage_boundary = matches!(self.peek(),
+                    Tok::PipeGt | Tok::Semi | Tok::RParen | Tok::RBracket |
+                    Tok::RBrace | Tok::Comma | Tok::Eof | Tok::Question);
+                let newline = self.i > 0
+                    && self.toks[self.i - 1].pos.line < self.pos().line;
+                if !stage_boundary && !newline {
+                    return Err(unsupported(self.pos(), "complex suspending pipeline lambda bodies"));
+                }
+                self.grow(1)?;
+                links += 1;
+                c = Expr {kind: ExprKind::Await(Box::new(c)), pos};
+                continue;
+            }
             let stage = self.parse_postfix()?;
             let (name, mut args) = match stage.kind {
                 ExprKind::Var(name) => (name, Vec::new()),
