@@ -263,6 +263,17 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         if end == rhs_start {
             return Err(syntax(op_pos, "I/O shorthand requires a value or binding"));
         }
+        // A declaration-first *reverse functional pipeline* is checked by
+        // the production expression parser, not by the readable-source
+        // preflight. Crucially, a plain 'val x << source' still goes through
+        // the I/O capability checks below. The expression parser separately
+        // requires an explicit identity-await stage and typechecks its result.
+        let reverse_functional_capture = reversed_read
+            && tokens[rhs_start..end].windows(2).any(|pair|
+                pair[0].tok == Tok::Lt && pair[1].tok == Tok::Pipe
+                && pair[0].pos.line == pair[1].pos.line
+                && pair[0].pos.col.checked_add(1) == Some(pair[1].pos.col));
+        if reverse_functional_capture { continue; }
         if mode == Mode::Detached && (operator == Direction::Read || reversed_read) {
             return Err(Diagnostic::new(op_pos, "E_IO_DISCARD",
                 "detached read cannot bind to the caller; use do readch channel, |outcome| -> void { ... }"));
