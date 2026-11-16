@@ -373,6 +373,14 @@ impl Parser {
 
     fn parse_type(&mut self) -> R<Type> {
         let pos = self.pos();
+        // A parenthesized tuple type is valid target language syntax, but
+        // the browser scalar guest profile cannot represent it yet. Report
+        // explicit unsupported capability, not a generic syntax error that
+        // implies a malformed source program. Never misparse as grouping.
+        if *self.peek() == Tok::LParen {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "tuple type '(T, ...)' is not supported by the browser Wasm compiler yet"));
+        }
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
             _ => return Err(self.expected("a type")),
