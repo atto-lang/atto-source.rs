@@ -180,7 +180,12 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
             j += 1;
             loop {
                 if parents.len() >= MAX_BASES { return Err(diag(t[start].pos, "E_SOURCE_LIMIT", "too many class bases")); }
-                parents.push(name(t, j)?); j += 1;
+                let candidate = name(t, j)?;
+                if parents.contains(&candidate) {
+                    return Err(diag(t[j].pos, "E_DUPLICATE",
+                        format!("duplicate class base '{candidate}'")));
+                }
+                parents.push(candidate); j += 1;
                 if t.get(j).map(|x| &x.tok) != Some(&Tok::Comma) { break; }
                 j += 1;
             }
@@ -189,7 +194,12 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
             j += 1;
             loop {
                 if contracts.len() >= MAX_BASES { return Err(diag(t[start].pos, "E_SOURCE_LIMIT", "too many contracts")); }
-                contracts.push(name(t, j)?); j += 1;
+                let candidate = name(t, j)?;
+                if contracts.contains(&candidate) {
+                    return Err(diag(t[j].pos, "E_DUPLICATE",
+                        format!("duplicate implemented contract '{candidate}'")));
+                }
+                contracts.push(candidate); j += 1;
                 if t.get(j).map(|x| &x.tok) != Some(&Tok::Comma) { break; }
                 j += 1;
             }
@@ -380,6 +390,10 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             out.push(t[i].clone());
             i += 1;
         }
+    }
+    if out.len() > crate::lexer::MAX_TOKENS {
+        return Err(diag(t.first().map(|x| x.pos).unwrap_or_default(), "E_SOURCE_LIMIT",
+            "expanded nominal methods exceed compiler token budget"));
     }
     Ok(out)
 }
