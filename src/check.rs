@@ -1967,7 +1967,9 @@ impl<'a> FnCx<'a> {
                             }
                             continue;
                         };
-                        if !info.public && self.inside_class() != Some(class_id) {
+                        if !info.public {
+                            // Structural conformance is restricted to the
+                            // public surface even inside the defining class.
                             return Err(Diagnostic::new(arm.pos, "E_PRIVATE",
                                 format!("structural patterns cannot inspect private field '{}.{}'",
                                     class.name, field.name)));
@@ -2105,8 +2107,9 @@ impl<'a> FnCx<'a> {
             // (pattern test, literal key for reachability, binding name)
             let (test, key, bind): (Option<TE>, Option<i64>, Option<&str>) = match &arm.pattern {
                 Pattern::Wild => (None, None, None),
-                Pattern::StructuralFields { .. } => return Err(type_err(arm.pos,
-                    "structural value-field patterns require a statically known class subject")),
+                Pattern::StructuralFields { .. } => return Err(Diagnostic::new(arm.pos,
+                    "E_UNSUPPORTED",
+                    "structural value-field matching requires an ordinary statically typed class subject")),
                 Pattern::Bind(n) => (None, None, Some(n.as_str())),
                 Pattern::Int(v) => {
                     if sty != Type::Int {
