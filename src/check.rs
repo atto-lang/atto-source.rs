@@ -2204,6 +2204,10 @@ impl<'a> FnCx<'a> {
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
+        // Each guarded binder must be populated before the condition reads it.
+        // Guarded ADT payloads are only extracted when their tag matches.
+        // Do not move the binding into the arm body: guards run first.
+        let mut match_setup = vec![TStmt::Set(tmp, subj)];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             // The current executable profile has only definite-return arm
@@ -2268,7 +2272,21 @@ impl<'a> FnCx<'a> {
                     } else {
                         TE { e: TExpr::AdtPayload(Box::new(get())), ty }
                     };
-                    body.push(TStmt::Set(slot, value));
+                    let assign = TStmt::Set(slot, value);
+                    if arm.guard.is_some() {
+                        if let Some(tag_test) = &test {
+                            // The payload is not valid to access until the
+                            // scrutinee's variant tag is proven. Preserve
+                            // this test even for a guarded wildcard fallback.
+                            match_setup.push(TStmt::If(
+                                vec![(tag_test.clone(), vec![assign])], None
+                            ));
+                        } else {
+                            match_setup.push(assign);
+                        }
+                    } else {
+                        body.push(assign);
+                    }
                 }
                 let guard = match &arm.guard {
                     Some(g) => Some(self.cond(g, "match guard")?),
@@ -2318,10 +2336,11 @@ impl<'a> FnCx<'a> {
                 format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
-        Ok(TStmt::Block(vec![
-            TStmt::Set(tmp, subj),
-            TStmt::If(out, Some(vec![TStmt::Unreachable])),
-        ]))
+        // Keep one ordered dispatch. Guard preinitialization is pure,
+        // tag-checked, and precedes the dispatch; the main If still
+        // enforces first-match semantics with an unreachable fallback.
+        match_setup.push(TStmt::If(out, Some(vec![TStmt::Unreachable])));
+        Ok(TStmt::Block(match_setup))
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
