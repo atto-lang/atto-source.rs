@@ -4,11 +4,20 @@
 // The sink adapter MUST be non-parking and returns checked {ok, written} or {ok:false, error}.
 const encoder = new TextEncoder();
 
-const error = (code, message) => ({code, message});
+// Never retain unbounded attacker/adapter text in checked result or CONTROL
+// payloads. Error codes are nominal identifiers, not arbitrary object keys.
+const MAX_ERROR_TEXT = 256;
+const boundedText = (value) => {
+  try { return String(value).slice(0, MAX_ERROR_TEXT); }
+  catch { return 'unreadable error'; }
+};
+const error = (code, message) => ({code, message:boundedText(message)});
 const failed = (code, message) => ({ok:false, error:error(code,message)});
 function resultFromSink(raw, expected) {
   if (raw?.ok === false && typeof raw.error?.code === 'string') {
-    return failed(raw.error.code, String(raw.error.message ?? raw.error.code));
+    const code=raw.error.code;
+    if (/^[A-Z][A-Z0-9_]{0,63}$/.test(code))
+      return failed(code, raw.error.message ?? code);
   }
   if (raw?.ok === true && Number.isSafeInteger(raw.written) && raw.written === expected) {
     return {ok:true, written:expected};
@@ -40,8 +49,15 @@ export class CheckedWriteQueue {
         (supervisor!==null && typeof supervisor!=='function')) {
       throw new TypeError('bounded slots/maxBytes, an asynchronous sink and optional supervisor are required');
     }
-    this.slots=slots;this.maxBytes=maxBytes;this.maxOwners=maxOwners;
-    this.sink=sink;this.supervisor=supervisor;
+    // Settings and trusted host adapters cannot be swapped mid-flight to
+    // bypass quota limits or disable a configured supervisor error path.
+    Object.defineProperties(this,{
+      slots:{value:slots,enumerable:true},
+      maxBytes:{value:maxBytes,enumerable:true},
+      maxOwners:{value:maxOwners,enumerable:true},
+      sink:{value:sink,enumerable:false},
+      supervisor:{value:supervisor,enumerable:false},
+    });
     this.closed=false;this._next=1;this._entries=new Map();this._fifo=[];
     this._usedBytes=0;this._running=null;this._scheduled=false;
     this._owners=new Map();this._supervisorFailures=[];this._fatalSupervisor=false;
@@ -196,7 +212,8 @@ export class CheckedWriteQueue {
     // indefinitely. Fail closed; outstanding accepted writes <= slot budget.
     this._fatalSupervisor=true;
     if(this._supervisorFailures.length<this.slots)
-      this._supervisorFailures.push(err);
+      this._supervisorFailures.push(
+        new Error('E_IO_SUPERVISOR: '+errorMessage(err).slice(0,MAX_ERROR_TEXT)));
     this.close();
   }
   _supervise(x,outcome) {
