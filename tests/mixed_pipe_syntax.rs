@@ -295,3 +295,35 @@ fn stored_actor_refs_can_form_a_typed_mixed_graph_without_dynamic_casts() {
     let err = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
 }
+
+#[test]
+fn repeating_one_actor_ref_in_a_pipe_graph_requires_explicit_fanout() {
+    let source = program("source pipe middle pipe source", "int");
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_PIPE_CONTRACT", "{err}");
+    assert!(err.message.contains("more than once"), "{err}");
+}
+
+#[test]
+fn a_class_instance_is_not_an_inferred_pipe_endpoint() {
+    let source = program("source pipe middle", "int")
+        .replacen("pub fnc main(): int {",
+                  "define class Dummy as end\n pub fnc main(): int {", 1)
+        .replacen("val source = spawn Parse();",
+                  "val source = new Dummy();", 1);
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("PipeSource/PipeSink"), "{err}");
+}
+
+#[test]
+fn known_actor_ref_edges_are_checked_across_three_stage_graph() {
+    let source = program("source pipe middle pipe sink", "int")
+        .replacen("define actor Validate receives int emits int",
+                  "define actor Validate receives int emits bool", 1)
+        .replacen("receive(ActorMail<int> mail): void { emit(mail.value); }\n         end\n         define actor Sink",
+                  "receive(ActorMail<int> mail): void { emit(true); }\n         end\n         define actor Sink", 1);
+    let err = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("emitted"), "{err}");
+}
