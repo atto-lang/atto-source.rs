@@ -1,0 +1,6 @@
+// expect-error: E_ANNOTATION_TARGET
+// Legacy override is no more valid on constructors than @Override.
+define class Child as
+  override constructor() {}
+end
+pub fnc main(): int { return 0; }
