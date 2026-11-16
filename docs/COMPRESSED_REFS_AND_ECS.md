@@ -48,3 +48,24 @@ independent analyzer golden fixture are preserved. Optional representation
 metadata is available through `export_effect_ir_with_layout_checked`, a separate
 `oreslang.managed-ref-effect-envelope.v1` containing the canonical `effect_ir`.
 It does not grant pointer, actor, allocation or borrowing authority.
+
+## Bounds-checked AoSoA field addressing (new Rust stage-0 helper)
+
+The arithmetic-only `aosoa_field_offset` cannot establish that an access
+fits within a block or backing allocation. Rust now also exposes
+`checked_aosoa_field_span(row, row_count, lanes, block_stride, field_base,
+field_element_stride, field_width, backing_byte_len)`, returning a byte
+range or a typed `RefError`. This helper rejects:
+
+- out-of-range logical rows and accesses past the actual backing bytes;
+- zero/non-power-of-two lane counts, zero widths/strides and overlapping
+  lane elements (field width greater than element stride);
+- any layout whose **last lane** would exceed the physical block extent,
+  even when the particular requested lane happens to fit;
+- all checked-arithmetic overflow in field extent and row/block offsets.
+
+It does **not** return a raw pointer, infer object lifetime, authorize a
+cross-actor borrow, check field overlap with *other* columns, or prove the
+backing region belongs to an actor. These obligations remain with validated
+MIR and the allocator. An AoSoA layout planner must provide whole-record
+nonoverlap and region-provenance proofs before native dereferencing.
