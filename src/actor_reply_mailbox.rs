@@ -45,6 +45,11 @@ impl<M, R> UnaryMailbox<M, R> {
     pub fn admit(&mut self, payload: M, caller_incarnation: u64,
         deadline: u64, now: u64) -> Result<ReplyReceipt, MailFault> {
         if self.closed { return Err(MailFault::Closed); }
+        // Reclaim expired/cancelled queued entries even if no dispatcher has
+        // polled yet. Their terminal receipts remain collectable by callers.
+        self.reply.expire(now);
+        let reply = &self.reply;
+        self.queue.retain(|d| matches!(reply.poll(&d.reply_permit), Ok(None)));
         if self.queue.len() >= self.max_queued { return Err(MailFault::QueueFull); }
         let ticket = self.reply.admit(caller_incarnation, deadline, now)?;
         self.queue.push_back(Delivery {
@@ -55,7 +60,10 @@ impl<M, R> UnaryMailbox<M, R> {
 
     /// Pending requests already settled by cancellation or timeout are
     /// discarded rather than executed. Inflight deliveries consume capacity.
-    pub fn next(&mut self) -> Option<Delivery<M>> {
+    pub fn next(&mut self, now: u64) -> Option<Delivery<M>> {
+        // No expired request can be dispatched, even if the runtime timer
+        // has not run since the deadline. This sweep is capacity-bounded.
+        self.reply.expire(now);
         while let Some(delivery) = self.queue.pop_front() {
             if matches!(self.reply.poll(&delivery.reply_permit), Ok(None)) {
                 return Some(delivery);
@@ -67,6 +75,8 @@ impl<M, R> UnaryMailbox<M, R> {
     /// A return value and respond_with use the same write-once staging gate.
     pub fn stage(&mut self, delivery: &Delivery<M>, response: R,
         now: u64) -> Result<(), SlotFault> {
+        // Deadline must be enforced at staging, not only at the timer tick.
+        self.reply.expire(now);
         self.reply.stage(&delivery.reply_permit, response, now)
     }
 
