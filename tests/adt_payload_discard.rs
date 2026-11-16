@@ -106,3 +106,94 @@ fn constructors_require_payloads_and_none_rejects_parentheses() {
         }
     "#, "E_ARITY");
 }
+
+
+#[test]
+fn guarded_discard_falls_through_without_binding_and_named_guard_reads_payload() {
+    accepted(r#"
+        fnc checked(): Result<int,string> { return Ok(41); }
+        pub fnc main(): int {
+            return match<int> checked() over
+                on Ok() when false : int -> 7,
+                on Ok(n) when n > 40 : int -> n + 1,
+                on Ok(_) : int -> 0,
+                on Err() : int -> -1,
+            end;
+        }
+    "#);
+    accepted(r#"
+        fnc checked(): Result<int,string> { return Err("bad"); }
+        pub fnc main(): int {
+            return switch<int> checked() over
+                case Ok(n) when n > 0 : int -> 0,
+                case Ok() : int -> 1,
+                case Err(error) when error == "bad" : int -> 42,
+                case Err(_) : int -> 2,
+            end;
+        }
+    "#);
+}
+
+#[test]
+fn discard_patterns_preserve_exhaustiveness_and_duplicate_checks() {
+    accepted(r#"
+        fnc checked(): Result<int,string> { return Ok(1); }
+        pub fnc main(): int {
+            return match<int> checked() over
+                on Ok() : int -> 42,
+                on Err(_) : int -> 0,
+            end;
+        }
+    "#);
+    rejected(r#"
+        fnc checked(): Result<int,string> { return Ok(1); }
+        pub fnc main(): int {
+            return match<int> checked() over
+                on Ok() when true : int -> 42,
+                on Err(_) : int -> 0,
+            end;
+        }
+    "#, "E_MATCH");
+    rejected(r#"
+        fnc checked(): Result<int,string> { return Err("bad"); }
+        pub fnc main(): int {
+            return switch<int> checked() over
+                case Err() : int -> 1,
+                case Err(_) : int -> 2,
+                case Ok() : int -> 42,
+            end;
+        }
+    "#, "E_MATCH");
+}
+
+#[test]
+fn discards_cannot_bind_in_guards_or_other_arms() {
+    rejected(r#"
+        fnc checked(): Result<int,string> { return Ok(41); }
+        pub fnc main(): int {
+            return match<int> checked() over
+                on Ok() when value > 0 : int -> 42,
+                on Ok(_) : int -> 1,
+                on Err(_) : int -> 0,
+            end;
+        }
+    "#, "E_UNBOUND");
+    rejected(r#"
+        fnc checked(): Result<int,string> { return Ok(41); }
+        pub fnc main(): int {
+            return match<int> checked() over
+                on Ok(value) : int -> value,
+                on Err() : int -> value,
+            end;
+        }
+    "#, "E_UNBOUND");
+    rejected(r#"
+        fnc checked(): Option<int> { return Some(41); }
+        pub fnc main(): int {
+            return match<int> checked() over
+                on Ok() : int -> 1,
+                on None : int -> 42,
+            end;
+        }
+    "#, "E_TYPE");
+}

@@ -2204,9 +2204,9 @@ impl<'a> FnCx<'a> {
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
-        // Each guarded binder must be populated before the condition reads it.
-        // Guarded ADT payloads are only extracted when their tag matches.
-        // Do not move the binding into the arm body: guards run first.
+        // A guard reads arm-local bindings before the selected arm body runs.
+        // Stage guarded values before dispatch, but only project a tagged
+        // payload when the scrutinee is confirmed to have that tag.
         let mut match_setup = vec![TStmt::Set(tmp, subj)];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
@@ -2272,20 +2272,19 @@ impl<'a> FnCx<'a> {
                     } else {
                         TE { e: TExpr::AdtPayload(Box::new(get())), ty }
                     };
-                    let assign = TStmt::Set(slot, value);
+                    let assignment = TStmt::Set(slot, value);
                     if arm.guard.is_some() {
-                        if let Some(tag_test) = &test {
-                            // The payload is not valid to access until the
-                            // scrutinee's variant tag is proven. Preserve
-                            // this test even for a guarded wildcard fallback.
+                        if let Some(tag_test) = test.as_ref() {
+                            // Never inspect the inactive Result/Option variant.
                             match_setup.push(TStmt::If(
-                                vec![(tag_test.clone(), vec![assign])], None
+                                vec![(tag_test.clone(), vec![assignment])], None,
                             ));
                         } else {
-                            match_setup.push(assign);
+                            // A whole-scrutinee binder has no tag to check.
+                            match_setup.push(assignment);
                         }
                     } else {
-                        body.push(assign);
+                        body.push(assignment);
                     }
                 }
                 let guard = match &arm.guard {
@@ -2336,9 +2335,6 @@ impl<'a> FnCx<'a> {
                 format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
-        // Keep one ordered dispatch. Guard preinitialization is pure,
-        // tag-checked, and precedes the dispatch; the main If still
-        // enforces first-match semantics with an unreachable fallback.
         match_setup.push(TStmt::If(out, Some(vec![TStmt::Unreachable])));
         Ok(TStmt::Block(match_setup))
     }
