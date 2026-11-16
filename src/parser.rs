@@ -1760,7 +1760,18 @@ impl Parser {
                 // creates a normal local, not a second I/O operation.
                 if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
                     && matches!(self.word_at(2), Some("val" | "let" | "const")) {
-                    return self.parse_await_pipeline_capture(e, expr_start);
+                    // Existing await pipelines retain their terminal capture.
+                    // An ordinary channel receiver instead creates exactly
+                    // one PrefixRead node using the same typed JSPI ABI.
+                    let has_stage = self.toks[expr_start..self.i].windows(2).any(|pair|
+                        pair[0].tok == Tok::PipeGt
+                            && matches!(&pair[1].tok, Tok::Ident(w)
+                                if w == "susp" || w == "suspends"));
+                    return if has_stage {
+                        self.parse_await_pipeline_capture(e, expr_start)
+                    } else {
+                        self.parse_channel_directional_capture(e)
+                    };
                 }
                 if matches!(self.peek(), Tok::PlusPlus | Tok::MinusMinus) {
                     return Err(Diagnostic::new(
@@ -1846,6 +1857,53 @@ impl Parser {
     /// A terminal directional binding after explicit suspension lowers to
     /// a standard local binding. The checker enforces effects, types, moves,
     /// and scope exactly as it does for regular initialized declarations.
+    /// Source `>> val/let name[: T]`: exactly one checked channel read.
+    /// Restrict the receiver to a lexical path (not an arbitrary expression
+    /// or callable), so this cannot accidentally become a pipeline capture.
+    /// The checker then validates static Channel<int>, suspension, ownership,
+    /// and the full Result<Option<int>,IoError> type.
+    fn parse_channel_directional_capture(&mut self, source: Expr) -> R<Stmt> {
+        let at = self.pos();
+        if !matches!(source.kind, ExprKind::Var(_) | ExprKind::Member(_, _)) {
+            return Err(Diagnostic::new(at, "E_IO_SYNTAX",
+                "direct >> val/let requires a named channel receiver"));
+        }
+        self.expect_io_double(Tok::Gt, ">>")?;
+        let kind = if self.eat_word("val") { BindKind::Val }
+            else if self.eat_word("let") { BindKind::Let }
+            else if self.eat_word("const") {
+                return Err(Diagnostic::new(at, "E_CONST_EFFECT",
+                    "runtime channel reads cannot initialize const"));
+            } else { return Err(self.expected("val or let after >>")); };
+        let (name, ty) = if matches!(self.peek(), Tok::Ident(_))
+            && *self.peek_at(1) == Tok::Colon {
+            let (name, _) = self.ident("channel receive binding")?;
+            self.advance();
+            (name, Some(self.parse_type()?))
+        } else if matches!(self.word_at(0), Some("Result")) {
+            let ty = self.parse_type()?;
+            let (name, _) = self.ident("channel receive binding")?;
+            (name, Some(ty))
+        } else {
+            let (name, _) = self.ident("channel receive binding")?;
+            (name, None)
+        };
+        if self.state_method && name == "s" {
+            return Err(Diagnostic::new(at, "E_STATE_BORROW",
+                "channel receive cannot shadow a critical state binder"));
+        }
+        if ty == Some(Type::Void) {
+            return Err(Diagnostic::new(at, "E_TYPE",
+                "channel receive cannot bind void"));
+        }
+        self.terminator()?;
+        Ok(Stmt::Bind {
+            kind, name, ty,
+            init: Expr {kind: ExprKind::PrefixRead(Box::new(source)), pos: at},
+            pos: at,
+        })
+    }
+
     fn parse_await_pipeline_capture(&mut self, value: Expr, start: usize) -> R<Stmt> {
         let at = self.pos();
         // Require an actual explicit suspension lambda in this statement.
@@ -2957,6 +3015,12 @@ impl Parser {
 
     fn parse_unary_inner(&mut self) -> R<Expr> {
         let pos = self.pos();
+        // Explicit one-shot `readch c` has exactly the same effectful AST
+        // node as unary `<< c`. It never produces an implicit int.
+        if self.eat_word("readch") {
+            let readable = self.parse_unary()?;
+            return Ok(Expr { kind: ExprKind::PrefixRead(Box::new(readable)), pos });
+        }
         // Two contiguous '<' tokens at prefix position are one value-producing
         // channel read. Parse into the production AST; do not reinterpret a
         // binary shift/write or spaced comparisons as a receive.
@@ -3401,7 +3465,7 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "nb" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "await" | "nb" | "super" | "match" | "select" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
