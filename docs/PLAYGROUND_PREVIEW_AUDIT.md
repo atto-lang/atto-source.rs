@@ -13,10 +13,12 @@ through the **real Rust compiler built for wasm32**, verifies no guest artifact
 on rejection, checks emitted guests and compares native/Wasm compiler bytes.
 Eight currently supported previews have exact guest-execution oracles:
 function-pipeline, generators, result-option, trap, borrow-checking,
-closures-functors, lexical-scope-pure, and state-containers. All must be
+lexical-scope-pure, state-containers, and fib-match. All must be
 compiled by the real wasm32 Rust compiler, executed in a genuine guest with
 exact stdout/return values, and compared byte-for-byte with native Rust.
-The other previews are **not yet certified executable**. Executing eight
+The exact `closures-functors` source is still rejected on this integrated
+compiler and is explicitly **not counted** as executed. The other previews
+are **not yet certified executable**. Executing eight
 samples does not establish complete ownership, actor, ADT or effect semantics.
 
 The site has **nine** ordinary examples and **42** previews (**51 total**).
