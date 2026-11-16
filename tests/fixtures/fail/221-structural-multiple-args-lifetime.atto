@@ -1,0 +1,9 @@
+// expect-error: E_BORROW
+define class Dog as
+    pub int foo = 42;
+end
+fnc inspect(p: {foo: int}, int n): int { return p.foo + n; }
+pub fnc main(): int {
+    val value = new Dog();
+    return inspect(value, 0);
+}
