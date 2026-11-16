@@ -1822,12 +1822,10 @@ impl Parser {
         if *self.peek() == Tok::LBrace {
             return self.parse_block();
         }
+        // Empty arms are permitted in both spellings: '{}' and 'end'.
+        // Even an empty end-delimited arm must consume its *own* end,
+        // leaving the enclosing match end for parse_match().
         let body = self.parse_stmts_until(&["end"])?;
-        if body.is_empty() {
-            return Err(Diagnostic::new(
-                self.pos(), "E_SYNTAX", "match arm requires at least one statement",
-            ));
-        }
         self.expect_word("end")?;
         Ok(body)
     }
