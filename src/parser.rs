@@ -530,8 +530,10 @@ impl Parser {
         let mut p = Self::new(toks.to_vec());
         p.i = offset;
         p.expect_word("define")?;
+        let is_unary = p.eat_word("unary");
+        let is_http = p.eat_word("http");
         p.expect_word("actor")?;
-        let decl = p.parse_actor(true)?;
+        let decl = p.parse_actor(true, is_unary, is_http)?;
         Ok((decl, p.i))
     }
 
@@ -561,12 +563,22 @@ impl Parser {
                     self.i += at + 2;
                     prog.classes.push(self.parse_state_container(public)?);
                 }
+                (Some("define"), Some("unary" | "http")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += 1;
+                    let is_unary = self.eat_word("unary");
+                    let is_http = self.eat_word("http");
+                    self.expect_word("actor")?;
+                    prog.actors.push(self.parse_actor(true, is_unary, is_http)?);
+                }
                 (Some("define"), Some("actor")) => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 2;
-                    let decl = self.parse_actor(true)?;
+                    let decl = self.parse_actor(true, false, false)?;
                     prog.actors.push(decl);
                 }
                 (Some("actor"), Some(w)) if w != "fnc" => {
@@ -574,7 +586,7 @@ impl Parser {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 1;
-                    let decl = self.parse_actor(false)?;
+                    let decl = self.parse_actor(false, false, false)?;
                     prog.actors.push(decl);
                 }
                 (Some("define"), Some("enum")) => {
@@ -606,7 +618,7 @@ impl Parser {
         let (name, pos) = self.ident("a class name")?;
         self.decl_head("class")?;
         self.expect_word("as")?;
-        let m = self.parse_members(&name, false, "end")?;
+        let m = self.parse_members(&name, false, "end", false)?;
         Ok(ClassDecl {
             name,
             pos,
@@ -699,7 +711,7 @@ impl Parser {
     /// After `define actor` (`defined`) or a legacy bare `actor`.
     /// Declaration signatures use the same role spelling as the namespace
     /// target parser, but only inline definitions carry executable bodies.
-    fn parse_actor(&mut self, defined: bool) -> R<ActorDecl> {
+    fn parse_actor(&mut self, defined: bool, is_unary: bool, is_http: bool) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
         self.decl_head("actor")?;
         let mut declared_receives = None;
@@ -742,10 +754,12 @@ impl Parser {
         } else {
             "end"
         };
-        let m = self.parse_members(&name, true, close)?;
+        let m = self.parse_members(&name, true, close, is_unary)?;
         Ok(ActorDecl {
             name,
             pos,
+            is_unary,
+            is_http,
             declared_receives,
             declared_emits,
             declared_sends,
@@ -815,7 +829,7 @@ impl Parser {
     }
 
     /// Class or actor members up to and including `close` (`end` or `}`).
-    fn parse_members(&mut self, owner: &str, actor: bool, close: &str) -> R<Members> {
+    fn parse_members(&mut self, owner: &str, actor: bool, close: &str, unary: bool) -> R<Members> {
         let kind = if actor { "actor" } else { "class" };
         let mut m = Members::default();
         let mut count = 0usize;
@@ -929,6 +943,18 @@ impl Parser {
                 Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
                     return Err(unsupported(self.pos(), &format!("'{w}' members")));
                 }
+                Some("susp" | "suspends") if actor && self.word_at(1) == Some("receive") => {
+                    if public {
+                        return Err(Diagnostic::new(mpos, "E_ACTOR",
+                            "susp receive is private sealed actor mailbox ingress"));
+                    }
+                    if m.receive.is_some() {
+                        return Err(Diagnostic::new(mpos, "E_DUPLICATE",
+                            format!("actor '{owner}' already declares receive")));
+                    }
+                    self.advance();
+                    m.receive = Some(self.parse_receive(owner, unary, true)?);
+                }
                 Some("receive") if actor && *self.peek_at(1) == Tok::LParen => {
                     if public {
                         return Err(Diagnostic::new(
@@ -944,7 +970,7 @@ impl Parser {
                             format!("actor '{owner}' already declares receive"),
                         ));
                     }
-                    let r = self.parse_receive(owner)?;
+                    let r = self.parse_receive(owner, unary, false)?;
                     m.receive = Some(r);
                 }
                 Some(_) if *self.peek_at(1) == Tok::LParen => {
@@ -1047,7 +1073,7 @@ impl Parser {
     }
 
     /// `receive ( ActorMail < T > name ) [ : void ] block`.
-    fn parse_receive(&mut self, owner: &str) -> R<Receive> {
+    fn parse_receive(&mut self, owner: &str, unary: bool, suspends: bool) -> R<Receive> {
         let pos = self.pos();
         self.advance();
         self.expect(Tok::LParen, "'('")?;
@@ -1078,15 +1104,17 @@ impl Parser {
             ));
         }
         self.expect(Tok::RParen, "')'")?;
-        if self.parse_return_spec()? != Type::Void {
-            return Err(Diagnostic::new(
-                pos,
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' must return void"),
-            ));
+        let ret = self.parse_return_spec()?;
+        if unary && ret == Type::Void {
+            return Err(Diagnostic::new(pos, "E_REPLY_TYPE",
+                format!("unary actor '{owner}' must return a non-void response")));
+        }
+        if !unary && ret != Type::Void {
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                format!("ordinary actor '{owner}.receive' must return void")));
         }
         let body = self.parse_block()?;
-        Ok(Receive { pos, mail, payload, body })
+        Ok(Receive { pos, mail, payload, ret, suspends, body })
     }
 
     /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.
