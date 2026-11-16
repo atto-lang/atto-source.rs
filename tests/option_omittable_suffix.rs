@@ -140,3 +140,21 @@ fn invalid_marker_placements_reject_without_ternary_or_propagation_fallback() {
     fails("fnc f(Point? x?): int { return 1; } pub fnc main(): int { return 0; }",
         "E_UNSUPPORTED_TYPE");
 }
+
+#[test]
+fn unused_match_only_adt_functions_still_allocate_linear_memory_for_loads() {
+    // The heap decision must not rely on a reachable Some/None constructor.
+    // Without ADT-read admission this used to produce structurally invalid Wasm.
+    let src = r#"
+        fnc inspect(int? x): int {
+            match x over
+                on None -> { return 42; }
+                on Some(n) -> { return n; }
+            end
+        }
+        pub fnc main(): int { return (42); }
+    "#;
+    let typed = atto_compiler::check::check(&parse(src)).unwrap();
+    assert!(typed.heap, "an uncalled ADT match still emits i32.load and needs memory");
+    pass(src);
+}

@@ -308,7 +308,7 @@ pub struct TProgram {
     pub main: u32,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
-    /// Classes exist: the module owns a bounded bump heap.
+    /// Classes and all tagged ADT memory accesses require bounded linear memory.
     pub heap: bool,
     /// Types of the actor-state globals, indexed by `TExpr::GlobalGet`.
     pub globals: Vec<Type>,
@@ -1287,8 +1287,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
-    let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+    // Even an uncalled, match-only Option/Result function emits ADT tag/payload
+    // linear-memory loads. Guest memory must not depend on whether a caller
+    // constructs Some/None: an optimizer or a mutation may remove every call.
+    let adt_memory_access = funcs.iter().any(|f| any_in_stmts(&f.body,
+        &|e| matches!(e.e,
+            TExpr::AdtNew { .. } | TExpr::AdtIs { .. } |
+            TExpr::AdtPayload(_) | TExpr::AdtPropagate { .. } |
+            TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     Ok(TProgram {
@@ -1296,7 +1302,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
+        heap: !p.classes.is_empty() || concat || adt_memory_access || !generators.is_empty(),
         generators,
         globals,
         actors: tactors,
