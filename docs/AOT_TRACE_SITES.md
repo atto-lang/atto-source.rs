@@ -31,3 +31,19 @@ a full interpreter, JIT, actor runtime, or garbage collector.
    allocation and pause budgets against Java and LLVM with exact SHA runs.
 
 No feature-parity or JIT-performance claim is justified by this PR alone.
+
+## AoS versus SoA advice
+
+The owner-local LayoutAccessTrace is a 64-field fixed-capacity buffer that
+records valid (row, field) coordinates without allocations. It applies the
+same conservative rules as LLVM's DopAotLayoutTrace draft PR #1846:
+
+- Repeated same-row, different-field transitions suggest AoS.
+- Repeated same-field, consecutive-row transitions suggest SoA.
+- Require at least two transitions and a strict winner; tied or sparse
+  evidence remains Insufficient.
+- No observation automatically migrates an existing store or changes an ABI.
+
+The Rust tests pin LLVM's sealed-tracing, invalid-probe, large-row and
+row/column access examples. An observation is a performance *hint*, never a
+semantic or safety proof. No guest instrumentation has been added.
