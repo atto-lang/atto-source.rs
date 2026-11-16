@@ -161,7 +161,7 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
                 .ok_or_else(|| fail(t[i].pos, "E_UNSUPPORTED_TYPE",
                     "Any literal specialization requires a direct immutable scalar initializer"))?;
             if t.get(i + 3).is_none_or(|x| x.tok != Tok::Semi) {
-                return Err(fail(t[i].pos, "E_UNSUPPORTED",
+                return Err(fail(t[i].pos, "E_UNSUPPORTED_TYPE",
                     "Any literal specialization does not accept computed or escaped values"));
             }
             let Tok::Ident(name) = &t[i - 2].tok else { unreachable!() };
