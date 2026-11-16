@@ -1,0 +1,7 @@
+// expect-error: E_ANNOTATION_TARGET
+// An interface signature is not a concrete inherited override.
+define interface Named as
+  @Override
+  name(): string;
+end
+pub fnc main(): int { return 0; }
