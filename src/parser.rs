@@ -2743,6 +2743,17 @@ impl Parser {
         let mut left = self.parse_additive()?;
         loop {
             let pos = self.pos();
+            // '>> val' cannot be parsed as two numeric comparisons.
+            // A terminal value binder is only legal after the explicit
+            // suspending pipeline stage handled at statement level.
+            if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
+                && matches!(self.word_at(2), Some("val" | "let" | "const"))
+                && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+                && self.toks[self.i].pos.col.checked_add(1) ==
+                   Some(self.toks[self.i + 1].pos.col) {
+                return Err(Diagnostic::new(pos, "E_IO_SYNTAX",
+                    "terminal '>> val/let' requires an explicit suspending pipeline"));
+            }
             let op = match self.peek() {
                 Tok::Lt => BinOp::Lt,
                 Tok::Le => BinOp::Le,
