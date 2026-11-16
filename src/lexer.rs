@@ -52,6 +52,8 @@ pub enum Tok {
     PipeGt,
     Amp,
     At,
+    /// Return shorthand: statement-position `^ expression;`.
+    Caret,
     Eof,
 }
 
@@ -308,7 +310,12 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('>', _) => (Tok::Gt, 1),
             ('*', _) => (Tok::Star, 1),
             ('/', _) => (Tok::Slash, 1),
-            ('%', _) | ('^', _) => {
+            ('^', Some('^')) => {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "boolean ^^ is reserved until its backend lowering is available"));
+            }
+            ('^', _) => (Tok::Caret, 1),
+            ('%', _) => {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED",
