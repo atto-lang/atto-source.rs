@@ -10,6 +10,7 @@ pub mod safety;
 pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;
+pub mod layout_trace;
 pub mod trace_sites;
 
 /// Compile the current scalar grammar with opt-in signed i64 overflow traps.
