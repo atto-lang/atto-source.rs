@@ -164,3 +164,21 @@ fn more_than_one_unary_signature_is_collected() {
     assert_eq!(sigs.len(), 2);
     assert_eq!(sigs[1].actor, "B");
 }
+
+#[test]
+fn unary_bare_return_cannot_satisfy_response() {
+    let src = "define unary actor Foo receives A as
+        receive(ActorMail<A> m): B { return; } end";
+    assert_eq!(diagnostic(src), "E_REPLY_TYPE");
+    assert_eq!(compile(src).unwrap_err().code, "E_REPLY_TYPE");
+}
+
+#[test]
+fn unrelated_method_called_respond_with_does_not_claim_actor_reply_sidecar() {
+    let src = "pub fnc main(): int { return 0; }
+        define class Foo as
+            respond_with(int value): int { return value; }
+        end";
+    assert!(!uses_reply_intrinsic(&lex(src).unwrap()));
+    assert!(signature(src).unwrap().is_empty());
+}
