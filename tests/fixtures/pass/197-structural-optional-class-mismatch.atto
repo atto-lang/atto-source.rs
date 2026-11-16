@@ -1,4 +1,5 @@
 // expect-exit: 42
+// java: rejects
 // Optional x exists but does not equal 10: the wildcard fallback runs.
 define class WrongX as
     pub int x = 11;
