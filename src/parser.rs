@@ -1150,21 +1150,87 @@ impl Parser {
         })
     }
 
-    /// Parse formal type modifiers without discarding the structural
-    /// semantics. The checker must validate the borrowed shape ABI *before*
-    /// registration or guest codegen. Inline shapes are still unsupported
-    /// until they have an owned type/field descriptor IR.
+    /// Consume and validate one anonymous shape type from the production
+    /// token stream, rather than accepting it only in the syntax-only preflight.
+    /// A reserved canonical spelling is interned as unresolved Type::Named;
+    /// this is temporary *syntax metadata*, NOT a nominal class or a runtime
+    /// layout. Param.structural must remain true and check() rejects this
+    /// formal before type resolution, signature registration, or codegen.
+    fn parse_inline_structural_param_type(&mut self) -> R<Type> {
+        let start = self.pos();
+        let mut spelling = String::from("(shape: ");
+        let mut depth = 0usize;
+        loop {
+            let token = self.peek().clone();
+            let piece = match &token {
+                Tok::LBrace => {
+                    depth += 1;
+                    if depth > 32 {
+                        return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                            "anonymous structural type nesting exceeds 32 levels"));
+                    }
+                    "{".to_string()
+                }
+                Tok::RBrace if depth > 0 => {
+                    depth -= 1;
+                    "}".to_string()
+                }
+                Tok::Ident(s) => s.clone(),
+                Tok::Str(s) => format!("{s:?}"),
+                Tok::Int(Some(n)) => n.to_string(),
+                Tok::Int(None) => {
+                    return Err(Diagnostic::new(self.pos(), "E_INTEGER_RANGE",
+                        "anonymous shape singleton is out of integer range"));
+                }
+                Tok::Colon => ":".to_string(),
+                Tok::Comma => ",".to_string(),
+                Tok::Pipe => "|".to_string(),
+                Tok::Minus => "-".to_string(),
+                Tok::Question => "?".to_string(),
+                Tok::Tilde => "~".to_string(),
+                Tok::Dot => ".".to_string(),
+                Tok::ColonColon => "::".to_string(),
+                Tok::Lt => "<".to_string(),
+                Tok::Gt => ">".to_string(),
+                Tok::Eof => {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "unterminated anonymous structural parameter type"));
+                }
+                _ => {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "invalid token in anonymous structural parameter type"));
+                }
+            };
+            spelling.push_str(&piece);
+            spelling.push(' ');
+            self.advance();
+            if depth == 0 { break; }
+        }
+        spelling.push(')');
+        // Reuse the bounded structural grammar and canonical identity rules:
+        // duplicate fields, singleton literals, unions, optional/type wildcard
+        // bans and finite nesting all retain their precise failure codes.
+        let formals = crate::structural_syntax::parse_formals(&spelling)
+            .map_err(|e| Diagnostic::new(start, e.code, e.message))?;
+        let canonical = formals[0].ty.canonical.clone();
+        debug_assert!(formals[0].ty.structural && canonical.starts_with("~{"));
+        let id = match self.type_names.iter().position(|(name, _)| name == &canonical) {
+            Some(i) => i as u32,
+            None => self.type_name(canonical, start),
+        };
+        Ok(Type::Named(id))
+    }
+
+    /// Parse formal type modifiers without discarding structural identity.
+    /// In particular, a bare {foo: T} is structurally marked by default.
+    /// These parsed but unlowered shapes remain fail-closed in check().
     fn parse_param_type(&mut self) -> R<(Type, bool)> {
         let pos = self.pos();
-        let structural = self.eat(&Tok::Tilde) || self.eat_word("structural");
+        let mut structural = self.eat(&Tok::Tilde) || self.eat_word("structural");
         if *self.peek() == Tok::LBrace {
-            // Bare anonymous {field: Type} is structural by default, like
-            // ~{field: Type}. The source-only grammar can validate it, but
-            // production Type has no checked ShapeType/loan ABI yet. Reject
-            // explicitly rather than interpreting the braces as a body or
-            // manufacturing a nominal class pointer.
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                "anonymous structural shape parameter requires checked shape type IR and readonly projected-field ABI"));
+            structural = true;
+            let ty = self.parse_inline_structural_param_type()?;
+            return Ok((ty, structural));
         }
         let ty = self.parse_type()?;
         if structural && !matches!(ty, Type::Named(_)) {
