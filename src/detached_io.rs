@@ -110,6 +110,12 @@ pub fn inspect(t: &[Token]) -> Result<Vec<DetachedIo>, Diagnostic> {
         let pos = t[start].pos;
         let (receiver, mut i) = handle(t, start + 2).ok_or_else(|| fail(pos,
             "E_IO_SYNTAX", "detached I/O requires a qualified channel or stream handle"))?;
+        // A call or computed receiver is not a plain readable capability.
+        // Do not misreport foo() as a valid handle with a missing callback.
+        if matches!(t.get(i).map(|x| &x.tok), Some(Tok::LParen)) {
+            return Err(fail(pos, "E_IO_SYNTAX",
+                "computed detached I/O receiver requires the full typed parser"));
+        }
         if !matches!(t.get(i).map(|x| &x.tok), Some(Tok::Comma)) {
             if kind == Kind::Read {
                 return Err(fail(pos, "E_IO_DISCARD",
