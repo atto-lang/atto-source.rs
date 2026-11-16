@@ -41,6 +41,12 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
 
+      - name: Audit 49 pinned caret and sequence spec vectors against native and Wasm compilers
+        env:
+          ATTOC: target/release/attoc
+          ATTO_COMPILER_WASM: target/wasm32-unknown-unknown/release/atto_compiler.wasm
+        run: node tests/caret_spec_native_wasm.mjs
+
       - name: Execute five callable forms and class mtd guest with negative no-artifact proofs
         env:
           ATTOC: target/release/attoc
