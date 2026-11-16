@@ -1,8 +1,8 @@
 //! Native host for the same compiler core; no implicit environment version.
 //! Usage: attoc input.atto [-o out.wasm] [--language-version 1|2].
 //! The existing unflagged v2 behavior is a draft compatibility decision.
-use atto_compiler::{compile_with_language_version, LanguageVersion};
-use std::process::ExitCode;
+use atto_compiler::{compile_with_language_version, LanguageVersion, SOURCE_CAP};
+use std::{io::Read, process::ExitCode};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -30,7 +30,10 @@ fn main() -> ExitCode {
             version = match number {
                 "1" => LanguageVersion::V1,
                 "2" => LanguageVersion::V2,
-                _ => return usage(),
+                _ => {
+                    eprintln!("E_LANGUAGE_VERSION: unsupported language version (expected 1 or 2)");
+                    return ExitCode::from(2);
+                },
             };
             version_explicit = true;
         } else if arg.starts_with('-') || input.is_some() {
@@ -41,9 +44,28 @@ fn main() -> ExitCode {
         index += 1;
     }
     let Some(input) = input else { return usage(); };
-    let source = match std::fs::read(&input).map(String::from_utf8) {
-        Ok(Ok(s)) => s,
-        _ => {
+    // Read at most one byte past the compiler's source cap. Reading the full
+    // file first would allow an untrusted path to exhaust host memory before
+    // the compiler's SOURCE_CAP diagnostic could protect the process.
+    let file = match std::fs::File::open(&input) {
+        Ok(file) => file,
+        Err(_) => {
+            eprintln!("{input}: cannot read UTF-8 source");
+            return ExitCode::from(2);
+        }
+    };
+    let mut bytes = Vec::new();
+    if file.take((SOURCE_CAP as u64) + 1).read_to_end(&mut bytes).is_err() {
+        eprintln!("{input}: cannot read UTF-8 source");
+        return ExitCode::from(2);
+    }
+    if bytes.len() > SOURCE_CAP {
+        eprintln!("{input}:1:1: E_SOURCE_LIMIT: source exceeds {SOURCE_CAP} UTF-8 bytes");
+        return ExitCode::from(1);
+    }
+    let source = match String::from_utf8(bytes) {
+        Ok(source) => source,
+        Err(_) => {
             eprintln!("{input}: cannot read UTF-8 source");
             return ExitCode::from(2);
         }

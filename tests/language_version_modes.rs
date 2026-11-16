@@ -11,6 +11,16 @@ fn accepted(src: &str, version: LanguageVersion) {
 }
 
 #[test]
+fn invalid_language_numbers_have_no_default_fallback() {
+    assert_eq!(LanguageVersion::from_number(1), Some(LanguageVersion::V1));
+    assert_eq!(LanguageVersion::from_number(2), Some(LanguageVersion::V2));
+    for value in [0, 3, u32::MAX] {
+        assert_eq!(LanguageVersion::from_number(value), None,
+            "unknown edition must not be mapped to a recognized grammar");
+    }
+}
+
+#[test]
 fn old_unmarked_comma_tail_survives_v1_but_not_v2() {
     let src = "pub fnc main() -> int let int x = 5, x + 37 end";
     accepted(src, LanguageVersion::V1);

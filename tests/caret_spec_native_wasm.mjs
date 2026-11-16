@@ -285,9 +285,48 @@ try {
     assert.equal(bad.code,'E_LANGUAGE_VERSION');
     assert.equal(api.result_length(),0);
   }
+  // Host ABI must reset state after both successful and failed compilation:
+  // stale valid bytes must never be exposed as a failed compile artifact.
+  for(const version of [1,2]) {
+    const good = compileWasmHost('pub fnc main(): int { ^ 42; }',version);
+    assert.equal(good.ok,true);
+    assert.equal(guestRun(good.wasm),42n);
+    const rejected = compileWasmHost('pub fnc main(): int { ^ missing_name; }',version);
+    assert.equal(rejected.ok,false);
+    assert.equal(rejected.code,'E_UNBOUND');
+    assert.equal(api.result_length(),0,'failure leaked previous guest output');
+    const recovered = compileWasmHost('pub fnc main(): int { ^ 42; }',version);
+    assert.equal(recovered.ok,true,'ABI state contaminated next compilation');
+    assert.deepEqual(recovered.wasm,good.wasm,'recovered output changed');
+  }
   const invalid=spawnSync(binary,['--language-version','3',join(versionWork,'missing.atto')],
     {encoding:'utf8',timeout:30000,maxBuffer:1<<20});
   assert.equal(invalid.status,2,'CLI must reject unrecognized language version');
+  assert.match(invalid.stderr,/E_LANGUAGE_VERSION/,'CLI must identify invalid grammar selection');
+  for(const flag of ['0','4294967295','junk']) {
+    const rejectedVersion=spawnSync(binary,['--language-version='+flag,
+      join(versionWork,'missing.atto')],{encoding:'utf8',timeout:30000,maxBuffer:1<<20});
+    assert.equal(rejectedVersion.status,2);
+    assert.match(rejectedVersion.stderr,/E_LANGUAGE_VERSION/);
+  }
+  // Native file reads must be bounded to SOURCE_CAP+1 bytes before decoding:
+  // giant user input should reject without emitting an output Wasm file.
+  const bigInput=join(versionWork,'oversized.atto');
+  const bigOutput=join(versionWork,'oversized.wasm');
+  await writeFile(bigInput,' '.repeat(65537),'utf8');
+  for(const version of [1,2]) {
+    const nativeTooBig=spawnSync(binary,[bigInput,'-o',bigOutput,
+      '--language-version',String(version)],{encoding:'utf8',timeout:30000,maxBuffer:1<<20});
+    assert.equal(nativeTooBig.status,1);
+    assert.match(nativeTooBig.stderr,/E_SOURCE_LIMIT/);
+    let emitted=false;
+    try {await stat(bigOutput);emitted=true;} catch(e) {if(e.code!=='ENOENT') throw e;}
+    assert.equal(emitted,false,'oversized input emitted a guest');
+  }
+  const oversizedHost=compileWasmHost(' '.repeat(65537),1);
+  assert.equal(oversizedHost.ok,false);
+  assert.equal(oversizedHost.code,'E_SOURCE_LIMIT');
+  assert.equal(api.result_length(),0);
 } finally { await rm(versionWork,{recursive:true,force:true}); }
 const versionReport={schema:'atto.callable-language-versions.v1',
   sourceVersions:['1','2'],sourceVersioning:'explicit-only',
