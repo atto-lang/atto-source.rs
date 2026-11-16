@@ -172,7 +172,7 @@ pub fnc main(): int { return 0; }
 fn real_channel_int_guest_imports_and_checked_result_compile_to_wasm() {
     for source in [SOURCE_PREFIX, SOURCE_EXPLICIT] {
         let wasm = compile(source).expect("checked source-compiled guest channel read");
-        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
         assert!(wasm.windows(b"channel_int_nb_read_v1".len())
             .any(|w| w == b"channel_int_nb_read_v1"));
         assert!(wasm.windows(b"channel_int_await_read_v1".len())
