@@ -244,3 +244,119 @@ fn typed_declaration_plus_empty_definition_is_not_a_verified_receiver() {
         define actor Foo as end";
     assert_eq!(diagnostic(source), "E_SIGNATURE");
 }
+
+#[test]
+fn exact_out_of_line_receive_example_satisfies_declared_input_signature_metadata() {
+    let source = "declare actor Foo receives Input emits Output;
+        mtd (Foo self) receive(ActorMail<Input> m): void {
+        }";
+    let (headers, typed) = target(source).unwrap();
+    assert_eq!(headers.actor_ports[0].receives.as_deref(), Some("Input"));
+    assert_eq!(headers.actor_ports[0].emits.as_deref(), Some("Output"));
+    assert!(typed.receivers.is_empty(), "receive is not callable as an ordinary mtd");
+    assert_eq!(typed.mailbox_ingresses.len(), 1);
+    assert_eq!(typed.mailbox_ingresses[0].actor, 0);
+    assert_eq!(typed.mailbox_ingresses[0].payload, "Input");
+    let program = build_actor_program(&headers, &typed);
+    let iface = program.actor_interface.unwrap();
+    assert!(iface.methods.is_empty());
+    assert_eq!(iface.mailbox_ingresses.len(), 1);
+    assert_eq!(iface.mailbox_ingresses[0].payload, "Input");
+    assert_eq!(typed.resolve(None, "Foo", "receive", 1, false, Pos::default())
+        .unwrap_err().code, "E_UNBOUND", "sealed ingress is not a public method");
+    assert_eq!(typed.require_spawnable("Foo", Pos::default()).unwrap_err().code, "E_UNLINKED");
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn private_attached_receiver_must_match_nominal_inbox_type() {
+    let source = "declare actor Foo receives Input emits Output;
+        mtd (Foo self) receive(ActorMail<Other> m): void {}";
+    assert_eq!(diagnostic(source), "E_SIGNATURE");
+}
+
+#[test]
+fn attached_receiver_requires_exact_actor_mail_envelope() {
+    for source in [
+        "declare actor Foo receives int; mtd (Foo self) receive(int m): void {}",
+        "declare actor Foo receives int; mtd (Foo self) receive(): void {}",
+        "declare actor Foo receives int; mtd (Foo self) receive(ActorMail<int> m, int extra): void {}",
+        "declare actor Foo receives int; mtd (Foo self) receive(ActorRef<Foo> m): void {}",
+        "declare actor Foo receives int; mtd (Foo self) receive(ActorMail<int> m): int { return 0; }",
+    ] {
+        assert_eq!(diagnostic(source), "E_SIGNATURE", "{source}");
+    }
+}
+
+#[test]
+fn private_receive_ingress_cannot_be_published_or_borrowed_mutably() {
+    for source in [
+        "declare pub actor Foo receives int; pub mtd (Foo self) receive(ActorMail<int> m): void {}",
+        "declare actor Foo receives int; mtd (mut self: Foo) receive(ActorMail<int> m): void {}",
+    ] {
+        assert_eq!(diagnostic(source), "E_SIGNATURE", "{source}");
+    }
+}
+
+#[test]
+fn double_attached_receiver_is_not_a_multicast_or_overload() {
+    let source = "declare actor Foo receives int;
+        mtd (Foo self) receive(ActorMail<int> m): void {}
+        mtd (Foo self) receive(ActorMail<int> n): void {}";
+    assert_eq!(diagnostic(source), "E_DUPLICATE");
+}
+
+#[test]
+fn inline_and_attached_receiver_cannot_both_claim_one_mailbox() {
+    let source = "declare actor Foo receives int;
+        define actor Foo as
+            receive(ActorMail<int> m): void { return; }
+        end
+        mtd (Foo self) receive(ActorMail<int> m): void {}";
+    assert_eq!(diagnostic(source), "E_DUPLICATE");
+}
+
+#[test]
+fn out_of_line_receive_can_fill_empty_concrete_actor_inbox_witness() {
+    let source = "use namespace workers;
+        declare actor Foo receives int;
+        define actor Foo as end
+        mtd (Foo self) receive(ActorMail<int> m): void {}";
+    let (headers, typed) = target(source).unwrap();
+    assert!(typed.actors[0].has_definition);
+    assert_eq!(typed.mailbox_ingresses.len(), 1);
+    assert!(headers.definitions[0].receive.is_none());
+    assert_eq!(typed.require_spawnable("Foo", Pos::default()).unwrap_err().code, "E_UNLINKED");
+}
+
+#[test]
+fn actor_receive_cannot_attach_to_an_undeclared_owner() {
+    assert_eq!(diagnostic("declare actor Foo receives int;
+        mtd (Bar self) receive(ActorMail<int> m): void {}"), "E_UNBOUND");
+}
+
+#[test]
+fn actor_mail_envelope_cannot_leak_through_unrelated_actor_method() {
+    let source = "declare actor Foo receives int;
+        mtd (Foo self) inspect(ActorMail<int> m): void {}";
+    assert_eq!(diagnostic(source), "E_SIGNATURE");
+}
+
+#[test]
+fn receive_input_header_is_metadata_not_verified_without_receiver_implementation() {
+    let (h, typed) = target("declare actor Foo receives int emits bool;").unwrap();
+    assert!(typed.mailbox_ingresses.is_empty());
+    assert_eq!(h.actor_ports[0].receives.as_deref(), Some("int"));
+    assert_eq!(typed.require_spawnable("Foo", Pos::default()).unwrap_err().code, "E_UNLINKED");
+}
+
+#[test]
+fn attached_receive_does_not_satisfy_declared_emits_effect_by_itself() {
+    let source = "declare actor Foo receives int emits bool;
+        mtd (Foo self) receive(ActorMail<int> m): void {}";
+    let (_, typed) = target(source).unwrap();
+    assert_eq!(typed.mailbox_ingresses.len(), 1);
+    assert_eq!(typed.actors[0].emits.as_deref(), Some("bool"));
+    assert!(!typed.actors[0].defined);
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_UNSUPPORTED");
+}
