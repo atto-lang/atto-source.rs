@@ -128,6 +128,9 @@ pub struct Method {
     pub is_static: bool,
     /// An explicit override of an inherited concrete method.
     pub override_member: bool,
+    /// Canonical @Override marker position, retained until semantic validation.
+    /// None for legacy 'override' or an ordinary method.
+    pub override_annotation: Option<Pos>,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
