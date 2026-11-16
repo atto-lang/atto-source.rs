@@ -1,4 +1,5 @@
 // expect-exit: 42
+// java: rejects
 // Literal bool equality checks a present optional public field.
 define class Flags as
     pub bool enabled: true;
