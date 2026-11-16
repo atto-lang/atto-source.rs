@@ -39,6 +39,28 @@ impl<'a> FnCx<'a> {
         Ok(TE{e:TExpr::ChannelRead{channel:Box::new(channel),scratch,status},
             ty:Type::FutureReadInt})
     }
+    pub(super) fn channel_cancel(&mut self,ticket:TE,name:&str,args:&[Expr],pos:Pos)->R<TE> {
+        if self.owner!=Owner::TopLevel || !self.suspends {
+            return Err(Diagnostic::new(pos,"E_EFFECT",
+                "Future read cancellation is Worker-local and requires susp fnc"));
+        }
+        if name!="cancel" {
+            return Err(type_err(pos,format!(
+                "Future<Result<Option<int>,IoError>> has no method '{name}'")));
+        }
+        self.arity("Future<Result<Option<int>,IoError>>.cancel",0,args.len(),pos)?;
+        self.imports.push(Import::ChannelCancel);
+        let status=self.temp(Type::IoError,pos)?;
+        let result=self.temp(Type::ResultVoidIoError,pos)?;
+        // Cancellation changes the pending registration to Err(Cancelled).
+        // The original Future stays owned by the caller and MUST be awaited
+        // exactly once to retire the host ticket before channel release.
+        Ok(TE{e:TExpr::ChannelFinish{
+            channel:Box::new(ticket),
+            operation:Import::ChannelCancel,status,result
+        },ty:Type::ResultVoidIoError})
+    }
+
     pub(super) fn channel_method(&mut self,channel:TE,name:&str,args:&[Expr],pos:Pos)->R<TE>{
         if self.owner!=Owner::TopLevel {
             return Err(Diagnostic::new(pos,"E_UNSUPPORTED","Channel<int> is Worker-local"));

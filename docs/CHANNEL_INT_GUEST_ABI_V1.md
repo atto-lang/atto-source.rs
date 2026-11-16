@@ -157,3 +157,19 @@ compiler-generated error/EOF/cancellation/close/release adversarial execution,
 linear ownership and abandoned-Future cleanup, and separately verified
 Java/LLVM/.NET semantics. The host synthetic-Wasm probe is additional
 evidence, not a substitute for the compiled guest test.
+
+## Cancellation from compiled guest (draft)
+
+`Future<Result<Option<int>,IoError>>.cancel()` is a checked Worker-local
+operation returning `Result<void,IoError>`. A successful cancellation
+settles the pending read with `Err(Cancelled)`, but **does not consume**
+the Future. The owner must still `await pending` once to retire the ticket;
+channel `release()` remains `Err(Busy)` until that happens. Cancellation
+after send commit returns `Err(AlreadySettled)` and the pending Future
+still delivers its original `Ok(Some(value))`. Cancellation does not
+silently erase committed FIFO messages.
+
+An abandoned Future without awaiting or explicit drop remains a lifecycle
+gap; the compiler does not yet enforce linear cleanup on all return paths.
+Keep the language/runtime contract in draft until that ownership obligation
+is checked and tested across all exit/throw/cancellation paths.

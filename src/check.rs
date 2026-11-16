@@ -3503,6 +3503,7 @@ impl<'a> FnCx<'a> {
     #[inline(never)]
     fn method_on(&mut self, recv: TE, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if recv.ty==Type::ChannelInt {return self.channel_method(recv,name,args,pos);}
+        if recv.ty==Type::FutureReadInt {return self.channel_cancel(recv,name,args,pos);}
         if recv.ty == Type::Str {
             return self.string_method(recv, name, args, pos);
         }
