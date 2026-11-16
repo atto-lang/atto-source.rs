@@ -55,7 +55,7 @@ fn incomplete_discarded_and_const_runtime_reads_have_stable_diagnostics() {
 }
 
 #[test]
-fn currently_unimplemented_guest_channel_read_must_never_emit_wasm() {
+fn undefined_channel_receiver_never_emits_guest_wasm() {
     for expression in [
         "val x = << c;",
         "total += (<< c);",
@@ -66,8 +66,7 @@ fn currently_unimplemented_guest_channel_read_must_never_emit_wasm() {
     ] {
         let src = format!("pub suspends fnc main(): int using io, suspend {{ {expression} return 42; }}");
         let err = compile(&src).expect_err("typed read import not implemented");
-        assert_eq!(err.code, "E_UNSUPPORTED", "{expression}: {err}");
-        assert!(err.message.contains("typed guest"), "{expression}: {err}");
+        assert_eq!(err.code, "E_UNBOUND", "{expression}: {err}");
     }
 }
 
@@ -115,7 +114,7 @@ fn prefix_and_declaration_first_variants_do_not_emit_guest_read_wasm() {
     ] {
         let source = format!("pub suspends fnc main(): int using io, suspend {{ {body} }}");
         let error = compile(&source).expect_err("guest channel reads are not yet lowered");
-        assert_eq!(error.code, "E_UNSUPPORTED", "{body}: {error}");
+        assert!(matches!(error.code, "E_UNBOUND" | "E_UNSUPPORTED"), "{body}: {error}");
     }
 }
 
@@ -139,13 +138,13 @@ fn direct_reads_require_an_explicit_suspending_callable() {
 }
 
 #[test]
-fn susp_and_suspends_keep_the_guest_read_abi_gate_in_place() {
+fn susp_and_suspends_still_require_a_resolved_channel() {
     for modifier in ["susp", "suspends"] {
         let source = format!(
             "pub {modifier} fnc main(): int using io, suspend {{ val a = << c; return 0; }}"
         );
         let err = compile(&source).expect_err("guest read ABI still pending");
-        assert_eq!(err.code, "E_UNSUPPORTED", "{source}: {err}");
+        assert_eq!(err.code, "E_UNBOUND", "{source}: {err}");
     }
 }
 
@@ -154,4 +153,48 @@ fn nested_non_suspending_lambda_does_not_inherit_outer_suspension() {
     let source = "pub susp fnc main(): int using io, suspend { val cb = || -> { val a = << c; }; return 0; }";
     let err = compile(source).expect_err("direct receive in plain lambda must fail");
     assert_eq!(err.code, "E_SUSPENDS_REQUIRED", "{err}");
+}
+
+const SOURCE_PREFIX: &str = r#"
+pub susp fnc channel_read_guest(Channel<int> c): Result<Option<int>, IoError> {
+    return << c;
+}
+pub fnc main(): int { return 0; }
+"#;
+const SOURCE_EXPLICIT: &str = r#"
+pub susp fnc channel_read_guest(Channel<int> c): Result<Option<int>, IoError> {
+    return readch c;
+}
+pub fnc main(): int { return 0; }
+"#;
+
+#[test]
+fn real_channel_int_guest_imports_and_checked_result_compile_to_wasm() {
+    for source in [SOURCE_PREFIX, SOURCE_EXPLICIT] {
+        let wasm = compile(source).expect("checked source-compiled guest channel read");
+        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert!(wasm.windows(b"channel_int_nb_read_v1".len())
+            .any(|w| w == b"channel_int_nb_read_v1"));
+        assert!(wasm.windows(b"channel_int_await_read_v1".len())
+            .any(|w| w == b"channel_int_await_read_v1"));
+        assert!(wasm.windows(b"atto.channel_int".len())
+            .any(|w| w == b"atto.channel_int"));
+        assert!(wasm.windows(b"atto.async".len()).any(|w| w == b"atto.async"));
+        assert!(wasm.windows(b"channel_read_guest".len())
+            .any(|w| w == b"channel_read_guest"));
+    }
+}
+
+#[test]
+fn real_channel_read_rejects_unsuspending_and_incorrect_source_type() {
+    let bad = [
+        ("pub fnc channel_read_guest(Channel<int> c): Result<Option<int>,IoError> { return << c; }", "E_SUSPENDS_REQUIRED"),
+        ("pub susp fnc channel_read_guest(int c): Result<Option<int>,IoError> { return << c; }", "E_TYPE"),
+        ("pub susp fnc channel_read_guest(Channel<int> c): int { return << c; }", "E_TYPE"),
+    ];
+    for (function, expected) in bad {
+        let source = format!("{function} pub fnc main(): int {{ return 0; }}");
+        let err = compile(&source).expect_err("bad channel guest must not emit artifact");
+        assert_eq!(err.code, expected, "{source}: {err}");
+    }
 }
