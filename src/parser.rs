@@ -539,7 +539,15 @@ impl Parser {
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
         };
-        if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
+        // The complete type may be followed by a contiguous declaration
+        // read operator: `val x: T << c`. That `<<` is NOT a second generic
+        // argument to T, nor a bit shift; the binding parser owns it.
+        let directional_read = *self.peek() == Tok::Lt && *self.peek_at(1) == Tok::Lt
+            && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+            && self.toks[self.i].pos.col.checked_add(1)
+                == Some(self.toks[self.i + 1].pos.col);
+        if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe)
+            && !directional_read {
             return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
         }
         Ok(ty)
