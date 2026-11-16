@@ -474,37 +474,37 @@ impl Emit<'_> {
                 self.expr(base);
                 for (op, left, right) in steps.into_iter().rev() {
                     self.expr(right);
-                let int = left.ty == Type::Int;
-                if left.ty == Type::Float {
-                    self.op(match op {
-                        BinOp::Add => 0xA0,
-                        BinOp::Sub => 0xA1,
-                        BinOp::Mul => 0xA2,
-                        BinOp::Div => 0xA3,
-                        BinOp::Eq => 0x61,
-                        BinOp::Ne => 0x62,
-                        BinOp::Lt => 0x63,
-                        BinOp::Gt => 0x64,
-                        BinOp::Le => 0x65,
-                        BinOp::Ge => 0x66,
-                        BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
-                    });
-                    continue;
-                }
-                match op {
-                    BinOp::Add => self.call(self.l.helper(H_ADD)),
-                    BinOp::Sub => self.call(self.l.helper(H_SUB)),
-                    BinOp::Mul => self.call(self.l.helper(H_MUL)),
-                    BinOp::And => self.op(0x71), // i32.and
-                    BinOp::Or => self.op(0x72),  // i32.or
-                    BinOp::Lt => self.op(0x53),
-                    BinOp::Le => self.op(0x57),
-                    BinOp::Gt => self.op(0x55),
-                    BinOp::Ge => self.op(0x59),
-                    BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
-                    BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-                    BinOp::Div => unreachable!("division not admitted by checker"),
-                }
+                    let int = left.ty == Type::Int;
+                    if left.ty == Type::Float {
+                        self.op(match op {
+                            BinOp::Add => 0xA0,
+                            BinOp::Sub => 0xA1,
+                            BinOp::Mul => 0xA2,
+                            BinOp::Div => 0xA3,
+                            BinOp::Eq => 0x61,
+                            BinOp::Ne => 0x62,
+                            BinOp::Lt => 0x63,
+                            BinOp::Gt => 0x64,
+                            BinOp::Le => 0x65,
+                            BinOp::Ge => 0x66,
+                            BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
+                        });
+                        continue;
+                    }
+                    match op {
+                        BinOp::Add => self.call(self.l.helper(H_ADD)),
+                        BinOp::Sub => self.call(self.l.helper(H_SUB)),
+                        BinOp::Mul => self.call(self.l.helper(H_MUL)),
+                        BinOp::And => self.op(0x71), // i32.and
+                        BinOp::Or => self.op(0x72),  // i32.or
+                        BinOp::Lt => self.op(0x53),
+                        BinOp::Le => self.op(0x57),
+                        BinOp::Gt => self.op(0x55),
+                        BinOp::Ge => self.op(0x59),
+                        BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
+                        BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
+                        BinOp::Div => unreachable!("division not admitted by checker"),
+                    }
                 }
             }
             TExpr::Ternary(c, a, b) => {
