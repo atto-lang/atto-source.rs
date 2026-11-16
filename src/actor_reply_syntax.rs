@@ -142,7 +142,13 @@ fn unary_at(toks: &[Token], start: usize) -> R<UnarySignature> {
             } },
             Tok::RBrace => depth -= 1,
             Tok::Eof => return Err(err(toks, i, "E_EOF", "unclosed unary receive body")),
-            Tok::Ident(w) if w == "return" => has_return = true,
+            Tok::Ident(w) if w == "return" => {
+                if tok(toks, i + 1, &Tok::Semi) || tok(toks, i + 1, &Tok::RBrace) {
+                    return Err(err(toks, i, "E_REPLY_TYPE",
+                        "unary return-value handler cannot use bare return; expected a response value"));
+                }
+                has_return = true;
+            },
             Tok::Dot if is(toks, i + 1, "respond_with") ||
                         is(toks, i + 1, "send_back") => {
                 // This bans mixing the implicit return reply with explicit
@@ -189,7 +195,28 @@ pub fn inspect(toks: &[Token]) -> R<Vec<UnarySignature>> {
 /// This profile is never executable. Ordinary ActorMail response sugar must
 /// also be blocked until the runtime supplies an authenticated reply slot.
 pub fn uses_reply_intrinsic(toks: &[Token]) -> bool {
-    toks.windows(2).any(|pair| pair[0].tok == Tok::Dot &&
-        matches!(&pair[1].tok, Tok::Ident(s) if
-            matches!(s.as_str(), "respond_with" | "send_back" | "reply_stream")))
+    // Only an authenticated receive(ActorMail<T> mail) parameter grants
+    // reply capability. Do not hijack unrelated user-defined methods named
+    // respond_with/reply_stream/send_back on other classes.
+    let mut mail_names: Vec<&str> = Vec::new();
+    for i in 0..toks.len() {
+        if !is(toks, i, "receive") || !tok(toks, i + 1, &Tok::LParen) ||
+            !is(toks, i + 2, "ActorMail") || !tok(toks, i + 3, &Tok::Lt) ||
+            !tok(toks, i + 5, &Tok::Gt) || !tok(toks, i + 7, &Tok::RParen) {
+            continue;
+        }
+        if let (Some(Token { tok: Tok::Ident(_), .. }),
+                Some(Token { tok: Tok::Ident(mail), .. })) =
+            (toks.get(i + 4), toks.get(i + 6)) {
+            mail_names.push(mail);
+        }
+    }
+    toks.windows(3).any(|w| {
+        let Tok::Ident(receiver) = &w[0].tok else { return false };
+        if !mail_names.contains(&receiver.as_str()) || w[1].tok != Tok::Dot {
+            return false;
+        }
+        matches!(&w[2].tok, Tok::Ident(name) if
+            matches!(name.as_str(), "respond_with" | "send_back" | "reply_stream"))
+    })
 }
