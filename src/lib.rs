@@ -15,6 +15,7 @@ pub mod lexer;
 pub mod parser;
 pub mod target_syntax;
 pub mod target_typed;
+pub mod type_declarations;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};
@@ -33,6 +34,14 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
+    // Type headers can be parsed and contract-checked in the Rust frontend,
+    // but neither tagged-union layout nor nominal interface/trait linking is
+    // available in guest Wasm. Never turn a syntax pass into a compile pass.
+    if type_declarations::contains_type_declaration(&toks) {
+        type_declarations::parse_tokens(&toks)?;
+        return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
+            "type declarations are syntax-only: union representation, type linking and nominal lowering are not yet implemented for browser Wasm"));
+    }
     // Detect target declarations at any file-scope position, not only at
     // source byte zero. Ignore comments/strings (the lexer already tokenizes
     // them) and ignore nested brace bodies so a string or local expression
