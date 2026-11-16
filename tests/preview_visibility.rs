@@ -23,10 +23,10 @@ fn exact_website_visibility_source_executes_and_has_deterministic_metadata() {
 fn forward_export_and_package_export_have_no_host_functions() {
     ok(r#"
         export pub Root;
-        define class Root as pub method(): int { return 42; } end
+        define class Root as pub answer(): int { return 42; } end
         export pub[pkg] class Internal;
-        define class Internal as pub method(): int { return 0; } end
-        pub fnc main(): int { val x = new Root(); return x.method(); }
+        define class Internal as pub answer(): int { return 0; } end
+        pub fnc main(): int { val x = new Root(); return x.answer(); }
     "#);
 }
 #[test]
