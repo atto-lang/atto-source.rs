@@ -1,0 +1,45 @@
+name: Exact signature admission for JSPI and Channel<int>
+on:
+  pull_request:
+    paths:
+      - 'runtime/browser/guest_import_admission_v2.mjs'
+      - 'tests/guest_import_admission_v2.test.mjs'
+      - 'tests/browser-async/channel-source-guest-probe.mjs'
+      - 'tests/browser-async/worker.mjs'
+      - 'tests/browser-async-e2e.mjs'
+      - '.github/workflows/jspi-import-signatures.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  actual-compiler-and-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source checkout
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SHA"
+          git rev-parse HEAD^{tree}
+      - name: Verify hostile compiled Wasm import signatures
+        run: node --test tests/guest_import_admission_v2.test.mjs
+      - name: Install pinned Rust/Wasm toolchain
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.85.1
+      - name: Compile and test current AttoLang Rust source
+        run: cargo test --locked
+      - name: Compile actual wasm32 compiler
+        run: cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+      - name: Execute source-compiled Channel<int> JSPI guest in real Chromium Worker
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          test -x "$CHROME_BIN"
+          node tests/browser-async-e2e.mjs
+      - name: Scope
+        run: echo 'REAL_SOURCE_COMPILED_WASM_JSPI_GUEST; NOT_NATIVE_C_FFI; NOT_JAVA_LLVM_NET_PARITY'
