@@ -299,3 +299,61 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
     }
     Ok(found)
 }
+
+/// Syntax-only candidate for a continuous producer → consumer connection.
+/// This does NOT grant a Readable<T>, Writable<T> or actor capability.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipeCandidate {
+    pub source: String,
+    pub sink: String,
+    pub pos: Pos,
+}
+
+fn pipe_endpoint(tokens: &[Token], start: usize, end: usize) -> Option<String> {
+    if let Some(v) = path(tokens, start, end) { return Some(v); }
+    // Only a capture-free actor constructor spelling is recognized. Actor
+    // capability typing and supervised runtime graph execution are separate.
+    if end == start + 4
+        && word(tokens.get(start)?) == Some("spawn")
+        && matches!(&tokens.get(start + 1)?.tok, Tok::Ident(_))
+        && matches!(&tokens.get(start + 2)?.tok, Tok::LParen)
+        && matches!(&tokens.get(start + 3)?.tok, Tok::RParen)
+    {
+        return Some(format!("spawn {}()", word(tokens.get(start + 1)?)?));
+    }
+    None
+}
+
+/// 'pipe' is the ONLY continuous endpoint/actor connection spelling.
+/// Directional '<<' and '>>' are single read/write/binding operations.
+/// v1 parses exactly one pair then fails closed at the compiler entrypoint:
+/// a reference-model pump is not an executable guest transport.
+pub fn inspect_pipe(tokens: &[Token]) -> Result<Vec<PipeCandidate>, Diagnostic> {
+    let mut out = Vec::new();
+    for (i, t) in tokens.iter().enumerate() {
+        if word(t) != Some("pipe") { continue; }
+        let mut start = i;
+        while start > 0 && !matches!(&tokens[start-1].tok,
+            Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow) {
+            start -= 1;
+        }
+        let pos = t.pos;
+        if matches!(tokens.get(start).and_then(word),
+            Some("nb" | "try" | "do" | "when" | "return")) {
+            return Err(syntax(pos,
+                "continuous pipe cannot be detached, selected as an atomic guard, or returned implicitly"));
+        }
+        let end = end_at(tokens, i + 1, Context::Standalone).ok_or_else(||
+            syntax(pos, "continuous pipe requires a complete ';'-terminated statement"))?;
+        if tokens[i + 1..end].iter().any(|x| word(x) == Some("pipe")) {
+            return Err(syntax(pos,
+                "chained pipe graphs require a separately typed, supervised runtime"));
+        }
+        let source = pipe_endpoint(tokens, start, i).ok_or_else(||
+            syntax(pos, "left pipe endpoint must be a qualified channel/stream path or spawn Actor()"))?;
+        let sink = pipe_endpoint(tokens, i + 1, end).ok_or_else(||
+            syntax(pos, "right pipe endpoint must be a qualified channel/stream path or spawn Actor()"))?;
+        out.push(PipeCandidate { source, sink, pos });
+    }
+    Ok(out)
+}
