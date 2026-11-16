@@ -268,6 +268,8 @@ pub enum TStmt {
     /// assign an actor-state global
     GlobalSet(u32, TE),
     Expr(TE),
+    /// Retire owned positive read tickets at lexical exits.
+    ChannelCleanup(Vec<u32>),
     /// A guest Error(message) carried by a private Wasm exception tag.
     Throw(TE),
     Return(Option<TE>),
@@ -462,6 +464,7 @@ struct FnCx<'a> {
     loops: u32,
     /// First slot declared inside each enclosing loop body.
     loop_floors: Vec<u32>,
+    loop_scopes: Vec<usize>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
@@ -1542,7 +1545,7 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
         TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
-        TStmt::Throw(_) | TStmt::ForIn { .. } => false,
+        TStmt::Throw(_) | TStmt::ForIn { .. } | TStmt::ChannelCleanup(_) => false,
     })
 }
 
@@ -1561,7 +1564,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => any_in_stmts(b, f),
-        TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
+        TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable |
+        TStmt::ChannelCleanup(_) => false,
     })
 }
 
@@ -1641,6 +1645,7 @@ impl<'a> FnCx<'a> {
             nparams: 0,
             loops: 0,
             loop_floors: Vec::new(),
+            loop_scopes: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
             state_write_scope: false,
@@ -1716,9 +1721,19 @@ impl<'a> FnCx<'a> {
         }
     }
 
+    fn read_slots_from(&self, floor: usize) -> Vec<u32> {
+        self.scopes.iter().skip(floor).flat_map(|scope| scope.iter())
+            .filter(|local| local.ty == Type::FutureReadInt)
+            .map(|local| local.slot).collect()
+    }
+
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.scopes.push(Vec::new());
-        let r = self.stmts(body);
+        let mut r = self.stmts(body);
+        if let Ok(stmts) = &mut r {
+            let slots = self.read_slots_from(self.scopes.len() - 1);
+            if !slots.is_empty() { stmts.push(TStmt::ChannelCleanup(slots)); }
+        }
         self.pop_scope();
         r
     }
@@ -1726,7 +1741,9 @@ impl<'a> FnCx<'a> {
     fn looped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.loops += 1;
         self.loop_floors.push(self.nparams + self.locals.len() as u32);
+        self.loop_scopes.push(self.scopes.len());
         let r = self.scoped(body);
+        self.loop_scopes.pop();
         self.loop_floors.pop();
         self.loops -= 1;
         r
@@ -1798,6 +1815,10 @@ impl<'a> FnCx<'a> {
                     Some(l) => (l.slot, l.ty, l.mutable, l.mail.is_some()),
                     None => return Err(Diagnostic::new(*pos, "E_UNBOUND", format!("unknown name '{name}'"))),
                 };
+                if ty == Type::FutureReadInt && !self.moved.contains(&slot) {
+                    return Err(Diagnostic::new(*pos, "E_CHANNEL_OWNERSHIP",
+                        "overwriting an unconsumed read Future would lose its ticket; await or abandon it first"));
+                }
                 if !mutable || mail {
                     return Err(Diagnostic::new(
                         *pos,
@@ -1838,6 +1859,10 @@ impl<'a> FnCx<'a> {
                 if v.ty == Type::GeneratorInt {
                     return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
                         "discarding an unclosed generator handle is prohibited"));
+                }
+                if v.ty == Type::FutureReadInt {
+                    return Err(Diagnostic::new(e.pos, "E_CHANNEL_OWNERSHIP",
+                        "discarding a read Future would leak its ticket; bind, await or abandon it"));
                 }
                 TStmt::Expr(v)
             }
@@ -1882,6 +1907,9 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 (Some(e), Type::Void) => return Err(type_err(e.pos, "a void fnc cannot return a value")),
+                (Some(e), Type::FutureReadInt) =>
+                    return Err(Diagnostic::new(e.pos, "E_CHANNEL_OWNERSHIP",
+                        "returning a read Future requires verified cross-call ownership")),
                 (Some(e), t) => {
                     let v = self.consume_expected(e, t)?;
                     if v.ty != t {
@@ -1972,6 +2000,8 @@ impl<'a> FnCx<'a> {
                         body: b,
                         update: u,
                     });
+                    let slots = self.read_slots_from(self.scopes.len() - 1);
+                    if !slots.is_empty() { out.push(TStmt::ChannelCleanup(slots)); }
                     Ok(TStmt::Block(out))
                 })();
                 self.pop_scope();
@@ -1986,10 +2016,15 @@ impl<'a> FnCx<'a> {
                         format!("'{w}' may only appear inside loop, while or for"),
                     ));
                 }
-                if matches!(s, Stmt::Break(_)) {
+                let exit = if matches!(s, Stmt::Break(_)) {
                     TStmt::Break
                 } else {
                     TStmt::Continue
+                };
+                let floor = *self.loop_scopes.last().expect("loop has lexical floor");
+                let slots = self.read_slots_from(floor);
+                if slots.is_empty() { exit } else {
+                    TStmt::Block(vec![TStmt::ChannelCleanup(slots), exit])
                 }
             }
             Stmt::Block(b) => TStmt::Block(self.scoped(b)?),
@@ -2142,6 +2177,8 @@ impl<'a> FnCx<'a> {
                 };
                 let at_arm = self.moved.clone();
                 body.extend(self.stmts(&arm.body)?);
+                let slots = self.read_slots_from(self.scopes.len() - 1);
+                if !slots.is_empty() { body.push(TStmt::ChannelCleanup(slots)); }
                 if !returns(&body) {
                     after.extend(self.moved.iter().copied());
                 }
@@ -2272,6 +2309,8 @@ impl<'a> FnCx<'a> {
                 };
                 let at_arm = self.moved.clone();
                 body.extend(self.stmts(&arm.body)?);
+                let slots = self.read_slots_from(self.scopes.len() - 1);
+                if !slots.is_empty() { body.push(TStmt::ChannelCleanup(slots)); }
                 if !returns(&body) {
                     after.extend(self.moved.iter().copied());
                 }
