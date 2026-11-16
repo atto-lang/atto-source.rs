@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+define class C as
+  @UnknownDecoration
+  pub value(): int { return 1; }
+end
+pub fnc main(): int { return 0; }
