@@ -28,7 +28,7 @@ fn codegen_accepts_borrowed_contiguous_array_slices_without_copies() {
     ] {
         let src = format!("pub fnc main(): int {{ {body} }}");
         let wasm = atto_compiler::compile(&src).unwrap_or_else(|e| panic!("{src}: {e}"));
-        assert!(wasm.starts_with(b"\\0asm"), "{src}");
+        assert!(wasm.starts_with(b"\0asm"), "{src}");
         assert_eq!(wasm, atto_compiler::compile(&src).unwrap(), "deterministic codegen");
     }
 }
