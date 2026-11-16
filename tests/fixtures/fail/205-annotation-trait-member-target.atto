@@ -1,0 +1,7 @@
+// expect-error: E_ANNOTATION_TARGET
+// A trait default is not an overriding class instance method.
+define trait Greeter as
+  @Override
+  greet(): string { return "hello"; }
+end
+pub fnc main(): int { return 0; }
