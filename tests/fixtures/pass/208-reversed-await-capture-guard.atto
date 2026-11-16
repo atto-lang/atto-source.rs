@@ -1,0 +1,20 @@
+// Reverse functional application preserves one Future await and the guard exit.
+// expect-exit: 42
+fnc transform_result(int x): int {
+    ^ x + 1;
+}
+
+pub suspends fnc main(): int {
+    val pending = task { return 41; };
+
+    val result: int <<
+        transform_result <|
+        susp |f| -> await f <|
+        pending;
+
+    guard result > 0 {
+        ^ -1;
+    }
+
+    ^ result;
+}
