@@ -1665,6 +1665,7 @@ impl Parser {
             Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
             _ => {
+                let expr_start = self.i;
                 let e = self.parse_expr()?;
                 // Compound addition uses the existing checked binary addition.
                 // Restrict it to locals: field/index targets need once-only lvalue lowering.
@@ -1725,7 +1726,7 @@ impl Parser {
                 // creates a normal local, not a second I/O operation.
                 if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
                     && matches!(self.word_at(2), Some("val" | "let" | "const")) {
-                    return self.parse_await_pipeline_capture(e);
+                    return self.parse_await_pipeline_capture(e, expr_start);
                 }
                 if matches!(self.peek(), Tok::PlusPlus | Tok::MinusMinus) {
                     return Err(Diagnostic::new(
@@ -1756,9 +1757,16 @@ impl Parser {
     /// A terminal directional binding after explicit suspension lowers to
     /// a standard local binding. The checker enforces effects, types, moves,
     /// and scope exactly as it does for regular initialized declarations.
-    fn parse_await_pipeline_capture(&mut self, value: Expr) -> R<Stmt> {
+    fn parse_await_pipeline_capture(&mut self, value: Expr, start: usize) -> R<Stmt> {
         let at = self.pos();
-        if !Self::checked_await_pipe_value(&value) {
+        // Require an actual explicit suspension lambda in this statement.
+        // A bare 'await future >> val x' cannot silently become pipeline
+        // syntax just because both constructs may suspend.
+        let has_explicit_stage = self.toks[start..self.i].windows(2).any(|pair|
+            pair[0].tok == Tok::PipeGt
+                && matches!(&pair[1].tok, Tok::Ident(w)
+                    if w == "susp" || w == "suspends"));
+        if !has_explicit_stage || !Self::checked_await_pipe_value(&value) {
             return Err(Diagnostic::new(at, "E_IO_SYNTAX",
                 "terminal '>> val/let' requires an explicit suspending await pipeline"));
         }
