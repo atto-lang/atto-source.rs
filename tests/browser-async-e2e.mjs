@@ -134,6 +134,12 @@ try{
   const badDiscardReference='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return match<int> checked() over on Err() : int -> 0, on Ok() : int -> value + 1, end; }';
   assert.match(await run(badDiscardReference,'E_UNBOUND'),/E_UNBOUND/);
   console.log('PASS browser: Ok() does not create an implicit value local');
+  const guardedDiscard='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return match<int> checked() over on Ok() when false : int -> 7, on Ok(n) when n > 40 : int -> n + 1, on Ok(_) : int -> 0, on Err() : int -> -1, end; }';
+  assert.match(await run(guardedDiscard,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS browser: guarded Ok() falls through and named Ok(n) guard observes the tagged payload');
+  const guardedErrDiscard='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return switch<int> checked() over case Err(message) when message == "wrong" : int -> 1, case Err() : int -> 0, case Ok(_) : int -> 42, end; }';
+  assert.match(await run(guardedErrDiscard,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS browser: unselected guarded Err does not read the active Ok payload');
   const capturedMatch='fnc checked(): Option<int> { return Some(41); } pub suspends fnc main(): int { return match<int> checked() over on Some(n) : int -> await task { return n + 1; }, on None : int -> 0, end; }';
   assert.match(await run(capturedMatch,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured match must yield once');
