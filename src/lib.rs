@@ -15,6 +15,8 @@ pub mod lexer;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+/// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
+pub mod state_admission;
 pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;
@@ -214,11 +216,7 @@ mod abi {
                     ),
                 );
             }
-            // SAFETY: this module is single-threaded wasm; the host copied
-            // exactly `length` bytes into the static input buffer, and the
-            // bounds check above established 0 <= length <= SOURCE_CAP.
-            // Form an explicit raw slice rather than an implicit autoref to
-            // a mutable static (rejected by modern Rust's safety lint).
+            // SAFETY: single-threaded wasm; the host wrote `length` bytes before calling.
             let input: &[u8] = unsafe {
                 std::slice::from_raw_parts(std::ptr::addr_of!(INPUT).cast::<u8>(), length as usize)
             };

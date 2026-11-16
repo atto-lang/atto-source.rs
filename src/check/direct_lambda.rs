@@ -49,7 +49,15 @@ pub fn lower(input: &Program) -> R<Program> {
         // the lambda declaration. The ordinary checker would otherwise miss
         // an earlier same-scope declaration with the identical name.
         let mut bindings_before_lambda = BTreeSet::<String>::new();
-        let mut scalar_immutables = BTreeMap::<String, Type>::new();
+        // Immutable scalar parameters are stable capture sources. A val
+        // initialized from one of these parameters is also an immutable
+        // snapshot (unlike a let alias, mutable parameter or owned object).
+        // Keep this deliberately narrower than general closure capture:
+        // no reference/heap handle or mutable value may escape the frame.
+        let mut scalar_immutables = f.params.iter()
+            .filter(|p| !p.mutable && matches!(p.ty, Type::Int | Type::Bool | Type::Float))
+            .map(|p| (p.name.clone(), p.ty))
+            .collect::<BTreeMap<String, Type>>();
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
             if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
@@ -140,7 +148,15 @@ pub fn lower(input: &Program) -> R<Program> {
             if let Stmt::Bind { kind, name, init, .. } = &stmt {
                 bindings_before_lambda.insert(name.clone());
                 if *kind == BindKind::Val {
-                    if let Some(ty @ (Type::Int | Type::Bool | Type::Float)) = literal_type(init) {
+                    // A copied immutable scalar remains immutable even when
+                    // its initializer is a parameter rather than a literal.
+                    // Record only verified source types, never guessed types
+                    // for calls, heap objects, mutable locals or ownership ops.
+                    let scalar_ty = literal_type(init).or_else(|| match &init.kind {
+                        ExprKind::Var(source) => scalar_immutables.get(source).copied(),
+                        _ => None,
+                    });
+                    if let Some(ty @ (Type::Int | Type::Bool | Type::Float)) = scalar_ty {
                         scalar_immutables.insert(name.clone(), ty);
                     }
                 }
@@ -241,6 +257,8 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             rewrite_expr(target, d)?;
             rewrite_expr(value, d)
         }
+        Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
+            "direct lambda rewriting cannot cross a protected state loan")),
         Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
             rewrite_expr(e, d),
         Stmt::Return(Some(e), _) => rewrite_expr(e, d),
@@ -329,8 +347,11 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
             }
             Ok(())
         }
-        ExprKind::Unary(_, x) | ExprKind::Trap(x) | ExprKind::Propagate(x) | ExprKind::Await(x) =>
-            rewrite_expr(x, d),
+        // Ownership wrappers may contain a direct lambda call or a value
+        // escape. Traverse their operand before the ordinary ownership checker
+        // validates move/borrow/copy semantics.
+        ExprKind::Ownership(_, _, x) | ExprKind::Unary(_, x) |
+        ExprKind::Trap(x) | ExprKind::Propagate(x) | ExprKind::Await(x) => rewrite_expr(x, d),
         ExprKind::Binary(_, x, y) => {
             rewrite_expr(x, d)?;
             rewrite_expr(y, d)
@@ -355,6 +376,8 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         }
         ExprKind::Lambda { .. } => Err(error(e.pos, "E_UNSUPPORTED",
             "nested or escaping lambda needs closure lowering")),
+        ExprKind::StateRead(_) => Err(error(e.pos, "E_UNSUPPORTED",
+            "protected state projections require a lexical state lease, not direct closure lowering")),
         // Exhaustive AST traversal: introducing a new expression kind must
         // require a compiler review of its lexical binding behaviour.
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
@@ -400,6 +423,13 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // A receiver and a nested lambda are outside the direct-call scalar
         // capture profile. The noncapturing typechecker retains the precise
         // E_CAPTURE/E_UNSUPPORTED failure classification for these forms.
+        // Capturing or moving ownership through a generated lambda requires
+        // a verified lifetime/effect model. Refuse rather than accidentally
+        // skipping an owned free variable during closure conversion.
+        ExprKind::Ownership(_, _, _) => return Err(error(e.pos, "E_UNSUPPORTED",
+            "explicit ownership inside a direct lambda requires verified capture lifetimes")),
+        ExprKind::StateRead(_) => return Err(error(e.pos, "E_UNSUPPORTED",
+            "protected state projection inside a direct lambda is not lifetime-verified")),
         ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Task(_) | ExprKind::Lambda { .. } => {},
     }
     Ok(())
@@ -408,7 +438,7 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
 fn stmt_pos(s: &Stmt) -> Pos {
     match s {
         Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } |
-        Stmt::FieldAssign { pos, .. } | Stmt::If { pos, .. } |
+        Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
         Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |

@@ -1,0 +1,12 @@
+// expect-error: E_MOVED
+// java: rejects
+// A repeated loop position must not transfer a pre-existing local.
+pub fnc main(): int {
+  val amount = 42;
+  let count = 0;
+  while take! amount > 0 {
+    count = count + 1;
+    if count >= 2 then break; fi
+  }
+  return count;
+}

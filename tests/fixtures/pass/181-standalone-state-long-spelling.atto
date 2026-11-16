@@ -1,0 +1,18 @@
+// Java reference spelling plus canonical contiguous compound keyword.
+// expect-exit: 0
+// expect-stdout: 41
+define state container Counter as
+  state { let int count: 0; }
+  pub set_count(int value): void {
+    handle_state(critical-write |s| -> { s.count = value; });
+  }
+  pub read_count(): int {
+    return handle_state(critical-read |s| -> s.count);
+  }
+end
+pub fnc main(): int {
+  val counter = new Counter();
+  counter.set_count(41);
+  stdio.println(counter.read_count());
+  return 0;
+}

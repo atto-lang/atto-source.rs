@@ -1,4 +1,5 @@
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
+import {createStateRuntime} from './state-runtime.mjs';
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
 function javaDouble(x){
   if(Number.isNaN(x))return 'NaN';
@@ -31,26 +32,33 @@ self.onmessage=async ({data})=>{
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
     // atto.browser.guest.v1: only these output capabilities may be imported
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64']);
+    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',
+      'state_register','state_enter','state_leave']);
     for(const imp of WebAssembly.Module.imports(guest)){
       if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
     }
     let stdout='',instance;
+    const state=createStateRuntime();
     const atto={
       print_i64:v=>{stdout+=String(v)},
       print_bool:v=>{stdout+=v?'true':'false'},
       print_str:(p,n)=>{stdout+=new TextDecoder('utf-8',{fatal:true}).decode(new Uint8Array(instance.exports.memory.buffer,p,n))},
       print_newline:()=>{stdout+='\n'},
       print_f64:v=>{stdout+=javaDouble(v)},
+      ...state.imports,
     };
     instance=new WebAssembly.Instance(guest,{atto});
     let value;
     try{value=instance.exports.main()}
     catch(e){
+      // The synchronous WebAssembly call has physically unwound. Release
+      // abandoned state leases only here, never while guest code still runs.
+      state.abort();
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':'trap: '+e.message;
       self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
     }
+    state.complete(); // rejects any scope that failed to release its lease
     self.postMessage({ok:true,value:String(value),stdout});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
 };
