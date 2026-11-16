@@ -1720,6 +1720,13 @@ impl Parser {
                         )),
                     };
                 }
+                // Terminal directional value capture follows a real
+                // suspending identity-await pipeline stage. This binder
+                // creates a normal local, not a second I/O operation.
+                if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
+                    && matches!(self.word_at(2), Some("val" | "let" | "const")) {
+                    return self.parse_await_pipeline_capture(e);
+                }
                 if matches!(self.peek(), Tok::PlusPlus | Tok::MinusMinus) {
                     return Err(Diagnostic::new(
                         self.pos(),
@@ -1733,6 +1740,63 @@ impl Parser {
         }
     }
 
+
+    /// True only for an identity-await pipeline and subsequent named stages.
+    /// This does not make arbitrary directional bindings or a second I/O
+    /// read legal. The first argument is always the left pipeline value.
+    fn checked_await_pipe_value(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Await(_) => true,
+            ExprKind::Call(_, args) => args.first()
+                .is_some_and(Self::checked_await_pipe_value),
+            _ => false,
+        }
+    }
+
+    /// A terminal directional binding after explicit suspension lowers to
+    /// a standard local binding. The checker enforces effects, types, moves,
+    /// and scope exactly as it does for regular initialized declarations.
+    fn parse_await_pipeline_capture(&mut self, value: Expr) -> R<Stmt> {
+        let at = self.pos();
+        if !Self::checked_await_pipe_value(&value) {
+            return Err(Diagnostic::new(at, "E_IO_SYNTAX",
+                "terminal '>> val/let' requires an explicit suspending await pipeline"));
+        }
+        self.expect_io_double(Tok::Gt, ">>")?;
+        let kind = if self.eat_word("val") { BindKind::Val }
+            else if self.eat_word("let") { BindKind::Let }
+            else if self.eat_word("const") {
+                return Err(Diagnostic::new(at, "E_CONST_EFFECT",
+                    "runtime pipeline values cannot initialize const"));
+            } else {
+                return Err(Diagnostic::new(at, "E_IO_SYNTAX",
+                    "expected val or let after a directional pipeline"));
+            };
+        let (name, ty) = if matches!(self.peek(), Tok::Ident(_))
+            && *self.peek_at(1) == Tok::Colon {
+            let (name, _) = self.ident("the pipeline capture name")?;
+            self.advance();
+            (name, Some(self.parse_type()?))
+        } else if matches!(self.word_at(0),
+            Some("int" | "bool" | "boolean" | "float" | "f64" | "string" | "String")) {
+            let ty = self.parse_type()?;
+            let (name, _) = self.ident("the pipeline capture name")?;
+            (name, Some(ty))
+        } else {
+            let (name, _) = self.ident("the pipeline capture name")?;
+            (name, None)
+        };
+        if self.state_method && name == "s" {
+            return Err(Diagnostic::new(at, "E_STATE_BORROW",
+                "pipeline capture cannot shadow the protected state binder"));
+        }
+        if ty == Some(Type::Void) {
+            return Err(Diagnostic::new(at, "E_TYPE",
+                "pipeline capture cannot bind void"));
+        }
+        self.terminator()?;
+        Ok(Stmt::Bind { kind, name, ty, init: value, pos: at })
+    }
 
     /// A contiguous directional operator in I/O syntax. Numeric shifts,
     /// generic type closers, and separated '< <' / '> >' are NOT aliases.
@@ -2576,7 +2640,13 @@ impl Parser {
                 // Do not reinterpret a lambda tail such as "await v + 1"
                 // as arithmetic performed *outside* the lambda. General
                 // lambda bodies require real callable-value semantics.
-                let stage_boundary = matches!(self.peek(),
+                let terminal_capture = *self.peek() == Tok::Gt
+                    && *self.peek_at(1) == Tok::Gt
+                    && matches!(self.word_at(2), Some("val" | "let" | "const"))
+                    && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+                    && self.toks[self.i].pos.col.checked_add(1) ==
+                       Some(self.toks[self.i + 1].pos.col);
+                let stage_boundary = terminal_capture || matches!(self.peek(),
                     Tok::PipeGt | Tok::Semi | Tok::RParen | Tok::RBracket |
                     Tok::RBrace | Tok::Comma | Tok::Eof | Tok::Question);
                 let newline = self.i > 0
