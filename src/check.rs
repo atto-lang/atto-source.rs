@@ -2203,6 +2203,9 @@ impl<'a> FnCx<'a> {
         let get = || TE { e: TExpr::Local(tmp), ty: sty };
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
+        // A value-returning exhaustive match is a definite function exit.
+        // Non-returning statement matches must retain normal continuation.
+        let mut all_exiting = true;
         // A previous arm's successful body must suppress every later arm.
         // Keep dispatch linear in the number of cases; do not hoist payload
         // reads for later candidates ahead of first-match selection.
@@ -2293,11 +2296,13 @@ impl<'a> FnCx<'a> {
                 };
                 let at_arm = self.moved.clone();
                 let checked_body = self.stmts(&arm.body)?;
-                if arm.result_type.is_some() && !returns(&checked_body) {
+                let exits = returns(&checked_body);
+                if arm.result_type.is_some() && !exits {
                     return Err(Diagnostic::new(arm.pos, "E_RETURN",
                         "typed match arm must return or throw on every path in this compiler profile"));
                 }
-                if !returns(&checked_body) {
+                all_exiting &= exits;
+                if !exits {
                     after.extend(self.moved.iter().copied());
                 }
                 self.moved = at_arm;
@@ -2345,12 +2350,19 @@ impl<'a> FnCx<'a> {
                 format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
-        // The static exhaustiveness proof guarantees a selection, but keep
-        // a fail-closed runtime trap if that proof and the emitted tags diverge.
-        out.push(TStmt::If(
-            vec![(not_selected(), vec![TStmt::Unreachable])],
-            None,
-        ));
+        // The static exhaustiveness proof guarantees selection.  When
+        // every chosen arm definitely exits, reaching the end is impossible,
+        // and the unconditional trap also preserves the function-level
+        // definite-return proof.  Otherwise, successful statement arms must
+        // continue after the match; trap only if no arm was selected.
+        if all_exiting {
+            out.push(TStmt::Unreachable);
+        } else {
+            out.push(TStmt::If(
+                vec![(not_selected(), vec![TStmt::Unreachable])],
+                None,
+            ));
+        }
         Ok(TStmt::Block(out))
     }
 
