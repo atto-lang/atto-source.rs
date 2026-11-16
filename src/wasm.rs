@@ -395,18 +395,26 @@ impl Emit<'_> {
     }
 
     fn if_chain(&mut self, arms: &[(TE, Vec<TStmt>)], other: Option<&[TStmt]>) {
-        let (c, body) = &arms[0];
-        self.expr(c);
-        self.open(0x04, 0x40, Frame::Other);
-        self.stmts(body);
-        if arms.len() > 1 {
-            self.op(0x05);
-            self.if_chain(&arms[1..], other);
-        } else if let Some(o) = other {
-            self.op(0x05);
-            self.stmts(o);
+        // Emit nested Wasm if/else blocks iteratively. The prior recursive
+        // emitter consumed one Rust stack frame per elif arm, potentially
+        // aborting the compiler before the MAX_TREE_HEIGHT diagnostic.
+        // Keep all frames open until the final else, then close in reverse:
+        // this preserves source-ordered, first-matching branch behavior.
+        debug_assert!(!arms.is_empty());
+        for (index, (condition, body)) in arms.iter().enumerate() {
+            self.expr(condition);
+            self.open(0x04, 0x40, Frame::Other);
+            self.stmts(body);
+            if index + 1 < arms.len() || other.is_some() {
+                self.op(0x05);
+            }
         }
-        self.close();
+        if let Some(body) = other {
+            self.stmts(body);
+        }
+        for _ in arms {
+            self.close();
+        }
     }
 
     fn expr(&mut self, v: &TE) {
