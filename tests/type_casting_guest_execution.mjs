@@ -33,7 +33,10 @@ const fail = [
   ['conditional-capture-fresh-name', 'E_DUPLICATE', program('if v is int as val v then return v; fi return 0;')],
   ['conditional-capture-requires-then', 'E_SYNTAX', program('if v is int as val n { return n; } return 0;')],
   ['conditional-binder-never-escapes-fi', 'E_UNBOUND', program('if v is int as val n then val x = n + 1; fi return n;')],
-  ['conditional-binder-not-in-else', 'E_UNBOUND', program('if v is string as val n then return 0; else return n; fi')]
+  ['conditional-binder-not-in-else', 'E_UNBOUND', program('if v is string as val n then return 0; else return n; fi')],
+  ['reject-shadowing-local-type-facts', 'E_UNSUPPORTED', program('if true then val v: int = 10; fi if v is int then return 42; fi return 0;')],
+  ['reject-unrelated-function-param-proof', 'E_UNSUPPORTED',
+    'fnc f(Any v): int { if v is int then return 42; fi return 0; } fnc g(int v): int { return v; } pub fnc main(): int { val value: Any = 41; return f(value); }']
 ];
 const noIo = () => { throw Error('unexpected host capability'); };
 const imports = {atto: {
