@@ -1,0 +1,14 @@
+// expect-exit: 42
+// java: rejects
+// Empty string is a VALUE, not absence or a wildcard.
+define class Pet as
+    pub string foo = "";
+    pub int n = 42;
+end
+pub fnc main(): int {
+    val p = new Pet();
+    match p over
+        on {foo: ""} as val v -> { return v.n; }
+        on _ -> { return 0; }
+    end
+}
