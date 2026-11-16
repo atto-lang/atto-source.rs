@@ -202,8 +202,8 @@ fn named_argument_plan_evaluates_once_then_permutes_by_formal_slot() {
 fn witness_tests_never_remove_the_production_codegen_gate() {
     let source = "define class Point as pub int x=10; end \
          pub fnc read(p: ~Point): int { return p.x; } \
-         pub fnc main(): int { val p=new Point(); return read(p); }";
-    let err = compile(source).expect_err("checked proof alone must not manufacture a Wasm structural call");
+         pub fnc main(): int { return read(new Point()); }";
+    let err = compile(source).expect_err("a computed receiver has no stable loan and cannot manufacture a Wasm call");
     assert_eq!(err.code, "E_UNSUPPORTED");
-    assert!(err.message.contains("projected-class ABI"));
+    assert!(err.message.contains("scalar projection"));
 }
