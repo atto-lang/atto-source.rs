@@ -43,6 +43,14 @@ with real asynchronous Promise continuations and i64 BigInt payloads.
 The runtime is **not imported by guest Wasm yet**; there are no silent
 channel imports exposed to unversioned guests.
 
+A closed channel is not automatically destroyed, because queued payloads
+remain readable until EOF. The host exposes explicit `release(handle)` only
+when the channel is closed, its queue is drained and no registered read Future
+remains outstanding. This prevents permanent channel-quota consumption while
+protecting unconsumed values and pending Future owners. Premature release
+returns checked `NotClosed` or `Busy`; released handles are never reused
+and become invalid.
+
 The host model accepts only signed 64-bit `bigint` elements, supports
 zero-capacity rendezvous, and bounds channels (default 64), tickets (1024)
 and per-channel capacity (up to 1024). It never speculatively reads ahead,
