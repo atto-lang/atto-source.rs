@@ -447,3 +447,19 @@ fn inline_handler_satisfies_same_nominal_inbox_witness_without_attached_mtd() {
     assert!(module.mailbox_ingresses.is_empty());
     assert!(!module.actors[0].defined);
 }
+
+#[test]
+fn sealed_actor_receive_rejects_direct_nominal_and_super_dispatch() {
+    for method in [
+        "receive(m);",
+        "Foo.receive(m);",
+        "super.receive(m);",
+    ] {
+        let source = format!(
+            "declare actor Foo receives int;
+             mtd (Foo self) receive(ActorMail<int> m): void {{}}
+             mtd (Foo self) retry(): void {{ {method} }}"
+        );
+        assert_eq!(diagnostic(&source), "E_ISOLATION", "{source}");
+    }
+}
