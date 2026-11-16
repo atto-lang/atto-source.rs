@@ -1748,43 +1748,56 @@ impl Parser {
         }
         self.height -= links;
 
-        // Actor composition and functional pipeline expressions are distinct.
-        // Only explicit spawn stages are admitted for actor-pipeline typing.
-        if matches!(&c.kind, ExprKind::Spawn(_))
-            && (*self.peek() == Tok::Pipe || self.is_word("pipe"))
-        {
-            let ExprKind::Spawn(first) = &c.kind else { unreachable!() };
-            let mut actors = vec![first.clone()];
-            while *self.peek() == Tok::Pipe || self.is_word("pipe") {
+        // `pipe` is continuous endpoint composition, never one read/write.
+        // Retain legacy `|` only for explicit actor-to-actor chains.
+        // Parser records unresolved endpoint expressions; semantic admission
+        // fails closed until a typed PipeSource/PipeSink guest ABI exists.
+        let first_is_actor = matches!(&c.kind, ExprKind::Spawn(_));
+        if self.is_word("pipe") || (first_is_actor && *self.peek() == Tok::Pipe) {
+            let first_pos = c.pos;
+            let first = match c.kind {
+                ExprKind::Spawn(actor) => PipeStage::Actor(actor),
+                ExprKind::Var(_) | ExprKind::Call(_, _) | ExprKind::Member(_, _)
+                | ExprKind::MethodCall(_, _, _) => PipeStage::Endpoint(c),
+                _ => return Err(Diagnostic::new(first_pos, "E_TYPE", "pipe source must be an actor, generator, channel or readable stream")),
+            };
+            let mut stages = vec![first];
+            let mut all_actors = first_is_actor;
+            while self.is_word("pipe") || (all_actors && *self.peek() == Tok::Pipe) {
                 let operator = self.pos();
+                let legacy_actor_bar = *self.peek() == Tok::Pipe;
                 self.advance();
                 let stage = self.parse_postfix()?;
-                let ExprKind::Spawn(actor) = stage.kind else {
-                    return Err(Diagnostic::new(
+                let next = match stage.kind {
+                    ExprKind::Spawn(actor) => PipeStage::Actor(actor),
+                    ExprKind::Var(_) | ExprKind::Call(_, _) | ExprKind::Member(_, _)
+                    | ExprKind::MethodCall(_, _, _) if !legacy_actor_bar => {
+                        all_actors = false;
+                        PipeStage::Endpoint(stage)
+                    }
+                    _ => return Err(Diagnostic::new(
                         operator,
                         "E_TYPE",
-                        "actor pipeline stages must be explicit spawn Actor() expressions",
-                    ));
+                        "pipe destination must be an actor or typed endpoint; '|' is actor-to-actor only",
+                    )),
                 };
-                if actors.len() >= 16 {
+                if stages.len() >= 16 {
                     return Err(Diagnostic::new(
-                        operator,
-                        "E_SOURCE_LIMIT",
-                        "actor pipeline exceeds the browser tenant's 16-actor budget",
+                        operator, "E_SOURCE_LIMIT",
+                        "pipeline exceeds the browser tenant's 16-stage budget",
                     ));
                 }
-                actors.push(actor);
+                stages.push(next);
             }
-            c = Expr {
-                kind: ExprKind::ActorPipeline(actors),
-                pos: c.pos,
+            let kind = if all_actors {
+                ExprKind::ActorPipeline(stages.into_iter().map(|s| match s {
+                    PipeStage::Actor(name) => name,
+                    PipeStage::Endpoint(_) => unreachable!("all_actors"),
+                }).collect())
+            } else {
+                ExprKind::MixedPipeline(stages)
             };
-        } else if self.is_word("pipe") {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                "actor pipe requires spawn Actor() stages; functional composition uses the pipe-greater operator",
-            ));
+            c = Expr { kind, pos: first_pos };
         }
         match self.peek() {
             Tok::Pipe => {
