@@ -135,6 +135,7 @@ mod tests {
     fn fake() -> Func {
         Func {
             name: "test_generator".into(),
+            suspends: false,
             pos: Pos { line: 1, col: 1 },
             is_generator: true,
             is_pure: false,
