@@ -461,12 +461,21 @@ impl Emit<'_> {
                 self.op(0x45);
             }
             TExpr::Bin(op, a, b) => {
-                // Canonical AttoLang conditions are eager: both operands
-                // execute in source order even when the left decides truth.
-                self.expr(a);
-                self.expr(b);
-                let int = a.ty == Type::Int;
-                if a.ty == Type::Float {
+                // Keep strict left-to-right source evaluation, but traverse
+                // deeply left-associative typed binary expressions iteratively.
+                // A 250-term chain must work in a default-sized Rust thread.
+                let mut steps: Vec<(BinOp, &TE, &TE)> =
+                    vec![(*op, a.as_ref(), b.as_ref())];
+                let mut base: &TE = a;
+                while let TExpr::Bin(next, nested_left, nested_right) = &base.e {
+                    steps.push((*next, nested_left.as_ref(), nested_right.as_ref()));
+                    base = nested_left;
+                }
+                self.expr(base);
+                for (op, left, right) in steps.into_iter().rev() {
+                    self.expr(right);
+                let int = left.ty == Type::Int;
+                if left.ty == Type::Float {
                     self.op(match op {
                         BinOp::Add => 0xA0,
                         BinOp::Sub => 0xA1,
@@ -480,7 +489,7 @@ impl Emit<'_> {
                         BinOp::Ge => 0x66,
                         BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
                     });
-                    return;
+                    continue;
                 }
                 match op {
                     BinOp::Add => self.call(self.l.helper(H_ADD)),
@@ -495,6 +504,7 @@ impl Emit<'_> {
                     BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
                     BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
                     BinOp::Div => unreachable!("division not admitted by checker"),
+                }
                 }
             }
             TExpr::Ternary(c, a, b) => {
