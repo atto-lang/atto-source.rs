@@ -15,16 +15,16 @@ sample and requires deterministic guest output or a positioned diagnostic.
 `ATTOC=<native-attoc> node tests/conformance.mjs` runs the same exact sources
 through the **real Rust compiler built for wasm32**, verifies no guest artifact
 on rejection, checks emitted guests and compares native/Wasm compiler bytes.
-Twenty candidate previews have independent guest-execution oracles:
+Twenty-one candidate previews have independent guest-execution oracles:
 function-pipeline, generators, result-option, trap, borrow-checking,
 lexical-scope-pure, state-containers, fib-match, guard, match-values, closures-functors, result-option-end, modules, callable-body-styles, traits-interfaces,
-diamond-inheritance, visibility-modifiers, routine, boolean-operators, and match-types-is. All must be
+diamond-inheritance, visibility-modifiers, routine, boolean-operators, match-types-is, and data-shapes. All must be
 compiled by the real wasm32 Rust compiler, executed in a genuine guest with
 exact stdout/return values, and compared byte-for-byte with native Rust.
 The other previews
 are **not yet certified executable**. The modules profile supports direct
 file-local qualified function calls only, not importing other files, module
-values, generic members, or a cross-file visibility/linker model. Executing twenty candidate
+values, generic members, or a cross-file visibility/linker model. Executing twenty-one candidate
 samples does not establish complete ownership, actor, ADT or effect semantics.
 
 The site has **nine** ordinary examples and **42** previews (**51 total**).
@@ -75,3 +75,19 @@ positioned diagnostic and without any guest artifact. A separate runtime
 Any implementation is needed for arbitrary dynamic values.
 The twentieth preview is **not certified** until exact-source Rust/wasm32
 compiler byte parity, guest stdout, negative fixtures and Chromium E2E pass.
+
+## Product-shape execution (preview 21 candidate)
+
+`data-shapes.atto` is a **bounded source-local scalar product** profile.
+Declared structs and records use checked guest-heap class constructors and
+field accesses, while two-field `Tuple`, `Pair`, and `Entry` use distinct
+private nominal classes with real runtime fields and canonical positional
+printing: `(7, paid)`, `Pair(widgets, 2)`, `Entry(widgets, 2)`.
+Keyed initializers must have an exact declared set of literal fields;
+unknown/missing/duplicate fields, dynamic anonymous shapes, unsupported
+generic arities, forged internal class identifiers, type mismatches and
+external mutations all reject before guest emission. This is NOT the full
+structural subtyping, record equality/copy, generic collection or
+cross-actor transport ABI; those require separate runtime contracts.
+Preview 21 is **not certified** until exact-source Rust, wasm32 compiler,
+independent guest stdout/return oracle and Chromium tests complete.

@@ -3637,7 +3637,22 @@ impl<'a> FnCx<'a> {
     /// `Name{a=1, b=true}`: the Java reference's object rendering.
     fn print_object(&mut self, v: TE, c: u32, newline: bool, pos: Pos) -> R<TE> {
         let class = &self.g.classes[c as usize];
-        let mut text = format!("{}{{", class.name);
+        // Internal scalar products retain real guest-heap field storage but
+        // display their documented positional notation, not the compiler's
+        // private synthesized class name. User code cannot spell the reserved
+        // product name prefix; shape_lower rejects attempted forgery.
+        let product_style = if class.name.starts_with(crate::shape_lower::PREFIX) {
+            if class.name.starts_with("__atto_shape_tuple_") { 1u8 }
+            else if class.name.starts_with("__atto_shape_pair_") { 2u8 }
+            else if class.name.starts_with("__atto_shape_entry_") { 3u8 }
+            else { 0u8 }
+        } else { 0u8 };
+        let mut text = match product_style {
+            1 => "(".to_owned(),
+            2 => "Pair(".to_owned(),
+            3 => "Entry(".to_owned(),
+            _ => format!("{}{{", class.name),
+        };
         let mut plan: Vec<(String, Option<(u32, Type)>)> = Vec::new();
         for (i, f) in class.fields.iter().enumerate() {
             if let Type::Enum(_) = f.ty {
@@ -3650,11 +3665,13 @@ impl<'a> FnCx<'a> {
             if i > 0 {
                 text.push_str(", ");
             }
-            text.push_str(&f.name);
-            text.push('=');
+            if product_style == 0 {
+                text.push_str(&f.name);
+                text.push('=');
+            }
             plan.push((std::mem::take(&mut text), Some((f.slot, f.ty))));
         }
-        text.push('}');
+        text.push(if product_style == 0 { '}' } else { ')' });
         plan.push((text, None));
         let mut pieces = Vec::new();
         for (s, field) in plan {
