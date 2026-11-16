@@ -1,4 +1,4 @@
-// expect: 42
+// expect-exit: 42
 fnc possibly_fail(bool valid): int throws(Error) {
   if !valid then
     throw new Error("invalid value");
