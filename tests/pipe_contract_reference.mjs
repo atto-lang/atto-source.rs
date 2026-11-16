@@ -181,7 +181,6 @@ test('actor ordinary sends and supervisor CONTROL do not enter emit data path', 
   assert.deepEqual(supervisorControls, ['PANIC']);
 });
 
-
 test('stream-to-actor transform allows zero-to-many emitted values', async () => {
   const sink = new BoundedSink(3);
   async function* transform(input) {
