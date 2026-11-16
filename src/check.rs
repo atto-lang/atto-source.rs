@@ -2962,6 +2962,23 @@ impl<'a> FnCx<'a> {
     }
 
     fn method_call(&mut self, base: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        // io.pipe is a checked continuous graph, NOT a dynamic method call.
+        // The browser guest has no owned PipeHandle/transport/observer ABI yet.
+        // Reject the unbound library namespace deliberately, before evaluating
+        // either endpoint. User-declared values/classes named io remain subject
+        // to their ordinary lexical method lookup, not this reserved namespace.
+        if name == "pipe" {
+            if let ExprKind::Var(n) = &base.kind {
+                if n == "io" && self.lookup(n).is_none()
+                    && self.g.class(n).is_none()
+                    && self.g.enum_(n).is_none()
+                    && self.g.actor(n).is_none()
+                {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "io.pipe(source, sink) requires checked PipeHandle setup, backpressure, failure completion and an owned guest transport ABI; no detached pump is emitted"));
+                }
+            }
+        }
         // Class.static(args)
         if let ExprKind::Var(n) = &base.kind {
             if self.lookup(n).is_none() {
