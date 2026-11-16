@@ -152,9 +152,63 @@ self.onmessage=async()=>{
       aliasHost.close(openedAlias.value);aliasHost.release(openedAlias.value);
       aliasResults.push(Number(expected));
     }
+    // Source-created, bounded Worker-owned channel: open -> try_send ->
+    // checked read -> close -> release, all compiled from Atto source.
+    // Not a borrowed host-preopened handle or a synthetic Wasm module.
+    const lifecycleBody=`val opened = Channel<int>.bounded(1);
+      match opened over
+        on Ok(local) -> {
+          val sent = local.try_send(45);
+          val received = readch local;
+          val closed = local.close();
+          val released = local.release();
+          return received;
+        }
+        on Err(problem) -> { return Err(problem); }
+      end`;
+    const lifecycleSource=source.replace('return << c;',lifecycleBody);
+    if(lifecycleSource===source)throw Error('channel lifecycle fixture missing');
+    const lifecycleEncoded=new TextEncoder().encode(lifecycleSource);
+    new Uint8Array(compiler.memory.buffer,compiler.input_ptr(),lifecycleEncoded.length)
+      .set(lifecycleEncoded);
+    if(compiler.compile(lifecycleEncoded.length)!==0) {
+      const mem=new Uint8Array(compiler.memory.buffer),start=compiler.error_ptr();
+      let end=start;while(end<mem.length&&mem[end]&&end-start<512)end++;
+      throw Error('source lifecycle compilation: '+
+        new TextDecoder().decode(mem.subarray(start,end)));
+    }
+    const lifecycleBinary=new Uint8Array(compiler.memory.buffer,compiler.result_ptr(),
+        compiler.result_length()).slice();
+    const lifecycleModule=new WebAssembly.Module(lifecycleBinary);
+    if(!verifyChannelIntGuestV1(lifecycleBinary,lifecycleModule))
+      throw Error('source lifecycle guest omitted channel ABI marker');
+    let lifecycleInstance,lifecycleYields=0;
+    const {imports:lifecycleImports,host:lifecycleHost}=createChannelIntGuestV1({
+      getMemory:()=>lifecycleInstance.exports.memory});
+    lifecycleInstance=new WebAssembly.Instance(lifecycleModule,{atto:{
+      ...lifecycleImports,
+      channel_int_await_read_v1:new WebAssembly.Suspending(lifecycleImports.channel_int_await_read_v1),
+      cooperate:new WebAssembly.Suspending(async()=>{await pause();lifecycleYields++;})
+    }});
+    const lifecyclePtr=await WebAssembly.promising(
+      lifecycleInstance.exports.read_channel_guest_v1)(0);
+    const lifecycleView=new DataView(lifecycleInstance.exports.memory.buffer);
+    if(!Number.isInteger(lifecyclePtr)||lifecyclePtr<0||lifecyclePtr%8
+        ||lifecyclePtr+16>lifecycleView.byteLength
+        ||lifecycleView.getInt32(lifecyclePtr,true)!==0)
+      throw Error('source lifecycle Result not Ok');
+    const lifecycleOption=lifecycleView.getInt32(lifecyclePtr+8,true);
+    if(lifecycleOption<0||lifecycleOption%8||lifecycleOption+16>lifecycleView.byteLength
+        ||lifecycleView.getInt32(lifecycleOption,true)!==1
+        ||lifecycleView.getBigInt64(lifecycleOption+8,true)!==45n)
+      throw Error('source lifecycle guest did not receive Some(45)');
+    if(lifecycleYields!==1)throw Error('source lifecycle missed cooperative suspension');
+    if(lifecycleHost.snapshot(1).ok)throw Error('guest did not release its owned channel');
+
     self.postMessage({ok:true,sourceCompiled:true,pendingSome:41,eof:true,
       invalidHandle:'Err',zeroSome:true,cooperativeYields,
       declarationFirstSome:42,declarationFirstYields:declYields,
-      explicitReadchSome:aliasResults[0],directionalSome:aliasResults[1]});
+      explicitReadchSome:aliasResults[0],directionalSome:aliasResults[1],
+      sourceLifecycleSome:45,sourceLifecycleYields:lifecycleYields,sourceLifecycleReleased:true});
   }catch(e){self.postMessage({ok:false,error:String(e?.stack||e)})}
 };
