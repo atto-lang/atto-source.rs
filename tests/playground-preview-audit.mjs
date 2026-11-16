@@ -68,7 +68,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'function-pipeline': { value: 121n, stdout: '121\n' },
       'generators': { value: 10n, stdout: '10\n' },
       'result-option': { value: 0n, stdout: '8080\n' },
-      'trap': { value: 7n, stdout: '5\nid must be nonnegative\n' },
+      'trap': { value: 7n, stdout: '5\nid must be nonnegative\nan ordinary throw was caught\n' },
       'borrow-checking': { value: 63n, stdout: '84\n43\n' },
       'closures-functors': { value: 84n, stdout: '' },
       'lexical-scope-pure': { value: 0n, stdout: '42\n42\n2\n42\n' },
