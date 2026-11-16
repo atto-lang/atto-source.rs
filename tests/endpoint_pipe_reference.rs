@@ -65,28 +65,13 @@ impl Writer {
 
 // One item at a time. A failed admission returns the owned item to the caller.
 fn pump(source: &mut Reader, sink: &mut Writer) -> Result<usize, PipeFailure> {
-    let mut admitted = 0;
-    loop {
-        let next = source.read().map_err(|kind| PipeFailure { kind, admitted, uncommitted: None })?;
-        let Some(mut item) = next else { return Ok(admitted); }; // EOF, not a message.
-        loop {
-            match sink.admit(item) {
-                Ok(()) => { admitted += 1; break; }
-                Err((Admission::Backpressure, still_owned)) => {
-                    // No source.read() until pending sink admission resolves.
-                    item = still_owned;
-                }
-                Err((status, still_owned)) => {
-                    let kind = match status {
-                        Admission::Closed => FailureKind::Write,
-                        Admission::Quota => FailureKind::Quota,
-                        Admission::Cancel => FailureKind::Cancelled,
-                        _ => unreachable!(),
-                    };
-                    return Err(PipeFailure { kind, admitted, uncommitted: Some(still_owned) });
-                }
-            }
-        }
+    // The direct oracle is built on the cooperative state machine below.
+    // A bounded tick budget prevents a permanently non-ready sink from
+    // creating an infinite busy-loop in a test or CI runner.
+    match run_cooperative(source, sink, 1_000_000) {
+        PollStep::Finished(n) => Ok(n),
+        PollStep::Failed(error) => Err(error),
+        PollStep::Pending(_) | PollStep::Progress(_) => unreachable!(),
     }
 }
 
