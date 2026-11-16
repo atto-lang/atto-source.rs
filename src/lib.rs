@@ -64,13 +64,30 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // them) and ignore nested brace bodies so a string or local expression
     // cannot accidentally switch the compiler into the target grammar.
     let mut braces = 0usize;
+    let mut ordinary_class_scope = 0usize;
     let mut target = false;
+    // Top-level `mtd` selects the receiver declaration grammar, whereas a
+    // member `mtd` inside `define class ... as ... end` belongs to the
+    // canonical class parser even if the class uses an end-delimited body.
+    // A brace-only depth check wrongly classified that member as top-level.
     for i in 0..toks.len() {
         match &toks[i].tok {
             lexer::Tok::LBrace => braces = braces.saturating_add(1),
             lexer::Tok::RBrace => braces = braces.saturating_sub(1),
             lexer::Tok::Ident(word) if braces == 0 => {
                 let next = toks.get(i + 1).map(|token| &token.tok);
+                if word == "define" &&
+                    matches!(next, Some(lexer::Tok::Ident(name)) if name == "class") {
+                    ordinary_class_scope = ordinary_class_scope.saturating_add(1);
+                    continue;
+                }
+                if word == "end" && ordinary_class_scope > 0 {
+                    ordinary_class_scope -= 1;
+                    continue;
+                }
+                if ordinary_class_scope > 0 {
+                    continue;
+                }
                 if word == "declare" || word == "mtd" ||
                     (word == "use" && matches!(next,
                         Some(lexer::Tok::Ident(name)) if name == "namespace")) {
