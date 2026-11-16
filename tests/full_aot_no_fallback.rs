@@ -3,7 +3,7 @@
 //! No dynamic source evaluator, runtime compilation or implicit interpreter fallback.
 use atto_compiler::compile;
 
-const WASM_V1: &[u8] = b"\\0asm\\x01\\0\\0\\0";
+const WASM_V1: &[u8] = b"\0asm\x01\0\0\0";
 
 fn read_uleb(bytes: &[u8], cursor: &mut usize) -> u32 {
     let mut value = 0u32;
