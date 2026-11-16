@@ -1,0 +1,11 @@
+// expect-error: E_UNSUPPORTED
+define class Pet as
+    pub string foo = "dog";
+end
+pub fnc main(): int {
+    val value = new Pet();
+    match value over
+        on is {foo: string} -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
