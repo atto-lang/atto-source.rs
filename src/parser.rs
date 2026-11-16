@@ -1215,8 +1215,16 @@ impl Parser {
             // without relaxing the checked return contract.
             let mut trial = self.clone();
             if let Ok(body) = trial.parse_explicit_end_body() {
-                *self = trial;
-                return Ok(body);
+                // A lone final expression still means a comma/end *implicit*
+                // tail return. Never reinterpret it as a statement/end body:
+                // doing so changes the type of existing class mtd methods.
+                // The current compatibility profile admits explicit-return
+                // bodies only when a top-level terminal is present. Fully
+                // branch-terminal explicit bodies await the versioned grammar.
+                if body.iter().any(|stmt| matches!(stmt, Stmt::Return(..) | Stmt::Throw(..))) {
+                    *self = trial;
+                    return Ok(body);
+                }
             }
             return self.parse_erlang_body(ret);
         }
