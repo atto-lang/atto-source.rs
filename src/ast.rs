@@ -297,6 +297,13 @@ pub enum Pattern {
     Variant(String, String),
     /// Tagged built-in ADT variant, optionally binding the payload.
     Adt(String, Option<String>),
+    /// Structural TYPE conformance, not value equality: test the accessible
+    /// public scalar shape of a declared class. The binder retains the
+    /// actual subject type and is a scoped, read-only class loan.
+    StructuralType {
+        name: String,
+        bind: Option<String>,
+    },
     /// Bounded, public-field structural value match for a statically known
     /// class. A missing optional field vacuously passes; missing required
     /// fields fail. The binding is a read-only scoped loan, not an owned copy.
