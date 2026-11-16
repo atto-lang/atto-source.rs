@@ -2281,6 +2281,10 @@ impl Parser {
             )),
             Tok::Float(_) => Err(unsupported(pos, "float literal patterns")),
             Tok::Str(_) => Err(unsupported(pos, "string literal patterns")),
+            // V2 rests and counted groups have a dedicated token. Reject
+            // them deliberately until checked sequence AST and runtime
+            // lowering exist; never reinterpret as a binding or an enum.
+            Tok::Ellipsis => Err(unsupported(pos, "sequence rest/count patterns")),
             Tok::LParen => Err(unsupported(pos, "tuple patterns")),
             Tok::LBracket => Err(Diagnostic::new(
                 pos,
@@ -2317,6 +2321,15 @@ impl Parser {
                     if *self.peek() == Tok::Dot {
                         self.advance();
                         let (variant, _) = self.ident("an enum variant")?;
+                        // List.of(...) / Array.of(...) / Tuple.of(...) are
+                        // proposed structural patterns, not enum variants.
+                        // Fail closed instead of consuming `*.of` as a
+                        // valid variant and reporting a misleading arrow.
+                        if matches!(w.as_str(), "List" | "Array" | "Tuple")
+                            && variant == "of" && *self.peek() == Tok::LParen
+                        {
+                            return Err(unsupported(pos, "structural sequence patterns"));
+                        }
                         if self.is_word("as") || *self.peek() == Tok::Dot {
                             return Err(unsupported(self.pos(), "variant payload patterns"));
                         }
