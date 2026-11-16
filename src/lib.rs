@@ -55,6 +55,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             && io.context == io_shorthand::Context::Standalone
             && io.mode == io_shorthand::Mode::Direct
             && !io.read_binder_on_left
+            // The browser compiler lacks stdin and stream I/O imports.
+            // Never miscompile a known reverse pump as stdio.print(input).
+            && io.readable_rhs_candidate.as_deref() != Some("stdio.in")
         {
             continue;
         }
