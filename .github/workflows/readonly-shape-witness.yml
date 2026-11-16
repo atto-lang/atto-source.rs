@@ -1,0 +1,43 @@
+name: Readonly structural shape witness (exact tree)
+
+on:
+  pull_request:
+    paths:
+      - "src/shape_witness.rs"
+      - "src/lib.rs"
+      - "tests/shape_witness_contract.rs"
+      - "docs/readonly-shape-witness.md"
+      - ".github/workflows/readonly-shape-witness.yml"
+  push:
+    paths:
+      - "src/shape_witness.rs"
+      - "src/lib.rs"
+      - "tests/shape_witness_contract.rs"
+      - "docs/readonly-shape-witness.md"
+      - ".github/workflows/readonly-shape-witness.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  structural-witness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source commit and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          rustc --version
+          cargo --version
+      - name: Compile and execute module unit tests
+        run: cargo test --lib shape_witness -- --nocapture
+      - name: Compile and execute public integration tests
+        run: cargo test --test shape_witness_contract -- --nocapture
+      - name: Run complete library regression
+        run: cargo test --lib
