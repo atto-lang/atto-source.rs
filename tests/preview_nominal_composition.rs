@@ -81,3 +81,85 @@ fn unknown_and_duplicate_nominal_declarations_are_rejected() {
     "#, "E_OVERRIDE");
     compiled("pub fnc main(): int { return 42; }");
 }
+
+#[test]
+fn single_inherited_method_cannot_be_silently_shadowed() {
+    rejected(r#"
+        define class Base as
+            pub ping(): int { return 1; }
+        end
+        define class Child extends Base as
+            pub ping(): int { return 2; }
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_OVERRIDE_REQUIRED");
+}
+
+#[test]
+fn child_override_must_preserve_parent_signature() {
+    rejected(r#"
+        define class Base as
+            pub ping(int n): int { return n; }
+        end
+        define class Child extends Base as
+            pub override ping(int n): bool { return true; }
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_SIGNATURE");
+}
+
+#[test]
+fn explicit_diamond_override_must_match_all_parent_signatures() {
+    rejected(r#"
+        define class A as pub ping(): int { return 1; } end
+        define class B as pub ping(): bool { return true; } end
+        define class C extends A, B as
+            pub override ping(): int { return 3; }
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_SIGNATURE");
+}
+
+#[test]
+fn concrete_method_override_is_allowed_through_indirect_ancestor() {
+    compiled(r#"
+        define class Base as pub ping(): int { return 1; } end
+        define class Middle extends Base as end
+        define class Child extends Middle as
+            pub override ping(): int { return 2; }
+        end
+        pub fnc main(): int {
+            val x = new Child();
+            return x.ping();
+        }
+    "#);
+}
+
+#[test]
+fn inherited_public_override_cannot_become_private() {
+    rejected(r#"
+        define class Base as pub ping(): int { return 1; } end
+        define class Child extends Base as
+            private override ping(): int { return 2; }
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_PRIVATE");
+}
+
+#[test]
+fn trait_and_interface_members_cannot_masquerade_as_class_overrides() {
+    rejected(r#"
+        define trait T as
+            pub override ping(): int { return 2; }
+        end
+        define class C implements T as end
+        pub fnc main(): int { return 0; }
+    "#, "E_OVERRIDE");
+    rejected(r#"
+        define interface I as
+            override ping(): int;
+        end
+        define class C implements I as end
+        pub fnc main(): int { return 0; }
+    "#, "E_OVERRIDE");
+}
