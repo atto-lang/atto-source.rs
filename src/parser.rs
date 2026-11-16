@@ -2320,16 +2320,16 @@ impl Parser {
                     self.advance();
                     if *self.peek() == Tok::Dot {
                         self.advance();
-                        let (variant, _) = self.ident("an enum variant")?;
-                        // List.of(...) / Array.of(...) / Tuple.of(...) are
-                        // proposed structural patterns, not enum variants.
-                        // Fail closed instead of consuming `*.of` as a
-                        // valid variant and reporting a misleading arrow.
+                        // `of` is reserved, so this check must run BEFORE
+                        // ident("an enum variant") performs reserved-word
+                        // validation. The v2 collection forms are not enum
+                        // variants and may not create a guest artifact yet.
                         if matches!(w.as_str(), "List" | "Array" | "Tuple")
-                            && variant == "of" && *self.peek() == Tok::LParen
+                            && self.is_word("of") && *self.peek_at(1) == Tok::LParen
                         {
                             return Err(unsupported(pos, "structural sequence patterns"));
                         }
+                        let (variant, _) = self.ident("an enum variant")?;
                         if self.is_word("as") || *self.peek() == Tok::Dot {
                             return Err(unsupported(self.pos(), "variant payload patterns"));
                         }
