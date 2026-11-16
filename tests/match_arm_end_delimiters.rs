@@ -63,6 +63,20 @@ fn end_delimited_arms_allow_multiple_statements_and_nested_match() {
 }
 
 #[test]
+fn guarded_arm_and_nested_if_fi_do_not_steal_the_arm_end() {
+    let src = fixture(r#"
+        on 4 when n > 3 ->
+            if n > 0 then
+                stdio.println("guarded");
+            fi
+            stdio.println("after-fi");
+        end
+        on _ -> { stdio.println("fallback"); }
+    "#);
+    assert!(compile(&src).is_ok(), "{src}");
+}
+
+#[test]
 fn do_match_uses_the_same_per_arm_delimiter_rules() {
     let src = r#"pub fnc main(): int {
         val n = 4;
