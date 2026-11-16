@@ -1,0 +1,22 @@
+// expect-exit: 42
+// java: rejects
+// Different nominal classes, same public structural scalar type layout.
+// The values differ from the type class's defaults: 'is' never compares values.
+define class Shape as
+    pub int x = 1;
+    pub int y = 2;
+end
+define class Other as
+    pub int x = 25;
+    pub int y = 17;
+    pub bool extra: true;
+end
+pub fnc main(): int {
+    val value = new Other();
+    match value over
+        on is ~Shape as val p -> {
+            return p.x + p.y;
+        }
+        on _ -> { return 0; }
+    end
+}
