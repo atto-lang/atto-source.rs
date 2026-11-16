@@ -457,8 +457,9 @@ impl Emit<'_> {
         self.close();
         self.get(result); self.i32c(0); self.store_i32(0);
         self.get(result); self.get(option); self.store_i32(8);
-        self.close();
-        self.close();
+        self.close(); // flattened Some/None vs IoError
+        self.close(); // awaited-import status
+        self.close(); // initial nb_read registration status
         self.get(result);
     }
 
