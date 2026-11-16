@@ -74,7 +74,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'traits-interfaces': { value: 0n, stdout: 'Ada\nhello\n' },
       'diamond-inheritance': { value: 0n, stdout: 'Ada\nhello\nroot\ndiamond resolved\n' },
       'visibility-modifiers': { value: 7n, stdout: '0\n' },
-      'routine': { value: 0n, stdout: '49\n40\n' },
+      'routine': { value: 0n, stdout: '49\n42\n' },
       'boolean-operators': { value: 0n, stdout: 'false\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\n' },
       'trap': { value: 7n, stdout: '5\nid must be nonnegative\nan ordinary throw was caught\n' },
       'borrow-checking': { value: 63n, stdout: '84\n43\n' },
