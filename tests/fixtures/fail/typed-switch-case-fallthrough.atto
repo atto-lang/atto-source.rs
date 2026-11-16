@@ -1,0 +1,7 @@
+// expect-error: E_RETURN
+pub fnc main(): int {
+    switch<int> true over
+        case true : int -> { val x = 42; }
+        default : int -> { return 0; }
+    end
+}
