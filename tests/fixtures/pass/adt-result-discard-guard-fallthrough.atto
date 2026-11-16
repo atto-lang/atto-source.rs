@@ -1,0 +1,12 @@
+// expect-exit: 42
+// An empty payload pattern may be guarded and must not bind.
+// A later named payload guard must observe the actual tagged value.
+fnc checked(): Result<int,string> { return Ok(41); }
+pub fnc main(): int {
+    return match<int> checked() over
+        on Ok() when false : int -> 1,
+        on Ok(n) when n > 40 : int -> n + 1,
+        on Ok(_) : int -> 0,
+        on Err() : int -> -1,
+    end;
+}
