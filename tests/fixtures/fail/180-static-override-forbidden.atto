@@ -1,4 +1,5 @@
-// expect-error: E_OVERRIDE
+// expect-error: E_ANNOTATION_TARGET
+// expect-line: 7
 define class Parent as
   pub ping(): int { return 1; }
 end
