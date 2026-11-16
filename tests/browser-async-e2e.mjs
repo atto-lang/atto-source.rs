@@ -10,6 +10,7 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser-async/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser-async/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/checked-write-queue.mjs',[new URL('../runtime/browser/checked-write-queue.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -123,6 +124,20 @@ try{
     assert.match(await run(source,code),new RegExp(code));
   }
   console.log('PASS integration: unsupported nb/do guests and discarded reads fail closed');
+
+  // Real Chromium Worker host proof. Separate from .atto guest execution:
+  // no wasm imports for typed nonblocking writes exist yet.
+  const hostProof=await evaluate("new Promise((resolve,reject)=>{const w=new Worker('/worker.mjs',{type:'module'});const timeout=setTimeout(()=>{w.terminate();reject(new Error('checked writer probe timeout'))},3000);w.onmessage=e=>{clearTimeout(timeout);w.terminate();resolve(e.data)};w.onerror=e=>{clearTimeout(timeout);w.terminate();reject(new Error('checked writer probe failure'))};w.postMessage({probe:'checked_writer'})})");
+  assert.equal(hostProof.ok,true,hostProof.error||'checked host proof failed');
+  assert.deepEqual(hostProof.probe.first,{ok:true,written:5});
+  assert.equal(hostProof.probe.quota,'E_IO_QUOTA');
+  assert.equal(hostProof.probe.queuedAccepted,true);
+  assert.deepEqual(hostProof.probe.notices,['E_IO_CANCELLED']);
+  assert.deepEqual(hostProof.probe.delivered,['hello']);
+  assert.equal(hostProof.probe.stats.pending,0);
+  assert.equal(hostProof.probe.stats.bytes,0);
+  console.log('PASS browser host: bounded nb/do write admission, owner cancel, checked future and supervisor error path');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
