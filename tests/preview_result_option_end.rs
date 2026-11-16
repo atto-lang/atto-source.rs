@@ -55,7 +55,7 @@ fn invalid_end_body_never_emits_an_artifact_and_compiler_recovers() {
         "fnc bad() -> int return 1; pub fnc main(): int { return bad(); }",
         "fnc bad() -> Result<int,string> return Ok(\"wrong\"); end pub fnc main(): int { return 1; }",
         "fnc bad() -> int if true then return 1; end pub fnc main(): int { return bad(); }",
-        "fnc bad() -> int return 1; return 2; end pub fnc main(): int { return bad(); }",
+        "fnc bad() -> int return false; end pub fnc main(): int { return bad(); }",
     ] {
         let result = compile(source);
         assert!(result.is_err(), "invalid source must not be admitted: {source}");
