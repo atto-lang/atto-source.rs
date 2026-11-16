@@ -463,3 +463,45 @@ fn sealed_actor_receive_rejects_direct_nominal_and_super_dispatch() {
         assert_eq!(diagnostic(&source), "E_ISOLATION", "{source}");
     }
 }
+
+#[test]
+fn attached_mtd_fulfills_a_concrete_actor_header_without_inline_receive() {
+    let source = "use namespace workers;
+        declare actor Foo receives int;
+        define actor Foo receives int as end
+        mtd (Foo self) receive(ActorMail<int> message): void {}";
+    let (_, linked) = target(source).unwrap();
+    assert_eq!(linked.mailbox_ingresses.len(), 1);
+    assert!(linked.actors[0].inbox_witnessed);
+    assert!(!linked.actors[0].defined);
+    assert!(!linked.actors[0].emits_witnessed);
+}
+
+#[test]
+fn declared_and_concrete_receives_cannot_disagree_even_with_valid_declared_mtd() {
+    let source = "use namespace workers;
+        declare actor Foo receives int;
+        define actor Foo receives bool as end
+        mtd (Foo self) receive(ActorMail<int> message): void {}";
+    assert_eq!(diagnostic(source), "E_SIGNATURE");
+}
+
+#[test]
+fn attached_receiver_must_match_concrete_inbox_even_when_declaration_omits_it() {
+    let source = "use namespace workers;
+        declare actor Foo;
+        define actor Foo receives int as end
+        mtd (Foo self) receive(ActorMail<bool> message): void {}";
+    assert_eq!(diagnostic(source), "E_SIGNATURE");
+}
+
+#[test]
+fn attached_receive_witness_still_does_not_authorize_pipe_emission_or_spawn() {
+    let source = "declare actor Foo receives int emits bool;
+        mtd (Foo self) receive(ActorMail<int> message): void {}";
+    let (_, linked) = target(source).unwrap();
+    assert!(linked.actors[0].inbox_witnessed);
+    assert!(!linked.actors[0].emits_witnessed);
+    assert_eq!(linked.require_spawnable("Foo", Pos::default()).unwrap_err().code, "E_UNLINKED");
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_UNSUPPORTED");
+}
