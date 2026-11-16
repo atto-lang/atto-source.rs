@@ -2459,7 +2459,23 @@ impl<'a> FnCx<'a> {
                     "typed channel/stream pipe adapter is parsed, but the owned guest transport and scheduler ABI are not implemented",
                 ));
             }
-            ExprKind::MixedPipeline(stages) => {
+            ExprKind::PipeCapture(..) => {
+                return Err(Diagnostic::new(pos, "E_PIPE_CONTRACT",
+                    "an inline Stream<T> capture is only valid as the terminal stage of a pipe/rpipe graph"));
+            }
+            ExprKind::MixedPipeline(stages) | ExprKind::DirectedPipeline(stages, _) => {
+                // Preserve original lexical stage order for future runtime
+                // construction while validating every *directed* edge in
+                // source-to-sink order. The reversed AST is never a license
+                // to infer dataflow direction from endpoint types.
+                let reversed = matches!(&e.kind,
+                    ExprKind::DirectedPipeline(_, PipeDirection::RightToLeft));
+                let flow: Vec<PipeStage> = if reversed {
+                    stages.iter().rev().cloned().collect()
+                } else {
+                    stages.to_vec()
+                };
+                let stages = flow.as_slice();
                 // A pipe is a typed continuous graph, NEVER a single I/O
                 // operator or a collection of ordinary actor.send() calls.
                 // No mixed graph can reach guest code until PipeHandle and
@@ -2484,7 +2500,16 @@ impl<'a> FnCx<'a> {
                 let mut contracts = Vec::with_capacity(stages.len());
                 let mut actor_names = Vec::with_capacity(stages.len());
                 let mut seen_refs = BTreeSet::new();
-                for stage in stages {
+                for (stage_idx, stage) in stages.iter().enumerate() {
+                    // An inline binding creates one bounded *terminal* sink
+                    // plus a readable view; it is not a writable Stream<T>
+                    // variable or an intermediate pass-through transform.
+                    if matches!(stage, PipeStage::Endpoint(Expr {
+                        kind: ExprKind::PipeCapture(..), .. }))
+                        && stage_idx + 1 != stages.len() {
+                        return Err(Diagnostic::new(pos, "E_PIPE_CONTRACT",
+                            "inline Stream<T> capture must be the terminal sink in dataflow order"));
+                    }
                     // These concrete bounded adapters carry compiler-known
                     // item types and endpoint direction, but NEVER cause an
                     // allocation or guest source execution in this subset.
@@ -2504,6 +2529,10 @@ impl<'a> FnCx<'a> {
                             PipeEndpointKind::StreamSink => "Stream.port<T>.sink()",
                             PipeEndpointKind::StreamReadable => "Stream.port<T>.stream()",
                         })),
+                        PipeStage::Endpoint(Expr {
+                            kind: ExprKind::PipeCapture(_name, item, _capacity, _mutable), ..
+                        }) => Some((PipePort { input: Some(*item), output: None },
+                            "inline Stream<T> capture")),
                         _ => None,
                     };
                     // Only *typed ActorRef* values prove actor port roles.
