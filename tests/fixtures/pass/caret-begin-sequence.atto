@@ -1,0 +1,8 @@
+// expect-exit: 42
+pub fnc main(): int {
+  ^ begin
+    let x = 3,
+    let y = x * 10,
+    y + 12
+  end;
+}

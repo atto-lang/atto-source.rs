@@ -52,6 +52,8 @@ const RESERVED: &[&str] = &[
     "yield",
     "nlex",
     "return",
+    "seq",
+    "begin",
     "self",
     "super",
     "static",
@@ -1192,18 +1194,26 @@ impl Parser {
 
     // ----------------------------------------------------------- statements
 
-    /// C-style braces remain the default. The extra -> after : Type is an
-    /// explicit body marker; a -> Type header also admits comma/end bodies.
+    /// Callable body choice is explicit and never inferred from commas:
+    /// `-> T { ... }` is a brace statement body.
+    /// `-> T ... end` is a semicolon statement body (explicit return).
+    /// `-> T :: ..., tail end` is a comma body (implicit tail return).
+    /// This is a deliberate tightening of the earlier optional-:: contract.
     fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type) -> R<Vec<Stmt>> {
         if arrow_type {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
             }
-            if self.eat(&Tok::ColonColon) && *self.peek() == Tok::LBrace {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "'::' requires a comma/end body, not a brace block"));
+            if self.eat(&Tok::ColonColon) {
+                if *self.peek() == Tok::LBrace {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "'::' requires a comma/end body, not a brace block"));
+                }
+                return self.parse_erlang_body(ret);
             }
-            return self.parse_erlang_body(ret);
+            let statements = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            return Ok(statements);
         }
         if colon_type && self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
             return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
@@ -1383,7 +1393,14 @@ impl Parser {
             self.terminator()?;
             return Ok(Stmt::YieldFrom(source, pos));
         }
-        let word = self.word_at(0).map(str::to_owned);
+        // `^` is a statement-position alias for `return`, never a unary
+        // or binary expression operator. Reuse the existing return-match,
+        // generator, terminator and type-checking paths.
+        let word = if *self.peek() == Tok::Caret {
+            Some("return".to_owned())
+        } else {
+            self.word_at(0).map(str::to_owned)
+        };
         match word.as_deref() {
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
@@ -1436,6 +1453,19 @@ impl Parser {
                     }
                     return self.parse_return_match(pos);
                 }
+                if self.is_word("seq") {
+                    self.advance();
+                    // A single value-match is also a degenerate one-step
+                    // sequence. Preserve return-match's exhaustiveness and
+                    // once-only subject evaluation until value-match AST
+                    // lowering is implemented for general sequence tails.
+                    if self.is_word("match") {
+                        return self.parse_return_match(pos);
+                    }
+                    let value = self.parse_comma_sequence(Tok::Semi, pos)?;
+                    self.terminator()?;
+                    return Ok(Stmt::Return(Some(value), pos));
+                }
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
                 let value = if at_end { None } else { Some(self.parse_expr()?) };
@@ -1445,6 +1475,12 @@ impl Parser {
                 }
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
+            }
+            Some("seq") if *self.peek_at(1) != Tok::LParen => {
+                self.advance();
+                let value = self.parse_comma_sequence(Tok::Semi, pos)?;
+                self.terminator()?;
+                Ok(Stmt::Expr(value))
             }
             Some("throw") => {
                 self.advance();
@@ -2739,7 +2775,7 @@ impl Parser {
         }
         let body = if *self.peek() == Tok::LBrace {
             LambdaBody::Block(self.parse_block()?)
-        } else if self.is_word("return") {
+        } else if self.is_word("return") || *self.peek() == Tok::Caret {
             // Unlike ordinary statements, a braceless lambda's return must
             // have a literal semicolon. A newline before the closing ')' does
             // not terminate this lambda body.
@@ -2778,6 +2814,51 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
+
+    /// A bounded, lexical comma sequence: `(> a, b)`, `begin a, b end`,
+    /// or statement-position `seq a, b;`. No tuple or comma operator.
+    /// Caller consumes the final delimiter (it is intentionally not swallowed).
+    fn parse_comma_sequence(&mut self, close: Tok, pos: Pos) -> R<Expr> {
+        self.enter()?;
+        let parsed = (|| -> R<Expr> {
+            if *self.peek() == close {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "empty comma sequence"));
+            }
+            let mut steps = Vec::new();
+            loop {
+                if steps.len() >= MAX_MEMBERS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many sequence steps"));
+                }
+                if matches!(self.word_at(0), Some("let" | "const" | "val")) {
+                    let local = self.parse_binding()?;
+                    steps.push(local);
+                    if !self.eat(&Tok::Comma) {
+                        return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                            "sequence requires a final value expression after bindings"));
+                    }
+                } else {
+                    let expression = self.parse_expr()?;
+                    if *self.peek() == close {
+                        return Ok(Expr {
+                            kind: ExprKind::Sequence(steps, Box::new(expression)),
+                            pos,
+                        });
+                    }
+                    self.expect(Tok::Comma, "',' between sequence steps")?;
+                    steps.push(Stmt::Expr(expression));
+                }
+                if *self.peek() == close {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "trailing comma in sequence"));
+                }
+                if *self.peek() == Tok::Eof {
+                    return Err(Diagnostic::new(self.pos(), "E_EOF", "unclosed sequence"));
+                }
+            }
+        })();
+        self.leave();
+        parsed
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -2794,6 +2875,12 @@ impl Parser {
                 self.advance();
                 ExprKind::Float(bits)
             }
+            Tok::SequenceOpen => {
+                self.advance();
+                let result = self.parse_comma_sequence(Tok::RParen, pos)?;
+                self.expect(Tok::RParen, "')' to close sequence")?;
+                return Ok(result);
+            }
             Tok::LParen => {
                 self.advance();
                 let inner = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
@@ -2802,6 +2889,12 @@ impl Parser {
                 }
                 self.expect(Tok::RParen, "')'")?;
                 return Ok(Expr { kind: inner.kind, pos });
+            }
+            Tok::Ident(s) if s == "begin" => {
+                self.advance();
+                let result = self.parse_comma_sequence(Tok::Ident("end".to_owned()), pos)?;
+                self.expect_word("end")?;
+                return Ok(result);
             }
             Tok::Ident(s) => match s.as_str() {
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {

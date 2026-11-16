@@ -147,19 +147,24 @@ impl Cursor<'_> {
         if !arrow_type {
             return Err(self.err("E_SYNTAX", "expected '{' for a method body"));
         }
-        if self.take(&Tok::ColonColon) && *self.tok() == Tok::LBrace {
+        let comma_body = self.take(&Tok::ColonColon);
+        if comma_body && *self.tok() == Tok::LBrace {
             return Err(self.err("E_SYNTAX", "'::' requires a comma/end body, not '{'"));
         }
         if *self.tok() == Tok::Arrow {
             return Err(self.err("E_SYNTAX", "a second '->' is not a body delimiter"));
         }
+        // This receiver-only scanner is syntax admission, not guest lowering.
+        // Keep nested call/list/sequence commas out of the outer body grammar.
         let (mut braces, mut conditionals, mut items) = (0u32, 0u32, 0usize);
+        let (mut parens, mut brackets) = (0u32, 0u32);
         loop {
             match self.tok() {
                 Tok::Eof => return Err(self.err("E_EOF", "unclosed Erlang-style method body")),
                 Tok::Ident(s) if s == "end" && braces == 0 => {
-                    if conditionals != 0 { return Err(self.err("E_SYNTAX", "unclosed if/fi in Erlang-style body")); }
-                    if items == 0 { return Err(self.err("E_SYNTAX", "empty Erlang-style method body")); }
+                    if conditionals != 0 { return Err(self.err("E_SYNTAX", "unclosed if/fi in method body")); }
+                    if parens != 0 || brackets != 0 { return Err(self.err("E_SYNTAX", "unclosed nested delimiter in method body")); }
+                    if items == 0 { return Err(self.err("E_SYNTAX", "empty method body")); }
                     self.next();
                     return Ok(());
                 }
@@ -171,6 +176,22 @@ impl Cursor<'_> {
                     if conditionals == 0 { return Err(self.err("E_SYNTAX", "unmatched fi")); }
                     conditionals -= 1;
                 }
+                Tok::LParen | Tok::SequenceOpen => {
+                    parens += 1;
+                    if parens > 128 { return Err(self.err("E_NESTING", "body paren nesting limit")); }
+                }
+                Tok::RParen => {
+                    if parens == 0 { return Err(self.err("E_SYNTAX", "unmatched ')'")); }
+                    parens -= 1;
+                }
+                Tok::LBracket => brackets += 1,
+                Tok::RBracket => {
+                    if brackets == 0 { return Err(self.err("E_SYNTAX", "unmatched ']'")); }
+                    brackets -= 1;
+                }
+                Tok::Caret if matches!(self.toks.get(self.i + 1).map(|x| &x.tok),
+                    Some(Tok::Ident(s)) if matches!(s.as_str(), "const" | "val" | "let")) =>
+                    return Err(self.err("E_SYNTAX", "return shorthand expects a value, not a binding")),
                 Tok::LBrace => {
                     braces += 1;
                     if braces > 128 { return Err(self.err("E_NESTING", "body nesting limit")); }
@@ -179,11 +200,15 @@ impl Cursor<'_> {
                     if braces == 0 { return Err(self.err("E_SYNTAX", "unmatched '}'")); }
                     braces -= 1;
                 }
-                Tok::Semi if braces == 0 && conditionals == 0 =>
-                    return Err(self.err("E_SYNTAX", "Erlang-style items require commas, not semicolons")),
-                Tok::Comma if braces == 0 && conditionals == 0 => {
+                Tok::Semi if comma_body && braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 =>
+                    return Err(self.err("E_SYNTAX", "'::' body requires commas, not semicolons")),
+                Tok::Comma if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    if !comma_body {
+                        return Err(self.err("E_SYNTAX",
+                            "unmarked '-> Type ... end' body requires semicolons and explicit returns"));
+                    }
                     if matches!(self.toks.get(self.i + 1).map(|x| &x.tok), Some(Tok::Ident(s)) if s == "end") {
-                        return Err(self.err("E_SYNTAX", "trailing comma in Erlang-style body"));
+                        return Err(self.err("E_SYNTAX", "trailing comma in '::' body"));
                     }
                 }
                 _ => {}

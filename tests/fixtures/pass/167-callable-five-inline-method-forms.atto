@@ -10,8 +10,8 @@ define class Methods as
         return 5;
     }
     pub m_end() -> int
-        let int x = 3,
-        x + 2
+        const x: int = 3;
+        ^ x + 2;
     end
     pub m_delimited() -> int ::
         let int x = 3, x + 2

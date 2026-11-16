@@ -10,8 +10,8 @@ fn inline_methods_accept_five_body_styles_with_legacy_prefixes() {
             method colon_arrow(): int -> { return 5; }
             arrow_braces() -> int { return 5; }
             arrow_end() -> int
-                let int x = 3,
-                x + 2
+                const x: int = 3;
+                ^ x + 2;
             end
             arrow_delimited() -> int ::
                 let int x = 3,
@@ -41,8 +41,8 @@ fn inline_actor_methods_share_the_five_body_styles() {
             method colon_arrow(): int -> { return 5; }
             arrow_braces() -> int { return 5; }
             arrow_end() -> int
-                let int x = 3,
-                x + 2
+                const x: int = 3;
+                ^ x + 2;
             end
             arrow_delimited() -> int :: let int x = 3, x + 2 end
         end
@@ -74,10 +74,10 @@ fn duplicate_arity_is_not_resolved_by_receiver_style() {
 }
 
 #[test]
-fn empty_erlang_body_is_not_a_valid_value_or_void_method() {
-    for header in ["empty() -> int :: end", "empty() -> void end"] {
-        let src = format!("define class C as {header} end pub fnc main(): int {{ return 0; }}");
-        let d = Parser::new(lex(&src).unwrap()).parse_program().unwrap_err();
-        assert_eq!(d.code, "E_SYNTAX", "{src}: {d}");
-    }
+fn empty_comma_body_fails_but_void_statement_body_is_valid() {
+    let invalid = "define class C as empty() -> int :: end end pub fnc main(): int { return 0; }";
+    assert_eq!(Parser::new(lex(invalid).unwrap()).parse_program().unwrap_err().code, "E_SYNTAX");
+    let valid = "define class C as empty() -> void end end pub fnc main(): int { return 0; }";
+    assert!(Parser::new(lex(valid).unwrap()).parse_program().is_ok());
+    assert!(atto_compiler::compile(valid).is_ok());
 }

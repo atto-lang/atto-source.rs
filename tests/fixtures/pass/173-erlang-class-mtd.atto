@@ -17,8 +17,8 @@ pub mtd (Calculator) three() -> int {
 }
 
 pub mtd (Calculator _) four() -> int
-  let int x = self.seed,
-  x + 2
+  const x: int = self.seed;
+  ^ x + 2;
 end
 
 pub mtd (self: Calculator) five() -> int ::
