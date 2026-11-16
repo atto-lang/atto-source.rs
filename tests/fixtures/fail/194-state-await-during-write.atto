@@ -1,9 +1,9 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_STATE_BORROW
 define state container Counter as
   state { let int count: 0; }
   pub bad(): void {
     handle_state(critical |s| -> {
-      await task();
+      await task { return 42; };
       s.count = 1;
     });
   }
