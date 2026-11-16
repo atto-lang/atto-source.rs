@@ -14,15 +14,15 @@ sample and requires deterministic guest output or a positioned diagnostic.
 `ATTOC=<native-attoc> node tests/conformance.mjs` runs the same exact sources
 through the **real Rust compiler built for wasm32**, verifies no guest artifact
 on rejection, checks emitted guests and compares native/Wasm compiler bytes.
-Fourteen currently supported previews have exact guest-execution oracles:
+Fifteen currently supported previews have exact guest-execution oracles:
 function-pipeline, generators, result-option, trap, borrow-checking,
-lexical-scope-pure, state-containers, fib-match, guard, match-values, closures-functors, result-option-end, modules, and callable-body-styles. All must be
+lexical-scope-pure, state-containers, fib-match, guard, match-values, closures-functors, result-option-end, modules, callable-body-styles, and visibility-modifiers. All must be
 compiled by the real wasm32 Rust compiler, executed in a genuine guest with
 exact stdout/return values, and compared byte-for-byte with native Rust.
 The other previews
 are **not yet certified executable**. The modules profile supports direct
 file-local qualified function calls only, not importing other files, module
-values, generic members, or a cross-file visibility/linker model. Executing fourteen
+values, generic members, or a cross-file visibility/linker model. Executing fifteen
 samples does not establish complete ownership, actor, ADT or effect semantics.
 
 The site has **nine** ordinary examples and **42** previews (**51 total**).
