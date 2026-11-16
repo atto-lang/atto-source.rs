@@ -459,3 +459,58 @@ pub fn inspect_unary_reads(tokens: &[Token]) -> Result<Vec<UnaryReadCandidate>, 
     }
     Ok(reads)
 }
+
+
+/// Conservative effect preflight for braced callable bodies. It is not the
+/// production effect checker: nominal Readable resolution, nested `end`
+/// bodies and full lambda/actor effects are still rejected before guest ABI.
+/// Never let an obviously non-suspending function acquire a hidden read.
+pub fn validate_unary_read_suspension(
+    tokens: &[Token], reads: &[UnaryReadCandidate],
+) -> Result<(), Diagnostic> {
+    for read in reads {
+        let Some(read_index) = tokens.iter().position(|t| t.pos == read.pos) else {
+            continue;
+        };
+        // None means an ordinary lexical block. Some(bool) is a callable
+        // scope and its explicit susp/suspends modifier.
+        let mut scopes: Vec<Option<bool>> = Vec::new();
+        for i in 0..read_index {
+            match &tokens[i].tok {
+                Tok::LBrace => {
+                    let head_start = (0..i).rev().find(|&j| matches!(
+                        tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace
+                    )).map_or(0, |j| j + 1);
+                    let head = &tokens[head_start..i];
+                    let fn_index = head.iter().position(|t| matches!(
+                        word(t), Some("fnc" | "routine" | "mtd")
+                    ));
+                    let callable = if let Some(n) = fn_index {
+                        // A modifier on a nested type must not bless the
+                        // outer callable: only tokens BEFORE fnc count.
+                        Some(head[..n].iter().any(|t| matches!(
+                            word(t), Some("susp" | "suspends")
+                        )))
+                    } else if head.iter().any(|t| matches!(&t.tok, Tok::Arrow))
+                        && head.iter().any(|t| matches!(&t.tok, Tok::Pipe))
+                    {
+                        // Braced pipe lambdas are independent callables.
+                        Some(head.iter().any(|t| matches!(
+                            word(t), Some("susp" | "suspends")
+                        )))
+                    } else {
+                        None
+                    };
+                    scopes.push(callable);
+                }
+                Tok::RBrace => { scopes.pop(); }
+                _ => {}
+            }
+        }
+        if let Some(false) = scopes.iter().rev().copied().flatten().next() {
+            return Err(Diagnostic::new(read.pos, "E_SUSPENDS_REQUIRED",
+                "direct << channel read can suspend; declare enclosing callable susp/suspends and required io/suspend effects"));
+        }
+    }
+    Ok(())
+}
