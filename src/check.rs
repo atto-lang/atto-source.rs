@@ -691,6 +691,10 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // Before emitting any ABI, lower only verified, class-local public int
+    // field snapshots; all other structural formals still fail closed below.
+    let adapted = crate::structural_call_lower::lower(p)?;
+    let p = &adapted;
     // Retain the structural marker in the production AST, but DO NOT
     // silently lower it as a nominal class pointer. A structural formal
     // requires the proof of a readonly borrowing ABI and a public shape
