@@ -125,9 +125,16 @@ fn tilde_operand_is_one_postfix_expression_not_a_magic_cast() {
     ] {
         assert!(syn::parse_arguments(bad).is_err(), "{bad}");
     }
-    // Aggregate literals are NOT structural argument projections, and
-    // spaces around the prefix can never change this AST distinction.
-    let a=syn::parse_arguments("(a: ~(x: 10), b: ~(k => 42))").unwrap();
-    assert_eq!(a[0].kind,syn::ArgKind::RecordAggregate);
-    assert_eq!(a[1].kind,syn::ArgKind::MapAggregate);
+    // Tilde-prefixed collection constructors have been removed entirely.
+    for obsolete in [
+        "(a: ~(x: 10))", "(a: ~ (x: 10))",
+        "(b: ~(k => 42))", "(b: ~ (k => 42))",
+        "(b: ~ /* comment */ (k => 42))",
+    ] {
+        assert!(syn::parse_arguments(obsolete).is_err(), "{obsolete}");
+    }
+    assert_eq!(syn::parse_arguments("(a: Record.of(x: 10))").unwrap()[0].kind,
+               syn::ArgKind::Ordinary);
+    assert_eq!(syn::parse_arguments("(b: Map.of(\"k\", 42))").unwrap()[0].kind,
+               syn::ArgKind::Ordinary);
 }
