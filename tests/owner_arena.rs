@@ -128,3 +128,33 @@ fn reset_and_allocation_loops_remain_fixed_capacity() {
         assert_eq!(arena.read(second), Err(ArenaError::StaleHandle));
     }
 }
+
+#[test]
+fn retired_arena_never_reopens_and_invalidates_every_handle() {
+    let mut arena = OwnerArena::new(64).unwrap();
+    let h1 = arena.allocate(8, 8).unwrap();
+    arena.write(h1).unwrap().fill(0xD2);
+    assert!(!arena.is_retired());
+    arena.retire();
+    assert!(arena.is_retired());
+    assert_eq!(arena.used_bytes(), 0);
+    assert_eq!(arena.read(h1), Err(ArenaError::Retired));
+    assert_eq!(arena.write(h1), Err(ArenaError::Retired));
+    assert_eq!(arena.reset(), Err(ArenaError::Retired));
+    assert_eq!(arena.allocate(8, 8), Err(ArenaError::Retired));
+    arena.retire();
+    assert!(arena.is_retired());
+    assert_eq!(arena.capacity(), 64);
+}
+
+#[test]
+fn replacement_arena_never_accepts_dropped_arena_handles() {
+    let h1 = {
+        let mut first = OwnerArena::new(8).unwrap();
+        first.allocate(8, 1).unwrap()
+    };
+    let mut next = OwnerArena::new(8).unwrap();
+    let fresh = next.allocate(8, 1).unwrap();
+    assert_eq!(next.read(h1), Err(ArenaError::ForeignArena));
+    assert_ne!(h1, fresh);
+}
