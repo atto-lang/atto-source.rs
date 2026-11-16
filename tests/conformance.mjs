@@ -416,15 +416,30 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
-  check(`removed-operator/${op}`, () => {
+// Single ^ is a statement-position return synonym, NEVER an infix operator.
+// The invalid infix spelling reaches the statement terminator check; % and
+// ^^ are still unsupported operators. All three must reject without Wasm.
+for (const [op, code] of [['%', 'E_UNSUPPORTED'], ['^', 'E_SEMICOLON'], ['^^', 'E_UNSUPPORTED']]) {
+  check(`invalid-infix-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
-    assert.equal(r.code, 'E_UNSUPPORTED');
+    assert.equal(r.code, code);
     assert.equal('wasm' in r, false);
     assert.ok(r.line >= 1 && r.col >= 1);
+  });
+}
+
+// Direct guest execution proves caret returns (and guard failure-path caret)
+// have actual function-return semantics, not merely parser recognition.
+for (const [label, source, value] of [
+  ['caret-return/42', 'pub fnc main(): int { ^ 42; }', 42n],
+  ['guard-caret/true-fallthrough', 'pub fnc main(): int { guard true { ^ -1; } ^ 42; }', 42n],
+  ['guard-caret/false-early-return', 'pub fnc main(): int { guard false { ^ -1; } ^ 42; }', -1n],
+]) {
+  check(label, () => {
+    const r = compile(source);
+    assert.equal(r.ok, true, r.message);
+    assert.equal(runGuest(r.wasm).value, value);
   });
 }
 
