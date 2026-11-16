@@ -105,6 +105,21 @@ try{
   const timer='suspends fnc delayedAnswer(): int { await rt.sleep(25); return 42; } pub suspends fnc main(): int { val result=await delayedAnswer(); stdio.println(result); return result; }';
   assert.match(await run(timer,'main() -> 42'),/^42\nmain\(\) -> 42$/);
   console.log('PASS JSPI: actual Wasm timer suspended, then resumed after host timer');
+
+  const typedTimer='pub suspends fnc main(): int { await sleep(25ms); return 42; }';
+  assert.match(await run(typedTimer,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'a typed timer await must suspend for at least one cooperative scheduler turn');
+  console.log('PASS JSPI: typed sleep(Duration literal) resumes real guest Wasm');
+  const typedQualified='pub suspends fnc main(): int { await std.time.sleep(1ms); return 42; }';
+  assert.match(await run(typedQualified,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS JSPI: std.time.sleep(Duration literal) qualified spelling');
+  assert.match(await run('pub fnc main(): int { sleep_blocking(100ms); return 42; }',
+    'E_BLOCKING_CONTEXT'),/E_BLOCKING_CONTEXT/);
+  assert.match(await run('pub suspends fnc main(): int { await sleep(1001ms); return 42; }',
+    'E_TIMER_RANGE'),/E_TIMER_RANGE/);
+  console.log('PASS JSPI: unsafe sync sleep and unsupported timer range fail closed');
+
   const tasks='pub suspends fnc main(): int { val a=task {return 20;}; val b=task {return 22;}; val c=await a + await b; stdio.println(c); return c; }';
   assert.match(await run(tasks,'main() -> 42'),/^42\nmain\(\) -> 42$/);
   console.log('PASS JSPI: two compiler-generated Wasm task functions produce and await typed Future<int>');
