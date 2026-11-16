@@ -2275,9 +2275,21 @@ impl Parser {
                 "Some" | "Ok" | "Err" => {
                     self.advance();
                     self.expect(Tok::LParen, "'(' after payload variant")?;
-                    let (name, _) = self.ident("a payload binding name")?;
-                    self.expect(Tok::RParen, "')' after payload binding")?;
-                    Ok(Pattern::Adt(w, Some(name)))
+                    // Pattern syntax is not constructor syntax. Both Foo()
+                    // and Foo(_) match the variant while discarding its
+                    // payload; Foo(name) binds it in the selected arm only.
+                    // Do not synthesize implicit 'value'/'error' bindings.
+                    let bind = if self.eat(&Tok::RParen) {
+                        None
+                    } else if self.eat_word("_") {
+                        self.expect(Tok::RParen, "')' after ignored payload")?;
+                        None
+                    } else {
+                        let (name, _) = self.ident("a payload binding or '_'")?;
+                        self.expect(Tok::RParen, "')' after payload binding")?;
+                        Some(name)
+                    };
+                    Ok(Pattern::Adt(w, bind))
                 },
                 "_" => {
                     self.advance();
