@@ -1,0 +1,4 @@
+// expect-error: E_DUPLICATE
+define class Error as
+end
+pub fnc main(): int { return 0; }
