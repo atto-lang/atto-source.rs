@@ -2193,6 +2193,32 @@ impl Parser {
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
         }
+        // Declaration-first, single-result capture of a *checked* reverse
+        // functional pipeline. An ordinary 'val x << source' remains an I/O
+        // read; only a chain containing an explicit suspending identity-await
+        // stage can use this expression binding path.
+        if *self.peek() == Tok::Lt && *self.peek_at(1) == Tok::Lt {
+            let at = self.pos();
+            self.expect_io_double(Tok::Lt, "<<")?;
+            if kind == BindKind::Const {
+                return Err(Diagnostic::new(at, "E_CONST_EFFECT",
+                    "runtime reverse pipeline results cannot initialize const"));
+            }
+            let start = self.i;
+            let init = self.parse_expr()?;
+            let has_reverse_application = self.toks[start..self.i].windows(2).any(|pair|
+                pair[0].tok == Tok::Lt && pair[1].tok == Tok::Pipe
+                && pair[0].pos.line == pair[1].pos.line
+                && pair[0].pos.col.checked_add(1) == Some(pair[1].pos.col));
+            let has_explicit_susp = self.toks[start..self.i].iter().any(|token|
+                matches!(&token.tok, Tok::Ident(w) if w == "susp" || w == "suspends"));
+            if !has_reverse_application || !has_explicit_susp
+                || !Self::checked_await_pipe_value(&init) {
+                return Err(Diagnostic::new(at, "E_IO_SYNTAX",
+                    "'val/let x <<' captures only a checked reverse suspending pipeline; plain readable sources use the I/O read contract"));
+            }
+            return Ok(Stmt::Bind { kind, name, ty, init, pos });
+        }
         if *self.peek() != Tok::Assign {
             return Err(Diagnostic::new(
                 self.pos(),
@@ -2686,8 +2712,106 @@ impl Parser {
         r
     }
 
+    /// A reverse functional application is one contiguous '<|' operator,
+    /// never a '<' comparison followed by conditional '|'.
+    fn reverse_pipe_at(&self) -> bool {
+        let Some(a) = self.toks.get(self.i) else { return false; };
+        let Some(b) = self.toks.get(self.i + 1) else { return false; };
+        a.tok == Tok::Lt && b.tok == Tok::Pipe
+            && a.pos.line == b.pos.line
+            && a.pos.col.checked_add(1) == Some(b.pos.col)
+    }
+
+    fn eat_reverse_pipe(&mut self) -> bool {
+        if !self.reverse_pipe_at() { return false; }
+        self.advance();
+        self.advance();
+        true
+    }
+
+    /// The only executable suspending lambda stage today is the identity
+    /// await. Build the same AST node used by forward '|> susp |f| -> await f'.
+    /// Do not invent general closure invocation or await-as-function.
+    fn parse_reverse_await_stage(&mut self) -> R<Expr> {
+        let at = self.pos();
+        if !(self.eat_word("susp") || self.eat_word("suspends")) {
+            return Err(unsupported(at, "non-suspending reverse lambda stage"));
+        }
+        self.expect(Tok::Pipe, "'|' before reverse suspending binder")?;
+        let (binder, _) = self.ident("a reverse suspending binder")?;
+        self.expect(Tok::Pipe, "'|' after reverse suspending binder")?;
+        self.expect(Tok::Arrow, "'->' after reverse suspending binder")?;
+        if !self.eat_word("await") {
+            return Err(unsupported(self.pos(), "reverse suspending lambdas other than '|f| -> await f'"));
+        }
+        let (awaited, at_name) = self.ident("the reverse awaited binder")?;
+        if awaited != binder {
+            return Err(Diagnostic::new(at_name, "E_PIPE_BIND",
+                "a reverse suspending identity-await must await its own parameter"));
+        }
+        if !self.eat_reverse_pipe() {
+            return Err(unsupported(self.pos(),
+                "complex reverse suspending lambda body: expected '<|' immediately after 'await binder'"));
+        }
+        let source = self.parse_equality()?;
+        if self.reverse_pipe_at() {
+            return Err(Diagnostic::new(self.pos(), "E_PIPE_DIRECTION",
+                "parenthesize a reverse chain passed to a suspending stage"));
+        }
+        Ok(Expr { kind: ExprKind::Await(Box::new(source)), pos: at })
+    }
+
+    /// Right-associated reverse application: f <| g <| x is f(g(x)).
+    /// Stage calls are synthesized from right to left; the source expression
+    /// appears as argument zero, so its runtime effects occur exactly once.
+    fn parse_reverse_pipeline(&mut self, mut value: Expr) -> R<Expr> {
+        let mut stages = Vec::new();
+        let mut links = 0;
+        while self.eat_reverse_pipe() {
+            let at = self.toks[self.i - 2].pos;
+            let (name, args) = match value.kind {
+                ExprKind::Var(name) => (name, Vec::new()),
+                ExprKind::Call(name, args) => (name, args),
+                _ => return Err(unsupported(at, "reverse pipeline stages other than named function calls")),
+            };
+            if args.len() >= MAX_PARAMS {
+                return Err(Diagnostic::new(at, "E_SOURCE_LIMIT",
+                    "reverse pipeline exceeds the call argument limit"));
+            }
+            self.grow(1)?;
+            links += 1;
+            stages.push((name, args, at));
+            value = if self.is_word("susp") || self.is_word("suspends") {
+                self.parse_reverse_await_stage()?
+            } else {
+                self.parse_equality()?
+            };
+        }
+        for (name, mut args, at) in stages.into_iter().rev() {
+            args.insert(0, value);
+            value = Expr { kind: ExprKind::Call(name, args), pos: at };
+        }
+        self.height -= links;
+        Ok(value)
+    }
+
     fn parse_ternary(&mut self) -> R<Expr> {
-        let mut c = self.parse_equality()?;
+        // Support a leading reverse suspending stage without accidentally
+        // treating an ordinary 'susp |x| -> x' lambda as executable.
+        let leading_reverse_await = matches!(self.word_at(0), Some("susp" | "suspends"))
+            && *self.peek_at(1) == Tok::Pipe
+            && *self.peek_at(3) == Tok::Pipe
+            && *self.peek_at(4) == Tok::Arrow
+            && matches!(self.word_at(5), Some("await"))
+            && *self.peek_at(7) == Tok::Lt
+            && *self.peek_at(8) == Tok::Pipe
+            && self.toks[self.i + 7].pos.line == self.toks[self.i + 8].pos.line
+            && self.toks[self.i + 7].pos.col.checked_add(1) == Some(self.toks[self.i + 8].pos.col);
+        let mut c = if leading_reverse_await {
+            self.parse_reverse_await_stage()?
+        } else {
+            self.parse_equality()?
+        };
         // Functional pipeline: value |> f |> g(extra) lowers to g(f(value), extra).
         // Only ordinary named functions are admitted: no computed callees,
         // receiver calls or actor piping. This preserves argument evaluation
@@ -2754,6 +2878,17 @@ impl Parser {
             c = Expr { kind: ExprKind::Call(name, args), pos };
         }
         self.height -= links;
+        if self.reverse_pipe_at() {
+            if links != 0 {
+                return Err(Diagnostic::new(self.pos(), "E_PIPE_DIRECTION",
+                    "mixing '|>' and '<|' requires parentheses"));
+            }
+            c = self.parse_reverse_pipeline(c)?;
+            if *self.peek() == Tok::PipeGt {
+                return Err(Diagnostic::new(self.pos(), "E_PIPE_DIRECTION",
+                    "mixing '<|' and '|>' requires parentheses"));
+            }
+        }
         match self.peek() {
             Tok::Pipe => {
                 return Err(Diagnostic::new(
@@ -2829,6 +2964,9 @@ impl Parser {
                 // 'pending |> susp |f| -> await f >> val x' too early.
                 break;
             }
+            // Let the lower-precedence functional '<|' parser consume its
+            // contiguous two-token spelling, not numeric comparison.
+            if self.reverse_pipe_at() { break; }
             let op = match self.peek() {
                 Tok::Lt => BinOp::Lt,
                 Tok::Le => BinOp::Le,
