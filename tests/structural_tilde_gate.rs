@@ -56,7 +56,7 @@ fn unsupported_structural_formals_and_type_positions_produce_no_wasm() {
         ("fnc main(p: ~Point): int { return 42; }", "E_UNSUPPORTED"),
         ("fnc main(p: structural Point): int { return 42; }", "E_UNSUPPORTED"),
         ("routine main(~Point p): int { return 42; }", "E_UNSUPPORTED"),
-        ("routine main(p: ~{x: int}): int { return 42; }", "E_UNSUPPORTED"),
+        ("routine main(p: ~{x: int}): int { return 42; }", "E_UNSUPPORTED_TYPE"),
         ("~ fnc main(): int { return 42; }", "E_UNSUPPORTED"),
         ("fnc main(): ~Point { return 42; }", "E_UNSUPPORTED"),
         ("fnc main(): int { val p: ~Point = 1; return 42; }", "E_UNSUPPORTED"),
