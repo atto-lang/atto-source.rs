@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+define actor Worker as
+    receive(ActorMail<int> m): void raises(Error) {
+        stdio.println(m.value);
+        return;
+    }
+end
+pub fnc main(): int { return 0; }
