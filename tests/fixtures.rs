@@ -40,6 +40,9 @@ fn negative_fixtures_fail_closed_with_expected_code() {
         if let Some(line) = header(&src, "expect-line") {
             assert_eq!(d.pos.line.to_string(), line, "{name}");
         }
+        if let Some(col) = header(&src, "expect-column") {
+            assert_eq!(d.pos.col.to_string(), col, "{name}");
+        }
     }
 }
 
