@@ -1,4 +1,5 @@
 // This worker loads the *real* Rust-compiled compiler wasm; no JS evaluator.
+import {validateGuestImportABI} from '/runtime/browser/guest_import_admission_v2.mjs';
 import {createStateRuntime} from './state-runtime.mjs';
 // Java Double.toString (JDK 19+ shortest round-trip); see tests/java-double.mjs
 function javaDouble(x){
@@ -31,12 +32,9 @@ self.onmessage=async ({data})=>{
     const out=new Uint8Array(api.memory.buffer,api.result_ptr(),api.result_length()).slice();
     if(!WebAssembly.validate(out))throw new Error('compiler emitted invalid wasm');
     const guest=new WebAssembly.Module(out);
-    // atto.browser.guest.v1: only these output capabilities may be imported
-    const allowed=new Set(['print_i64','print_bool','print_str','print_newline','print_f64',
-      'state_register','state_enter','state_leave']);
-    for(const imp of WebAssembly.Module.imports(guest)){
-      if(imp.module!=='atto'||!allowed.has(imp.name))throw new Error('guest import not granted: '+imp.module+'.'+imp.name);
-    }
+    // Old v1 Workers remain channel/async-denying. Signatures are checked,
+    // not only import names, before any host capabilities are supplied.
+    validateGuestImportABI(out,guest,'browser-basic-v1');
     let stdout='',instance;
     const state=createStateRuntime();
     const atto={
