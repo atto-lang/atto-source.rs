@@ -17,6 +17,9 @@ fn exact_website_result_option_end_source_compiles() {
 
 #[test]
 fn explicit_semicolon_end_body_supports_nested_fi_and_result() {
+    // A double colon is currently also used as an optional header delimiter
+    // in the exact site sample. Its semicolon mode must preserve explicit return.
+    compiled("fnc answer() -> int :: return 42; end pub fnc main(): int { return answer(); }");
     compiled(r#"
         fnc validate(int n) -> Result<int, string>
             if n <= 0 then
