@@ -1,4 +1,5 @@
 // expect-exit: 42
+// java: rejects
 // Expected guest: optional x exists and equals 10; y is required wildcard.
 // Structural match binder is a read-only scoped loan of the full object.
 define class Point as
