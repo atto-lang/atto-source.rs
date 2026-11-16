@@ -111,6 +111,17 @@ try{
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
     'channel read await must yield cooperatively once');
   console.log('PASS compiled AttoLang Channel<int> read Future, Some(41) -> 42');
+  const unaryChannelGuest="pub susp fnc main(): int {\n  val opened: Result<Channel<int>,IoError> = Channel<int>.bounded(1);\n  ^ match opened over\n    on Err(error) -> { return -10; }\n    on Ok(channel) -> {\n      val sent: Result<void,IoError> = channel.send(41);\n      val got: Result<Option<int>,IoError> = << channel;\n      val closed: Result<void,IoError> = channel.close();\n      val released: Result<void,IoError> = channel.release();\n      ^ match released over\n        on Err(error) -> { return -11; }\n        on Ok -> {\n          ^ match got over\n            on Err(error) -> { return -12; }\n            on Ok(item) -> {\n              ^ match item over\n                on None -> { return -13; }\n                on Some(n) -> { return n + 1; }\n              end\n            }\n          end\n        }\n      end\n    }\n  end\n}";
+  assert.match(await run(unaryChannelGuest,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS integrated unary << Channel<int>: real JSPI read, Some(41) -> 42');
+  const declarationChannelGuest=unaryChannelGuest.replace(
+    'val got: Result<Option<int>,IoError> = << channel;',
+    'val got: Result<Option<int>,IoError> << channel;');
+  assert.notEqual(declarationChannelGuest,unaryChannelGuest,'declaration fixture must differ');
+  assert.match(await run(declarationChannelGuest,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS integrated declaration-first val got << channel: same checked guest read');
+
+
 
   const channelAbandonSource=`pub susp fnc main(): int {
     val opened = Channel<int>.bounded(0);

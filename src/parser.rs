@@ -551,7 +551,15 @@ impl Parser {
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
         };
-        if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
+        // The complete type may be followed by a contiguous declaration
+        // read operator: `val x: T << c`. That `<<` is NOT a second generic
+        // argument to T, nor a bit shift; the binding parser owns it.
+        let directional_read = *self.peek() == Tok::Lt && *self.peek_at(1) == Tok::Lt
+            && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+            && self.toks[self.i].pos.col.checked_add(1)
+                == Some(self.toks[self.i + 1].pos.col);
+        if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe)
+            && !directional_read {
             return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
         }
         Ok(ty)
@@ -2230,15 +2238,34 @@ impl Parser {
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
         }
-        if *self.peek() != Tok::Assign {
+        // Declaration-first directional binding is sugar for a single
+        // value-producing prefix receive. Build the SAME AST node as
+        // `val name = << c`, so type/effect/borrow/runtime checks cannot drift.
+        // Numeric shifts and nested generic closing delimiters are not read
+        // operators; the pair must be adjacent on the same source line.
+        let read_pair = *self.peek() == Tok::Lt && *self.peek_at(1) == Tok::Lt
+            && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+            && self.toks[self.i].pos.col.checked_add(1)
+                == Some(self.toks[self.i + 1].pos.col);
+        let init = if self.eat(&Tok::Assign) {
+            self.parse_expr()?
+        } else if read_pair {
+            if kind == BindKind::Const {
+                return Err(Diagnostic::new(self.pos(), "E_CONST_EFFECT",
+                    "runtime channel reads cannot initialize const; use val or let"));
+            }
+            let op_pos = self.pos();
+            self.advance();
+            self.advance();
+            let source = self.parse_expr()?;
+            Expr { kind: ExprKind::PrefixRead(Box::new(source)), pos: op_pos }
+        } else {
             return Err(Diagnostic::new(
                 self.pos(),
                 "E_UNINITIALIZED",
-                format!("binding '{name}' needs an initializer"),
+                format!("binding '{name}' needs '=' or a contiguous '<<' readable initializer"),
             ));
-        }
-        self.advance();
-        let init = self.parse_expr()?;
+        };
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
@@ -2943,6 +2970,18 @@ impl Parser {
 
     fn parse_unary_inner(&mut self) -> R<Expr> {
         let pos = self.pos();
+        // Two contiguous '<' tokens at prefix position are one value-producing
+        // channel read. Parse into the production AST; do not reinterpret a
+        // binary shift/write or spaced comparisons as a receive.
+        if *self.peek() == Tok::Lt && *self.peek_at(1) == Tok::Lt
+            && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+            && self.toks[self.i].pos.col.checked_add(1) ==
+               Some(self.toks[self.i + 1].pos.col) {
+            self.advance();
+            self.advance();
+            let readable = self.parse_unary()?;
+            return Ok(Expr { kind: ExprKind::PrefixRead(Box::new(readable)), pos });
+        }
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
