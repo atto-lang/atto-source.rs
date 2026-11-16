@@ -50,6 +50,8 @@ pub enum Tok {
     Question,
     Pipe,
     PipeGt,
+    /// Contiguous reverse functional application operator in typed I/O continuations.
+    LtPipe,
     Amp,
     At,
     Eof,
@@ -302,6 +304,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('=', _) => (Tok::Assign, 1),
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
+            ('<', Some('|')) => (Tok::LtPipe, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
             ('>', Some('=')) => (Tok::Ge, 2),
