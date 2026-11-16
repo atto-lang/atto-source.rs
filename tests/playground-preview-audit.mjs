@@ -72,6 +72,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'modules': { value: 0n, stdout: '42\n' },
       'callable-body-styles': { value: 0n, stdout: '15\n10\n10\n5\n5\n' },
       'traits-interfaces': { value: 0n, stdout: 'Ada\nhello\n' },
+      'match-types-is': { value: 0n, stdout: 'positive integer\n' },
       'diamond-inheritance': { value: 0n, stdout: 'Ada\nhello\nroot\ndiamond resolved\n' },
       'visibility-modifiers': { value: 7n, stdout: '0\n' },
       'routine': { value: 0n, stdout: '49\n42\n' },
@@ -102,8 +103,8 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
      'fib-match', 'guard', 'match-values', 'closures-functors',
      'result-option-end', 'modules', 'callable-body-styles',
      'traits-interfaces', 'diamond-inheritance', 'visibility-modifiers',
-     'routine', 'boolean-operators'].sort(),
-    'the nineteen requested compiled guest candidates must execute');
+     'routine', 'boolean-operators', 'match-types-is'].sort(),
+    'the twenty requested compiled guest candidates must execute');
   outcome.executionCoverage.verified = outcome.guestExecuted.length;
   outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
   console.log('PLAYGROUND_PREVIEW_EXECUTION_COVERAGE ' + JSON.stringify({

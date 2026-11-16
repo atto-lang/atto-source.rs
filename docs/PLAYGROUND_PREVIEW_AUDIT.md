@@ -15,16 +15,16 @@ sample and requires deterministic guest output or a positioned diagnostic.
 `ATTOC=<native-attoc> node tests/conformance.mjs` runs the same exact sources
 through the **real Rust compiler built for wasm32**, verifies no guest artifact
 on rejection, checks emitted guests and compares native/Wasm compiler bytes.
-Nineteen candidate previews have independent guest-execution oracles:
+Twenty candidate previews have independent guest-execution oracles:
 function-pipeline, generators, result-option, trap, borrow-checking,
 lexical-scope-pure, state-containers, fib-match, guard, match-values, closures-functors, result-option-end, modules, callable-body-styles, traits-interfaces,
-diamond-inheritance, visibility-modifiers, routine, and boolean-operators. All must be
+diamond-inheritance, visibility-modifiers, routine, boolean-operators, and match-types-is. All must be
 compiled by the real wasm32 Rust compiler, executed in a genuine guest with
 exact stdout/return values, and compared byte-for-byte with native Rust.
 The other previews
 are **not yet certified executable**. The modules profile supports direct
 file-local qualified function calls only, not importing other files, module
-values, generic members, or a cross-file visibility/linker model. Executing nineteen candidate
+values, generic members, or a cross-file visibility/linker model. Executing twenty candidate
 samples does not establish complete ownership, actor, ADT or effect semantics.
 
 The site has **nine** ordinary examples and **42** previews (**51 total**).
@@ -60,3 +60,18 @@ This branch must not change or publish the website's pinned
 `atto.browser.guest.v2` compiler, enable disabled previews, or claim
 that source acceptance on one backend establishes cross-backend parity.
 Website/site tracking: https://github.com/atto-lang/atto-platform-conformance/issues/31
+
+## Bounded scalar Any specialization (preview 20 candidate)
+
+`match-types-is.atto` is compiled using a **strictly static, monomorphic
+scalar specialization**: one immutable, directly literal-initialized `Any`
+binding and one direct callable with an `Any` parameter are type-narrowed
+to the proven scalar. Each `on is T` is checked against that scalar, and
+unreachable type alternatives are removed before the ordinary match
+checker/emitter; guarded matching is evaluated at runtime as usual.
+This is **not** the general runtime-tagged `Any` object ABI: computed,
+mutable, escaping, or multiply specialized `Any` values must reject with a
+positioned diagnostic and without any guest artifact. A separate runtime
+Any implementation is needed for arbitrary dynamic values.
+The twentieth preview is **not certified** until exact-source Rust/wasm32
+compiler byte parity, guest stdout, negative fixtures and Chromium E2E pass.
