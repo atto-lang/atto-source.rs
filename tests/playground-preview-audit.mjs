@@ -91,8 +91,8 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
   assert.deepEqual(outcome.guestExecuted.slice().sort(),
     ['function-pipeline', 'generators', 'result-option', 'trap',
      'borrow-checking', 'lexical-scope-pure', 'state-containers',
-     'fib-match', 'guard', 'match-values'].sort(),
-    'the ten currently compiled preview guests must execute');
+     'fib-match', 'guard', 'match-values', 'closures-functors'].sort(),
+    'the eleven currently compiled preview guests must execute');
   outcome.executionCoverage.verified = outcome.guestExecuted.length;
   outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
   console.log('PLAYGROUND_PREVIEW_EXECUTION_COVERAGE ' + JSON.stringify({
