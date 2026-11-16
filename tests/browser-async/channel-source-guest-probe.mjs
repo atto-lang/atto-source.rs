@@ -125,7 +125,8 @@ self.onmessage=async()=>{
       ['val int x = << c; return << c;', 'E_TYPE'],
     ]){
       const bad=compile(src(body));
-      assert(!bad.bytes&&bad.error.includes(error),'must reject mis-typed read '+error);
+      assert(!bad.bytes&&bad.error.includes(error),
+        'must reject mis-typed read '+error+'; got '+String(bad.error)+'; emitted='+Boolean(bad.bytes));
     }
     const unsusp=compile('pub fnc channel_read_guest(Channel<int> c): Result<Option<int>,IoError> { return << c; } pub fnc main(): int { return 0; }');
     assert(!unsusp.bytes&&unsusp.error.includes('E_SUSPENDS_REQUIRED'),'unsuspended guest must reject');
