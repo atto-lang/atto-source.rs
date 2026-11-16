@@ -940,7 +940,7 @@ impl Parser {
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
                 }
-                Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
+                Some(w @ ("async" | "suspend" | "structural" | "abstract" | "nlex" | "shared")) => {
                     return Err(unsupported(self.pos(), &format!("'{w}' members")));
                 }
                 Some("susp" | "suspends") if actor && self.word_at(1) == Some("receive") => {
