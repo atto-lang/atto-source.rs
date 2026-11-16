@@ -1475,6 +1475,12 @@ impl Parser {
         if *self.peek() == Tok::At {
             return Err(unsupported(pos, "annotations"));
         }
+        // '^' is a statement-position return marker, not a prefix
+        // expression, XOR or exponentiation. Reuse the checked return path.
+        if *self.peek() == Tok::Caret {
+            self.advance();
+            return self.parse_return_after_marker(pos);
+        }
         if *self.peek() == Tok::LBrace || *self.peek() == Tok::LBracket {
             return Err(unsupported(pos, "destructuring"));
         }
@@ -1533,24 +1539,7 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
-                if self.is_word("match") {
-                    // Return-position match is a value. Generators cannot
-                    // return values, including an exhaustive match.
-                    if self.in_generator {
-                        return Err(Diagnostic::new(pos, "E_RETURN",
-                            "generator cannot return a match value"));
-                    }
-                    return self.parse_return_match(pos);
-                }
-                let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
-                    || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
-                let value = if at_end { None } else { Some(self.parse_expr()?) };
-                if self.in_generator && value.is_some() {
-                    return Err(Diagnostic::new(pos, "E_RETURN",
-                        "generators may terminate with 'return;' but cannot return a value"));
-                }
-                self.terminator()?;
-                Ok(Stmt::Return(value, pos))
+                self.parse_return_after_marker(pos)
             }
             Some("throw") => {
                 self.advance();
@@ -1753,6 +1742,61 @@ impl Parser {
         }
     }
 
+
+    /// Shared return and caret-return grammar. Caret is never an expression
+    /// operator. A terminal '>> val/let' after an explicit suspending stage
+    /// binds and returns the just-captured value in a single checked scope.
+    ///
+    /// This sugar deliberately uses the ordinary binding and return checker:
+    /// there is no implicit Future await, IO read, unchecked cast, or second
+    /// evaluation of the pipeline.
+    fn parse_return_after_marker(&mut self, pos: Pos) -> R<Stmt> {
+        if self.is_word("match") {
+            if self.in_generator {
+                return Err(Diagnostic::new(pos, "E_RETURN",
+                    "generator cannot return a match value"));
+            }
+            return self.parse_return_match(pos);
+        }
+        let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
+            || matches!(self.word_at(0),
+                Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
+        let expr_start = self.i;
+        let value = if at_end { None } else { Some(self.parse_expr()?) };
+        // 'return p |> susp |f| -> await f >> val x: T;' or
+        // '^ p |> susp |f| -> await f >> val x: T;'
+        // are equivalent to an explicit checked binding then return x.
+        // This is legal only for the existing identity-await pipeline
+        // subset; it cannot turn an arbitrary '>> val' into assignment.
+        if let Some(value) = value.as_ref() {
+            if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
+                && matches!(self.word_at(2), Some("val" | "let" | "const")) {
+                if self.in_generator {
+                    return Err(Diagnostic::new(pos, "E_RETURN",
+                        "generators cannot return a captured pipeline value"));
+                }
+                let captured = self.parse_await_pipeline_capture(value.clone(), expr_start)?;
+                let Stmt::Bind { name, .. } = &captured else {
+                    return Err(Diagnostic::new(pos, "E_IO_SYNTAX",
+                        "return-position pipeline requires a declaration binding"));
+                };
+                let return_value = Expr {
+                    kind: ExprKind::Var(name.clone()),
+                    pos,
+                };
+                return Ok(Stmt::Block(vec![
+                    captured,
+                    Stmt::Return(Some(return_value), pos),
+                ]));
+            }
+        }
+        if self.in_generator && value.is_some() {
+            return Err(Diagnostic::new(pos, "E_RETURN",
+                "generators may terminate with return; but cannot return a value"));
+        }
+        self.terminator()?;
+        Ok(Stmt::Return(value, pos))
+    }
 
     /// True only for an identity-await pipeline and subsequent named stages.
     /// This does not make arbitrary directional bindings or a second I/O
@@ -2779,8 +2823,11 @@ impl Parser {
                 && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
                 && self.toks[self.i].pos.col.checked_add(1) ==
                    Some(self.toks[self.i + 1].pos.col) {
-                return Err(Diagnostic::new(pos, "E_IO_SYNTAX",
-                    "terminal '>> val/let' requires an explicit suspending pipeline"));
+                // Leave the declaration to the statement or return parser.
+                // Reject there unless it followed a verified suspending
+                // identity-await pipeline. Erroring here rejects *valid*
+                // 'pending |> susp |f| -> await f >> val x' too early.
+                break;
             }
             let op = match self.peek() {
                 Tok::Lt => BinOp::Lt,
