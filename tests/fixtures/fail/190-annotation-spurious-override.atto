@@ -1,0 +1,6 @@
+// expect-error: E_OVERRIDE
+define class Standalone as
+  @Override
+  pub value(): int { return 5; }
+end
+pub fnc main(): int { return 0; }
