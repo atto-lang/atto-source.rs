@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED_TYPE
+pub fnc inspect(p: {foo: string | int}): int {
+    return 42;
+}
+pub fnc main(): int { return 42; }
