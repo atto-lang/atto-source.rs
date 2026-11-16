@@ -2180,6 +2180,18 @@ impl<'a> FnCx<'a> {
         let mut match_setup = vec![TStmt::Set(tmp, subj)];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
+            // The current executable profile has only definite-return arm
+            // results, not first-class match expression temporaries. Enforce
+            // the annotation against the enclosing callable's return type;
+            // do not silently erase or cast mismatched annotations.
+            if let Some(declared) = arm.result_type {
+                let declared = self.resolve(declared, arm.pos)?;
+                if declared != self.ret {
+                    return Err(type_err(arm.pos, format!(
+                        "match arm result annotation {} conflicts with enclosing return type {}",
+                        self.tn(declared), self.tn(self.ret))));
+                }
+            }
             if covered {
                 return Err(Diagnostic::new(
                     arm.pos,
@@ -2284,7 +2296,12 @@ impl<'a> FnCx<'a> {
                     None => None,
                 };
                 let at_arm = self.moved.clone();
-                body.extend(self.stmts(&arm.body)?);
+                let checked_body = self.stmts(&arm.body)?;
+                if arm.result_type.is_some() && !returns(&checked_body) {
+                    return Err(Diagnostic::new(arm.pos, "E_RETURN",
+                        "typed match arm must return or throw on every path in this compiler profile"));
+                }
+                body.extend(checked_body);
                 if !returns(&body) {
                     after.extend(self.moved.iter().copied());
                 }
@@ -2355,6 +2372,18 @@ impl<'a> FnCx<'a> {
         let mut out = Vec::new();
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
+            // The current executable profile has only definite-return arm
+            // results, not first-class match expression temporaries. Enforce
+            // the annotation against the enclosing callable's return type;
+            // do not silently erase or cast mismatched annotations.
+            if let Some(declared) = arm.result_type {
+                let declared = self.resolve(declared, arm.pos)?;
+                if declared != self.ret {
+                    return Err(type_err(arm.pos, format!(
+                        "match arm result annotation {} conflicts with enclosing return type {}",
+                        self.tn(declared), self.tn(self.ret))));
+                }
+            }
             if covered {
                 return Err(Diagnostic::new(arm.pos, "E_MATCH",
                     format!("unreachable match arm {}: prior arms cover every variant", i + 1)));
@@ -2408,7 +2437,12 @@ impl<'a> FnCx<'a> {
                     None => None,
                 };
                 let at_arm = self.moved.clone();
-                body.extend(self.stmts(&arm.body)?);
+                let checked_body = self.stmts(&arm.body)?;
+                if arm.result_type.is_some() && !returns(&checked_body) {
+                    return Err(Diagnostic::new(arm.pos, "E_RETURN",
+                        "typed match arm must return or throw on every path in this compiler profile"));
+                }
+                body.extend(checked_body);
                 if !returns(&body) {
                     after.extend(self.moved.iter().copied());
                 }

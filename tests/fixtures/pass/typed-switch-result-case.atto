@@ -1,0 +1,9 @@
+// expect-exit: 42
+// switch/case uses the same checked Result payload pattern types as match.
+fnc selected(): Result<int,string> { return Ok(41); }
+pub fnc main(): int {
+    return switch<int> selected() over
+        case Err(error) : int -> -3,
+        case Ok(n) : int -> n + 1,
+    end;
+}

@@ -1,0 +1,7 @@
+// expect-error: E_TYPE
+pub fnc main(): int {
+    return switch<int> true over
+        case true : bool -> true,
+        default : int -> 0,
+    end;
+}

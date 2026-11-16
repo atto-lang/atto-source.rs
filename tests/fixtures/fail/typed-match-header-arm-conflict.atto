@@ -1,0 +1,8 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+    return match<int> 42 over
+        on 42 : bool -> true,
+        on _ : int -> 0,
+    end;
+}

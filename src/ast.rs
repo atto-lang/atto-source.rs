@@ -326,6 +326,9 @@ pub enum Pattern {
 pub struct MatchArm {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
+    /// Optional arm result annotation, checked against the value returned
+    /// by this narrowed return-position/definite-exit compiler profile.
+    pub result_type: Option<Type>,
     pub body: Vec<Stmt>,
     pub pos: Pos,
 }

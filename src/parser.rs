@@ -79,6 +79,7 @@ const RESERVED: &[&str] = &[
     "break",
     "continue",
     "switch",
+    "case",
     "match",
     "matches",
     "over",
@@ -123,7 +124,6 @@ const RESERVED: &[&str] = &[
 /// Statement-leading keywords that name real AttoLang features this compiler
 /// does not lower yet. They are rejected, never approximated.
 const UNSUPPORTED_STMT: &[&str] = &[
-    "switch",
     "try",
     "select",
     "defer",
@@ -244,6 +244,10 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
         Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        // A nested return-match is a definite exit only when each reachable
+        // arm exits; the type checker separately proves subject exhaustiveness.
+        Some(Stmt::Match { arms, .. }) => !arms.is_empty()
+            && arms.iter().all(|arm| guard_failure_exits(&arm.body)),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
@@ -1606,14 +1610,15 @@ impl Parser {
             }
             Some("return") => {
                 self.advance();
-                if self.is_word("match") {
-                    // Return-position match is a value. Generators cannot
+                if self.is_word("match") || self.is_word("switch") {
+                    let switch = self.is_word("switch");
+                    // Return-position match/switch is a value. Generators cannot
                     // return values, including an exhaustive match.
                     if self.in_generator {
                         return Err(Diagnostic::new(pos, "E_RETURN",
                             "generator cannot return a match value"));
                     }
-                    return self.parse_return_match(pos);
+                    return self.parse_return_match(pos, switch);
                 }
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
@@ -1682,12 +1687,14 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Continue(pos))
             }
-            Some("match") => self.parse_match(false),
-            Some("do") if self.word_at(1) == Some("match") => {
+            Some("match") => self.parse_match(false, false),
+            Some("switch") => self.parse_match(false, true),
+            Some("do") if matches!(self.word_at(1), Some("match" | "switch")) => {
+                let switch = self.word_at(1) == Some("switch");
                 self.advance();
-                self.parse_match(true)
+                self.parse_match(true, switch)
             }
-            Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
+            Some("do") if matches!(self.word_at(1), Some("select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
             // Narrow, executable Writable<string/int/bool/float> builtin.
@@ -2120,24 +2127,32 @@ impl Parser {
     /// Java Parser.parseMatch. Canonical `match x over on P -> { } end`
     /// (or `over { on P { } }`); legacy `match [first] x [;] P -> { } end`
     /// with `else` as the catch-all. `do match` requires `over`.
-    fn parse_match(&mut self, procedural: bool) -> R<Stmt> {
+    fn parse_match(&mut self, procedural: bool, switch: bool) -> R<Stmt> {
         let pos = self.pos();
-        self.expect_word("match")?;
-        if *self.peek() == Tok::Lt {
-            return Err(unsupported(self.pos(), "value match ('match<T>')"));
-        }
-        self.eat_word("first");
+        let keyword = if switch { "switch" } else { "match" };
+        self.expect_word(keyword)?;
+        let switch_type = if switch && self.eat(&Tok::Lt) {
+            let ty = self.parse_type()?;
+            self.expect(Tok::Gt, "'>' after switch result type")?;
+            Some(ty)
+        } else {
+            if *self.peek() == Tok::Lt {
+                return Err(unsupported(self.pos(), "value match ('match<T>')"));
+            }
+            None
+        };
+        if !switch { self.eat_word("first"); }
         let subject = self.parse_expr()?;
         let over = self.eat_word("over");
-        if !over {
-            self.eat(&Tok::Semi);
-        }
+        if !over && !switch { self.eat(&Tok::Semi); }
         let braced = over && self.eat(&Tok::LBrace);
-        if procedural && !over {
+        // Preserve Java's untyped legacy statement switch: `switch x case ... end`.
+        // Typed switch<T> is the new value-result syntax and requires `over`.
+        if (procedural && !switch && !over) || (switch && switch_type.is_some() && !over) {
             return Err(Diagnostic::new(
                 self.pos(),
                 "E_SYNTAX",
-                "'do match' requires 'over' before its arms",
+                "typed switch and procedural match require 'over' before their arms",
             ));
         }
         let mut arms = Vec::new();
@@ -2148,20 +2163,35 @@ impl Parser {
             }
             self.grow(1)?;
             let apos = self.pos();
-            if over && !self.eat_word("on") {
-                let msg = if self.is_word("else") || self.is_word("default") {
-                    "match has no default/else keyword; use 'on _ -> { ... }'"
-                } else {
-                    "every 'match ... over' arm must start with contextual keyword 'on'"
-                };
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", msg));
+            let default_case = switch && self.eat_word("default");
+            let labelled = if switch {
+                self.eat_word("case") || self.eat_word("on")
+            } else if over {
+                self.eat_word("on")
+            } else { false };
+            if (over || switch) && !default_case && !labelled {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    if switch { "switch arms require 'case', 'on', or 'default'" }
+                    else { "every match arm requires 'on' (use 'on _' for default)" }));
             }
-            let pattern = if !over && self.eat_word("else") {
+            let pattern = if default_case || (!over && self.eat_word("else")) {
                 Pattern::Wild
             } else {
                 self.parse_pattern()?
             };
             let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
+            // This annotation is meaningful only for a definitely exiting
+            // statement arm in the currently admitted browser profile.
+            let annotated = if self.eat(&Tok::Colon) {
+                Some(self.parse_type()?)
+            } else { None };
+            if let (Some(outer), Some(inner)) = (switch_type, annotated) {
+                if outer != inner {
+                    return Err(Diagnostic::new(apos, "E_TYPE",
+                        "switch<T> result type conflicts with this case's ': Type' annotation"));
+                }
+            }
+            let result_type = annotated.or(switch_type);
             if *self.peek() == Tok::Assign && *self.peek_at(1) == Tok::Gt {
                 return Err(Diagnostic::new(
                     self.pos(),
@@ -2169,13 +2199,14 @@ impl Parser {
                     "match implementations use the slim arrow '->'; '=>' is reserved for type definitions",
                 ));
             }
-            if !self.eat(&Tok::Arrow) && !braced {
+            if !self.eat(&Tok::Arrow) && (!braced || switch) {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "match arms in 'over ... end' use '->'"));
             }
             let body = self.parse_block()?;
             arms.push(MatchArm {
                 pattern,
                 guard,
+                result_type,
                 body,
                 pos: apos,
             });
@@ -2203,8 +2234,16 @@ impl Parser {
     /// once-only subject evaluation, exhaustive pattern checker, strict return
     /// typing, unreachable-arm detection and Wasm branches. It does not
     /// pretend that arbitrary expressions are value matches.
-    fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
-        self.expect_word("match")?;
+    fn parse_return_match(&mut self, pos: Pos, switch: bool) -> R<Stmt> {
+        let keyword = if switch { "switch" } else { "match" };
+        self.expect_word(keyword)?;
+        // A result type here is an obligation on every value-producing arm.
+        // This executable subset lowers return-match arms to definite returns.
+        let match_type = if self.eat(&Tok::Lt) {
+            let ty = self.parse_type()?;
+            self.expect(Tok::Gt, "'>' after match result type")?;
+            Some(ty)
+        } else { None };
         let subject = self.parse_expr()?;
         self.expect_word("over")?;
         let mut arms = Vec::new();
@@ -2217,7 +2256,14 @@ impl Parser {
             let pattern = if self.eat_word("default") {
                 Pattern::Wild
             } else {
-                self.expect_word("on")?;
+                if switch {
+                    if !self.eat_word("case") && !self.eat_word("on") {
+                        return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                            "switch arms require 'case', 'on', or 'default'"));
+                    }
+                } else {
+                    self.expect_word("on")?;
+                }
                 self.parse_pattern()?
             };
             // The guard sees a pattern binding only after that pattern
@@ -2228,7 +2274,17 @@ impl Parser {
             } else {
                 None
             };
-            self.expect(Tok::Arrow, "'->' in a return match arm")?;
+            let annotated = if self.eat(&Tok::Colon) {
+                Some(self.parse_type()?)
+            } else { None };
+            if let (Some(outer), Some(inner)) = (match_type, annotated) {
+                if outer != inner {
+                    return Err(Diagnostic::new(apos, "E_TYPE",
+                        "match/switch<T> result type conflicts with this arm's ': Type' annotation"));
+                }
+            }
+            let result_type = annotated.or(match_type);
+            self.expect(Tok::Arrow, "'->' in a return match/switch arm")?;
             let braced = *self.peek() == Tok::LBrace;
             let body = if braced {
                 let body = self.parse_block()?;
@@ -2244,6 +2300,7 @@ impl Parser {
             arms.push(MatchArm {
                 pattern,
                 guard,
+                result_type,
                 body,
                 pos: apos,
             });
