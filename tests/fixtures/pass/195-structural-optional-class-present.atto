@@ -1,0 +1,18 @@
+// expect-exit: 42
+// Expected guest: optional x exists and equals 10; y is required wildcard.
+// Structural match binder is a read-only scoped loan of the full object.
+define class Point as
+    pub int x = 10;
+    pub int y = 32;
+end
+pub fnc main(): int {
+    val value = new Point();
+    match value over
+        on ~{ x?: 10, y: _ } as val p -> {
+            return p.x + p.y;
+        }
+        on _ -> {
+            return 0;
+        }
+    end
+}
