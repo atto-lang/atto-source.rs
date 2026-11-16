@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED_TYPE
+// expect-error: E_UNSUPPORTED
 pub fnc inspect(p: {foo: string | int}): int {
     return 42;
 }
