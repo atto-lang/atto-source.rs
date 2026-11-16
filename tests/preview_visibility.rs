@@ -66,3 +66,44 @@ fn protected_modifier_cannot_create_public_mutable_alias() {
     err("define class C as protected let int mutable: 42; end pub fnc main(): int { return 0; }", "E_UNSUPPORTED");
     ok("pub fnc main(): int { return 42; }");
 }
+
+#[test]
+fn class_method_names_do_not_forge_file_level_exports() {
+    err(r#"
+        export pub fnc hidden;
+        define class C as
+            pub hidden(): int { return 42; }
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNBOUND");
+}
+
+#[test]
+fn overloaded_top_level_function_needs_nonambiguous_export_identity() {
+    err(r#"
+        export pub fnc score;
+        fnc score(int n): int { return n; }
+        fnc score(bool b): int { return 42; }
+        pub fnc main(): int { return score(1); }
+    "#, "E_DUPLICATE");
+}
+
+#[test]
+fn foreign_prototype_cannot_satisfy_export_or_become_callable() {
+    err(r#"
+        export pub fnc host_clock_ns;
+        external fnc host_clock_ns(): int;
+        pub fnc main(): int { return 0; }
+    "#, "E_UNBOUND");
+}
+
+#[test]
+fn genuine_top_level_function_export_resolves_without_host_function_leak() {
+    let wasm = ok(r#"
+        export pub fnc get_value;
+        fnc get_value(): int { return 42; }
+        pub fnc main(): int { return get_value(); }
+    "#);
+    assert!(wasm.windows(b"atto.visibility.profile.v1".len())
+        .any(|w| w == b"atto.visibility.profile.v1"));
+}
