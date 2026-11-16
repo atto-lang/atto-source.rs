@@ -1,0 +1,14 @@
+// expect-exit: 42
+// java: rejects
+// Guard observes a scope-local borrowed subject after value pattern succeeds.
+define class Pet as
+    pub string foo = "dog";
+    pub int n = 42;
+end
+pub fnc main(): int {
+    val p = new Pet();
+    match p over
+        on {foo: "dog"} as val v when v.n > 40 -> { return v.n; }
+        on _ -> { return 0; }
+    end
+}
