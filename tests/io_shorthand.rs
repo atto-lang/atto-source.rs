@@ -325,3 +325,27 @@ fn read_binders_cannot_shadow_reserved_language_keywords() {
         }
     }
 }
+
+#[test]
+fn typed_select_generic_guard_context_is_preserved() {
+    for src in [
+        "do select<int> { when inbox >> val x -> {} }",
+        "do select<Result<Option<int>, Error>> { when inbox >> let x -> {} }",
+        "nb select<Result<Option<int>, Error>> { when outgoing << value -> {} }",
+    ] {
+        let ops = parse(src);
+        assert_eq!(ops.len(), 1, "{src}: {ops:?}");
+        assert_eq!(ops[0].context, Context::SelectArm, "{src}");
+    }
+}
+
+#[test]
+fn typed_select_is_not_inherited_by_nested_non_select_blocks() {
+    for src in [
+        "do select<int> { block { when inbox >> val x -> {} } }",
+        "do select<Result<Option<int>, Error>> { if true then { when inbox >> val x -> {} } fi }",
+    ] {
+        let err = inspect(&lex(src).unwrap()).expect_err(src);
+        assert_eq!(err.code, "E_IO_SYNTAX", "{src}: {err}");
+    }
+}
