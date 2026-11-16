@@ -309,9 +309,9 @@ fn pipe_endpoint(tokens: &[Token], start: usize, end: usize) -> Option<String> {
     if let Some(v) = path(tokens, start, end) { return Some(v); }
     if end == start + 4
         && word(&tokens[start]) == Some("spawn")
-        && matches!(tokens[start+1].tok, Tok::Ident(_))
-        && matches!(tokens[start+2].tok, Tok::LParen)
-        && matches!(tokens[start+3].tok, Tok::RParen) {
+        && matches!(&tokens[start+1].tok, Tok::Ident(_))
+        && matches!(&tokens[start+2].tok, Tok::LParen)
+        && matches!(&tokens[start+3].tok, Tok::RParen) {
         return Some(format!("spawn {}()", word(&tokens[start+1])?));
     }
     None
@@ -325,7 +325,7 @@ pub fn inspect_pipe(tokens: &[Token]) -> Result<Vec<PipeCandidate>, Diagnostic> 
     for (i, t) in tokens.iter().enumerate() {
         if word(t) != Some("pipe") { continue; }
         let mut start = i;
-        while start > 0 && !matches!(tokens[start-1].tok,
+        while start > 0 && !matches!(&tokens[start-1].tok,
             Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow) {
             start -= 1;
         }
