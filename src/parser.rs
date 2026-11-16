@@ -3398,6 +3398,20 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                // Restrict the first browser guest constructor to the exact
+                // typed Channel<int>.bounded(capacity) form. This is a
+                // compiler intrinsic, not an untyped generic method dispatch.
+                "Channel" if *self.peek_at(1) == Tok::Lt
+                    && self.word_at(2) == Some("int")
+                    && *self.peek_at(3) == Tok::Gt
+                    && *self.peek_at(4) == Tok::Dot
+                    && self.word_at(5) == Some("bounded") =>
+                {
+                    for _ in 0..6 { self.advance(); }
+                    let args=self.parse_args()?;
+                    return Ok(Expr {kind: ExprKind::Call(
+                        "Channel<int>.bounded".to_owned(), args), pos});
+                }
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }
