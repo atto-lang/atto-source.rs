@@ -48,8 +48,6 @@ fn unsupported_formals_never_miscompile_or_move_actor_ownership() {
     for (formal, expected) in [
         ("~int p", "E_UNSUPPORTED_TYPE"),
         ("p: structural bool", "E_UNSUPPORTED_TYPE"),
-        ("~{x: int} p", "E_UNSUPPORTED"),
-        ("p: ~ {x: int}", "E_UNSUPPORTED"),
         ("~Point mut p", "E_BORROW"),
         ("p: ~ Point mut", "E_BORROW"),
         ("~Point p = new Point()", "E_UNSUPPORTED"),
@@ -137,4 +135,13 @@ fn tilde_operand_is_one_postfix_expression_not_a_magic_cast() {
                syn::ArgKind::Ordinary);
     assert_eq!(syn::parse_arguments("(b: Map.of(\"k\", 42))").unwrap()[0].kind,
                syn::ArgKind::Ordinary);
+}
+
+#[test]
+fn single_public_scalar_formal_is_no_longer_an_unsupported_signature() {
+    for spelling in ["~{x: int} p", "p: ~ {x: int}", "p: {x: int}"] {
+        let src = format!("pub fnc read({spelling}): int {{ return p.x; }} pub fnc main(): int {{ return 42; }}");
+        let guest = compile(&src).expect("one-scalar readonly shape ABI must compile");
+        assert_eq!(&guest[..8], b"\\0asm\\x01\\0\\0\\0");
+    }
 }
