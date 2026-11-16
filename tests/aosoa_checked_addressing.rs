@@ -131,3 +131,32 @@ fn all_admitted_spans_fit_backing_and_do_not_cross_blocks() {
         }
     }
 }
+
+#[test]
+fn shared_heterogeneous_aosoa_v1_golden_offsets_match() {
+    // Matches oreslang-platform-conformance:
+    // contracts/v1/heterogeneous-four-layout-golden-v1.json (AoSoA plan).
+    // Reference-only physical offsets; not native guest execution.
+    let golden = [
+        (0, 4, 4, [0, 4, 8, 12, 72]),
+        (16, 8, 8, [16, 24, 32, 40, 88]),
+        (48, 1, 1, [48, 49, 50, 51, 120]),
+        (52, 4, 4, [52, 56, 60, 64, 124]),
+    ];
+    for (field_base, field_stride, field_width, expected) in golden {
+        for (row, expected_start) in expected.into_iter().enumerate() {
+            let range = checked_aosoa_field_span(
+                row,
+                5,
+                4,
+                72,
+                field_base,
+                field_stride,
+                field_width,
+                144,
+            )
+            .unwrap();
+            assert_eq!(range, expected_start..expected_start + field_width);
+        }
+    }
+}
