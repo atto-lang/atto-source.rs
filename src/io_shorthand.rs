@@ -70,7 +70,7 @@ fn path(tokens: &[Token], start: usize, end: usize) -> Option<String> {
 fn select_body_for_when(tokens: &[Token], when_start: usize) -> bool {
     let mut braces = Vec::new();
     for (i, token) in tokens.iter().enumerate().take(when_start) {
-        match token.tok {
+        match &token.tok {
             Tok::LBrace => braces.push(i),
             Tok::RBrace => { braces.pop(); }
             _ => {}
@@ -78,9 +78,26 @@ fn select_body_for_when(tokens: &[Token], when_start: usize) -> bool {
     }
     let Some(&open) = braces.last() else { return false; };
     if open == 0 { return false; }
-    // In v1 the select block opens directly after the `select` keyword.
-    // Typed/nested select generics belong in the full parser, not preflight.
-    word(&tokens[open - 1]) == Some("select")
+    // Direct `select {` and typed `select<Type<...>> {` both own
+    // the immediately enclosed guards. Other blocks cannot inherit the
+    // permission merely by nesting somewhere inside a select statement.
+    if word(&tokens[open - 1]) == Some("select") { return true; }
+    if !matches!(&tokens[open - 1].tok, Tok::Gt) { return false; }
+    let mut depth = 0usize;
+    for j in (0..open).rev() {
+        match &tokens[j].tok {
+            Tok::Gt => depth += 1,
+            Tok::Lt => {
+                if depth == 0 { return false; }
+                depth -= 1;
+                if depth == 0 {
+                    return j > 0 && word(&tokens[j - 1]) == Some("select");
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn syntax(pos: Pos, message: &str) -> Diagnostic {
