@@ -3005,6 +3005,12 @@ impl Parser {
                 }
                 "task" => {
                     self.advance();
+                    // Legacy task() shorthand is deliberately unsupported, not
+                    // a malformed implementation of structured task { ... }.
+                    // Preserve existing actor-state/critical-scope rejection.
+                    if *self.peek() == Tok::LParen {
+                        return Err(unsupported(pos, "task() requires a checked structured task body"));
+                    }
                     if *self.peek() != Tok::LBrace {return Err(self.expected("a task block '{ ... }'"));}
                     let body = self.parse_block()?;
                     if self.task_funcs.len() >= MAX_FUNCS {return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many task blocks"));}
