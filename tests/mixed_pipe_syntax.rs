@@ -249,3 +249,26 @@ fn direct_mixed_actor_ref_edges_check_emitted_payload_types() {
     assert_eq!(err.code, "E_TYPE", "{err}");
     assert!(err.message.contains("emitted"), "{err}");
 }
+
+#[test]
+fn pure_source_actor_needs_explicit_executable_start_contract() {
+    let source = "define actor OnlySource emits int as
+        end
+        pub fnc main(): int { return 0; }";
+    let parsed = parser::Parser::new(lexer::lex(source).unwrap())
+        .parse_program().unwrap();
+    assert_eq!(parsed.actors[0].declared_emits, Some(atto_compiler::ast::Type::Int));
+    let err = atto_compiler::compile(source).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+    assert!(err.message.contains("startup producer hook"), "{err}");
+}
+
+#[test]
+fn declared_input_cannot_claim_a_missing_receive_handler() {
+    let source = "define actor NoSink receives int as
+        end
+        pub fnc main(): int { return 0; }";
+    let err = atto_compiler::compile(source).unwrap_err();
+    assert_eq!(err.code, "E_TYPE", "{err}");
+    assert!(err.message.contains("declared receives"), "{err}");
+}
