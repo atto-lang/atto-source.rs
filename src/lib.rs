@@ -19,6 +19,8 @@ pub mod state_admission;
 pub mod structural_syntax;
 /// Non-executable read-only structural field/key/loan witness planner.
 pub mod readonly_shape;
+/// Executable bounded by-value class field snapshot calls (not general loan ABI).
+pub mod structural_call_lower;
 pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;
