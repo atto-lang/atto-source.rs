@@ -15,7 +15,20 @@ pub enum ArgKind { Ordinary, StructuralProjection, RecordAggregate, MapAggregate
 #[derive(Clone, Debug)]
 pub struct Argument { pub label: Option<String>, pub kind: ArgKind, pub value: Vec<Token> }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Pattern { pub ty: TypeUse, pub binder: Option<String>, pub guarded: bool }
+pub enum PatternKind {
+    /// Requires the runtime subject to implement a reifiable structural type.
+    TypeTest(TypeUse),
+    /// Name resolved later to an immutable, statically known pattern constant.
+    /// A type name alone is *not* a valid constant pattern.
+    ValueConstant(String),
+    /// Every listed field must exist and its value pattern must succeed.
+    /// Subject-only extra fields do not affect matching.
+    ValueFields(Vec<(String, ScalarPattern)>),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScalarPattern { Any, Int(i64), Bool(bool), Str(String) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pattern { pub kind: PatternKind, pub binder: Option<String>, pub guarded: bool }
 
 struct Cursor { ts: Vec<Token>, i: usize }
 impl Cursor {
@@ -211,9 +224,79 @@ pub fn bind_resolved(formals: &[Formal], args: &[Argument]) -> R<Vec<usize>> {
 
 pub fn parse_pattern(src: &str) -> R<Pattern> {
     let mut c = Cursor::new(src)?;
-    c.eat_word("on"); c.eat_word("is");
-    let ty = c.ty(0)?;
-    if !ty.structural { return Err(c.err("E_SYNTAX", "expected structural type pattern")); }
+    c.eat_word("on");
+    let is_type = c.eat_word("is");
+    let kind = if is_type {
+        let ty = c.ty(0)?;
+        if !ty.structural {
+            return Err(c.err("E_SYNTAX", "is type test requires ~ or structural"));
+        }
+        PatternKind::TypeTest(ty)
+    } else {
+        if !(c.eat(Tok::Tilde) || c.eat_word("structural")) {
+            return Err(c.err("E_SYNTAX", "value pattern needs ~ or structural"));
+        }
+        if c.eat(Tok::LBrace) {
+            // Value patterns are deliberately not the same as structural
+            // type shapes. All field values must be literal or '_'.
+            // No getters, effects, or arbitrary runtime expressions.
+            let mut fields = Vec::new();
+            let mut names = HashSet::new();
+            if c.tok() == &Tok::RBrace {
+                return Err(c.err("E_SYNTAX", "empty field value pattern"));
+            }
+            loop {
+                if fields.len() >= LIMIT {
+                    return Err(c.err("E_SOURCE_LIMIT", "too many field value patterns"));
+                }
+                let name = c.ident()?;
+                if !names.insert(name.clone()) {
+                    return Err(c.err("E_DUPLICATE", "duplicate value pattern field"));
+                }
+                c.expect(Tok::Colon)?;
+                let value = match c.tok().clone() {
+                    Tok::Ident(w) if w == "_" => {
+                        c.i += 1; ScalarPattern::Any
+                    }
+                    Tok::Ident(w) if w == "true" || w == "false" => {
+                        c.i += 1; ScalarPattern::Bool(w == "true")
+                    }
+                    Tok::Int(Some(n)) if n <= i64::MAX as u64 => {
+                        c.i += 1; ScalarPattern::Int(n as i64)
+                    }
+                    Tok::Minus if matches!(c.next(), Tok::Int(Some(_))) => {
+                        c.i += 1;
+                        let Tok::Int(Some(magnitude)) = c.tok().clone() else { unreachable!() };
+                        let value = if magnitude == i64::MAX as u64 + 1 {
+                            i64::MIN
+                        } else if magnitude <= i64::MAX as u64 {
+                            -(magnitude as i64)
+                        } else {
+                            return Err(c.err("E_INTEGER_RANGE", "negative pattern integer out of range"));
+                        };
+                        c.i += 1; ScalarPattern::Int(value)
+                    }
+                    Tok::Str(s) => { c.i += 1; ScalarPattern::Str(s) }
+                    _ => return Err(c.err("E_SYNTAX",
+                        "field value must be a literal or '_'; use 'is ~' for type fields")),
+                };
+                fields.push((name, value));
+                if !c.eat(Tok::Comma) { break; }
+                if c.tok() == &Tok::RBrace {
+                    return Err(c.err("E_SYNTAX", "trailing value pattern comma"));
+                }
+            }
+            c.expect(Tok::RBrace)?;
+            PatternKind::ValueFields(fields)
+        } else {
+            let mut name = c.ident()?;
+            while c.eat(Tok::Dot) || c.eat(Tok::ColonColon) {
+                name.push('.');
+                name.push_str(&c.ident()?);
+            }
+            PatternKind::ValueConstant(name)
+        }
+    };
     let binder = if c.eat_word("as") {
         if !(c.eat_word("val") || c.eat_word("let")) {
             return Err(c.err("E_SYNTAX", "expected val/let binder"));
@@ -223,12 +306,12 @@ pub fn parse_pattern(src: &str) -> R<Pattern> {
     let guarded = c.eat_word("when");
     if guarded {
         if c.tok() == &Tok::Eof { return Err(c.err("E_SYNTAX", "missing guard")); }
-        // A target-only guard is retained as syntax. Full expression parsing,
-        // purity and ownership validation belong to production match lowering.
+        // Syntax-only: full guard expression, effects and ownership are
+        // checked by the production matcher once it supports this syntax.
         c.i = c.ts.len()-1;
     }
     c.finish()?;
-    Ok(Pattern { ty, binder, guarded })
+    Ok(Pattern { kind, binder, guarded })
 }
 
 #[cfg(test)]
@@ -248,7 +331,24 @@ mod tests {
     #[test] fn pattern_alias_and_guard_syntax() {
         assert_eq!(parse_pattern("on is ~Point as val p").unwrap(),
                    parse_pattern("on is structural Point as val p").unwrap());
-        assert!(parse_pattern("on ~{x: int} as let p when p.x > 0").unwrap().guarded);
+        let t = parse_pattern("on is ~Point as val p").unwrap();
+        let v = parse_pattern("on ~Point as val p").unwrap();
+        assert!(matches!(t.kind, PatternKind::TypeTest(_)));
+        assert_eq!(v.kind, PatternKind::ValueConstant("Point".into()));
+        assert_eq!(parse_pattern("on ~Point as val p").unwrap(),
+                   parse_pattern("on structural Point as val p").unwrap());
+        assert_eq!(parse_pattern("on ~{x: 10, y: _} as val p").unwrap(),
+                   parse_pattern("on structural {x: 10, y: _} as val p").unwrap());
+        let fields = parse_pattern("on ~{x: 10, y: _} as let p when p.x > 0").unwrap();
+        assert!(fields.guarded);
+        assert_eq!(fields.kind, PatternKind::ValueFields(vec![
+            ("x".into(), ScalarPattern::Int(10)),
+            ("y".into(), ScalarPattern::Any),
+        ]));
+        for bad in ["on ~{x: int}", "on ~{}", "on ~{x: 1, x: 2}",
+                    "on is ~{x: 10}", "on is ~Point as p"] {
+            assert!(parse_pattern(bad).is_err(), "{bad}");
+        }
         assert!(parse_pattern("on Point").is_err());
         assert!(parse_pattern("on ~").is_err());
     }
