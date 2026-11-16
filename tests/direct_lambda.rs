@@ -45,6 +45,29 @@ fn immutable_scalar_capture_is_lifted_as_hidden_wasm_parameter() {
     assert!(matches!(&value.e, TExpr::Call(1, args) if args.len() == 2));
 }
 #[test]
+fn immutable_function_parameter_and_val_alias_capture_as_definition_snapshot() {
+    let src = r#"
+      fnc multiply(int factor): int {
+        val captured_factor = factor;
+        val triple = |value| : int -> value * captured_factor;
+        return triple(14);
+      }
+      pub fnc main(): int { return multiply(3); }
+    "#;
+    let checked = checked(src);
+    // Two nominal functions plus the lifted private direct-call function.
+    assert_eq!(checked.funcs.len(), 3);
+    assert_eq!(checked.funcs[2].params, [Type::Int, Type::Int]);
+    let wasm = atto_compiler::compile(src).unwrap();
+    assert_eq!(wasm, atto_compiler::compile(src).unwrap());
+    assert!(wasm.starts_with(b"\\0asm"));
+}
+#[test]
+fn mutable_source_cannot_be_promoted_through_an_immutable_alias() {
+    let src = "pub fnc main(): int { let n = 10; val snapshot = n; val f = |v| -> v + snapshot; return f(1); }";
+    assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_CAPTURE");
+}
+#[test]
 fn mutable_outer_capture_still_rejected() {
     let src = "pub fnc main(): int { let extra = 1; val f = |n| -> n + extra; return f(1); }";
     assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_CAPTURE");
