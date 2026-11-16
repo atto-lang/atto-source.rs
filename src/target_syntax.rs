@@ -86,6 +86,9 @@ impl Cursor<'_> {
         }
     }
     fn type_name(&mut self) -> R<String> {
+        if *self.tok() == Tok::Tilde || self.word() == Some("structural") {
+            return Err(self.err("E_UNSUPPORTED_TYPE", "structural (~ / structural) receiver types are not lowered"));
+        }
         let name = match self.tok().clone() {
             Tok::Ident(s) => { self.next(); s }
             _ => return Err(self.err("E_SYNTAX", "expected a type name")),
