@@ -1,0 +1,3 @@
+// expect-error: E_EFFECT_TYPE
+fnc bad(): int raises(Error) { throw Error("wrong effect"); }
+pub fnc main(): int { return bad(); }
