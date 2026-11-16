@@ -17,6 +17,8 @@ pub mod parser;
 pub mod state_admission;
 /// Syntax-only structural tilde and named-call binder; not guest lowering.
 pub mod structural_syntax;
+/// Non-executable read-only structural field/key/loan witness planner.
+pub mod readonly_shape;
 pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;
