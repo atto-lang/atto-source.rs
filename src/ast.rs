@@ -175,6 +175,12 @@ pub struct Receive {
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    /// Typed actor application inbox (not a supervisor CONTROL path).
+    pub declared_receives: Option<Type>,
+    /// Typed explicit pipe output. Not inferred from ordinary sends.
+    pub declared_emits: Option<Type>,
+    /// Ordinary outbound application-message effect; independent of emits.
+    pub declared_sends: Option<Type>,
     pub fields: Vec<Field>,
     pub receive: Option<Receive>,
     pub methods: Vec<Method>,
