@@ -2096,9 +2096,10 @@ impl Parser {
     /// keyword. This executable slice admits only declared class shapes;
     /// inline shape types and dynamic reification remain fail-closed.
     fn parse_structural_type_test(&mut self, pos: Pos) -> R<Pattern> {
-        if !(self.eat(&Tok::Tilde) || self.eat_word("structural")) {
+        let marked = self.eat(&Tok::Tilde) || self.eat_word("structural");
+        if !marked && *self.peek() != Tok::LBrace {
             return Err(Diagnostic::new(pos, "E_SYNTAX",
-                "structural type test requires 'is ~Type' or 'is structural Type'"));
+                "structural type test requires a shape, 'is ~Type' or 'is structural Type'"));
         }
         if *self.peek() == Tok::LBrace {
             return Err(unsupported(self.pos(),
