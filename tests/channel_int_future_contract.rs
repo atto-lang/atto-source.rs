@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChannelError { Closed, Full, InvalidHandle, AlreadyConsumed, AlreadySettled }
+enum ChannelError { Closed, Full, Quota, InvalidHandle, AlreadyConsumed, AlreadySettled }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReadOutcome { Item(i64), Eof, Cancelled }
@@ -27,9 +27,11 @@ impl ChannelInt {
         }
     }
     /// Registration returns immediately: no actor/worker carrier may park.
-    fn nb_read(&mut self) -> u64 {
+    fn nb_read(&mut self) -> Result<u64,ChannelError> {
+        const MAX_PENDING: usize = 1024;
+        if self.pending.len() >= MAX_PENDING {return Err(ChannelError::Quota);}
         let ticket=self.next;
-        self.next=self.next.checked_add(1).expect("bounded ticket allocation");
+        self.next=self.next.checked_add(1).ok_or(ChannelError::Quota)?;
         if let Some(item)=self.queued.pop_front() {
             self.settled.insert(ticket,ReadOutcome::Item(item));
         } else if self.closed {
@@ -37,7 +39,7 @@ impl ChannelInt {
         } else {
             self.pending.push_back(ticket);
         }
-        ticket
+        Ok(ticket)
     }
     /// A successful send linearizes at delivery/admission, not consumption.
     fn send(&mut self, item: i64) -> Result<(),ChannelError> {
@@ -91,7 +93,7 @@ impl ChannelInt {
 #[test]
 fn pending_registration_is_nonparking_and_resumes_fifo_exactly_once() {
     let mut ch=ChannelInt::new(2);
-    let a=ch.nb_read();let b=ch.nb_read();
+    let a=ch.nb_read().unwrap();let b=ch.nb_read().unwrap();
     assert_eq!(ch.peek(a),Ok(None));
     assert_eq!(ch.peek(b),Ok(None));
     ch.send(10).unwrap();ch.send(20).unwrap();
@@ -106,10 +108,10 @@ fn buffer_capacity_is_bounded_and_no_value_is_speculatively_lost() {
     let mut ch=ChannelInt::new(1);
     ch.send(41).unwrap();
     assert_eq!(ch.send(99),Err(ChannelError::Full));
-    let a=ch.nb_read();
+    let a=ch.nb_read().unwrap();
     assert_eq!(ch.consume(a),Ok(Some(ReadOutcome::Item(41))));
     ch.send(42).unwrap();
-    let b=ch.nb_read();
+    let b=ch.nb_read().unwrap();
     assert_eq!(ch.consume(b),Ok(Some(ReadOutcome::Item(42))));
 }
 
@@ -117,7 +119,7 @@ fn buffer_capacity_is_bounded_and_no_value_is_speculatively_lost() {
 fn zero_capacity_requires_a_pending_reader_for_rendezvous() {
     let mut ch=ChannelInt::new(0);
     assert_eq!(ch.send(12),Err(ChannelError::Full));
-    let a=ch.nb_read();
+    let a=ch.nb_read().unwrap();
     ch.send(12).unwrap();
     assert_eq!(ch.consume(a),Ok(Some(ReadOutcome::Item(12))));
 }
@@ -125,7 +127,7 @@ fn zero_capacity_requires_a_pending_reader_for_rendezvous() {
 #[test]
 fn cancellation_preserves_next_reader_and_returns_checked_cancel() {
     let mut ch=ChannelInt::new(1);
-    let abandoned=ch.nb_read();let next=ch.nb_read();
+    let abandoned=ch.nb_read().unwrap();let next=ch.nb_read().unwrap();
     ch.cancel(abandoned).unwrap();
     ch.send(42).unwrap();
     assert_eq!(ch.consume(abandoned),Ok(Some(ReadOutcome::Cancelled)));
@@ -138,7 +140,7 @@ fn close_resolves_pending_reads_but_never_drops_queued_payloads() {
     let mut ch=ChannelInt::new(2);
     ch.send(20).unwrap();
     ch.close();ch.close();
-    let first=ch.nb_read();let eof=ch.nb_read();
+    let first=ch.nb_read().unwrap();let eof=ch.nb_read().unwrap();
     assert_eq!(ch.consume(first),Ok(Some(ReadOutcome::Item(20))));
     assert_eq!(ch.consume(eof),Ok(Some(ReadOutcome::Eof)));
     assert_eq!(ch.send(1),Err(ChannelError::Closed));
@@ -147,7 +149,7 @@ fn close_resolves_pending_reads_but_never_drops_queued_payloads() {
 #[test]
 fn close_with_pending_requests_delivers_eof_without_fake_zero_message() {
     let mut ch=ChannelInt::new(1);
-    let a=ch.nb_read();let b=ch.nb_read();
+    let a=ch.nb_read().unwrap();let b=ch.nb_read().unwrap();
     ch.close();
     assert_eq!(ch.consume(a),Ok(Some(ReadOutcome::Eof)));
     assert_eq!(ch.consume(b),Ok(Some(ReadOutcome::Eof)));
@@ -156,7 +158,7 @@ fn close_with_pending_requests_delivers_eof_without_fake_zero_message() {
 #[test]
 fn committed_delivery_wins_over_later_cancellation() {
     let mut ch=ChannelInt::new(1);
-    let t=ch.nb_read();
+    let t=ch.nb_read().unwrap();
     ch.send(123).unwrap();
     assert_eq!(ch.cancel(t),Err(ChannelError::AlreadySettled));
     assert_eq!(ch.consume(t),Ok(Some(ReadOutcome::Item(123))));
@@ -167,7 +169,7 @@ fn malformed_ticket_never_forges_owned_read_result() {
     let mut ch=ChannelInt::new(1);
     assert_eq!(ch.peek(0),Err(ChannelError::InvalidHandle));
     assert_eq!(ch.consume(u64::MAX),Err(ChannelError::InvalidHandle));
-    let t=ch.nb_read();
+    let t=ch.nb_read().unwrap();
     assert_eq!(ch.peek(t),Ok(None));
 }
 
@@ -178,4 +180,18 @@ fn guest_read_syntax_cannot_yet_emit_fake_channel_wasm() {
         "real Channel<int> and Future<Result<Option<int>,Error>> guest ABI is not implemented");
     assert!(matches!(d.code,"E_UNSUPPORTED"|"E_SYNTAX"|"E_UNBOUND"),
         "must fail closed, got {d}");
+}
+
+#[test]
+fn pending_read_budget_is_bounded_and_does_not_consume_a_slot_on_quota_error() {
+    let mut ch=ChannelInt::new(0);
+    let mut handles=Vec::new();
+    for _ in 0..1024 {handles.push(ch.nb_read().unwrap());}
+    assert_eq!(ch.nb_read(),Err(ChannelError::Quota));
+    let first=handles[0];
+    ch.cancel(first).unwrap();
+    assert_eq!(ch.consume(first),Ok(Some(ReadOutcome::Cancelled)));
+    let next=ch.nb_read().unwrap();
+    assert!(next>handles[1023]);
+    assert_eq!(ch.peek(next),Ok(None));
 }
