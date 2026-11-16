@@ -2098,6 +2098,54 @@ impl Parser {
         Ok(args)
     }
 
+    /// Parse an index or half-open slice. The second separator can be the
+    /// existing contiguous '::' token; a two-colon slice always has a step.
+    fn parse_index_or_slice(&mut self, base: Expr) -> R<Expr> {
+        let pos = self.pos();
+        self.expect(Tok::LBracket, "'[' for index or slice")?;
+        if *self.peek() == Tok::RBracket {
+            return Err(Diagnostic::new(self.pos(), "E_SLICE_SYNTAX",
+                "empty brackets are invalid; use [:] for the full slice"));
+        }
+        let start = if matches!(self.peek(), Tok::Colon | Tok::ColonColon) {
+            None
+        } else { Some(Box::new(self.parse_expr()?)) };
+        if self.eat(&Tok::RBracket) {
+            return Ok(Expr { kind: ExprKind::Index(Box::new(base),
+                start.expect("nonempty index expression")), pos });
+        }
+        let double_colon = if self.eat(&Tok::ColonColon) { true } else {
+            if !self.eat(&Tok::Colon) {
+                return Err(Diagnostic::new(self.pos(), "E_SLICE_SYNTAX",
+                    "expected ':' or ']' after indexed expression"));
+            }
+            false
+        };
+        let end = if double_colon || matches!(self.peek(), Tok::Colon | Tok::ColonColon | Tok::RBracket) {
+            None
+        } else { Some(Box::new(self.parse_expr()?)) };
+        let step = if double_colon || self.eat(&Tok::Colon) {
+            if matches!(self.peek(), Tok::RBracket | Tok::Colon | Tok::ColonColon) {
+                return Err(Diagnostic::new(self.pos(), "E_SLICE_SYNTAX",
+                    "the second ':' must be followed by an integer stride"));
+            }
+            let value = self.parse_expr()?;
+            let zero = matches!(value.kind, ExprKind::Int(Some(0))) ||
+                matches!(&value.kind, ExprKind::Unary(UnOp::Plus | UnOp::Neg, v)
+                    if matches!(v.kind, ExprKind::Int(Some(0))));
+            if zero {
+                return Err(Diagnostic::new(value.pos, "E_SLICE_STEP_ZERO",
+                    "slice step must not be zero"));
+            }
+            Some(Box::new(value))
+        } else { None };
+        if !self.eat(&Tok::RBracket) {
+            return Err(Diagnostic::new(self.pos(), "E_SLICE_SYNTAX",
+                "expected ']' after slice; only two ':' separators are allowed"));
+        }
+        Ok(Expr { kind: ExprKind::Slice { base: Box::new(base), start, end, step }, pos })
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
         let mut chain = 0u32;
         let r = self.parse_postfix_chain(&mut chain);
@@ -2189,7 +2237,11 @@ impl Parser {
                         };
                     }
                 }
-                Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
+                Tok::LBracket => {
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = self.parse_index_or_slice(e)?;
+                },
                 Tok::Question if !self.question_opens_ternary() => {
                     let question = self.pos();
                     self.advance();
