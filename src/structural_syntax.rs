@@ -13,7 +13,14 @@ pub struct Formal { pub name: String, pub ty: TypeUse }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArgKind { Ordinary, StructuralProjection, RecordAggregate, MapAggregate }
 #[derive(Clone, Debug)]
-pub struct Argument { pub label: Option<String>, pub kind: ArgKind, pub value: Vec<Token> }
+pub struct Argument {
+    pub label: Option<String>,
+    pub kind: ArgKind,
+    pub value: Vec<Token>,
+    /// The first token of this source argument, including any top-level label.
+    /// Diagnostics must not invent a zero/default source location.
+    pub pos: Pos,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatternKind {
     /// Requires the runtime subject to implement a reifiable structural type.
@@ -145,6 +152,67 @@ pub fn parse_formals(src: &str) -> R<Vec<Formal>> {
     Ok(out)
 }
 
+/// Bounded *syntax-only* recognition of the first right-hand operand of
+/// a structural projection. The production compiler must still prove the
+/// callee's structural formal, public fields, borrow lifetime and adapter ABI.
+/// A token prefix alone is NOT evidence that a safe projection is possible.
+fn check_projection_operand(expr: &[Token], first: Pos) -> R<()> {
+    let Some(Tok::Ident(head)) = expr.get(1).map(|t| &t.tok) else {
+        return Err(Diagnostic::new(first, "E_SYNTAX",
+            "structural argument requires a postfix value operand"));
+    };
+    if matches!(head.as_str(), "true" | "false" | "null" | "new"
+        | "await" | "spawn" | "is" | "structural" | "fnc" | "self") {
+        // Explicit self is possible in method arguments, but until a checked
+        // receiver-loan ABI exists, it must not be mistaken for an ordinary
+        // owned argument.
+        return Err(Diagnostic::new(first, "E_UNSUPPORTED",
+            "structural projection of a keyword, literal or receiver is not admitted"));
+    }
+    let mut i = 2usize;
+    while i < expr.len() {
+        match &expr[i].tok {
+            Tok::Dot | Tok::ColonColon => {
+                if !matches!(expr.get(i+1).map(|t| &t.tok), Some(Tok::Ident(_))) {
+                    return Err(Diagnostic::new(expr[i].pos, "E_SYNTAX",
+                        "structural projection member access requires a name"));
+                }
+                i += 2;
+            }
+            Tok::LParen | Tok::LBracket => {
+                let mut stack = Vec::new();
+                loop {
+                    let Some(token) = expr.get(i) else {
+                        return Err(Diagnostic::new(first, "E_SYNTAX",
+                            "unclosed structural postfix expression"));
+                    };
+                    match token.tok {
+                        Tok::LParen => stack.push(Tok::RParen),
+                        Tok::LBracket => stack.push(Tok::RBracket),
+                        Tok::LBrace => stack.push(Tok::RBrace),
+                        Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                            if stack.pop() != Some(token.tok.clone()) {
+                                return Err(Diagnostic::new(token.pos, "E_SYNTAX",
+                                    "unbalanced structural postfix expression"));
+                            }
+                        }
+                        _ => {}
+                    }
+                    if stack.len() > LIMIT {
+                        return Err(Diagnostic::new(token.pos, "E_NESTING",
+                            "structural projection postfix expression is too deep"));
+                    }
+                    i += 1;
+                    if stack.is_empty() { break; }
+                }
+            }
+            _ => return Err(Diagnostic::new(expr[i].pos, "E_UNSUPPORTED",
+                "structural argument preflight admits a single postfix operand only; full operators need typed lowering")),
+        }
+    }
+    Ok(())
+}
+
 fn classify(expr: &[Token]) -> R<ArgKind> {
     let first = &expr[0];
     let tilde = first.tok == Tok::Tilde;
@@ -176,6 +244,11 @@ fn classify(expr: &[Token]) -> R<ArgKind> {
     }
     if tilde || matches!(&first.tok, Tok::Ident(w) if w == "structural") {
         if expr.len() == 1 { return Err(Diagnostic::new(first.pos, "E_SYNTAX", "missing structural operand")); }
+        if matches!(expr[1].tok, Tok::LBrace | Tok::LParen) {
+            return Err(Diagnostic::new(first.pos, "E_SYNTAX",
+                "structural argument projection needs a value; brace shapes are types and parenthesized aggregates use '~' only"));
+        }
+        check_projection_operand(expr, first.pos)?;
         return Ok(ArgKind::StructuralProjection);
     }
     Ok(ArgKind::Ordinary)
@@ -190,6 +263,7 @@ pub fn parse_arguments(src: &str) -> R<Vec<Argument>> {
     if !c.eat(Tok::RParen) {
         loop {
             if out.len() >= LIMIT { return Err(c.err("E_SOURCE_LIMIT", "too many arguments")); }
+            let arg_pos = c.pos();
             let label = if matches!(c.tok(), Tok::Ident(_)) && c.next() == &Tok::Colon {
                 let name = c.ident()?; c.expect(Tok::Colon)?;
                 if !labels.insert(name.clone()) { return Err(c.err("E_DUPLICATE", "duplicate argument label")); }
@@ -200,7 +274,7 @@ pub fn parse_arguments(src: &str) -> R<Vec<Argument>> {
             };
             let value = c.expr()?;
             let kind = classify(&value)?;
-            out.push(Argument { label, kind, value });
+            out.push(Argument { label, kind, value, pos: arg_pos });
             if !c.eat(Tok::Comma) { break; }
             if c.tok() == &Tok::RParen { return Err(c.err("E_SYNTAX", "trailing comma")); }
         }
@@ -219,14 +293,32 @@ pub fn bind_resolved(formals: &[Formal], args: &[Argument]) -> R<Vec<usize>> {
     for arg in args {
         let slot = if let Some(label) = &arg.label {
             formals.iter().position(|f| &f.name == label)
-                .ok_or_else(|| Diagnostic::new(Pos::default(), "E_UNBOUND", "unknown label"))?
+                .ok_or_else(|| Diagnostic::new(arg.pos, "E_UNBOUND", format!("unknown named argument '{}'", label)))?
         } else { let i = next_positional; next_positional += 1; i };
-        if slot >= formals.len() { return Err(Diagnostic::new(Pos::default(), "E_ARITY", "extra argument")); }
-        if !filled.insert(slot) { return Err(Diagnostic::new(Pos::default(), "E_DUPLICATE", "parameter bound twice")); }
+        if slot >= formals.len() { return Err(Diagnostic::new(arg.pos, "E_ARITY", "extra argument")); }
+        if !filled.insert(slot) { return Err(Diagnostic::new(arg.pos, "E_DUPLICATE", "parameter bound twice")); }
         result.push(slot);
     }
-    if filled.len() != formals.len() { return Err(Diagnostic::new(Pos::default(), "E_ARITY", "missing argument")); }
+    if filled.len() != formals.len() {
+        return Err(Diagnostic::new(args.last().map_or(Pos::default(), |a| a.pos),
+            "E_ARITY", "missing argument"));
+    }
     Ok(result)
+}
+
+/// Source-only binding contract. The returned indices are in SOURCE
+/// evaluation order, not declaration order. Later typed lowering must
+/// evaluate each value once before permuting temporary slots.
+pub fn bind_checked_structural(formals: &[Formal], args: &[Argument]) -> R<Vec<usize>> {
+    let slots = bind_resolved(formals, args)?;
+    for (arg, &slot) in args.iter().zip(&slots) {
+        if arg.kind == ArgKind::StructuralProjection && !formals[slot].ty.structural {
+            return Err(Diagnostic::new(arg.pos, "E_TYPE",
+                format!("explicit '~' argument requires a structural formal '{}'",
+                    formals[slot].name)));
+        }
+    }
+    Ok(slots)
 }
 
 pub fn parse_pattern(src: &str) -> R<Pattern> {
