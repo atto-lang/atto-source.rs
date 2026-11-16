@@ -25,7 +25,7 @@ fn scalar_actor_mail_remains_executable() {
     for payload_type in ["int", "bool"] {
         let source = actor_source(payload_type);
         let wasm = compile(&source).unwrap_or_else(|e| panic!("{payload_type}: {e}"));
-        assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"), "{payload_type}");
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "{payload_type}");
         assert_eq!(compile(&source).unwrap(), wasm, "guest output must be deterministic");
     }
 }
@@ -75,7 +75,7 @@ fn nested_adt_value_profiles_still_compile_outside_actor_mail() {
         include_str!("fixtures/pass/94-nested-option-result-in-arguments.atto"),
     ] {
         let wasm = compile(src).expect("non-mailbox nested ADT profile must remain executable");
-        assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
     }
 }
 
