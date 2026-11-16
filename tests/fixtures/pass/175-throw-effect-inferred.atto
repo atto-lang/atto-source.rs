@@ -1,4 +1,4 @@
-// expect: 42
+// expect-exit: 42
 fnc fail_when_called(): int {
   throw Error("not reached");
 }
