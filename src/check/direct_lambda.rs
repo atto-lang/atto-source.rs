@@ -49,7 +49,15 @@ pub fn lower(input: &Program) -> R<Program> {
         // the lambda declaration. The ordinary checker would otherwise miss
         // an earlier same-scope declaration with the identical name.
         let mut bindings_before_lambda = BTreeSet::<String>::new();
-        let mut scalar_immutables = BTreeMap::<String, Type>::new();
+        // Immutable scalar parameters are stable capture sources. A val
+        // initialized from one of these parameters is also an immutable
+        // snapshot (unlike a let alias, mutable parameter or owned object).
+        // Keep this deliberately narrower than general closure capture:
+        // no reference/heap handle or mutable value may escape the frame.
+        let mut scalar_immutables = f.params.iter()
+            .filter(|p| !p.mutable && matches!(p.ty, Type::Int | Type::Bool | Type::Float))
+            .map(|p| (p.name.clone(), p.ty))
+            .collect::<BTreeMap<String, Type>>();
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
             if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
@@ -140,7 +148,15 @@ pub fn lower(input: &Program) -> R<Program> {
             if let Stmt::Bind { kind, name, init, .. } = &stmt {
                 bindings_before_lambda.insert(name.clone());
                 if *kind == BindKind::Val {
-                    if let Some(ty @ (Type::Int | Type::Bool | Type::Float)) = literal_type(init) {
+                    // A copied immutable scalar remains immutable even when
+                    // its initializer is a parameter rather than a literal.
+                    // Record only verified source types, never guessed types
+                    // for calls, heap objects, mutable locals or ownership ops.
+                    let scalar_ty = literal_type(init).or_else(|| match &init.kind {
+                        ExprKind::Var(source) => scalar_immutables.get(source).copied(),
+                        _ => None,
+                    });
+                    if let Some(ty @ (Type::Int | Type::Bool | Type::Float)) = scalar_ty {
                         scalar_immutables.insert(name.clone(), ty);
                     }
                 }
