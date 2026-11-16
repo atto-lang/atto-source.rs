@@ -17,6 +17,8 @@ pub struct IoShorthand {
     pub context: Context,
     pub source_or_sink: String,
     pub binder: Option<String>,
+    /// True for reversed read-binding syntax with the binder on the left.
+    pub read_binder_on_left: bool,
     /// Operator start position. Payload is intentionally not evaluated.
     pub pos: Pos,
 }
@@ -108,16 +110,35 @@ fn valid_read_annotation(tokens: &[Token], start: usize, end: usize) -> bool {
     type_ref(tokens, &mut cursor, end, 0) && cursor == end
 }
 
-/// Inspect recognized qualified-path shorthand forms without producing guest I/O.
-/// Returns an explicit parse diagnostic for malformed shorthand, and otherwise
-/// a list of typed-lowering candidates. This cannot prove the left operand has
-/// the required capability; the later typechecker must do that.
+/// Read binding syntax is a declaration, never an assignment.
+/// Compile-time const cannot be initialized by effectful I/O.
+fn read_binder(tokens: &[Token], start: usize, end: usize, pos: Pos) -> Result<String, Diagnostic> {
+    let qualifier = tokens.get(start).and_then(word);
+    if qualifier == Some("const") {
+        return Err(Diagnostic::new(pos, "E_CONST_EFFECT",
+            "const requires a compile-time initializer; use val or let for runtime I/O reads"));
+    }
+    if !matches!(qualifier, Some("val" | "let")) {
+        return Err(syntax(pos, "read shorthand requires val or let followed by a binding name"));
+    }
+    let name = tokens.get(start + 1).and_then(word)
+        .filter(|w| !matches!(*w,
+            "const" | "val" | "let" | "when" | "return" | "select" | "do" | "writech" | "readch"))
+        .ok_or_else(|| syntax(pos, "read shorthand requires a binding name"))?;
+    if start + 2 != end && !valid_read_annotation(tokens, start + 2, end) {
+        return Err(syntax(pos, "read shorthand requires a complete ': Type' annotation (no trailing tokens)"));
+    }
+    Ok(name.to_owned())
+}
+
+/// Bounded syntax preflight. Recognition is distinct from capability typing
+/// and guest execution; downstream browser compilation fails closed.
 pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
     let mut found = Vec::new();
     for i in 0..tokens.len().saturating_sub(1) {
-        let Some(direction) = op_at(tokens, i) else { continue; };
-        // Never confuse nested generic closers, comparisons or expressions
-        // embedded in a larger statement with an I/O operation.
+        let Some(operator) = op_at(tokens, i) else { continue; };
+        // Only statement/when-arm leading expressions are admitted here.
+        // A real expression parser must handle parenthesized and computed IO.
         let mut start = i;
         while start > 0 && !matches!(&tokens[start - 1].tok,
             Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow)
@@ -130,39 +151,40 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             Context::Standalone
         };
         let lhs_start = start + usize::from(context == Context::SelectArm);
-        let Some(subject) = path(tokens, lhs_start, i) else { continue; };
-        if subject == "when" { continue; }
         let op_pos = tokens[i].pos;
         let rhs_start = i + 2;
+        // A leading declaration binder to the left of << means INPUT;
+        // an expression on the left of << means OUTPUT. Never guess from
+        // runtime values, type names, or operator overloading.
+        let reversed_read = operator == Direction::Write
+            && matches!(tokens.get(lhs_start).and_then(word), Some("const" | "val" | "let"));
+        let lhs_path = if reversed_read { None } else { path(tokens, lhs_start, i) };
+        if !reversed_read && lhs_path.is_none() { continue; }
         let end = end_at(tokens, rhs_start, context)
             .ok_or_else(|| syntax(op_pos, "I/O shorthand requires ';' or '->' after its operand"))?;
         if end == rhs_start {
             return Err(syntax(op_pos, "I/O shorthand requires a value or binding"));
         }
-        let binder = if direction == Direction::Read {
-            let qualifier = tokens.get(rhs_start).and_then(word);
-            if !matches!(qualifier, Some("const" | "val" | "let")) {
-                return Err(syntax(op_pos, "read shorthand requires const, val or let followed by a name"));
-            }
-            let name = tokens.get(rhs_start + 1).and_then(word)
-                .filter(|w| !matches!(*w, "const" | "val" | "let" | "when"))
-                .ok_or_else(|| syntax(op_pos, "read shorthand requires a binding name"))?;
-            if rhs_start + 2 != end
-                && !valid_read_annotation(tokens, rhs_start + 2, end)
-            {
-                return Err(syntax(op_pos, "read shorthand requires a complete ': Type' annotation (no trailing tokens)"));
-            }
-            Some(name.to_owned())
+        let (direction, subject, binder) = if reversed_read {
+            let binding = read_binder(tokens, lhs_start, i, op_pos)?;
+            let source = path(tokens, rhs_start, end)
+                .ok_or_else(|| syntax(op_pos,
+                    "reversed read shorthand requires a qualified readable source; computed expressions are not yet supported"))?;
+            (Direction::Read, source, Some(binding))
+        } else if operator == Direction::Read {
+            let binding = read_binder(tokens, rhs_start, end, op_pos)?;
+            (Direction::Read, lhs_path.unwrap(), Some(binding))
         } else {
             for j in rhs_start..end {
                 if op_at(tokens, j).is_some() {
                     return Err(syntax(op_pos, "chained I/O direction operators are not allowed in v1"));
                 }
             }
-            None
+            (Direction::Write, lhs_path.unwrap(), None)
         };
         found.push(IoShorthand {
-            direction, context, source_or_sink: subject, binder, pos: op_pos,
+            direction, context, source_or_sink: subject, binder,
+            read_binder_on_left: reversed_read, pos: op_pos,
         });
     }
     Ok(found)
