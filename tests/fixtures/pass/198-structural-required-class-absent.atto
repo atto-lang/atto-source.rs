@@ -1,0 +1,16 @@
+// expect-exit: 42
+// x is optional but required y is absent, so the first arm does not match.
+define class OnlyX as
+    pub int x = 10;
+end
+pub fnc main(): int {
+    val value = new OnlyX();
+    match value over
+        on ~{ x?: 10, y: _ } -> {
+            return 1;
+        }
+        on _ -> {
+            return 42;
+        }
+    end
+}
