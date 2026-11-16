@@ -255,6 +255,63 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
             i=next;
             continue;
         }
+        // Conditional type capture is a branch-local binding, never a cast.
+        // Lower only a stable, statically proven immutable scalar:
+        //   if v is T as val n then body fi
+        // becomes:
+        //   if <known type predicate> then val n: Concrete = v; body fi
+        // The ordinary parser/checker enforces lexical visibility and rejects
+        // references in else or after fi. No dynamic Any ABI is fabricated.
+        if word(&t, i, "if") &&
+            t.get(i + 1).is_some_and(|x| matches!(&x.tok, Tok::Ident(name) if tags.contains_key(name))) &&
+            word(&t, i + 2, "is")
+        {
+            let Tok::Ident(subject) = &t[i + 1].tok else { unreachable!() };
+            let concrete = tags[subject];
+            let negated = t.get(i + 3).is_some_and(|x| x.tok == Tok::Bang);
+            let type_at = i + 3 + usize::from(negated);
+            let Some(Tok::Ident(type_name)) = t.get(type_at).map(|x| &x.tok) else {
+                return Err(fail(t[i + 2].pos, "E_UNSUPPORTED_TYPE",
+                    "conditional type capture requires a reifiable scalar type"));
+            };
+            let expected = scalar_type(type_name).ok_or_else(|| fail(t[type_at].pos,
+                "E_UNSUPPORTED_TYPE", "conditional type capture requires a supported scalar type"))?;
+            let after_type = type_at + 1;
+            if word(&t, after_type, "as") {
+                if !word(&t, after_type + 1, "val") {
+                    return Err(fail(t[after_type].pos, "E_SYNTAX",
+                        "conditional type capture requires 'as val name'"));
+                }
+                let binder_at = after_type + 2;
+                let Some(Tok::Ident(binder)) = t.get(binder_at).map(|x| &x.tok) else {
+                    return Err(fail(t[after_type].pos, "E_SYNTAX",
+                        "missing conditional capture binder"));
+                };
+                if binder == "_" || binder == "then" || tags.contains_key(binder) {
+                    return Err(fail(t[binder_at].pos, "E_DUPLICATE",
+                        "conditional type capture needs a fresh branch-local name"));
+                }
+                let then_at = binder_at + 1;
+                if !word(&t, then_at, "then") {
+                    return Err(fail(t[then_at.min(t.len() - 1)].pos, "E_SYNTAX",
+                        "conditional type capture requires 'then'"));
+                }
+                let at = t[i + 1].pos;
+                let make = |w: &str| Token { tok: Tok::Ident(w.to_owned()), pos: at };
+                out.push(t[i].clone());
+                out.push(make(if (concrete == expected) != negated { "true" } else { "false" }));
+                out.push(t[then_at].clone());
+                out.push(make("val"));
+                out.push(t[binder_at].clone());
+                out.push(Token { tok: Tok::Colon, pos: at });
+                out.push(make(concrete));
+                out.push(Token { tok: Tok::Assign, pos: at });
+                out.push(t[i + 1].clone());
+                out.push(Token { tok: Tok::Semi, pos: at });
+                i = then_at + 1;
+                continue;
+            }
+        }
         if word(&t,i,"is") && i > 0 && matches!(t[i-1].tok,Tok::Ident(_)) {
             let Tok::Ident(name) = &t[i-1].tok else { unreachable!() };
             if let Some(actual) = tags.get(name) {
