@@ -1,0 +1,16 @@
+// expect-error: E_BORROW
+// Even a seemingly harmless method could have unchecked effects.
+// A match binder is a read-only scoped loan; field reads are allowed.
+define class Parcel as
+    pub int y = 42;
+    pub value(): int { return self.y; }
+end
+pub fnc main(): int {
+    val p = new Parcel();
+    match p over
+        on ~{ y: _ } as val match_p -> {
+            return match_p.value();
+        }
+        on _ -> { return 0; }
+    end
+}
