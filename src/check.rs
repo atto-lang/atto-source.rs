@@ -2062,11 +2062,17 @@ impl<'a> FnCx<'a> {
                                     field.name, self.tn(info.ty)))),
                         };
                         let read = TE {
-                            e: TExpr::FieldGet { obj: Box::new(get()), offset: info.slot },
-                            ty: info.ty,
+                            e: TExpr::FieldGet { obj: Box::new(get()), offset: field_slot },
+                            ty: field_ty,
                         };
                         let eq = TE {
-                            e: TExpr::Bin(BinOp::Eq, Box::new(read), Box::new(lit)),
+                            e: if field_ty == Type::Str {
+                                // Full UTF-8 content equality, never string
+                                // reference or guest linear-memory pointer equality.
+                                TExpr::Str(StrOp::Eq, Box::new(read), Some(Box::new(lit)))
+                            } else {
+                                TExpr::Bin(BinOp::Eq, Box::new(read), Box::new(lit))
+                            },
                             ty: Type::Bool,
                         };
                         test = TE {
