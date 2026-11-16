@@ -1,0 +1,10 @@
+// expect: 42
+fnc possibly_fail(bool valid): int throws(Error) {
+  if !valid then
+    throw new Error("invalid value");
+  fi
+  return 42;
+}
+pub fnc main(): int {
+  return possibly_fail(true);
+}
