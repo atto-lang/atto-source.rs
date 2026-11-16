@@ -4,3 +4,5 @@ define class Standalone as
   pub value(): int { return 5; }
 end
 pub fnc main(): int { return 0; }
+// expect-line: 3
+// expect-column: 3
