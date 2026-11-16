@@ -107,3 +107,91 @@ fn contextual_read_await_rejects_binder_theft_and_lossy_future_payload_types() {
         assert_eq!(diag.code, expected, "{operation}: {diag}");
     }
 }
+
+
+#[test]
+fn std_await_adapter_executes_future_then_scalar_pipeline_in_guest_wasm() {
+    let src = r#"
+fnc transform_result(int value): int { return value + 1; }
+pub susp fnc main(): int {
+    val pending = task { return 41; };
+    return pending
+        |> std.await
+        |> transform_result;
+}
+"#;
+    let wasm = compile(src).expect("std.await uses checked guest Future<int> lowering");
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+    assert!(has(&wasm, b"task_await"), "adapter must await, not erase the Future");
+    assert!(has(&wasm, b"cooperate"), "adapter must preserve scheduler cooperation");
+    assert_eq!(wasm, compile(src).unwrap(), "adapter codegen must be deterministic");
+}
+
+#[test]
+fn std_await_adapter_matches_explicit_identity_await_guest_path() {
+    let header = "pub susp fnc main(): int { val pending = task { return 42; };";
+    let explicit = format!("{header} return pending |> susp |f| -> await f; }}");
+    let alias = format!("{header} return pending |> std.await; }}");
+    for src in [&explicit, &alias] {
+        let wasm = compile(src).expect("both stages must compile");
+        assert!(has(&wasm, b"task_await") && has(&wasm, b"cooperate"));
+    }
+}
+
+#[test]
+fn std_await_adapter_caret_return_and_terminal_value_capture_compile() {
+    let src = r#"
+fnc transform_result(int value): int { return value + 1; }
+pub susp fnc main(): int {
+    val pending = task { return 41; };
+    ^ pending
+        |> std.await
+        |> transform_result
+        >> val result: int;
+}
+"#;
+    let wasm = compile(src).expect("checked caret return and capture with std.await");
+    assert!(has(&wasm, b"task_await") && has(&wasm, b"cooperate"));
+}
+
+#[test]
+fn std_await_adapter_rejects_factory_raw_scalar_and_effect_escape() {
+    for (source, expected) in [
+        ("pub susp fnc main(): int { val p=task {return 42;}; return p |> std.await(); }", "E_PIPE_ADAPTER"),
+        ("pub susp fnc main(): int { return 42 |> std.await; }", "E_TYPE"),
+        ("pub fnc main(): int { return 42 |> std.await; }", "E_EFFECT"),
+    ] {
+        let diag = compile(source).expect_err("invalid adapter use must not emit a guest Wasm artifact");
+        assert_eq!(diag.code, expected, "{source}: {diag}");
+    }
+    let pure = "pub pure susp fnc main(): int { val p=task {return 42;}; return p |> std.await; }";
+    let diag = compile(pure).expect_err("pure scope must not launder suspension effects");
+    assert!(matches!(diag.code, "E_PURE" | "E_EFFECT"), "{pure}: {diag}");
+}
+
+#[test]
+fn std_await_rejects_shadowed_core_namespace_without_reinterpreting_the_local() {
+    let source = r#"
+pub susp fnc main(): int {
+    val std = 99;
+    val pending = task { return 41; };
+    return pending |> std.await;
+}
+"#;
+    let diag = compile(source).expect_err("shadowed 'std' must not silently invoke a builtin");
+    assert_eq!(diag.code, "E_PIPE_ADAPTER", "{diag}");
+    assert!(diag.message.contains("shadowed"), "{diag}");
+}
+
+#[test]
+fn std_await_rejects_reawaiting_a_consumed_future() {
+    let source = r#"
+pub susp fnc main(): int {
+    val pending = task { return 41; };
+    val first = pending |> std.await;
+    return pending |> std.await;
+}
+"#;
+    let diag = compile(source).expect_err("a Future handle is consumed exactly once");
+    assert_eq!(diag.code, "E_MOVED", "{diag}");
+}
