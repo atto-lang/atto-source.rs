@@ -2928,6 +2928,18 @@ impl Parser {
         r
     }
 
+    // Never inline channel read construction into the recursive Pratt
+    // descent stack: unrelated deep expressions must retain E_NESTING.
+    #[inline(never)]
+    fn parse_channel_read(&mut self, pos: Pos, prefix_tokens: usize) -> R<Expr> {
+        for _ in 0..prefix_tokens { self.advance(); }
+        let readable = self.parse_unary()?;
+        Ok(Expr {
+            kind: ExprKind::Call("\u{0}atto_channel_read".to_owned(), vec![readable]),
+            pos,
+        })
+    }
+
     fn parse_unary_inner(&mut self) -> R<Expr> {
         let pos = self.pos();
         // Two contiguous '<' tokens at prefix position are one value-producing
@@ -2943,6 +2955,16 @@ impl Parser {
             return Ok(Expr { kind: ExprKind::PrefixRead(Box::new(readable)), pos });
         }
         let op = match self.peek() {
+            Tok::Lt if *self.peek_at(1) == Tok::Lt
+                && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+                && self.toks[self.i].pos.col.checked_add(1)
+                    == Some(self.toks[self.i + 1].pos.col) =>
+            {
+                return self.parse_channel_read(pos, 2);
+            }
+            Tok::Ident(s) if s == "readch" => {
+                return self.parse_channel_read(pos, 1);
+            }
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
             Tok::Bang => UnOp::Not,

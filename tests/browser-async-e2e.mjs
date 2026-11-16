@@ -13,6 +13,7 @@ const files=new Map([
   ['/channel-host-probe.mjs',[new URL('./browser-async/channel-host-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/channel-int-v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/channel-guest-abi-probe.mjs',[new URL('./browser-async/channel-guest-abi-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/channel-source-guest-probe.mjs',[new URL('./browser-async/channel-source-guest-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_guest_v1.mjs',[new URL('../runtime/browser/channel_int_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
@@ -96,6 +97,23 @@ try{
   console.log('PASS channel ABI: genuine Wasm import and tagged Future outcome in Chromium Worker (NOT AttoLang guest lowering)');
 
 
+  // End-to-end source-to-guest checked Channel<int> direct read, not a
+  // synthetic import, with immediate/pending/EOF/cancel/error and FIFO.
+  const sourceProbe=await evaluate("new Promise((resolve,reject)=>{"+
+    "const w=new Worker('/channel-source-guest-probe.mjs',{type:'module'});"+
+    "const t=setTimeout(()=>{w.terminate();reject(Error('source guest timeout'))},10000);"+
+    "w.onmessage=e=>{clearTimeout(t);w.terminate();resolve(e.data)};"+
+    "w.onerror=e=>{clearTimeout(t);w.terminate();reject(Error('source guest worker error'))};"+
+    "w.postMessage({});})");
+  assert.equal(sourceProbe.ok,true,'compiled source guest failed: '+sourceProbe.error);
+  assert.deepEqual(sourceProbe.results,
+    ['fifo-zero-eof','pending','cancel-error','two-receives','readch-i64-min']);
+  // Two successful values plus the explicit terminal EOF read are
+  // three distinct one-shot registrations/scheduler yields.
+  assert.equal(sourceProbe.registered,3);
+  assert.equal(sourceProbe.yields,3);
+  console.log('PASS source-compiled Channel<int> guest: FIFO, Some(0), EOF, pending, cancellation, error, readch and JSPI');
+ 
   const run=async(src,expected)=>{
     await evaluate("(()=>{let e=document.querySelector('#source');e.value="+JSON.stringify(src)+";document.querySelector('#run').click()})()");
     let lastOutput='not yet available';

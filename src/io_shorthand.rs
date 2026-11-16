@@ -201,6 +201,27 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
     let mut found = Vec::new();
     for i in 0..tokens.len().saturating_sub(1) {
         let Some(operator) = op_at(tokens, i) else { continue; };
+        // Prefix << is an expression, but a declaration-first binder
+        // wins even if its invalid NAME is itself a keyword ("return",
+        // "await", "trap", etc.). Do not skip its reserved-binder
+        // diagnostic just because the token before << looks unary.
+        if operator == Direction::Write && unary_read_start(tokens, i) {
+            let statement_start = (0..i).rev().find(|&j| matches!(
+                tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace | Tok::Arrow
+            )).map_or(0, |j| j + 1);
+            // In a select arm, the declaration follows the 'when'
+            // prefix, but it is still a binder rather than a return expr.
+            let binder_start = statement_start +
+                usize::from(tokens.get(statement_start).and_then(word) == Some("when"));
+            let declaration_without_initializer =
+                matches!(tokens.get(binder_start).and_then(word),
+                    Some("val" | "let" | "const"))
+                && !tokens[binder_start..i].iter()
+                    .any(|t| matches!(&t.tok, Tok::Assign));
+            if !declaration_without_initializer {
+                continue;
+            }
+        }
         // Locate the beginning of the containing statement or select arm.
         // This deliberately does not reinterpret embedded numeric operators.
         let mut start = i;
@@ -413,6 +434,13 @@ pub fn inspect_unary_reads(tokens: &[Token]) -> Result<Vec<UnaryReadCandidate>, 
         let Some(first) = tokens.get(operand) else {
             return Err(syntax(pos, "unary << requires a readable operand"));
         };
+        // Numeric and string literals are *syntactically valid expressions*,
+        // but not Readable capabilities. Let the production AST checker issue
+        // E_TYPE; do not misreport these as incomplete I/O grammar. This
+        // does not admit codegen without capability validation.
+        if matches!(&first.tok, Tok::Int(_) | Tok::Float(_) | Tok::Str(_)) {
+            continue;
+        }
         let (start, end) = if matches!(&first.tok, Tok::LParen) {
             let mut cursor = operand + 1;
             while cursor < tokens.len() &&

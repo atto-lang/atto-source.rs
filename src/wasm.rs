@@ -408,6 +408,109 @@ impl Emit<'_> {
         self.close();
     }
 
+    // Keep the large checked JSPI conversion out of the recursive
+    // expression emitter's stack frame. Deep arithmetic/ADT expressions
+    // must retain their existing E_NESTING behavior, not overflow Rust.
+    #[inline(never)]
+    fn emit_channel_read(&mut self, source: &TE, scratch: u32,
+                         status: u32, option: u32, result: u32) {
+            // Allocate a fresh aligned 16-byte guest slot before host admission.
+            // Source is evaluated exactly once, registration is nonparking;
+            // JSPI await suspends the current Wasm stack, not the Worker.
+            self.i32c(16);
+            self.call(self.l.helper(H_ALLOC));
+            self.set(scratch);
+            self.expr(source);
+            self.get(scratch);
+            self.call(self.l.import(Import::ChannelNbRead));
+            self.set(status);
+            self.get(status);
+            self.op(0x45); // i32.eqz: registration successful
+            self.open(0x04, 0x40, Frame::Other);
+            self.get(scratch);
+            self.load_i32(0); // opaque registered ticket
+            self.get(scratch);
+            self.call(self.l.import(Import::ChannelAwaitRead));
+            self.set(status);
+            self.get(status);
+            self.op(0x45); // i32.eqz: checked 16-byte response committed
+            self.open(0x04, 0x40, Frame::Other);
+            self.get(scratch);
+            self.load_i32(0); // flat tag: 0 Some, 1 None, 2 Err
+            self.i32c(1);
+            self.op(0x4B); // i32.gt_u: >=2 requires error validation
+            self.open(0x04, 0x40, Frame::Other);
+            self.get(scratch);
+            self.load_i32(0);
+            self.i32c(2);
+            self.op(0x46); // i32.eq
+            self.open(0x04, 0x40, Frame::Other);
+            self.get(scratch);
+            self.load_i32(4); // IoError code, NEVER value sentinel
+            self.set(status);
+            // Host Err(tag=2,error=0) is invalid; reject as InvalidValue.
+            self.get(status);
+            self.op(0x45);
+            self.open(0x04, 0x40, Frame::Other);
+            self.i32c(4);
+            self.set(status);
+            self.close();
+            self.op(0x05);
+            self.i32c(4); // unknown tag => checked InvalidValue
+            self.set(status);
+            self.close();
+            self.op(0x05);
+            // Flat Some/None becomes the normal nested Option<int> ADT.
+            self.i32c(16);
+            self.call(self.l.helper(H_ALLOC));
+            self.set(option);
+            self.get(option);
+            self.get(scratch);
+            self.load_i32(0);
+            self.op(0x45); // Some(0) => Option tag 1; None(1) => tag 0
+            self.store_i32(0);
+            self.get(scratch);
+            self.load_i32(0);
+            self.op(0x45);
+            self.open(0x04, 0x40, Frame::Other);
+            self.get(option);
+            self.get(scratch);
+            self.load_i64(8); // full signed i64, including zero and i64::MIN
+            self.store_i64(8);
+            self.close();
+            self.i32c(16);
+            self.call(self.l.helper(H_ALLOC));
+            self.set(result);
+            self.get(result);
+            self.i32c(0); // Result::Ok
+            self.store_i32(0);
+            self.get(result);
+            self.get(option);
+            self.store_i32(8);
+            self.close(); // flat tag validation
+            self.close(); // awaiting succeeded
+            self.close(); // registration succeeded
+
+            self.get(status);
+            self.op(0x45); // success already allocated outer Result
+            self.open(0x04, 0x40, Frame::Other);
+            self.op(0x05);
+            self.i32c(16);
+            self.call(self.l.helper(H_ALLOC));
+            self.set(result);
+            self.get(result);
+            self.i32c(1); // Result::Err
+            self.store_i32(0);
+            self.get(result);
+            self.get(status); // checked IoError integer code
+            self.store_i32(8);
+            self.close();
+            self.get(result);
+            // Even immediately ready reads cooperate once. Never park
+            // an OS Worker or issue a hidden blocking host import.
+            self.call(self.l.import(Import::Cooperate));
+    }
+
     fn expr(&mut self, v: &TE) {
         match &v.e {
             TExpr::I64(n) => self.i64c(*n),
@@ -511,6 +614,8 @@ impl Emit<'_> {
             TExpr::Barrier(count) => {self.expr(count);self.call(self.l.import(Import::Barrier));}
             TExpr::TaskStart(idx) => {self.i32c(*idx as i32);self.call(self.l.import(Import::TaskStart));}
             TExpr::TaskAwait(handle) => {self.expr(handle);self.call(self.l.import(Import::TaskAwait));}
+            TExpr::ChannelRead { source, scratch, status, option, result } =>
+                self.emit_channel_read(source, *scratch, *status, *option, *result),
             // Value stays on the Wasm stack over the void JSPI host call.
             TExpr::AwaitYield(value) => {self.expr(value);self.call(self.l.import(Import::Cooperate));}
             TExpr::Call(f, args) => {
@@ -1052,6 +1157,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::TaskStart => Sig(vec![I32], vec![I32]),
             Import::TaskAwait => Sig(vec![I32], vec![I64]),
             Import::Cooperate => Sig(vec![], vec![]),
+            Import::ChannelNbRead | Import::ChannelAwaitRead => Sig(vec![I32,I32], vec![I32]),
             Import::StateRegister => Sig(vec![I32], vec![]),
             Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
             Import::StateLeave => Sig(vec![I64], vec![]),
@@ -1259,8 +1365,18 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 6, gsec);
 
+    // Explicit, opt-in host entrypoint for a typed source-compiled read
+    // function. The ordinary zero-argument main() ABI is unchanged.
+    // This is a bounded bridge until source-level channel construction and
+    // independent dispatch/ownership checks are implemented.
+    let channel_entry = p.imports.contains(&Import::ChannelAwaitRead)
+        .then(|| p.funcs.iter().enumerate().find(|(_, f)| {
+            f.name == "channel_read_guest"
+                && f.params == [Type::ChannelInt]
+                && f.ret == Type::ResultOptionIntIoError
+        }).map(|(idx, _)| idx as u32)).flatten();
     let mut exp = Vec::new();
-    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 } + u64::from(has_tasks));
+    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 } + u64::from(has_tasks) + u64::from(channel_entry.is_some()));
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -1271,6 +1387,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         name(&mut exp, "memory");
         exp.push(0x02);
         uleb(&mut exp, 0);
+    }
+    if let Some(func_index) = channel_entry {
+        name(&mut exp, "channel_read_guest");
+        exp.push(0x00);
+        uleb(&mut exp, layout.func(func_index) as u64);
     }
     if has_actors {
         name(&mut exp, "actor_init");
@@ -1359,6 +1480,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             name(&mut a, &actor.name);
         }
         section(&mut out, 0, a);
+    }
+    if p.imports.contains(&Import::ChannelAwaitRead) {
+        let mut marker = Vec::new();
+        name(&mut marker, "atto.channel_int");
+        marker.push(1); // checked JSPI channel ABI v1
+        section(&mut out, 0, marker);
     }
     // Deliberately versioned and opt-in: the public guest.v2 contract
     // remains unchanged for programs without actual async imports.
