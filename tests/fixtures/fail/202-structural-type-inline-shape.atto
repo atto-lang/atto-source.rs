@@ -1,0 +1,11 @@
+// expect-error: E_UNSUPPORTED
+define class C as
+    pub int x = 42;
+end
+pub fnc main(): int {
+    val v = new C();
+    match v over
+        on is ~{x: int} -> { return 42; }
+        on _ -> { return 0; }
+    end
+}
