@@ -131,7 +131,7 @@ try{
   // ADT case binder is visible to the selected arm but NOT automatically
   // captured by a spawned task: that requires task-owned frames.
   const adtCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return 42; }, end; }';
-  assert.match(await run(adtCase,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.match(await run(adtCase,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'ADT selected case awaits exactly once');
   const captureCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return value + 1; }, end; }';
   assert.match(await run(captureCase,'E_UNBOUND'),/E_UNBOUND/);
