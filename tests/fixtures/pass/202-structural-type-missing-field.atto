@@ -1,0 +1,16 @@
+// expect-exit: 42
+// java: rejects
+define class Shape as
+    pub int x = 10;
+    pub int y = 32;
+end
+define class OnlyX as
+    pub int x = 10;
+end
+pub fnc main(): int {
+    val value = new OnlyX();
+    match value over
+        on is ~ Shape -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
