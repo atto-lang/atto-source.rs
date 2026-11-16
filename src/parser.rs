@@ -2560,7 +2560,7 @@ impl Parser {
             //
             // Desugars to transform(await pending); await still belongs to the
             // current execution context and the checker enforces suspends.
-            if self.eat_word("suspends") {
+            if self.eat_word("suspends") || self.eat_word("susp") {
                 self.expect(Tok::Pipe, "'|' before the suspending pipeline binder")?;
                 let (binder, _) = self.ident("a suspending pipeline binder")?;
                 self.expect(Tok::Pipe, "'|' after the suspending pipeline binder")?;
