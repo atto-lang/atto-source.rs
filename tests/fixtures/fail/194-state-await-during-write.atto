@@ -3,7 +3,7 @@ define state container Counter as
   state { let int count: 0; }
   pub bad(): void {
     handle_state(critical |s| -> {
-      await task { return 42; };
+      await task { return 41; };
       s.count = 1;
     });
   }

@@ -1,0 +1,12 @@
+// expect-error: E_STATE_BORROW
+// A caret return cannot escape while a sealed actor-state write lease is held.
+define state container Counter as
+    state { let int count: 0; }
+    pub bad(): void {
+        handle_state(critical |s| -> {
+            ^ 42;
+            s.count = 1;
+        });
+    }
+end
+pub fnc main(): int { ^ 0; }

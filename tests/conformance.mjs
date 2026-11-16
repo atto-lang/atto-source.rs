@@ -416,30 +416,40 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// Single ^ is a statement-position return synonym, NEVER an infix operator.
-// The invalid infix spelling reaches the statement terminator check; % and
-// ^^ are still unsupported operators. All three must reject without Wasm.
-for (const [op, code] of [['%', 'E_UNSUPPORTED'], ['^', 'E_SEMICOLON'], ['^^', 'E_UNSUPPORTED']]) {
-  check(`invalid-infix-operator/${op}`, () => {
+// '%' and '^^' remain unavailable arithmetic/boolean operators.
+// '^' is an explicit statement-position return marker, never infix XOR.
+for (const op of ['%', '^^']) {
+  check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
-    assert.equal(r.code, code);
+    assert.equal(r.code, 'E_UNSUPPORTED');
     assert.equal('wasm' in r, false);
     assert.ok(r.line >= 1 && r.col >= 1);
   });
 }
+check('caret-return/checked-guest-42', () => {
+  const r = compile('pub fnc main(): int { ^ 42; }');
+  assert.ok(r.ok, r.message);
+  assert.equal(runGuest(r.wasm).value, 42n);
+});
+check('caret-operator/infix-rejected-without-guest', () => {
+  const r = compile('pub fnc main(): int { return 5 ^ 2; }');
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'E_SEMICOLON');
+  assert.equal('wasm' in r, false);
+  assert.ok(r.line >= 1 && r.col >= 1);
+});
 
-// Direct guest execution proves caret returns (and guard failure-path caret)
-// have actual function-return semantics, not merely parser recognition.
-for (const [label, source, value] of [
-  ['caret-return/42', 'pub fnc main(): int { ^ 42; }', 42n],
-  ['guard-caret/true-fallthrough', 'pub fnc main(): int { guard true { ^ -1; } ^ 42; }', 42n],
-  ['guard-caret/false-early-return', 'pub fnc main(): int { guard false { ^ -1; } ^ 42; }', -1n],
+// Guard success/failure must execute the caret return in the real Wasm guest,
+// not merely be accepted by the frontend.
+for (const [label, guard_condition, expected] of [
+  ['guard-caret/true-fallthrough', 'true', 42n],
+  ['guard-caret/false-early-return', 'false', -1n],
 ]) {
   check(label, () => {
-    const r = compile(source);
-    assert.equal(r.ok, true, r.message);
-    assert.equal(runGuest(r.wasm).value, value);
+    const r = compile(`pub fnc main(): int { guard ${guard_condition} { ^ -1; } ^ 42; }`);
+    assert.ok(r.ok, r.message);
+    assert.equal(runGuest(r.wasm).value, expected);
   });
 }
 

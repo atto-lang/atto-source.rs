@@ -97,7 +97,9 @@ fn contextual_read_await_rejects_binder_theft_and_lossy_future_payload_types() {
         ("nb stdio.in >> (val String line << await Future<int>);", "E_TYPE"),
         ("nb stdio.in >> (const String line << await Future<string>);", "E_CONST_EFFECT"),
         ("nb stdio.in >> Future<string> x | await x >> const String line;", "E_CONST_EFFECT"),
-        ("nb stdio.in >> (val String line << Future<string>);", "E_SYNTAX"),
+        // A non-awaited Future<T> placeholder is an illegal I/O direction
+        // operand, rejected by preflight with its stable I/O diagnostic.
+        ("nb stdio.in >> (val String line << Future<string>);", "E_IO_SYNTAX"),
         ("nb stdio.in >> Future<string> x | await x >> val String;", "E_SYNTAX"),
     ] {
         let src = format!("pub suspends fnc main(): int {{ {operation} return 42; }}");
