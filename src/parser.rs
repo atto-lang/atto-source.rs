@@ -992,7 +992,7 @@ impl Parser {
         }
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
-        let ret = self.parse_return_spec()?;
+        let ret = self.parse_return_spec(&params)?;
         let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
         Ok(Method {
             name,
@@ -1037,7 +1037,7 @@ impl Parser {
             ));
         }
         self.expect(Tok::RParen, "')'")?;
-        if self.parse_return_spec()? != Type::Void {
+        if self.parse_return_spec(&[])? != Type::Void {
             return Err(Diagnostic::new(
                 pos,
                 "E_TYPE",
@@ -1048,12 +1048,34 @@ impl Parser {
         Ok(Receive { pos, mail, payload, body })
     }
 
-    /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.
-    fn parse_return_spec(&mut self) -> R<Type> {
-        if self.eat(&Tok::Colon) || self.eat(&Tok::Arrow) {
-            self.parse_type()
-        } else {
-            Ok(Type::Void)
+    /// A static typeof query is resolved before producing the typed guest AST.
+    /// This browser/AOT slice permits only declared parameter bindings.
+    /// Other value queries and runtime-reflective expressions fail closed.
+    fn parse_return_spec(&mut self, params: &[Param]) -> R<Type> {
+        if !(self.eat(&Tok::Colon) || self.eat(&Tok::Arrow)) {
+            return Ok(Type::Void);
+        }
+        if !self.eat_word("typeof") {
+            return self.parse_type();
+        }
+        let pos = self.pos();
+        if self.eat(&Tok::Bang) {
+            return Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNSUPPORTED",
+                "typeof! is not a type operator; use typeof name"));
+        }
+        let parenthesized = self.eat(&Tok::LParen);
+        let (name, _) = self.ident("a binding name after typeof")?;
+        if parenthesized {
+            self.expect(Tok::RParen, "')' after the typeof binding")?;
+        }
+        if name == "fnc" {
+            return Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNSUPPORTED",
+                "typeof fnc(...) callable types are not yet implemented in this browser backend"));
+        }
+        match params.iter().find(|p| p.name == name) {
+            Some(p) => Ok(p.ty),
+            None => Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNBOUND",
+                format!("typeof {name} must reference a declared parameter in this AOT profile"))),
         }
     }
 
@@ -1138,7 +1160,7 @@ impl Parser {
         let params = self.parse_params()?;
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
-        let ret = self.parse_return_spec()?;
+        let ret = self.parse_return_spec(&params)?;
         self.parse_effect_clauses()?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
