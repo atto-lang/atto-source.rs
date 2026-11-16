@@ -257,9 +257,9 @@ fn nested_generic_closers_without_io_do_not_trigger_preflight() {
 fn parentheses_around_qualified_io_receiver_are_supported() {
     let source = r#"
     (stdio.out) << "greeting";
-    (input_stream) >> const chunk;
+    (input_stream) >> val chunk;
     do select {
-        when (inbox) >> const msg -> { (stdio.out) << msg; }
+        when (inbox) >> val msg -> { (stdio.out) << msg; }
         when (outgoing) << "ready" -> {}
     }
     "#;
@@ -276,5 +276,5 @@ fn parentheses_around_qualified_io_receiver_are_supported() {
 fn standalone_direction_does_not_reinterpret_expression_context() {
     assert!(parse("const x: int = 1 << 3;").is_empty());
     assert!(parse("return n << 1;").is_empty());
-    assert!(parse("do select { when inbox >> const x: Result<Option<int>> -> {} }").len() == 1);
+    assert!(parse("do select { when inbox >> val x: Result<Option<int>> -> {} }").len() == 1);
 }
