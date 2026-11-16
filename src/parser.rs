@@ -2130,9 +2130,9 @@ impl Parser {
                     "the second ':' must be followed by an integer stride"));
             }
             let value = self.parse_expr()?;
-            let zero = matches!(value.kind, ExprKind::Int(Some(0))) ||
+            let zero = matches!(&value.kind, ExprKind::Int(Some(0))) ||
                 matches!(&value.kind, ExprKind::Unary(UnOp::Plus | UnOp::Neg, v)
-                    if matches!(v.kind, ExprKind::Int(Some(0))));
+                    if matches!(&v.kind, ExprKind::Int(Some(0))));
             if zero {
                 return Err(Diagnostic::new(value.pos, "E_SLICE_STEP_ZERO",
                     "slice step must not be zero"));
