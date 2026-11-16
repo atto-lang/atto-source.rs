@@ -417,6 +417,32 @@ impl Emit<'_> {
         }
     }
 
+    fn binary_opcode(&mut self, op: BinOp, left_ty: Type) {
+        let int = left_ty == Type::Int;
+        if left_ty == Type::Float {
+            self.op(match op {
+                BinOp::Add => 0xA0, BinOp::Sub => 0xA1,
+                BinOp::Mul => 0xA2, BinOp::Div => 0xA3,
+                BinOp::Eq => 0x61, BinOp::Ne => 0x62,
+                BinOp::Lt => 0x63, BinOp::Gt => 0x64,
+                BinOp::Le => 0x65, BinOp::Ge => 0x66,
+                BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
+            });
+            return;
+        }
+        match op {
+            BinOp::Add => self.call(self.l.helper(H_ADD)),
+            BinOp::Sub => self.call(self.l.helper(H_SUB)),
+            BinOp::Mul => self.call(self.l.helper(H_MUL)),
+            BinOp::And => self.op(0x71), BinOp::Or => self.op(0x72),
+            BinOp::Lt => self.op(0x53), BinOp::Le => self.op(0x57),
+            BinOp::Gt => self.op(0x55), BinOp::Ge => self.op(0x59),
+            BinOp::Eq => self.op(if int {0x51} else {0x46}),
+            BinOp::Ne => self.op(if int {0x52} else {0x47}),
+            BinOp::Div => unreachable!("int / int rejected by checker"),
+        }
+    }
+
     fn expr(&mut self, v: &TE) {
         match &v.e {
             TExpr::I64(n) => self.i64c(*n),
@@ -471,41 +497,21 @@ impl Emit<'_> {
                 self.expr(a);
                 self.op(0x45);
             }
-            TExpr::Bin(op, a, b) => {
-                // Canonical AttoLang conditions are eager: both operands
-                // execute in source order even when the left decides truth.
-                self.expr(a);
-                self.expr(b);
-                let int = a.ty == Type::Int;
-                if a.ty == Type::Float {
-                    self.op(match op {
-                        BinOp::Add => 0xA0,
-                        BinOp::Sub => 0xA1,
-                        BinOp::Mul => 0xA2,
-                        BinOp::Div => 0xA3,
-                        BinOp::Eq => 0x61,
-                        BinOp::Ne => 0x62,
-                        BinOp::Lt => 0x63,
-                        BinOp::Gt => 0x64,
-                        BinOp::Le => 0x65,
-                        BinOp::Ge => 0x66,
-                        BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
-                    });
-                    return;
+            TExpr::Bin(..) => {
+                // The typed left spine is a source-ordered chain, not a
+                // recursive host call stack. The right subexpressions still
+                // evaluate exactly once, and their Wasm opcodes are emitted
+                // immediately after evaluation of each operand.
+                let mut spine = Vec::new();
+                let mut cursor = v;
+                while let TExpr::Bin(op, left, right) = &cursor.e {
+                    spine.push((*op, left.as_ref(), right.as_ref()));
+                    cursor = left;
                 }
-                match op {
-                    BinOp::Add => self.call(self.l.helper(H_ADD)),
-                    BinOp::Sub => self.call(self.l.helper(H_SUB)),
-                    BinOp::Mul => self.call(self.l.helper(H_MUL)),
-                    BinOp::And => self.op(0x71), // i32.and
-                    BinOp::Or => self.op(0x72),  // i32.or
-                    BinOp::Lt => self.op(0x53),
-                    BinOp::Le => self.op(0x57),
-                    BinOp::Gt => self.op(0x55),
-                    BinOp::Ge => self.op(0x59),
-                    BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
-                    BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
-                    BinOp::Div => unreachable!("division not admitted by checker"),
+                self.expr(cursor);
+                for (op, left, right) in spine.into_iter().rev() {
+                    self.expr(right);
+                    self.binary_opcode(op, left.ty);
                 }
             }
             TExpr::Ternary(c, a, b) => {

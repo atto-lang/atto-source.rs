@@ -2796,10 +2796,29 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+        // Left-associative operators are parsed without recursive descent,
+        // but checking the resulting left spine recursively consumes several
+        // host stack frames per operator. Reconstruct the typed chain in
+        // source order with a bounded explicit stack instead. This preserves
+        // eager evaluation, promotions, checked arithmetic and diagnostics.
+        let mut spine = vec![(op, r, pos)];
+        let mut cursor = l;
+        while let ExprKind::Binary(inner_op, inner_left, inner_right) = &cursor.kind {
+            spine.push((*inner_op, inner_right.as_ref(), cursor.pos));
+            cursor = inner_left;
+        }
+        let mut value = self.value(cursor)?;
+        for (op, right, at) in spine.into_iter().rev() {
+            let next = self.value(right)?;
+            value = self.binary_values(op, value, next, at)?;
+        }
+        Ok(value)
+    }
+
+    #[inline(never)]
+    fn binary_values(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
                 let both = a.ty == Type::Str && b.ty == Type::Str;
                 return match op {
