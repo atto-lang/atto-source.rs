@@ -28,14 +28,14 @@ fn accepts_success_only_callback_on_write() {
 fn accepts_typed_outcome_callbacks_on_reads_and_writes() {
     let src = r#"
 do readch inbox, |outcome| -> void { handle_read(outcome); };
-do writech outgoing, f(1, 2), |done| -> void { handle_write(done); };
+do writech outgoing, f(1, 2), |receipt| -> void { handle_write(receipt); };
 "#;
     let operations = parse(src);
     assert_eq!(operations.len(), 2);
     assert_eq!(operations[0].kind, Kind::Read);
     assert_eq!(operations[0].callback, Callback::Outcome("outcome".to_string()));
     assert_eq!(operations[1].kind, Kind::Write);
-    assert_eq!(operations[1].callback, Callback::Outcome("done".to_string()));
+    assert_eq!(operations[1].callback, Callback::Outcome("receipt".to_string()));
 }
 #[test]
 fn nested_lambda_blocks_and_optional_terminal_semicolon() {
