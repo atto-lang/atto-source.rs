@@ -1,5 +1,9 @@
 # atto-source.rs: AttoLang browser compiler
 
+## Collection indexing, slicing and spread (syntax-only candidate)
+
+The parser now recognizes `arr[index]`, `arr[start:end]`, `arr[::step]`, `arr[::-1]` and contextual `...` expansion inside array/list literals and call argument lists. It produces separate AST nodes and specific malformed-slice errors; literal zero strides are rejected. **The browser checker still returns `E_UNSUPPORTED` for collection indexing, slicing and spread**, and array literals themselves remain unlowered on this main-derived branch. Do not treat a parsing test as a guest execution test or a claim of cross-backend parity. See `atto-lang/atto-spec/language/collection-slice-spread-v1.md` for the candidate contract and conformance repository for planned vectors. The open array implementation PRs #111 and #112 require separate reconciliation.
+
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
 ## Namespace and out-of-line receiver syntax (parse-only)

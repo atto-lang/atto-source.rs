@@ -3180,6 +3180,9 @@ impl<'a> FnCx<'a> {
             }
             ExprKind::Member(base, name) => self.member(base, name, pos)?,
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
+            ExprKind::Index(..) | ExprKind::Slice { .. } | ExprKind::Spread(..) =>
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "collection indexing, slicing and spread are parsed but not yet lowered to browser Wasm")),
             ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "array literals are parsed but not yet lowered to browser Wasm")),
             ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",

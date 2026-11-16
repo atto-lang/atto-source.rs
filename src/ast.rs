@@ -423,6 +423,17 @@ pub enum ExprKind {
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
     MethodCall(Box<Expr>, String, Vec<Expr>),
+    /// Syntax-only checked element access; browser guest lowering is gated.
+    Index(Box<Expr>, Box<Expr>),
+    /// Syntax-only half-open, optionally strided slice; bounds have distinct AST nodes.
+    Slice {
+        base: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
+    },
+    /// Contextual expansion inside arrays or argument lists only.
+    Spread(Box<Expr>),
     /// Syntax-only sequence literal. Browser guest allocation is not lowered.
     Array(Vec<Expr>),
     /// Parsed lambda signature/body. The browser backend deliberately rejects

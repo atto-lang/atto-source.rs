@@ -386,6 +386,18 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
             for a in args { rewrite_expr(a, d)?; }
             Ok(())
         }
+        ExprKind::Index(base, index) => {
+            rewrite_expr(base, d)?;
+            rewrite_expr(index, d)
+        }
+        ExprKind::Slice { base, start, end, step } => {
+            rewrite_expr(base, d)?;
+            for part in [start, end, step] {
+                if let Some(expr) = part { rewrite_expr(expr, d)?; }
+            }
+            Ok(())
+        }
+        ExprKind::Spread(source) => rewrite_expr(source, d),
         ExprKind::Lambda { .. } => Err(error(e.pos, "E_UNSUPPORTED",
             "nested or escaping lambda needs closure lowering")),
         ExprKind::StateRead(_) => Err(error(e.pos, "E_UNSUPPORTED",

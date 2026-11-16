@@ -30,6 +30,8 @@ pub enum Tok {
     Arrow,
     FatArrow,
     Dot,
+    /// Atomic prefix collection expansion operator.
+    Spread,
     Assign,
     EqEq,
     NotEq,
@@ -296,6 +298,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('+', Some('+')) => (Tok::PlusPlus, 2),
             ('+', Some('=')) => (Tok::PlusAssign, 2),
             ('+', _) => (Tok::Plus, 1),
+            ('.', Some('.')) if chars.get(i + 2) == Some(&'.') => (Tok::Spread, 3),
             ('.', _) => (Tok::Dot, 1),
             ('=', Some('=')) => (Tok::EqEq, 2),
             ('=', Some('>')) => (Tok::FatArrow, 2),
