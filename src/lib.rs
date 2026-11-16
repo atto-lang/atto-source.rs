@@ -12,6 +12,7 @@ pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
+pub mod io_shorthand;
 pub mod parser;
 pub mod target_syntax;
 pub mod target_typed;
@@ -33,6 +34,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
+    // Recognize I/O shorthand without pretending the browser subset supports
+    // channels, streams, or atomic select yet. Fail closed before guest emit.
+    if let Some(io) = io_shorthand::inspect(&toks)?.first() {
+        return Err(Diagnostic::new(io.pos, "E_UNSUPPORTED",
+            "I/O << / >> shorthand parsed, but typed read/write and select runtime lowering are not implemented in the browser compiler"));
+    }
     // Detect target declarations at any file-scope position, not only at
     // source byte zero. Ignore comments/strings (the lexer already tokenizes
     // them) and ignore nested brace bodies so a string or local expression
