@@ -40,6 +40,15 @@ fn equivalent_explicit_await_and_pipeline_compile_to_identical_wasm() {
 }
 
 #[test]
+fn susp_alias_and_suspends_long_form_have_the_same_checked_await_profile() {
+    for keyword in ["susp", "suspends"] {
+        let src = format!("pub suspends fnc main(): int {{ val pending=task {{return 42;}}; return pending |> {keyword} |v| -> await v; }}");
+        let wasm=compile(&src).expect("both lambda effect spellings must lower to await");
+        assert!(has(&wasm, b"task_await") && has(&wasm, b"cooperate"));
+    }
+}
+
+#[test]
 fn bare_await_stage_and_unsupported_lambda_shapes_fail_closed() {
     for (src, expected) in [
         ("pub suspends fnc main(): int { return 42 |> await; }", "E_UNSUPPORTED"),
