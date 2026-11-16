@@ -71,6 +71,11 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'result-option-end': { value: 0n, stdout: '8080\n' },
       'modules': { value: 0n, stdout: '42\n' },
       'callable-body-styles': { value: 0n, stdout: '15\n10\n10\n5\n5\n' },
+      'traits-interfaces': { value: 0n, stdout: 'Ada\nhello\n' },
+      'diamond-inheritance': { value: 0n, stdout: 'Ada\nhello\nroot\ndiamond resolved\n' },
+      'visibility-modifiers': { value: 7n, stdout: '0\n' },
+      'routine': { value: 0n, stdout: '49\n42\n' },
+      'boolean-operators': { value: 0n, stdout: 'false\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\n' },
       'trap': { value: 7n, stdout: '5\nid must be nonnegative\nan ordinary throw was caught\n' },
       'borrow-checking': { value: 63n, stdout: '84\n43\n' },
       'closures-functors': { value: 84n, stdout: '' },
@@ -95,8 +100,10 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
     ['function-pipeline', 'generators', 'result-option', 'trap',
      'borrow-checking', 'lexical-scope-pure', 'state-containers',
      'fib-match', 'guard', 'match-values', 'closures-functors',
-     'result-option-end', 'modules', 'callable-body-styles'].sort(),
-    'the fourteen currently compiled preview guests must execute');
+     'result-option-end', 'modules', 'callable-body-styles',
+     'traits-interfaces', 'diamond-inheritance', 'visibility-modifiers',
+     'routine', 'boolean-operators'].sort(),
+    'the nineteen requested compiled guest candidates must execute');
   outcome.executionCoverage.verified = outcome.guestExecuted.length;
   outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
   console.log('PLAYGROUND_PREVIEW_EXECUTION_COVERAGE ' + JSON.stringify({
