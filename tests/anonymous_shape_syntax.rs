@@ -79,6 +79,7 @@ fn structural_row_fields_and_union_arms_canonicalize_as_unordered_sets() {
                ty("(p: {foo: string | {a: bool, z: string}})"));
     assert_ne!(ty("(p: {foo: int})"), ty("(p: {bar: int})"));
     assert_ne!(ty("(p: {foo: int})"), ty("(p: {foo: string})"));
+    assert_eq!(ty("(p: {foo: -0})"), ty("(p: {foo: 0})"));
 }
 
 #[test]
