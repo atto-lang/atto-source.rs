@@ -278,3 +278,48 @@ fn standalone_direction_does_not_reinterpret_expression_context() {
     assert!(parse("return n << 1;").is_empty());
     assert!(parse("do select { when inbox >> val x: Result<Option<int>> -> {} }").len() == 1);
 }
+
+
+#[test]
+fn select_guards_require_immediately_enclosing_select_block() {
+    for src in [
+        "when inbox >> val value -> {}",
+        "pub fnc main(): void { when inbox >> val value -> {} }",
+        "pub fnc main(): void { if true then { when inbox >> val value -> {} } fi }",
+        "do select { if true then { when inbox >> val value -> {} } fi }",
+        "do { when output << \"data\" -> {} }",
+    ] {
+        let diag = inspect(&lex(src).unwrap()).expect_err(src);
+        assert_eq!(diag.code, "E_IO_SYNTAX", "{src}: {diag}");
+        assert!(diag.message.contains("directly inside select"), "{src}: {diag}");
+    }
+}
+
+#[test]
+fn select_guards_are_still_recognized_after_nested_arm_bodies() {
+    let sample = r#"do select {
+      when inbox >> val first -> { if true then { stdio.out << "ok"; } fi }
+      when outgoing << "second" -> { stdio.out << "done"; }
+    }"#;
+    let ops = parse(sample);
+    assert_eq!(ops.len(), 4, "{ops:?}");
+    assert_eq!(ops[0].context, Context::SelectArm);
+    assert_eq!(ops[1].context, Context::Standalone);
+    assert_eq!(ops[2].context, Context::SelectArm);
+    assert_eq!(ops[3].context, Context::Standalone);
+}
+
+#[test]
+fn read_binders_cannot_shadow_reserved_language_keywords() {
+    for binder in ["if", "for", "return", "await", "fnc", "class", "module", "select", "when"] {
+        for source in [
+            format!("inbox >> val {binder};"),
+            format!("val {binder} << inbox;"),
+            format!("do select {{ when inbox >> let {binder} -> {{}} }}"),
+            format!("do select {{ when let {binder} << inbox -> {{}} }}"),
+        ] {
+            let err = inspect(&lex(&source).unwrap()).expect_err(&source);
+            assert_eq!(err.code, "E_IO_SYNTAX", "{source}: {err}");
+        }
+    }
+}
