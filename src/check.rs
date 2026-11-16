@@ -2159,6 +2159,9 @@ impl<'a> FnCx<'a> {
                 Pattern::StructuralFields { .. } => return Err(Diagnostic::new(arm.pos,
                     "E_UNSUPPORTED",
                     "structural value-field matching requires an ordinary statically typed class subject")),
+                Pattern::StructuralType { .. } => return Err(Diagnostic::new(arm.pos,
+                    "E_UNSUPPORTED",
+                    "structural type matching requires an ordinary statically typed class subject")),
                 Pattern::Bind(n) => (None, None, Some(n.as_str())),
                 Pattern::Int(v) => {
                     if sty != Type::Int {
