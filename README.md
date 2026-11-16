@@ -1,5 +1,31 @@
 # atto-source.rs: AttoLang browser compiler
 
+## Native AOT artifact support (experimental, import-free profile)
+
+Alongside `attoc`'s **fully compiled portable guest Wasm**, the host-only
+`attoaot` tool precompiles that guest into native machine code with Wasmtime
+at **build time**. A resulting `.cwasm` is a trusted, target- and
+Wasmtime-version-specific precompiled module, **not** a standalone native
+executable; execution still needs a compatible loader, but needs no AttoLang
+compiler or guest JIT compilation. Compile the tool separately, so no native
+runtime dependency is pulled into the browser compiler:
+
+```sh
+cargo build --locked --release --features native-aot --bin attoaot
+./target/release/attoaot example.atto -o example.cwasm
+wasmtime run --invoke main example.cwasm
+```
+
+The initial AOT tool only accepts **import-free** AttoLang guests. Actor/stdio
+imports require an explicitly linked native AOT runtime host and are rejected,
+not silently distributed as uninstantiable binaries. Required evidence:
+`ATTO_REQUIRE_NATIVE_AOT=1 cargo test --locked --features native-aot
+--bin attoaot --test native_aot`, with compatible Wasmtime installed.
+No actual AOT execution is claimed unless that strict test runs successfully.
+See [native AOT details and known gaps](docs/native-aot.md). Native
+ELF/Mach-O/PE packaging and broader actor/effect parity remain future work.
+
+
 ## Checked Array<int> access and zero-copy contiguous views (candidate)
 
 This stacked branch builds on draft Array<int> implementation PR #111 and adds
