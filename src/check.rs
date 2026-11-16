@@ -1975,7 +1975,8 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultOptionIntIoError | Type::ResultChannelIntIoError | Type::ResultVoidIoError) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -2197,6 +2198,11 @@ impl<'a> FnCx<'a> {
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
                         (Type::OptionResultIntStr, "None") => (0, None),
                         (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
+                        (Type::ResultOptionIntIoError, "Ok") => (0, Some(Type::OptionInt)),
+                        (Type::ResultOptionIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultChannelIntIoError, "Ok") => (0, Some(Type::ChannelInt)),
+                        (Type::ResultChannelIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultVoidIoError, "Err") => (1, Some(Type::IoError)),
                         _ => return Err(type_err(arm.pos,
                             format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
@@ -2430,6 +2436,11 @@ impl<'a> FnCx<'a> {
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
             (Type::OptionResultIntStr, "None") => (0, None),
             (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
+                        (Type::ResultOptionIntIoError, "Ok") => (0, Some(Type::OptionInt)),
+                        (Type::ResultOptionIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultChannelIntIoError, "Ok") => (0, Some(Type::ChannelInt)),
+                        (Type::ResultChannelIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultVoidIoError, "Err") => (1, Some(Type::IoError)),
             _ => return Err(type_err(e.pos,
                 format!("variant '{variant}' is not valid for {}", self.tn(want)))),
         };

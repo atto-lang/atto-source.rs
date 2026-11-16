@@ -85,7 +85,9 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::FutureInt => Some(I32),
+        Type::FutureInt | Type::ChannelInt | Type::IoError |
+        Type::FutureReadInt | Type::ResultOptionIntIoError |
+        Type::ResultChannelIntIoError | Type::ResultVoidIoError => Some(I32),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),

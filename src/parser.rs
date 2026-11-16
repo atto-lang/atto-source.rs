@@ -464,6 +464,27 @@ impl Parser {
                         "browser ADT admits only Option<int> and Option<Result<int,string>>")),
                 }
             }
+            "Channel" => {
+                self.expect(Tok::Lt, "'<' after Channel")?;
+                let item=self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Channel item")?;
+                if item!=Type::Int {
+                    return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser channel ABI v1 admits only Channel<int>"));
+                }
+                Type::ChannelInt
+            }
+            "Future" => {
+                self.expect(Tok::Lt, "'<' after Future")?;
+                let result=self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Future payload")?;
+                match result {
+                    Type::Int => Type::FutureInt,
+                    Type::ResultOptionIntIoError => Type::FutureReadInt,
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser Future v1 admits only int or Result<Option<int>,IoError>")),
+                }
+            }
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
                 let inner = self.parse_type()?;
@@ -480,16 +501,20 @@ impl Parser {
                 self.expect(Tok::Comma, "',' between Result type arguments")?;
                 let bad = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Result types")?;
-                if good != Type::Int || bad != Type::Str {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Result<int,string>"));
+                match (good,bad) {
+                    (Type::Int,Type::Str) => Type::ResultIntStr,
+                    (Type::OptionInt,Type::IoError) => Type::ResultOptionIntIoError,
+                    (Type::ChannelInt,Type::IoError) => Type::ResultChannelIntIoError,
+                    (Type::Void,Type::IoError) => Type::ResultVoidIoError,
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser Result admits int/string or checked Channel<int>/Option<int>/IoError profiles")),
                 }
-                Type::ResultIntStr
             },
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
             "string" | "String" => Type::Str,
+            "IoError" => Type::IoError,
             n if UNSUPPORTED_TYPES.contains(&n) => {
                 return Err(Diagnostic::new(
                     pos,
