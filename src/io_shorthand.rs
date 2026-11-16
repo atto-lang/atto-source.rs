@@ -64,6 +64,25 @@ fn path(tokens: &[Token], start: usize, end: usize) -> Option<String> {
     Some(components.join("."))
 }
 
+/// A `when` I/O guard belongs to the immediately enclosing select body.
+/// Merely seeing the word `when` at a statement boundary must never grant
+/// select-only atomicity or alter the parse of ordinary blocks.
+fn select_body_for_when(tokens: &[Token], when_start: usize) -> bool {
+    let mut braces = Vec::new();
+    for (i, token) in tokens.iter().enumerate().take(when_start) {
+        match token.tok {
+            Tok::LBrace => braces.push(i),
+            Tok::RBrace => { braces.pop(); }
+            _ => {}
+        }
+    }
+    let Some(&open) = braces.last() else { return false; };
+    if open == 0 { return false; }
+    // In v1 the select block opens directly after the `select` keyword.
+    // Typed/nested select generics belong in the full parser, not preflight.
+    word(&tokens[open - 1]) == Some("select")
+}
+
 fn syntax(pos: Pos, message: &str) -> Diagnostic {
     Diagnostic::new(pos, "E_IO_SYNTAX", message)
 }
@@ -132,8 +151,7 @@ fn read_binder(tokens: &[Token], start: usize, end: usize, pos: Pos) -> Result<S
         return Err(syntax(pos, "read shorthand requires val or let followed by a binding name"));
     }
     let name = tokens.get(start + 1).and_then(word)
-        .filter(|w| !matches!(*w,
-            "const" | "val" | "let" | "when" | "return" | "select" | "do" | "writech" | "readch"))
+        .filter(|w| *w != "when" && !crate::parser::is_reserved(w))
         .ok_or_else(|| syntax(pos, "read shorthand requires a binding name"))?;
     if start + 2 != end && !valid_read_annotation(tokens, start + 2, end) {
         return Err(syntax(pos, "read shorthand requires a complete ': Type' annotation (no trailing tokens)"));
@@ -155,12 +173,17 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         {
             start -= 1;
         }
-        let context = if tokens.get(start).and_then(word) == Some("when") {
+        let is_when = tokens.get(start).and_then(word) == Some("when");
+        let context = if is_when {
+            if !select_body_for_when(tokens, start) {
+                return Err(syntax(tokens[start].pos,
+                    "I/O 'when' guards are only valid directly inside select blocks"));
+            }
             Context::SelectArm
         } else {
             Context::Standalone
         };
-        let lhs_start = start + usize::from(context == Context::SelectArm);
+        let lhs_start = start + usize::from(is_when);
         let op_pos = tokens[i].pos;
         let rhs_start = i + 2;
         // A leading declaration binder to the left of << means INPUT;
