@@ -110,8 +110,51 @@ self.onmessage=async()=>{
       throw Error('declaration-first read did not return Some(42)');
     if(declYields!==1)throw Error('declaration-first read must cooperate once');
     declHost.close(declChannel.value);declHost.release(declChannel.value);
+
+    // Compile both additional one-shot spellings as *real Atto sources*.
+    // Each gets a fresh Wasm module, channel host and private namespace.
+    // This is not a synthetic ABI Wasm probe or a JavaScript read emulation.
+    const aliases=[
+      ['return readch c;',43n],
+      ['c >> val item; return item;',44n],
+    ];
+    const aliasResults=[];
+    for(const [body,expected] of aliases){
+      const sourceAlias=source.replace('return << c;',body);
+      if(sourceAlias===source)throw Error('alias fixture not constructed');
+      const encodedAlias=new TextEncoder().encode(sourceAlias);
+      new Uint8Array(compiler.memory.buffer,compiler.input_ptr(),encodedAlias.length).set(encodedAlias);
+      if(compiler.compile(encodedAlias.length)!==0)throw Error('alias compilation failed: '+body);
+      const binaryAlias=new Uint8Array(compiler.memory.buffer,compiler.result_ptr(),compiler.result_length()).slice();
+      const moduleAlias=new WebAssembly.Module(binaryAlias);
+      if(!verifyChannelIntGuestV1(binaryAlias,moduleAlias))throw Error('missing alias channel ABI marker');
+      let aliasInstance,aliasYields=0;
+      const {imports:aliasImports,host:aliasHost}=createChannelIntGuestV1({
+        getMemory:()=>aliasInstance.exports.memory});
+      aliasInstance=new WebAssembly.Instance(moduleAlias,{atto:{
+        ...aliasImports,
+        channel_int_await_read_v1:new WebAssembly.Suspending(aliasImports.channel_int_await_read_v1),
+        cooperate:new WebAssembly.Suspending(async()=>{await pause();aliasYields++;})
+      }});
+      const openedAlias=aliasHost.open(1);
+      if(!openedAlias.ok||!aliasHost.send(openedAlias.value,expected).ok)
+        throw Error('alias channel admission failed: '+body);
+      const ptr=await WebAssembly.promising(aliasInstance.exports.read_channel_guest_v1)(openedAlias.value);
+      const memory=new DataView(aliasInstance.exports.memory.buffer);
+      if(!Number.isInteger(ptr)||ptr<0||ptr%8||ptr+16>memory.byteLength
+          ||memory.getInt32(ptr,true)!==0)throw Error('alias result not Ok');
+      const inner=memory.getInt32(ptr+8,true);
+      if(inner<0||inner%8||inner+16>memory.byteLength
+          ||memory.getInt32(inner,true)!==1
+          ||memory.getBigInt64(inner+8,true)!==expected)
+        throw Error('alias value not Some('+expected+'): '+body);
+      if(aliasYields!==1)throw Error('alias did not cooperate once: '+body);
+      aliasHost.close(openedAlias.value);aliasHost.release(openedAlias.value);
+      aliasResults.push(Number(expected));
+    }
     self.postMessage({ok:true,sourceCompiled:true,pendingSome:41,eof:true,
       invalidHandle:'Err',zeroSome:true,cooperativeYields,
-      declarationFirstSome:42,declarationFirstYields:declYields});
+      declarationFirstSome:42,declarationFirstYields:declYields,
+      explicitReadchSome:aliasResults[0],directionalSome:aliasResults[1]});
   }catch(e){self.postMessage({ok:false,error:String(e?.stack||e)})}
 };
