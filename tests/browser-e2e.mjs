@@ -77,6 +77,45 @@ try{
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
+  const linkedMtdSource = await readFile(new URL('./fixtures/pass/173-class-mtd-executable.atto', import.meta.url), 'utf8');
+  assert.equal(await run(linkedMtdSource, 'main() -> 20'), 'main() -> 20');
+  console.log('PASS browser: compiled native class mtd methods dispatch and return 20');
+  const illegalMtd = 'define class C as int value: 1; end mtd (self: C) update() -> int { self.value = 2; return 2; } pub fnc main(): int { return 0; }';
+  assert.match(await run(illegalMtd, 'E_OWNERSHIP'), /E_OWNERSHIP/);
+  console.log('PASS browser: immutable class receiver mutation fails closed');
+  // Exercise the exact lexically captured, pure-function sample from the
+  // public playground through Chromium's real Wasm compiler and guest workers.
+  const lexical = await readFile(new URL('./fixtures/pass/playground-lexical-scope-pure.atto', import.meta.url), 'utf8');
+  assert.equal(await run(lexical, 'main() -> 0'), '42\n42\n2\n42\nmain() -> 0');
+  console.log('PASS browser: lexical capture, scope shadowing and pure arithmetic (42/42/2/42)');
+  const impure = await readFile(new URL('./fixtures/fail/pure-transitive-call.atto', import.meta.url), 'utf8');
+  assert.match(await run(impure, 'E_PURE'), /E_PURE/);
+  console.log('PASS browser: transitive impurity is rejected by the compiler');
+  // Parity-inspired lexical tests: Java's closure lifetime is broader, but
+  // this deliberately bounded Rust/Wasm profile must preserve lexical values.
+  for (const [fixture, expected] of [
+    ['pure-lexical-two-captures.atto', 'main() -> 42'],
+    ['pure-lexical-bool-capture.atto', 'main() -> 42'],
+    ['pure-mutual-recursion.atto', 'main() -> 42'],
+    ['lexical-constructor-lambda-capture.atto', 'main() -> 42']
+  ]) {
+    const source = await readFile(new URL('./fixtures/pass/' + fixture, import.meta.url), 'utf8');
+    assert.match(await run(source, expected), /^main\(\) -> 42$/);
+  }
+  console.log('PASS browser: immutable lexical captures and mutually recursive pure functions');
+  for (const [fixture, expected] of [
+    ['pure-transitive-dead-branch.atto', 'E_PURE'],
+    ['lexical-out-of-scope-capture.atto', 'E_CAPTURE'],
+    ['lexical-escaping-mutable-counter.atto', 'E_CAPTURE'],
+    ['lexical-constructor-lambda-escape.atto', 'E_UNSUPPORTED']
+  ]) {
+    const source = await readFile(new URL('./fixtures/fail/' + fixture, import.meta.url), 'utf8');
+    assert.match(await run(source, expected), new RegExp(expected));
+  }
+  console.log('PASS browser: effects and invalid captures cannot masquerade as pure or lexical');
+
+
+
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
   console.log('PASS browser: val reassignment fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 8; }','main() -> 48'),/48/);
