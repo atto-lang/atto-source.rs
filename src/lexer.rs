@@ -52,6 +52,8 @@ pub enum Tok {
     PipeGt,
     Amp,
     At,
+    /// Contextual `structural` shorthand, not an arithmetic operator.
+    Tilde,
     Eof,
 }
 
@@ -320,6 +322,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('|', _) => (Tok::Pipe, 1),
             ('&', _) => (Tok::Amp, 1),
             ('@', _) => (Tok::At, 1),
+            ('~', _) => (Tok::Tilde, 1),
             ('`', _) => {
                 return Err(Diagnostic::new(
                     pos,
