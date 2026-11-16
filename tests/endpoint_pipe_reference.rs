@@ -2,16 +2,11 @@
 //! This deliberately does not claim guest stdin, Wasm, or scheduler execution.
 use std::collections::VecDeque;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Spelling { SourceRightSink, SinkLeftSource }
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PipeIr { source: &'static str, sink: &'static str }
-fn lower(spelling: Spelling, lhs: &'static str, rhs: &'static str) -> PipeIr {
-    match spelling {
-        Spelling::SourceRightSink => PipeIr { source: lhs, sink: rhs },
-        Spelling::SinkLeftSource => PipeIr { source: rhs, sink: lhs },
-    }
+fn lower(keyword: &str, lhs: &'static str, rhs: &'static str) -> Result<PipeIr, &'static str> {
+    if keyword != "pipe" { return Err("E_IO_SYNTAX"); }
+    Ok(PipeIr { source: lhs, sink: rhs })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,30 +71,26 @@ fn pump(source: &mut Reader, sink: &mut Writer) -> Result<usize, PipeFailure> {
 }
 
 #[test]
-fn normalized_direction_is_identical_in_both_spellings() {
-    let forward = lower(Spelling::SourceRightSink, "stdio.in", "stdio.out");
-    let reverse = lower(Spelling::SinkLeftSource, "stdio.out", "stdio.in");
-    assert_eq!(forward, reverse);
-    assert_eq!(forward.source, "stdio.in");
-    assert_eq!(forward.sink, "stdio.out");
+fn only_pipe_keyword_normalizes_a_continuous_connection() {
+    let pipeline = lower("pipe", "stdio.in", "stdio.out").unwrap();
+    assert_eq!(pipeline.source, "stdio.in");
+    assert_eq!(pipeline.sink, "stdio.out");
+    for old in [">>", "<<"] {
+        assert_eq!(lower(old, "stdio.in", "stdio.out"), Err("E_IO_SYNTAX"));
+    }
 }
 
 #[test]
-fn both_orientations_relay_multiple_elements_in_order() {
-    for spelling in [Spelling::SourceRightSink, Spelling::SinkLeftSource] {
-        let ir = match spelling {
-            Spelling::SourceRightSink => lower(spelling, "stdio.in", "stdio.out"),
-            Spelling::SinkLeftSource => lower(spelling, "stdio.out", "stdio.in"),
-        };
-        assert_eq!((ir.source, ir.sink), ("stdio.in", "stdio.out"));
-        let mut src = Reader::from_items(&["hello", "", "world"]);
-        let mut dst = Writer::with_schedule(&[]);
-        assert_eq!(pump(&mut src, &mut dst), Ok(3));
-        assert_eq!(dst.output, ["hello", "", "world"]);
-        assert_eq!(src.read_calls, 4); // three elements plus one EOF
-        assert_eq!(src.close_calls, 0);
-        assert_eq!(dst.close_calls, 0);
-    }
+fn pipe_keyword_relay_preserves_multiple_elements_in_order() {
+    let ir = lower("pipe", "stdio.in", "stdio.out").unwrap();
+    assert_eq!((ir.source, ir.sink), ("stdio.in", "stdio.out"));
+    let mut src = Reader::from_items(&["hello", "", "world"]);
+    let mut dst = Writer::with_schedule(&[]);
+    assert_eq!(pump(&mut src, &mut dst), Ok(3));
+    assert_eq!(dst.output, ["hello", "", "world"]);
+    assert_eq!(src.read_calls, 4); // three elements plus one EOF
+    assert_eq!(src.close_calls, 0);
+    assert_eq!(dst.close_calls, 0);
 }
 
 #[test]
@@ -242,12 +233,9 @@ fn run_cooperative(src: &mut Reader, dst: &mut Writer, budget: usize) -> PollSte
 }
 
 #[test]
-fn checked_both_directions_preserve_unicode_empty_messages_and_order() {
-    assert_eq!(
-        lower(Spelling::SourceRightSink, "stdio.in", "stdio.out"),
-        lower(Spelling::SinkLeftSource, "stdio.out", "stdio.in"),
-    );
-    for _form in [Spelling::SourceRightSink, Spelling::SinkLeftSource] {
+fn checked_pipe_keyword_preserves_unicode_empty_messages_and_order() {
+    assert_eq!(lower("pipe", "stdio.in", "stdio.out").unwrap().source, "stdio.in");
+    {
         let mut src = Reader::from_items(&["", "café", "🦀", "line\n", "\0"]);
         let mut dst = Writer::with_schedule(&[
             Admission::Backpressure, Admission::Ready,
