@@ -124,6 +124,16 @@ try{
   assert.match(await run(typedCase,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected switch case awaits once');
   console.log('PASS integration: typed switch<int> case executes awaited task with one scheduler handoff');
+  const discardedErr='fnc checked(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return match<int> checked() over on Err() : int -> 0, on Ok(value) : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(discardedErr,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
+  console.log('PASS browser: Err() discards payload while Ok(value) binds and task captures it');
+  const discardedOk='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return switch<int> checked() over case Err(_) : int -> -1, case Ok() : int -> 42, end; }';
+  assert.match(await run(discardedOk,'main() -> 42'),/^main\(\) -> 42$/);
+  console.log('PASS browser: Ok() and Err(_) discard tagged payloads');
+  const badDiscardReference='fnc checked(): Result<int,string> { return Ok(41); } pub fnc main(): int { return match<int> checked() over on Err() : int -> 0, on Ok() : int -> value + 1, end; }';
+  assert.match(await run(badDiscardReference,'E_UNBOUND'),/E_UNBOUND/);
+  console.log('PASS browser: Ok() does not create an implicit value local');
   const capturedMatch='fnc checked(): Option<int> { return Some(41); } pub suspends fnc main(): int { return match<int> checked() over on Some(n) : int -> await task { return n + 1; }, on None : int -> 0, end; }';
   assert.match(await run(capturedMatch,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured match must yield once');
