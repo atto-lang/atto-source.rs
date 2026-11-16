@@ -2067,6 +2067,30 @@ impl Parser {
         Ok(Pattern::StructuralFields { fields, bind })
     }
 
+    /// Structural type checks are syntactically distinguished by the 'is'
+    /// keyword. This executable slice admits only declared class shapes;
+    /// inline shape types and dynamic reification remain fail-closed.
+    fn parse_structural_type_test(&mut self, pos: Pos) -> R<Pattern> {
+        if !(self.eat(&Tok::Tilde) || self.eat_word("structural")) {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "structural type test requires 'is ~Type' or 'is structural Type'"));
+        }
+        if *self.peek() == Tok::LBrace {
+            return Err(unsupported(self.pos(),
+                "inline structural type-shape tests require verified type-shape lowering"));
+        }
+        let (name, _) = self.ident("a declared structural type")?;
+        let bind = if self.eat_word("as") {
+            if self.eat_word("let") {
+                return Err(unsupported(self.pos(),
+                    "mutable structural type-test bindings require ownership lowering"));
+            }
+            self.expect_word("val")?;
+            Some(self.ident("a structural type-test binding")?.0)
+        } else { None };
+        Ok(Pattern::StructuralType { name, bind })
+    }
+
     /// Java Parser.parsePattern, restricted to the forms this compiler lowers.
     fn parse_pattern(&mut self) -> R<Pattern> {
         let pos = self.pos();
@@ -2120,7 +2144,10 @@ impl Parser {
                     self.advance();
                     Ok(Pattern::Wild)
                 }
-                "is" => Err(unsupported(pos, "structural type tests (on is ~Type)")),
+                "is" => {
+                    self.advance();
+                    self.parse_structural_type_test(pos)
+                },
                 "structural" => {
                     self.advance();
                     if *self.peek() == Tok::LBrace {
