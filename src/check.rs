@@ -1381,14 +1381,18 @@ fn body_check(
     Ok((tbody, cx.locals))
 }
 
-/// Definite-return analysis matching the Java reference: an `if` returns
-/// only with an `else` whose every arm returns; an unconditional `loop`
-/// without a `break` never falls through; `while true` is not special.
+/// Conservative definite-return/non-fallthrough analysis: an `if`
+/// needs an exhaustive else; a loop is non-fallthrough only when its typed
+/// condition is literally `true` (or absent) and no break targets it.
+/// Do NOT treat a variable or computed condition as constant true: this
+/// would accept a function that can fall through without returning.
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
-        TStmt::Loop { cond: None, body, .. } => !breaks(body),
+        TStmt::Loop { cond, body, .. } =>
+            (cond.is_none() || cond.as_ref().is_some_and(|c|
+                matches!(&c.e, TExpr::Bool(true)))) && !breaks(body),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
         _ => false,
     })
