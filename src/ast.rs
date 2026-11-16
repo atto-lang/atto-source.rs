@@ -124,6 +124,8 @@ pub struct Method {
     pub pos: Pos,
     pub public: bool,
     pub is_static: bool,
+    /// Independent throws/raises/panics upper bounds, identical to a fnc.
+    pub failure_effects: FailureEffects,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
