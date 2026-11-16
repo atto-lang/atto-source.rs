@@ -24,6 +24,9 @@ struct Method {
     origin: String,
     public: bool,
     overriding: bool,
+    /// Exact source position of the override keyword; body identifiers
+    /// named 'override' must never be rewritten or dropped.
+    override_pos: Option<Pos>,
     pos: Pos,
 }
 #[derive(Clone)]
@@ -82,6 +85,10 @@ fn members(t: &[Token], kind: Kind, owner: &str) -> R<(BTreeMap<String, Method>,
             kind != Kind::Class
         };
         let override_at = if is(t, i, "override") { let v = i; i += 1; Some(v) } else { None };
+        if override_at.is_some() && kind != Kind::Class {
+            return Err(diag(t[start].pos, "E_OVERRIDE",
+                "trait/interface methods cannot declare a class override"));
+        }
         if is(t, i, "fnc") || is(t, i, "method") { i += 1; }
         let is_ctor = is(t, i, "constructor");
         let method = matches!(t.get(i + 1).map(|x| &x.tok), Some(Tok::LParen));
@@ -135,7 +142,8 @@ fn members(t: &[Token], kind: Kind, owner: &str) -> R<(BTreeMap<String, Method>,
         let m = Method {
             name: member_name.clone(), sig: signature,
             tokens: copied, origin: format!("{owner}::{member_name}"),
-            public, overriding: override_at.is_some(), pos: t[start].pos,
+            public, overriding: override_at.is_some(),
+            override_pos: override_at.map(|i| t[i].pos), pos: t[start].pos,
         };
         if out.insert(member_name.clone(), m).is_some() {
             return Err(diag(t[start].pos, "E_DUPLICATE", format!("duplicate method '{member_name}'")));
@@ -259,22 +267,41 @@ fn resolve(
             }
         }
         let mut result = BTreeMap::new();
+        let mut inherited_concrete_names = BTreeSet::new();
         for (name, choices) in inherited {
             if let Some(local) = d.methods.get(&name) {
-                if !local.overriding && choices.len() > 1 {
-                    return Err(diag(local.pos, "E_AMBIGUOUS_MEMBER", format!("'{name}' requires explicit override")));
+                if !local.overriding {
+                    return Err(diag(local.pos, "E_OVERRIDE_REQUIRED",
+                        format!("'{name}' must explicitly override the inherited implementation")));
                 }
+                // Every competing origin must have an identical signature.
+                // Never allow a child to silently change parameter/return ABI
+                // or narrow a public inherited method to private.
+                for candidate in &choices {
+                    if local.sig != candidate.sig {
+                        return Err(diag(local.pos, "E_SIGNATURE",
+                            format!("override '{name}' must match all inherited method signatures")));
+                    }
+                    if candidate.public && !local.public {
+                        return Err(diag(local.pos, "E_PRIVATE",
+                            format!("override '{name}' cannot reduce inherited visibility")));
+                    }
+                }
+                inherited_concrete_names.insert(name);
             } else if choices.len() > 1 {
-                return Err(diag(d.pos, "E_AMBIGUOUS_MEMBER", format!("ambiguous concrete inherited method '{name}'; define an explicit override")));
+                return Err(diag(d.pos, "E_AMBIGUOUS_MEMBER",
+                    format!("ambiguous concrete inherited method '{name}'; define an explicit override")));
             } else {
                 result.insert(name, choices[0].clone());
             }
         }
         for (name, local) in &d.methods {
-            if local.overriding && result.get(name).is_none() &&
-                !d.parents.iter().any(|parent| all.get(parent).is_some_and(|base| base.methods.contains_key(name))) &&
-                !d.contracts.iter().any(|contract| all.get(contract).is_some_and(|c| c.methods.contains_key(name))) {
-                return Err(diag(local.pos, "E_OVERRIDE", format!("method '{name}' has no base declaration to override")));
+            // Inherited methods can originate from any ancestor depth, not
+            // solely direct parent methods. An interface signature alone is
+            // not a concrete method that may be overridden.
+            if local.overriding && !inherited_concrete_names.contains(name) {
+                return Err(diag(local.pos, "E_OVERRIDE",
+                    format!("method '{name}' has no concrete inherited method to override")));
             }
             result.insert(name.clone(), local.clone());
         }
@@ -329,16 +356,15 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             Token { pos: d.pos, tok: Tok::Ident(d.name.clone()) },
             Token { pos: d.pos, tok: Tok::Ident("as".into()) },
         ]);
-        // Strip 'override' markers only at class method headers, as the
-        // inherited signature has been checked above.
-        let mut i = 0;
-        while i < d.body.len() {
-            if is(&d.body, i, "override") {
-                i += 1;
-                continue;
-            }
-            output.push(d.body[i].clone());
-            i += 1;
+        // Remove only exact declaration-header override tokens. A token
+        // spelled 'override' inside a method body is never a header marker.
+        // Source coordinates remain unchanged for every retained token.
+        for token in &d.body {
+            let header_override = is(std::slice::from_ref(token), 0, "override")
+                && d.methods.values().any(|m|
+                    m.override_pos.is_some_and(|p|
+                        p.line == token.pos.line && p.col == token.pos.col));
+            if !header_override { output.push(token.clone()); }
         }
         output.extend(additions);
         output.push(Token { pos: d.pos, tok: Tok::Ident("end".into()) });
