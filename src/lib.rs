@@ -21,6 +21,8 @@ pub mod module_lower;
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
 pub mod shape_lower;
+/// Compiler-only, non-emitting read-only projection witness preparation.
+pub mod shape_witness;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
 /// Explicitly unlinked foreign prototypes and source-only exports.
