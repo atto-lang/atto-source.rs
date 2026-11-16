@@ -7,8 +7,8 @@ fn five_body_spellings_parse_and_compile() {
         fnc two(): int -> { return 5; }
         fnc three() -> int { return 5; }
         fnc four() -> int
-            let int x = 3,
-            x + 2
+            const x: int = 3;
+            ^ x + 2;
         end
         fnc five() -> int ::
             let int x = 3,
