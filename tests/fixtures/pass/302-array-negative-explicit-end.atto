@@ -1,0 +1,7 @@
+// expect-exit: 60
+// java: target-only
+pub fnc main(): int {
+    val a = [10,20,30,40,50];
+    val middle = a[1:-1];
+    return middle[0] + middle[-1];
+}
