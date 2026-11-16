@@ -58,8 +58,8 @@ fn typed_ir_defers_tagged_payload_load_until_reached_arm() {
             "each candidate either evaluates its guard or selects a body");
     }
     assert_eq!(payload_candidates, 3, "only named tagged binders extract payloads");
-    assert!(matches!(dispatch.last(), Some(TStmt::If(_, None))),
-        "unreachable fail-closed fallback must be conditional");
+    assert!(matches!(dispatch.last(), Some(TStmt::Unreachable)),
+        "all-exiting match must retain its definite-return and fail-closed proof");
 }
 
 #[test]
@@ -123,4 +123,31 @@ fn checked_guards_do_not_imply_exhaustiveness_or_leak_binders() {
             end;
         }
     "#, "E_TYPE");
+}
+
+
+#[test]
+fn statement_match_without_definite_exit_preserves_continuation() {
+    let src = r#"
+        fnc optional(): Option<int> { return Some(41); }
+        pub fnc main(): int {
+            let result = 0;
+            match optional() over
+                on Some(n) when n > 40 -> { result = 42; }
+                on Some(n) when n > 0 -> { result = 99; }
+                on Some() -> { result = -1; }
+                on None -> { result = 0; }
+            end
+            return result;
+        }
+    "#;
+    let program = typed(src);
+    let main = &program.funcs[program.main as usize];
+    let dispatch = main.body.iter().find_map(|s| match s {
+        TStmt::Block(body) if body.len() > 3 => Some(body),
+        _ => None,
+    }).expect("non-returning match block");
+    assert!(matches!(dispatch.last(), Some(TStmt::If(_, None))),
+        "statement match must trap only on impossible unmatched path");
+    valid(src);
 }
