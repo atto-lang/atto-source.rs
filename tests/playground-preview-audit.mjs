@@ -74,6 +74,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'lexical-scope-pure': { value: 0n, stdout: '42\n42\n2\n42\n' },
       'state-containers': { value: 0n, stdout: '2\n0\n' },
       'fib-match': { value: 144n, stdout: '0 1 1 2 3 5 8 13 21 34 \n' },
+      'guard': { value: 0n, stdout: '42\n' },
     }[name];
     if (expected) {
       const guest = runGuest(result.wasm);
@@ -89,8 +90,8 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
   assert.deepEqual(outcome.guestExecuted.slice().sort(),
     ['function-pipeline', 'generators', 'result-option', 'trap',
      'borrow-checking', 'lexical-scope-pure', 'state-containers',
-     'fib-match'].sort(),
-    'the eight currently compiled preview guests must execute');
+     'fib-match', 'guard'].sort(),
+    'the nine currently compiled preview guests must execute');
   outcome.executionCoverage.verified = outcome.guestExecuted.length;
   outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
   console.log('PLAYGROUND_PREVIEW_EXECUTION_COVERAGE ' + JSON.stringify({
