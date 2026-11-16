@@ -1,0 +1,10 @@
+// expect-error: E_EFFECT_TYPE
+fnc maybe_escalate(): int raises(Error) {
+    return 42;
+}
+define class Worker as
+    pub static fnc run(): int throws(Error) {
+        return maybe_escalate();
+    }
+end
+pub fnc main(): int { return 0; }
