@@ -77,15 +77,32 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
             return Err(fail(head.pos, "E_UNSUPPORTED",
                 "Any match requires a type pattern ('on is int') or wildcard"));
         }
+        // Typed arms may negate the type test, and may bind a proven scalar.
+        // Bind only after the type test succeeds: failed arms cannot leak names.
+        let negated = typed && matches!(t.get(j + 2).map(|x| &x.tok), Some(Tok::Bang));
+        let type_at = j + 2 + usize::from(negated);
         let arm_ty = if typed {
-            let ty = match t.get(j + 2).map(|x| &x.tok) {
+            let ty = match t.get(type_at).map(|x| &x.tok) {
                 Some(Tok::Ident(s)) => scalar_type(s),
                 _ => None,
             };
             Some(ty.ok_or_else(|| fail(head.pos, "E_UNSUPPORTED_TYPE",
                 "runtime object type patterns are not implemented; only provable scalar tags are supported"))?)
         } else { None };
-        let header_end = j + if typed { 3 } else { 2 };
+        let after_type = if typed { type_at + 1 } else { j + 2 };
+        let binding = if typed && word(t, after_type, "as") {
+            if !word(t, after_type + 1, "val") {
+                return Err(fail(t[after_type].pos, "E_SYNTAX",
+                    "type pattern capture requires 'as val name'; mutable and implicit bindings are not implemented"));
+            }
+            match t.get(after_type + 2) {
+                Some(token @ Token { tok: Tok::Ident(name), .. })
+                    if name != "_" && name != "when" => Some(token.clone()),
+                _ => return Err(fail(t[after_type].pos, "E_SYNTAX",
+                    "expected a non-wildcard binding name after 'as val'")),
+            }
+        } else { None };
+        let header_end = after_type + if binding.is_some() { 3 } else { 0 };
         let mut body_open = header_end;
         while body_open < t.len() && t[body_open].tok != Tok::LBrace {
             if t[body_open].tok == Tok::Eof || word(t, body_open, "on") ||
@@ -112,13 +129,13 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
             if depth > 128 { return Err(fail(head.pos, "E_NESTING", "type arm nesting exceeds 128")); }
             end += 1;
         }
-        let compatible = arm_ty.is_none_or(|ty| ty == concrete);
+        let compatible = arm_ty.is_none_or(|ty| (ty == concrete) != negated);
         let guarded = word(t, header_end, "when");
         if compatible && !selected {
             output.push(t[j].clone()); // on
             if typed {
-                output.push(Token { tok: Tok::Ident("_".into()), pos: t[j + 1].pos });
-                output.extend_from_slice(&t[j + 3..end]);
+                output.push(binding.unwrap_or(Token { tok: Tok::Ident("_".into()), pos: t[j + 1].pos }));
+                output.extend_from_slice(&t[header_end..end]);
             } else {
                 output.extend_from_slice(&t[j + 1..end]);
             }
@@ -241,7 +258,9 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
         if word(&t,i,"is") && i > 0 && matches!(t[i-1].tok,Tok::Ident(_)) {
             let Tok::Ident(name) = &t[i-1].tok else { unreachable!() };
             if let Some(actual) = tags.get(name) {
-                let test = match t.get(i+1).map(|x| &x.tok) {
+                let negated = matches!(t.get(i + 1).map(|x| &x.tok), Some(Tok::Bang));
+                let type_at = i + 1 + usize::from(negated);
+                let test = match t.get(type_at).map(|x| &x.tok) {
                     Some(Tok::Ident(type_name)) => scalar_type(type_name),
                     _ => None
                 }.ok_or_else(|| fail(t[i].pos,"E_UNSUPPORTED_TYPE",
@@ -250,8 +269,8 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
                     return Err(fail(t[i].pos,"E_SYNTAX","'is' requires the checked scalar operand"));
                 }
                 out.pop();
-                out.push(Token {tok:Tok::Ident(if *actual==test {"true"} else {"false"}.into()),pos:t[i-1].pos});
-                i+=2;
+                out.push(Token {tok:Tok::Ident(if (*actual == test) != negated {"true"} else {"false"}.into()),pos:t[i-1].pos});
+                i = type_at + 1;
                 continue;
             }
             return Err(fail(t[i].pos,"E_UNSUPPORTED","'is' on a value without a proven Any type tag is not executable"));
