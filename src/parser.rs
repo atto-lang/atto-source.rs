@@ -2930,6 +2930,18 @@ impl Parser {
 
     fn parse_unary_inner(&mut self) -> R<Expr> {
         let pos = self.pos();
+        // Two contiguous '<' tokens at prefix position are one value-producing
+        // channel read. Parse into the production AST; do not reinterpret a
+        // binary shift/write or spaced comparisons as a receive.
+        if *self.peek() == Tok::Lt && *self.peek_at(1) == Tok::Lt
+            && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+            && self.toks[self.i].pos.col.checked_add(1) ==
+               Some(self.toks[self.i + 1].pos.col) {
+            self.advance();
+            self.advance();
+            let readable = self.parse_unary()?;
+            return Ok(Expr { kind: ExprKind::PrefixRead(Box::new(readable)), pos });
+        }
         let op = match self.peek() {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
