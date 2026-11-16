@@ -127,6 +127,6 @@ pub fnc main(): int {
     let parsed=Parser::new(lexer::lex(src).unwrap()).parse_program().unwrap();
     let f=parsed.funcs.iter().find(|f|f.name=="main").unwrap();
     let Stmt::Bind{init,..}=&f.body[0] else{panic!("binding")};
-    assert!(matches!(init.kind,ExprKind::DirectedPipeline(_,PipeDirection::RightToLeft)));
+    assert!(matches!(&init.kind,ExprKind::DirectedPipeline(_,PipeDirection::RightToLeft)));
     assert_eq!(compile(src).unwrap_err().code,"E_UNSUPPORTED");
 }
