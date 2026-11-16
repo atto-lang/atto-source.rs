@@ -442,3 +442,59 @@ test('invalid stopOwner does not poison owner ledger',()=>{
   }
   assert.equal(q.stats.owners,0);
 });
+
+
+test('quota settings and supervisor cannot be disabled by post-construction mutation',async()=>{
+  const events=[];
+  const q=new CheckedWriteQueue({slots:1,maxBytes:5,maxOwners:1,
+    sink:async()=>({ok:false,error:{code:'E_IO_CLOSED'}}),
+    supervisor:e=>events.push(e)});
+  assert.throws(()=>{q.maxBytes=Number.MAX_SAFE_INTEGER},TypeError);
+  assert.throws(()=>{q.slots=Number.MAX_SAFE_INTEGER},TypeError);
+  assert.throws(()=>{q.maxOwners=Number.MAX_SAFE_INTEGER},TypeError);
+  assert.throws(()=>{q.supervisor=null},TypeError);
+  assert.throws(()=>{q.sink=async()=>({ok:true,written:5})},TypeError);
+  assert.equal(submit(q,'123456').error.code,'E_IO_QUOTA');
+  assert.equal(submit(q,'x',{mode:'do'}).ok,true);
+  await afterTurn();await afterTurn();
+  assert.equal(events.length,1);
+  assert.equal(events[0].outcome.error.code,'E_IO_CLOSED');
+});
+
+test('hostile error codes and huge failure text are bounded and validated',async()=>{
+  const tooLong='Z'.repeat(1024*1024);
+  const q=new CheckedWriteQueue({sink:async()=>({ok:false,error:{
+    code:'E_IO_CLOSED',message:tooLong}})});
+  const a=submit(q,'fail');
+  assert.equal((await a.future).error.message.length,256);
+  await afterTurn();
+  const q2=new CheckedWriteQueue({sink:async()=>({ok:false,error:{
+    code:'bad code; not an identifier',message:tooLong}})});
+  const b=submit(q2,'fail');
+  const outcome=await b.future;
+  assert.equal(outcome.error.code,'E_IO_ADAPTER');
+  assert(outcome.error.message.length<=256);
+  await afterTurn();
+  assert.equal(q2.stats.pending,0);
+});
+
+test('reentrant callback admission is serialized and respects slot budget',async()=>{
+  const records=[];
+  const q=new CheckedWriteQueue({slots:1,maxBytes:32,
+    sink:async bytes=>({ok:true,written:bytes.length}),
+    supervisor:e=>records.push(e.outcome)});
+  let accepted=false;
+  const a=submit(q,'first',{mode:'do',onOutcome:result=>{
+    assert.equal(result.ok,true);
+    // The settled ticket frees one slot before its callback runs.
+    const second=submit(q,'second',{mode:'do',onOutcome:r=>{
+      assert.equal(r.ok,true);accepted=true;
+    }});
+    assert.equal(second.ok,true);
+  }});
+  assert.equal(a.ok,true);
+  await afterTurn();await afterTurn();
+  assert.equal(accepted,true);
+  assert.equal(q.stats.pending,0);
+  assert.deepEqual(records,[]);
+});
