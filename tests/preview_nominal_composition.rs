@@ -163,3 +163,17 @@ fn trait_and_interface_members_cannot_masquerade_as_class_overrides() {
         pub fnc main(): int { return 0; }
     "#, "E_OVERRIDE");
 }
+
+#[test]
+fn duplicate_bases_and_contracts_are_rejected_before_composition() {
+    rejected(r#"
+        define class A as pub ping(): int { return 1; } end
+        define class B extends A, A as end
+        pub fnc main(): int { return 0; }
+    "#, "E_DUPLICATE");
+    rejected(r#"
+        define trait T as pub ping(): int { return 1; } end
+        define class C implements T, T as end
+        pub fnc main(): int { return 0; }
+    "#, "E_DUPLICATE");
+}
