@@ -121,3 +121,58 @@ fn non_class_subjects_cannot_use_structural_field_value_patterns() {
         assert_eq!(d.code, "E_UNSUPPORTED", "{source}: {d}");
     }
 }
+
+#[test]
+fn anonymous_bare_value_shapes_and_exact_string_fields_emit_deterministic_wasm() {
+    for sample in [
+        r#"define class Pet as pub string foo = "dog"; pub int n = 42; end
+           pub fnc main(): int {
+             val p = new Pet();
+             match p over
+               on {foo: "dog", n: _} as val x -> { return x.n; }
+               on _ -> { return 0; }
+             end
+           }"#,
+        r#"define class Pet as pub string foo = "cat"; end
+           pub fnc main(): int {
+             val p = new Pet();
+             match p over
+               on {foo: "dog"} -> { return 1; }
+               on {foo: _} -> { return 42; }
+               on _ -> { return 0; }
+             end
+           }"#,
+        r#"define class Pet as pub int n = 42; end
+           pub fnc main(): int {
+             val p = new Pet();
+             match p over
+               on {foo?: "dog", n: _} as val x -> { return x.n; }
+               on _ -> { return 0; }
+             end
+           }"#,
+    ] {
+        let wasm = compile(sample).unwrap_or_else(|e| panic!("{sample}: {e}"));
+        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(wasm, compile(sample).unwrap(), "Wasm output must be stable");
+    }
+}
+
+#[test]
+fn anonymous_shapes_reject_private_and_wrong_typed_strings() {
+    for (field, code) in [
+        ("int foo = 42", "E_PRIVATE"),
+        ("pub int foo = 42", "E_TYPE"),
+    ] {
+        let src = format!(
+          "define class Pet as {field}; end pub fnc main(): int {{
+             val p = new Pet();
+             match p over
+               on {{foo: \\"dog\\"}} -> {{ return 1; }}
+               on _ -> {{ return 42; }}
+             end
+           }}"
+        );
+        let err = compile(&src).expect_err("bad shape must fail before emitting Wasm");
+        assert_eq!(err.code, code, "{src}: {err}");
+    }
+}
