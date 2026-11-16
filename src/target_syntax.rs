@@ -763,6 +763,22 @@ fn validate_receiver_body(
         start + 1
     } else { start };
     while i < end.saturating_sub(1) {
+        // The actor's sealed ingress is runtime-owned. Even its own attached
+        // method cannot enter it by a plain call, nominal Foo.receive(), or
+        // a super.receive() bypass. Typed dispatcher admission comes later.
+        let direct_receive_call = word_at(toks, i, "receive") &&
+            at(toks, i+1, &Tok::LParen) &&
+            (i == 0 || !at(toks, i-1, &Tok::Dot));
+        let nominal_receive_call = word_at(toks, i, &receiver.owner) &&
+            at(toks, i+1, &Tok::Dot) && word_at(toks, i+2, "receive") &&
+            at(toks, i+3, &Tok::LParen);
+        let super_receive_call = word_at(toks, i, "super") &&
+            at(toks, i+1, &Tok::Dot) && word_at(toks, i+2, "receive") &&
+            at(toks, i+3, &Tok::LParen);
+        if direct_receive_call || nominal_receive_call || super_receive_call {
+            return Err(diagnostic(toks, i, "E_ISOLATION",
+                "actor receive ingress is not callable; use typed ActorRef.send"));
+        }
         if word_at(toks, i, "handle_state") &&
             !(i >= 2 && word_at(toks, i-2, "self") && at(toks, i-1, &Tok::Dot)) {
             return Err(diagnostic(toks, i, "E_SEALED",
