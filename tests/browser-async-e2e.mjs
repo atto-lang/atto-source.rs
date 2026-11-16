@@ -124,6 +124,24 @@ try{
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
     'the explicit suspends lambda stage must cooperatively await exactly once');
   console.log('PASS integration: explicit suspends identity-await stage executes real guest Future<int> and named transform');
+
+  const captured='fnc transform_result(int x): int { return x + 1; } pub suspends fnc main(): int { val future=task { return 41; }; future |> susp |f| -> await f |> transform_result >> val result: int; stdio.println(result); return result; }';
+  assert.match(await run(captured,'main() -> 42'),/^42\nmain\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'capturing the transformed Future result must await once, not register another read');
+  console.log('PASS integration: terminal >> val result captures a real JSPI awaited Future<int>');
+
+  const captureDirect='pub suspends fnc main(): int { val pending=task { return 42; }; pending |> suspends |p| -> await p >> val answer: int; return answer; }';
+  assert.match(await run(captureDirect,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'direct terminal capture must yield once');
+  console.log('PASS integration: direct terminal await capture executes in browser guest');
+
+  assert.match(await run(
+    'pub suspends fnc main(): int { val pending=task {return 42;}; pending |> susp |p| -> await p >> val answer: string; return 42; }',
+    'E_TYPE'),/E_TYPE/);
+  console.log('PASS integration: mismatched terminal capture rejects without executable guest');
+
   for (const source of [
     'pub suspends fnc main(): int { nb stdio.in >> (val String line << await Future<string>); return 42; }',
     'pub suspends fnc main(): int { nb stdio.in >> Future<string> x | await x >> val String line; return 42; }',
