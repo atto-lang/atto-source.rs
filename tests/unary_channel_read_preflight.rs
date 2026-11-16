@@ -198,3 +198,14 @@ fn real_channel_read_rejects_unsuspending_and_incorrect_source_type() {
         assert_eq!(err.code, expected, "{source}: {err}");
     }
 }
+
+#[test]
+fn numeric_literal_receiver_fails_with_capability_type_error_not_syntax_error() {
+    for operand in ["42", "0", "3.5", r#""text""#] {
+        let source = format!(
+            "pub susp fnc channel_read_guest(): Result<Option<int>,IoError> {{ return << {operand}; }} pub fnc main(): int {{ return 0; }}"
+        );
+        let err = compile(&source).expect_err("non-readable literal must never emit guest");
+        assert_eq!(err.code, "E_TYPE", "{source}: {err}");
+    }
+}
