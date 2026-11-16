@@ -124,6 +124,19 @@ try{
   assert.match(await run(typedCase,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected switch case awaits once');
   console.log('PASS integration: typed switch<int> case executes awaited task with one scheduler handoff');
+  // Candidate-local bindings: no later guard effects after a selected arm.
+  const lazyGuardSkipped='fnc observe(int n): bool { stdio.println("SHOULD_NOT_RUN"); return n > 0; } fnc optional(): Option<int> { return Some(41); } pub fnc main(): int { return match<int> optional() over on Some(n) when n > 40 : int -> 42, on Some(n) when observe(n) : int -> 3, on Some() : int -> 1, on None : int -> 0, end; }';
+  assert.match(await run(lazyGuardSkipped,'main() -> 42'),/^main\(\) -> 42$/,'unselected later guard must not execute effects');
+  console.log('PASS lazy guard: earlier selected arm suppresses later guard side effects');
+  const lazyGuardReached='fnc observe(int n): bool { stdio.println("GUARD_ONCE"); return n > 0; } fnc optional(): Option<int> { return Some(41); } pub fnc main(): int { return match<int> optional() over on Some(n) when n > 100 : int -> 1, on Some(n) when observe(n) : int -> n + 1, on Some() : int -> 0, on None : int -> 2, end; }';
+  assert.match(await run(lazyGuardReached,'main() -> 42'),/^GUARD_ONCE\nmain\(\) -> 42$/,'reached guarded payload must initialize before its exactly-once guard');
+  console.log('PASS lazy guard: reached candidate binds first and executes guard exactly once');
+  const lazyGuardWrongVariant='fnc observe(int n): bool { stdio.println("WRONG_TAG"); return true; } fnc value(): Result<int,string> { return Err("bad"); } pub fnc main(): int { return match<int> value() over on Ok(n) when observe(n) : int -> 9, on Err(error) when error == "bad" : int -> 42, on Err() : int -> 0, on Ok() : int -> 1, end; }';
+  assert.match(await run(lazyGuardWrongVariant,'main() -> 42'),/^main\(\) -> 42$/,'wrong-tag payload and guard must not be touched');
+  console.log('PASS lazy guard: no inactive-tag guard execution or payload projection');
+  const lazyStatement='fnc optional(): Option<int> { return Some(41); } pub fnc main(): int { let result = 0; match optional() over on Some(n) when n > 40 -> { result = 42; } on Some(n) when n > 0 -> { result = 99; } on Some() -> { result = -1; } on None -> { result = 0; } end return result; }';
+  assert.match(await run(lazyStatement,'main() -> 42'),/^main\(\) -> 42$/,'non-returning selected body must suppress later arms');
+  console.log('PASS lazy guard: non-returning statement arm suppresses later matches');
   const guardedResult='fnc checked(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return match<int> checked() over on Err(error) when error != "E3" : int -> 0, on Ok(value) when value > 5 : int -> await task { return value + 1; }, default : int -> 10, end; }';
   assert.match(await run(guardedResult,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1);
