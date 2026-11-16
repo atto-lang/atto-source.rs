@@ -84,6 +84,8 @@ fn signatures_must_match_definitions() {
 fn aliases_must_not_create_recursion_without_nominal_anchor() {
     rejects("define type A as A", "E_TYPE_CYCLE");
     rejects("declare type A = B; define type B as A", "E_TYPE_CYCLE");
+    rejects("define type A as A | int", "E_TYPE_CYCLE");
+    rejects("define type A as B | int; define type B as A", "E_TYPE_CYCLE");
     accepts("declare type Star = ExternalZ;");
 }
 
