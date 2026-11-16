@@ -349,3 +349,32 @@ fn typed_select_is_not_inherited_by_nested_non_select_blocks() {
         assert_eq!(err.code, "E_IO_SYNTAX", "{src}: {err}");
     }
 }
+
+#[test]
+fn lexically_shadowed_stdio_cannot_bypass_typed_receiver_resolution() {
+    for src in [
+        r#"pub fnc main(): int {
+              val stdio: int = 1;
+              stdio.out << "not a builtin handle";
+              return 7;
+            }"#,
+        r#"pub fnc main(): int {
+              val stdio: int = 1;
+              (stdio.out) << "not a builtin handle";
+              return 7;
+            }"#,
+        r#"pub fnc main(): int {
+              val stdio: int = 1;
+              writech stdio.out, "not a builtin handle";
+              return 7;
+            }"#,
+        r#"pub fnc main(): int {
+              val stdio: int = 1;
+              stdio.print("not a builtin handle");
+              return 7;
+            }"#,
+    ] {
+        let err = atto_compiler::compile(src).expect_err(src);
+        assert_eq!(err.code, "E_IO_SHADOW", "{src}: {err}");
+    }
+}
