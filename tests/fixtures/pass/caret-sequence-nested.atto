@@ -1,0 +1,8 @@
+// expect-exit: 42
+pub fnc main(): int {
+  const int result = (>
+    let x = 5,
+    (> let y = x + 3, y)
+  );
+  ^ seq let adjusted = result * 5, adjusted + 2;
+}
