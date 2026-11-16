@@ -108,7 +108,7 @@ fn stdout_shorthand_and_explicit_write_compile_to_same_guest_as_print() {
     }"#;
     let a = atto_compiler::compile(source).expect("standalone stdout shorthand executes");
     let b = atto_compiler::compile(explicit).expect("explicit stdout print executes");
-    assert_eq!(&a[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&a[..8], b"\0asm\x01\0\0\0");
     assert_eq!(a, b, "the typed checked guest I/O lowering must be identical");
 }
 
