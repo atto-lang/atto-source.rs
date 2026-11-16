@@ -1,0 +1,44 @@
+name: Native AOT precompiled guest (Wasmtime 50.0.1)
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'src/bin/attoaot.rs'
+      - 'src/wasm.rs'
+      - 'src/check.rs'
+      - 'tests/native_aot.rs'
+      - 'docs/native-aot.md'
+      - '.github/workflows/native-aot.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-and-run-precompiled-native-guest:
+    name: Compile ahead and execute trusted native .cwasm
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ATTO_REQUIRE_NATIVE_AOT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust and browser target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Set up pinned native AOT compiler/runtime
+        uses: bytecodealliance/actions/wasmtime/setup@v1
+        with:
+          version: "50.0.1"
+      - name: Verify Wasmtime version
+        shell: bash
+        run: |
+          wasmtime --version
+          wasmtime --version | grep -q '50.0.1'
+      - name: Check browser compiler build is still independent of native AOT feature
+        run: cargo check --locked --target wasm32-unknown-unknown --lib
+      - name: Compile native AOT host utility ahead of execution
+        run: cargo build --locked --release --features native-aot --bin attoaot
+      - name: Run Rust unit and real native machine-code AOT integration tests
+        run: cargo test --locked --features native-aot --bin attoaot --test native_aot -- --nocapture
+      - name: Verify no runtime compilation was substituted
+        run: echo 'AOT test must precompile .atto to .cwasm, delete source, then invoke main from the precompiled artifact'
