@@ -166,12 +166,26 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
             return Err(Diagnostic::new(definition.pos, "E_UNBOUND",
                 format!("concrete actor '{}' has no matching declare actor", definition.name)));
         };
+        // A header is not a substitute for the mailbox handler. Check all
+        // three sources of truth: nominal declaration, concrete header,
+        // and the actual typed receive handler. Never select the first one
+        // and silently mask a contradictory receive body.
+        if let Some(inline_input) = definition.declared_receives {
+            match definition.receive.as_ref() {
+                Some(receive) if receive.payload == inline_input => {}
+                _ => return Err(Diagnostic::new(definition.pos, "E_SIGNATURE",
+                    format!("actor '{}' concrete receives header does not match its receive(ActorMail<T>) handler",
+                        definition.name))),
+            }
+        }
+        if header.receives.is_some() && definition.receive.is_none() {
+            return Err(Diagnostic::new(definition.pos, "E_SIGNATURE",
+                format!("actor '{}' declared receives but has no verified receive(ActorMail<T>) handler",
+                    definition.name)));
+        }
         // Match available primitive input/output/effect header types without
         // inventing a runtime witness for arbitrary unresolved nominal types.
-        // Actual mailbox receives may satisfy a forward declaration even if
-        // the concrete definition omits a redundant receives header.
-        let actual_receive = definition.declared_receives
-            .or_else(|| definition.receive.as_ref().map(|r| r.payload));
+        let actual_receive = definition.receive.as_ref().map(|r| r.payload);
         for (kind, declared, concrete) in [
             ("receives", header.receives.as_deref(), actual_receive),
             ("emits", header.emits.as_deref(), definition.declared_emits),
@@ -199,15 +213,6 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
                         format!("actor '{}' {kind} contract mismatch: declaration {declared}, definition {actual}",
                             definition.name)));
                 }
-            }
-        }
-        if let Some(input) = header.receives.as_deref() {
-            if actual_receive.is_none() {
-                // A declared namespace actor may provide an out-of-line
-                // runtime-only receive hook later; this target compiler has
-                // no authenticated ingress binder, so do not reject metadata
-                // solely due to the absence of an inline handler.
-                let _ = input;
             }
         }
     }
