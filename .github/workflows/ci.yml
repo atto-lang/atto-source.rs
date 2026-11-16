@@ -45,6 +45,11 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
 
+      - name: Execute default-stack arithmetic guest and native-vs-wasm binary parity
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/default_stack_binary_guest.mjs
+
       - name: Execute five callable forms and class mtd guest with negative no-artifact proofs
         env:
           ATTOC: target/release/attoc
