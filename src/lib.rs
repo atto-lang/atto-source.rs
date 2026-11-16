@@ -13,6 +13,7 @@ pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
 pub mod parser;
+pub mod v2;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};
@@ -31,9 +32,24 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
-    let program = parser::Parser::new(toks).parse_program()?;
-    let typed = check::check(&program)?;
-    let bytes = wasm::emit(&typed);
+    // The legacy narrow-profile pipeline keeps compiling everything it
+    // already accepts, byte for byte. A program it rejects is offered to the
+    // general pipeline; when both reject, the diagnostic of the pipeline
+    // that understood more of the source (the later position) is reported.
+    let legacy = parser::Parser::new(toks.clone())
+        .parse_program()
+        .and_then(|program| check::check(&program))
+        .map(|typed| wasm::emit(&typed));
+    let bytes = match legacy {
+        Ok(bytes) => bytes,
+        Err(first) => match v2::compile(toks) {
+            Ok(bytes) => bytes,
+            Err(second) => {
+                let later = (second.pos.line, second.pos.col) > (first.pos.line, first.pos.col);
+                return Err(if later { second } else { first });
+            }
+        },
+    };
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },

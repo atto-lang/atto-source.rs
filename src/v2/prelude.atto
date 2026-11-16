@@ -1,0 +1,522 @@
+// AttoLang guest runtime of the v2 pipeline, compiled into each module that
+// needs it (only the functions a program reaches are emitted).
+//
+// Everything here is ordinary guest code running in the module's own linear
+// memory: there are no extra host imports. Names starting with `__` are
+// reserved for this file. Values are raw 64-bit words; `__load`/`__store`
+// address the bump heap.
+//
+// Runtime root slots (`__rt`): 1 current task, 2 first task, 3 last task,
+// 4 progress flag, 5 virtual clock (ms), 6 last Rx item.
+//
+// Task record (72 bytes): 0 done, 8 value, 16 status (0 new, 1 suspended,
+// 2 finished), 24 entry closure, 32 frame-stack base, 40 saved frame-stack
+// top, 48 next task, 56 wake time, 64 deadline. A task is also a Future:
+// the first two words are the Future layout.
+
+fnc __box(int tag, int v): int {
+  val b = __alloc(16);
+  __store(b, 0, tag);
+  __store(b, 8, v);
+  return b;
+}
+
+fnc __some(int v): int {
+  val b = __alloc(8);
+  __store(b, 0, v);
+  return b;
+}
+
+fnc __str_eq(int a, int b): int {
+  val n = __and(a, 4294967295);
+  if n != __and(b, 4294967295) then
+    return 0;
+  fi
+  val pa = __shr(a, 32);
+  val pb = __shr(b, 32);
+  let i = 0;
+  while i < n do
+    if __load8(pa + i) != __load8(pb + i) then
+      return 0;
+    fi
+    i = i + 1;
+  done
+  return 1;
+}
+
+// kind 0: all true, 1: any true, 2: odd number true
+fnc __gate(int list, int kind): int {
+  let acc = 0;
+  if kind == 0 then
+    acc = 1;
+  fi
+  val n = __load(list, 0);
+  let i = 0;
+  while i < n do
+    val v = __load(list, 8 + 8 * i);
+    if kind == 0 then
+      if v == 0 then acc = 0; fi
+    fi
+    if kind == 1 then
+      if v != 0 then acc = 1; fi
+    fi
+    if kind == 2 then
+      if v != 0 then acc = 1 - acc; fi
+    fi
+    i = i + 1;
+  done
+  return acc;
+}
+
+// ------------------------------------------------------------------ queues
+// A queue is a [head, tail] pair of singly linked 16-byte nodes.
+
+fnc __q_push(int q, int v): void {
+  val n = __alloc(16);
+  __store(n, 0, v);
+  if __load(q, 0) == 0 then
+    __store(q, 0, n);
+  else
+    __store(__load(q, 8), 8, n);
+  fi
+  __store(q, 8, n);
+}
+
+fnc __q_pop(int q): int {
+  val n = __load(q, 0);
+  __store(q, 0, __load(n, 8));
+  return __load(n, 0);
+}
+
+// ----------------------------------------------------------------- futures
+
+fnc __fut_new(): int {
+  return __alloc(16);
+}
+
+fnc __fut_done(int f, int v): void {
+  __store(f, 8, v);
+  __store(f, 0, 1);
+  __set_rt(4, 1);
+}
+
+suspends fnc __await(int f): int {
+  while __load(f, 0) == 0 do
+    __suspend();
+  done
+  __set_rt(4, 1);
+  return __load(f, 8);
+}
+
+// ------------------------------------------------------------------- tasks
+
+fnc __task_spawn(int clo): int {
+  val t = __alloc(72);
+  __store(t, 24, clo);
+  __store(t, 32, __alloc(4096));
+  if __rt(2) == 0 then
+    __set_rt(2, t);
+  else
+    __store(__rt(3), 48, t);
+  fi
+  __set_rt(3, t);
+  __set_rt(4, 1);
+  return t;
+}
+
+// Run one task until it finishes or suspends.
+fnc __resume(int t): void {
+  __set_rt(1, t);
+  val base = __load(t, 32);
+  __set_fend(base + 4096);
+  if __load(t, 16) == 0 then
+    __set_state(0);
+    __set_fsp(base);
+  else
+    __set_state(2);
+    __set_fsp(__load(t, 40));
+  fi
+  val r = __call0(__load(t, 24));
+  if __state() == 1 then
+    __set_state(0);
+    __store(t, 40, __fsp());
+    __store(t, 16, 1);
+  else
+    __store(t, 16, 2);
+    __store(t, 8, r);
+    __store(t, 0, 1);
+    __set_rt(4, 1);
+  fi
+}
+
+// Cooperative round-robin scheduler. Each round resumes every unfinished,
+// non-sleeping task once. When a whole round changes nothing, the virtual
+// clock jumps to the earliest sleeper; with no sleeper the program is
+// quiescent. A blocked main task at quiescence is a deadlock (panic 6); a
+// task still blocked when its `with timeout` deadline passes is panic 7.
+fnc __sched(int main): int {
+  loop do
+    __set_rt(4, 0);
+    let t = __rt(2);
+    while t != 0 do
+      if __load(t, 16) != 2 then
+        if __load(t, 56) <= __rt(5) then
+          __resume(t);
+        fi
+      fi
+      t = __load(t, 48);
+    done
+    if __rt(4) == 0 then
+      let wake = 0;
+      let limit = 0;
+      t = __rt(2);
+      while t != 0 do
+        if __load(t, 16) != 2 then
+          val w = __load(t, 56);
+          val d = __load(t, 64);
+          if w > __rt(5) then
+            if wake == 0 then
+              wake = w;
+            fi
+            if w < wake then
+              wake = w;
+            fi
+          fi
+          if d != 0 then
+            // blocked without a wake time, or sleeping past its deadline
+            if w <= __rt(5) then
+              if limit == 0 then limit = d; fi
+              if d < limit then limit = d; fi
+            fi
+            if w > d then
+              if limit == 0 then limit = d; fi
+              if d < limit then limit = d; fi
+            fi
+          fi
+        fi
+        t = __load(t, 48);
+      done
+      if limit != 0 then
+        if wake == 0 then
+          __panic(7);
+        fi
+        if limit < wake then
+          __panic(7);
+        fi
+      fi
+      if wake == 0 then
+        break;
+      fi
+      __set_rt(5, wake);
+    fi
+  done
+  if __load(main, 0) == 0 then
+    __panic(6);
+  fi
+  return __load(main, 8);
+}
+
+fnc __main(int clo): int {
+  return __sched(__task_spawn(clo));
+}
+
+suspends fnc __sleep(int ms): void {
+  __store(__rt(1), 56, __rt(5) + ms);
+  __suspend();
+  __store(__rt(1), 56, 0);
+  __set_rt(4, 1);
+}
+
+fnc __deadline_push(int ms): int {
+  val t = __rt(1);
+  val old = __load(t, 64);
+  let limit = __rt(5) + ms;
+  if old != 0 then
+    if old < limit then
+      limit = old;
+    fi
+  fi
+  __store(t, 64, limit);
+  return old;
+}
+
+fnc __deadline_pop(int old): void {
+  __store(__rt(1), 64, old);
+}
+
+// ---------------------------------------------------------------- channels
+// Channel (56 bytes): 0 capacity (-1 unbounded), 8 count, 16 head, 24 tail,
+// 32 closed, 40/48 queue of pending `nb readch` futures.
+
+fnc __chan_new(int cap): int {
+  val c = __alloc(56);
+  __store(c, 0, cap);
+  return c;
+}
+
+// 1 when the value was accepted, 0 when a bounded channel is full.
+fnc __chan_offer(int c, int v): int {
+  if __load(c, 32) != 0 then
+    __panic(8);
+  fi
+  if __load(c, 40) != 0 then
+    __fut_done(__q_pop(c + 40), __some(v));
+    return 1;
+  fi
+  val cap = __load(c, 0);
+  if cap >= 0 then
+    if __load(c, 8) >= cap then
+      return 0;
+    fi
+  fi
+  __q_push(c + 16, v);
+  __store(c, 8, __load(c, 8) + 1);
+  __set_rt(4, 1);
+  return 1;
+}
+
+suspends fnc __chan_send(int c, int v): void {
+  while __chan_offer(c, v) == 0 do
+    __suspend();
+  done
+}
+
+fnc __chan_take(int c): int {
+  __store(c, 8, __load(c, 8) - 1);
+  __set_rt(4, 1);
+  return __q_pop(c + 16);
+}
+
+suspends fnc __chan_recv(int c): int {
+  loop do
+    if __load(c, 8) > 0 then
+      return __chan_take(c);
+    fi
+    if __load(c, 32) != 0 then
+      __panic(9);
+    fi
+    __suspend();
+  done
+}
+
+// Some(item), or None once the channel is closed and drained.
+suspends fnc __chan_recv_opt(int c): int {
+  loop do
+    if __load(c, 8) > 0 then
+      return __some(__chan_take(c));
+    fi
+    if __load(c, 32) != 0 then
+      return 0;
+    fi
+    __suspend();
+  done
+}
+
+fnc __chan_try(int c): int {
+  if __load(c, 8) > 0 then
+    return __some(__chan_take(c));
+  fi
+  return 0;
+}
+
+fnc __chan_nb(int c): int {
+  val f = __fut_new();
+  if __load(c, 8) > 0 then
+    __fut_done(f, __some(__chan_take(c)));
+    return f;
+  fi
+  if __load(c, 32) != 0 then
+    __fut_done(f, 0);
+    return f;
+  fi
+  __q_push(c + 40, f);
+  return f;
+}
+
+fnc __chan_close(int c): void {
+  if __load(c, 32) != 0 then
+    return;
+  fi
+  __store(c, 32, 1);
+  while __load(c, 40) != 0 do
+    __fut_done(__q_pop(c + 40), 0);
+  done
+  __set_rt(4, 1);
+}
+
+// ------------------------------------------------------------------ actors
+// Actor instance: 0 mailbox channel, 8 downstream actor, 16 next sequence
+// number, then the actor's state fields.
+
+fnc __mail_send(int a, int v): void {
+  val c = __load(a, 0);
+  if __load(c, 32) != 0 then
+    return;
+  fi
+  __q_push(c + 16, v);
+  __store(c, 8, __load(c, 8) + 1);
+  __set_rt(4, 1);
+}
+
+// Append `b` to the end of `a`'s pipeline; the pipeline value is its head.
+fnc __actor_link(int a, int b): int {
+  let t = a;
+  while __load(t, 8) != 0 do
+    t = __load(t, 8);
+  done
+  __store(t, 8, b);
+  return a;
+}
+
+fnc __actor_emit(int a, int v): void {
+  val n = __load(a, 8);
+  if n == 0 then
+    __panic(10);
+  fi
+  __mail_send(n, v);
+}
+
+fnc __actor_stop(int a): void {
+  __chan_close(__load(a, 0));
+}
+
+// --------------------------------------------------------------- telemetry
+// Span (24 bytes): 0 name, 8 attribute count, 16 closed.
+
+fnc __span_new(int name): int {
+  val s = __alloc(24);
+  __store(s, 0, name);
+  return s;
+}
+
+fnc __span_attr(int s, int key, int value): void {
+  if __load(s, 16) != 0 then
+    __panic(12);
+  fi
+  __store(s, 8, __load(s, 8) + 1);
+}
+
+fnc __span_close(int s): void {
+  __store(s, 16, 1);
+}
+
+// ---------------------------------------------------------------------- rx
+// Observable node (32 bytes): 0 kind, 8 upstream, 16 a, 24 b.
+// kinds: 0 from_iter (a list, b index), 1 map (a closure), 2 filter
+// (a closure), 3 take (b remaining), 4 from_channel (a channel).
+// Pull protocol: 0 pending, 1 item ready in root slot 6, 2 complete.
+
+fnc __rx_node(int kind, int up, int a, int b): int {
+  val o = __alloc(32);
+  __store(o, 0, kind);
+  __store(o, 8, up);
+  __store(o, 16, a);
+  __store(o, 24, b);
+  return o;
+}
+
+fnc __rx_poll(int o): int {
+  val kind = __load(o, 0);
+  val up = __load(o, 8);
+  if kind == 0 then
+    val list = __load(o, 16);
+    val i = __load(o, 24);
+    if i >= __load(list, 0) then
+      return 2;
+    fi
+    __store(o, 24, i + 1);
+    __set_rt(6, __load(list, 8 + 8 * i));
+    return 1;
+  fi
+  if kind == 1 then
+    val r = __rx_poll(up);
+    if r != 1 then
+      return r;
+    fi
+    __set_rt(6, __call1(__load(o, 16), __rt(6)));
+    return 1;
+  fi
+  if kind == 2 then
+    loop do
+      val r = __rx_poll(up);
+      if r != 1 then
+        return r;
+      fi
+      if __call1(__load(o, 16), __rt(6)) != 0 then
+        return 1;
+      fi
+    done
+  fi
+  if kind == 3 then
+    val left = __load(o, 24);
+    if left <= 0 then
+      return 2;
+    fi
+    val r = __rx_poll(up);
+    if r == 1 then
+      __store(o, 24, left - 1);
+    fi
+    return r;
+  fi
+  val c = __load(o, 16);
+  if __load(c, 8) > 0 then
+    __set_rt(6, __chan_take(c));
+    return 1;
+  fi
+  if __load(c, 32) != 0 then
+    return 2;
+  fi
+  return 0;
+}
+
+// Subscription (16 bytes): 0 completion future, 8 disposed.
+suspends fnc __rx_run(int o, int observer, int sub): int {
+  loop do
+    if __load(sub, 8) != 0 then
+      break;
+    fi
+    val r = __rx_poll(o);
+    if r == 2 then
+      break;
+    fi
+    if r == 1 then
+      __call1(observer, __rt(6));
+    else
+      __suspend();
+    fi
+  done
+  __fut_done(__load(sub, 0), 0);
+  return 0;
+}
+
+fnc __rx_subscribe(int o, int observer): int {
+  val sub = __alloc(16);
+  __store(sub, 0, __fut_new());
+  do task {
+    await __rx_run(o, observer, sub);
+  };
+  return sub;
+}
+
+suspends fnc __rx_first(int o): int {
+  loop do
+    val r = __rx_poll(o);
+    if r == 2 then
+      return 0;
+    fi
+    if r == 1 then
+      return __some(__rt(6));
+    fi
+    __suspend();
+  done
+}
+
+fnc __rx_first_task(int o): int {
+  return task {
+    return await __rx_first(o);
+  };
+}
+
+fnc __sub_dispose(int sub): void {
+  __store(sub, 8, 1);
+}
