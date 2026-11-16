@@ -70,3 +70,51 @@ fn currently_unimplemented_guest_channel_read_must_never_emit_wasm() {
         assert!(err.message.contains("typed guest"), "{expression}: {err}");
     }
 }
+
+#[test]
+fn type_first_declaration_reads_are_recognized_without_becoming_binary_writes() {
+    for (source, binding, channel) in [
+        ("val int a << c;", "a", "c"),
+        ("let Result<Option<int>, IoError> result << inbox;", "result", "inbox"),
+        ("val a: Result<Option<int>, IoError> << inbox;", "a", "inbox"),
+        ("val Channel<int> received << channel_source;", "received", "channel_source"),
+    ] {
+        let tokens = lexer::lex(source).unwrap();
+        let directional = io_shorthand::inspect(&tokens).expect(source);
+        assert_eq!(directional.len(), 1, "{source}");
+        let read = &directional[0];
+        assert_eq!(read.direction, io_shorthand::Direction::Read, "{source}");
+        assert!(read.read_binder_on_left, "{source}");
+        assert_eq!(read.binder.as_deref(), Some(binding), "{source}");
+        assert_eq!(read.source_or_sink, channel, "{source}");
+        assert!(reads(source).unwrap().is_empty(), "binary declaration stolen by unary parse: {source}");
+    }
+}
+
+#[test]
+fn type_first_bindings_preserve_const_and_complete_type_errors() {
+    for (source, code) in [
+        ("const int a << c;", "E_CONST_EFFECT"),
+        ("val Result<Option<int>, IoError a << inbox;", "E_IO_SYNTAX"),
+        ("val int a unexpected << c;", "E_IO_SYNTAX"),
+    ] {
+        let tokens = lexer::lex(source).unwrap();
+        let error = io_shorthand::inspect(&tokens).expect_err(source);
+        assert_eq!(error.code, code, "{source}: {error}");
+    }
+}
+
+#[test]
+fn prefix_and_declaration_first_variants_do_not_emit_guest_read_wasm() {
+    for body in [
+        "val int a = << c; return 0;",
+        "val int a = (<< c); return 0;",
+        "val int a << c; return 0;",
+        "let total = 0; total += << c; return total;",
+        "let total = 0; total += (<< c); return total;",
+    ] {
+        let source = format!("pub suspends fnc main(): int using io, suspend {{ {body} }}");
+        let error = compile(&source).expect_err("guest channel reads are not yet lowered");
+        assert_eq!(error.code, "E_UNSUPPORTED", "{body}: {error}");
+    }
+}
