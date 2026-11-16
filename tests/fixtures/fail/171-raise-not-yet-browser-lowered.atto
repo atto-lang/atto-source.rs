@@ -1,0 +1,4 @@
+// expect-error: E_UNSUPPORTED
+// Must not silently lower raise as throw, even when Error is valid.
+fnc fail(): int { raise Error("escalation"); }
+pub fnc main(): int { return fail(); }

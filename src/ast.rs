@@ -180,6 +180,24 @@ pub struct ActorDecl {
     pub methods: Vec<Method>,
 }
 
+/// The three source-level failure capabilities are intentionally independent.
+/// In the current browser subset only core Error is a resolvable failure type;
+/// marker-interface and Error-subclass resolution need a later nominal pass.
+/// These are upper bounds, not permission to turn raise/panic into a throw.
+#[derive(Clone, Debug, Default)]
+pub struct FailureEffects {
+    pub explicit: bool,
+    pub throws: bool,
+    pub raises: bool,
+    pub panics: bool,
+}
+
+impl FailureEffects {
+    pub fn mask(&self) -> u8 {
+        (self.throws as u8) | ((self.raises as u8) << 1) | ((self.panics as u8) << 2)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Func {
     pub name: String,
@@ -188,6 +206,8 @@ pub struct Func {
     pub is_generator: bool,
     /// Explicit effect contract: no externally observable effects or impure calls.
     pub is_pure: bool,
+    /// Explicit throws(Error), raises(Error), and panics(Error) upper bounds.
+    pub failure_effects: FailureEffects,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,

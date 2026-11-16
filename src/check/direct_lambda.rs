@@ -188,6 +188,7 @@ pub fn lower(input: &Program) -> R<Program> {
                 pos: d.lambda.pos,
                 is_generator: false,
                 is_pure: true,
+                failure_effects: FailureEffects::default(),
                 params: d.params.into_iter().chain(
                     d.captures.into_iter().map(|c| c.source)
                 ).zip(all_types).map(|(name, ty)| Param {

@@ -1,0 +1,4 @@
+// expect-error: E_EFFECT_TYPE
+fnc inner(): int throws(Error) { throw Error("inner"); }
+fnc outer(): int panics(Error) { return inner(); }
+pub fnc main(): int { return 0; }

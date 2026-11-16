@@ -1,0 +1,11 @@
+// expect-exit: 42
+fnc fail_when_called(): int {
+  throw Error("not reached");
+}
+fnc forward(bool ok): int throws(Error) {
+  if ok then
+    return 42;
+  fi
+  return fail_when_called();
+}
+pub fnc main(): int { return forward(true); }

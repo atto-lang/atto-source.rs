@@ -1,0 +1,7 @@
+// expect-error: E_TYPE
+// A class with an error-like message is not an Error + Throwable.
+define class Unrelated as
+  pub string message: "not an error";
+end
+fnc fail(): int { throw new Unrelated(); }
+pub fnc main(): int { return fail(); }

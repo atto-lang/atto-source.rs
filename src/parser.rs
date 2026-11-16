@@ -1039,6 +1039,59 @@ impl Parser {
         }
     }
 
+    /// Parse explicitly declared failure upper bounds on a function.
+    /// Built-in Error implements Throwable, Raisable and Panicable in core.
+    /// The limited browser backend cannot resolve user-defined Error
+    /// subclasses/interfaces yet and must reject those rather than pretending
+    /// they inherit the required nominal contracts.
+    fn parse_failure_effects(&mut self) -> R<FailureEffects> {
+        let mut effects = FailureEffects::default();
+        loop {
+            let (kind, at) = match self.word_at(0) {
+                Some("throws") => (0, self.pos()),
+                Some("raises") => (1, self.pos()),
+                Some("panics") => (2, self.pos()),
+                _ => break,
+            };
+            self.advance();
+            self.expect(Tok::LParen, "'(' after failure effect")?;
+            let type_at = self.pos();
+            let name = match self.peek().clone() {
+                Tok::Ident(s) => s,
+                _ => return Err(Diagnostic::new(type_at, "E_EFFECT_TYPE",
+                    "a failure effect requires an Error subtype")),
+            };
+            self.advance();
+            if name != "Error" {
+                let code = if matches!(name.as_str(),
+                    "int" | "bool" | "string" | "String" | "float" | "void") {
+                    "E_EFFECT_TYPE"
+                } else {
+                    "E_UNSUPPORTED_TYPE"
+                };
+                return Err(Diagnostic::new(type_at, code,
+                    format!("failure effect '{name}' requires Error ancestry and a matching nominal interface; only built-in Error is browser-admitted")));
+            }
+            if *self.peek() != Tok::RParen {
+                return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
+                    "failure effect currently requires exactly one Error type"));
+            }
+            self.advance();
+            let flag = match kind {
+                0 => &mut effects.throws,
+                1 => &mut effects.raises,
+                _ => &mut effects.panics,
+            };
+            if *flag {
+                return Err(Diagnostic::new(at, "E_EFFECT_TYPE",
+                    "duplicate failure effect declaration"));
+            }
+            *flag = true;
+            effects.explicit = true;
+        }
+        Ok(effects)
+    }
+
     /// Parameters after `(` up to and including `)`.
     fn parse_params(&mut self) -> R<Vec<Param>> {
         let mut params: Vec<Param> = Vec::new();
@@ -1121,6 +1174,11 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
+        let failure_effects = self.parse_failure_effects()?;
+        if is_pure && failure_effects.explicit {
+            return Err(Diagnostic::new(pos, "E_PURE",
+                "pure functions cannot declare throw, raise or panic effects"));
+        }
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1138,6 +1196,7 @@ impl Parser {
             pos,
             is_generator,
             is_pure,
+            failure_effects,
             params,
             ret,
             body,

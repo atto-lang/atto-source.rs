@@ -17,6 +17,7 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod failure_effects;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
@@ -1250,6 +1251,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
+    failure_effects::verify(p, &funcs)?;
     // A pure declaration is a checked transitive effect contract, not a hint.
     // Inspect fully resolved typed calls, including branches that are never
     // executed at runtime. Other functions are impure unless declared pure.
@@ -2534,10 +2536,16 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "ordinary throw in class and actor methods needs supervisor/cleanup integration"));
         }
+        // Failure-capability v1: built-in Error is the *only* type admitted
+        // here and is defined by the core contract as Error + Throwable.
+        // Do not accept an unrelated class merely because it implements a
+        // marker, or silently treat raise/panic as an ordinary throw. A full
+        // nominal Error-subclass/interface resolver is needed before widening
+        // this path; the browser subset must fail closed until then.
         let args = match &error.kind {
-            ExprKind::Call(name, args) if name == "Error" => args,
+            ExprKind::Call(name, args) | ExprKind::New(name, args) if name == "Error" => args,
             _ => return Err(type_err(error.pos,
-                "throw requires an Error subclass; this browser slice admits only throw Error(message)")),
+                "throw requires Error + Throwable; this browser slice admits only throw Error(message)")),
         };
         if args.len() != 1 {
             return Err(Diagnostic::new(error.pos, "E_ARITY",

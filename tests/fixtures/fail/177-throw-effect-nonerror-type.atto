@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED_TYPE
+define class NotAnError as
+  pub int code: 5;
+end
+fnc bad(): int throws(NotAnError) { return 1; }
+pub fnc main(): int { return bad(); }
