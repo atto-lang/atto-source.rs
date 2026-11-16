@@ -2931,6 +2931,29 @@ impl Parser {
     fn parse_unary_inner(&mut self) -> R<Expr> {
         let pos = self.pos();
         let op = match self.peek() {
+            // Compiler-owned intrinsic: no source identifier can contain
+            // U+0000, so users cannot forge this typed I/O operation.
+            Tok::Lt if *self.peek_at(1) == Tok::Lt
+                && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+                && self.toks[self.i].pos.col.checked_add(1)
+                    == Some(self.toks[self.i + 1].pos.col) =>
+            {
+                self.advance();
+                self.advance();
+                let readable = self.parse_unary()?;
+                return Ok(Expr {
+                    kind: ExprKind::Call("\u{0}atto_channel_read".to_owned(), vec![readable]),
+                    pos,
+                });
+            }
+            Tok::Ident(s) if s == "readch" => {
+                self.advance();
+                let readable = self.parse_unary()?;
+                return Ok(Expr {
+                    kind: ExprKind::Call("\u{0}atto_channel_read".to_owned(), vec![readable]),
+                    pos,
+                });
+            }
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
             Tok::Bang => UnOp::Not,
