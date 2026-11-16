@@ -1,0 +1,16 @@
+// expect-exit: 42
+// Optional wildcard x imposes no equality test; y is required.
+define class AvailableY as
+    pub int y = 40;
+end
+pub fnc main(): int {
+    val value = new AvailableY();
+    match value over
+        on structural { x?: _, y: _ } as val p ->
+            return p.y + 2;
+        end
+        on _ -> {
+            return 0;
+        }
+    end
+}
