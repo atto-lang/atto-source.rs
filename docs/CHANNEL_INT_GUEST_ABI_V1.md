@@ -92,6 +92,20 @@ read-result slot must encode exactly one tag from
 replace the tag. Errors are typed, versioned and nonthrowing for ordinary
 closed, cancelled, quota, or invalid-capability results.
 
+**Host-only abandoned-Future disposal (not guest ABI v1):**
+`ChannelIntHostV1.abandon_read(ticket)` detaches an uncommitted pending
+registration, retires its ticket, reclaims the ticket quota, and wakes any
+already-claimed pending await with `Err(Cancelled)`. It also retires an
+unclaimed settled EOF/error ticket. A ticket holding an already committed
+`Some(value)` returns `Busy`: losing an admitted value to an ignored Future
+is forbidden. `cancel(ticket)` is distinct: it records a cancellation result
+but intentionally leaves an unclaimed ticket available for a later checked
+`await_read(ticket)`. The compiler does **not** yet emit `abandon_read` on
+`^`/`return`, exception unwind or scope exit, so automatic guest cleanup and
+linear ticket ownership remain **unverified and merge-blocking**. A future
+versioned ABI must provide the appropriate drop/abandon hook and prove every
+control-flow exit executes it without losing committed values.
+
 Release/merge gates (the source typing, tagged Wasm lowering, marker checks,
 and single-fixture Chromium execution have passed; the broader lifecycle and
 cross-backend gates remain):

@@ -112,6 +112,60 @@ test('strict i64 payload validation preserves signed 64-bit edges',async()=>{
   }
 });
 
+test('abandon_read releases pending registration and quota without dropping future messages',async()=>{
+  const rt=new ChannelIntHostV1({maxChannels:1,maxTickets:1,maxCapacity:0});
+  const ch=rt.open(0).value;
+  const old=rt.nb_read(ch).value;
+  assert.deepEqual(rt.nb_read(ch),error('Quota'));
+  assert.deepEqual(rt.abandon_read(old),{ok:true,value:{abandoned:true}});
+  assert.equal(rt.snapshot(ch).value.pending,0);
+  assert.equal(rt.snapshot(ch).value.outstanding,0);
+  assert.deepEqual(await rt.await_read(old),error('AlreadyConsumed'));
+  const fresh=rt.nb_read(ch).value;
+  assert.equal(rt.send(ch,41n).ok,true);
+  assert.deepEqual(await rt.await_read(fresh),item(41));
+  rt.close(ch);
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('abandon_read resolves an already-claimed pending await exactly once',async()=>{
+  const rt=new ChannelIntHostV1({maxTickets:1});
+  const ch=rt.open(0).value;
+  const ticket=rt.nb_read(ch).value;
+  const awaited=rt.await_read(ticket);
+  assert.deepEqual(rt.abandon_read(ticket),{ok:true,value:{abandoned:true}});
+  assert.deepEqual(await awaited,error('Cancelled'));
+  assert.deepEqual(rt.abandon_read(ticket),error('AlreadyConsumed'));
+  assert.equal(rt.snapshot(ch).value.outstanding,0);
+  assert.equal(rt.send(ch,4n).ok,false,'orphan read cannot admit a send');
+  rt.close(ch);
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('abandon_read refuses to discard an admitted value, even after close',async()=>{
+  const rt=new ChannelIntHostV1({maxChannels:1,maxTickets:1,maxCapacity:1});
+  const ch=rt.open(0).value;
+  const ticket=rt.nb_read(ch).value;
+  assert.equal(rt.send(ch,-9223372036854775808n).ok,true);
+  rt.close(ch);
+  assert.deepEqual(rt.abandon_read(ticket),error('Busy'));
+  assert.deepEqual(rt.release(ch),error('Busy'));
+  assert.deepEqual(await rt.await_read(ticket),item(-9223372036854775808n));
+  assert.deepEqual(rt.abandon_read(ticket),error('AlreadyConsumed'));
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('abandon_read reclaims settled EOF tickets, preserving close and release',async()=>{
+  const rt=new ChannelIntHostV1({maxChannels:1,maxTickets:1});
+  const ch=rt.open(0).value;
+  rt.close(ch);
+  const ticket=rt.nb_read(ch).value;
+  assert.deepEqual(rt.release(ch),error('Busy'));
+  assert.deepEqual(rt.abandon_read(ticket),{ok:true,value:{abandoned:true}});
+  assert.deepEqual(await rt.await_read(ticket),error('AlreadyConsumed'));
+  assert.equal(rt.release(ch).ok,true);
+});
+
 test('pending-read quota errors are checked and recover after settlement',async()=>{
   const rt=new ChannelIntHostV1({maxChannels:2,maxTickets:2,maxCapacity:2});
   const ch=rt.open(0).value;

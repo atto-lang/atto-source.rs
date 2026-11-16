@@ -109,6 +109,34 @@ export class ChannelIntHostV1 {
     return ok({cancelled:true});
   }
 
+  // Owner-driven disposal of an abandoned Future read. Unlike cancel(),
+  // this relinquishes the ticket itself, freeing quota without requiring a
+  // later await. It never throws away a value already admitted to a read:
+  // that value remains owned by the ticket and must be awaited explicitly.
+  // This is host-only v1; guest compiler auto-cleanup needs a versioned ABI.
+  abandon_read(ticketId) {
+    const ticket=this.#tickets.get(ticketId);
+    if (!ticket) return err(this.#retired.has(ticketId)
+      ? 'AlreadyConsumed' : 'InvalidHandle');
+    if (ticket.settled) {
+      if (ticket.outcome?.ok && ticket.outcome.value?.some) {
+        return err('Busy');
+      }
+      this.#retire(ticket);
+      return ok({abandoned:true});
+    }
+    const channel=this.#channels.get(ticket.channel);
+    if (!channel) throw Error('broken abandoned read owner invariant');
+    const idx=channel.pending.indexOf(ticketId);
+    if (idx<0) throw Error('broken abandoned pending read invariant');
+    channel.pending.splice(idx,1);
+    this.#settle(ticket,err('Cancelled'));
+    // A claimed Future has an await continuation; #settle retires it when
+    // notifying that continuation. Without a waiter, remove the ticket now.
+    if (this.#tickets.has(ticketId)) this.#retire(ticket);
+    return ok({abandoned:true});
+  }
+
   close(handle) {
     const channel=this.#channels.get(handle);
     if (!channel) return err('InvalidHandle');
