@@ -1,4 +1,5 @@
 // Real Atto source -> Rust wasm32 compiler -> guest Wasm Channel<int> JSPI.
+import {validateGuestImportABI} from '/runtime/browser/guest_import_admission_v2.mjs';
 // Unlike the separate synthetic-module ABI probe, this is a compiled guest.
 import {createChannelIntGuestV1, verifyChannelIntGuestV1,
   CHANNEL_INT_V1_ERRORS as E} from '/runtime/browser/channel_int_guest_v1.mjs';
@@ -26,6 +27,7 @@ self.onmessage=async()=>{
     try { module=new WebAssembly.Module(wasm); }
     catch(error) { throw Error('compiler generated invalid Wasm: '+String(error?.message||error)); }
     if(!verifyChannelIntGuestV1(wasm,module))throw Error('missing versioned channel marker');
+    validateGuestImportABI(wasm,module,'channel-int-v1');
     let instance,cooperativeYields=0;
     const {imports,host}=createChannelIntGuestV1({getMemory:()=>instance.exports.memory});
     const atto={...imports,
