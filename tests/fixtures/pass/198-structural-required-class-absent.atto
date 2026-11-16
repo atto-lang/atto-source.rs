@@ -1,4 +1,5 @@
 // expect-exit: 42
+// java: rejects
 // x is optional but required y is absent, so the first arm does not match.
 define class OnlyX as
     pub int x = 10;
