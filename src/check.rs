@@ -49,6 +49,8 @@ pub enum Import {
     SleepMs,
     Barrier,
     TaskStart,
+    /// Versioned ABI: start an AOT task with one copied i64 capture.
+    TaskStartI64,
     TaskAwait,
     /// Mandatory cooperative scheduler turn for every source await.
     Cooperate,
@@ -59,7 +61,7 @@ pub enum Import {
 }
 
 impl Import {
-    pub const ALL: [Import; 15] = [
+    pub const ALL: [Import; 16] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -70,6 +72,7 @@ impl Import {
         Import::SleepMs,
         Import::Barrier,
         Import::TaskStart,
+        Import::TaskStartI64,
         Import::TaskAwait,
         Import::Cooperate,
         Import::StateRegister,
@@ -88,6 +91,7 @@ impl Import {
             Import::SleepMs => "sleep_ms",
             Import::Barrier => "barrier",
             Import::TaskStart => "task_start",
+            Import::TaskStartI64 => "task_start_i64",
             Import::TaskAwait => "task_await",
             Import::Cooperate => "cooperate",
             Import::StateRegister => "state_register",
@@ -205,6 +209,8 @@ pub enum TExpr {
     Barrier(Box<TE>),
     /// Capture-free task body index; the Wasm host schedules task_invoke(index).
     TaskStart(u32),
+    /// One immutable i64 snapshot; host schedules task_invoke_i64(index, value).
+    TaskStartI64(u32, Box<TE>),
     /// Consume one typed future handle and yield until the task finishes.
     TaskAwait(Box<TE>),
     /// Preserve evaluated value and release the worker carrier at least one event-loop turn.
@@ -1496,7 +1502,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } |
         TExpr::SleepMs(_) | TExpr::Barrier(_) | TExpr::TaskStart(_) |
-        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) => false,
+        TExpr::TaskStartI64(..) | TExpr::TaskAwait(_) | TExpr::AwaitYield(_) => false,
     }
 }
 
@@ -1547,6 +1553,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
+        TExpr::TaskStartI64(_, capture) => any_in(capture, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a)
         | TExpr::SleepMs(a) | TExpr::Barrier(a) | TExpr::TaskAwait(a)
         | TExpr::AwaitYield(a) => any_in(a, f),
@@ -3031,13 +3038,31 @@ impl<'a> FnCx<'a> {
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
-            ExprKind::Task(name) => {
+            ExprKind::Task(name, capture) => {
                 if !self.suspends { return Err(Diagnostic::new(pos, "E_EFFECT", "task requires a suspends fnc")); }
-                let (idx, params, ret) = self.g.sigs.get(&(name.clone(), 0)).ok_or_else(||
-                    Diagnostic::new(pos, "E_TASK", "internal task body not registered"))?;
-                if !params.is_empty() || *ret != Type::Int { return Err(type_err(pos, "task body must return int")); }
-                self.imports.push(Import::TaskStart);
-                TE {e: TExpr::TaskStart(*idx), ty: Type::FutureInt}
+                let arity = usize::from(capture.is_some());
+                let (idx, params, ret) = self.g.sigs.get(&(name.clone(), arity)).ok_or_else(||
+                    Diagnostic::new(pos, "E_TASK", "internal task body not registered"))?.clone();
+                if params.len() != arity || params.iter().any(|t| *t != Type::Int) || ret != Type::Int {
+                    return Err(type_err(pos, "task body must return int and accept at most one int capture"));
+                }
+                if let Some(captured_name) = capture {
+                    // Resolve in the arm's lexical scope, after its ADT tag
+                    // and payload binding checks. Borrowed and heap-backed
+                    // values cannot enter this scalar-copy profile.
+                    let value = self.value(&Expr {
+                        kind: ExprKind::Var(captured_name.clone()), pos
+                    })?;
+                    if value.ty != Type::Int {
+                        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                            "task capture supports only a copied int arm binder; no reference/ADT capture"));
+                    }
+                    self.imports.push(Import::TaskStartI64);
+                    TE {e: TExpr::TaskStartI64(idx, Box::new(value)), ty: Type::FutureInt}
+                } else {
+                    self.imports.push(Import::TaskStart);
+                    TE {e: TExpr::TaskStart(idx), ty: Type::FutureInt}
+                }
             },
             ExprKind::Await(..) => unreachable!("handled by expr"),
             ExprKind::StateRead(field) => {
