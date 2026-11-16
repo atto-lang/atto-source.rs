@@ -108,8 +108,10 @@ try{
   assert.equal(sourceProbe.ok,true,'compiled source guest failed: '+sourceProbe.error);
   assert.deepEqual(sourceProbe.results,
     ['fifo-zero-eof','pending','cancel-error','two-receives','readch-i64-min']);
-  assert.equal(sourceProbe.registered,2);
-  assert.equal(sourceProbe.yields,2);
+  // Two successful values plus the explicit terminal EOF read are
+  // three distinct one-shot registrations/scheduler yields.
+  assert.equal(sourceProbe.registered,3);
+  assert.equal(sourceProbe.yields,3);
   console.log('PASS source-compiled Channel<int> guest: FIFO, Some(0), EOF, pending, cancellation, error, readch and JSPI');
  
   const run=async(src,expected)=>{
