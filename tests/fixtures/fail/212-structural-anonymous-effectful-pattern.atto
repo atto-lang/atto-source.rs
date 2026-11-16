@@ -1,0 +1,13 @@
+// expect-error: E_SYNTAX
+// Pattern literal matching must not run arbitrary source functions.
+define class Pet as
+    pub string foo = "dog";
+end
+pub fnc effectful(): string { return "dog"; }
+pub fnc main(): int {
+    val p = new Pet();
+    match p over
+        on {foo: effectful()} -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
