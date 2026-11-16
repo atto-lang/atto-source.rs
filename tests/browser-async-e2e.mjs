@@ -131,6 +131,22 @@ try{
     'capturing the transformed Future result must await once, not register another read');
   console.log('PASS integration: terminal >> val result captures a real JSPI awaited Future<int>');
 
+  // Exact multiline caret-return terminal capture requested in Atto syntax:
+  // caret returns the checked value bound by >> val; there is no second await.
+  const caretCapture=`fnc transform_result(int v): int { return v + 1; }
+pub suspends fnc main(): int {
+    val pending = task { return 41; };
+
+    ^ pending
+        |> susp |f| -> await f
+        |> transform_result
+        >> val result: int;
+}`;
+  assert.match(await run(caretCapture,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
+    'caret await-transform-capture must suspend exactly once');
+  console.log('PASS integration: exact multiline caret-return pipeline compiles and runs as a guest returning 42');
+
   const captureDirect='pub suspends fnc main(): int { val pending=task { return 42; }; pending |> suspends |p| -> await p >> val answer: int; return answer; }';
   assert.match(await run(captureDirect,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,
