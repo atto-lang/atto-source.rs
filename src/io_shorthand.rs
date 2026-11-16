@@ -434,6 +434,13 @@ pub fn inspect_unary_reads(tokens: &[Token]) -> Result<Vec<UnaryReadCandidate>, 
         let Some(first) = tokens.get(operand) else {
             return Err(syntax(pos, "unary << requires a readable operand"));
         };
+        // Numeric and string literals are *syntactically valid expressions*,
+        // but not Readable capabilities. Let the production AST checker issue
+        // E_TYPE; do not misreport these as incomplete I/O grammar. This
+        // does not admit codegen without capability validation.
+        if matches!(&first.tok, Tok::Int(_) | Tok::Float(_) | Tok::Str(_)) {
+            continue;
+        }
         let (start, end) = if matches!(&first.tok, Tok::LParen) {
             let mut cursor = operand + 1;
             while cursor < tokens.len() &&
