@@ -103,7 +103,7 @@ fn first_callback(t: &[Token], f: &Func) -> R<Option<Template>> {
     Ok(Some(Template { func: f.clone(), callback: callback.clone(), first_arg_end: j + 1 }))
 }
 fn scalar_fnc(t: &[Token], f: &Func) -> bool {
-    if f.routine || f.args_start + 4 >= f.args_end { return false; }
+    if f.routine || f.args_end != f.args_start + 3 { return false; }
     // Only fnc name(int value): int ... is first-class under this profile.
     is(t, f.args_start + 1, "int") &&
     matches!(t.get(f.args_start + 2).map(|x| &x.tok), Some(Tok::Ident(_))) &&
