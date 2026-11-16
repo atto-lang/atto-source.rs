@@ -32,6 +32,12 @@ pub struct TypedActor {
     pub emits: Option<String>,
     pub sends: Option<String>,
     pub implemented_contracts: Vec<String>,
+    /// Exactly one matching inline or attached receive(ActorMail<T>) was
+    /// admitted by the static namespace linker. This is NOT runtime authority.
+    pub inbox_witnessed: bool,
+    /// An emitted-output effect needs a separate checked implementation.
+    /// No target-only token scan can certify an emit effect.
+    pub emits_witnessed: bool,
     /// Concrete syntax definition linked to the forward declaration;
     /// this alone does NOT make the actor spawnable.
     pub has_definition: bool,
@@ -167,6 +173,8 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
             emits: port.emits.clone(),
             sends: port.sends.clone(),
             implemented_contracts: port.implements.clone(),
+            inbox_witnessed: false,
+            emits_witnessed: false,
             has_definition: headers.definitions.iter().any(|a| a.name == port.name),
             defined: false,
         }).collect(),
@@ -284,6 +292,13 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
         module.mailbox_ingresses.push(TypedMailboxIngress {
             actor, payload: payload.to_owned(), pos: header.pos, body_lowered: false,
         });
+    }
+    for (i, actor) in module.actors.iter_mut().enumerate() {
+        actor.inbox_witnessed = module.mailbox_ingresses.iter().any(|m| m.actor == i) ||
+            headers.definitions.iter().any(|d| d.name == actor.name && d.receive.is_some());
+        // Even a syntactically present emit() does not prove its type, effect,
+        // backpressure or ownership semantics. Do not infer a pipe source.
+        actor.emits_witnessed = false;
     }
     Ok(module)
 }
