@@ -62,9 +62,36 @@ fn funcs(t: &[Token]) -> R<BTreeMap<String, Func>> {
         let name = name.clone();
         let args_end = balanced(t, i + 2, Tok::LParen, Tok::RParen)?;
         let mut j = args_end + 1;
-        while j < t.len() && t[j].tok != Tok::LBrace && t[j].tok != Tok::Semi {
+        while j < t.len() && t[j].tok != Tok::LBrace && t[j].tok != Tok::Semi &&
+              !is(t, j, "end") {
             if t[j].tok == Tok::Eof { break; }
             j += 1;
+        }
+        // End-bodied routines are direct-call-only too. Record their own
+        // lexical boundary; never scan into the following function's '{',
+        // which would fabricate recursion from calls inside main().
+        if j < t.len() && is(t, j, "end") {
+            if t[i + 3..args_end].iter().any(|x|
+                matches!(&x.tok, Tok::Ident(n) if n == "Fnc")) {
+                return Err(fail(t[i].pos, "E_UNSUPPORTED",
+                    "end-bodied higher-order callback lowering needs a checked body mode"));
+            }
+            // Nested match/select end-delimiters require a proper statement
+            // grammar, not this intentionally bounded lexical profile.
+            if t[args_end + 1..j].iter().any(|x|
+                matches!(&x.tok, Tok::Ident(n) if n == "match" || n == "select")) {
+                return Err(fail(t[i].pos, "E_UNSUPPORTED",
+                    "end-bodied routine with nested match/select requires an explicit body CFG"));
+            }
+            let f = Func { name: name.clone(), start: i, end: j + 1,
+                args_start: i + 2, args_end, body_start: args_end, body_end: j,
+                routine };
+            if out.insert(name.clone(), f).is_some() {
+                return Err(fail(t[i].pos, "E_DUPLICATE",
+                    format!("duplicate named callable '{name}'")));
+            }
+            i = j + 1;
+            continue;
         }
         if j >= t.len() || t[j].tok != Tok::LBrace {
             i += 1;
