@@ -1448,7 +1448,9 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::FieldGet { .. } | TExpr::GlobalGet(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
-        TExpr::AdtPropagate { .. } => false,
+        TExpr::AdtPropagate { .. } |
+        TExpr::SleepMs(_) | TExpr::Barrier(_) | TExpr::TaskStart(_) |
+        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) => false,
     }
 }
 
