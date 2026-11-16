@@ -66,8 +66,8 @@ fn direct_checker_rejects_nonreadable_operand_and_missing_suspension() {
 }
 
 #[test]
-fn parsed_prefix_read_still_cannot_emerge_as_guest_wasm() {
+fn unbound_prefix_read_cannot_emerge_as_guest_wasm() {
     let src = "pub susp fnc main(): int { val x = << c; return 0; }";
-    let err = atto_compiler::compile(src).expect_err("guest read import is not implemented");
-    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
+    let err = atto_compiler::compile(src).expect_err("unbound source channel must fail before guest emission");
+    assert_eq!(err.code, "E_UNBOUND", "{err}");
 }
