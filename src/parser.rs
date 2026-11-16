@@ -1878,17 +1878,78 @@ impl Parser {
         }
     }
 
-    /// This is a *syntax* contract, not an executable read. The initial nb
-    /// registration cannot park; the explicit await can suspend the caller.
-    /// In the first form Future<T> is a contextual TYPE SLOT, never a runtime
-    /// value manufactured by the parser or an implicit unwrap.
+    /// In contextual I/O syntax, `(await x)?` propagates the error from
+    /// the **resolved** Result, not from a Future. Bare `await x?` is
+    /// intentionally rejected: elsewhere unary await binds to a postfix
+    /// expression, which would incorrectly apply ? to the Future.
+    fn parse_io_checked_await(&mut self, expected: &str) -> R<bool> {
+        let grouped = self.eat(&Tok::LParen);
+        self.expect_word("await")?;
+        let (name, pos) = self.ident("the awaited Future binder")?;
+        if name != expected {
+            return Err(Diagnostic::new(pos, "E_PIPE_BIND",
+                "await must consume the Future bound by this continuation"));
+        }
+        if grouped {
+            self.expect(Tok::RParen, "')' after the awaited Future expression")?;
+            Ok(self.eat(&Tok::Question))
+        } else if self.eat(&Tok::Question) {
+            Err(Diagnostic::new(pos, "E_IO_SYNTAX",
+                "write '(await x)?' to propagate the resolved Result, not 'await x?'"))
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Determine the successful payload of an explicitly propagated Result,
+    /// accounting for nested generics without splitting an inner type's comma.
+    /// The later guest checker must also prove that the enclosing callable
+    /// can propagate the precise E (including IoError).
+    fn io_result_ok_type(&self, value_type: &str, at: Pos) -> R<String> {
+        let body = value_type.strip_prefix("Result<")
+            .and_then(|s| s.strip_suffix('>'))
+            .ok_or_else(|| Diagnostic::new(at, "E_TYPE",
+                "'?' after await requires a Result<T,E> Future payload"))?;
+        let mut depth = 0usize;
+        let mut comma = None;
+        for (i, ch) in body.char_indices() {
+            match ch {
+                '<' => depth += 1,
+                '>' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    if comma.is_some() {
+                        return Err(Diagnostic::new(at, "E_TYPE",
+                            "Result must contain exactly T and E"));
+                    }
+                    comma = Some(i);
+                }
+                _ => {}
+            }
+        }
+        let i = comma.ok_or_else(|| Diagnostic::new(at, "E_TYPE",
+            "Result must contain exactly T and E"))?;
+        let ok = &body[..i];
+        let err = &body[i + 1..];
+        if ok.is_empty() || err.is_empty() || depth != 0 {
+            return Err(Diagnostic::new(at, "E_TYPE",
+                "Result must contain complete success and error types"));
+        }
+        Ok(ok.to_owned())
+    }
+
+    /// Typed read-then-capture continuations are intentionally parser-only:
+    ///   nb stdin >> Future<T> pending |> await pending >> val T outcome;
+    ///   nb stdin >> (val T outcome << |f| -> await f <| Future<T>);
+    ///
+    /// In both cases the leading nb registers the read without parking, and
+    /// the explicit await may suspend the current task. The inner `Future<T>`
+    /// is a *contextual type slot*, never an evaluated constructor or sink.
+    /// A suffix `(await f)?` propagates Result's error without erasing EOF.
     fn parse_nb_await_read_continuation(&mut self) -> R<Stmt> {
         let at = self.pos();
         self.expect_word("nb")?;
-        // The restricted browser parser intentionally rejects stdio.in as
-        // an executable ordinary member expression. Admit this *syntactic*
-        // receiver only here, without bypassing eventual lexical shadowing
-        // or pretending stdin has a guest host adapter.
+        // Stdin is only a syntax-profile receiver for now; no executable
+        // Readable/Future guest ABI is introduced by parsing this path.
         if self.word_at(0) == Some("stdio")
             && *self.peek_at(1) == Tok::Dot
             && self.word_at(2) == Some("in")
@@ -1901,36 +1962,48 @@ impl Parser {
             return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
         }
         self.expect_io_double(Tok::Gt, ">>")?;
-        let (future_inner, bound_inner) = if self.eat(&Tok::LParen) {
+        let (future_inner, resolved_type, propagated) = if self.eat(&Tok::LParen) {
             let bound = self.parse_io_resolved_binder_type()?;
             self.expect_io_double(Tok::Lt, "<<")?;
-            self.expect_word("await")?;
-            let future = self.parse_io_future_slot()?;
-            self.expect(Tok::RParen, "')' after read–await continuation")?;
-            (future, bound)
+            if self.eat_word("await") {
+                // Previously admitted short reverse form; retained while the
+                // explicit reverse-pipe form is added.
+                let future = self.parse_io_future_slot()?;
+                self.expect(Tok::RParen, "')' after read–await continuation")?;
+                (future, bound, false)
+            } else {
+                // No explicit susp marker is required here: the literal
+                // `await` in the inline lambda makes suspension visible,
+                // but a future checker must still enforce enclosing effects.
+                let _explicit_effect = self.eat_word("susp") || self.eat_word("suspends");
+                self.expect(Tok::Pipe, "'|' before reverse lambda parameter")?;
+                let (parameter, _) = self.ident("reverse lambda parameter")?;
+                self.expect(Tok::Pipe, "'|' after reverse lambda parameter")?;
+                self.expect(Tok::Arrow, "'->' in reverse lambda")?;
+                let propagated = self.parse_io_checked_await(&parameter)?;
+                self.expect(Tok::LtPipe, "'<|' applying a typed Future to the reverse lambda")?;
+                let future = self.parse_io_future_slot()?;
+                self.expect(Tok::RParen, "')' after reversed read continuation")?;
+                (future, bound, propagated)
+            }
         } else if self.is_word("Future") {
             let future = self.parse_io_future_slot()?;
             let (pending, _) = self.ident("intermediate Future binder")?;
-            self.expect(Tok::Pipe, "'|' before an awaited read continuation")?;
-            self.expect_word("await")?;
-            let (awaited, awaited_pos) = self.ident("awaited Future binder")?;
-            if awaited != pending {
-                return Err(Diagnostic::new(awaited_pos, "E_PIPE_BIND",
-                    "await must consume the Future bound by this read"));
+            // A contextual `|> await x` refers to the *named* pending Future;
+            // it is not the forbidden anonymous `future |> await` stage.
+            if !(self.eat(&Tok::PipeGt) || self.eat(&Tok::Pipe)) {
+                return Err(Diagnostic::new(self.pos(), "E_IO_SYNTAX",
+                    "expected '|>' or '|' after the named Future binding"));
             }
+            let propagated = self.parse_io_checked_await(&pending)?;
             self.expect_io_double(Tok::Gt, ">>")?;
             let bound = self.parse_io_resolved_binder_type()?;
-            (future, bound)
+            (future, bound, propagated)
         } else if self.is_word("val") || self.is_word("let") || self.is_word("const") {
-            // Directional read-to-future-to-await flow (syntax only):
-            //
-            // nb stdio.in >> val pending: Future<Outcome>
-            //     |> susp |f| -> await f
-            //     >> val resolved: Outcome;
-            //
-            // The first '>>' is an nb read that binds its Future, '|>' is
-            // callable application, and the final '>>' binds the value. This
-            // must not be generalized into assignment or another stream read.
+            // Existing explicit-function continuation:
+            // nb stdin >> val pending: Future<Outcome>
+            //    |> susp |f| -> (await f)?
+            //    >> val resolved: Outcome;
             let typed_future = self.parse_io_resolved_binder_type()?;
             let inner = typed_future.strip_prefix("Future<")
                 .and_then(|s| s.strip_suffix('>'))
@@ -1947,23 +2020,24 @@ impl Parser {
             let (parameter, _) = self.ident("suspending lambda parameter")?;
             self.expect(Tok::Pipe, "'|' after suspending lambda parameter")?;
             self.expect(Tok::Arrow, "'->' in suspending lambda")?;
-            self.expect_word("await")?;
-            let (awaited, awaited_pos) = self.ident("awaited Future parameter")?;
-            if parameter != awaited {
-                return Err(Diagnostic::new(awaited_pos, "E_PIPE_BIND",
-                    "suspending stage must await its own lambda parameter"));
-            }
+            let propagated = self.parse_io_checked_await(&parameter)?;
             self.expect_io_double(Tok::Gt, ">>")?;
-            let resolved = self.parse_io_resolved_binder_type()?;
-            (inner, resolved)
+            let bound = self.parse_io_resolved_binder_type()?;
+            (inner, bound, propagated)
         } else {
             return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
         };
-        // String and string are accepted surface aliases. Do not erase
-        // Result/Option/EOF/error information from future payload types.
-        if Self::canonical_io_type(&future_inner) != Self::canonical_io_type(&bound_inner) {
+
+        // '?' converts Result<T,E> to T (and propagates E), but never unwraps
+        // an inner Option<T>. Without '?', preserve the *whole* Future payload.
+        let outcome = if propagated {
+            self.io_result_ok_type(&future_inner, at)?
+        } else {
+            future_inner
+        };
+        if Self::canonical_io_type(&outcome) != Self::canonical_io_type(&resolved_type) {
             return Err(Diagnostic::new(at, "E_TYPE",
-                "resolved binder must match the entire Future payload type (including Result/Option/EOF/errors)"));
+                "the captured binding must match the complete awaited value; '?' propagates only Result.Err, never Option.None"));
         }
         self.terminator()?;
         Err(unsupported(at, "typed nonblocking read–await continuation guest ABI"))
@@ -3369,6 +3443,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Question => "?",
                 Tok::Pipe => "|",
                 Tok::PipeGt => "|>",
+                Tok::LtPipe => "<|",
                 Tok::Amp => "&",
                 Tok::At => "@",
                 _ => "?",
