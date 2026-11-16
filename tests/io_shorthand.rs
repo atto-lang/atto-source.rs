@@ -94,6 +94,7 @@ fn stdout_shorthand_and_explicit_write_compile_to_same_guest_as_print() {
         val x: int = 42;
         stdio.out << "effectful output";
         writech stdio.out, "!";
+        (stdio.out) << " bracketed ";
         stdio.out << x;
         return 7;
     }"#;
@@ -101,6 +102,7 @@ fn stdout_shorthand_and_explicit_write_compile_to_same_guest_as_print() {
         val x: int = 42;
         stdio.print("effectful output");
         stdio.print("!");
+        stdio.print(" bracketed ");
         stdio.print(x);
         return 7;
     }"#;
