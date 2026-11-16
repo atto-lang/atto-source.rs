@@ -453,3 +453,25 @@ fn deeply_generic_future_annotations_are_not_direction_operators() {
     assert_eq!(parsed[0].mode, Mode::Nonblocking);
     assert_eq!(parsed[0].binder.as_deref(), Some("p"));
 }
+
+#[test]
+fn standalone_future_read_and_contextual_await_pipeline_are_distinct() {
+    use atto_compiler::io_shorthand::Mode;
+    // Future<T> in a normal nb read type annotation must not cause the
+    // scanner to skip the operation. Nested generic closing >> tokens
+    // belong to the type parser, not another read.
+    let standalone = parse(
+        "nb inbox >> val pending: Future<Result<Option<Result<string, IoError>>, Error>>;"
+    );
+    assert_eq!(standalone.len(), 1, "{standalone:?}");
+    assert_eq!(standalone[0].direction, Direction::Read);
+    assert_eq!(standalone[0].mode, Mode::Nonblocking);
+    assert_eq!(standalone[0].binder.as_deref(), Some("pending"));
+
+    // The checked continuation parser owns this complete production, so
+    // the legacy scanner must not emit a second read or reject nested ops.
+    let contextual = parse(
+        "nb inbox >> val pending: Future<int> |> susp |f| -> await f >> val result: int;"
+    );
+    assert!(contextual.is_empty(), "the explicit continuation owns the read: {contextual:?}");
+}
