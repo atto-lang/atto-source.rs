@@ -84,7 +84,8 @@ fn lexical_early_exit_and_committed_rehoming_emit_guest_abandon_import() {
 fn unowned_read_ticket_discard_and_overwrite_fail_closed() {
     let discard = SCOPED.replace("val pending = nb readch channel;", "nb readch channel;");
     let error = compile(&discard).expect_err("bare read must not lose its ticket");
-    assert_eq!(error.code,"E_CHANNEL_OWNERSHIP","{error}");
+    // Bare nb readch is rejected before ownership typing; it cannot leak a ticket.
+    assert_eq!(error.code,"E_UNSUPPORTED","{error}");
     let overwrite = SCOPED.replace("val pending = nb readch channel;",
         "let pending = nb readch channel; pending = nb readch channel;");
     let error = compile(&overwrite).expect_err("overwrite must not lose a pending read");
