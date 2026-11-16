@@ -34,7 +34,14 @@ assert.equal(api.abi_version(),2);
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf8',{fatal:true});
 function compileWasmHost(input, languageVersion = 2) {
   const b = encoder.encode(input);
-  if(b.length > api.input_capacity()) return {ok:false,code:'E_SOURCE_LIMIT'};
+  if(b.length > api.input_capacity()) {
+    // Exercise the real ABI error path (which also clears prior result bytes),
+    // rather than returning a synthetic host-only rejection that leaves stale
+    // successful output visible to consumers.
+    assert.equal(api.compile_versioned(b.length,languageVersion),1);
+    assert.equal(api.result_length(),0,'oversized input retained previous guest output');
+    return {ok:false,code:'E_SOURCE_LIMIT'};
+  }
   new Uint8Array(api.memory.buffer,api.input_ptr(),b.length).set(b);
   assert.equal(typeof api.compile_versioned,'function','versioned Wasm compiler ABI is required');
   const rc=api.compile_versioned(b.length,languageVersion);
