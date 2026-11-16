@@ -2453,6 +2453,12 @@ impl<'a> FnCx<'a> {
                 })
             }
             ExprKind::New(class, args) => self.new_object(class, args, pos)?,
+            ExprKind::PipeEndpoint(_, _, _) => {
+                return Err(Diagnostic::new(
+                    pos, "E_UNSUPPORTED",
+                    "typed channel/stream pipe adapter is parsed, but the owned guest transport and scheduler ABI are not implemented",
+                ));
+            }
             ExprKind::MixedPipeline(stages) => {
                 // A pipe is a typed continuous graph, NEVER a single I/O
                 // operator or a collection of ordinary actor.send() calls.
@@ -2479,6 +2485,24 @@ impl<'a> FnCx<'a> {
                 let mut actor_names = Vec::with_capacity(stages.len());
                 let mut seen_refs = BTreeSet::new();
                 for stage in stages {
+                    // These concrete bounded adapters carry compiler-known
+                    // item types and endpoint direction, but NEVER cause an
+                    // allocation or guest source execution in this subset.
+                    let builtin_port = match stage {
+                        PipeStage::Endpoint(Expr {
+                            kind: ExprKind::PipeEndpoint(kind, item, _capacity), ..
+                        }) => Some((match kind {
+                            PipeEndpointKind::ChannelBounded | PipeEndpointKind::StreamBuffered =>
+                                PipePort { input: Some(*item), output: Some(*item) },
+                            PipeEndpointKind::StreamSink =>
+                                PipePort { input: Some(*item), output: None },
+                        }, match kind {
+                            PipeEndpointKind::ChannelBounded => "Channel<T>.bounded",
+                            PipeEndpointKind::StreamBuffered => "Stream.buffered<T>",
+                            PipeEndpointKind::StreamSink => "Stream.port<T>.sink()",
+                        })),
+                        _ => None,
+                    };
                     // Only *typed ActorRef* values prove actor port roles.
                     // Other values remain unavailable in the current browser
                     // subset; do not infer an endpoint from the name alone.
@@ -2529,6 +2553,9 @@ impl<'a> FnCx<'a> {
                             output: actor.declared_emits,
                         }));
                         actor_names.push(actor.name.as_str());
+                    } else if let Some((port, label)) = builtin_port {
+                        contracts.push(StageContract::Known(port));
+                        actor_names.push(label);
                     } else {
                         contracts.push(StageContract::Deferred);
                         actor_names.push("unresolved endpoint");
@@ -2541,11 +2568,19 @@ impl<'a> FnCx<'a> {
                     match problem {
                         PipeContractError::MissingSink { stage } => type_err(
                             pos,
-                            format!("actor '{}' needs an explicit receives T pipe-input declaration", actor_names[stage]),
+                            if actor_names[stage].contains('<') {
+                                format!("pipe stage '{}' does not provide PipeSink<T>", actor_names[stage])
+                            } else {
+                                format!("actor '{}' needs an explicit receives T pipe-input declaration", actor_names[stage])
+                            },
                         ),
                         PipeContractError::MissingSource { stage } => type_err(
                             pos,
-                            format!("actor '{}' needs an explicit emits T pipe-output declaration", actor_names[stage]),
+                            if actor_names[stage].contains('<') {
+                                format!("pipe stage '{}' does not provide PipeSource<T>", actor_names[stage])
+                            } else {
+                                format!("actor '{}' needs an explicit emits T pipe-output declaration", actor_names[stage])
+                            },
                         ),
                         PipeContractError::TypeMismatch { from, to, emitted, received } => type_err(
                             pos,
