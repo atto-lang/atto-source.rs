@@ -13,6 +13,7 @@ const files=new Map([
   ['/channel-host-probe.mjs',[new URL('./browser-async/channel-host-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/channel-int-v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/channel-guest-abi-probe.mjs',[new URL('./browser-async/channel-guest-abi-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/channel-source-guest-probe.mjs',[new URL('./browser-async/channel-source-guest-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_guest_v1.mjs',[new URL('../runtime/browser/channel_int_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
@@ -94,6 +95,16 @@ try{
   assert.deepEqual(abiProbe,{ok:true,importExecuted:true,some:41,eof:true,
     replay:'AlreadyConsumed',released:true});
   console.log('PASS channel ABI: genuine Wasm import and tagged Future outcome in Chromium Worker (NOT AttoLang guest lowering)');
+  const sourceProbe=await evaluate("new Promise((resolve,reject)=>{"+
+    "const w=new Worker('/channel-source-guest-probe.mjs',{type:'module'});"+
+    "const t=setTimeout(()=>{w.terminate();reject(Error('source channel guest timeout'))},10000);"+
+    "w.onmessage=e=>{clearTimeout(t);w.terminate();resolve(e.data)};"+
+    "w.onerror=e=>{clearTimeout(t);w.terminate();reject(Error('source channel guest worker error'))};"+
+    "w.postMessage({});})");
+  assert.deepEqual(sourceProbe,{ok:true,sourceCompiled:true,pendingSome:41,
+    eof:true,invalidHandle:'Err',zeroSome:true,cooperativeYields:3});
+  console.log('PASS source compiler: real JSPI Channel<int> guest read Some/EOF/Err/zero in Worker');
+
 
 
   const run=async(src,expected)=>{
