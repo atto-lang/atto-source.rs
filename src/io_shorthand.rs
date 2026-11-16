@@ -400,13 +400,13 @@ pub fn inspect_unary_reads(tokens: &[Token]) -> Result<Vec<UnaryReadCandidate>, 
         let Some(first) = tokens.get(operand) else {
             return Err(syntax(pos, "unary << requires a readable operand"));
         };
-        let (start, end) = if matches!(first.tok, Tok::LParen) {
+        let (start, end) = if matches!(&first.tok, Tok::LParen) {
             let mut cursor = operand + 1;
             while cursor < tokens.len() &&
-                !matches!(tokens[cursor].tok, Tok::RParen | Tok::Semi | Tok::Eof) {
+                !matches!(&tokens[cursor].tok, Tok::RParen | Tok::Semi | Tok::Eof) {
                 cursor += 1;
             }
-            if cursor >= tokens.len() || !matches!(tokens[cursor].tok, Tok::RParen) {
+            if cursor >= tokens.len() || !matches!(&tokens[cursor].tok, Tok::RParen) {
                 return Err(syntax(pos, "unary << requires a complete parenthesized readable operand"));
             }
             (operand + 1, cursor)
@@ -417,7 +417,7 @@ pub fn inspect_unary_reads(tokens: &[Token]) -> Result<Vec<UnaryReadCandidate>, 
             }
             cursor += 1;
             while cursor + 1 < tokens.len() &&
-                matches!(tokens[cursor].tok, Tok::Dot) &&
+                matches!(&tokens[cursor].tok, Tok::Dot) &&
                 tokens.get(cursor + 1).and_then(word).is_some() {
                 cursor += 2;
             }
@@ -432,7 +432,7 @@ pub fn inspect_unary_reads(tokens: &[Token]) -> Result<Vec<UnaryReadCandidate>, 
             tokens[j].tok, Tok::Semi | Tok::LBrace | Tok::RBrace
         )).map(|j| j + 1).unwrap_or(0);
         if tokens.get(stmt_start).and_then(word) == Some("const") &&
-            tokens[stmt_start..i].iter().any(|t| matches!(t.tok, Tok::Assign)) {
+            tokens[stmt_start..i].iter().any(|t| matches!(&t.tok, Tok::Assign)) {
             return Err(Diagnostic::new(pos, "E_CONST_EFFECT",
                 "runtime channel reads cannot initialize const; use val or let"));
         }
