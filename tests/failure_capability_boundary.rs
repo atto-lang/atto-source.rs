@@ -38,13 +38,10 @@ fn unimplemented_raise_panic_and_effect_clauses_never_emit_a_guest() {
         assert_eq!(err.code, "E_UNSUPPORTED", "{action}: {err}");
     }
     for clause in ["throws(Error)", "raises(Error)", "panics(Error)"] {
-        let source = format!(
-            "fnc fail(): int {clause} {{ return 1; }}\npub fnc main(): int {{ return fail(); }}"
+        let text = format!(
+            "fnc no_failure(): int {clause} {{ return 1; }}\npub fnc main(): int {{ return no_failure(); }}"
         );
-        let err = compile(&source).expect_err(clause);
-        assert!(
-            matches!(err.code, "E_SYNTAX" | "E_UNSUPPORTED" | "E_SEMICOLON"),
-            "{clause}: {err}"
-        );
+        let wasm = compile(&text).expect("bounded signature with no failure must compile");
+        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0", "{clause}");
     }
 }
