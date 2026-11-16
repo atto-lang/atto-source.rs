@@ -220,7 +220,9 @@ pub fn checked_aosoa_field_span(
     field_width: usize,
     backing_byte_len: usize,
 ) -> Result<std::ops::Range<usize>, RefError> {
+    // Canonical data-layout-abi-v1 permits tile widths 1..=1024.
     if lanes == 0
+        || lanes > 1024
         || !lanes.is_power_of_two()
         || block_stride == 0
         || field_element_stride == 0
