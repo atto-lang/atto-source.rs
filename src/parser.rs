@@ -96,6 +96,7 @@ const RESERVED: &[&str] = &[
     "untrusted",
     "spawn",
     "pipe",
+    "rpipe",
     "receives",
     "emits",
     "stop",
@@ -1771,22 +1772,29 @@ impl Parser {
         }
         self.height -= links;
 
-        // `pipe` is continuous endpoint composition, never one read/write.
-        // Retain legacy `|` only for explicit actor-to-actor chains.
-        // Parser records unresolved endpoint expressions; semantic admission
-        // fails closed until a typed PipeSource/PipeSink guest ABI exists.
+        // `pipe` always wires left->right, `rpipe` always right->left.
+        // Preserve source-order stages in the reversed AST so future
+        // constructor effects are evaluated in lexical order. The checker
+        // validates edges in *dataflow* order and still fails closed without
+        // the owned transport/scheduler ABI.
         let first_is_actor = matches!(&c.kind, ExprKind::Spawn(_));
-        if self.is_word("pipe") || (first_is_actor && *self.peek() == Tok::Pipe) {
+        let reversed = self.is_word("rpipe");
+        if self.is_word("pipe") || reversed
+            || (first_is_actor && *self.peek() == Tok::Pipe) {
             let first_pos = c.pos;
             let first = match &c.kind {
                 ExprKind::Spawn(actor) => PipeStage::Actor(actor.clone()),
                 ExprKind::Var(_) | ExprKind::Call(_, _) | ExprKind::Member(_, _)
-                | ExprKind::MethodCall(_, _, _) | ExprKind::PipeEndpoint(_, _, _) => PipeStage::Endpoint(c.clone()),
-                _ => return Err(Diagnostic::new(first_pos, "E_TYPE", "pipe source must be an actor, generator, channel or readable stream")),
+                | ExprKind::MethodCall(_, _, _) | ExprKind::PipeEndpoint(_, _, _)
+                | ExprKind::PipeCapture(_, _, _, _) => PipeStage::Endpoint(c.clone()),
+                _ => return Err(Diagnostic::new(first_pos, "E_TYPE",
+                    "pipeline stage must be an actor, generator, channel, readable stream or bounded Stream<T> capture")),
             };
             let mut stages = vec![first];
             let mut all_actors = first_is_actor;
-            while self.is_word("pipe") || (all_actors && *self.peek() == Tok::Pipe) {
+            while (reversed && self.is_word("rpipe"))
+                || (!reversed && self.is_word("pipe"))
+                || (!reversed && all_actors && *self.peek() == Tok::Pipe) {
                 let operator = self.pos();
                 let legacy_actor_bar = *self.peek() == Tok::Pipe;
                 self.advance();
@@ -1795,25 +1803,26 @@ impl Parser {
                     ExprKind::Spawn(actor) => PipeStage::Actor(actor.clone()),
                     ExprKind::Var(_) | ExprKind::Call(_, _) | ExprKind::Member(_, _)
                     | ExprKind::MethodCall(_, _, _) | ExprKind::PipeEndpoint(_, _, _)
-                        if !legacy_actor_bar => {
+                    | ExprKind::PipeCapture(_, _, _, _) if !legacy_actor_bar => {
                         all_actors = false;
                         PipeStage::Endpoint(stage.clone())
                     }
-                    _ => return Err(Diagnostic::new(
-                        operator,
-                        "E_TYPE",
-                        "pipe destination must be an actor or typed endpoint; '|' is actor-to-actor only",
-                    )),
+                    _ => return Err(Diagnostic::new(operator, "E_TYPE",
+                        "pipe stage must be an actor or typed endpoint; '|' is actor-to-actor only")),
                 };
                 if stages.len() >= 16 {
-                    return Err(Diagnostic::new(
-                        operator, "E_SOURCE_LIMIT",
-                        "pipeline exceeds the browser tenant's 16-stage budget",
-                    ));
+                    return Err(Diagnostic::new(operator, "E_SOURCE_LIMIT",
+                        "pipeline exceeds the browser tenant's 16-stage budget"));
                 }
                 stages.push(next);
             }
-            let kind = if all_actors {
+            if self.is_word(if reversed { "pipe" } else { "rpipe" }) {
+                return Err(Diagnostic::new(self.pos(), "E_PIPE_DIRECTION",
+                    "mixing 'pipe' and 'rpipe' requires an explicit separate graph"));
+            }
+            let kind = if reversed {
+                ExprKind::DirectedPipeline(stages, PipeDirection::RightToLeft)
+            } else if all_actors {
                 ExprKind::ActorPipeline(stages.into_iter().map(|s| match s {
                     PipeStage::Actor(name) => name,
                     PipeStage::Endpoint(_) => unreachable!("all_actors"),
@@ -2163,6 +2172,44 @@ impl Parser {
         Ok(item)
     }
 
+    /// Parse only the explicit parenthesized stream capture stage. The
+    /// Stream<T> type is not a general browser-guest allocation type yet.
+    /// This syntax must ultimately appear as the terminal sink of one
+    /// checked pipe/rpipe graph; standalone use fails closed in the checker.
+    fn parse_inline_pipe_stream_capture(&mut self) -> R<ExprKind> {
+        let at = self.pos();
+        self.expect(Tok::LParen, "'(' before a stream capture")?;
+        let mutable = if self.eat_word("let") { true }
+            else if self.eat_word("val") { false }
+            else if self.eat_word("const") {
+                return Err(Diagnostic::new(at, "E_CONST_EFFECT",
+                    "a runtime Stream<T> capture cannot initialize const"));
+            } else {
+                return Err(Diagnostic::new(at, "E_PIPE_CONTRACT",
+                    "inline stream capture requires let or val"));
+            };
+        let (name, _) = self.ident("an inline Stream<T> capture name")?;
+        self.expect(Tok::Colon, "':' before the captured Stream<T> type")?;
+        self.expect_word("Stream")?;
+        let declared = self.parse_pipe_item_type()?;
+        self.expect(Tok::Assign, "'=' before Stream.buffered<T>(capacity)")?;
+        self.expect_word("Stream")?;
+        self.expect(Tok::Dot, "'.buffered' in the stream capture")?;
+        let (constructor, _) = self.ident("the Stream.buffered constructor")?;
+        if constructor != "buffered" {
+            return Err(Diagnostic::new(at, "E_PIPE_CONTRACT",
+                "inline capture requires Stream.buffered<T>(capacity)"));
+        }
+        let constructed = self.parse_pipe_item_type()?;
+        if declared != constructed {
+            return Err(Diagnostic::new(at, "E_TYPE",
+                "inline captured Stream<T> type must equal Stream.buffered<T> item type"));
+        }
+        let capacity = self.parse_pipe_capacity()?;
+        self.expect(Tok::RParen, "')' after the stream capture")?;
+        Ok(ExprKind::PipeCapture(name, declared, capacity, mutable))
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -2180,13 +2227,19 @@ impl Parser {
                 ExprKind::Float(bits)
             }
             Tok::LParen => {
-                self.advance();
-                let inner = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
-                if *self.peek() == Tok::Comma {
-                    return Err(unsupported(self.pos(), "tuples"));
+                // In a continuous graph, this is a *declaration* of one
+                // bounded port, not an expression that writes all values.
+                if matches!(self.word_at(1), Some("val" | "let" | "const")) {
+                    self.parse_inline_pipe_stream_capture()?
+                } else {
+                    self.advance();
+                    let inner = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
+                    if *self.peek() == Tok::Comma {
+                        return Err(unsupported(self.pos(), "tuples"));
+                    }
+                    self.expect(Tok::RParen, "')'")?;
+                    return Ok(Expr { kind: inner.kind, pos });
                 }
-                self.expect(Tok::RParen, "')'")?;
-                return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
                 "true" => {
