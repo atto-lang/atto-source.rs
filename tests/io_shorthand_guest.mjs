@@ -39,6 +39,7 @@ try {
     '  val x: int = 42;',
     '  stdio.out << "effectful output";',
     '  writech stdio.out, "!";',
+    '  (stdio.out) << " bracketed ";',
     '  stdio.out << x;',
     '  return 7;',
     '}'
@@ -48,6 +49,7 @@ try {
     '  val x: int = 42;',
     '  stdio.print("effectful output");',
     '  stdio.print("!");',
+    '  stdio.print(" bracketed ");',
     '  stdio.print(x);',
     '  return 7;',
     '}'
@@ -57,7 +59,7 @@ try {
   assert.equal(a.status, 0, a.diagnostic);
   assert.equal(b.status, 0, b.diagnostic);
   assert.deepEqual(a.wasm, b.wasm, 'same typed Wasm for shorthand and explicit operations');
-  assert.equal(runGuest(a.wasm), 'effectful output!42');
+  assert.equal(runGuest(a.wasm), 'effectful output! bracketed 42');
   console.log('PASS compiled Atto output shorthand / explicit I/O Wasm guest');
 
   for (const [label, src, expected] of [
