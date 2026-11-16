@@ -8,6 +8,7 @@
 //
 // usage: node tests/conformance.mjs [compiler.wasm]
 import assert from 'node:assert/strict';
+import { auditPlaygroundPreviews } from './playground-preview-audit.mjs';
 import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -276,6 +277,10 @@ for (const f of await fixtures('pass')) {
         // spelling from the oreslang-source.llvm v1 design contracts; tracked
         // so this fixture is revisited when the Java parser admits it
         assert.ok(j.rejected, 'Java now accepts this LLVM-design spelling: update the fixture claim');
+      } else if (claim === 'rejects') {
+        // A passing Rust/Wasm guest must not be reported as Java parity
+        // while the Java compiler still rejects this newer Atto construct.
+        assert.ok(j.rejected, 'Java now accepts this Rust/Wasm-positive fixture: update its parity claim');
       } else {
         assert.ok(!j.rejected, `Java reference rejected it: ${j.stdout}`);
         if (j.race && header(f.source, 'stdout-order')[0] === 'unordered') {
@@ -562,6 +567,18 @@ console.log('COMPILED_WASM_GUEST_TRACE actor_instances=' + tracedActorInstances 
   ' admitted_and_settled=' + tracedActorMessages +
   ' backend=browser-wasm guest=EXECUTED scheduling=serial-host-only');
 console.log(digests.length ? `artifact digests:\n${digests.join('\n')}` : '');
+// Exact current site preview corpus. Rejections never count as executing a
+// feature; the report explicitly separates admitted, unsupported and guests.
+try {
+  const previewAudit = await auditPlaygroundPreviews({
+    compile, runGuest, nativeBytes: attoc ? nativeBytes : null
+  });
+  console.log('PLAYGROUND_PREVIEW_AUDIT ' + JSON.stringify(previewAudit));
+  passed++;
+} catch (error) {
+  failures.push('playground-preview-corpus: ' + error.message);
+}
+
 console.log(`conformance: ${passed} passed, ${failures.length} failed` +
   (java ? `, ${javaChecked} Java-differential` : ', Java differential skipped (set ATTO_JAVA)') +
   (attoc ? `, ${nativeChecked} native-vs-wasm` : ', native parity skipped (set ATTOC)'));
