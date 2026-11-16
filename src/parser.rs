@@ -2631,6 +2631,31 @@ impl Parser {
         Ok(args)
     }
 
+    /// Narrow JSPI preview adapter: duration literals lower to rounded-up
+    /// millisecond host timers ONLY at a sleep call. They are not generic ints.
+    fn parse_sleep_args(&mut self) -> R<Vec<Expr>> {
+        self.expect(Tok::LParen, "'('")?;
+        let pos = self.pos();
+        let nanos = match self.peek().clone() {
+            Tok::Duration(nanos) => nanos,
+            _ => return Err(Diagnostic::new(pos, "E_DURATION_TYPE",
+                "sleep expects one typed duration literal (for example 100ms) in the JSPI preview")),
+        };
+        self.advance();
+        if *self.peek() == Tok::Comma {
+            return Err(Diagnostic::new(self.pos(), "E_ARITY", "sleep expects exactly one duration"));
+        }
+        self.expect(Tok::RParen, "')' after sleep duration")?;
+        let millis = nanos / 1_000_000 + u64::from(nanos % 1_000_000 != 0);
+        // The browser worker's current bounded sleep_ms host import supports
+        // 0..=1000ms; an out-of-range argument must fail before Wasm emission.
+        if millis > 1_000 {
+            return Err(Diagnostic::new(pos, "E_TIMER_RANGE",
+                "JSPI preview sleep supports at most 1000ms; portable timers are not yet available"));
+        }
+        Ok(vec![Expr { kind: ExprKind::Int(Some(millis)), pos }])
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
         let mut chain = 0u32;
         let r = self.parse_postfix_chain(&mut chain);
@@ -2670,7 +2695,14 @@ impl Parser {
                         ExprKind::Var(n) => n.clone(),
                         _ => return Err(unsupported(self.pos(), "calling a computed value")),
                     };
-                    let args = self.parse_args()?;
+                    let args = if name == "sleep" {
+                        self.parse_sleep_args()?
+                    } else if name == "sleep_blocking" {
+                        return Err(Diagnostic::new(pos, "E_BLOCKING_CONTEXT",
+                            "sleep_blocking requires a parkable native fiber; browser JSPI cannot provide synchronous sleep"));
+                    } else {
+                        self.parse_args()?
+                    };
                     e = Expr {
                         kind: ExprKind::Call(name, args),
                         pos,
@@ -2697,6 +2729,18 @@ impl Parser {
                                 continue;
                             }
                         }
+                    }
+                    // Experimental std.time.sleep alias is a narrow compiler-owned
+                    // spelling, not general std module resolution.
+                    if matches!(&e.kind, ExprKind::Var(b) if b == "std")
+                        && self.word_at(1) == Some("time")
+                        && *self.peek_at(2) == Tok::Dot
+                        && matches!(self.word_at(3), Some("sleep" | "sleep_blocking")) {
+                        let name = self.word_at(3).unwrap().to_owned();
+                        for _ in 0..4 { self.advance(); }
+                        if *self.peek() != Tok::LParen { return Err(self.expected("'('")); }
+                        e = Expr { kind: ExprKind::Var(name), pos };
+                        continue;
                     }
                     // Restrict the async runtime namespace to known, typed calls.
                     if matches!(&e.kind, ExprKind::Var(b) if b == "rt") {
@@ -2899,6 +2943,8 @@ impl Parser {
                 self.advance();
                 ExprKind::Int(v)
             }
+            Tok::Duration(_) => return Err(Diagnostic::new(pos, "E_DURATION_TYPE",
+                "duration literals currently require a sleep(...) argument; generic Duration values are not yet lowered")),
             Tok::Str(s) => {
                 self.advance();
                 ExprKind::Str(s)
@@ -3039,6 +3085,7 @@ fn describe(t: &Tok) -> String {
     match t {
         Tok::Ident(s) => format!("'{s}'"),
         Tok::Int(_) => "an integer".into(),
+        Tok::Duration(_) => "a duration".into(),
         Tok::Str(_) => "a string".into(),
         Tok::Eof => "end of input".into(),
         other => {
