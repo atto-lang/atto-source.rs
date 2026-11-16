@@ -118,3 +118,40 @@ fn prefix_and_declaration_first_variants_do_not_emit_guest_read_wasm() {
         assert_eq!(error.code, "E_UNSUPPORTED", "{body}: {error}");
     }
 }
+
+#[test]
+fn direct_reads_require_an_explicit_suspending_callable() {
+    for body in [
+        "val a = << c; return 0;",
+        "let total = 0; total += (<< c); return total;",
+        "val a = trap << c; return 0;",
+        "if true { val a = << c; } return 0;",
+    ] {
+        let source = format!("pub fnc main(): int using io {{ {body} }}");
+        let err = compile(&source).expect_err("direct read must not silently make fnc suspending");
+        assert_eq!(err.code, "E_SUSPENDS_REQUIRED", "{body}: {err}");
+    }
+    // A suspend effect import without an explicit suspending signature
+    // must not silently turn the enclosing fnc into a coroutine.
+    let err = compile("pub fnc main(): int using io, suspend { val a = << c; return 0; }")
+        .expect_err("missing suspends modifier");
+    assert_eq!(err.code, "E_SUSPENDS_REQUIRED");
+}
+
+#[test]
+fn susp_and_suspends_keep_the_guest_read_abi_gate_in_place() {
+    for modifier in ["susp", "suspends"] {
+        let source = format!(
+            "pub {modifier} fnc main(): int using io, suspend {{ val a = << c; return 0; }}"
+        );
+        let err = compile(&source).expect_err("guest read ABI still pending");
+        assert_eq!(err.code, "E_UNSUPPORTED", "{source}: {err}");
+    }
+}
+
+#[test]
+fn nested_non_suspending_lambda_does_not_inherit_outer_suspension() {
+    let source = "pub susp fnc main(): int using io, suspend { val cb = || -> { val a = << c; }; return 0; }";
+    let err = compile(source).expect_err("direct receive in plain lambda must fail");
+    assert_eq!(err.code, "E_SUSPENDS_REQUIRED", "{err}");
+}
