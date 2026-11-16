@@ -20,6 +20,11 @@ strip = true
 name = "attoc"
 path = "src/bin/attoc.rs"
 
+[features]
+# Never pull the native host AOT packager into a wasm32 browser build.
+native-aot = []
+
 [[bin]]
 name = "attoaot"
 path = "src/bin/attoaot.rs"
+required-features = ["native-aot"]
