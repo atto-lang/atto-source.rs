@@ -1918,6 +1918,148 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    /// Executable, bounded v1 structural *value* matching for statically
+    /// known ordinary classes. Every requested public field is checked, and
+    /// the optional presence bit is distinct from the value wildcard.
+    ///
+    /// No dynamic reflection, actor-state access or implicit class copying.
+    /// A match binder is a scoped, read-only loan of the original subject.
+    #[inline(never)]
+    fn match_class_fields(&mut self, subj: TE, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
+        use crate::structural_syntax::ScalarPattern;
+        let Type::Class(class_id) = subj.ty else { unreachable!("class match expects class") };
+        let sty = subj.ty;
+        if self.g.classes[class_id as usize].state_container {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "structural matching cannot inspect a protected actor-state container"));
+        }
+        let original_owner = match &subj.e {
+            TExpr::Local(slot) => Some(*slot),
+            _ => None,
+        };
+        // Do not consume or duplicate ownership: the original expression is
+        // evaluated once into a local pointer and only borrowed by match arms.
+        let tmp = self.temp(sty, pos)?;
+        let get = || TE { e: TExpr::Local(tmp), ty: sty };
+        let truth = |v: bool| TE { e: TExpr::Bool(v), ty: Type::Bool };
+        let mut covered = false;
+        let mut after: BTreeSet<u32> = BTreeSet::new();
+        let mut out = Vec::new();
+        for (i, arm) in arms.iter().enumerate() {
+            if covered {
+                return Err(Diagnostic::new(arm.pos, "E_MATCH",
+                    format!("unreachable match arm {} after catch-all", i + 1)));
+            }
+            let (test, bind, catch_all) = match &arm.pattern {
+                Pattern::Wild => (truth(true), None, true),
+                Pattern::Bind(n) => (truth(true), Some(n.as_str()), true),
+                Pattern::StructuralFields { fields, bind } => {
+                    let mut test = truth(true);
+                    for field in fields {
+                        let class = &self.g.classes[class_id as usize];
+                        let found = class.fields.iter().find(|f| f.name == field.name);
+                        let Some(info) = found else {
+                            // With fixed class layouts presence is known at
+                            // compile time. Absent optional fields pass;
+                            // absent required fields make this arm false.
+                            if !field.optional {
+                                test = truth(false);
+                            }
+                            continue;
+                        };
+                        if !info.public && self.inside_class() != Some(class_id) {
+                            return Err(Diagnostic::new(arm.pos, "E_PRIVATE",
+                                format!("structural patterns cannot inspect private field '{}.{}'",
+                                    class.name, field.name)));
+                        }
+                        if info.mode == FieldMode::ActorState {
+                            return Err(Diagnostic::new(arm.pos, "E_STATE_BORROW",
+                                "structural patterns cannot inspect sealed actor-state fields"));
+                        }
+                        // A wildcard checks existence only; no field read,
+                        // getter, or object handle materialization occurs.
+                        let lit = match &field.value {
+                            ScalarPattern::Any => continue,
+                            ScalarPattern::Int(v) if info.ty == Type::Int => TE {
+                                e: TExpr::I64(*v), ty: Type::Int,
+                            },
+                            ScalarPattern::Bool(v) if info.ty == Type::Bool => TE {
+                                e: TExpr::Bool(*v), ty: Type::Bool,
+                            },
+                            ScalarPattern::Str(_) => return Err(Diagnostic::new(arm.pos,
+                                "E_UNSUPPORTED_TYPE",
+                                "structural string value matching needs verified string equality lowering")),
+                            _ => return Err(type_err(arm.pos,
+                                format!("structural field '{}' has type {} incompatible with its value pattern",
+                                    field.name, self.tn(info.ty)))),
+                        };
+                        let read = TE {
+                            e: TExpr::FieldGet { obj: Box::new(get()), offset: info.slot },
+                            ty: info.ty,
+                        };
+                        let eq = TE {
+                            e: TExpr::Bin(BinOp::Eq, Box::new(read), Box::new(lit)),
+                            ty: Type::Bool,
+                        };
+                        test = TE {
+                            e: TExpr::Bin(BinOp::And, Box::new(test), Box::new(eq)),
+                            ty: Type::Bool,
+                        };
+                    }
+                    (test, bind.as_deref(), false)
+                },
+                _ => return Err(type_err(arm.pos,
+                    "a class match accepts structural field-value patterns or a catch-all")),
+            };
+            self.scopes.push(Vec::new());
+            let result = (|| -> R<(TE, Vec<TStmt>)> {
+                let mut body = Vec::new();
+                if let Some(n) = bind {
+                    let slot = self.declare(n, sty, false, arm.pos)?;
+                    self.loans.insert(slot, ScopedLoan {
+                        owner: original_owner.unwrap_or(tmp),
+                        mutable: false,
+                    });
+                    body.push(TStmt::Set(slot, get()));
+                }
+                let guard = match &arm.guard {
+                    Some(g) => Some(self.cond(g, "match guard")?),
+                    None => None,
+                };
+                let at_arm = self.moved.clone();
+                body.extend(self.stmts(&arm.body)?);
+                if !returns(&body) {
+                    after.extend(self.moved.iter().copied());
+                }
+                self.moved = at_arm;
+                let cond = match guard {
+                    None => test,
+                    Some(guard) => TE {
+                        e: TExpr::Ternary(Box::new(test), Box::new(guard),
+                            Box::new(truth(false))),
+                        ty: Type::Bool,
+                    },
+                };
+                Ok((cond, body))
+            })();
+            self.pop_scope();
+            let (cond, body) = result?;
+            if catch_all && arm.guard.is_none() {
+                covered = true;
+            }
+            out.push((cond, body));
+        }
+        if !covered {
+            return Err(Diagnostic::new(pos, "E_MATCH",
+                "structural class matches require an unguarded 'on _' catch-all"));
+        }
+        self.moved = after;
+        Ok(TStmt::Block(vec![
+            TStmt::Set(tmp, subj),
+            TStmt::If(out, Some(vec![TStmt::Unreachable])),
+        ]))
+    }
+
     /// `match`: the subject is evaluated once into a temp; arms are tried in
     /// source order; a guard runs only after its pattern matched. The checker
     /// rejects unreachable arms and requires exhaustiveness (Java reference:
@@ -1925,6 +2067,9 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
+        if matches!(sty, Type::Class(_)) {
+            return self.match_class_fields(subj, arms, pos);
+        }
         if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
             return self.match_adt(subj, arms, pos);
         }
@@ -1960,6 +2105,8 @@ impl<'a> FnCx<'a> {
             // (pattern test, literal key for reachability, binding name)
             let (test, key, bind): (Option<TE>, Option<i64>, Option<&str>) = match &arm.pattern {
                 Pattern::Wild => (None, None, None),
+                Pattern::StructuralFields { .. } => return Err(type_err(arm.pos,
+                    "structural value-field patterns require a statically known class subject")),
                 Pattern::Bind(n) => (None, None, Some(n.as_str())),
                 Pattern::Int(v) => {
                     if sty != Type::Int {
