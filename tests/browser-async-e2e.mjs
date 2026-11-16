@@ -127,6 +127,16 @@ try{
   const conflictingCase='pub suspends fnc main(): int { return switch<int> 1 over case 1 : bool -> true, default : int -> 0, end; }';
   assert.match(await run(conflictingCase,'E_TYPE'),/E_TYPE/);
   console.log('PASS integration: typed switch case mismatch fails closed without a guest');
+
+  // ADT case binder is visible to the selected arm but NOT automatically
+  // captured by a spawned task: that requires task-owned frames.
+  const adtCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return 42; }, end; }';
+  assert.match(await run(adtCase,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'ADT selected case awaits exactly once');
+  const captureCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(captureCase,'E_UNBOUND'),/E_UNBOUND/);
+  console.log('PASS integration: ADT case selection executes once; task payload captures fail closed');
+
   const combined='pub suspends fnc main(): int { val a=task { return 42; }; stdio.out << "direct"; return await a; }';
   assert.match(await run(combined,'main() -> 42'),/^directmain\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'combined stdout/Future guest must yield exactly once');
