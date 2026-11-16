@@ -611,6 +611,13 @@ pub fn resolve_receiver_header<'a>(
         return Err(Diagnostic::new(pos, "E_UNBOUND",
             format!("unknown actor receiver type '{actor}'")));
     }
+    // A private mailbox entrypoint is a runtime ingress, not a callable
+    // receiver-targeted method. Never resolve it through self.receive(...) or
+    // normal namespace method lookup, even from within the actor itself.
+    if symbols.actors.iter().any(|a| a == actor) && name == "receive" {
+        return Err(Diagnostic::new(pos, "E_ISOLATION",
+            "actor receive(ActorMail<T>) is sealed runtime ingress, not a callable mtd"));
+    }
     let Some(method) = symbols.receivers.iter().find(|m|
         m.owner == actor && m.name == name && m.arity == arity) else {
         return Err(Diagnostic::new(pos, "E_UNBOUND",
