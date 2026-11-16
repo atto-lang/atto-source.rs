@@ -1,0 +1,8 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Point as pub int x=0; end
+pub fnc read(~Point p): int { return p; }
+pub fnc main(): int {
+    val a = new Point();
+    return read(a);
+}
