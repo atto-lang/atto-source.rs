@@ -20,7 +20,7 @@ claim. In particular, `[::-1]` remains `E_UNSUPPORTED`, not an incorrect
 contiguous view.
 
 `tests/array_index_slice.rs` provides native compilation and negative
-diagnostic checks; `tests/fixtures/pass/293..300`, panic `40..44`, and
+diagnostic checks; `tests/fixtures/pass/293..302`, panic `40..46`, and
 fail `310..316` are intended for the existing real compiler Wasm / guest
 execution harness. Merely adding these files does not prove they passed.
 The separate main-derived syntax PR #174 must be reconciled semantically
