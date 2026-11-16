@@ -10,7 +10,7 @@ import {join, resolve} from 'node:path';
 
 const path = new URL('./contracts/caret-return-sequences-v1.json', import.meta.url);
 const bytes = await readFile(path);
-const sha = createHash('sha1').update('blob ' + bytes.length + '\\0').update(bytes).digest('hex');
+const sha = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
 assert.equal(sha, 'a60128931556c770c00f232cc6cc861518fe82bc',
   'Spec snapshot changed without updating upstream Git-blob receipt');
 const contract = JSON.parse(bytes.toString('utf8'));
@@ -78,7 +78,7 @@ try{
     const row={
       id:c.id,phase:c.phase,expect:c.expect,expectedReturn:c.expectedReturn,
       expectedDiagnosticCategory:c.diagnostic,sourceBlobSha:createHash('sha1')
-        .update('blob '+Buffer.byteLength(c.source)+'\\0').update(c.source).digest('hex'),
+        .update('blob '+Buffer.byteLength(c.source)+'\0').update(c.source).digest('hex'),
       nativeExit:native.status,wasmHostOk:wasmHost.ok,wasmHostCode:wasmHost.code,
       nativeDiagnostic:(native.stderr||'').slice(0,2048),
       diagnostic_category_checked:false,
@@ -86,7 +86,7 @@ try{
     };
     try {
       if(native.error) throw native.error;
-      const nativeCode=(native.stderr||'').match(/\\bE_[A-Z0-9_]+\\b/)?.[0];
+      const nativeCode=(native.stderr||'').match(/\bE_[A-Z0-9_]+\b/)?.[0];
       row.nativeCode=nativeCode;
       if(c.expect==='reject') {
         let found=false;
@@ -134,7 +134,7 @@ const report={schema:'atto.caret.spec-audit.v1',specPullRequest:'atto-lang/atto-
   compilerWasmSha256:createHash('sha256').update(compilerBytes).digest('hex'),
   summary,rows};
 await mkdir('dist',{recursive:true});
-await writeFile('dist/caret_spec_audit.json',JSON.stringify(report,null,2)+'\\n','utf8');
+await writeFile('dist/caret_spec_audit.json',JSON.stringify(report,null,2)+'\n','utf8');
 console.log('CARET_SPEC_AUDIT',JSON.stringify(summary),
   'corpus_sha='+sha,'strict='+String(process.env.ATTO_CARET_ENFORCE_ALL==='1'));
 if(process.env.ATTO_CARET_ENFORCE_ALL==='1'){
