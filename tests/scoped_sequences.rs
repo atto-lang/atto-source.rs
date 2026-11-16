@@ -43,6 +43,8 @@ fn sequence_syntax_and_scopes_fail_closed() {
         "pub fnc main(): int { ^ (> let x = 5, x + 3; }",
         "pub fnc main(): int { seq let x = 5, x + 37; }",
         "pub fnc main(): int { ^ (> let x = 2, x + 3) ^ 4; }",
+        "fnc seq(int x): int { return x; } pub fnc main(): int { ^ seq(42); }",
+        "pub fnc main(): int { ^ begin(42); }",
     ] {
         assert!(compile(src).is_err(), "malformed or untyped sequence compiled: {src}");
     }
