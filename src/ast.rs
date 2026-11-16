@@ -104,7 +104,8 @@ pub enum FieldMode {
     /// Class `T name: e`, `mut T name = e`, `let T name = e`: the constructor
     /// may assign it; methods see a read-only `self` (Java ownership rule).
     Constructor,
-    /// Actor `let T name = e`: mailbox-owned state any actor method may assign.
+    /// Actor-owned state, or a protected state-container field whose writes
+    /// require the typed, checked critical-write scope.
     ActorState,
 }
 
@@ -142,6 +143,9 @@ pub struct ClassDecl {
     pub name: String,
     pub pos: Pos,
     pub public: bool,
+    /// Distinct nominal protected-state declaration, never an ordinary class.
+    /// Only a restricted Worker-local scalar backend has executable lowering.
+    pub state_container: bool,
     pub fields: Vec<Field>,
     pub ctor: Option<Constructor>,
     pub methods: Vec<Method>,
@@ -182,6 +186,8 @@ pub struct Func {
     pub pos: Pos,
     /// Explicit `fnc *gen` modifier; not inferred from `yield`.
     pub is_generator: bool,
+    /// Explicit effect contract: no externally observable effects or impure calls.
+    pub is_pure: bool,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
@@ -217,6 +223,12 @@ pub enum Stmt {
     Assign {
         name: String,
         value: Expr,
+        pos: Pos,
+    },
+    /// Lexical scope admission for protected state writes, retained through
+    /// the typed frontend so a class field cannot manufacture write authority.
+    StateWrite {
+        body: Vec<Stmt>,
         pos: Pos,
     },
     /// `target.field = value`; only `self.field` is admitted by the checker.
@@ -348,6 +360,10 @@ pub enum LambdaBody {
     Block(Vec<Stmt>),
 }
 
+/// Explicit Atto ownership operators, not pointer address syntax.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnershipOp { Borrow, Copy, Take, Share }
+
 #[derive(Clone, Debug)]
 pub enum ExprKind {
     /// Integer literal. `None` is 2^63, only legal as the operand of unary minus.
@@ -361,6 +377,9 @@ pub enum ExprKind {
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
+    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, take! x,
+    /// share! x. Parentheses are optional grouping, not call arguments.
+    Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// Postfix `?`: unwrap Ok/Some or propagate Err/None from the caller.
@@ -369,6 +388,10 @@ pub enum ExprKind {
     Call(String, Vec<Expr>),
     /// `self`
     SelfRef,
+    /// Compiler-recognized immutable by-value projection from an explicit
+    /// `handle_state(critical-read |s| -> s.field)` scope. Never ordinary
+    /// class member access: the checker must prove a protected state lease.
+    StateRead(String),
     /// `new Class(args)`
     New(String, Vec<Expr>),
     /// `spawn Actor()`

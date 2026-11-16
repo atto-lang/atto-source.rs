@@ -398,7 +398,28 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
     // kept in place, while out-of-line method headers/bodies are attached
     // immediately before its closing end. Source token positions are retained.
     let mut insertions: Vec<Vec<Token>> = vec![Vec::new(); headers.class_definitions.len()];
-    let mut omitted: Vec<(usize, usize)> = Vec::new();
+    // Bound source rewriting to O(tokens + copied method tokens), even when
+    // a file declares hundreds of classes/receivers within SOURCE_CAP.
+    // The previous nested per-token scans over class ends / omission ranges
+    // were quadratic in declaration count.
+    let mut omitted = vec![false; toks.len()];
+    // Validate *all* source ranges before the first semantic self/effect
+    // scan. A forged overlapping ledger must be E_SYNTAX, never be interpreted
+    // as a receiver body that can accidentally read another declaration.
+    for site in &headers.receiver_sites {
+        if site.declaration_start >= site.method_start ||
+            site.method_start >= site.end || site.end > toks.len() {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "invalid out-of-line receiver source span"));
+        }
+        for slot in &mut omitted[site.declaration_start..site.end] {
+            if *slot {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "overlapping class receiver source spans"));
+            }
+            *slot = true;
+        }
+    }
     for (receiver, site) in headers.receivers.iter().zip(&headers.receiver_sites) {
         if receiver.mutable {
             return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED",
@@ -413,6 +434,44 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
             return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
                 "invalid out-of-line receiver source span"));
         }
+        // Keep this v1 profile *conservative* until effect/borrow lowering is
+        // available: an immutable receiver may observe scalar fields and call
+        // another immutable class mtd, but may not escape or invoke arbitrary
+        // inline methods with unproven effects. This check runs on original
+        // lexer tokens, so comments and strings cannot forge receiver syntax.
+        // The production parser/checker still validates the emitted AST.
+        if headers.class_definitions[owner].fields.iter().any(|field|
+            !matches!(field.ty, crate::ast::Type::Int | crate::ast::Type::Bool |
+                crate::ast::Type::Float | crate::ast::Type::Str)) {
+            return Err(Diagnostic::new(receiver.pos, "E_UNSUPPORTED_TYPE",
+                "immutable mtd query mode requires scalar instance fields"));
+        }
+        for i in site.method_start..site.end {
+            if !word_at(toks, i, "self") { continue; }
+            if !at(toks, i + 1, &Tok::Dot) {
+                return Err(diagnostic(toks, i, "E_OWNERSHIP",
+                    "immutable class receiver cannot escape, alias or be reborrowed"));
+            }
+            let method = match toks.get(i + 2).map(|t| &t.tok) {
+                Some(Tok::Ident(name)) => name.as_str(),
+                _ => return Err(diagnostic(toks, i, "E_OWNERSHIP",
+                    "invalid immutable class member access")),
+            };
+            match toks.get(i + 3).map(|t| &t.tok) {
+                Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus) =>
+                    return Err(diagnostic(toks, i, "E_OWNERSHIP",
+                        "immutable class mtd cannot mutate instance fields")),
+                Some(Tok::LParen) => {
+                    if !headers.receivers.iter().any(|other|
+                        other.owner == receiver.owner && other.name == method &&
+                        !other.mutable) {
+                        return Err(diagnostic(toks, i, "E_UNSUPPORTED",
+                            "immutable mtd may call only checked immutable class mtd"));
+                    }
+                }
+                _ => {}
+            }
+        }
         if receiver.public {
             // pub mtd (self: Type) method(...) becomes a public inline method.
             if !matches!(&toks[site.declaration_start].tok, Tok::Ident(s) if s == "pub") {
@@ -422,16 +481,25 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
             insertions[owner].push(toks[site.declaration_start].clone());
         }
         insertions[owner].extend_from_slice(&toks[site.method_start..site.end]);
-        omitted.push((site.declaration_start, site.end));
+
+    }
+    let mut insert_at = vec![None; toks.len()];
+    for (owner, end) in headers.class_ends.iter().copied().enumerate() {
+        if end >= toks.len() || insert_at[end].replace(owner).is_some() {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "invalid or overlapping class closing token spans"));
+        }
+        if omitted[end] {
+            return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "class receiver span overlaps a class end delimiter"));
+        }
     }
     let mut result: Vec<Token> = Vec::with_capacity(toks.len());
     for (i, token) in toks.iter().enumerate() {
-        for (owner, end) in headers.class_ends.iter().enumerate() {
-            if *end == i {
-                result.extend(insertions[owner].iter().cloned());
-            }
+        if let Some(owner) = insert_at[i] {
+            result.extend(insertions[owner].iter().cloned());
         }
-        if !omitted.iter().any(|(start,end)| *start <= i && i < *end) {
+        if !omitted[i] {
             result.push(token.clone());
         }
     }

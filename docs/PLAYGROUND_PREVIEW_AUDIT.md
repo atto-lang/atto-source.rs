@@ -1,8 +1,8 @@
-# Exact /play language preview corpus (35 published sources)
+# Exact /play language preview corpus (42 published sources)
 
-This candidate pins the exact UTF-8 contents and Git blob SHA-1 of **all 35**
+This candidate pins the exact UTF-8 contents and Git blob SHA-1 of **all 42**
 language-preview samples published in `atto-lang.github.io` at commit
-`78e8320034f50f6d6f2b06b3301717d373d19932`. The snapshot is in `tests/playground_previews/`.
+`38a19bdc251d6f8db3ffea3b8df0e6c84ca8881c`. The snapshot is in `tests/playground_previews/`.
 The manifest is a byte-fidelity check, not a declaration that the syntax
 is currently supported.
 
@@ -11,11 +11,23 @@ sample and requires deterministic guest output or a positioned diagnostic.
 `ATTOC=<native-attoc> node tests/conformance.mjs` runs the same exact sources
 through the **real Rust compiler built for wasm32**, verifies no guest artifact
 on rejection, checks emitted guests and compares native/Wasm compiler bytes.
-The four compiler-admitted example sources are compiled and **executed**
-with exact stdout and return-value oracles: function-pipeline (121), generators
-(10), result-option (8080 printed, exit 0), and trap (outer Option of Result;
-5 and an error message printed, exit 7). These specific executions do not
-establish comprehensive generator, ADT, or exception semantics.
+Eight currently supported previews have exact guest-execution oracles:
+function-pipeline, generators, result-option, trap, borrow-checking,
+closures-functors, lexical-scope-pure, and state-containers. All must be
+compiled by the real wasm32 Rust compiler, executed in a genuine guest with
+exact stdout/return values, and compared byte-for-byte with native Rust.
+The other previews are **not yet certified executable**. Executing eight
+samples does not establish complete ownership, actor, ADT or effect semantics.
+
+The site has **nine** ordinary examples and **42** previews (**51 total**).
+The nine ordinary sources have independent exact-blob and guest oracles in
+`tests/playground_site_examples/manifest.json`; this corpus pins all 42
+previews from current site commit 38a19bdc251d6f8db3ffea3b8df0e6c84ca8881c.
+Fail-closed rejection is a safety property, **not successful implementation**.
+The opt-in `ATTO_REQUIRE_ALL_EXAMPLES=1` gate deliberately fails until every
+valid preview compiles and executes with a verified guest oracle. Do not
+reclassify previews as runnable or promote compiler Wasm without verified
+source-level execution and explicit release authorization.
 
 The result JSON classifies every exact source as `unsupported` or
 `admitted`; only a sample in `guestExecuted` has an actual positive

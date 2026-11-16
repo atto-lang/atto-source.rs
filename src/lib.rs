@@ -13,6 +13,8 @@ pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
 pub mod parser;
+/// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
+pub mod state_admission;
 pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;

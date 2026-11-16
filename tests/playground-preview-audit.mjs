@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const corpus = new URL('./playground_previews/', import.meta.url);
 const imports = new Set([
   'print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64',
-  'actor_spawn', 'actor_send'
+  'actor_spawn', 'actor_send', 'state_register', 'state_enter', 'state_leave'
 ]);
 function gitBlobSha(bytes) {
   return createHash('sha1').update(Buffer.from('blob ' + bytes.length + '\0'))
@@ -19,15 +19,16 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
   const raw = await readFile(new URL('MANIFEST.tsv', corpus), 'utf8');
   const pairs = raw.split('\n').filter(line => line && !line.startsWith('#'))
     .map(line => line.split('\t'));
-  assert.equal(pairs.length, 35, 'every public preview has a pinned blob');
+  assert.equal(pairs.length, 42, 'every public preview has a pinned blob');
   assert.ok(pairs.every(([name, sha]) =>
     /^[a-z-]+$/.test(name) && /^[a-f0-9]{40}$/.test(sha)));
   const names = pairs.map(([name]) => name);
-  assert.equal(new Set(names).size, 35, 'no duplicate preview names');
+  assert.equal(new Set(names).size, 42, 'no duplicate preview names');
   assert.deepEqual((await readdir(corpus)).filter(n => n.endsWith('.atto')).sort(),
     names.map(name => name + '.atto').sort());
-  const outcome = { total: 35, admitted: [], unsupported: [],
-    guestExecuted: [], nativeCompared: 0, parityCertified: false };
+  const outcome = { total: 42, admitted: [], unsupported: [],
+    guestExecuted: [], unverified: [], nativeCompared: 0, parityCertified: false,
+    executionCoverage: { verified: 0, remaining: 42 } };
   for (const [name, expectedSha] of pairs) {
     const url = new URL(name + '.atto', corpus);
     const sourceBytes = await readFile(url);
@@ -68,6 +69,10 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'generators': { value: 10n, stdout: '10\n' },
       'result-option': { value: 0n, stdout: '8080\n' },
       'trap': { value: 7n, stdout: '5\nid must be nonnegative\n' },
+      'borrow-checking': { value: 63n, stdout: '84\n43\n' },
+      'closures-functors': { value: 84n, stdout: '' },
+      'lexical-scope-pure': { value: 0n, stdout: '42\n42\n2\n42\n' },
+      'state-containers': { value: 0n, stdout: '2\n0\n' },
     }[name];
     if (expected) {
       const guest = runGuest(result.wasm);
@@ -75,11 +80,23 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       assert.equal(guest.value, expected.value, name + ': exit value');
       assert.equal(guest.stdout, expected.stdout, name + ': stdout');
       outcome.guestExecuted.push(name);
+    } else {
+      outcome.unverified.push({ name, reason: 'no independent compiled-guest output oracle' });
     }
   }
-  assert.equal(outcome.admitted.length + outcome.unsupported.length, 35);
+  assert.equal(outcome.admitted.length + outcome.unsupported.length, 42);
   assert.deepEqual(outcome.guestExecuted.slice().sort(),
-    ['function-pipeline', 'generators', 'result-option', 'trap'].sort(),
-    'all four currently accepted public previews must execute');
+    ['function-pipeline', 'generators', 'result-option', 'trap',
+     'borrow-checking', 'closures-functors', 'lexical-scope-pure', 'state-containers'].sort(),
+    'all eight previously implemented preview guest oracles must execute');
+  outcome.executionCoverage.verified = outcome.guestExecuted.length;
+  outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
+  // Opt-in strict release gate: no unsupported/unexecuted examples permitted.
+  if (process.env.ATTO_REQUIRE_ALL_EXAMPLES === '1') {
+    assert.equal(outcome.executionCoverage.remaining, 0,
+      'published previews without actual guest execution');
+    assert.equal(outcome.unsupported.length, 0,
+      'unsupported preview sources must become executable before parity release');
+  }
   return outcome;
 }
