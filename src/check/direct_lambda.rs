@@ -359,6 +359,8 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         }
         ExprKind::Lambda { .. } => Err(error(e.pos, "E_UNSUPPORTED",
             "nested or escaping lambda needs closure lowering")),
+        ExprKind::StateRead(_) => Err(error(e.pos, "E_UNSUPPORTED",
+            "protected state projections require a lexical state lease, not direct closure lowering")),
         // Exhaustive AST traversal: introducing a new expression kind must
         // require a compiler review of its lexical binding behaviour.
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
@@ -409,6 +411,8 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // skipping an owned free variable during closure conversion.
         ExprKind::Ownership(_, _, _) => return Err(error(e.pos, "E_UNSUPPORTED",
             "explicit ownership inside a direct lambda requires verified capture lifetimes")),
+        ExprKind::StateRead(_) => return Err(error(e.pos, "E_UNSUPPORTED",
+            "protected state projection inside a direct lambda is not lifetime-verified")),
         ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Lambda { .. } => {},
     }
     Ok(())
