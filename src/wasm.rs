@@ -1282,7 +1282,13 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     section(&mut out, 3, fsec);
 
-    let has_memory = !p.data.is_empty() || p.heap || p.strings || has_actors;
+    // A callable taking Array<int> can be compiled even when main never
+    // constructs an array. Its i64.load instructions still require a declared
+    // memory for Wasm validation, despite having no static data segment.
+    let has_array_signature = p.funcs.iter().any(|f|
+        f.ret == Type::ArrayInt ||
+        f.params.iter().chain(f.locals.iter()).any(|t| *t == Type::ArrayInt));
+    let has_memory = !p.data.is_empty() || p.heap || p.strings || has_actors || has_array_signature;
     if has_memory {
         // Fixed and non-growable: strings, the object heap, or a private
         // 64 KiB actor memory even for scalar-only actors.
