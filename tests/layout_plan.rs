@@ -92,7 +92,7 @@ fn invalid_and_overflowing_plans_are_rejected() {
         Err(RefError::InvalidLayout)
     );
     assert_eq!(
-        LayoutPlan::new(LayoutKind::Aosoa { lanes: 512 }, &FIELDS, 6),
+        LayoutPlan::new(LayoutKind::Aosoa { lanes: 2048 }, &FIELDS, 6),
         Err(RefError::InvalidLayout)
     );
     let many = [FieldSpec { bytes: 1, align: 1 }; 65];
@@ -127,4 +127,28 @@ fn zero_rows_produce_no_guest_storage_and_cannot_be_indexed() {
         assert_eq!(plan.field_count(), FIELDS.len());
         assert_eq!(plan.field_offset(0, 0), Err(RefError::OutOfRange));
     }
+}
+
+#[test]
+fn java_compatible_1024_lane_tile_tail_has_exact_offsets() {
+    let fields = [FieldSpec { bytes: 8, align: 8 }; 2];
+    let tile = LayoutPlan::new(LayoutKind::Aosoa { lanes: 1024 }, &fields, 1025).unwrap();
+    assert_eq!(tile.total_bytes(), 32768);
+    assert_eq!(tile.field_offset(1023, 0), Ok(8184));
+    assert_eq!(tile.field_offset(1024, 0), Ok(16384));
+    assert_eq!(tile.field_offset(1024, 1), Ok(24576));
+    assert_eq!(tile.field_offset(1025, 0), Err(RefError::OutOfRange));
+
+    let aos = LayoutPlan::new(LayoutKind::Aos, &fields, 1025).unwrap();
+    let soa = LayoutPlan::new(LayoutKind::Soa, &fields, 1025).unwrap();
+    assert_eq!(aos.total_bytes(), 16400);
+    assert_eq!(soa.total_bytes(), 16400);
+    assert_eq!(aos.field_offset(1024, 0), Ok(16384));
+    assert_eq!(soa.field_offset(1024, 0), Ok(8192));
+    assert_eq!(soa.field_offset(1024, 1), Ok(16392));
+
+    assert_eq!(
+        LayoutPlan::new(LayoutKind::Aosoa { lanes: 2048 }, &fields, 1025),
+        Err(RefError::InvalidLayout)
+    );
 }
