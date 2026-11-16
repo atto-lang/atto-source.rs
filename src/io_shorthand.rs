@@ -201,6 +201,14 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
     let mut found = Vec::new();
     for i in 0..tokens.len().saturating_sub(1) {
         let Some(operator) = op_at(tokens, i) else { continue; };
+        // Prefix `<< readable` is an expression, not a binary directional
+        // statement. The production parser/checker owns this case, and the
+        // unary syntax preflight already validated its source-token shape.
+        // Do not steal `return << c`, `x += << c`, or grouped `(<< c)`
+        // as writes from a source named "return" or an incomplete sink.
+        if operator == Direction::Write && unary_read_start(tokens, i) {
+            continue;
+        }
         // Locate the beginning of the containing statement or select arm.
         // This deliberately does not reinterpret embedded numeric operators.
         let mut start = i;
