@@ -56,10 +56,13 @@ pub enum Import {
     StateRegister,
     StateEnter,
     StateLeave,
+    /// Worker-owned Channel<int> direct read: register without parking, then await.
+    ChannelNbRead,
+    ChannelAwaitRead,
 }
 
 impl Import {
-    pub const ALL: [Import; 15] = [
+    pub const ALL: [Import; 17] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -75,6 +78,8 @@ impl Import {
         Import::StateRegister,
         Import::StateEnter,
         Import::StateLeave,
+        Import::ChannelNbRead,
+        Import::ChannelAwaitRead,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -93,6 +98,8 @@ impl Import {
             Import::StateRegister => "state_register",
             Import::StateEnter => "state_enter",
             Import::StateLeave => "state_leave",
+            Import::ChannelNbRead => "channel_int_nb_read_v1",
+            Import::ChannelAwaitRead => "channel_int_await_read_v1",
         }
     }
 }
@@ -207,6 +214,13 @@ pub enum TExpr {
     TaskStart(u32),
     /// Consume one typed future handle and yield until the task finishes.
     TaskAwait(Box<TE>),
+    /// One source-level, exact-once read using a JSPI Worker-owned channel.
+    /// The compiler lowers the flattened host tag to Result<Option<int>,IoError>.
+    /// These are distinct fresh i32 locals (except source may be an i32 local).
+    ChannelRead {
+        channel: Box<TE>, ticket: u32, outcome: u32,
+        result: u32, option: u32, status: u32,
+    },
     /// Preserve evaluated value and release the worker carrier at least one event-loop turn.
     AwaitYield(Box<TE>),
     /// print an object; `tmp` is an i32 scratch local holding it
@@ -1307,7 +1321,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ChannelRead { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let tasks = p.funcs.iter().enumerate().filter(|(_, f)| f.name.starts_with("$atto_task_"))
@@ -1496,7 +1510,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } |
         TExpr::SleepMs(_) | TExpr::Barrier(_) | TExpr::TaskStart(_) |
-        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) => false,
+        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) | TExpr::ChannelRead { .. } => false,
     }
 }
 
@@ -1550,6 +1564,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a)
         | TExpr::SleepMs(a) | TExpr::Barrier(a) | TExpr::TaskAwait(a)
         | TExpr::AwaitYield(a) => any_in(a, f),
+        TExpr::ChannelRead { channel, .. } => any_in(channel, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
@@ -3085,23 +3100,35 @@ impl<'a> FnCx<'a> {
             ExprKind::Member(base, name) => self.member(base, name, pos)?,
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
             ExprKind::PrefixRead(source) => {
-                // The AST preserves the read as an effectful expression; there
-                // is deliberately no fake scalar or unchecked read import.
                 if !self.suspends {
                     return Err(Diagnostic::new(pos, "E_SUSPENDS_REQUIRED",
                         "unary << readable can suspend; declare susp/suspends"));
                 }
-                if !self.loans.is_empty() {
+                if !self.loans.is_empty() || self.state_write_scope || self.state_read_scope {
                     return Err(Diagnostic::new(pos, "E_BORROW",
-                        "unary << cannot suspend with a live object loan"));
+                        "unary << cannot suspend with a live object loan or protected state lease"));
                 }
-                let value = self.expr(source)?;
-                if value.ty != Type::ChannelInt {
+                // A checked channel handle cannot be interpreted as an int or
+                // an arbitrary method named read(). The operand is evaluated
+                // exactly once and the result is always the *checked* ADT.
+                let channel = self.value(source)?;
+                if channel.ty != Type::ChannelInt {
                     return Err(Diagnostic::new(pos, "E_IO_READABLE",
                         "unary << requires a statically readable Channel<int> in the browser subset"));
                 }
-                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                    "typed guest channel read, checked Result<Option<int>, IoError> and JSPI resume ABI are not implemented"));
+                let ticket = self.temp(Type::ChannelInt, pos)?;
+                let outcome = self.temp(Type::ResultOptionIntIoError, pos)?;
+                let result = self.temp(Type::ResultOptionIntIoError, pos)?;
+                let option = self.temp(Type::OptionInt, pos)?;
+                let status = self.temp(Type::IoError, pos)?;
+                self.imports.push(Import::ChannelNbRead);
+                self.imports.push(Import::ChannelAwaitRead);
+                // A nonparking read still cooperates after settlement, including
+                // the immediately-ready case, just like an ordinary await.
+                self.imports.push(Import::Cooperate);
+                TE {e: TExpr::ChannelRead {
+                    channel: Box::new(channel), ticket, outcome, result, option, status,
+                }, ty: Type::ResultOptionIntIoError}
             }
             ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "array literals are parsed but not yet lowered to browser Wasm")),
