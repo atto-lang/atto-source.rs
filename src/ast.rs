@@ -83,6 +83,8 @@ pub struct ActorInterface {
     pub forwards: Vec<String>,
     /// Declared actor port contracts are metadata; no guest authority.
     pub ports: Vec<ActorInterfacePort>,
+    /// Sealed runtime-only out-of-line mailbox ingress. Never a public mtd.
+    pub mailbox_ingresses: Vec<ActorInterfaceMailboxIngress>,
     pub methods: Vec<ActorInterfaceMethod>,
 }
 
@@ -95,6 +97,15 @@ pub struct ActorInterfacePort {
     pub emits: Option<String>,
     pub sends: Option<String>,
     pub implemented_contracts: Vec<String>,
+}
+
+/// Checked signature of a private receive(ActorMail<T>) handler attached
+/// to a declared nominal actor. This does NOT enable mailbox guest dispatch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActorInterfaceMailboxIngress {
+    pub owner: u32,
+    pub payload: String,
+    pub pos: Pos,
 }
 
 /// Typed out-of-line receiver signature; its body is not lowered.
