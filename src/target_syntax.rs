@@ -232,23 +232,9 @@ impl Cursor<'_> {
         let name = self.ident()?;
         let params = self.params()?;
         let arity = params.len();
-        // `receive` is a sealed mailbox ingress, not an ordinary public
-        // receiver-targeted method. Its authorization must be tied to the
-        // declared nominal actor, never to an arbitrary call to Foo.receive.
-        if name == "receive" {
-            if public || mutable {
-                return Err(Diagnostic::new(pos, "E_SIGNATURE",
-                    "actor receive ingress must be private and cannot expose a mutable receiver"));
-            }
-            if arity != 1 || !params[0].type_name.starts_with("ActorMail<") ||
-                !params[0].type_name.ends_with('>') {
-                return Err(Diagnostic::new(pos, "E_SIGNATURE",
-                    "actor receive requires exactly one ActorMail<T> parameter"));
-            }
-        } else if params.iter().any(|p| p.type_name.starts_with("ActorMail<")) {
-            return Err(Diagnostic::new(pos, "E_SIGNATURE",
-                "ActorMail<T> is sealed to the private actor receive ingress"));
-        }
+        // Sealed mailbox ingress is validated *after* resolving the owner
+        // against actor or class declarations. A class may have an ordinary
+        // receive(...) method; only actor receive(ActorMail<T>) is privileged.
         let arrow_type = *self.tok() == Tok::Arrow;
         let colon_type = *self.tok() == Tok::Colon;
         let return_type = if self.take(&Tok::Colon) || self.take(&Tok::Arrow) {
