@@ -1,0 +1,4 @@
+// expect-error: E_UNSUPPORTED
+// Must not silently lower explicit panic as an ordinary guest throw.
+fnc fail(): int { panic Error("fatal"); }
+pub fnc main(): int { return fail(); }
