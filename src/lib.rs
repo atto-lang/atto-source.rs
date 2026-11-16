@@ -17,6 +17,8 @@ pub mod detached_io;
 pub mod parser;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
+/// Conservative source-local class/trait/interface composition.
+pub mod nominal_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
@@ -38,7 +40,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let toks = module_lower::lower(lexer::lex(source)?)?;
+    let toks = nominal_lower::lower(module_lower::lower(lexer::lex(source)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
