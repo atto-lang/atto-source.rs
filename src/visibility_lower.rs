@@ -2,7 +2,7 @@
 //! This is not a package linker or a foreign-function runtime.
 //! Public exports add deterministic Wasm metadata; private/package entries
 //! cannot be imported as host functions.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 type R<T> = Result<T, Diagnostic>;
@@ -32,17 +32,31 @@ fn name(t: &[Token], i: usize) -> R<String> {
         None => Err(error(Pos { line: 1, col: 1 }, "E_EOF", "missing export name")),
     }
 }
-fn declarations(t: &[Token]) -> BTreeMap<String, &'static str> {
-    let mut out = BTreeMap::new();
-    for i in 0..t.len().saturating_sub(2) {
-        if word(t, i, "define") && word(t, i + 1, "class") {
-            if let Tok::Ident(n) = &t[i + 2].tok { out.insert(n.clone(), "class"); }
+/// Resolve exports against the checked parser's actual declaration table,
+/// not arbitrary tokens: a class member named Foo is NOT a top-level fnc
+/// Foo, and a foreign prototype never grants source-level export authority.
+pub fn resolve_exports(exports: &mut [Export], parsed: &crate::ast::Program) -> R<()> {
+    for export in exports {
+        let class_count = parsed.classes.iter()
+            .filter(|c| c.name == export.name && !c.state_container).count();
+        let fnc_count = parsed.funcs.iter()
+            .filter(|f| f.name == export.name).count();
+        let matches = class_count + fnc_count;
+        if matches == 0 {
+            return Err(error(export.pos, "E_UNBOUND",
+                format!("export '{}' has no top-level declaration", export.name)));
         }
-        if word(t, i, "fnc") && t[i + 2].tok == Tok::LParen {
-            if let Tok::Ident(n) = &t[i + 1].tok { out.insert(n.clone(), "fnc"); }
+        if matches != 1 {
+            return Err(error(export.pos, "E_DUPLICATE",
+                format!("export '{}' is ambiguous without an arity-qualified export", export.name)));
         }
+        let kind = if class_count == 1 { "class" } else { "fnc" };
+        if !export.kind.is_empty() && export.kind != kind {
+            return Err(error(export.pos, "E_TYPE", "export declaration kind mismatch"));
+        }
+        export.kind = kind;
     }
-    out
+    Ok(())
 }
 fn external_prototype(t: &[Token], start: usize) -> R<(usize, String)> {
     let p = t[start].pos;
@@ -167,15 +181,8 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
             }
         }
     }
-    let known = declarations(&out);
-    for export in &mut exports {
-        let declared = known.get(&export.name).copied().ok_or_else(|| error(
-            export.pos, "E_UNBOUND", format!("export '{}' has no declaration", export.name)))?;
-        if !export.kind.is_empty() && export.kind != declared {
-            return Err(error(export.pos, "E_TYPE", "export declaration kind mismatch"));
-        }
-        export.kind = declared;
-    }
+    // Export-name resolution is deferred to resolve_exports after parsing.
+    // A token sweep cannot prove source-level class/function membership.
     let mut lowered = Vec::with_capacity(out.len() + exports.len());
     for j in 0..out.len() {
         if word(&out, j, "define") && word(&out, j + 1, "class") {
