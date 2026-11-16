@@ -1,0 +1,4 @@
+// expect-error: E_ANNOTATION_TARGET
+@Override
+routine square(int x): int { return x * x; }
+pub fnc main(): int { return square(2); }
