@@ -85,6 +85,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
+        Type::FutureInt => Some(I32),
         Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
@@ -504,6 +505,12 @@ impl Emit<'_> {
                 self.expr(b);
                 self.close();
             }
+            TExpr::SleepMs(ms) => {self.expr(ms);self.call(self.l.import(Import::SleepMs));}
+            TExpr::Barrier(count) => {self.expr(count);self.call(self.l.import(Import::Barrier));}
+            TExpr::TaskStart(idx) => {self.i32c(*idx as i32);self.call(self.l.import(Import::TaskStart));}
+            TExpr::TaskAwait(handle) => {self.expr(handle);self.call(self.l.import(Import::TaskAwait));}
+            // Value stays on the Wasm stack over the void JSPI host call.
+            TExpr::AwaitYield(value) => {self.expr(value);self.call(self.l.import(Import::Cooperate));}
             TExpr::Call(f, args) => {
                 for a in args {
                     self.expr(a);
@@ -1038,6 +1045,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintF64 => Sig(vec![F64], vec![]),
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![]),
+            Import::SleepMs => Sig(vec![I64], vec![I64]),
+            Import::Barrier => Sig(vec![I64], vec![I64]),
+            Import::TaskStart => Sig(vec![I32], vec![I32]),
+            Import::TaskAwait => Sig(vec![I32], vec![I64]),
+            Import::Cooperate => Sig(vec![], vec![]),
             Import::StateRegister => Sig(vec![I32], vec![]),
             Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
             Import::StateLeave => Sig(vec![I64], vec![]),
@@ -1157,6 +1169,27 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         bodies.push(c);
     }
 
+    // Only compiler-generated capture-free task bodies are dispatchable.
+    // Task entrypoints cannot be dynamically forged by guest source.
+    let has_tasks = !p.tasks.is_empty();
+    let task_invoke_idx = layout.func(p.funcs.len() as u32 + if has_actors { 2 } else { 0 });
+    if has_tasks {
+        func_types.push(types.idx(Sig(vec![I32], vec![I64])));
+        let mut e = Emit { l: &layout, code: vec![0], frames: Vec::new(), void_main: false, active_iterators: Vec::new() };
+        for task in &p.tasks {
+            e.op(0x20); e.op(0);
+            e.i32c(*task as i32);
+            e.op(0x46);
+            e.open(0x04, 0x40, Frame::Other);
+            e.call(layout.func(*task));
+            e.op(0x0F);
+            e.close();
+        }
+        e.op(0x00); // unknown task function index
+        e.op(0x0B);
+        bodies.push(e.code);
+    }
+
     // The tag has no JS import/export. Each instance gets its own identity,
     // so no host exception or foreign guest tag can be forged as an ordinary
     // Atto throw. Unaffected modules retain their original section layout.
@@ -1225,7 +1258,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     section(&mut out, 6, gsec);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 });
+    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 } + u64::from(has_tasks));
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -1244,6 +1277,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         name(&mut exp, "actor_receive");
         exp.push(0x00);
         uleb(&mut exp, actor_init_idx as u64 + 1);
+    }
+    if has_tasks {
+        name(&mut exp, "task_invoke");
+        exp.push(0x00);
+        uleb(&mut exp, task_invoke_idx as u64);
     }
     section(&mut out, 7, exp);
 
@@ -1287,6 +1325,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         .chain(helper_names.into_iter().map(String::from))
         .chain(p.funcs.iter().map(|f| f.name.clone()))
         .collect();
+    if has_tasks { all.push("atto.task_invoke".into()); }
     if !p.generators.is_empty() {
         all.extend([
             "atto.generator_new", "atto.generator_check_ptr",
@@ -1318,6 +1357,14 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             name(&mut a, &actor.name);
         }
         section(&mut out, 0, a);
+    }
+    // Deliberately versioned and opt-in: the public guest.v2 contract
+    // remains unchanged for programs without actual async imports.
+    if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate)) {
+        let mut marker = Vec::new();
+        name(&mut marker, "atto.async");
+        marker.push(2); // JSPI + mandatory cooperative yield; old v1 guests must fail closed
+        section(&mut out, 0, marker);
     }
     out
 }
