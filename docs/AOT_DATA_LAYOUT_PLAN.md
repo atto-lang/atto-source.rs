@@ -14,7 +14,7 @@ accepts only its validated scalar subset.
   reserved final partial block for stable indexing.
 
 The planner checks field count (1–64), positive widths, power-of-two alignment,
-AoSoA lanes (1–256), integer overflow, row bounds, and field indices. Zero-row
+AoSoA lanes (1–1024), integer overflow, row bounds, and field indices. Zero-row
 stores have a zero-byte footprint. Offsets are relative integers only, not
 native pointers. The metadata \`Vec\` allocations occur in the planning host;
 they are not guest heap allocations and imply no guest tracing GC.
@@ -33,6 +33,6 @@ Before guest integration: preserve typed MIR ownership, field projections,
 generations and domain provenance; validate row relocation and active borrows;
 add native-object execution tests for inverted fields; compare Java and LLVM
 semantic fixtures; benchmark throughput/tail latency and resident bytes.
-These tests verify address planning and non-overlap, **not** native guest
+The 1,025-row / 1,024-lane tail fixture matches the exact Java reference offsets in java PR #3131. These tests verify address planning and non-overlap, **not** native guest
 class execution, browser compilation, GC absence in every future runtime,
 or cross-backend feature parity.
