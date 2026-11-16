@@ -15,6 +15,8 @@ fn caret_returns_from_free_functions_and_nested_control_flow() {
         "fnc add(int n): int { ^ n + 2; } pub fnc main(): int { ^ add(40); }",
         "pub fnc main(): int { if true then ^ 42; else ^ 0; fi }",
         "pub fnc main(): int { ^ match 5 over on 5 -> 42, default -> 0, end; }",
+        "pub fnc main(): int { ^ seq match 5 over on 5 -> 42, default -> 0, end; }",
+        "define class C as answer(): int { ^ 42; } end pub fnc main(): int { const c = new C(); ^ c.answer(); }",
         "fnc noop(): void { ^; } pub fnc main(): int { ^ 42; }",
     ] { accepts(src); }
 }
