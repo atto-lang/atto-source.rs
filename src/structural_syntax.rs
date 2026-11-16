@@ -572,8 +572,10 @@ mod tests {
             FieldPattern { name: "x".into(), optional: false, value: ScalarPattern::Int(10) },
             FieldPattern { name: "y".into(), optional: false, value: ScalarPattern::Any },
         ]));
+        assert!(matches!(parse_pattern("on is ~{x: 10}").unwrap().kind,
+                         PatternKind::TypeTest(_)));
         for bad in ["on ~{x: int}", "on ~{}", "on ~{x: 1, x: 2}",
-                    "on is ~{x: 10}", "on is ~Point as p"] {
+                    "on is ~Point as p"] {
             assert!(parse_pattern(bad).is_err(), "{bad}");
         }
         assert!(parse_pattern("on Point").is_err());
