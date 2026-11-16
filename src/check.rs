@@ -2468,66 +2468,72 @@ impl<'a> FnCx<'a> {
                 let mut previous_actor_emit = None;
                 let mut previous_is_actor = false;
                 for (i, stage) in stages.iter().enumerate() {
-                    match stage {
-                        PipeStage::Actor(name) => {
-                            let index = self.g.actor(name).ok_or_else(|| Diagnostic::new(
-                                pos, "E_UNBOUND",
-                                format!("unknown actor pipeline stage '{name}'"),
-                            ))?;
-                            let actor = &self.g.actors[index as usize];
-                            if actor.receive_idx.is_none() {
-                                return Err(type_err(
-                                    pos,
-                                    format!("actor pipeline stage '{name}' has no receive(ActorMail<T>) handler"),
-                                ));
-                            }
-                            // In strict mixed graph roles, an actor's observed
-                            // receive/emit body is not a declaration of authority.
-                            if i > 0 && actor.declared_receives.is_none() {
-                                return Err(type_err(
-                                    pos,
-                                    format!("actor '{name}' needs an explicit receives T pipe-input declaration"),
-                                ));
-                            }
-                            if i + 1 < stages.len() && actor.declared_emits.is_none() {
-                                return Err(type_err(
-                                    pos,
-                                    format!("actor '{name}' needs an explicit emits T pipe-output declaration"),
-                                ));
-                            }
-                            if i != 0 && previous_is_actor {
-                                match previous_actor_emit {
-                                    Some(expected) if expected == actor.payload => {}
-                                    Some(expected) => return Err(type_err(
-                                        pos,
-                                        format!(
-                                            "actor pipeline emitted {} cannot enter '{name}' receiving {}",
-                                            self.tn(expected),
-                                            self.tn(actor.payload)
-                                        ),
+                    // Named ActorRef locals expose their declared actor ports,
+                    // not an untyped variable-to-variable pipe. Unknown
+                    // channel/stream/generator endpoints remain ABI-gated.
+                    let actor_index = match stage {
+                        PipeStage::Actor(name) => Some(self.g.actor(name).ok_or_else(|| {
+                            Diagnostic::new(pos, "E_UNBOUND",
+                                format!("unknown actor pipeline stage '{name}'"))
+                        })?),
+                        PipeStage::Endpoint(endpoint) => match &endpoint.kind {
+                            ExprKind::Var(name) => {
+                                let ty = self.lookup(name).map(|local| local.ty).ok_or_else(|| {
+                                    Diagnostic::new(endpoint.pos, "E_UNBOUND",
+                                        format!("unknown pipe endpoint '{name}'"))
+                                })?;
+                                match ty {
+                                    Type::ActorRef(index) => Some(index),
+                                    Type::Int | Type::Bool | Type::Float | Type::Str
+                                    | Type::Void | Type::Enum(_) => return Err(type_err(
+                                        endpoint.pos,
+                                        format!("pipe endpoint '{name}' is a scalar, not a PipeSource/PipeSink"),
                                     )),
-                                    None => return Err(type_err(
-                                        pos,
-                                        format!("actor pipeline stage before '{name}' does not emit"),
-                                    )),
+                                    _ => None,
                                 }
                             }
-                            previous_actor_emit = actor.emitted;
-                            previous_is_actor = true;
+                            _ => None,
+                        },
+                    };
+                    if let Some(index) = actor_index {
+                        let actor = &self.g.actors[index as usize];
+                        let name = actor.name.as_str();
+                        if actor.receive_idx.is_none() {
+                            return Err(type_err(
+                                pos,
+                                format!("actor pipeline stage '{name}' has no receive(ActorMail<T>) handler"),
+                            ));
                         }
-                        PipeStage::Endpoint(_endpoint) => {
-                            // Do not invent a source/sink capability from a
-                            // syntactic identifier or silently evaluate an
-                            // endpoint before the runtime ownership contract.
-                            if previous_is_actor && previous_actor_emit.is_none() {
-                                return Err(type_err(
-                                    pos,
-                                    "actor pipeline stage before endpoint does not emit",
-                                ));
+                        if i > 0 && actor.declared_receives.is_none() {
+                            return Err(type_err(pos,
+                                format!("actor '{name}' needs an explicit receives T pipe-input declaration")));
+                        }
+                        if i + 1 < stages.len() && actor.declared_emits.is_none() {
+                            return Err(type_err(pos,
+                                format!("actor '{name}' needs an explicit emits T pipe-output declaration")));
+                        }
+                        if i != 0 && previous_is_actor {
+                            match previous_actor_emit {
+                                Some(expected) if expected == actor.payload => {}
+                                Some(expected) => return Err(type_err(pos, format!(
+                                    "actor pipeline emitted {} cannot enter '{name}' receiving {}",
+                                    self.tn(expected), self.tn(actor.payload)
+                                ))),
+                                None => return Err(type_err(pos,
+                                    format!("actor pipeline stage before '{name}' does not emit"))),
                             }
-                            previous_actor_emit = None;
-                            previous_is_actor = false;
                         }
+                        previous_actor_emit = actor.emitted;
+                        previous_is_actor = true;
+                    } else {
+                        // The type system must not infer channel/stream roles
+                        // from identifier spelling or perform a hidden pump.
+                        if previous_is_actor && previous_actor_emit.is_none() {
+                            return Err(type_err(pos,
+                                "actor pipeline stage before endpoint does not emit"));
+                        }
+                        previous_actor_emit = None;
+                        previous_is_actor = false;
                     }
                 }
                 return Err(Diagnostic::new(
