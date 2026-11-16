@@ -1,0 +1,11 @@
+// expect-error: E_UNSUPPORTED
+// A structural type test cannot reinterpret an int subject as a class.
+define class Shape as
+    pub int x = 42;
+end
+pub fnc main(): int {
+    match 42 over
+        on is ~Shape -> { return 1; }
+        on _ -> { return 42; }
+    end
+}
