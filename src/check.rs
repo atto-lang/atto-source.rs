@@ -3745,9 +3745,12 @@ pub fn check_target_actor_interface(program: &Program) -> R<()> {
                 "actor cannot have more than one mailbox receive ingress"));
         }
         if let Some(declared) = port.receives.as_deref() {
-            let canonical = |name: &str| match name {
-                "boolean" => "bool", "String" => "string", "f64" => "float", other => other,
-            };
+            fn canonical(name: &str) -> &str {
+                match name {
+                    "boolean" => "bool", "String" => "string", "f64" => "float",
+                    other => other,
+                }
+            }
             if canonical(declared) != canonical(&ingress.payload) {
                 return Err(Diagnostic::new(ingress.pos, "E_SIGNATURE",
                     "attached mailbox ingress does not match declared receives type"));
