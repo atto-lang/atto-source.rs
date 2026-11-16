@@ -787,7 +787,18 @@ pub fn check(p: &Program) -> R<TProgram> {
     // emitted type. This preflight collects typed emit values, including those
     // inside conditionals and loops, without exposing a guest capability.
     for (ai, actor) in p.actors.iter().enumerate() {
-        let Some(receive) = actor.receive.as_ref() else { continue };
+        let Some(receive) = actor.receive.as_ref() else {
+            if actor.declared_emits.is_some() {
+                return Err(Diagnostic::new(
+                    actor.pos, "E_UNSUPPORTED",
+                    format!(
+                        "actor '{}' declares emits but has no receive handler; startup producer hook is not implemented in this browser profile",
+                        actor.name,
+                    ),
+                ));
+            }
+            continue;
+        };
         let named = [("$value", Type::Int, false), ("$sequence", Type::Int, false)];
         let mut scratch_imports = Vec::new();
         let mut scratch_data = Vec::new();
