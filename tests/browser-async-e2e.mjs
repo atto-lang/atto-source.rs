@@ -232,7 +232,7 @@ try{
     match opened over
       on Err(error) -> { return -1; }
       on Ok(channel) -> {
-        { val pending = nb readch channel; }
+        block { val pending = nb readch channel; }
         val closed = channel.close();
         val released = channel.release();
         match released over
@@ -250,7 +250,7 @@ try{
     match opened over
       on Err(error) -> { return -1; }
       on Ok(channel) -> {
-        {
+        block {
           val pending = nb readch channel;
           val sent = channel.send(41);
         }
