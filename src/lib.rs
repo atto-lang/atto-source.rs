@@ -32,6 +32,10 @@ pub mod state_admission;
 pub mod target_syntax;
 /// Proposed unary actor signatures: parse/type preflight, guest ABI unavailable.
 pub mod actor_reply_syntax;
+/// Typed nominal one-way/unary/stream contract IR (not guest ABI).
+pub mod actor_reply_contract;
+/// Fixed-budget unary reply correlation core; not yet wired into Wasm actors.
+pub mod actor_reply_slot;
 pub mod target_typed;
 pub mod wasm;
 
@@ -54,7 +58,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Detect proposed unary request/reply source before general-purpose lowerers.
     // This scanner proves only a bounded signature; no nominal protocol,
     // linear reply slot, suspending handler or compiled guest behavior exists.
-    if let Some(unary) = actor_reply_syntax::inspect(&raw_tokens)?.first() {
+    let unary_signatures = actor_reply_syntax::inspect(&raw_tokens)?;
+    let _checked_contracts = actor_reply_contract::check_unary(&raw_tokens, &unary_signatures)?;
+    if let Some(unary) = unary_signatures.first() {
         return Err(Diagnostic::new(unary.pos, "E_UNSUPPORTED",
             "unary actor signature recognized, but nominal UnaryRequest<R>, suspend semantics and authenticated one-shot reply ABI are not implemented"));
     }
