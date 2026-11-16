@@ -172,12 +172,25 @@ fn read_binder(tokens: &[Token], start: usize, end: usize, pos: Pos) -> Result<S
     if !matches!(qualifier, Some("val" | "let")) {
         return Err(syntax(pos, "read shorthand requires val or let followed by a binding name"));
     }
-    let name = tokens.get(start + 1).and_then(word)
+    // Match the production binding grammar: both `val name: Type` and
+    // `val Type name` are supported, including nested generic types.
+    // This is syntax-only; the real type checker must still unify the exact
+    // checked read outcome with the declared type (never silently unwrap).
+    let name_index = if start + 2 == end {
+        start + 1
+    } else if valid_read_annotation(tokens, start + 2, end) {
+        start + 1
+    } else {
+        let mut cursor = start + 1;
+        if !type_ref(tokens, &mut cursor, end, 0) || cursor + 1 != end {
+            return Err(syntax(pos,
+                "read binding requires 'val name: Type' or 'val Type name' (complete type, no trailing tokens)"));
+        }
+        cursor
+    };
+    let name = tokens.get(name_index).and_then(word)
         .filter(|w| *w != "when" && !crate::parser::is_reserved(w))
         .ok_or_else(|| syntax(pos, "read shorthand requires a binding name"))?;
-    if start + 2 != end && !valid_read_annotation(tokens, start + 2, end) {
-        return Err(syntax(pos, "read shorthand requires a complete ': Type' annotation (no trailing tokens)"));
-    }
     Ok(name.to_owned())
 }
 
