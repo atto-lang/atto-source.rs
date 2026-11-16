@@ -12,6 +12,7 @@ const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/state-runtime.mjs',[new URL('./browser/state-runtime.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/guest_import_admission_v2.mjs',[new URL('../runtime/browser/guest_import_admission_v2.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
