@@ -491,7 +491,6 @@ fn endpoint_pump_syntax_rejects_unchecked_modes_guards_and_chains() {
     for source in [
         "nb stdio.in >> stdio.out;",
         "try stdio.in >> stdio.out;",
-        "do stdio.in >> stdio.out;",
         "do select { when stdio.in >> stdio.out -> {} }",
         "stdio.in >> stdio.out >> extra;",
         "stdio.out << stdio.in << extra;",
@@ -502,3 +501,10 @@ fn endpoint_pump_syntax_rejects_unchecked_modes_guards_and_chains() {
     }
 }
 
+
+#[test]
+fn detached_endpoint_pump_cannot_discard_checked_outcome() {
+    let source = "do stdio.in >> stdio.out;";
+    let err = inspect(&lex(source).unwrap()).expect_err(source);
+    assert_eq!(err.code, "E_IO_DISCARD", "{err}");
+}
