@@ -1,5 +1,32 @@
 # atto-source.rs: AttoLang browser compiler
 
+## Checked Array<int> access and zero-copy contiguous views (candidate)
+
+This stacked branch builds on draft Array<int> implementation PR #111 and adds
+compiled typed-IR / Wasm emission for `array[index]`, `array[start:end]`,
+`array[:]`, and explicit unit-stride `array[::1]`, including negative indices.
+The bound expressions and receiver execute once in source order. Indexing
+accepts normalized indices 0..len-1 and slicing requires explicit bounds
+within [-len,len] (no clamping); an opposing-direction positive slice is
+empty. Out-of-bounds guest execution writes `panic_code=6` then traps.
+Contiguous slicing composes a new immutable `(static_byte_offset,len)`
+descriptor referencing the same static readonly data—no element copy or
+heap allocation. Empty slices remain valid; indexing an empty slice traps.
+
+**Not supported here:** non-unit or negative strides, runtime-backed mutable
+arrays, iterable spread, arbitrary lists and Unicode scalar string slices.
+These must be lowered with distinct ownership/view ABIs before any execution
+claim. In particular, `[::-1]` remains `E_UNSUPPORTED`, not an incorrect
+contiguous view.
+
+`tests/array_index_slice.rs` provides native compilation and negative
+diagnostic checks; `tests/fixtures/pass/293..302`, panic `40..46`, and
+fail `310..316` are intended for the existing real compiler Wasm / guest
+execution harness. Merely adding these files does not prove they passed.
+The separate main-derived syntax PR #174 must be reconciled semantically
+with this stacked branch; never overwrite the existing Array<int> lowering
+with syntax-only variants. Track runtime scope and test receipts in #175.
+
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
 ## Namespace and out-of-line receiver syntax (parse-only)

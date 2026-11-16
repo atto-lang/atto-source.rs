@@ -359,6 +359,16 @@ pub enum ExprKind {
     /// First executable array profile: readonly integer array literals.
     /// Values must be compile-time int constants; no implicit heap copying.
     ArrayLit(Vec<Expr>),
+    /// Bounds-checked element access; only Array<int> lowered in this phase.
+    Index(Box<Expr>, Box<Expr>),
+    /// Half-open slicing; contiguous Array<int> is executable, other strides
+    /// remain diagnosed rather than silently copied or reinterpreted.
+    Slice {
+        base: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
+    },
     Var(String),
     /// Value-producing Clojure-style immutable loop/recur expression.
     StateLoop { bindings: Vec<Stmt>, body: Vec<Stmt> },

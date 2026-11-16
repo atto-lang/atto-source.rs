@@ -1,0 +1,7 @@
+// expect-exit: 40
+// java: target-only
+fnc pick(a: Array<int>, index: int): int { return a[index]; }
+pub fnc main(): int {
+    val numbers = [10, 20, 30, 40, 50];
+    return pick(numbers, -2);
+}

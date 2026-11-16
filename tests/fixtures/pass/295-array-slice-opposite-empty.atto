@@ -1,0 +1,8 @@
+// expect-exit: 0
+// java: target-only
+pub fnc main(): int {
+    val a = [10, 20, 30, 40, 50];
+    let sum = 0;
+    for (int x in a[4:1]) { sum = sum + x; }
+    return sum;
+}

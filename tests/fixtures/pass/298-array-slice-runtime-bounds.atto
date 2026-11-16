@@ -1,0 +1,8 @@
+// expect-exit: 5
+// java: target-only
+fnc slice_sum(a: Array<int>, from: int, until: int): int {
+    let total = 0;
+    for (int n in a[from:until]) { total = total + n; }
+    return total;
+}
+pub fnc main(): int { return slice_sum([1,2,3,4], -3, -1); }

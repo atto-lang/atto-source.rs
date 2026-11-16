@@ -1,0 +1,2 @@
+// expect-error: E_NOT_INDEXABLE
+pub fnc main(): int { return 42[0]; }

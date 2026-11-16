@@ -1,0 +1,4 @@
+// expect-exit: 0
+// java: target-only
+fnc unused(a: Array<int>): int { return a[0]; }
+pub fnc main(): int { return 0; }
