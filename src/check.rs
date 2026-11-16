@@ -2646,43 +2646,49 @@ impl<'a> FnCx<'a> {
         Ok(TStmt::Throw(msg))
     }
 
+    // Separated from recursive expression checking to prevent large
+    // JSPI admission logic inflating every arithmetic/AST stack frame.
+    #[inline(never)]
+    fn checked_channel_read(&mut self, args: &[Expr], pos: Pos) -> R<TE> {
+            if !self.suspends {
+                return Err(Diagnostic::new(pos, "E_SUSPENDS_REQUIRED",
+                    "channel read requires susp/suspends and the io/suspend effect contract"));
+            }
+            if self.owner != Owner::TopLevel {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "channel reads in class/actor methods require checked lifecycle integration"));
+            }
+            if !self.loans.is_empty() || self.state_read_scope || self.state_write_scope {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "channel read cannot suspend with live ownership loans or protected actor state"));
+            }
+            if args.len() != 1 {
+                return Err(Diagnostic::new(pos, "E_ARITY", "channel read requires one readable"));
+            }
+            let channel = self.value(&args[0])?;
+            if channel.ty != Type::ChannelInt {
+                return Err(type_err(args[0].pos,
+                    format!("readch/<< requires Channel<int>, got {}", self.tn(channel.ty))));
+            }
+            let scratch = self.temp(Type::ChannelInt, pos)?;
+            let status = self.temp(Type::IoError, pos)?;
+            let option = self.temp(Type::OptionInt, pos)?;
+            let result = self.temp(Type::ResultOptionIntIoError, pos)?;
+            self.imports.extend([
+                Import::ChannelNbRead, Import::ChannelAwaitRead, Import::Cooperate,
+            ]);
+            Ok(TE {
+                e: TExpr::ChannelRead {
+                    source: Box::new(channel), scratch, status, option, result,
+                },
+                ty: Type::ResultOptionIntIoError,
+            })
+    }
+
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
-            ExprKind::Call(name, args) if name == "\u{0}atto_channel_read" => {
-                if !self.suspends {
-                    return Err(Diagnostic::new(e.pos, "E_SUSPENDS_REQUIRED",
-                        "channel read requires susp/suspends and the io/suspend effect contract"));
-                }
-                if self.owner != Owner::TopLevel {
-                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
-                        "channel reads in class/actor methods require checked lifecycle integration"));
-                }
-                if !self.loans.is_empty() || self.state_read_scope || self.state_write_scope {
-                    return Err(Diagnostic::new(e.pos, "E_BORROW",
-                        "channel read cannot suspend with live ownership loans or protected actor state"));
-                }
-                if args.len() != 1 {
-                    return Err(Diagnostic::new(e.pos, "E_ARITY", "channel read requires one readable"));
-                }
-                let channel = self.value(&args[0])?;
-                if channel.ty != Type::ChannelInt {
-                    return Err(type_err(args[0].pos,
-                        format!("readch/<< requires Channel<int>, got {}", self.tn(channel.ty))));
-                }
-                let scratch = self.temp(Type::ChannelInt, e.pos)?;
-                let status = self.temp(Type::IoError, e.pos)?;
-                let option = self.temp(Type::OptionInt, e.pos)?;
-                let result = self.temp(Type::ResultOptionIntIoError, e.pos)?;
-                self.imports.extend([
-                    Import::ChannelNbRead, Import::ChannelAwaitRead, Import::Cooperate,
-                ]);
-                Ok(TE {
-                    e: TExpr::ChannelRead {
-                        source: Box::new(channel), scratch, status, option, result,
-                    },
-                    ty: Type::ResultOptionIntIoError,
-                })
-            }
+            ExprKind::Call(name, args) if name == "\u{0}atto_channel_read" =>
+                self.checked_channel_read(args, e.pos),
             ExprKind::Await(inner) => {
                 if !self.suspends {
                     return Err(Diagnostic::new(e.pos, "E_EFFECT",
