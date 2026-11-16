@@ -1,0 +1,5 @@
+// expect-error: E_PURE
+pure fnc concat(string a, string b): string {
+    return a + b;
+}
+pub fnc main(): int { stdio.println(concat("a", "b")); return 0; }

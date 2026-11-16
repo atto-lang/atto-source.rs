@@ -45,6 +45,7 @@ const RESERVED: &[&str] = &[
     "as",
     "fnc",
     "routine",
+    "pure",
     "async",
     "suspends",
     "generator",
@@ -987,6 +988,7 @@ impl Parser {
         }
         let start = self.pos();
         self.eat_word("pub");
+        let is_pure = self.eat_word("pure");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
         }
@@ -1032,6 +1034,10 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
+        if is_pure && is_generator {
+            return Err(Diagnostic::new(pos, "E_PURE",
+                "pure generator effects require verified continuation semantics"));
+        }
         if is_generator && ret != Type::GeneratorInt {
             return Err(Diagnostic::new(pos, "E_TYPE",
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
@@ -1044,6 +1050,7 @@ impl Parser {
             name,
             pos,
             is_generator,
+            is_pure,
             params,
             ret,
             body,

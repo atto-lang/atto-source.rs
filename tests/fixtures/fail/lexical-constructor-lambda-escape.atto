@@ -1,0 +1,11 @@
+// A direct lambda is not a first-class constructor argument.
+// expect-error: E_UNSUPPORTED
+define class Holder as
+  mut int value = 0;
+  constructor(int v) { self.value = v; }
+end
+pub fnc main(): int {
+  val direct = |n| : int -> n + 1;
+  val holder = new Holder(direct);
+  return direct(41);
+}

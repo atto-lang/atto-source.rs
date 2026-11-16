@@ -182,6 +182,8 @@ pub struct Func {
     pub pos: Pos,
     /// Explicit `fnc *gen` modifier; not inferred from `yield`.
     pub is_generator: bool,
+    /// Explicit effect contract: no externally observable effects or impure calls.
+    pub is_pure: bool,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
