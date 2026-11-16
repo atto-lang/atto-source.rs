@@ -225,3 +225,29 @@ fn nested_generic_closers_without_io_do_not_trigger_preflight() {
         assert!(parse(src).is_empty(), "{src}");
     }
 }
+
+#[test]
+fn parentheses_around_qualified_io_receiver_are_supported() {
+    let source = r#"
+    (stdio.out) << "greeting";
+    (input_stream) >> const chunk;
+    do select {
+        when (inbox) >> const msg -> { (stdio.out) << msg; }
+        when (outgoing) << "ready" -> {}
+    }
+    "#;
+    let ops = parse(source);
+    assert_eq!(ops.len(), 5, "{ops:?}");
+    assert_eq!(ops[0].source_or_sink, "stdio.out");
+    assert_eq!(ops[1].source_or_sink, "input_stream");
+    assert_eq!(ops[2].context, Context::SelectArm);
+    assert_eq!(ops[3].source_or_sink, "stdio.out");
+    assert_eq!(ops[4].direction, Direction::Write);
+}
+
+#[test]
+fn standalone_direction_does_not_reinterpret_expression_context() {
+    assert!(parse("const x: int = 1 << 3;").is_empty());
+    assert!(parse("return n << 1;").is_empty());
+    assert!(parse("do select { when inbox >> const x: Result<Option<int>> -> {} }").len() == 1);
+}
