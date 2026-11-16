@@ -30,7 +30,7 @@ fn literal_and_union_types_do_not_collapse_to_broad_field_types() {
     assert_ne!(ty("(p: {foo: string | int})"), ty("(p: {foo: string})"));
     assert_ne!(ty("(p: {foo: 42})"), ty("(p: {foo: int})"));
     assert_eq!(ty("(p: {foo: \"dog\" | \"cat\"})"),
-               "~{foo:\"dog\"|\"cat\"}");
+               "~{foo:\"cat\"|\"dog\"}");
 }
 
 #[test]
