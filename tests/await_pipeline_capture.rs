@@ -78,6 +78,97 @@ fn direction_tokens_are_contiguous_and_binders_must_be_fresh() {
 }
 
 
+
+#[test]
+fn caret_pipeline_capture_returns_transformed_future_without_an_extra_return() {
+    let source = r#"
+fnc transform_result(int x): int { return x + 1; }
+pub suspends fnc main(): int {
+    val pending = task { return 41; };
+
+    ^ pending
+        |> susp |f| -> await f
+        |> transform_result
+        >> val result: int;
+}
+"#;
+    compile_ok(source);
+}
+
+#[test]
+fn caret_and_return_capture_are_ast_equivalent_checked_bind_then_return() {
+    use atto_compiler::{lexer, parser::Parser, ast::{Stmt, ExprKind, BindKind}};
+    for marker in ["^", "return"] {
+        let src=format!(r#"
+fnc transform_result(int v): int {{ return v + 1; }}
+pub suspends fnc main(): int {{
+    val pending = task {{ return 41; }};
+    {marker} pending |> suspends |f| -> await f
+       |> transform_result >> val answer: int;
+}}
+"#);
+        let p=Parser::new(lexer::lex(&src).unwrap()).parse_program().unwrap();
+        let last=p.funcs.iter().find(|f|f.name=="main").unwrap().body.last().unwrap();
+        let Stmt::Block(steps)=last else {panic!("return capture must become a checked block: {marker}")};
+        assert_eq!(steps.len(),2);
+        let Stmt::Bind {name,kind,ty,init,..}=&steps[0] else {panic!("binding missing")};
+        assert_eq!(name,"answer");
+        assert_eq!(*kind,BindKind::Val);
+        assert_eq!(*ty,Some(atto_compiler::ast::Type::Int));
+        assert!(matches!(&init.kind,ExprKind::Call(_,args)
+            if matches!(args.first().map(|e|&e.kind),Some(ExprKind::Await(_)))));
+        assert!(matches!(&steps[1],Stmt::Return(Some(e),_) if
+            matches!(&e.kind,ExprKind::Var(v) if v=="answer")));
+        compile_ok(&src);
+    }
+}
+
+#[test]
+fn caret_return_is_a_statement_marker_not_an_expression_or_an_operator() {
+    use atto_compiler::lexer::{lex,Tok};
+    assert!(matches!(lex("^ 42;").unwrap()[0].tok,Tok::Caret));
+    for src in [
+        "pub fnc main(): int { ^ 42 ^ 3; }",
+        "pub fnc main(): int { val x = ^ 42; return x; }",
+        "pub fnc main(): int { ^ ^ 42; }",
+        "pub fnc main(): int { ^ 41 ^^ true; }",
+    ] {
+        assert!(compile(src).is_err(),"infix/nested caret forbidden: {src}");
+    }
+    compile_ok("pub fnc main(): int { ^ 42; }");
+}
+
+#[test]
+fn caret_capture_checks_type_effects_and_invalid_binders() {
+    let cases=[
+        ("pub susp fnc main(): int { val p=task{return 42;}; ^ p |> susp |f| -> await f >> val x: string; }","E_TYPE"),
+        ("pub fnc main(): int { val p=task{return 42;}; ^ p |> susp |f| -> await f >> val x: int; }","E_EFFECT"),
+        ("pub susp fnc main(): int { val p=task{return 42;}; ^ p |> susp |f| -> await f >> const x: int; }","E_CONST_EFFECT"),
+        ("pub susp fnc main(): int { val p=task{return 42;}; ^ p |> susp |f| -> await g >> val x: int; }","E_PIPE_BIND"),
+        ("pub susp fnc main(): int { val p=task{return 42;}; ^ p >> val x: int; }","E_IO_SYNTAX"),
+        ("pub susp fnc main(): int { val p=task{return 42;}; ^ p |> susp |f| -> await f >> val x: int; return 5; }","E_UNREACHABLE"),
+    ];
+    for (src,expected) in cases {
+        let result=compile(src).expect_err("invalid caret pipeline must not emit guest Wasm");
+        // Unreachable statements may be rejected at control-flow analysis
+        // or accepted but dead-code-eliminated; other diagnostics are exact.
+        if expected != "E_UNREACHABLE" {
+            assert_eq!(result.code,expected,"{src}: {result}");
+        }
+    }
+}
+
+#[test]
+fn caret_capture_fails_for_unknown_transformation_and_mismatched_return() {
+    for src in [
+        "pub susp fnc main(): int { val p=task{return 41;}; ^ p |> susp |f| -> await f |> unknown_transform >> val x: int; }",
+        "fnc bool_result(int v): bool { return true; } pub susp fnc main(): int { val p=task{return 41;}; ^ p |> susp |f| -> await f |> bool_result >> val x: bool; }",
+    ] {
+        assert!(compile(src).is_err(),"source cannot pass without callable or matching return type");
+    }
+}
+
+
 #[test]
 fn live_class_loans_cannot_cross_suspending_future_pipeline() {
     for loan in ["borrow! parcel", "borrow! mut parcel"] {
