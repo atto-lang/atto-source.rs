@@ -76,3 +76,44 @@ fn direction_tokens_are_contiguous_and_binders_must_be_fresh() {
         "pub suspends fnc main(): int { val p=task{return 42;}; p |> susp |f| -> await f >> val ; return 42; }",
     ] { compile(src).expect_err("malformed terminal direction must be rejected"); }
 }
+
+
+#[test]
+fn live_class_loans_cannot_cross_suspending_future_pipeline() {
+    for loan in ["borrow! parcel", "borrow! mut parcel"] {
+        let source = format!(r#"
+define class Parcel as
+    pub let int value = 1;
+end
+pub suspends fnc main(): int {{
+    let parcel = new Parcel();
+    val reader = {loan};
+    val future = task {{ return 41; }};
+    future |> susp |f| -> await f >> val received: int;
+    return received + reader.value;
+}}
+"#);
+        let diag=compile(&source).expect_err("class loan must not cross suspension");
+        assert_eq!(diag.code,"E_BORROW","{loan}: {diag}");
+    }
+}
+
+#[test]
+fn completed_class_loan_scope_may_precede_suspending_pipeline() {
+    let source = r#"
+define class Parcel as
+    pub let int value = 1;
+end
+pub suspends fnc main(): int {
+    let parcel = new Parcel();
+    block {
+        val reader = borrow! parcel;
+        stdio.println(reader.value);
+    }
+    val future = task { return 42; };
+    future |> susp |f| -> await f >> val value: int;
+    return value;
+}
+"#;
+    compile_ok(source);
+}
