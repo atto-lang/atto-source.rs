@@ -46,3 +46,32 @@ fn parser_recovers_after_rejection() {
     assert!(compile("pub fnc main(): int { ^ 2 ^ 3; }").is_err());
     accepts("pub fnc main(): int { ^ 42; }");
 }
+
+#[test]
+fn caret_inside_literal_true_while_is_nonfallthrough_without_break() {
+    for src in [
+        "pub fnc main(): int { while true do ^ 42; done }",
+        "pub fnc main(): int { while true { ^ 42; } }",
+        "pub fnc main(): int { while true do if true then ^ 42; else ^ 1; fi done }",
+    ] {
+        accepts(src);
+    }
+
+    // Branches that can leave the loop must not be mistaken for a return.
+    for src in [
+        "pub fnc main(): int { while false do ^ 42; done }",
+        "pub fnc main(): int { let flag = true; while flag do ^ 42; done }",
+        "pub fnc main(): int { while true do break; done }",
+        "pub fnc main(): int { while true do if true then break; fi ^ 42; done }",
+    ] {
+        let err = compile(src).unwrap_err();
+        assert_eq!(err.code, "E_RETURN", "{src}: {err}");
+    }
+}
+
+#[test]
+fn tuple_return_type_is_explicitly_unsupported_not_misparsed() {
+    let src = "fnc pair(): (int, int) { ^ (> let x = 5, (x, x + 1)); } pub fnc main(): int { ^ 42; }";
+    let err = compile(src).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED_TYPE", "{err}");
+}
