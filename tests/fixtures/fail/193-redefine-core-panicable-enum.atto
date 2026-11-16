@@ -1,0 +1,5 @@
+// expect-error: E_DUPLICATE
+define enum Panicable as
+    A
+end
+pub fnc main(): int { return 0; }
