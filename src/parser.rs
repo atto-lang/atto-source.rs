@@ -1375,6 +1375,44 @@ impl Parser {
             Some("do") if matches!(self.word_at(1), Some("switch" | "select" | "nb")) => {
                 Err(unsupported(pos, &format!("'do {}'", self.word_at(1).unwrap())))
             }
+            // Narrow, executable Writable<string/int/bool/float> builtin.
+            // Use the existing typed stdio.print lowering, not a new host
+            // import or unchecked operator overload. The << token pair
+            // must be contiguous to avoid interpreting '< <' as I/O.
+            Some("stdio")
+                if *self.peek_at(1) == Tok::Dot
+                    && self.word_at(2) == Some("out")
+                    && *self.peek_at(3) == Tok::Lt
+                    && *self.peek_at(4) == Tok::Lt
+                    && {
+                        let a = self.toks[self.i + 3].pos;
+                        let b = self.toks[self.i + 4].pos;
+                        a.line == b.line && a.col.checked_add(1) == Some(b.col)
+                    } =>
+            {
+                for _ in 0..5 { self.advance(); }
+                let value = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(Expr {
+                    kind: ExprKind::Call("stdio.print".to_owned(), vec![value]),
+                    pos,
+                }))
+            }
+            // Explicit spelling is retained alongside the shorthand.
+            // Other writech/readch targets must not be mistaken for stdout.
+            Some("writech") if self.word_at(1) == Some("stdio")
+                && *self.peek_at(2) == Tok::Dot
+                && self.word_at(3) == Some("out")
+                && *self.peek_at(4) == Tok::Comma =>
+            {
+                for _ in 0..5 { self.advance(); }
+                let value = self.parse_expr()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(Expr {
+                    kind: ExprKind::Call("stdio.print".to_owned(), vec![value]),
+                    pos,
+                }))
+            }
             Some("trap") => {
                 // Caller-side trap also works in expression-statement position.
                 let e = self.parse_expr()?;
