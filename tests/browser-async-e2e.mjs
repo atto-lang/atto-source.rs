@@ -124,6 +124,15 @@ try{
   assert.match(await run(typedCase,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected switch case awaits once');
   console.log('PASS integration: typed switch<int> case executes awaited task with one scheduler handoff');
+  // ADT case payload binding is lexical; the copied int capture ABI
+  // transfers the selected arm's value into the scheduled task frame.
+  const adtCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return 42; }, end; }';
+  assert.match(await run(adtCase,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'ADT selected case awaits exactly once');
+  const captureCase='fnc choice(): Result<int,string> { return Ok(41); } pub suspends fnc main(): int { return switch<int> choice() over case Err(error) : int -> -3, case Ok(value) : int -> await task { return value + 1; }, end; }';
+  assert.match(await run(captureCase,'main() -> 42'),/^main\(\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured switch case yields exactly once');
+  console.log('PASS integration: ADT case selection and copied i64 task payload capture');
   const capturedMatch='fnc checked(): Option<int> { return Some(41); } pub suspends fnc main(): int { return match<int> checked() over on Some(n) : int -> await task { return n + 1; }, on None : int -> 0, end; }';
   assert.match(await run(capturedMatch,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'captured match must yield once');
