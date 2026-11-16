@@ -12,6 +12,9 @@ const files=new Map([
   ['/worker.mjs',[new URL('./browser-async/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/channel-host-probe.mjs',[new URL('./browser-async/channel-host-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/channel-int-v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/channel-guest-abi-probe.mjs',[new URL('./browser-async/channel-guest-abi-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/channel_int_guest_v1.mjs',[new URL('../runtime/browser/channel_int_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/channel_int_v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -81,6 +84,17 @@ try{
     cancellation:'Cancelled',eof:true,sendAfterClose:'Closed'
   });
   console.log('PASS browser host: Channel<int> checked Future, cancellation and EOF in actual Worker (NOT guest ABI)');
+  // Real Wasm import/worker integration, distinct from compiler-emitted reads.
+  const abiProbe=await evaluate("new Promise((resolve,reject)=>{"+
+    "const w=new Worker('/channel-guest-abi-probe.mjs',{type:'module'});"+
+    "const t=setTimeout(()=>{w.terminate();reject(Error('channel ABI timeout'))},5000);"+
+    "w.onmessage=e=>{clearTimeout(t);w.terminate();resolve(e.data)};"+
+    "w.onerror=e=>{clearTimeout(t);w.terminate();reject(Error('channel ABI Worker error'))};"+
+    "w.postMessage({});})");
+  assert.deepEqual(abiProbe,{ok:true,importExecuted:true,some:41,eof:true,
+    replay:'AlreadyConsumed',released:true});
+  console.log('PASS channel ABI: genuine Wasm import and tagged Future outcome in Chromium Worker (NOT AttoLang guest lowering)');
+
 
   const run=async(src,expected)=>{
     await evaluate("(()=>{let e=document.querySelector('#source');e.value="+JSON.stringify(src)+";document.querySelector('#run').click()})()");

@@ -1,6 +1,6 @@
 # Worker-owned `Channel<int>` guest ABI — staged v1 contract
 
-**Status: host runtime and reference tests implemented; compiler-to-guest
+**Status: host runtime plus checked Worker-owned versioned import bridge implemented and tested; compiler-to-guest
 channel ABI NOT yet admitted.** A passing JavaScript host model is not a
 compiled AttoLang guest execution receipt. Avoid falsely promoting this to
 `atto.browser.guest.v2`.
@@ -116,3 +116,31 @@ runtime.
 
 Host reference model source and tests must be treated as **contract tests**
 until the bridge gates above are implemented and independently verified.
+
+
+## Executed implementation staging — November 16, 2026
+
+The adapter at runtime/browser/channel_int_guest_v1.mjs now defines a
+checked import table, error/status codes, and a strictly tagged 16-byte
+read outcome slot: at offset 0 an i32 tag (0 Some, 1 EOF/None, 2 Error),
+at offset 4 an i32 IoError code (zero on success), and at offset 8 an
+i64 payload (meaningful only for Some). Output pointers are checked for
+linear-memory bounds and 8-byte alignment on awaited read slots; handle
+slots require 4-byte alignment. No raw host pointers cross the ABI.
+
+The adapter also defines channel_int_release_v1(channel: i32) -> i32
+to reclaim explicitly closed, drained, ticket-free channel capabilities.
+Numeric handles are scoped to a single guest Worker adapter; the import
+signature validator checks exact Wasm function types and fails closed
+on missing/duplicate/incorrect capability markers or forged imports.
+
+Native Node tests now cover this typed memory layout, the three
+Some/None/Error outcomes, cancellation, read ticket replay, pointer
+safety, lifecycle and a genuine Wasm import module. The dedicated
+Chromium Worker probe uses a synthetic Wasm import module, not an
+AttoLang-compiled Channel<int> guest. This distinction is intentional.
+
+Future compiler work must implement Channel<int> and
+Future<Result<Option<int>,IoError>> source typing, JSPI await lowering,
+ADT construction, source-level nb readch and compiler-generated markers.
+The bridge is not a substitute for any of those acceptance gates.
