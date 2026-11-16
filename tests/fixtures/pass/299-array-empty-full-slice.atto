@@ -1,0 +1,9 @@
+// expect-exit: 0
+// java: target-only
+pub fnc main(): int {
+    val a: Array<int> = [];
+    val view = a[:];
+    let seen = 0;
+    for (int n in view) { seen = seen + 1; }
+    return seen;
+}
