@@ -121,7 +121,7 @@ try{
   console.log('PASS integration: conflicting typed arm fails closed without a guest');
   // Switch/case uses the same checked match lowering and JSPI continuation path.
   const typedCase='pub suspends fnc main(): int { return switch<int> 1 over case 1 : int -> await task { return 42; }, default : int -> await task { return 0; }, end; }';
-  assert.match(await run(typedCase,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.match(await run(typedCase,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected switch case awaits once');
   console.log('PASS integration: typed switch<int> case executes awaited task with one scheduler handoff');
   const conflictingCase='pub suspends fnc main(): int { return switch<int> 1 over case 1 : bool -> true, default : int -> 0, end; }';
