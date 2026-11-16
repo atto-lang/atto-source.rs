@@ -148,3 +148,17 @@ fn braced_and_expression_forms_preserve_body_kinds() {
         assert_eq!(actual, expected, "{source}");
     }
 }
+
+#[test]
+fn lambda_recursion_limit_does_not_abort_and_parser_recovers() {
+    // A moderate nested lambda remains syntactically valid; execution is
+    // separately gated by closure lowering and ownership rules.
+    let valid=format!("{}1","|x| -> ".repeat(20));
+    parsed(&valid).expect("moderately nested lambdas parse");
+    for count in [33, 64, 150] {
+        let adversarial=format!("{}1","|x| -> ".repeat(count));
+        let err=parsed(&adversarial).expect_err("deep lambda source must fail closed");
+        assert_eq!(err.code,"E_NESTING","depth {count}: {err}");
+    }
+    parsed("|x| -> 41").expect("parser recovers after nesting rejection");
+}

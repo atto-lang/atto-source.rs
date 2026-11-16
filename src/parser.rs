@@ -10,6 +10,9 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+/// Safety cap on recursively nested lambda bodies; protects small runner stacks
+/// independently of the generic-type and expression-depth budgets.
+pub const MAX_LAMBDA_DEPTH: u32 = 32;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -202,6 +205,7 @@ pub struct Parser {
     toks: Vec<Token>,
     i: usize,
     depth: u32,
+    lambda_depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
     height: u32,
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
@@ -271,6 +275,7 @@ impl Parser {
             toks,
             i: 0,
             depth: 0,
+            lambda_depth: 0,
             height: 0,
             cond: 0,
             type_names: Vec::new(),
@@ -3208,6 +3213,17 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self, suspends: bool) -> R<ExprKind> {
+        // Each nested expression-bodied lambda adds several recursive parser
+        // frames. Check a *lambda-specific* budget before descending; the
+        // general MAX_DEPTH check alone can overflow the native thread stack
+        // on adversarial chains such as "|x| -> " repeated many times.
+        self.lambda_depth += 1;
+        if self.lambda_depth > MAX_LAMBDA_DEPTH {
+            self.lambda_depth -= 1;
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambda bodies exceed the safe recursion budget"));
+        }
+        let result = (|| -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
@@ -3284,6 +3300,10 @@ impl Parser {
             LambdaBody::Expression(Box::new(self.parse_expr()?))
         };
         Ok(ExprKind::Lambda { params, return_type, body, suspends })
+        })();
+        // Always restore the guard, including on early syntax/limit errors.
+        self.lambda_depth -= 1;
+        result
     }
 
     fn parse_array_literal(&mut self) -> R<ExprKind> {
