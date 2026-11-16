@@ -177,8 +177,19 @@ mod abi {
                     ),
                 );
             }
-            // SAFETY: single-threaded wasm; the host wrote `length` bytes before calling.
-            let input: &[u8] = unsafe { &(*std::ptr::addr_of!(INPUT))[..length as usize] };
+            // SAFETY: input length was checked against SOURCE_CAP above.
+            // INPUT is a fixed-size static byte buffer, initialized for the
+            // entire module lifetime. The single-threaded browser host must
+            // finish writing before calling compile(), and must not mutate
+            // the buffer until this invocation returns. Use an explicit raw
+            // pointer slice instead of implicitly borrowing *const [u8; N],
+            // which trips dangerous_implicit_autorefs on modern rustc.
+            let input: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    std::ptr::addr_of!(INPUT).cast::<u8>(),
+                    length as usize,
+                )
+            };
             let source = match std::str::from_utf8(input) {
                 Ok(s) => s,
                 Err(_) => {
