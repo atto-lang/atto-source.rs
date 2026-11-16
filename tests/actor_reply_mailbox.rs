@@ -72,7 +72,8 @@ fn handler_panic_discards_staged_value_and_settles_with_failure() {
 fn successful_turn_without_value_is_terminal_missing_reply() {
     let mut m: UnaryMailbox<i64, i64> = UnaryMailbox::new(1, 1, 1);
     let r = m.admit(0, 1, 90, 1).unwrap();
-    m.complete(m.next().unwrap(), 2).unwrap();
+    let delivery = m.next().unwrap();
+    m.complete(delivery, 2).unwrap();
     assert_eq!(m.collect(r), Ok(ReplyOutcome::Failure(ReplyFailure::MissingReply)));
 }
 
