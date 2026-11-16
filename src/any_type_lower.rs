@@ -10,7 +10,7 @@
 //! Type arms whose tag cannot match the proven scalar are removed; compatible
 //! arms lower to guards / catch-alls preserving arm order and once-only match
 //! subject evaluation. Unsupported Any shapes fail *before* emitting Wasm.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
@@ -55,6 +55,10 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
     let mut j = start + 3;
     let mut arms = 0;
     let mut selected = false;
+    // Type-arm reachability must be validated before dead arms are pruned
+    // by monomorphic specialization. Guarded arms do not cover a tag.
+    let mut unguarded_tags = BTreeSet::<(bool, &'static str)>::new();
+    let mut wildcard_covered = false;
     let mut output = t[start..start + 3].to_vec();
     while !word(t, j, "end") {
         let Some(head) = t.get(j) else {
@@ -131,6 +135,21 @@ fn replace_match_arms(t: &[Token], start: usize, concrete: &str) -> R<(Vec<Token
         }
         let compatible = arm_ty.is_none_or(|ty| (ty == concrete) != negated);
         let guarded = word(t, header_end, "when");
+        if wildcard_covered {
+            return Err(fail(head.pos, "E_MATCH",
+                "unreachable Any type arm after an unconditional wildcard"));
+        }
+        if let Some(ty) = arm_ty {
+            if unguarded_tags.contains(&(negated, ty)) {
+                return Err(fail(head.pos, "E_MATCH",
+                    "unreachable Any type arm: this tag is already unconditionally covered"));
+            }
+            if !guarded {
+                unguarded_tags.insert((negated, ty));
+            }
+        } else if !guarded {
+            wildcard_covered = true;
+        }
         if compatible && !selected {
             output.push(t[j].clone()); // on
             if typed {
