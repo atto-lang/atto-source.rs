@@ -71,6 +71,15 @@ fn switch_statement_and_do_switch_have_no_implicit_fallthrough() {
             }
         }
     "#);
+    // Java-compatible legacy untyped switch does not require 'over'.
+    accepted(r#"
+        pub fnc main(): int {
+            switch 1
+                case 1 -> { return 42; }
+                default -> { return 0; }
+            end
+        }
+    "#);
     // Alias 'on' is supported for shared AST tooling and existing examples.
     accepted(r#"
         pub fnc main(): int {
@@ -92,6 +101,15 @@ fn reject_wrong_case_result_and_header_type() {
             end;
         }
     "#, "E_TYPE");
+    // Typed switch<T> never silently accepts the ambiguous legacy delimiter.
+    rejected(r#"
+        pub fnc main(): int {
+            switch<int> true
+                case true : int -> { return 42; }
+                default : int -> { return 0; }
+            end
+        }
+    "#, "E_SYNTAX");
     rejected(r#"
         pub fnc main(): int {
             switch<int> true over
