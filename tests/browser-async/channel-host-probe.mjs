@@ -34,6 +34,13 @@ self.onmessage=async()=>{
     const closed=rt.send(ch,1n);
     if(closed.ok||closed.error.kind!=='Closed')throw Error('send-after-close admitted');
 
+    const released=rt.release(ch);
+    if(!released.ok || released.value.released!==true)
+      throw Error('closed and drained channel did not release quota');
+    const stale=rt.nb_read(ch);
+    if(stale.ok || stale.error.kind!=='InvalidHandle')
+      throw Error('released channel handle remained usable');
+
     self.postMessage({
       ok:true,answer:String(item.value.value+1n),
       singleConsumption:double.error.kind,
