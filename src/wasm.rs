@@ -5,7 +5,8 @@
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
 //!   1 = integer overflow; 2 is reserved (division/remainder unsupported);
 //!   3 = object heap exhausted; 4 = invalid generator handle/state;
-//!   5 = generator per-pull dispatch budget exhausted
+//!   5 = generator per-pull dispatch budget exhausted;
+//!   6 = checked Array<int> index/slice outside the allowed bounds
 //! * export `memory` when strings, classes, or actors exist;
 //!   actor-only modules receive one private 64 KiB page per instance;
 //!   with classes it is a fixed, non-growable [`HEAP_PAGES`]-page memory
@@ -36,6 +37,8 @@ pub const PANIC_HEAP: i32 = 3;
 pub const PANIC_GENERATOR: i32 = 4;
 /// Non-yielding generator exceeded its bounded per-pull dispatch budget.
 pub const PANIC_GENERATOR_BUDGET: i32 = 5;
+/// Readonly Array<int> view index or slice exceeded its finite bounds.
+pub const PANIC_ARRAY_BOUNDS: i32 = 6;
 /// Fixed memory size, in 64 KiB pages, of a module that allocates objects.
 pub const HEAP_PAGES: u32 = 16;
 
@@ -259,6 +262,40 @@ impl Emit<'_> {
         panic(&mut self.code, PANIC_GENERATOR);
     }
 
+    /// The high 32 bits are the aligned static-data pointer, low 32 bits len.
+    /// Lift len to signed i64 for checked negative-bound normalization.
+    fn array_len_i64(&mut self, array_slot: u32) {
+        self.get(array_slot);
+        self.op(0xA7); // i32.wrap_i64: count
+        self.op(0xAD); // i64.extend_i32_u
+    }
+
+    /// Normalize an evaluated signed integer index once, then check bounds.
+    /// permit_end allows len as a half-open slice endpoint but not an index.
+    fn array_normalize_bound(&mut self, array_slot: u32, bound_slot: u32, permit_end: bool) {
+        self.get(bound_slot);
+        self.i64c(0);
+        self.op(0x53); // i64.lt_s
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(bound_slot);
+        self.array_len_i64(array_slot);
+        self.op(0x7C); // i64.add; input len is <= 1024
+        self.set(bound_slot);
+        self.close();
+        // Negative after normalization, or beyond the last permitted bound.
+        self.get(bound_slot);
+        self.i64c(0);
+        self.op(0x53); // i64.lt_s
+        self.get(bound_slot);
+        self.array_len_i64(array_slot);
+        self.op(if permit_end { 0x55 } else { 0x59 }); // i64.gt_s or ge_s
+        self.op(0x72); // i32.or
+        self.open(0x04, 0x40, Frame::Other);
+        panic(&mut self.code, PANIC_ARRAY_BOUNDS);
+        self.op(0x00); // unreachable (runtime panic)
+        self.close();
+    }
+
     fn stmts(&mut self, s: &[TStmt]) {
         for st in s {
             self.stmt(st);
@@ -434,6 +471,66 @@ impl Emit<'_> {
             }
             TExpr::StrConst(offset, len) | TExpr::ArrayConst(offset, len) =>
                 self.i64c(((*offset as i64) << 32) | *len as i64),
+            TExpr::ArrayIndex { source, index, array_slot, index_slot } => {
+                // Source and index expressions execute once and left-to-right.
+                self.expr(source);
+                self.set(*array_slot);
+                self.expr(index);
+                self.set(*index_slot);
+                self.array_normalize_bound(*array_slot, *index_slot, false);
+                // All values live in aligned immutable module static memory.
+                self.get(*array_slot);
+                self.i64c(32);
+                self.op(0x88); // i64.shr_u -> byte offset
+                self.op(0xA7); // i32.wrap_i64
+                self.get(*index_slot);
+                self.op(0xA7);
+                self.i32c(8);
+                self.op(0x6C); // i32.mul
+                self.op(0x6A); // i32.add
+                self.load_i64(0);
+            }
+            TExpr::ArraySlice { source, start, end, array_slot, start_slot, end_slot } => {
+                // Return a new readonly descriptor onto the SAME backing data:
+                // no copying, heap allocation, mutable alias, or owner transfer.
+                self.expr(source);
+                self.set(*array_slot);
+                if let Some(start) = start {
+                    self.expr(start);
+                } else {
+                    self.i64c(0);
+                }
+                self.set(*start_slot);
+                if let Some(end) = end {
+                    self.expr(end);
+                } else {
+                    self.array_len_i64(*array_slot);
+                }
+                self.set(*end_slot);
+                self.array_normalize_bound(*array_slot, *start_slot, true);
+                self.array_normalize_bound(*array_slot, *end_slot, true);
+                // Construct (base_offset + start*8)<<32 | max(end-start,0).
+                self.get(*array_slot);
+                self.i64c(32);
+                self.op(0x88); // i64.shr_u
+                self.get(*start_slot);
+                self.i64c(8);
+                self.op(0x7E); // i64.mul
+                self.op(0x7C); // i64.add (bounded by 1024 elements)
+                self.i64c(32);
+                self.op(0x86); // i64.shl
+                self.get(*end_slot);
+                self.get(*start_slot);
+                self.op(0x59); // i64.ge_s
+                self.open(0x04, I64, Frame::Other);
+                self.get(*end_slot);
+                self.get(*start_slot);
+                self.op(0x7D); // i64.sub
+                self.op(0x05); // else
+                self.i64c(0);
+                self.close();
+                self.op(0x84); // i64.or
+            },
             TExpr::IntToFloat(a) => {
                 self.expr(a);
                 self.op(0xB9); // f64.convert_i64_s
