@@ -1,0 +1,12 @@
+// expect-error: E_UNSUPPORTED
+define actor Worker as
+    receive(ActorMail<int> m): void panics(Error) {
+        stdio.println(m.value);
+        return;
+    }
+end
+pub fnc main(): int {
+    val w = spawn Worker();
+    w.send(42);
+    return 0;
+}
