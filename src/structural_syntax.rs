@@ -451,18 +451,19 @@ pub fn parse_pattern(src: &str) -> R<Pattern> {
                     Tok::Ident(w) if w == "true" || w == "false" => {
                         c.i += 1; ScalarPattern::Bool(w == "true")
                     }
-                    Tok::Int(Some(n)) if n <= i64::MAX as u64 => {
+                    Tok::Int(Some(n)) => {
                         c.i += 1; ScalarPattern::Int(n as i64)
                     }
-                    Tok::Minus if matches!(c.next(), Tok::Int(Some(_))) => {
+                    Tok::Int(None) => {
+                        return Err(c.err("E_INTEGER_RANGE",
+                            "positive pattern integer is out of signed i64 range"));
+                    }
+                    Tok::Minus if matches!(c.next(), Tok::Int(_)) => {
                         c.i += 1;
-                        let Tok::Int(Some(magnitude)) = c.tok().clone() else { unreachable!() };
-                        let value = if magnitude == i64::MAX as u64 + 1 {
-                            i64::MIN
-                        } else if magnitude <= i64::MAX as u64 {
-                            -(magnitude as i64)
-                        } else {
-                            return Err(c.err("E_INTEGER_RANGE", "negative pattern integer out of range"));
+                        let value = match c.tok().clone() {
+                            Tok::Int(None) => i64::MIN,
+                            Tok::Int(Some(n)) => -(n as i64),
+                            _ => unreachable!(),
                         };
                         c.i += 1; ScalarPattern::Int(value)
                     }
