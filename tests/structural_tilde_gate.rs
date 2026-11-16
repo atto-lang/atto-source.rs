@@ -4,6 +4,40 @@
 use atto_compiler::{compile, lexer::{lex, Tok}};
 
 #[test]
+fn tilde_prefix_lexing_is_whitespace_insensitive_and_fail_closed_consistently() {
+    let strip_positions = |source: &str| -> Vec<Tok> {
+        lex(source).expect(source).into_iter().map(|t| t.tok).collect()
+    };
+    for (tight, spaced) in [
+        ("~{x: 10}", "~ {x: 10}"),
+        ("~Point", "~ Point"),
+        ("~(field: 42)", "~ (field: 42)"),
+        ("~(key => 42)", "~ (key => 42)"),
+        ("~{}", "~ {}"),
+    ] {
+        assert_eq!(strip_positions(tight), strip_positions(spaced),
+                   "tilde prefix must tokenize the same with spaces");
+    }
+    assert_eq!(strip_positions("~{x: 10}"), strip_positions("~/*c*/{x: 10}"));
+    for (tight, spaced) in [
+        ("fnc main(p: ~{x: int}): int { return 42; }",
+         "fnc main(p: ~ {x: int}): int { return 42; }"),
+        ("fnc main(): int { return ~value; }",
+         "fnc main(): int { return ~ value; }"),
+        ("fnc main(): int { return ~(field: 42); }",
+         "fnc main(): int { return ~ (field: 42); }"),
+        ("fnc main(): int { match 1 over on ~{x: 10} -> {} on _ -> {} end return 42; }",
+         "fnc main(): int { match 1 over on ~ {x: 10} -> {} on _ -> {} end return 42; }"),
+        ("fnc main(): int { match 1 over on is ~{x: int} -> {} on _ -> {} end return 42; }",
+         "fnc main(): int { match 1 over on is ~ {x: int} -> {} on _ -> {} end return 42; }"),
+    ] {
+        let a = compile(tight).expect_err(tight);
+        let b = compile(spaced).expect_err(spaced);
+        assert_eq!(a.code, b.code, "{tight} / {spaced}");
+    }
+}
+
+#[test]
 fn tilde_tokenization_is_explicit_and_comment_string_safe() {
     let tokens = lex("~Point ~ Point // ~ignore\n\"~literal\" /* ~ignore */").unwrap();
     assert!(matches!(tokens[0].tok, Tok::Tilde));
