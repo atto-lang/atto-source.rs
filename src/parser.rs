@@ -1755,10 +1755,10 @@ impl Parser {
         let first_is_actor = matches!(&c.kind, ExprKind::Spawn(_));
         if self.is_word("pipe") || (first_is_actor && *self.peek() == Tok::Pipe) {
             let first_pos = c.pos;
-            let first = match c.kind {
-                ExprKind::Spawn(actor) => PipeStage::Actor(actor),
+            let first = match &c.kind {
+                ExprKind::Spawn(actor) => PipeStage::Actor(actor.clone()),
                 ExprKind::Var(_) | ExprKind::Call(_, _) | ExprKind::Member(_, _)
-                | ExprKind::MethodCall(_, _, _) => PipeStage::Endpoint(c),
+                | ExprKind::MethodCall(_, _, _) => PipeStage::Endpoint(c.clone()),
                 _ => return Err(Diagnostic::new(first_pos, "E_TYPE", "pipe source must be an actor, generator, channel or readable stream")),
             };
             let mut stages = vec![first];
@@ -1768,12 +1768,12 @@ impl Parser {
                 let legacy_actor_bar = *self.peek() == Tok::Pipe;
                 self.advance();
                 let stage = self.parse_postfix()?;
-                let next = match stage.kind {
-                    ExprKind::Spawn(actor) => PipeStage::Actor(actor),
+                let next = match &stage.kind {
+                    ExprKind::Spawn(actor) => PipeStage::Actor(actor.clone()),
                     ExprKind::Var(_) | ExprKind::Call(_, _) | ExprKind::Member(_, _)
                     | ExprKind::MethodCall(_, _, _) if !legacy_actor_bar => {
                         all_actors = false;
-                        PipeStage::Endpoint(stage)
+                        PipeStage::Endpoint(stage.clone())
                     }
                     _ => return Err(Diagnostic::new(
                         operator,
