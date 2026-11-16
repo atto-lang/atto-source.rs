@@ -160,3 +160,17 @@ fn shared_heterogeneous_aosoa_v1_golden_offsets_match() {
         }
     }
 }
+
+#[test]
+fn canonical_tile_width_bounds_deny_oversized_power_of_two() {
+    // oreslang-platform-conformance/contracts/v1/data-layout-abi-v1.json
+    // specifies power-of-two tiles with a maximum of 1024 lanes.
+    assert_eq!(
+        checked_aosoa_field_span(0, 2048, 2048, 8192, 0, 4, 4, 8192),
+        Err(RefError::InvalidLayout)
+    );
+    assert_eq!(
+        checked_aosoa_field_span(1023, 1024, 1024, 4096, 0, 4, 4, 4096),
+        Ok(4092..4096)
+    );
+}
