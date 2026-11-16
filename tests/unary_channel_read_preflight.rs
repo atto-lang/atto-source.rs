@@ -61,7 +61,7 @@ fn production_read_emits_checked_guest_abi_and_preserves_type() {
             "pub {modifier} fnc read_channel_guest_v1(Channel<int> c): Result<Option<int>,IoError> {{ return << c; }} pub fnc main(): int {{ return 0; }}"
         );
         let wasm = compile(&src).expect("a real checked guest channel read must compile");
-        assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
         for marker in [b"atto.channel_int".as_slice(), b"atto.async",
             b"channel_int_nb_read_v1", b"channel_int_await_read_v1", b"cooperate"] {
             assert!(wasm.windows(marker.len()).any(|x| x == marker),
