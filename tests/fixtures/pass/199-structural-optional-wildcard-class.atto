@@ -1,4 +1,5 @@
 // expect-exit: 42
+// java: rejects
 // Optional wildcard x imposes no equality test; y is required.
 define class AvailableY as
     pub int y = 40;
