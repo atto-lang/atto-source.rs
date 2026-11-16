@@ -1591,6 +1591,13 @@ impl Parser {
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
         let write = self.parse_state_critical_mode(false)?;
+        // A read-only block cannot become StateWrite: that AST always
+        // requests an exclusive write ticket from the trusted Worker host.
+        // Reads are accepted only as nonescaping by-value s.field projections.
+        if !write {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                "critical-read is by-value s.field only; block scopes cannot request a write lease"));
+        }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, _) = self.ident("state lease binder")?;
         if binder != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",

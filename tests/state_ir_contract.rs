@@ -46,3 +46,18 @@ fn state_constructor_can_still_initialize_storage_without_a_guest_lease() {
     assert!(!constructor.body.iter().any(|stmt| matches!(stmt,TStmt::StateFieldWrite {..})),
         "creation must not forge a state write loan");
 }
+
+#[test]
+fn critical_read_block_never_escalates_to_exclusive_state_write() {
+    let source = r#"
+define state Counter as
+  state { let int count: 0; }
+  pub bad(): void {
+    handle_state(critical-read |s| -> {});
+  }
+end
+pub fnc main(): int { return 0; }
+"#;
+    let diagnostic = atto_compiler::compile(source).unwrap_err();
+    assert_eq!(diagnostic.code, "E_STATE_BORROW", "{diagnostic}");
+}
