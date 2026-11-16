@@ -55,8 +55,21 @@ self.onmessage=async ({data})=>{
         cooperativeYields++;
       });
       atto.sleep_ms=new WebAssembly.Suspending(async ms=>{
-        if(ms<0n||ms>1000n)throw new Error('invalid sleep duration');
-        await new Promise(resolve=>setTimeout(resolve,Number(ms)));
+        if(typeof ms!=='bigint'||ms<0n||ms>1000n)
+          throw new Error('invalid or unsupported JSPI preview sleep duration');
+        // setTimeout is allowed to be late, but may fire early under some
+        // clock/rounding conditions: recheck a monotonic deadline every wake.
+        // A zero-duration sleep still crosses a Worker event-loop turn.
+        const duration=Number(ms);
+        const deadline=performance.now()+duration;
+        await new Promise(resolve=>{
+          const check=()=>{
+            const remaining=deadline-performance.now();
+            if(remaining<=0) resolve();
+            else setTimeout(check,Math.max(1,Math.ceil(remaining)));
+          };
+          setTimeout(check,Math.max(0,Math.ceil(duration)));
+        });
         return 0n;
       });
       atto.barrier=new WebAssembly.Suspending(async n=>{
