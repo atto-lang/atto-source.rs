@@ -2044,11 +2044,13 @@ impl Parser {
         let over = self.eat_word("over");
         if !over && !switch { self.eat(&Tok::Semi); }
         let braced = over && self.eat(&Tok::LBrace);
-        if (procedural || switch) && !over {
+        // Preserve Java's untyped legacy statement switch: `switch x case ... end`.
+        // Typed switch<T> is the new value-result syntax and requires `over`.
+        if (procedural && !switch && !over) || (switch && switch_type.is_some() && !over) {
             return Err(Diagnostic::new(
                 self.pos(),
                 "E_SYNTAX",
-                "switch and procedural match require 'over' before their arms",
+                "typed switch and procedural match require 'over' before their arms",
             ));
         }
         let mut arms = Vec::new();
@@ -2065,7 +2067,7 @@ impl Parser {
             } else if over {
                 self.eat_word("on")
             } else { false };
-            if over && !default_case && !labelled {
+            if (over || switch) && !default_case && !labelled {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     if switch { "switch arms require 'case', 'on', or 'default'" }
                     else { "every match arm requires 'on' (use 'on _' for default)" }));
