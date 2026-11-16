@@ -40,6 +40,28 @@ fn compiled_guest_channel_imports_are_versioned_and_deterministic() {
  assert_eq!(wasm,compile(SRC).unwrap());
 }
 #[test]
+fn nested_caret_and_return_match_are_identical_compiled_guest_control_flow() {
+    // Exact user-requested control flow, including nested nonlocal returns
+    // and a suspended Channel<int> future. No implicit unwrap is introduced.
+    let caret = SRC
+        .replace("  match opened over", "  ^ match opened over")
+        .replace("      match sent over", "      ^ match sent over")
+        .replace("          match result over", "          ^ match result over")
+        .replace("              match item over", "              ^ match item over");
+    assert_eq!(caret.matches("^ match").count(), 4);
+    let explicit_return = caret.replace("^ match", "return match");
+    let caret_wasm = compile(&caret)
+        .unwrap_or_else(|e| panic!("nested caret match source rejected: {e}"));
+    let return_wasm = compile(&explicit_return)
+        .unwrap_or_else(|e| panic!("nested return match source rejected: {e}"));
+    assert_eq!(caret_wasm, return_wasm,
+        "^ match and return match must lower to identical typed Wasm");
+    for name in ["atto.channel_int","atto.async","channel_int_await_read_v1"] {
+        assert!(has(&caret_wasm,name.as_bytes()),"missing compiled channel ABI {name}");
+    }
+}
+
+#[test]
 fn unsupported_channel_profiles_fail_closed() {
  for src in [
   r#"pub susp fnc main(): int { val ch=Channel<string>.bounded(1); return 0; }"#,

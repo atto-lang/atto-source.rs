@@ -250,6 +250,13 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
         Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        // A nested `^ match` or `return match` exits iff all arm bodies
+        // exit. Exhaustiveness (including guarded-arm coverage) remains a
+        // separate mandatory check in the typed matcher; this syntactic
+        // termination preflight must not pretend to prove coverage itself.
+        Some(Stmt::Match { arms, .. }) =>
+            !arms.is_empty()
+                && arms.iter().all(|arm| guard_failure_exits(&arm.body)),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))

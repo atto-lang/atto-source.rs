@@ -1,0 +1,23 @@
+// expect-exit: 42
+// Both nested ^ match and return match reuse typed, exhaustive ADT checking.
+// No Channel<int> host imports are required to prove return-position semantics.
+pub fnc main(): int {
+    val opened: Result<Option<int>,IoError> = Ok(Some(41));
+
+    ^ match opened over
+        on Err(error) -> { return -1; }
+        on Ok(value) -> {
+            val wrapped: Result<Option<int>,IoError> = Ok(value);
+
+            return match wrapped over
+                on Err(error) -> { return -2; }
+                on Ok(inner) -> {
+                    ^ match inner over
+                        on None -> { return 0; }
+                        on Some(n) -> { ^ n + 1; }
+                    end
+                }
+            end
+        }
+    end
+}
