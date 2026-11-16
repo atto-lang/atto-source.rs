@@ -38,7 +38,7 @@ fn parameters_and_actor_operations_are_not_constant() {
 #[test]
 fn compile_time_provenance_does_not_grant_rebinding() {
     rejects("pub fnc main(): int { const int x = 5; x = 6; return x; }", "E_IMMUTABLE");
-    rejects("pub fnc main(): int { const mut int x = 5; x = 6; return x; }", "E_IMMUTABLE");
+    rejects("pub fnc main(): int { const mut int x = 5; x = 6; return x; }", "E_CONST_MUT_TARGET");
 }
 
 #[test]
@@ -77,4 +77,26 @@ fn constant_provenance_follows_slots_not_shadowed_names() {
 fn const_cannot_call_functions_or_reach_mutable_aliases() {
     rejects("pub fnc main(): int { let mut x = 1; const y = x; return y; }", "E_CONST");
     rejects("pub fnc main(): int { const x = stdio.println(1); return 0; }", "E_CONST");
+}
+
+#[test]
+fn type_right_const_and_implicit_const_have_the_same_provenance() {
+    valid("pub fnc main(): int { int x = 10; const y: int = 20; const int z = 12; return x + y + z; }");
+    rejects("fnc runtime_value(): int { return 10; } pub fnc main(): int { const x: int = runtime_value(); return x; }", "E_CONST");
+    rejects("pub fnc main(): int { const x: int = 10; x = 42; return x; }", "E_IMMUTABLE");
+}
+
+#[test]
+fn bare_mut_is_neither_an_implicit_const_nor_a_binding() {
+    rejects("pub fnc main(): int { mut int x = 10; return x; }", "E_MUT_QUALIFIER");
+    rejects("pub fnc main(): int { mut Cell x = new Cell(); return 0; }", "E_MUT_QUALIFIER");
+}
+
+#[test]
+fn const_mut_rejects_immutable_scalar_targets_with_or_without_type_annotations() {
+    rejects("pub fnc main(): int { const mut int x = 10; return x; }", "E_CONST_MUT_TARGET");
+    rejects("pub fnc main(): int { const mut x: int = 10; return x; }", "E_CONST_MUT_TARGET");
+    rejects("pub fnc main(): int { const mut x = 10; return x; }", "E_CONST_MUT_TARGET");
+    rejects("pub fnc main(): int { const mut bool x = true; return 0; }", "E_CONST_MUT_TARGET");
+    rejects("pub fnc main(): int { const mut string x = \"hello\"; return 0; }", "E_CONST_MUT_TARGET");
 }
