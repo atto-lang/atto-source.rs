@@ -87,6 +87,7 @@ pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnosti
             bounds[i] = Some((&m.failure_effects, m.pos));
         }
     }
+    let mut receiver_indices = Vec::<(usize, crate::diag::Pos, &str)>::new();
     for a in &program.actors {
         for m in &a.methods {
             let label = format!("{}.{}", a.name, m.name);
@@ -95,6 +96,15 @@ pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnosti
                     format!("typed actor method '{}' missing its effect-checking body", label))
             })?;
             bounds[i] = Some((&m.failure_effects, m.pos));
+        }
+        if let Some(r) = &a.receive {
+            let label = format!("{}.receive", a.name);
+            let i = typed_index.get(label.as_str()).copied().ok_or_else(|| {
+                Diagnostic::new(r.pos, "E_EFFECT_TYPE",
+                    format!("typed receive handler '{}' missing its effect-checking body", label))
+            })?;
+            bounds[i] = Some((&r.failure_effects, r.pos));
+            receiver_indices.push((i, r.pos, a.name.as_str()));
         }
     }
 
@@ -118,6 +128,17 @@ pub(super) fn verify(program: &Program, funcs: &[TFunc]) -> Result<(), Diagnosti
             break;
         }
     }
+    // A receive handler may not carry even a potential escaping failure
+    // through this runtime: there is no verified supervisor CONTROL channel
+    // for typed Error transport and no exception-safe actor teardown yet.
+    // This applies to inherited/transitive effects and bare declarations.
+    for (i, pos, actor) in receiver_indices {
+        if effects[i] != 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("actor '{}.receive' has escaping failure effects; supervisor CONTROL/error transport is not implemented for this browser target", actor)));
+        }
+    }
+
     for (i, bound) in bounds.iter().enumerate() {
         let Some((declared, pos)) = bound else { continue; };
         if !declared.explicit { continue; }
