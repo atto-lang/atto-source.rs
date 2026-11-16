@@ -138,3 +138,13 @@ fn adt_case_without_task_capture_still_lowers_real_async_guest() {
     assert!(has(&guest, b"task_await"));
     assert_eq!(guest, compile(source).unwrap());
 }
+
+
+#[test]
+fn task_call_is_not_a_structured_task_block() {
+    let rejected = r#"pub suspends fnc main(): int {
+        return await task();
+    }"#;
+    let e = compile(rejected).expect_err("task() must not silently become a spawned task");
+    assert_eq!(e.code, "E_UNSUPPORTED", "unexpected task-call diagnostic: {e}");
+}
