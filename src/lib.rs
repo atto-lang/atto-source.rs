@@ -200,7 +200,9 @@ mod abi {
                 );
             }
             // SAFETY: single-threaded wasm; the host wrote `length` bytes before calling.
-            let input: &[u8] = unsafe { &(*std::ptr::addr_of!(INPUT))[..length as usize] };
+            let input: &[u8] = unsafe {
+                std::slice::from_raw_parts(std::ptr::addr_of!(INPUT).cast::<u8>(), length as usize)
+            };
             let source = match std::str::from_utf8(input) {
                 Ok(s) => s,
                 Err(_) => {
