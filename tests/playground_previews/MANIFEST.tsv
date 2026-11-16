@@ -1,5 +1,6 @@
 # Exact public-site preview sources; every entry is a Git blob SHA-1
-# site_commit 38a19bdc251d6f8db3ffea3b8df0e6c84ca8881c
+# site_commit 971366eed2f0b02673f6f6860a8cfbf526216e3e
+# site_candidate_branch fix/play-callable-body-styles-public-access-20261115
 # site_root play/examples/preview
 actor-pipeline	7736f9710da491050fa5e71307eb933561791774
 actor-receiver-methods	aac346b631d1a0faf06b17d156c00c2ab54f39a2
@@ -7,7 +8,7 @@ async-iterators	5ef19f8968ac4d29ff66fc65a4a775b7c00edee6
 boolean-operators	a323f261ed2d4e92bf489e71819fd522233762e8
 borrow-arc-send-atomic-box	183c5f2f1881034e5d6e57968c7dd444ada166ab
 borrow-checking	9df7379909d348d60c833533cb7c2e475cd68301
-callable-body-styles	6cb3a7504caa5cb75f4b38af73aed9cb25016b78
+callable-body-styles	951c2eb5b25bd6477396adc2367c324a7c40f985
 channel-bounded	4c272c8a288a84ef6842651722bbf4ed3d430035
 channel-probe	0f8a65616e09fb7560c025f3e00dc4040402ebec
 channel-unbounded	70e7325e584aa688eccfd7ff0a72759f70b81424
