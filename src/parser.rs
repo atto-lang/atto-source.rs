@@ -3438,6 +3438,7 @@ fn describe(t: &Tok) -> String {
                 Tok::PipeGt => "|>",
                 Tok::Amp => "&",
                 Tok::At => "@",
+                Tok::Caret => "^",
                 _ => "?",
             };
             format!("'{s}'")
