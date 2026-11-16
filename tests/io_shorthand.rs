@@ -508,3 +508,87 @@ fn detached_endpoint_pump_cannot_discard_checked_outcome() {
     let err = inspect(&lex(source).unwrap()).expect_err(source);
     assert_eq!(err.code, "E_IO_DISCARD", "{err}");
 }
+
+
+#[test]
+fn endpoint_pipe_parenthesized_paths_preserve_both_orientations() {
+    let ops = parse(r#"
+        (stdio.in) >> (stdio.out);
+        (stdio.out) << (stdio.in);
+        (reader) >> sink;
+        sink << (reader);
+    "#);
+    assert_eq!(ops.len(), 4, "{ops:?}");
+    assert_eq!(ops[0].direction, Direction::Pump);
+    assert_eq!(ops[0].source_or_sink, "stdio.in");
+    assert_eq!(ops[0].pipe_sink.as_deref(), Some("stdio.out"));
+    assert_eq!(ops[1].direction, Direction::Write);
+    assert_eq!(ops[1].source_or_sink, "stdio.out");
+    assert_eq!(ops[1].readable_rhs_candidate.as_deref(), Some("stdio.in"));
+    assert_eq!(ops[2].pipe_sink.as_deref(), Some("sink"));
+    assert_eq!(ops[3].readable_rhs_candidate.as_deref(), Some("reader"));
+}
+
+#[test]
+fn endpoint_pipe_cannot_consume_read_binders_or_nested_generic_closers() {
+    let ops = parse(r#"
+        stdio.in >> val next: Result<Option<string>, IoError>;
+        val reversed: Result<Option<string>, IoError> << stdio.in;
+        stdio.out << value;
+        stdio.in >> stdio.out;
+    "#);
+    assert_eq!(ops.len(), 4, "{ops:?}");
+    assert_eq!(ops[0].direction, Direction::Read);
+    assert_eq!(ops[0].binder.as_deref(), Some("next"));
+    assert!(ops[0].pipe_sink.is_none());
+    assert_eq!(ops[1].direction, Direction::Read);
+    assert!(ops[1].read_binder_on_left);
+    assert!(ops[1].pipe_sink.is_none());
+    assert_eq!(ops[2].direction, Direction::Write);
+    assert!(ops[2].pipe_sink.is_none());
+    assert_eq!(ops[3].direction, Direction::Pump);
+}
+
+#[test]
+fn endpoint_pipe_malformed_operands_and_chains_fail_before_guest_emit() {
+    for src in [
+        "stdio.in >> ;",
+        "stdio.in >> 1;",
+        "stdio.in >> stdio.out << extra;",
+        "stdio.out << stdio.in >> extra;",
+        "stdio.in >> stdio.out >> tail;",
+        "stdio.in >> (stdio.out;",
+        "do select { when stdio.in >> stdio.out -> {} }",
+    ] {
+        let diagnostic = inspect(&lex(src).unwrap()).expect_err(src);
+        assert_eq!(diagnostic.code, "E_IO_SYNTAX", "{src}: {diagnostic}");
+    }
+}
+
+#[test]
+fn endpoint_pipe_nb_try_and_select_never_silently_emit_wasm() {
+    for src in [
+        "pub fnc main(): void { nb stdio.out << stdio.in; }",
+        "pub fnc main(): void { try stdio.out << stdio.in; }",
+        "pub fnc main(): void { do select { when stdio.out << stdio.in -> {} } }",
+        "pub fnc main(): void { (stdio.out) << (stdio.in); }",
+        "pub fnc main(): void { stdio.out >> stdio.in; }",
+        "pub fnc main(): void { stdio.in << stdio.out; }",
+    ] {
+        let err = atto_compiler::compile(src).expect_err("guest endpoint pump is unsupported");
+        assert!(
+            err.code == "E_UNSUPPORTED" || err.code == "E_IO_SYNTAX",
+            "{src}: unexpected diagnostic {err}"
+        );
+    }
+}
+
+#[test]
+fn endpoint_pipe_never_steals_numeric_shifts_comments_or_string_literals() {
+    assert!(parse(r#"
+        val x = 1024 >> 3;
+        val y = "stdio.in >> stdio.out";
+        // stdio.out << stdio.in
+        val result: Result<Option<int>, Error> = source();
+    "#).is_empty());
+}
