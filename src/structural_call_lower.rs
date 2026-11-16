@@ -56,31 +56,27 @@ fn profile(p: &Program) -> R<Option<Profile>> {
     let mut candidates = p.funcs.iter().filter(|f| f.params.iter().any(|q| q.structural));
     let Some(f) = candidates.next() else { return Ok(None); };
     if candidates.next().is_some() {
-        return Err(unsupported(f.pos, "multiple structural functions need a type-indexed dispatch table"));
+        return Ok(None);
     }
     if f.is_generator || f.params.len() != 1 || !f.params[0].structural {
-        return Err(unsupported(f.pos, "only a single ~Class argument on a non-generator top-level fnc"));
+        return Ok(None);
     }
     let param = &f.params[0];
     if param.mutable {
         return Err(Diagnostic::new(param.pos, "E_BORROW",
             "structural parameters must be read-only"));
     }
-    let name = class_of_named(p, param.ty)
-        .ok_or_else(|| unsupported(param.pos,
-            "anonymous shapes, scalar formals and unresolved class shapes require typed descriptor IR"))?;
+    let Some(name) = class_of_named(p, param.ty) else { return Ok(None); };
     let source = ordinary_class(p, name).unwrap();
     let public: Vec<_> = source.fields.iter().filter(|q| q.public).collect();
     if public.is_empty() || public.len() > MAX_PROJECTED_INTS {
-        return Err(unsupported(param.pos,
-            "structural class must expose between one and eight public int fields"));
+        return Ok(None);
     }
     let mut fields = Vec::new();
     let mut replacements = BTreeMap::new();
     for field in public {
         if field.ty != Type::Int || field.mode == FieldMode::ActorState {
-            return Err(unsupported(param.pos,
-                "initial executable structural calls admit public int fields only"));
+            return Ok(None);
         }
         let hidden = format!("$shape_{}_{}", param.name, field.name);
         fields.push(field.name.clone());
