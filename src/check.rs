@@ -283,6 +283,10 @@ struct ActorInfo {
     methods: Vec<MethodInfo>,
     receive_idx: Option<u32>,
     payload: Type,
+    /// Declared pipe-input and pipe-output capabilities; unlike inferred
+    /// `emitted`, they authorize mixed graph actor endpoints.
+    declared_receives: Option<Type>,
+    declared_emits: Option<Type>,
     /// Typed values explicitly emitted by this actor's receive handler.
     /// `None` means the actor is a terminal sink, not that its input type
     /// should automatically be forwarded to the next stage.
@@ -730,12 +734,40 @@ pub fn check(p: &Program) -> R<TProgram> {
             }
             None => Type::Void,
         };
+        // The header is a checked declaration, not duck typing on emit()
+        // nor a substitute for the application mailbox handler.
+        let declared_receives = a.declared_receives.map(&res).transpose()?;
+        let declared_emits = a.declared_emits.map(&res).transpose()?;
+        if let Some(input) = declared_receives {
+            if input == Type::Void || receive_idx.is_none() || input != payload {
+                return Err(type_err(
+                    a.pos,
+                    format!(
+                        "actor '{}' declared receives {} but its receive(ActorMail<T>) handler has {}",
+                        a.name,
+                        tn_plain(input, tn, &class_names, &p.enums, &actor_names),
+                        tn_plain(payload, tn, &class_names, &p.enums, &actor_names),
+                    ),
+                ));
+            }
+        }
+        if let Some(output) = declared_emits {
+            if !matches!(output, Type::Int | Type::Bool) {
+                return Err(Diagnostic::new(
+                    a.pos,
+                    "E_UNSUPPORTED_TYPE",
+                    format!("actor '{}' emitted pipe type must be int or bool in this browser subset", a.name),
+                ));
+            }
+        }
         actors.push(ActorInfo {
             name: a.name.clone(),
             fields,
             methods,
             receive_idx,
             payload,
+            declared_receives,
+            declared_emits,
             emitted: None,
         });
     }
@@ -787,6 +819,19 @@ pub fn check(p: &Program) -> R<TProgram> {
                 }
             } else {
                 emitted = Some(ty);
+            }
+        }
+        if let Some(declared) = g.actors[ai].declared_emits {
+            if emitted != Some(declared) {
+                return Err(type_err(
+                    actor.pos,
+                    format!(
+                        "actor '{}' declares emits {} but its receive handler emits {}",
+                        actor.name,
+                        g.tn(declared),
+                        emitted.map(|ty| g.tn(ty)).unwrap_or_else(|| "nothing".to_string()),
+                    ),
+                ));
             }
         }
         g.actors[ai].emitted = emitted;
@@ -2434,6 +2479,20 @@ impl<'a> FnCx<'a> {
                                 return Err(type_err(
                                     pos,
                                     format!("actor pipeline stage '{name}' has no receive(ActorMail<T>) handler"),
+                                ));
+                            }
+                            // In strict mixed graph roles, an actor's observed
+                            // receive/emit body is not a declaration of authority.
+                            if i > 0 && actor.declared_receives.is_none() {
+                                return Err(type_err(
+                                    pos,
+                                    format!("actor '{name}' needs an explicit receives T pipe-input declaration"),
+                                ));
+                            }
+                            if i + 1 < stages.len() && actor.declared_emits.is_none() {
+                                return Err(type_err(
+                                    pos,
+                                    format!("actor '{name}' needs an explicit emits T pipe-output declaration"),
                                 ));
                             }
                             if i != 0 && previous_is_actor {
