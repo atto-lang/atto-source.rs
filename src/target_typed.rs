@@ -190,11 +190,18 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
         // three sources of truth: nominal declaration, concrete header,
         // and the actual typed receive handler. Never select the first one
         // and silently mask a contradictory receive body.
-        if let Some(inline_input) = definition.declared_receives {
+        if let Some(concrete_input) = definition.declared_receives {
+            let has_attached_receive = headers.receivers.iter().any(|r|
+                r.owner == definition.name && r.name == "receive"
+            );
             match definition.receive.as_ref() {
-                Some(receive) if receive.payload == inline_input => {}
+                Some(receive) if receive.payload == concrete_input => {}
+                // An out-of-line private mtd receive may witness the inbox
+                // even when the concrete actor definition has no inline
+                // receive handler. Its payload is checked below, not guessed.
+                None if has_attached_receive => {}
                 _ => return Err(Diagnostic::new(definition.pos, "E_SIGNATURE",
-                    format!("actor '{}' concrete receives header does not match its receive(ActorMail<T>) handler",
+                    format!("actor '{}' concrete receives header requires one matching inline or attached receive(ActorMail<T>) handler",
                         definition.name))),
             }
         }
@@ -210,7 +217,10 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
         // inventing a runtime witness for arbitrary unresolved nominal types.
         let actual_receive = definition.receive.as_ref().map(|r| r.payload);
         for (kind, declared, concrete) in [
-            ("receives", header.receives.as_deref(), actual_receive),
+            // A concrete receives clause must agree with the forward
+            // declaration even when the receiver body is out-of-line.
+            ("receives", header.receives.as_deref(),
+                definition.declared_receives.or(actual_receive)),
             ("emits", header.emits.as_deref(), definition.declared_emits),
             ("sends", header.sends.as_deref(), definition.declared_sends),
         ] {
@@ -279,6 +289,24 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
                 return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
                     format!("actor '{}' receives {expected} but attached receive(ActorMail<{payload}>) disagrees",
                         header.owner)));
+            }
+        }
+        // A declaration might omit receives while its concrete definition
+        // specifies it. The attached witness must satisfy that contract too.
+        if let Some(concrete) = headers.definitions.iter()
+            .find(|d| d.name == header.owner)
+            .and_then(|d| d.declared_receives) {
+            let concrete_name = match concrete {
+                Type::Int => "int",
+                Type::Bool => "bool",
+                Type::Float => "float",
+                Type::Str => "string",
+                _ => return Err(Diagnostic::new(header.pos, "E_UNSUPPORTED_TYPE",
+                    "cannot verify a non-primitive concrete receives clause against an attached mailbox ingress in this frontend")),
+            };
+            if normalize(concrete_name) != normalize(payload) {
+                return Err(Diagnostic::new(header.pos, "E_SIGNATURE",
+                    format!("actor '{}' concrete receives {concrete_name} but attached receive(ActorMail<{payload}>) disagrees", header.owner)));
             }
         }
         if headers.definitions.iter().any(|d| d.name == header.owner && d.receive.is_some()) {
