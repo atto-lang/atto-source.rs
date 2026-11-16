@@ -1,8 +1,13 @@
 // expect-exit: 0
 // expect-stdout: 42
 define actor Worker as
-    compute(int x): int panics(Error) raises(Error) {
+    compute(int x): int {
         return x + 2;
+    }
+    // A method may be annotated, but this browser stage has no supervisor
+    // CONTROL transport for calling a potentially failing method from receive.
+    future_failure(): int panics(Error) raises(Error) {
+        return 1;
     }
     receive(ActorMail<int> msg): void {
         stdio.println(self.compute(msg.value));
