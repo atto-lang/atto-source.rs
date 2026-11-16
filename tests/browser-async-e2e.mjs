@@ -113,7 +113,7 @@ try{
   console.log('PASS JSPI: two Wasm task continuations overlap at strict two-party barrier (not eager/sequential)');
   // New typed-arm JSPI admission: selected arm launches/awaits exactly one task.
   const typedArm='pub suspends fnc main(): int { return match<int> 1 over on 1 : int -> await task { return 42; }, on _ : int -> await task { return 0; }, end; }';
-  assert.match(await run(typedArm,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.match(await run(typedArm,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected typed arm awaits once');
   console.log('PASS integration: typed match<int> arm executes awaited task with one scheduler handoff');
   const badTypedArm='pub suspends fnc main(): int { return match<int> 1 over on 1 : bool -> true, on _ : int -> 0, end; }';
