@@ -29,7 +29,7 @@ fn built_in_error_is_currently_the_only_admitted_throw_payload() {
 }
 
 #[test]
-fn unimplemented_raise_panic_and_effect_clauses_never_emit_a_guest() {
+fn unimplemented_raise_panic_fail_closed_but_effect_bounds_are_typed() {
     for action in [
         "raise Error(\"escalated\");",
         "panic Error(\"fatal\");",
@@ -42,6 +42,6 @@ fn unimplemented_raise_panic_and_effect_clauses_never_emit_a_guest() {
             "fnc no_failure(): int {clause} {{ return 1; }}\npub fnc main(): int {{ return no_failure(); }}"
         );
         let wasm = compile(&text).expect("bounded signature with no failure must compile");
-        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0", "{clause}");
+        assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0", "{clause}");
     }
 }
