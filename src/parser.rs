@@ -249,6 +249,10 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
         Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        // A nested return-match is a definite exit only when each reachable
+        // arm exits; the type checker separately proves subject exhaustiveness.
+        Some(Stmt::Match { arms, .. }) => !arms.is_empty()
+            && arms.iter().all(|arm| guard_failure_exits(&arm.body)),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
@@ -2060,6 +2064,11 @@ impl Parser {
                 self.parse_pattern()?
             };
             let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
+            // This annotation is meaningful only for a definitely exiting
+            // statement arm in the currently admitted browser profile.
+            let result_type = if self.eat(&Tok::Colon) {
+                Some(self.parse_type()?)
+            } else { None };
             if *self.peek() == Tok::Assign && *self.peek_at(1) == Tok::Gt {
                 return Err(Diagnostic::new(
                     self.pos(),
@@ -2074,6 +2083,7 @@ impl Parser {
             arms.push(MatchArm {
                 pattern,
                 guard,
+                result_type,
                 body,
                 pos: apos,
             });
@@ -2103,6 +2113,13 @@ impl Parser {
     /// pretend that arbitrary expressions are value matches.
     fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
         self.expect_word("match")?;
+        // A result type here is an obligation on every value-producing arm.
+        // This executable subset lowers return-match arms to definite returns.
+        let match_type = if self.eat(&Tok::Lt) {
+            let ty = self.parse_type()?;
+            self.expect(Tok::Gt, "'>' after match result type")?;
+            Some(ty)
+        } else { None };
         let subject = self.parse_expr()?;
         self.expect_word("over")?;
         let mut arms = Vec::new();
@@ -2126,6 +2143,16 @@ impl Parser {
             } else {
                 None
             };
+            let annotated = if self.eat(&Tok::Colon) {
+                Some(self.parse_type()?)
+            } else { None };
+            if let (Some(outer), Some(inner)) = (match_type, annotated) {
+                if outer != inner {
+                    return Err(Diagnostic::new(apos, "E_TYPE",
+                        "match<T> result type conflicts with this arm's ': Type' annotation"));
+                }
+            }
+            let result_type = annotated.or(match_type);
             self.expect(Tok::Arrow, "'->' in a return match arm")?;
             let braced = *self.peek() == Tok::LBrace;
             let body = if braced {
@@ -2142,6 +2169,7 @@ impl Parser {
             arms.push(MatchArm {
                 pattern,
                 guard,
+                result_type,
                 body,
                 pos: apos,
             });
