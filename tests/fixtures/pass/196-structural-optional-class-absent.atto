@@ -1,4 +1,5 @@
 // expect-exit: 42
+// java: rejects
 // Optional x does not exist on the class; required y is present.
 define class OnlyY as
     pub int y = 42;
