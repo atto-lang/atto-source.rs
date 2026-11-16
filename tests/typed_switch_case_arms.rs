@@ -6,7 +6,7 @@ use atto_compiler::compile;
 
 fn accepted(src: &str) {
     let guest = compile(src).unwrap_or_else(|e| panic!("compiler rejected switch case: {e}"));
-    assert!(guest.starts_with(b"\\0asm\\x01\\0\\0\\0"), "real Wasm header required");
+    assert!(guest.starts_with(b"\0asm\x01\0\0\0"), "real Wasm header required");
     assert_eq!(guest, compile(src).expect("deterministic source lowering"));
 }
 fn rejected(src: &str, code: &str) {
