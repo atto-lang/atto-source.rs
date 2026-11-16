@@ -22,8 +22,9 @@ self.onmessage=async()=>{
       throw Error('source compiler rejected: '+new TextDecoder().decode(bytes.subarray(p,q)));
     }
     const wasm=new Uint8Array(compiler.memory.buffer,compiler.result_ptr(),compiler.result_length()).slice();
-    if(!WebAssembly.validate(wasm))throw Error('compiler generated invalid Wasm');
-    const module=new WebAssembly.Module(wasm);
+    let module;
+    try { module=new WebAssembly.Module(wasm); }
+    catch(error) { throw Error('compiler generated invalid Wasm: '+String(error?.message||error)); }
     if(!verifyChannelIntGuestV1(wasm,module))throw Error('missing versioned channel marker');
     let instance,cooperativeYields=0;
     const {imports,host}=createChannelIntGuestV1({getMemory:()=>instance.exports.memory});
