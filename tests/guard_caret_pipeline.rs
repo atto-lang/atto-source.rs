@@ -166,3 +166,24 @@ fn guard_return_cannot_silently_escape_borrow_check_during_await() {
         }
     "#, "E_BORROW");
 }
+
+#[test]
+fn guard_and_caret_cannot_escape_a_critical_write_lease() {
+    // Neither caret return nor an else-free guard may bypass the nonescaping
+    // critical state lease contract. The parser must reject before guest Wasm.
+    for forbidden in ["^;", "guard false { ^; }", "await task { return 42; };"] {
+        let src = format!(r#"
+define state container Counter as
+    state {{ let int count: 0; }}
+    pub bad(): void {{
+        handle_state(critical |s| -> {{
+            {forbidden}
+            s.count = 1;
+        }});
+    }}
+end
+pub fnc main(): int {{ ^ 0; }}
+"#);
+        rejected(&src, "E_STATE_BORROW");
+    }
+}
