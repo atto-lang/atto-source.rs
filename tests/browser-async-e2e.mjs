@@ -119,6 +119,14 @@ try{
   const badTypedArm='pub suspends fnc main(): int { return match<int> 1 over on 1 : bool -> true, on _ : int -> 0, end; }';
   assert.match(await run(badTypedArm,'E_TYPE'),/E_TYPE/);
   console.log('PASS integration: conflicting typed arm fails closed without a guest');
+  // Switch/case uses the same checked match lowering and JSPI continuation path.
+  const typedCase='pub suspends fnc main(): int { return switch<int> 1 over case 1 : int -> await task { return 42; }, default : int -> await task { return 0; }, end; }';
+  assert.match(await run(typedCase,'main() -> 42'),/^main\\(\\) -> 42$/);
+  assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected switch case awaits once');
+  console.log('PASS integration: typed switch<int> case executes awaited task with one scheduler handoff');
+  const conflictingCase='pub suspends fnc main(): int { return switch<int> 1 over case 1 : bool -> true, default : int -> 0, end; }';
+  assert.match(await run(conflictingCase,'E_TYPE'),/E_TYPE/);
+  console.log('PASS integration: typed switch case mismatch fails closed without a guest');
   const combined='pub suspends fnc main(): int { val a=task { return 42; }; stdio.out << "direct"; return await a; }';
   assert.match(await run(combined,'main() -> 42'),/^directmain\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'combined stdout/Future guest must yield exactly once');
