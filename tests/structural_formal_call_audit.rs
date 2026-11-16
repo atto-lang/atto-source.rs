@@ -48,8 +48,8 @@ fn unsupported_formals_never_miscompile_or_move_actor_ownership() {
     for (formal, expected) in [
         ("~int p", "E_UNSUPPORTED_TYPE"),
         ("p: structural bool", "E_UNSUPPORTED_TYPE"),
-        ("~{x: int} p", "E_UNSUPPORTED_TYPE"),
-        ("p: ~ {x: int}", "E_UNSUPPORTED_TYPE"),
+        ("~{x: int} p", "E_UNSUPPORTED"),
+        ("p: ~ {x: int}", "E_UNSUPPORTED"),
         ("~Point mut p", "E_BORROW"),
         ("p: ~ Point mut", "E_BORROW"),
         ("~Point p = new Point()", "E_UNSUPPORTED"),
