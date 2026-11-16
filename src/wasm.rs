@@ -412,6 +412,65 @@ impl Emit<'_> {
     /// Lower the flattened Worker result tag (Some=0, None=1, Err=2)
     /// to the compiler's nested immutable Result<Option<int>, IoError>.
     /// Never synthesize an integer for EOF/error and never duplicate the read.
+    /// Encode a host status in the same Result wire layout used by native
+    /// ADT constructors: tag 0=Ok, tag 1=Err, i32 payload at offset 8.
+    /// For Result<void, IoError> the success payload remains zero.
+    fn channel_status_result(&mut self, status: u32, result: u32, handle: Option<u32>) {
+        self.i32c(16); self.call(self.l.helper(H_ALLOC)); self.set(result);
+        self.get(status);
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(result); self.i32c(1); self.store_i32(0);
+        self.get(result); self.get(status); self.store_i32(8);
+        self.op(0x05);
+        self.get(result); self.i32c(0); self.store_i32(0);
+        if let Some(handle) = handle {
+            self.get(result); self.get(handle); self.load_i32(0);
+            self.store_i32(8);
+        }
+        self.close();
+        self.get(result);
+    }
+
+    fn channel_open(&mut self, capacity: &TE, capacity_slot: u32,
+                    handle: u32, result: u32, status: u32) {
+        // Evaluate once. Check *before* wrapping i64 to i32: otherwise
+        // 2^32+small would turn into an unintended small valid capacity.
+        self.expr(capacity); self.set(capacity_slot);
+        self.i32c(8); self.call(self.l.helper(H_ALLOC)); self.set(handle);
+        self.get(capacity_slot); self.i64c(0); self.op(0x53); // i64.lt_s
+        self.get(capacity_slot); self.i64c(i32::MAX as i64); self.op(0x55); // i64.gt_s
+        self.op(0x72); // i32.or (both comparisons produce i32)
+        self.open(0x04, 0x40, Frame::Other);
+        self.i32c(1); self.set(status); // checked InvalidCapacity
+        self.op(0x05);
+        self.get(capacity_slot); self.op(0xA7); // i32.wrap_i64
+        self.get(handle);
+        self.call(self.l.import(Import::ChannelOpen));
+        self.set(status);
+        self.close();
+        self.channel_status_result(status, result, Some(handle));
+    }
+
+    fn channel_try_send(&mut self, channel: &TE, value: &TE,
+                        result: u32, status: u32) {
+        // One nonparking host admission decision. Full -> Err(Full),
+        // not an implicit wait and not an uncaught host exception.
+        self.expr(channel);
+        self.expr(value);
+        self.call(self.l.import(Import::ChannelSend));
+        self.set(status);
+        self.channel_status_result(status, result, None);
+    }
+
+    fn channel_close_or_release(&mut self, channel: &TE, release: bool,
+                                 result: u32, status: u32) {
+        self.expr(channel);
+        self.call(self.l.import(if release { Import::ChannelRelease }
+                               else { Import::ChannelClose }));
+        self.set(status);
+        self.channel_status_result(status, result, None);
+    }
+
     fn channel_read(&mut self, channel: &TE, ticket: u32, outcome: u32,
                     result: u32, option: u32, status: u32) {
         let alloc = self.l.helper(H_ALLOC);
@@ -569,6 +628,12 @@ impl Emit<'_> {
             TExpr::ChannelRead { channel, ticket, outcome, result, option, status } => {
                 self.channel_read(channel, *ticket, *outcome, *result, *option, *status);
             }
+            TExpr::ChannelOpen {capacity,capacity_slot,handle_slot,result_slot,status_slot} =>
+                self.channel_open(capacity,*capacity_slot,*handle_slot,*result_slot,*status_slot),
+            TExpr::ChannelTrySend {channel,value,result_slot,status_slot} =>
+                self.channel_try_send(channel,value,*result_slot,*status_slot),
+            TExpr::ChannelStatus {channel,release,result_slot,status_slot} =>
+                self.channel_close_or_release(channel,*release,*result_slot,*status_slot),
             // Value stays on the Wasm stack over the void JSPI host call.
             TExpr::AwaitYield(value) => {self.expr(value);self.call(self.l.import(Import::Cooperate));}
             TExpr::Call(f, args) => {
@@ -1115,6 +1180,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::StateLeave => Sig(vec![I64], vec![]),
             Import::ChannelNbRead => Sig(vec![I32, I32], vec![I32]),
             Import::ChannelAwaitRead => Sig(vec![I32, I32], vec![I32]),
+            Import::ChannelOpen => Sig(vec![I32, I32], vec![I32]),
+            Import::ChannelSend => Sig(vec![I32, I64], vec![I32]),
+            Import::ChannelClose | Import::ChannelRelease => Sig(vec![I32], vec![I32]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1435,13 +1503,15 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     // Deliberately versioned and opt-in: the public guest.v2 contract
     // remains unchanged for programs without actual async imports.
-    if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate)) {
+    if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate |
+        Import::ChannelOpen | Import::ChannelSend | Import::ChannelClose | Import::ChannelRelease)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.async");
         marker.push(2); // JSPI + mandatory cooperative yield; old v1 guests must fail closed
         section(&mut out, 0, marker);
     }
-    if p.imports.iter().any(|i| matches!(i, Import::ChannelNbRead | Import::ChannelAwaitRead)) {
+    if p.imports.iter().any(|i| matches!(i, Import::ChannelNbRead | Import::ChannelAwaitRead |
+        Import::ChannelOpen | Import::ChannelSend | Import::ChannelClose | Import::ChannelRelease)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.channel_int");
         marker.push(1);
