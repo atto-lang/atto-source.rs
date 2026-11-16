@@ -416,6 +416,9 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Structural match binders are read-only field projections until
+    /// method-effect and receiver-borrow contracts are checked.
+    pattern_loans: BTreeSet<u32>,
     /// Compiler-issued lexical protected state permissions.
     state_write_scope: bool,
     state_read_scope: bool,
@@ -1564,6 +1567,7 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            pattern_loans: BTreeSet::new(),
             state_write_scope: false,
             state_read_scope: false,
             imports,
@@ -1632,6 +1636,7 @@ impl<'a> FnCx<'a> {
         if let Some(ended) = self.scopes.pop() {
             for l in ended {
                 self.loans.remove(&l.slot);
+                self.pattern_loans.remove(&l.slot);
                 self.moved.remove(&l.slot);
             }
         }
@@ -2022,6 +2027,7 @@ impl<'a> FnCx<'a> {
                         owner: original_owner.unwrap_or(tmp),
                         mutable: false,
                     });
+                    self.pattern_loans.insert(slot);
                     body.push(TStmt::Set(slot, get()));
                 }
                 let guard = match &arm.guard {
@@ -3377,6 +3383,17 @@ impl<'a> FnCx<'a> {
     }
 
     fn method_call(&mut self, base: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        // A value-pattern binder is a readonly scoped loan. Method effects
+        // are not yet classified; even an apparent getter could mutate state,
+        // store the receiver, or outlive this arm. Field reads remain allowed.
+        if let ExprKind::Var(n) = &base.kind {
+            if let Some(local) = self.lookup(n) {
+                if self.pattern_loans.contains(&local.slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "method call on structural pattern loan requires checked receiver effects"));
+                }
+            }
+        }
         // Class.static(args)
         if let ExprKind::Var(n) = &base.kind {
             if self.lookup(n).is_none() {
