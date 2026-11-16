@@ -19,6 +19,21 @@ fn routine_cannot_escape_into_first_class_parameter() {
     fail(&SITE.replace("apply(twice, 21)", "apply(square, 21)"), "E_ROUTINE");
 }
 #[test]
+fn end_bodied_routines_do_not_scan_into_the_following_main() {
+    pass(r#"
+        routine r_end() -> int ::
+            let int n = 3,
+            n + 2
+        end
+        pub fnc main(): int { return r_end() + 37; }
+    "#);
+    fail(r#"
+        routine r_recur() -> int :: r_recur() end
+        pub fnc main(): int { return 0; }
+    "#, "E_ROUTINE_RECURSION");
+}
+
+#[test]
 fn recursive_routines_are_rejected_before_guest_emission() {
     fail(r#"
         routine recurse(int n): int { return recurse(n - 1); }
