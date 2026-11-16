@@ -3437,22 +3437,50 @@ impl<'a> FnCx<'a> {
             _ => None,
         } {
             if self.lookup(name).is_none() {
-                if args.len() != 2 {
-                    return Err(Diagnostic::new(
-                        pos,
-                        "E_ARITY",
-                        format!("{name} takes 2 arguments, found {}", args.len()),
-                    ));
+                // An array literal in this exact builtin position is an
+                // unescaped, read-only scalar argument pack. No general
+                // heap Array<bool> value, indexing, or mutable alias exists.
+                let values: &[Expr] = if args.len() == 1 {
+                    match &args[0].kind {
+                        ExprKind::Array(items) => {
+                            if items.iter().any(|e| !matches!(&e.kind,
+                                ExprKind::Bool(_) | ExprKind::Var(_))) {
+                                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                                    "boolean array gate pack admits only immutable bool literals or bindings"));
+                            }
+                            items
+                        }
+                        _ => return Err(Diagnostic::new(pos, "E_ARITY",
+                            format!("{name} expects at least 2 bool arguments or a scalar array literal"))),
+                    }
+                } else { args };
+                if values.len() < 2 {
+                    return Err(Diagnostic::new(pos, "E_ARITY",
+                        format!("{name} expects at least 2 bool arguments")));
                 }
-                let a = self.value(&args[0])?;
-                let c = self.value(&args[1])?;
-                if a.ty != Type::Bool || c.ty != Type::Bool {
-                    return Err(type_err(pos, format!("{name} needs bool arguments")));
+                if values.len() > crate::parser::MAX_PARAMS {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                        format!("{name} has too many boolean operands")));
                 }
-                return Ok(TE {
-                    e: TExpr::Builtin(b, Box::new(a), Box::new(c)),
-                    ty: Type::Bool,
-                });
+                // Normal functions eagerly evaluate all arguments; nested
+                // typed binary builtins retain exact left-to-right behavior.
+                let mut iter = values.iter();
+                let first = iter.next().expect("checked operand minimum");
+                let mut accumulated = self.value(first)?;
+                if accumulated.ty != Type::Bool {
+                    return Err(type_err(first.pos, format!("{name} needs bool arguments")));
+                }
+                for arg in iter {
+                    let next = self.value(arg)?;
+                    if next.ty != Type::Bool {
+                        return Err(type_err(arg.pos, format!("{name} needs bool arguments")));
+                    }
+                    accumulated = TE {
+                        e: TExpr::Builtin(b, Box::new(accumulated), Box::new(next)),
+                        ty: Type::Bool,
+                    };
+                }
+                return Ok(accumulated);
             }
         }
         if name == "stdio.print" || name == "stdio.println" {
