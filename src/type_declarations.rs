@@ -238,7 +238,7 @@ pub fn parse_tokens(toks: &[Token]) -> R<Vec<TypeDeclaration>> {
                 "declare type requires '=' and not 'as'")?,
         }
         let expression = c.expression(kind)?;
-        let braced = matches!(expression, TypeExpression::Interface(_) | TypeExpression::Trait(_));
+        let braced = matches!(&expression, TypeExpression::Interface(_) | TypeExpression::Trait(_));
         if !c.take(&Tok::Semi) && *c.tok() != Tok::Eof &&
             !(braced && matches!(c.word(), Some("define" | "declare"))) {
             return Err(c.err("E_SYNTAX",
