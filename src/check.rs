@@ -2397,6 +2397,85 @@ impl<'a> FnCx<'a> {
                 })
             }
             ExprKind::New(class, args) => self.new_object(class, args, pos)?,
+            ExprKind::MixedPipeline(stages) => {
+                // A mixed pipe is not a chain of ordinary actor mailbox sends:
+                // actors source only explicitly emitted application values.
+                // Channel/stream/generator capability types and connection
+                // ownership are not available in this browser ABI yet.
+                if let Some(me) = self.actor_name() {
+                    return Err(Diagnostic::new(
+                        pos, "E_UNSUPPORTED",
+                        format!("mixed pipeline cannot spawn stages inside actor '{me}'"),
+                    ));
+                }
+                if matches!(self.owner, Owner::FieldInit { .. }) {
+                    return Err(Diagnostic::new(
+                        pos, "E_UNSUPPORTED",
+                        "mixed pipeline in a field initializer",
+                    ));
+                }
+                if !(2..=16).contains(&stages.len()) {
+                    return Err(Diagnostic::new(
+                        pos, "E_SOURCE_LIMIT",
+                        "mixed pipeline must have 2 to 16 stages",
+                    ));
+                }
+                let mut previous_actor_emit = None;
+                let mut previous_is_actor = false;
+                for (i, stage) in stages.iter().enumerate() {
+                    match stage {
+                        PipeStage::Actor(name) => {
+                            let index = self.g.actor(name).ok_or_else(|| Diagnostic::new(
+                                pos, "E_UNBOUND",
+                                format!("unknown actor pipeline stage '{name}'"),
+                            ))?;
+                            let actor = &self.g.actors[index as usize];
+                            if actor.receive_idx.is_none() {
+                                return Err(type_err(
+                                    pos,
+                                    format!("actor pipeline stage '{name}' has no receive(ActorMail<T>) handler"),
+                                ));
+                            }
+                            if i != 0 && previous_is_actor {
+                                match previous_actor_emit {
+                                    Some(expected) if expected == actor.payload => {}
+                                    Some(expected) => return Err(type_err(
+                                        pos,
+                                        format!(
+                                            "actor pipeline emitted {} cannot enter '{name}' receiving {}",
+                                            self.tn(expected),
+                                            self.tn(actor.payload)
+                                        ),
+                                    )),
+                                    None => return Err(type_err(
+                                        pos,
+                                        format!("actor pipeline stage before '{name}' does not emit"),
+                                    )),
+                                }
+                            }
+                            previous_actor_emit = actor.emitted;
+                            previous_is_actor = true;
+                        }
+                        PipeStage::Endpoint(_endpoint) => {
+                            // Do not invent a source/sink capability from a
+                            // syntactic identifier or silently evaluate an
+                            // endpoint before the runtime ownership contract.
+                            if previous_is_actor && previous_actor_emit.is_none() {
+                                return Err(type_err(
+                                    pos,
+                                    "actor pipeline stage before endpoint does not emit",
+                                ));
+                            }
+                            previous_actor_emit = None;
+                            previous_is_actor = false;
+                        }
+                    }
+                }
+                return Err(Diagnostic::new(
+                    pos, "E_UNSUPPORTED",
+                    "mixed pipe parsed with actor emission checks; typed PipeSource/PipeSink, backpressure, cancellation and guest ABI are not implemented",
+                ));
+            }
             ExprKind::ActorPipeline(stages) => {
                 // Admission only: do not generate a fake ActorRef or invoke a
                 // JavaScript-side pipeline interpreter for this source form.
