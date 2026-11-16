@@ -1,0 +1,6 @@
+// expect-error: E_ANNOTATION_TARGET
+define actor Worker as
+  @Override
+  work(): int { return 1; }
+end
+pub fnc main(): int { return 0; }
