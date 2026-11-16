@@ -196,6 +196,7 @@ pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
 }
 
+#[derive(Clone)]
 pub struct Parser {
     toks: Vec<Token>,
     i: usize,
@@ -1229,9 +1230,31 @@ impl Parser {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
             }
-            if self.eat(&Tok::ColonColon) && *self.peek() == Tok::LBrace {
+            // Keep existing implicit-return comma/end bodies compatible.
+            // A semicolon/end body is an explicit-return sequence. Try it in
+            // an isolated parser snapshot: failed trials must not leak token
+            // positions, symbol interning or nesting-budget state.
+            let explicit_comma = self.eat(&Tok::ColonColon);
+            if explicit_comma && *self.peek() == Tok::LBrace {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     "'::' requires a comma/end body, not a brace block"));
+            }
+            // The pinned website also uses '::' as an optional header
+            // separator before explicit semicolon/return statements. Until
+            // the versioned header migration (#185), preserve both spellings
+            // without relaxing the checked return contract.
+            let mut trial = self.clone();
+            if let Ok(body) = trial.parse_explicit_end_body() {
+                // A lone final expression still means a comma/end *implicit*
+                // tail return. Never reinterpret it as a statement/end body:
+                // doing so changes the type of existing class mtd methods.
+                // The current compatibility profile admits explicit-return
+                // bodies only when a top-level terminal is present. Fully
+                // branch-terminal explicit bodies await the versioned grammar.
+                if body.iter().any(|stmt| matches!(stmt, Stmt::Return(..) | Stmt::Throw(..))) {
+                    *self = trial;
+                    return Ok(body);
+                }
             }
             return self.parse_erlang_body(ret);
         }
@@ -1240,6 +1263,47 @@ impl Parser {
                 "a ': Type ->' callable body must open with '{'"));
         }
         self.parse_block()
+    }
+
+    /// Explicit statement/end bodies use ordinary semicolon terminators
+    /// and do NOT infer a return from the last expression. Nested if/fi and
+    /// match/end consume their own delimiters before this outer 'end'.
+    /// A callable's return and exhaustiveness obligations remain checked by
+    /// the normal typed frontend, not guessed by the parser.
+    fn parse_explicit_end_body(&mut self) -> R<Vec<Stmt>> {
+        if self.in_generator {
+            return Err(unsupported(self.pos(), "explicit/end generator bodies"));
+        }
+        self.enter()?;
+        let previous = self.erlang_body;
+        self.erlang_body = false;
+        let parsed = (|| -> R<Vec<Stmt>> {
+            let mut body = Vec::new();
+            if self.is_word("end") {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "explicit/end callable bodies require a statement"));
+            }
+            while !self.is_word("end") {
+                if *self.peek() == Tok::Eof {
+                    return Err(self.expected("'end'"));
+                }
+                if *self.peek() == Tok::Comma {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "explicit/end callable bodies cannot contain comma-separated items"));
+                }
+                let start = self.i;
+                body.push(self.parse_stmt()?);
+                if self.i == start {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "explicit/end body statement did not consume source"));
+                }
+            }
+            self.expect_word("end")?;
+            Ok(body)
+        })();
+        self.erlang_body = previous;
+        self.leave();
+        parsed
     }
 
     /// In an Erlang-style sequence the last expression is an implicit return
