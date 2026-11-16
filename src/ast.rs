@@ -138,19 +138,10 @@ pub struct Receive {
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
-    /// `declare actor Foo;` names a nominal actor without an inline body.
-    /// It is never executable merely because its header parses.
-    pub declaration_only: bool,
-    /// Only `declare pub actor Foo;` exports a nominal declaration.
-    pub public: bool,
-    /// Contract references are metadata, not proof of implementation.
-    pub implemented_contracts: Vec<String>,
     /// Explicit application mailbox type. Independent of ordinary sends.
     pub declared_receives: Option<Type>,
     /// Explicit pipeline event type, distinct from sends/replies/CONTROL.
     pub declared_emits: Option<Type>,
-    /// Ordinary outbound application-message effect, not pipeline emission.
-    pub declared_sends: Option<Type>,
     pub fields: Vec<Field>,
     pub receive: Option<Receive>,
     pub methods: Vec<Method>,
