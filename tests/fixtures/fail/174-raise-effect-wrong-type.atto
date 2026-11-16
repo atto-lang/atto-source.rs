@@ -1,0 +1,3 @@
+// expect-error: E_EFFECT_TYPE
+fnc bad(): int raises(string) { return 4; }
+pub fnc main(): int { return bad(); }
