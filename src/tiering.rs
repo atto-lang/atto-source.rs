@@ -41,12 +41,24 @@ pub enum PlanError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExecutionPlan {
-    pub target: DeploymentTarget,
-    pub optimization: OptimizationMode,
-    pub aot_baseline_required: bool,
+    target: DeploymentTarget,
+    optimization: OptimizationMode,
 }
 
 impl ExecutionPlan {
+    /// No consumer can disable the AOT baseline through mutable/public fields.
+    pub const fn requires_aot_baseline(self) -> bool {
+        true
+    }
+
+    pub const fn target(self) -> DeploymentTarget {
+        self.target
+    }
+
+    pub const fn optimization(self) -> OptimizationMode {
+        self.optimization
+    }
+
     /// Validate an optimization request without asserting target compilation,
     /// actual executable-memory provisioning or JIT implementation support.
     pub fn admit(
@@ -73,14 +85,13 @@ impl ExecutionPlan {
         Ok(Self {
             target,
             optimization,
-            aot_baseline_required: true,
         })
     }
 }
 
 /// A fixed-capacity, zero-allocation counter bank. The only hot path is a
 /// bounds-checked saturating integer increment. No code is generated here.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct TraceCounters<const N: usize> {
     counts: [u32; N],
     hot_threshold: u32,
