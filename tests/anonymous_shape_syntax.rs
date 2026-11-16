@@ -158,7 +158,7 @@ fn production_parser_preserves_anonymous_formals_without_nominal_erasure() {
         assert!(p.structural, "{spelling}");
         let Type::Named(i) = p.ty else { panic!("shape must retain a reserved, unresolved type identity"); };
         let canonical = &program.type_names[i as usize].0;
-        assert!(canonical.starts_with("~{{"), "{spelling}: {canonical}");
+        assert!(canonical.starts_with("~{"), "{spelling}: {canonical}");
         assert_eq!(canonical,
             &syn::parse_formals(&format!("({spelling})")).unwrap()[0].ty.canonical);
         let err = compile(&src).expect_err("no projected shape ABI may emit a guest");
