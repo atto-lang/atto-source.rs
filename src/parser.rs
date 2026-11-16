@@ -1150,33 +1150,53 @@ impl Parser {
         })
     }
 
+    /// Parse formal type modifiers without discarding the structural
+    /// semantics. The checker must validate the borrowed shape ABI *before*
+    /// registration or guest codegen. Inline shapes are still unsupported
+    /// until they have an owned type/field descriptor IR.
+    fn parse_param_type(&mut self) -> R<(Type, bool)> {
+        let pos = self.pos();
+        let structural = self.eat(&Tok::Tilde) || self.eat_word("structural");
+        if structural && *self.peek() == Tok::LBrace {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "inline structural parameter shapes need verified shape ABI lowering"));
+        }
+        let ty = self.parse_type()?;
+        if structural && !matches!(ty, Type::Named(_)) {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "structural formal requires a declared class shape, not a scalar, generic or actor reference"));
+        }
+        Ok((ty, structural))
+    }
+
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
-        if self.is_word("structural") || *self.peek() == Tok::Tilde {
-            return Err(unsupported(pos, "structural (~ / structural) parameters"));
-        }
         // compatibility form `name: type [mut]`
         if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, pos) = self.ident("a parameter name")?;
             self.advance();
-            let ty = self.parse_type()?;
+            let (ty, structural) = self.parse_param_type()?;
             let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable, pos);
+            return self.finish_param(name, ty, structural, mutable, pos);
         }
-        let ty = self.parse_type()?;
+        let (ty, structural) = self.parse_param_type()?;
         let mutable = self.eat_word("mut");
         let (name, pos) = self.ident("a parameter name")?;
-        self.finish_param(name, ty, mutable, pos)
+        self.finish_param(name, ty, structural, mutable, pos)
     }
 
-    fn finish_param(&self, name: String, ty: Type, mutable: bool, pos: Pos) -> R<Param> {
+    fn finish_param(&self, name: String, ty: Type, structural: bool, mutable: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
             return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
+        }
+        if structural && mutable {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "a structural formal is a readonly loan; mutable structural formals require a checked exclusive-borrow ABI"));
         }
         if *self.peek() == Tok::Assign {
             return Err(unsupported(self.pos(), "default parameter values"));
         }
-        Ok(Param { name, ty, mutable, pos })
+        Ok(Param { name, ty, structural, mutable, pos })
     }
 
     // ----------------------------------------------------------- statements
