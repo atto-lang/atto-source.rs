@@ -1,0 +1,3 @@
+// expect-error: E_ANNOTATION_TARGET
+@Override
+pub fnc main(): int { return 0; }
