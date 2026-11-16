@@ -158,8 +158,11 @@ impl Cursor {
                     format!("-{v}")
                 }
             }
-            Tok::Ident(ref w) if allow_literal && !explicit &&
-                (w == "true" || w == "false") => {
+            Tok::Ident(ref w) if w == "true" || w == "false" => {
+                if !allow_literal || explicit {
+                    return Err(self.err("E_TYPE",
+                        "boolean singleton types are only admitted inside structural fields"));
+                }
                 self.i += 1;
                 w.clone()
             }
@@ -168,6 +171,10 @@ impl Cursor {
                 if name == "_" {
                     return Err(self.err("E_TYPE",
                         "'_' is a value-pattern wildcard, not an implicit Any type"));
+                }
+                if name == "null" || name == "undefined" {
+                    return Err(self.err("E_UNSUPPORTED_TYPE",
+                        "null/undefined singleton shape types need an explicit presence/value contract"));
                 }
                 if explicit && matches!(name.as_str(),
                     "int" | "bool" | "string" | "String" | "float" | "void") {
