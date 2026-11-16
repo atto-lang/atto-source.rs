@@ -1,0 +1,12 @@
+// Two tasks must both reach the host barrier before either can resume.
+pub suspends fnc main(): int {
+  val first = task {
+    await rt.barrier(2);
+    return 20;
+  };
+  val second = task {
+    await rt.barrier(2);
+    return 22;
+  };
+  return await first + await second;
+}
