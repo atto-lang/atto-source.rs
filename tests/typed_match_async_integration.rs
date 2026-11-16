@@ -105,3 +105,46 @@ fn switch_task_effects_and_scope_are_checked_not_coerced() {
         assert_eq!(diagnostic.code, expected, "{source}: {diagnostic}");
     }
 }
+
+#[test]
+fn adt_payload_task_capture_is_rejected_until_owned_frames_exist() {
+    let source = r#"
+        fnc choice(): Result<int,string> { return Ok(41); }
+        pub suspends fnc main(): int {
+            return switch<int> choice() over
+                case Err(error) : int -> -3,
+                case Ok(value) : int -> await task { return value + 1; },
+            end;
+        }
+    "#;
+    let diagnostic = compile(source).expect_err("task must not read a parent case-local without a captured owned frame");
+    assert_eq!(diagnostic.code, "E_UNBOUND", "{diagnostic}");
+}
+
+#[test]
+fn adt_case_without_task_capture_still_lowers_real_async_guest() {
+    let source = r#"
+        fnc choice(): Result<int,string> { return Ok(41); }
+        pub suspends fnc main(): int {
+            return switch<int> choice() over
+                case Err(error) : int -> -3,
+                case Ok(value) : int -> await task { return 42; },
+            end;
+        }
+    "#;
+    let guest = compile(source).unwrap_or_else(|e| panic!("adt awaited case: {e}"));
+    assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
+    assert!(has(&guest, b"task_start"));
+    assert!(has(&guest, b"task_await"));
+    assert_eq!(guest, compile(source).unwrap());
+}
+
+
+#[test]
+fn task_call_is_not_a_structured_task_block() {
+    let rejected = r#"pub suspends fnc main(): int {
+        return await task();
+    }"#;
+    let e = compile(rejected).expect_err("task() must not silently become a spawned task");
+    assert_eq!(e.code, "E_UNSUPPORTED", "unexpected task-call diagnostic: {e}");
+}
