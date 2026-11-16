@@ -190,9 +190,12 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
                         definition.name))),
             }
         }
-        if header.receives.is_some() && definition.receive.is_none() {
+        if header.receives.is_some() && definition.receive.is_none() &&
+            !headers.receivers.iter().any(|r|
+                r.owner == definition.name && r.name == "receive"
+            ) {
             return Err(Diagnostic::new(definition.pos, "E_SIGNATURE",
-                format!("actor '{}' declared receives but has no verified receive(ActorMail<T>) handler",
+                format!("actor '{}' declared receives but has no inline or attached receive(ActorMail<T>) handler",
                     definition.name)));
         }
         // Match available primitive input/output/effect header types without
