@@ -1,0 +1,6 @@
+// expect-error: E_DUPLICATE_ANNOTATION
+define class Root as pub value(): int { return 1; } end
+define class Child extends Root as
+  @Override pub override value(): int { return 2; }
+end
+pub fnc main(): int { return 0; }
