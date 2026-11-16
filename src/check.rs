@@ -1958,6 +1958,49 @@ impl<'a> FnCx<'a> {
             let (test, bind, catch_all) = match &arm.pattern {
                 Pattern::Wild => (truth(true), None, true),
                 Pattern::Bind(n) => (truth(true), Some(n.as_str()), true),
+                Pattern::StructuralType { name, bind } => {
+                    let Some(target_id) = self.g.class(name) else {
+                        return Err(Diagnostic::new(arm.pos, "E_UNKNOWN_TYPE",
+                            format!("unknown structural type '{name}'")));
+                    };
+                    let target = &self.g.classes[target_id as usize];
+                    if target.state_container {
+                        return Err(Diagnostic::new(arm.pos, "E_STATE_BORROW",
+                            "protected actor-state containers cannot be structural type patterns"));
+                    }
+                    // In this first AOT slice only public scalar fields are
+                    // reifiable. Do not mistake a class pointer's nominal ID
+                    // or private members for an accessible structural shape.
+                    let fields: Vec<_> = target.fields.iter().filter(|f| f.public).collect();
+                    if fields.is_empty() {
+                        return Err(Diagnostic::new(arm.pos, "E_UNSUPPORTED_TYPE",
+                            "empty public class shape cannot establish structural type conformance"));
+                    }
+                    for field in &fields {
+                        if !matches!(field.ty,
+                            Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))
+                        {
+                            return Err(Diagnostic::new(arm.pos, "E_UNSUPPORTED_TYPE",
+                                "nested class/actor handle fields require recursive structural type checking"));
+                        }
+                        if field.mode == FieldMode::ActorState {
+                            return Err(Diagnostic::new(arm.pos, "E_STATE_BORROW",
+                                "protected actor-state members are not structural type fields"));
+                        }
+                    }
+                    let actual = &self.g.classes[class_id as usize];
+                    let conforms = fields.iter().all(|expected| {
+                        actual.fields.iter().any(|field| {
+                            field.public
+                                && field.mode != FieldMode::ActorState
+                                && field.name == expected.name
+                                && field.ty == expected.ty
+                        })
+                    });
+                    // No field values are read: all conformance checks are
+                    // derived from known public layouts at compile time.
+                    (truth(conforms), bind.as_deref(), false)
+                },
                 Pattern::StructuralFields { fields, bind } => {
                     let mut test = truth(true);
                     for field in fields {
@@ -2016,7 +2059,7 @@ impl<'a> FnCx<'a> {
                     (test, bind.as_deref(), false)
                 },
                 _ => return Err(type_err(arm.pos,
-                    "a class match accepts structural field-value patterns or a catch-all")),
+                    "a class match accepts structural value/type patterns or a catch-all")),
             };
             self.scopes.push(Vec::new());
             let result = (|| -> R<(TE, Vec<TStmt>)> {
