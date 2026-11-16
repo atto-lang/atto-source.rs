@@ -12,7 +12,7 @@ impl From<SlotFault> for MailFault {
 }
 
 /// Caller-only receipt does not grant the right to stage a reply.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ReplyReceipt { ticket: Ticket }
 
 /// Trusted, non-forgeable delivery permit, obtained only from admitted queue.
