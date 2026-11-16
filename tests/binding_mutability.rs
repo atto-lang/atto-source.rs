@@ -64,10 +64,9 @@ fn scalars_still_distinguish_reassignment_from_mut() {
 }
 
 #[test]
-fn legacy_const_mut_is_still_not_rebindable() {
-    expect_ok("pub fnc main(): int { const mut x: int = 1; return x; }");
-    let src = "pub fnc main(): int { const mut x: int = 1; x = 2; return x; }";
-    assert_eq!(atto_compiler::compile(src).unwrap_err().code, "E_IMMUTABLE");
+fn scalar_const_mut_is_not_a_mutable_binding() {
+    expect_error("const mut x: int = 1; return x;", "E_CONST_MUT_TARGET");
+    expect_error("const mut int x = 1; x = 2; return x;", "E_CONST_MUT_TARGET");
 }
 
 #[test]
