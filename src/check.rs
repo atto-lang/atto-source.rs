@@ -338,6 +338,7 @@ struct MethodInfo {
     is_static: bool,
     idx: u32,
     params: Vec<Type>,
+    min_arity: usize,
     ret: Type,
 }
 
@@ -363,6 +364,8 @@ struct ActorInfo {
 /// Program-wide declaration tables shared by every body check.
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
+    /// Full signature arity -> first accepted positional arity.
+    min_arities: BTreeMap<(String, usize), usize>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -798,6 +801,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     // ---- top-level signatures keep indices 0..funcs.len()
     let mut sigs = BTreeMap::new();
+    let mut min_arities = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
         if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None") {
@@ -808,6 +812,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             ));
         }
         let key = (f.name.clone(), f.params.len());
+        let min_arity = f.params.iter().take_while(|p| !p.omittable).count();
         if sigs.contains_key(&key) {
             return Err(Diagnostic::new(
                 f.pos,
@@ -819,7 +824,15 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ),
             ));
         }
+        // Overlap is a declaration error, not a type-directed call choice.
+        // For example f(int) and f(int, int? x?) both admit f(1).
+        if min_arities.iter().any(|((name, max), min): (&(String, usize), &usize)|
+            name == &f.name && min_arity <= *max && *min <= f.params.len()) {
+            return Err(Diagnostic::new(f.pos, "E_AMBIGUOUS",
+                format!("omittable parameters create overlapping call arities for '{}'", f.name)));
+        }
         let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
+        min_arities.insert(key.clone(), min_arity);
         sigs.insert(key, (i as u32, params, res(f.ret)?));
         names.entry(f.name.clone()).or_default().push(f.params.len());
     }
@@ -846,6 +859,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 is_static: m.is_static,
                 idx: 0,
                 params: m.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
+                min_arity: m.params.iter().take_while(|p| !p.omittable).count(),
                 ret: res(m.ret)?,
             });
         }
@@ -960,6 +974,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 
     let g = Globals {
         sigs,
+        min_arities,
         names,
         classes,
         enums: &p.enums,
@@ -1214,6 +1229,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     name: String::new(),
                     ty: mi.ret,
                     mutable: false,
+                    omittable: false,
                     pos: m.pos,
                 },
                 mi.ret,
@@ -3065,6 +3081,26 @@ impl<'a> FnCx<'a> {
         Ok(out)
     }
 
+    /// Generate a fresh guest-heap None for each omitted Option<T> formal.
+    /// This retains the callee's full ABI arity and never uses a host null.
+    fn args_with_omissions(&mut self, callee: &str, args: &[Expr], params: &[Type],
+        min_arity: usize, pos: Pos) -> R<Vec<TE>> {
+        if args.len() < min_arity || args.len() > params.len() {
+            return Err(Diagnostic::new(pos, "E_ARITY",
+                format!("'{callee}' expects {min_arity}..={} arguments, got {}", params.len(), args.len())));
+        }
+        let mut typed = self.args(callee, args, params)?;
+        for ty in &params[args.len()..] {
+            if !matches!(ty, Type::OptionInt | Type::OptionResultIntStr) {
+                return Err(Diagnostic::new(pos, "E_OMITTABLE_DEFAULT",
+                    "omitted argument has no supported Option<T> implicit None value"));
+            }
+            let tmp = self.temp(*ty, pos)?;
+            typed.push(TE { e: TExpr::AdtNew { tag: 0, payload: None, tmp }, ty: *ty });
+        }
+        Ok(typed)
+    }
+
     fn arity(&self, callee: &str, want: usize, got: usize, pos: Pos) -> R<()> {
         if want != got {
             return Err(Diagnostic::new(
@@ -3268,8 +3304,7 @@ impl<'a> FnCx<'a> {
                         ));
                     }
                     let label = format!("{n}.{name}");
-                    self.arity(&label, m.params.len(), args.len(), pos)?;
-                    let targs = self.args(&label, args, &m.params)?;
+                    let targs = self.args_with_omissions(&label, args, &m.params, m.min_arity, pos)?;
                     return Ok(TE {
                         e: TExpr::Call(m.idx, targs),
                         ty: m.ret,
@@ -3310,8 +3345,7 @@ impl<'a> FnCx<'a> {
                         }
                     };
                     let label = format!("{}.{name}", actor.name);
-                    self.arity(&label, m.params.len(), args.len(), pos)?;
-                    let targs = self.args(&label, args, &m.params)?;
+                    let targs = self.args_with_omissions(&label, args, &m.params, m.min_arity, pos)?;
                     return Ok(TE {
                         e: TExpr::Call(m.idx, targs),
                         ty: m.ret,
@@ -3417,9 +3451,8 @@ impl<'a> FnCx<'a> {
             ));
         }
         let label = format!("{cname}.{name}");
-        self.arity(&label, m.params.len(), args.len(), pos)?;
         let mut targs = vec![recv];
-        targs.extend(self.args(&label, args, &m.params)?);
+        targs.extend(self.args_with_omissions(&label, args, &m.params, m.min_arity, pos)?);
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,
@@ -3568,8 +3601,14 @@ impl<'a> FnCx<'a> {
                 return Err(isolation(pos, me, "file/module callable", name));
             }
         }
-        let (idx, params, ret) = match self.g.sigs.get(&(name.to_string(), args.len())) {
-            Some(s) => s.clone(),
+        // Resolve by admitted arity interval. Intervals were proven disjoint
+        // when signatures were registered, so no type-directed ambiguity.
+        let candidate = self.g.sigs.iter().find(|((n, max), _)| {
+            n == name && args.len() <= *max &&
+                self.g.min_arities.get(&(n.clone(), *max)).is_some_and(|min| args.len() >= *min)
+        }).map(|(key, sig)| (key.clone(), sig.clone()));
+        let ((_, max_arity), (idx, params, ret)) = match candidate {
+            Some(s) => s,
             None => {
                 return Err(match self.g.names.get(name) {
                     Some(arities) => Diagnostic::new(
@@ -3590,7 +3629,8 @@ impl<'a> FnCx<'a> {
                 })
             }
         };
-        let targs = self.args(name, args, &params)?;
+        let min_arity = self.g.min_arities[&(name.to_string(), max_arity)];
+        let targs = self.args_with_omissions(name, args, &params, min_arity, pos)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
             ty: ret,
