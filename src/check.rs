@@ -703,32 +703,6 @@ pub fn check(p: &Program) -> R<TProgram> {
     let mut actors = Vec::new();
     let mut globals = Vec::new();
     for a in &p.actors {
-        // A semicolon declaration is only a package/namespace nominal
-        // contract. It cannot allocate a default actor, fabricate a receive
-        // handler, or imply trusted runtime ingress. Out-of-line linking is
-        // deliberately unsupported in this browser compiler profile.
-        if a.declaration_only {
-            return Err(Diagnostic::new(
-                a.pos, "E_UNSUPPORTED",
-                format!(
-                    "declare actor '{}' is metadata only: authenticated namespace linking, external init/receive ingress and executable actor implementation are not available",
-                    a.name,
-                ),
-            ));
-        }
-        if let Some(effect) = a.declared_sends {
-            // Ordinary application sends need a transitive effect checker
-            // across helpers and ActorRef destinations. Never treat the
-            // clause as pipeline output or silently assume it is checked.
-            let _ = res(effect)?;
-            return Err(Diagnostic::new(
-                a.pos, "E_UNSUPPORTED",
-                format!(
-                    "actor '{}' declares sends, but transitive application-message effects are not checked by this browser compiler",
-                    a.name,
-                ),
-            ));
-        }
         let fields = fields_of(&a.name, &a.fields, true, globals.len() as u32)?;
         globals.extend(fields.iter().map(|f| f.ty));
         let mut methods = methods_of(&a.name, &a.methods, &a.fields)?;
