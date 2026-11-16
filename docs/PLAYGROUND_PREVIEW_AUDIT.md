@@ -1,8 +1,11 @@
 # Exact /play language preview corpus (42 published sources)
 
 This candidate pins the exact UTF-8 contents and Git blob SHA-1 of **all 42**
-language-preview samples published in `atto-lang.github.io` at commit
-`38a19bdc251d6f8db3ffea3b8df0e6c84ca8881c`. The snapshot is in `tests/playground_previews/`.
+language-preview samples published in `atto-lang.github.io` at candidate commit
+`971366eed2f0b02673f6f6860a8cfbf526216e3e` (website draft PR #146). The current
+published site still has the old private-method source; do NOT count the
+14th public preview until the site correction has passed its own gates
+and the website candidate has merged.. The snapshot is in `tests/playground_previews/`.
 The manifest is a byte-fidelity check, not a declaration that the syntax
 is currently supported.
 
@@ -11,15 +14,15 @@ sample and requires deterministic guest output or a positioned diagnostic.
 `ATTOC=<native-attoc> node tests/conformance.mjs` runs the same exact sources
 through the **real Rust compiler built for wasm32**, verifies no guest artifact
 on rejection, checks emitted guests and compares native/Wasm compiler bytes.
-Thirteen currently supported previews have exact guest-execution oracles:
+Fourteen currently supported previews have exact guest-execution oracles:
 function-pipeline, generators, result-option, trap, borrow-checking,
-lexical-scope-pure, state-containers, fib-match, guard, match-values, closures-functors, result-option-end, and modules. All must be
+lexical-scope-pure, state-containers, fib-match, guard, match-values, closures-functors, result-option-end, modules, and callable-body-styles. All must be
 compiled by the real wasm32 Rust compiler, executed in a genuine guest with
 exact stdout/return values, and compared byte-for-byte with native Rust.
 The other previews
 are **not yet certified executable**. The modules profile supports direct
 file-local qualified function calls only, not importing other files, module
-values, generic members, or a cross-file visibility/linker model. Executing thirteen
+values, generic members, or a cross-file visibility/linker model. Executing fourteen
 samples does not establish complete ownership, actor, ADT or effect semantics.
 
 The site has **nine** ordinary examples and **42** previews (**51 total**).
