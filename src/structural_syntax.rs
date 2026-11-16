@@ -154,6 +154,9 @@ impl Cursor {
                 self.i += 1;
                 if v == i64::MAX as u64 + 1 {
                     i64::MIN.to_string()
+                } else if v == 0 {
+                    // Integer -0 and 0 are the same singleton type.
+                    "0".to_owned()
                 } else {
                     format!("-{v}")
                 }
