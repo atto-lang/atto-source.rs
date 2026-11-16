@@ -197,6 +197,10 @@ pub struct Func {
 pub struct Param {
     pub name: String,
     pub ty: Type,
+    /// Source-level ~Type / structural Type formal marker. A structural
+    /// class-borrow ABI must be checked before this can be lowered.
+    /// Never erase this to nominal Type::Class during type resolution.
+    pub structural: bool,
     pub mutable: bool,
     pub pos: Pos,
 }
