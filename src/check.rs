@@ -3456,6 +3456,16 @@ impl<'a> FnCx<'a> {
             }
         }
         if name == "stdio.print" || name == "stdio.println" {
+            // The parser desugars `stdio.out << value` and the explicit
+            // `writech stdio.out, value` through this checked builtin.
+            // Never let a lexical binding named `stdio` be silently bypassed
+            // by that syntactic rewrite: it denotes a different receiver.
+            // Full stream capability dispatch can resolve shadowed names
+            // when it is implemented.
+            if self.lookup("stdio").is_some() {
+                return Err(Diagnostic::new(pos, "E_IO_SHADOW",
+                    "the builtin stdio capability is shadowed by a local binding; use an unshadowed handle"));
+            }
             let newline = name == "stdio.println";
             if args.len() != 1 {
                 return Err(Diagnostic::new(

@@ -12,6 +12,8 @@ pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
+pub mod io_shorthand;
+pub mod detached_io;
 pub mod parser;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
@@ -35,6 +37,28 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
+    // Detached tasks require ownership, completion callbacks and supervisor
+    // error routing. Parse-check early; NEVER execute them as synchronous I/O.
+    if let Some(detached) = detached_io::inspect(&toks)?.first() {
+        return Err(Diagnostic::new(detached.pos, "E_UNSUPPORTED",
+            "supervised do readch/writech syntax recognized, but detached I/O scheduling and completion callbacks are not implemented"));
+    }
+    // The browser guest already has a typed stdio.print output import.
+    // Permit the exact stdio.out << value statement form to lower through
+    // that existing checked path. All other channels, streams, read
+    // directions and select registrations fail closed until implemented.
+    for io in io_shorthand::inspect(&toks)? {
+        if io.source_or_sink == "stdio.out"
+            && io.direction == io_shorthand::Direction::Write
+            && io.context == io_shorthand::Context::Standalone
+            && io.mode == io_shorthand::Mode::Direct
+            && !io.read_binder_on_left
+        {
+            continue;
+        }
+        return Err(Diagnostic::new(io.pos, "E_UNSUPPORTED",
+            "I/O direction shorthand recognized, but this capability is not supported by the browser compiler; only standalone stdio.out writes are executable"));
+    }
     // Detect target declarations at any file-scope position, not only at
     // source byte zero. Ignore comments/strings (the lexer already tokenizes
     // them) and ignore nested brace bodies so a string or local expression
@@ -176,7 +200,9 @@ mod abi {
                 );
             }
             // SAFETY: single-threaded wasm; the host wrote `length` bytes before calling.
-            let input: &[u8] = unsafe { &(*std::ptr::addr_of!(INPUT))[..length as usize] };
+            let input: &[u8] = unsafe {
+                std::slice::from_raw_parts(std::ptr::addr_of!(INPUT).cast::<u8>(), length as usize)
+            };
             let source = match std::str::from_utf8(input) {
                 Ok(s) => s,
                 Err(_) => {

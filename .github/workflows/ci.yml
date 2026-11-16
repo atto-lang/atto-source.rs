@@ -30,6 +30,10 @@ jobs:
         run: cargo test --locked --verbose
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Execute real native-compiled output I/O shorthand guest in Wasm
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/io_shorthand_guest.mjs
       - name: Build actual Wasm compiler
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
