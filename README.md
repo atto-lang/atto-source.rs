@@ -398,3 +398,29 @@ The fixture corpus is in `tests/fixtures/`:
 Keep canonical AttoLang (.atto) semantics consistent with the language specification, while treating Oreslang-named tooling and .ores as compatibility surfaces.
 
 Changes asserting compiler/runtime support must identify the exact source head, target, toolchain, executed positive and negative guest tests, and failure/unsupported status; an empty CI step list is **not executed**. Documentation records responsibility, **not** a claim of feature completion.
+
+## Draft I/O direction shorthand (not general channel or stream execution)
+
+The browser subset currently has a **draft**, unverified real-lowering profile
+for standalone stdout writes only:
+
+```atto
+stdio.out << "effectful output";
+writech stdio.out, "effectful output";
+```
+
+Both statements reuse the same typed `stdio.print` guest Wasm emission and
+host import. This profile does **not** add any new guest ABI or a general
+`Writable<T>`/channel runtime. It also does not append a newline.
+Other channel/stream read or write targets and all `select` I/O arms continue
+to fail closed with `E_UNSUPPORTED`. Runtime `const` read bindings fail with
+`E_CONST_EFFECT`; use `val`/ `let` for effectful reads once supported.
+
+Tests: `cargo test --locked --test io_shorthand`, then
+`cargo build --locked --release --bin attoc` and
+`ATTOC=target/release/attoc node tests/io_shorthand_guest.mjs`.
+These are intended checks, not an assertion of passing CI. As of the draft
+commit, source/private-carrier Actions have not reported executed test steps;
+treat guest conformance as **NOT_EXECUTED** until a real run succeeds.
+See [language spec](https://github.com/atto-lang/atto-spec/pull/32) and
+[remaining implementation tracker](https://github.com/atto-lang/atto-source.rs/issues/180).
