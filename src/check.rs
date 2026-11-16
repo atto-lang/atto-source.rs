@@ -45,10 +45,14 @@ pub enum Import {
     ActorSpawn,
     /// `actor_send(ref: i32, value: i64)`: enqueue one message
     ActorSend,
+    /// Private Worker-owned state-container creation/lexical admission hooks.
+    StateRegister,
+    StateEnter,
+    StateLeave,
 }
 
 impl Import {
-    pub const ALL: [Import; 7] = [
+    pub const ALL: [Import; 10] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -56,6 +60,9 @@ impl Import {
         Import::PrintF64,
         Import::ActorSpawn,
         Import::ActorSend,
+        Import::StateRegister,
+        Import::StateEnter,
+        Import::StateLeave,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -66,6 +73,9 @@ impl Import {
             Import::PrintF64 => "print_f64",
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
+            Import::StateRegister => "state_register",
+            Import::StateEnter => "state_enter",
+            Import::StateLeave => "state_leave",
         }
     }
 }
@@ -151,8 +161,14 @@ pub enum TExpr {
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
-    /// load a field of a class instance
+    /// ordinary class field read
     FieldGet {
+        obj: Box<TE>,
+        offset: u32,
+    },
+    /// A compiler-authorized state field read; never fold into FieldGet
+    /// without checking the protected receiver and lexical lease authority.
+    StateFieldRead {
         obj: Box<TE>,
         offset: u32,
     },
@@ -185,13 +201,26 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
-    /// store `value` into the field at `offset` of `obj`
+    /// ordinary class field initialization / assignment
     FieldSet {
         obj: TE,
         offset: u32,
         ty: Type,
         value: TE,
     },
+    /// Protected state write: verified lexical exclusive access to `obj`.
+    StateFieldWrite {
+        obj: TE,
+        offset: u32,
+        ty: Type,
+        value: TE,
+    },
+    /// Retain lexical protected authority through typed IR.
+    /// Single-Worker Wasm emits the body inline pending scheduler integration.
+    StateCriticalWrite(Vec<TStmt>),
+    /// Register a freshly allocated protected state object with the trusted
+    /// Worker host BEFORE returning it. Constructors cannot forge a lease.
+    StateRegister(TE),
     /// assign an actor-state global
     GlobalSet(u32, TE),
     Expr(TE),
@@ -314,6 +343,8 @@ struct MethodInfo {
 
 struct ClassInfo {
     name: String,
+    /// Distinct protected-state nominal declaration (single Worker-local profile).
+    state_container: bool,
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
@@ -385,6 +416,9 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Compiler-issued lexical protected state permissions.
+    state_write_scope: bool,
+    state_read_scope: bool,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -872,6 +906,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         };
         classes.push(ClassInfo {
             name: c.name.clone(),
+            state_container: c.state_container,
             fields,
             methods,
             new_idx,
@@ -1107,6 +1142,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ty: Type::Void,
             }));
         }
+        if c.state_container {
+            body.push(TStmt::StateRegister(obj.clone()));
+        }
         body.push(TStmt::Return(Some(obj)));
         funcs[info.new_idx as usize] = Some(TFunc {
             name: format!("{}.new", c.name),
@@ -1206,6 +1244,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     }
 
     validate_generator_graph(&generators, p)?;
+    if p.classes.iter().any(|c| c.state_container) {
+        imports.extend([Import::StateRegister, Import::StateEnter, Import::StateLeave]);
+    }
     imports.sort();
     imports.dedup();
     let funcs: Vec<TFunc> = funcs.into_iter().map(|f| f.expect("every function index is defined")).collect();
@@ -1347,7 +1388,7 @@ fn returns(body: &[TStmt]) -> bool {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
-        TStmt::Block(b) => returns(b),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
         _ => false,
     })
 }
@@ -1406,7 +1447,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         // propagation. Keep these explicit when evolving the language.
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
-        TExpr::FieldGet { .. } | TExpr::GlobalGet(_) |
+        TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } => false,
@@ -1428,7 +1469,9 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
             pure_stmts(body, pure_indices) && pure_stmts(update, pure_indices),
         TStmt::Block(body) => pure_stmts(body, pure_indices),
         TStmt::Break | TStmt::Continue | TStmt::Unreachable => true,
-        TStmt::FieldSet { .. } | TStmt::GlobalSet(_, _) |
+        TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
+        TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
+        TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
     })
 }
@@ -1436,8 +1479,10 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
 /// Whether any expression node in `body` satisfies `f`.
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
-        TStmt::FieldSet { obj, value, .. } => any_in(obj, f) || any_in(value, f),
+        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
+        TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
+            any_in(obj, f) || any_in(value, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
         }
@@ -1445,7 +1490,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
-        TStmt::Block(b) => any_in_stmts(b, f),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => any_in_stmts(b, f),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
     })
 }
@@ -1465,7 +1510,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
-        TExpr::FieldGet { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
+        TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
+        TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
     }
@@ -1480,7 +1526,7 @@ fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
         TStmt::Loop { body, update, .. } =>
             guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
         TStmt::ForIn { body, .. } => guest_eh_in_stmts(body),
-        TStmt::Block(b) => guest_eh_in_stmts(b),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => guest_eh_in_stmts(b),
         _ => false,
     })
 }
@@ -1500,7 +1546,7 @@ fn breaks(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Break => true,
         TStmt::If(arms, other) => arms.iter().any(|(_, b)| breaks(b)) || other.as_ref().is_some_and(|b| breaks(b)),
-        TStmt::Block(b) => breaks(b),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => breaks(b),
         _ => false,
     })
 }
@@ -1518,6 +1564,8 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            state_write_scope: false,
+            state_read_scope: false,
             imports,
             data,
         }
@@ -1691,6 +1739,19 @@ impl<'a> FnCx<'a> {
                 // a reassigned object binding owns a value again
                 self.moved.remove(&slot);
                 TStmt::Set(slot, v)
+            }
+            Stmt::StateWrite { body, pos } => {
+                let allowed = matches!(self.owner,
+                    Owner::Class { c, ctor: false, is_static: false }
+                    if self.g.classes[c as usize].state_container);
+                if !allowed || self.state_write_scope {
+                    return Err(Diagnostic::new(*pos, "E_STATE_BORROW",
+                        "critical-write requires a non-nested protected state container method"));
+                }
+                self.state_write_scope = true;
+                let checked = self.scoped(body);
+                self.state_write_scope = false;
+                TStmt::StateCriticalWrite(checked?)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
             Stmt::Expr(e) => {
@@ -2221,12 +2282,17 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
-                if !ctor {
-                    return Err(Diagnostic::new(
-                        pos,
-                        "E_OWNERSHIP",
-                        format!("cannot mutate field '{field}' through read-only binding 'self'"),
-                    ));
+                // Never grant mutable state authority from a field mode alone.
+                // The declaration must be a protected state container AND the
+                // typed checker must be inside the lexical critical-write AST.
+                if mode == FieldMode::ActorState {
+                    if !class.state_container || !self.state_write_scope {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                            "mutable state requires a checked critical-write scope"));
+                    }
+                } else if !ctor {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                        format!("cannot mutate field '{field}' through read-only binding 'self'")));
                 }
                 let v = self.value(value)?;
                 if v.ty != fty {
@@ -2235,15 +2301,15 @@ impl<'a> FnCx<'a> {
                         format!("cannot assign {} to field '{field}' of type {}", self.tn(v.ty), self.tn(fty)),
                     ));
                 }
-                Ok(TStmt::FieldSet {
-                    obj: TE {
-                        e: TExpr::Local(0),
-                        ty: Type::Class(c),
-                    },
-                    offset,
-                    ty: fty,
-                    value: v,
-                })
+                let obj = TE {
+                    e: TExpr::Local(0),
+                    ty: Type::Class(c),
+                };
+                if mode == FieldMode::ActorState && class.state_container {
+                    Ok(TStmt::StateFieldWrite { obj, offset, ty: fty, value: v })
+                } else {
+                    Ok(TStmt::FieldSet { obj, offset, ty: fty, value: v })
+                }
             }
             Owner::Actor { a } => {
                 let actor = &self.g.actors[a as usize];
@@ -2841,6 +2907,25 @@ impl<'a> FnCx<'a> {
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
+            ExprKind::StateRead(field) => {
+                let c = match self.owner {
+                    Owner::Class { c, ctor: false, is_static: false }
+                        if self.g.classes[c as usize].state_container => c,
+                    _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "critical-read requires a protected instance state container")),
+                };
+                if self.state_read_scope || self.state_write_scope {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "protected state read cannot nest with another active lease"));
+                }
+                self.state_read_scope = true;
+                let checked = self.field_get(TE {
+                    e: TExpr::Local(0),
+                    ty: Type::Class(c),
+                }, field, pos);
+                self.state_read_scope = false;
+                checked?
+            }
             ExprKind::SelfRef => {
                 return Err(match self.owner {
                     Owner::Class { is_static: false, .. } | Owner::Actor { .. } => Diagnostic::new(
@@ -3119,10 +3204,23 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_BORROW",
                 "borrowed object field cannot yield an owned handle without nested-loan provenance"));
         }
+        // Class privacy does not grant sealed state access: require a
+        // compiler-recognized lease on the exact receiver instance.
+        let protected = f.mode == FieldMode::ActorState && class.state_container;
+        if protected {
+            let same_receiver = matches!(&obj.e, TExpr::Local(0))
+                && matches!(self.owner,
+                    Owner::Class { c: owner, ctor: false, is_static: false } if owner == c);
+            if !same_receiver || !(self.state_read_scope || self.state_write_scope) {
+                return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                    "protected state read requires critical-read or critical-write on this receiver"));
+            }
+        }
         Ok(TE {
-            e: TExpr::FieldGet {
-                obj: Box::new(obj),
-                offset: f.slot,
+            e: if protected {
+                TExpr::StateFieldRead { obj: Box::new(obj), offset: f.slot }
+            } else {
+                TExpr::FieldGet { obj: Box::new(obj), offset: f.slot }
             },
             ty: f.ty,
         })

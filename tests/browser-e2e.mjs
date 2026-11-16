@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -10,6 +11,7 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/state-runtime.mjs',[new URL('./browser/state-runtime.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -26,7 +28,7 @@ async function until(fn,label){
     try{const value=await fn();if(value)return value;last=value}catch(e){last=e.message}
     await sleep(100);
   }
-  throw new Error(label+' timed out: '+last);
+  throw new Error((typeof label==='function'?label():label)+' timed out: '+last);
 }
 let chrome,ws;
 try{
@@ -72,7 +74,7 @@ try{
       const value=await evaluate("document.querySelector('#result').textContent");
       lastOutput=value;
       return value?.includes(expected)?value:null;
-    },expected+' (last browser output: '+lastOutput+')');
+    },()=>expected+' (last browser output: '+lastOutput+')');
     return state;
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
@@ -173,6 +175,41 @@ try{
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
   assert.match(await run(values,'main() -> 1'),/^3\.5\n1\.0E7\nzero\/many\ntrue\nmain\(\) -> 1$/);
   console.log('PASS browser: float (Java Double.toString), string values and match');
+
+  // The full source bytes are mirrored from atto-lang.github.io PR #127,
+  // not a hand-written approximation. Test a real Chromium dedicated Worker,
+  // with the actual Rust-compiled wasm32 compiler and its emitted guest Wasm.
+  const stateSource = await readFile(new URL('./browser/fixtures/play-state-containers.atto',import.meta.url),'utf8');
+  const blobHash = createHash('sha1')
+    .update('blob '+Buffer.byteLength(stateSource)).update(Buffer.from([0])).update(stateSource).digest('hex');
+  assert.equal(blobHash, 'eac6084e6a02989f8973eb7fc2af7d59baf9db7e',
+    'exact /play preview Git blob must match website PR, not a divergent test sample');
+  assert.equal(await run(stateSource, 'main() -> 0'), '2\n0\nmain() -> 0');
+  console.log('PASS browser: byte-verified /play state preview compiles AND executes in Chromium Worker');
+
+  // Real guest fault while an exclusive state ticket is physically active.
+  // The Worker aborts only after unwind, and each new Worker has fresh tickets.
+  const stateOverflow = stateSource.replace('counter.increment(2);',
+    'counter.increment(9223372036854775807);\n  counter.increment(1);');
+  assert.notEqual(stateOverflow,stateSource,'overflow fixture must alter the program');
+  assert.match(await run(stateOverflow,'E_PANIC'),/E_PANIC: integer overflow/);
+  assert.equal(await run(stateSource, 'main() -> 0'), '2\n0\nmain() -> 0');
+  console.log('PASS browser: state write panic aborts host ticket and next Worker recovers');
+
+  const independent = await readFile(new URL('./fixtures/pass/180-standalone-state-critical.atto',import.meta.url),'utf8');
+  assert.equal(await run(independent,'main() -> 0'), '2\n0\n7\n2\nmain() -> 0');
+  console.log('PASS browser: separate state instances, critical read/write, reset');
+
+  const unguarded = await readFile(new URL('./fixtures/fail/196-state-same-class-access.atto',import.meta.url),'utf8');
+  assert.match(await run(unguarded,'E_STATE_BORROW'), /^E_STATE_BORROW:/);
+  const spacedCriticalRead = await readFile(new URL('./fixtures/fail/188-state-spaced-critical-read.atto',import.meta.url),'utf8');
+  assert.match(await run(spacedCriticalRead,'E_SYNTAX'), /^E_SYNTAX:/);
+  assert.equal(await run(stateSource,'main() -> 0'),'2\n0\nmain() -> 0',
+    'invalid code must not poison the next Worker or leave stale guest bytes');
+  console.log('PASS browser: state capability bypass and malformed keyword fail closed; recovery executes');
+
+  assert.ok(requests.some(x=>x.path==='/state-runtime.mjs'),
+    'the browser Worker must load the protected-state host admission module');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

@@ -104,7 +104,8 @@ pub enum FieldMode {
     /// Class `T name: e`, `mut T name = e`, `let T name = e`: the constructor
     /// may assign it; methods see a read-only `self` (Java ownership rule).
     Constructor,
-    /// Actor `let T name = e`: mailbox-owned state any actor method may assign.
+    /// Actor-owned state, or a protected state-container field whose writes
+    /// require the typed, checked critical-write scope.
     ActorState,
 }
 
@@ -142,6 +143,9 @@ pub struct ClassDecl {
     pub name: String,
     pub pos: Pos,
     pub public: bool,
+    /// Distinct nominal protected-state declaration, never an ordinary class.
+    /// Only a restricted Worker-local scalar backend has executable lowering.
+    pub state_container: bool,
     pub fields: Vec<Field>,
     pub ctor: Option<Constructor>,
     pub methods: Vec<Method>,
@@ -219,6 +223,12 @@ pub enum Stmt {
     Assign {
         name: String,
         value: Expr,
+        pos: Pos,
+    },
+    /// Lexical scope admission for protected state writes, retained through
+    /// the typed frontend so a class field cannot manufacture write authority.
+    StateWrite {
+        body: Vec<Stmt>,
         pos: Pos,
     },
     /// `target.field = value`; only `self.field` is admitted by the checker.
@@ -378,6 +388,10 @@ pub enum ExprKind {
     Call(String, Vec<Expr>),
     /// `self`
     SelfRef,
+    /// Compiler-recognized immutable by-value projection from an explicit
+    /// `handle_state(critical-read |s| -> s.field)` scope. Never ordinary
+    /// class member access: the checker must prove a protected state lease.
+    StateRead(String),
     /// `new Class(args)`
     New(String, Vec<Expr>),
     /// `spawn Actor()`

@@ -13,6 +13,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { formatJavaDouble } from './java-double.mjs';
+import {createStateRuntime} from './browser/state-runtime.mjs';
 import { verify_actor_trace, BROWSER_MAX_ACTORS, BROWSER_MAX_MAILBOX } from './actor-trace-refinement.mjs';
 
 const here = new URL('.', import.meta.url).pathname;
@@ -50,7 +51,8 @@ export function compile(source) {
 // does in a dedicated Web Worker), runs actor_init, and queues mail. After
 // main returns, mailboxes drain FIFO, actor by actor in spawn order: one
 // valid schedule of the concurrent browser runtime.
-const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send']);
+const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send',
+  'state_register', 'state_enter', 'state_leave']);
 const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', 'actor_receive']);
 export const MAX_ACTORS = BROWSER_MAX_ACTORS;
 export const MAX_MAILBOX = BROWSER_MAX_MAILBOX;
@@ -83,8 +85,10 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
   assert.equal(exportNames.includes('actor_receive'), names.length > 0, 'actor exports iff actor table');
   let out = '';
   const actors = [];
+  const runtimes = new WeakMap();
   const instantiate = inActor => {
     let instance;
+    const state = createStateRuntime();
     const atto = {
       print_i64: v => { out += String(v); },
       print_bool: v => { out += v ? 'true' : 'false'; },
@@ -113,8 +117,10 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
         emit({ kind: 'send_accept', actor_id: a.id, generation: a.generation,
           message_id: messageId });
       },
+      ...state.imports,
     };
     instance = new WebAssembly.Instance(module, { atto });
+    runtimes.set(instance, state);
     return instance;
   };
   const main = instantiate(false);
@@ -122,7 +128,9 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
   try {
     value = main.exports.main();
     assert.equal(typeof value, 'bigint');
+    runtimes.get(main).complete();
   } catch (error) {
+    runtimes.get(main).abort();
     return { ok: false, panic: main.exports.panic_code.value, error: String(error), stdout: out };
   }
   for (const a of actors) {
@@ -132,11 +140,13 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
         message_id: messageId });
       try { a.instance.exports.actor_receive(a.type, a.queue[seq], BigInt(seq)); }
       catch (error) {
+        runtimes.get(a.instance).abort();
         return { ok: false, panic: a.instance.exports.panic_code.value, actor: names[a.type], error: String(error), stdout: out };
       }
       emit({ kind: 'receive_complete', actor_id: a.id, generation: a.generation,
         message_id: messageId });
     }
+    runtimes.get(a.instance).complete();
     emit({ kind: 'actor_close', actor_id: a.id, generation: a.generation });
   }
   return { ok: true, value, stdout: out, actors: actors.length };
