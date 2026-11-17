@@ -31,6 +31,7 @@ struct Module {
 pub struct ModuleDecl {
     pub name: String,
     pub inline_public: bool,
+    pub pos: Pos,
 }
 pub struct Lowered {
     pub tokens: Vec<Token>,
@@ -180,6 +181,7 @@ pub fn lower_with_manifest(toks: Vec<Token>) -> R<Lowered> {
             declarations.push(ModuleDecl {
                 name: owner.clone(),
                 inline_public,
+                pos,
             });
             modules.insert(owner, module);
             continue;
