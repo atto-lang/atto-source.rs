@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_TYPE
 // Trap itself is unsupported until Result lowering; panic-bypass guest test must be restored once implemented.
 // Checked arithmetic panic MUST bypass a guest Error-only catch.
 pub fnc main(): int {
