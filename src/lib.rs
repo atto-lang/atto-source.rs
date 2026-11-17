@@ -148,9 +148,30 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             }
         }
     }
+    // One canonical, resolved export surface on the program AST feeds the
+    // checker and all guest metadata. No second lexical metadata writer.
+    program.exports = visibility.exports.iter().map(|e| {
+        let kind = match e.kind {
+            "class" => ast::ExportKind::Class,
+            "fnc" => ast::ExportKind::Fnc,
+            "actor" => ast::ExportKind::Actor,
+            "enum" => ast::ExportKind::Enum,
+            "module" => ast::ExportKind::Module,
+            _ => return Err(Diagnostic::new(e.pos, "E_EXPORT_KIND",
+                        "unresolved or unsupported export kind")),
+        };
+        Ok(ast::ExportDecl {
+            name: e.name.clone(),
+            pos: e.pos,
+            kind,
+            visibility: match e.visibility {
+                visibility_lower::Visibility::Public => ast::ExportVisibility::Public,
+                visibility_lower::Visibility::Package => ast::ExportVisibility::Package,
+            },
+        })
+    }).collect::<Result<Vec<_>, Diagnostic>>()?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
-    visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
