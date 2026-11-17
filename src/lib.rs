@@ -58,7 +58,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    let visibility = visibility_lower::lower(lexer::lex(source)?)?;
     let file_modules = module_lower::lower_with_manifest(visibility.tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(
         file_modules.tokens,

@@ -53,7 +53,7 @@ fn is(t: &[Token], i: usize, value: &str) -> bool {
 }
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(s), pos })
+        Some(Token { tok: Tok::Ident(s), pos: _ })
             if s.len() <= 96
                 && !matches!(
                     s.as_str(),
@@ -71,13 +71,13 @@ fn diag(pos: Pos, code: &'static str, what: impl Into<String>) -> Diagnostic {
 }
 fn closing(t: &[Token], open: usize, left: Tok, right: Tok) -> R<usize> {
     let mut depth = 0usize;
-    for i in open..t.len() {
-        if t[i].tok == left {
+    for (i, token) in t.iter().enumerate().skip(open) {
+        if token.tok == left {
             depth += 1;
         }
-        if t[i].tok == right {
+        if token.tok == right {
             if depth == 0 {
-                return Err(diag(t[i].pos, "E_SYNTAX", "unbalanced delimiter"));
+                return Err(diag(token.pos, "E_SYNTAX", "unbalanced delimiter"));
             }
             depth -= 1;
             if depth == 0 {
@@ -85,7 +85,7 @@ fn closing(t: &[Token], open: usize, left: Tok, right: Tok) -> R<usize> {
             }
         }
         if depth > 128 {
-            return Err(diag(t[i].pos, "E_NESTING", "nominal member nesting limit"));
+            return Err(diag(token.pos, "E_NESTING", "nominal member nesting limit"));
         }
     }
     Err(diag(t[open].pos, "E_EOF", "unclosed nominal method body"))

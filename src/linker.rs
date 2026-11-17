@@ -44,7 +44,7 @@ fn word(t: &[Token], i: usize, val: &str) -> bool {
 }
 fn ident(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(s), pos })
+        Some(Token { tok: Tok::Ident(s), pos: _ })
             if s.len() <= 64
                 && !s.is_empty()
                 && s.is_ascii()

@@ -43,7 +43,7 @@ fn word(tokens: &[Token], i: usize, expected: &str) -> bool {
 }
 fn ident(tokens: &[Token], i: usize, what: &str) -> R<String> {
     match tokens.get(i) {
-        Some(Token { tok: Tok::Ident(s), pos })
+        Some(Token { tok: Tok::Ident(s), pos: _ })
             if !s.is_empty() && s.len() <= MAX_NAME && !matches!(s.as_str(), "as" | "end" | "pub" | "fnc" | "define" | "module") =>
         {
             Ok(s.clone())

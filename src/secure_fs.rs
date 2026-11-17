@@ -5,7 +5,6 @@
 //! from the returned descriptor, not via a previously checked path. This
 //! removes symlink-swap and directory-replacement TOCTOU escapes for this
 //! profile. It is Linux-only and needs separate audited platform ports.
-#![cfg(target_os = "linux")]
 use crate::diag::{Diagnostic, Pos};
 use std::ffi::CString;
 use std::fs::File;
@@ -107,7 +106,7 @@ impl LockedRoot {
                 file = Some(open_child(parent, name, false, diagnostic_code)?);
             }
         }
-        let mut file = file.ok_or_else(|| fail(diagnostic_code, "empty source file path"))?;
+        let file = file.ok_or_else(|| fail(diagnostic_code, "empty source file path"))?;
         let metadata = file
             .metadata()
             .map_err(|e| fail(diagnostic_code, format!("cannot stat pinned source FD: {e}")))?;

@@ -9,7 +9,7 @@
 //! Scope: direct immutable scalar product construction. It is NOT arbitrary
 //! structural subtyping, collections, generic runtime reflection, actor
 //! transport or value-copy ABI parity. Dynamic/unknown product shapes reject.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{self, Tok, Token};
