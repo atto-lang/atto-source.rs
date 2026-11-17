@@ -76,7 +76,8 @@ reject('pub fnc main(): int {let n=40; val reader=borrow! n; n=42; return n;}', 
 accept('pub fnc main(): int {let n=40; val reader=borrow! n; val old=copy! reader; val next=old+2; n=42; return next;}');
 // Function calls and unproved ownership operations in the remaining
 // suffix retain the loan, rather than inferring purity from no literal name.
-reject('pub fnc passthrough(v: int): int {return v;} pub fnc main(): int {let n=40; val reader=borrow! n; val old=copy! reader; val next=passthrough(old); n=42; return n;}', 'E_BORROW');
-reject('pub fnc main(): int {let n=40; let other=1; val reader=borrow! n; val old=copy! reader; val transfer=take! other; n=42; return n;}', 'E_BORROW');
-console.log('PASS browser Wasm ownership ABI: 9 scalar admits, 19 fail-closed cases');
+reject('pub fnc passthrough(v: int): int {return v;} pub fnc main(): int {let n=40; val reader=borrow! n; val old=copy! reader; n=passthrough(old); return n;}', 'E_BORROW');
+reject('pub fnc main(): int {let n=40; let other=42; val reader=borrow! n; val old=copy! reader; n=take! other; return n;}', 'E_BORROW');
+accept('pub fnc passthrough(v: int): int {return v;} pub fnc main(): int {let n=40; val reader=borrow! n; val old=copy! reader; val completed=passthrough(old); n=42; return n;}');
+console.log('PASS browser Wasm ownership ABI: 10 scalar admits, 19 fail-closed cases');
 
