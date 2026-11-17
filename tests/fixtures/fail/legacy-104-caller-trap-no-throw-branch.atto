@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_TYPE
 // Legacy Option-returning trap example: now rejected without guest output.
 // Non-taken throw is not a failure, and normal values stay Some.
 fnc maybe_fail(bool should_fail): int {
