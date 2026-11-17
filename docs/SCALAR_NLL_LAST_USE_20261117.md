@@ -78,13 +78,16 @@ profile:
 
 1. **Unproved effectful tail:** calls, method calls, object creation,
    spawns, member/heap references, user-defined callbacks, trap, early
-   propagation, container expressions, borrow/reborrow and take operations
+   propagation, container expressions, unproved reborrows and take operations
    were previously inspected as though ordinary pure expressions could
    prove a suffix harmless. The scanner now returns "unproved" for these
    expression categories, so their presence keeps the loan live until
    lexical scope exit. Only fully checked scalar literals, named scalar
    references, admitted pure unary operations, arithmetic/boolean and
-   ternary expressions can justify retirement. This deliberately causes
+   ternary expressions can justify retirement, as can a fresh borrow of a
+   **named scalar owner** when the typed borrow gate proves its mutability
+   and conflicts. A new borrow of the old alias remains a live use.
+   This deliberately causes
    some conservative E_BORROW rejections for safe but not yet proved
    effectful programs; it does not authorize guest code with unverified
    runtime/cleanup effects.
