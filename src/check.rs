@@ -19,6 +19,7 @@ use crate::diag::{Diagnostic, Pos};
 mod generator_lower;
 mod scalar_lifetime;
 pub mod typed_mir_census;
+pub mod loan_cfg_oracle_v1;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
