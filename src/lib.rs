@@ -27,6 +27,8 @@ pub mod nominal_lower;
 pub mod visibility_lower;
 /// Trusted in-memory package/module linker; no filesystem or network access.
 pub mod linker;
+/// Host-only local package root resolver (strict .atto.pkg.toml subset).
+pub mod package_resolver;
 /// Direct routine-only and statically specialized named callbacks.
 pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
