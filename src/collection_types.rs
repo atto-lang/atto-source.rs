@@ -130,6 +130,39 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
     })
 }
 
+/// Reject invalid hash-key types at declaration time, including empty maps
+/// that would otherwise bypass entry-by-entry key checking.
+fn validate_hash_contract(ty: &LiteralType, at: Pos, depth: usize) -> Result<(), Diagnostic> {
+    use LiteralType::*;
+    if depth >= MAX_LITERAL_DEPTH {
+        return Err(diag(at,"E_NESTING","collection type nesting exceeds the limit"));
+    }
+    match ty {
+        Map(key, value) => {
+            if !matches!(key.as_ref(), Int | Bool | String | Bottom) {
+                return Err(diag(at, "E_MAP_KEY",
+                    "this browser profile requires hashable scalar Map keys (int, bool, string)"));
+            }
+            validate_hash_contract(key, at, depth + 1)?;
+            validate_hash_contract(value, at, depth + 1)
+        }
+        Array(item) | List(item) => validate_hash_contract(item, at, depth + 1),
+        Record(fields) => {
+            for (_, field_type) in fields {
+                validate_hash_contract(field_type, at, depth + 1)?;
+            }
+            Ok(())
+        }
+        Tuple(items) => {
+            for item in items {
+                validate_hash_contract(item, at, depth + 1)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Parse a type annotation as far as the literal preflight needs. A user-defined
 /// nominal type remains owned by the ordinary checker; no fake structural alias.
 fn annotation(ty: Type, program: &Program, pos: Pos) -> Result<Option<LiteralType>, Diagnostic> {
@@ -141,7 +174,9 @@ fn annotation(ty: Type, program: &Program, pos: Pos) -> Result<Option<LiteralTyp
         Type::Named(i) => {
             let name = &program.type_names[i as usize].0;
             if builtin_name(name) {
-                Ok(Some(canonical_type(name, pos, 0)?))
+                let ty = canonical_type(name, pos, 0)?;
+                validate_hash_contract(&ty, pos, 0)?;
+                Ok(Some(ty))
             } else {
                 Ok(None)
             }
@@ -378,6 +413,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
         _ => return Err(diag(e.pos, "E_UNSUPPORTED",
             "nonliteral collection elements require ownership-aware expression type checking")),
     };
+    validate_hash_contract(&ty,e.pos,0)?;
     matches_expected(&ty,expected,e.pos)?;
     Ok(TypedLiteral { pos: e.pos,ty,children })
 }
@@ -475,6 +511,14 @@ fn walk(body: &[Stmt], program: &Program,
                     locals.insert(name.clone(), stored);
                 } else {
                     locals.remove(name);
+                }
+            }
+            Stmt::FieldAssign {target,pos,..} => {
+                if let ExprKind::Var(name) = &target.kind {
+                    if locals.get(name).is_some_and(owns_storage) {
+                        return Err(diag(*pos,"E_OWNERSHIP",
+                            format!("mutating owned record '{name}' requires a checked field-write capability")));
+                    }
                 }
             }
             Stmt::Assign {name,value,pos} => {
