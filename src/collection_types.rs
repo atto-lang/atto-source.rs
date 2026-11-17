@@ -249,7 +249,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
             let left_node = inferred(left,None,depth+1,locals)?;
             let right_node = inferred(right,Some(&left_node.ty),depth+1,locals)?;
             let result = left_node.ty.clone();
-            if !matches!(result, Int | Float) {
+            if !matches!(&result, Int | Float) {
                 return Err(diag(e.pos,"E_TYPE",
                     "static literal arithmetic currently admits only homogeneous int/float"));
             }
@@ -266,8 +266,23 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
             }
             Int
         }
-        ExprKind::Unary(UnOp::Plus, v) if matches!(&v.kind, ExprKind::Int(_)) =>
-            inferred(v, Some(&Int), depth + 1, locals)?.ty,
+        ExprKind::Unary(op @ (UnOp::Neg | UnOp::Plus), v) => {
+            let child = inferred(v,None,depth+1,locals)?;
+            if !matches!(&child.ty, Int | Float) {
+                return Err(diag(e.pos,"E_TYPE",
+                    "unary +/- requires int or float"));
+            }
+            // A source-signed minimum integer is handled above. All other
+            // unary numeric operations retain the checked scalar type.
+            let ty = child.ty.clone();
+            children.push(child);
+            if *op == UnOp::Neg || *op == UnOp::Plus { ty } else { unreachable!() }
+        }
+        ExprKind::Unary(UnOp::Not, v) => {
+            let child = inferred(v,Some(&Bool),depth+1,locals)?;
+            children.push(child);
+            Bool
+        },
         ExprKind::Array(items) => {
             let (kind, element) = match expected {
                 Some(Array(element)) => (true, element.as_ref().clone()),
@@ -319,7 +334,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
             }
             let key_ty = if wanted_k == Bottom { keys } else { wanted_k };
             let val_ty = if wanted_v == Bottom { vals } else { wanted_v };
-            if !matches!(key_ty, Int | Bool | String | Bottom) {
+            if !matches!(&key_ty, Int | Bool | String | Bottom) {
                 return Err(diag(e.pos, "E_MAP_KEY",
                     "this profile permits only scalar hashable map key types"));
             }
@@ -405,7 +420,7 @@ fn scalar_seed(e: &Expr, locals: &BTreeMap<String, LiteralType>) -> bool {
     match &e.kind {
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
         ExprKind::Str(_) => true,
-        ExprKind::Unary(UnOp::Neg | UnOp::Plus, inner) =>
+        ExprKind::Unary(UnOp::Neg | UnOp::Plus | UnOp::Not, inner) =>
             scalar_seed(inner, locals),
         ExprKind::Var(name) => locals.get(name).is_some_and(|t| !owns_storage(t)),
         ExprKind::Binary(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, a, b) =>
