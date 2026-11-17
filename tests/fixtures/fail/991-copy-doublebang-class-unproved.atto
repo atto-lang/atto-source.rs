@@ -1,0 +1,10 @@
+// expect-error: E_COPY_DEEP_UNSUPPORTED
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val original = new Parcel();
+  val detached = copy!! original;
+  return detached.value;
+}
