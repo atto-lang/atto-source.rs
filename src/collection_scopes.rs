@@ -10,6 +10,18 @@ type R<T> = Result<T, Diagnostic>;
 fn err(at: Pos, code: &'static str, msg: impl Into<String>) -> Diagnostic {
     Diagnostic::new(at, code, msg)
 }
+// Prove that the retained fields can be duplicated without manufacturing
+// aliases of unique mutable storage. This conservative frontend profile
+// admits only immutable scalars, tuples and recursively scalar Records.
+fn retain_safe(ty: &Ty, depth: usize) -> bool {
+    if depth >= MAX_LITERAL_DEPTH { return false; }
+    match ty {
+        Ty::Int | Ty::Bool | Ty::Float | Ty::String => true,
+        Ty::Record(fields) => fields.iter().all(|(_, t)| retain_safe(t, depth + 1)),
+        Ty::Tuple(items) => items.iter().all(|t| retain_safe(t, depth + 1)),
+        _ => false,
+    }
+}
 fn is_collection(ty: &Ty) -> bool {
     matches!(ty, Ty::Record(_) | Ty::OpenRecord | Ty::Map(_,_) |
         Ty::Array(_) | Ty::List(_) | Ty::Tuple(_) | Ty::AnyTuple)
@@ -65,7 +77,45 @@ impl<'a> Scope<'a> {
             return Err(err(e.pos,"E_NESTING","scoped type expression nesting exceeded"));
         }
         let ty = match &e.kind {
+            ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) |
+            ExprKind::Str(_) => Some(inferred(e, None, depth)?.ty),
             ExprKind::Var(name) => self.local(name).and_then(|v| v.actual.clone()),
+            ExprKind::With(base, updates) => {
+                let original = match self.expression(base,None,depth + 1)? {
+                    Some(Ty::Record(fields)) => fields,
+                    Some(Ty::OpenRecord) => return Err(err(e.pos,"E_WITH_OPEN_RECORD",
+                        "with needs a proven closed Record shape; narrow open Record first")),
+                    Some(_) => return Err(err(e.pos,"E_WITH_TYPE",
+                        "with requires a closed structural Record in this compiler profile")),
+                    None => return Err(err(e.pos,"E_WITH_UNRESOLVED",
+                        "with receiver type cannot be proved statically")),
+                };
+                let mut fields: BTreeMap<String, Ty> = original.iter().cloned().collect();
+                let mut seen = std::collections::BTreeSet::new();
+                for (name, update) in updates {
+                    if !seen.insert(name.clone()) {
+                        return Err(err(update.pos,"E_DUPLICATE",
+                            format!("duplicate with update field '{name}'")));
+                    }
+                    let updated = self.expression(update,None,depth + 1)?
+                        .ok_or_else(|| err(update.pos,"E_WITH_TYPE",
+                            format!("with field '{name}' requires a statically known type")))?;
+                    if !retain_safe(&updated, depth + 1) {
+                        return Err(err(update.pos,"E_WITH_OWNERSHIP",
+                            "with cannot implicitly share a mutable or unresolved updated field"));
+                    }
+                    fields.insert(name.clone(),updated);
+                }
+                for (name, retained) in &original {
+                    if !seen.contains(name) && !retain_safe(retained,depth + 1) {
+                        return Err(err(e.pos,"E_WITH_OWNERSHIP",
+                            format!("retained field '{name}' lacks verified Copy/share ownership")));
+                    }
+                }
+                let result = Ty::Record(fields.into_iter().collect());
+                let _checked_static_layout = crate::layout_plan::record(&result,e.pos)?;
+                Some(result)
+            },
             ExprKind::Member(base, field) => {
                 match self.expression(base,None,depth+1)? {
                     Some(t @ (Ty::Record(_) | Ty::OpenRecord)) =>
