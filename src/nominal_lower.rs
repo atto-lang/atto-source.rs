@@ -180,6 +180,15 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
             Hierarchy::Final
         } else if is(t, j, "non") && t.get(j + 1).map(|x| &x.tok) == Some(&Tok::Minus)
             && is(t, j + 2, "sealed") {
+            // The canonical hyphenated modifier must be contiguous.
+            // "non - sealed" is not an alternate hierarchy spelling.
+            if t[j].pos.line != t[j + 1].pos.line ||
+                t[j + 1].pos.line != t[j + 2].pos.line ||
+                t[j + 1].pos.col != t[j].pos.col + 3 ||
+                t[j + 2].pos.col != t[j + 1].pos.col + 1 {
+                return Err(diag(t[j].pos, "E_SEALED",
+                    "non-sealed modifier must be written without spaces"));
+            }
             j += 3;
             Hierarchy::NonSealed
         } else {
