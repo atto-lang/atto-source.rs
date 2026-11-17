@@ -72,5 +72,11 @@ reject('pub fnc main(): int {let n=40; val reader=borrow! n; n=42; if n>0 then s
 // Unused loans continue to fail closed; this narrow slice requires a checked
 // use before it will consider shortening a lexical borrow.
 reject('pub fnc main(): int {let n=40; val reader=borrow! n; n=42; return n;}', 'E_BORROW');
-console.log('PASS browser Wasm ownership ABI: 8 scalar admits, 17 fail-closed cases');
+// Hardened NLL accepts only fully scanned pure future expressions.
+accept('pub fnc main(): int {let n=40; val reader=borrow! n; val old=copy! reader; val next=old+2; n=42; return next;}');
+// Function calls and unproved ownership operations in the remaining
+// suffix retain the loan, rather than inferring purity from no literal name.
+reject('pub fnc passthrough(v: int): int {return v;} pub fnc main(): int {let n=40; val reader=borrow! n; val old=copy! reader; val next=passthrough(old); n=42; return n;}', 'E_BORROW');
+reject('pub fnc main(): int {let n=40; let other=1; val reader=borrow! n; val old=copy! reader; val transfer=take! other; n=42; return n;}', 'E_BORROW');
+console.log('PASS browser Wasm ownership ABI: 9 scalar admits, 19 fail-closed cases');
 
