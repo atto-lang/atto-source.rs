@@ -175,8 +175,15 @@ mod abi {
                     ),
                 );
             }
-            // SAFETY: single-threaded wasm; the host wrote `length` bytes before calling.
-            let input: &[u8] = unsafe { &(*std::ptr::addr_of!(INPUT))[..length as usize] };
+            // SAFETY: bounds are checked above and INPUT is a fixed-size
+            // static buffer. The wasm32 host writes exactly `length` bytes
+            // before this synchronous single-threaded compilation call.
+            // Form the slice directly from the raw pointer: indexing the
+            // dereferenced static mut pointer would create a forbidden
+            // implicit autoref under current Rust compiler lints.
+            let input: &[u8] = unsafe {
+                std::slice::from_raw_parts(std::ptr::addr_of!(INPUT).cast::<u8>(), length as usize)
+            };
             let source = match std::str::from_utf8(input) {
                 Ok(s) => s,
                 Err(_) => {
