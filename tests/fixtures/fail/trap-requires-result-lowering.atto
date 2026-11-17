@@ -3,14 +3,14 @@
 // No guest artifact may be emitted until Result<T, Error> and typed error joins
 // preserve the original throw Error payload and identity across Wasm unwinding.
 
-fnc checked_id(int id): Result<int, Error> {
+fnc checked_id(int id): Result<int,string> {
     if id < 0 then
-        return Err(Error("invalid id"));
+        return Err("invalid id");
     fi
     return Ok(id);
 }
 
 pub fnc main(): int {
-    val Result<int, Error> checked = trap checked_id(5);
+    val Result<int,string> checked = trap checked_id(5);
     return 7;
 }
