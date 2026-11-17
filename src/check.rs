@@ -20,6 +20,9 @@ mod generator_lower;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
+// Exact upstream path-sensitive checked-handle oracle + typed-admitted adapter.
+mod checked_handle_cfg;
+mod checked_handle_adapter;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
@@ -1056,6 +1059,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for (i, f) in p.funcs.iter().enumerate() {
         let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
         if f.is_generator {
+            if checked_handle_adapter::has_checked_operation(&f.body) {
+                return Err(Diagnostic::new(f.pos, "E_HANDLE",
+                    "checked-handle syntax is not admitted in generator continuations"));
+            }
             if let Some(mut plan) = generator_lower::lower(f)? {
                 plan.function = i as u32;
                 generators.push(plan);
@@ -1111,6 +1118,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             &mut imports,
             &mut data,
         )?;
+        // Separate all-path proof on a type-checked/loan-admitted source body.
+        // This rejects divergent cleanups before generating guest Wasm.
+        checked_handle_adapter::verify_type_admitted_body(&f.body, f.pos)?;
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
             params,
