@@ -9,7 +9,7 @@
 //! still unsupported; method-copy composition is the only admitted ABI.
 //!
 //! This is intentionally NOT a generic package manager or binary Wasm linker.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{self, Tok, Token};
@@ -51,7 +51,7 @@ impl UnitKey {
     }
 }
 fn valid(s: &str) -> bool {
-    s.len() <= 64 && !s.is_empty() && s.as_bytes()[0].is_ascii_alphabetic() &&
+    s.len() <= 64 && !s.is_empty() && (s.as_bytes()[0].is_ascii_alphabetic() || s.as_bytes()[0] == b'_') &&
     s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 fn err(pos: Pos, code: &'static str, why: impl Into<String>) -> Diagnostic {
@@ -98,7 +98,6 @@ struct Parsed {
     tokens: Vec<Token>,
     imports: Vec<Import>,
     decls: Vec<Decl>,
-    exports: BTreeMap<String, ClassVisibility>,
     emitted: Vec<Token>,
 }
 fn list(t: &[Token], index: &mut usize) -> R<Vec<String>> {
@@ -189,7 +188,8 @@ fn read_class(t: &[Token], start: usize, first: usize) -> R<Option<(Decl,usize)>
     }
     let permits=if word(t,j,"permits") {j+=1; list(t,&mut j)?} else {vec![]};
     if !word(t,j,"as") {
-        return Err(err(t[j].pos,"E_SYNTAX","expected 'as' in class header"));
+        return Err(err(t.get(j).map_or(t[start].pos,|x|x.pos),
+            "E_SYNTAX","expected 'as' in class header"));
     }
     j+=1;
     let mut depth=0usize;
@@ -284,7 +284,7 @@ fn parse(unit: &SourceUnit<'_>, entry: bool) -> R<Parsed> {
                 "E_UNBOUND","export must name a class declared in the same source unit"))?;
         decl.visibility=*vis;
     }
-    Ok(Parsed {key,tokens:tokens[first_source..].to_vec(),imports,decls,exports,
+    Ok(Parsed {key,tokens:tokens[first_source..].to_vec(),imports,decls,
         emitted:Vec::new()})
 }
 fn identity(key: &UnitKey, name: &str) -> NominalId {
@@ -397,7 +397,11 @@ pub fn compile_linked(units: &[SourceUnit<'_>], entry: usize) -> R<Vec<u8>> {
                         if at>0 && (word(&parsed.tokens,at-1,"val") ||
                             word(&parsed.tokens,at-1,"let") ||
                             word(&parsed.tokens,at-1,"fnc") ||
-                            word(&parsed.tokens,at-1,"method")) {
+                            word(&parsed.tokens,at-1,"method") ||
+                            matches!(&parsed.tokens[at-1].tok,
+                                Tok::Ident(t) if matches!(t.as_str(),
+                                    "int" | "bool" | "float" | "string" | "void") ||
+                                    symbols.contains_key(t))) {
                             return Err(err(token.pos,"E_NAMESPACE",
                                 "class/import alias cannot be shadowed by a value or callable binder"));
                         }
