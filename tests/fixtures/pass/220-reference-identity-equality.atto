@@ -1,0 +1,9 @@
+// expect-exit: 7
+// Class identity checks must be stable without invoking equals().
+define class Thing as end
+pub fnc main(): int {
+  val a = new Thing();
+  val b = new Thing();
+  if a == a, a != b then return 7; fi
+  return 0;
+}

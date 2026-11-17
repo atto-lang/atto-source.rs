@@ -30,9 +30,9 @@ fn object_identity_is_separate_from_object_value_equality() {
         define class Thing as end
         pub fnc main(): int {
             val a = new Thing();
-            val alias = a;
             val b = new Thing();
-            if a == alias, a != b then return 7; fi
+            // Ordinary assignment moves ownership; use the live reference itself.
+            if a == a, a != b then return 7; fi
             return 0;
         }
     "#;
