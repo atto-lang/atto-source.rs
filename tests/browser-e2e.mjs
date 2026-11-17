@@ -132,9 +132,9 @@ try{
   // reject every trap expression rather than silently emit the old lowering.
   const legacyTrap = 'pub fnc main(): int { match trap 42 over on Some(x) -> { return x; } on None -> { return 0; } end }';
   assert.match(await run(legacyTrap, 'E_UNSUPPORTED'), /E_UNSUPPORTED/);
-  const resultTrap = 'fnc parse(int n): Result<int,string> { return Ok(n); }\\npub fnc main(): int { val x = trap parse(42); return 0; }';
+  const resultTrap = 'fnc parse(int n): Result<int,string> { return Ok(n); }\npub fnc main(): int { val x = trap parse(42); return 0; }';
   assert.match(await run(resultTrap, 'E_UNSUPPORTED'), /E_UNSUPPORTED/);
-  const ordinaryTrap = 'fnc fail(): int { throw Error("bad"); }\\npub fnc main(): int { val x = trap fail(); return x; }';
+  const ordinaryTrap = 'fnc fail(): int { throw Error("bad"); }\npub fnc main(): int { val x = trap fail(); return x; }';
   assert.match(await run(ordinaryTrap, 'E_UNSUPPORTED'), /E_UNSUPPORTED/);
   console.log('PASS browser: obsolete Option trap lowered to no artifact (E_UNSUPPORTED)');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
