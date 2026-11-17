@@ -297,10 +297,7 @@ mod tests {
             assert!(!proves(
                 &[Stmt::Expr(expr(ExprKind::Unary(
                     operation,
-                    Box::new(expr(ExprKind::Call(
-                        "get_owner".to_string(),
-                        vec![],
-                    ))),
+                    Box::new(expr(ExprKind::Call("get_owner".to_string(), vec![],))),
                 )))],
                 "reader",
             ));
