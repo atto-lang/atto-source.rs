@@ -1843,6 +1843,14 @@ impl<'a> FnCx<'a> {
         // even when a later syntactic unref! exists on another path.
         let live_handle = self.scopes.iter().flat_map(|scope| scope.iter()).any(|l|
             matches!(l.ty, Type::CheckedRef(_)) && !self.moved.contains(&l.slot));
+        if live_handle {
+            if let Stmt::Return(Some(Expr { kind: ExprKind::Var(name), .. }), _) = s {
+                if self.lookup(name).is_some_and(|l| self.loans.contains_key(&l.slot)) {
+                    return Err(Diagnostic::new(crate::diag::Pos::default(), "E_BORROW",
+                        "a deref! view cannot escape its checked-handle lifetime"));
+                }
+            }
+        }
         if live_handle && matches!(s,
             Stmt::Return(..) | Stmt::If { .. } | Stmt::While { .. } | Stmt::Loop { .. } |
             Stmt::For { .. } | Stmt::ForIn { .. } | Stmt::Break(..) | Stmt::Continue(..) |
