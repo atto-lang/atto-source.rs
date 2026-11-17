@@ -13,7 +13,7 @@ allow() {
   local case_name=$1 payload=$2
   printf '%b' "$payload" > "$file"
   if ! bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
-    echo "FAIL: \${case_name}: comment-only policy rejected" >&2
+    echo "FAIL: ${case_name}: comment-only policy rejected" >&2
     cat "$workspace/err" >&2
     exit 1
   fi
@@ -24,11 +24,11 @@ deny() {
   local case_name=$1 payload=$2
   printf '%b' "$payload" > "$file"
   if bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
-    echo "FAIL: \${case_name}: forbidden policy accepted" >&2
+    echo "FAIL: ${case_name}: forbidden policy accepted" >&2
     exit 1
   fi
   grep -q '^PRIVATE_CI_EXPORT_REJECTED:' "$workspace/err" || {
-    echo "FAIL: \${case_name}: no fail-closed diagnostic" >&2
+    echo "FAIL: ${case_name}: no fail-closed diagnostic" >&2
     exit 1
   }
   pass=$((pass + 1))
