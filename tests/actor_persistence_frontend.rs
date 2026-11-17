@@ -214,3 +214,26 @@ end
 "#;
     assert_eq!(parse(other_susp_method).unwrap_err().code, "E_PERSIST_SIGNATURE");
 }
+
+#[test]
+fn golden_scalar_wire_matches_shared_cross_backend_fixture() {
+    // Golden vector: atto-platform-conformance/contracts/actor-persistence-scalar-wire-v1.json
+    // This is a host serializer assertion, NOT guest AOT codegen or disk recovery.
+    let p = parse(
+        "define durable actor Counter as\\n\\
+         state count: int = 0;\\n\\
+         state enabled: bool = true;\\n end"
+    ).unwrap();
+    let schema = ActorStateSchema::for_actor(&p.actors[0]).unwrap();
+    assert_eq!(schema.schema_id, 0xbd8486fc17afa1c9);
+    let encoded = schema.encode(&[StateScalar::Int(100), StateScalar::Bool(true)]).unwrap();
+    let hex: String = encoded.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex,
+        "4154544f5354303101c9a1af17fc8684bd020001640000000000000002018fd7fcf2f2744e29"
+    );
+    assert_eq!(
+        schema.decode(&encoded).unwrap(),
+        vec![StateScalar::Int(100), StateScalar::Bool(true)]
+    );
+}
