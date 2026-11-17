@@ -374,6 +374,108 @@ struct ActiveLoan {
     used: bool,
 }
 
+/// Typed expression observations independently reconstructed from the
+/// expression tree that the Wasm backend consumes. A bare loan marker is never
+/// accepted as proof that a guest load occurred (or that every load was marked).
+#[derive(Default)]
+struct AuditReads {
+    direct_slots: BTreeSet<u32>,
+    borrowed_loads: Vec<(u32, u32)>, // (loan_id, owner_slot), evaluation order
+}
+fn audit_expr_reads(
+    builder: &mut Builder,
+    expr: &TE,
+    depth: usize,
+    observed: &mut AuditReads,
+) -> Result<(), Diagnostic> {
+    builder.charge_expr(depth)?;
+    if !simple_type(expr.ty) {
+        return Err(unsupported("borrowed expression requires independent non-scalar effects proof"));
+    }
+    match &expr.e {
+        TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) => {}
+        TExpr::Local(slot) => {
+            if *slot >= builder.slots || !builder.origins.contains_key(slot) {
+                return Err(incomplete("direct scalar read lacks a defined local origin"));
+            }
+            observed.direct_slots.insert(*slot);
+        }
+        TExpr::LoanRead { loan_id, owner_slot } => {
+            if *loan_id == 0 || *owner_slot >= builder.slots
+                || !builder.origins.contains_key(owner_slot)
+            {
+                return Err(incomplete("typed alias load has invalid loan/owner origin"));
+            }
+            observed.borrowed_loads.push((*loan_id, *owner_slot));
+        }
+        TExpr::Neg(inner) | TExpr::FNeg(inner) => {
+            builder.may_trap = true;
+            audit_expr_reads(builder, inner, depth + 1, observed)?;
+        }
+        TExpr::Not(inner) | TExpr::IntToFloat(inner) => {
+            audit_expr_reads(builder, inner, depth + 1, observed)?;
+        }
+        TExpr::Bin(_, left, right) => {
+            // Checked arithmetic can trap before lexical cleanup. Never
+            // treat a trapped path as implicitly loan-free.
+            builder.may_trap = true;
+            audit_expr_reads(builder, left, depth + 1, observed)?;
+            audit_expr_reads(builder, right, depth + 1, observed)?;
+        }
+        TExpr::Builtin(_, left, right) => {
+            audit_expr_reads(builder, left, depth + 1, observed)?;
+            audit_expr_reads(builder, right, depth + 1, observed)?;
+        }
+        TExpr::Ternary(cond, yes, no) => {
+            builder.has_conditional = true;
+            audit_expr_reads(builder, cond, depth + 1, observed)?;
+            audit_expr_reads(builder, yes, depth + 1, observed)?;
+            audit_expr_reads(builder, no, depth + 1, observed)?;
+        }
+        _ => return Err(unsupported("unmodeled typed expression requires CFG/effect proof")),
+    }
+    Ok(())
+}
+
+/// Consume exactly the alias-read event sequence that precedes this checked
+/// scalar statement; unmatched, duplicate, or missing markers fail closed.
+/// Direct loads of owners under exclusive loans also fail closed.
+fn validate_audited_expression(
+    builder: &mut Builder,
+    expr: Option<&TE>,
+    active: &BTreeMap<u32, ActiveLoan>,
+    pending_reads: &mut Vec<(u32, u32)>,
+) -> Result<(), Diagnostic> {
+    let mut observed = AuditReads::default();
+    if let Some(expr) = expr {
+        audit_expr_reads(builder, expr, 0, &mut observed)?;
+    }
+    if observed.borrowed_loads != *pending_reads {
+        return Err(incomplete("typed alias loads differ from ordered loan-use markers"));
+    }
+    if observed.direct_slots.iter().any(|slot| {
+        active.values().any(|loan| loan.exclusive && loan.owner_slot == *slot)
+    }) {
+        return Err(incomplete("direct read of an exclusively borrowed owner"));
+    }
+    // The flat audit has no unwind edges or expression-level phi mapping.
+    // It must not certify a possible trap/branch while loans remain live.
+    if !active.is_empty() && (builder.may_trap || builder.has_conditional) {
+        return Err(unsupported("borrowed expression needs trap/conditional cleanup CFG"));
+    }
+    builder.use_facts = builder.use_facts
+        .checked_add(observed.borrowed_loads.len())
+        .and_then(|n| n.checked_add(observed.direct_slots.len()))
+        .ok_or_else(|| budget("scalar expression observation overflow"))?;
+    if builder.use_facts > MAX_CENSUS_USES {
+        return Err(budget("scalar expression observation budget exceeded"));
+    }
+    builder.may_trap = false;
+    builder.has_conditional = false;
+    pending_reads.clear();
+    Ok(())
+}
+
 /// Verify that the compiler-generated typed loan markers form a consistent
 /// straight-line lifecycle alongside the actual typed scalar load/store IR.
 ///
@@ -428,6 +530,7 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
         let mut active = BTreeMap::<u32, ActiveLoan>::new();
         let mut all_issued = BTreeSet::new();
         let mut pending_exclusive_write: Option<(u32, u32)> = None;
+        let mut pending_reads = Vec::<(u32, u32)>::new();
         let mut terminal = false;
         for (ordinal, stmt) in func.body.iter().enumerate() {
             if terminal {
@@ -447,6 +550,9 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                     exclusive,
                     ..
                 } => {
+                    if !pending_reads.is_empty() || pending_exclusive_write.is_some() {
+                        return Err(incomplete("unconsumed alias events before a new loan issue"));
+                    }
                     if *loan_id == 0
                         || *owner_slot >= builder.slots
                         || !builder.origins.contains_key(owner_slot)
@@ -483,6 +589,17 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                     if loan.owner_slot != *owner_slot || (*write && !loan.exclusive) {
                         return Err(incomplete("loan use owner/exclusive provenance mismatch"));
                     }
+                    if *write {
+                        if pending_exclusive_write.is_some() {
+                            return Err(incomplete("multiple unmatched alias writes in one statement"));
+                        }
+                        pending_exclusive_write = Some((*loan_id, *owner_slot));
+                    } else {
+                        if pending_exclusive_write.is_some() {
+                            return Err(incomplete("alias read marker after a pending alias write"));
+                        }
+                        pending_reads.push((*loan_id, *owner_slot));
+                    }
                     loan.used = true;
                     result.push(mk(
                         *loan_id,
@@ -491,9 +608,11 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                             write: *write,
                         },
                     ));
-                    pending_exclusive_write = if *write { Some((*loan_id, *owner_slot)) } else { None };
                 }
                 TStmt::ScalarLoanEnd { loan_id, owner_slot } => {
+                    if !pending_reads.is_empty() || pending_exclusive_write.is_some() {
+                        return Err(incomplete("loan ended before its pending guest operation"));
+                    }
                     let loan = active
                         .remove(loan_id)
                         .ok_or_else(|| incomplete("loan ended without live issued identity"))?;
@@ -504,8 +623,9 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                     pending_exclusive_write = None;
                 }
                 TStmt::Set(slot, value) => {
-                    let mut reads = BTreeSet::new();
-                    builder.reads(value, 0, &mut reads)?;
+                    validate_audited_expression(
+                        &mut builder, Some(value), &active, &mut pending_reads
+                    )?;
                     if *slot >= builder.slots {
                         return Err(incomplete("scalar lifecycle writes undeclared slot"));
                     }
@@ -515,6 +635,9 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                     if active.values().any(|l| l.owner_slot == *slot) && !direct {
                         return Err(incomplete("owner write conflicts with a live loan"));
                     }
+                    if pending_exclusive_write.is_some() && !direct {
+                        return Err(incomplete("alias write marker not followed by matching owner write"));
+                    }
                     pending_exclusive_write = None;
                     if builder.next_origin as usize > MAX_CENSUS_ORIGINS {
                         return Err(budget("scalar lifecycle SSA origin budget exceeded"));
@@ -523,15 +646,20 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                     builder.next_origin += 1;
                 }
                 TStmt::Expr(value) => {
-                    let mut reads = BTreeSet::new();
-                    builder.reads(value, 0, &mut reads)?;
-                    pending_exclusive_write = None;
+                    if pending_exclusive_write.is_some() {
+                        return Err(incomplete("alias write marker cannot target expression-only statement"));
+                    }
+                    validate_audited_expression(
+                        &mut builder, Some(value), &active, &mut pending_reads
+                    )?;
                 }
                 TStmt::Return(value) => {
-                    let mut reads = BTreeSet::new();
-                    if let Some(value) = value {
-                        builder.reads(value, 0, &mut reads)?;
+                    if pending_exclusive_write.is_some() {
+                        return Err(incomplete("alias write marker cannot target terminal return"));
                     }
+                    validate_audited_expression(
+                        &mut builder, value.as_ref(), &active, &mut pending_reads
+                    )?;
                     if !active.is_empty() {
                         return Err(unsupported("return with an active loan needs scope/unwind cleanup facts"));
                     }
@@ -544,7 +672,9 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                 return Err(budget("scalar loan lifecycle census fact budget exceeded"));
             }
         }
-        if !terminal || !active.is_empty() {
+        if !terminal || !active.is_empty() || !pending_reads.is_empty()
+            || pending_exclusive_write.is_some()
+        {
             return Err(unsupported("scalar loan lifetime or terminal return not explicitly closed"));
         }
     }
