@@ -1,0 +1,19 @@
+// expect-error: E_HANDLE
+// java: rejects
+// A checked handle cannot bypass unref through a transitive guest throw.
+define class Parcel as
+  pub let int value = 42;
+end
+
+fnc fail(borrow! Parcel payload): int { throw Error("boom"); }
+fnc wrapper(borrow! Parcel payload): int { return fail(payload); }
+pub fnc main(): int {
+  val original = new Parcel();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    stdio.println(wrapper(view));
+  }
+  val restored = unref! handle;
+  return restored.value;
+}
