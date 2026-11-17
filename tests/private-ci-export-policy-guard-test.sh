@@ -49,6 +49,10 @@ expect_deny 'active CRLF' 'foreign/repo 123\r\n'
 expect_deny 'vertical tab' '#comment\v\n'
 expect_deny 'backspace' '#comment\b\n'
 expect_deny 'invalid UTF8' '#comment\377\n'
+expect_allow 'comment without trailing LF' '# final comment'
+expect_deny 'bare CR at EOF' '# comment\r'
+expect_deny 'embedded CR hidden destination' '# comment\rforeign/repo 123\n'
+expect_deny 'double CR before LF' '# comment\r\r\n'
 
 # The inclusive 64 KiB boundary must not be rejected spuriously.
 rm -f "$file"
