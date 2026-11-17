@@ -62,7 +62,7 @@ fn builtin_name(name: &str) -> bool {
 }
 
 /// Split only on top-level commas. Generic nesting is bounded independently.
-fn type_args<'a>(input: &'a str, at: Pos, depth: usize) -> Result<Vec<&'a str>, Diagnostic> {
+fn type_args(input: &str, at: Pos, depth: usize) -> Result<Vec<&str>, Diagnostic> {
     if depth >= MAX_LITERAL_DEPTH {
         return Err(diag(at, "E_NESTING", "collection type nesting exceeds the limit"));
     }
