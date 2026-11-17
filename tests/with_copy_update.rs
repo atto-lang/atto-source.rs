@@ -145,5 +145,5 @@ fn unsupported_nested_records_still_fail_closed() {
         return 0;
     }";
     let e=compile(source).expect_err("mutable or nested graph cannot use flat scalar layout");
-    assert_eq!(e.code,"E_WITH_OWNERSHIP","{e}");
+    assert_eq!(e.code,"E_UNSUPPORTED","{e}");
 }
