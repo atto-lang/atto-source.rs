@@ -2983,11 +2983,15 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+                    // Generator<int> is an opaque, affine continuation handle, not a
+                    // value-comparable scalar. Admitting it here would lower its
+                    // i64 representation using an i32 equality instruction and
+                    // could emit an invalid Wasm guest instead of a diagnostic.
+                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr | Type::GeneratorInt) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
-                            "comparing object, actor or tagged ADT references is unsupported; pointer equality is not structural equality",
+                            "value equality on objects, actor references, tagged ADTs or generator handles is not supported; equality must not silently compare handles",
                         ));
                     }
                     if a.ty == Type::Str {

@@ -1,9 +1,12 @@
 // expect-exit: 7
 // Class identity checks must be stable without invoking equals().
-define class Thing as end
+define class Thing as
+  pub final int tag: 42;
+end
 pub fnc main(): int {
   val a = new Thing();
   val b = new Thing();
-  if a == a, a != b then return 7; fi
+  // Equal fields do not imply identical heap allocations.
+  if a == a, a != b, !(a == b), !(a != a) then return 7; fi
   return 0;
 }

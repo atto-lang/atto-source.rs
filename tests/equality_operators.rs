@@ -1,5 +1,5 @@
 //! Equality operator admission in the real lexer/parser/checker/Wasm backend.
-use atto_compiler::compile;
+use atto_compiler::{compile, ast::{BinOp, ExprKind, Stmt}, lexer, parser::Parser};
 
 fn main_with_condition(condition: &str) -> String {
     format!("pub fnc main(): int {{ if {condition} then return 1; fi return 0; }}")
@@ -65,4 +65,59 @@ fn mixed_reference_and_scalar_identity_fails_closed() {
         }
     "#;
     assert_eq!(compile(src).unwrap_err().code, "E_IDENTITY_TYPE");
+}
+
+#[test]
+fn parser_retains_value_and_identity_opcodes_without_aliasing() {
+    for (spelling, expected) in [
+        ("eq", BinOp::Eq),
+        ("neq", BinOp::Ne),
+        ("!eq", BinOp::Ne),
+        ("==", BinOp::IdEq),
+        ("!=", BinOp::IdNe),
+    ] {
+        let source = format!("fnc compare(): bool {{ return 1 {spelling} 2; }} pub fnc main(): int {{ return 0; }}");
+        let ast = Parser::new(lexer::lex(&source).unwrap()).parse_program().unwrap();
+        let Stmt::Return(Some(expr), _) = &ast.funcs[0].body[0] else {
+            panic!("{spelling}: expected return expression");
+        };
+        let ExprKind::Binary(actual, _, _) = &expr.kind else {
+            panic!("{spelling}: missing operator AST");
+        };
+        assert_eq!(*actual, expected, "{spelling}: wrong operator");
+    }
+}
+
+#[test]
+fn identity_rejects_strings_different_class_domains_and_tagged_values() {
+    for src in [
+        "pub fnc main(): int { if \"same\" == \"same\" then return 1; fi return 0; }".to_string(),
+        "pub fnc main(): int { if \"same\" != \"other\" then return 1; fi return 0; }".to_string(),
+        "define class A as end define class B as end pub fnc main(): int { val a = new A(); val b = new B(); if a == b then return 1; fi return 0; }".to_string(),
+    ] {
+        let d = compile(&src).expect_err("identity must never lower to scalar or mismatched-object equality");
+        assert_eq!(d.code, "E_IDENTITY_TYPE", "{src}: {d}");
+        assert!(d.pos.line >= 1 && d.pos.col >= 1, "{d}");
+    }
+}
+
+#[test]
+fn generator_handles_are_not_value_or_reference_equal() {
+    // An affine Generator<int> uses an i64 continuation handle. Reject *before*
+    // emitting an i32.eq guest opcode or leaking an unclosed generator.
+    for spelling in ["eq", "neq", "==", "!="] {
+        let src = format!(r#"
+            fnc *gen values(): Generator<int> {{ yield 1; }}
+            pub fnc main(): int {{
+                if values() {spelling} values() then return 1; fi
+                return 0;
+            }}
+        "#);
+        let d = compile(&src).expect_err("opaque generator comparison must not emit a guest");
+        assert_eq!(
+            d.code,
+            if matches!(spelling, "==" | "!=") { "E_IDENTITY_TYPE" } else { "E_UNSUPPORTED" },
+            "{spelling}: {d}"
+        );
+    }
 }
