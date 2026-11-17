@@ -183,38 +183,14 @@ and executed by both native and wasm32 compiler paths in CI. This work
 does not update the pinned public playground compiler or lift the
 syntax-preview labels.
 
-### First executable caller-side `trap expr` and ordinary guest throws
+### Trap-to-Result migration: legacy Option lowering disabled
 
-The Rust/Wasm browser subset admits synchronous `trap expr` for the two
-**concrete** operand profiles `int` and `Result<int,string>`. The result
-is `Option<int>` or `Option<Result<int,string>>` respectively, without
-flattening `Some(Err(...))`. The operand is evaluated once, before the
-Some allocation. The only ordinary throwable currently admitted is a
-source-level `throw Error(message)` statement in a **top-level free
-function**, where `message: string` can be computed dynamically.
-A raw `throw "text"`, forged `Error` constructor, or non-string Error
-payload fails static checking.
+The canonical [trap-to-Result v1 contract](https://github.com/atto-lang/atto-spec/blob/main/language/trap-result-v1.md) changes `trap expression` to return `Result<T, Error>` for ordinary values, `Result<Option<T>,Error>` for Option values and a **single Result** with a lossless joined error type for already-Result values. Caught ordinary throws must remain `Err(original Error)`; `None` is not an error.
 
-The compiler emits one **private WebAssembly exception tag** whose sole
-payload is the guest Error's i64 string view. It neither imports nor
-exports that tag. The `trap` catch handles only that tag and materializes
-`None`; throws automatically unwind through ordinary Wasm function calls.
-Host exceptions, unknown tags, checked-arithmetic panic, heap exhaustion,
-forced cancellation, and fatal engine traps **bypass** this catch.
+This browser compiler previously admitted a narrow `trap expr` slice that emitted `Some(value)` on success and `None` on source throw. That **legacy behavior is no longer conformant**. Until the checker, typed IR, Error identity/payload representation, error joins and emitted Wasm are changed together, `trap` now returns a positioned `E_UNSUPPORTED` diagnostic and **no guest Wasm**. Ordinary `throw Error(message)` remains a separate guest exception path, but source `raise`, `panic`, cancellation and host faults must never be transformed into `Err`.
 
-This is deliberately **not full language exception parity**: arbitrary
-Error subclasses, first-class Error values, `try/catch`, `recover`,
-`defer` cleanup, async/resumable traps, actor/supervisor exception routing,
-`Option<void>`, `Option<Option<T>>`, and general `Option<T>` remain gated
-by explicit unsupported diagnostics. No existing guest imports/exports or
-`panic_code` meanings change; modules without throws/traps emit no EH
-section. The generated guest needs an engine with WebAssembly exception
-handling enabled.
+The retained legacy `TExpr::Trap` emitter is deliberately unreachable from the checker. It is not executable proof of the new semantics and must not be reenabled through a type-only change. The old trap guest runs and public-preview Git blobs are historical candidate receipts, **not current pass cases**. The pinned public playground binary is not replaced or relabeled. Admission requires exact-head native and wasm32 guest tests for scalar/Option/Result outcomes, preservation of Error payload and identity, no nested Result, typed join failure, and source panic/raise bypass.
 
-The checked-in `tests/fixtures/pass/107-playground-trap-expression.atto`
-compiles the actual public playground preview body under the candidate
-compiler and executes it in Wasm CI. The **public playground binary** is
-pinned separately and has not been replaced or relabeled by this change.
 
 ## Where the syntax comes from
 
