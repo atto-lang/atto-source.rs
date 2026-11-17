@@ -69,11 +69,14 @@ fn expr_uses_alias(expr: &Expr, alias: &str, budget: &mut usize) -> Option<bool>
             | crate::ast::UnOp::Copy,
             inner,
         ) => expr_uses_alias(inner, alias, budget),
-        // A new scalar loan of a named local has no guest-side effect:
-        // bind_scalar_borrow subsequently checks its type, mutability and
-        // conflicts. A name referencing THIS alias remains a live use.
-        // Borrowing arbitrary expressions is not admitted by that gate.
-        ExprKind::Unary(crate::ast::UnOp::Borrow | crate::ast::UnOp::BorrowMut | crate::ast::UnOp::Take, inner) => {
+        // A checked scalar borrow or take of a named local has no
+        // unproved guest-side effect: bind_scalar_borrow / scalar_take
+        // validate mutability, moves and conflicts. The old alias itself
+        // remains a live use; computed targets cannot authorize release.
+        ExprKind::Unary(
+            crate::ast::UnOp::Borrow | crate::ast::UnOp::BorrowMut | crate::ast::UnOp::Take,
+            inner,
+        ) => {
             if matches!(&inner.kind, ExprKind::Var(_)) {
                 expr_uses_alias(inner, alias, budget)
             } else {
