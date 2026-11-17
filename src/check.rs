@@ -2836,6 +2836,7 @@ impl<'a> FnCx<'a> {
                 let (success_tag, success_ty) = match value.ty {
                     Type::ResultIntStr | Type::ResultIntError => (0, Type::Int),
                     Type::ResultOptionIntError => (0, Type::OptionInt),
+                    Type::ResultVoidError => (0, Type::Void),
                     Type::OptionInt => (1, Type::Int),
                     _ => return Err(type_err(e.pos,
                         format!("postfix '?' requires an admitted Option or Result payload, found {}", self.tn(value.ty)))),
