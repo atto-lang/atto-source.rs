@@ -129,9 +129,23 @@ fn reject_nested_exports(t: &[Token]) -> R<()> {
             // the surrounding class/module so its first 'end' cannot cause
             // an inner export to masquerade as file scope.
             Tok::Arrow if braces == 0 => {
-                let after_result = t.get(i + 2).map(|x| &x.tok);
-                if after_result != Some(&Tok::LBrace) &&
-                   after_result != Some(&Tok::ColonColon) {
+                // A return annotation can be followed by effect clauses
+                // before its braced body. Do not mistake such a function
+                // for an end-delimited one and poison later top-level exports.
+                let mut j = i + 2;
+                while ["throws", "raises", "panics"].iter().any(|k| word(t, j, k))
+                    && t.get(j + 1).map(|x| &x.tok) == Some(&Tok::LParen) {
+                    j += 2;
+                    while j < t.len() && !matches!(t[j].tok, Tok::RParen | Tok::Eof) {
+                        j += 1;
+                    }
+                    if t.get(j).map(|x| &x.tok) != Some(&Tok::RParen) { break; }
+                    j += 1;
+                    if t.get(j).map(|x| &x.tok) == Some(&Tok::Comma) { j += 1; }
+                }
+                let body_start = t.get(j).map(|x| &x.tok);
+                if body_start != Some(&Tok::LBrace) &&
+                   body_start != Some(&Tok::ColonColon) {
                     end_scopes += 1;
                 }
             }
