@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED_TYPE
+// expect-error: E_UNSUPPORTED
 pub fnc main(): int {
   val answer = trap "some value";
   return 0;
