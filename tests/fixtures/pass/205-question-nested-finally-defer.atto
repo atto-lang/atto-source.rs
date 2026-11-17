@@ -1,0 +1,23 @@
+// expect-exit: 42
+// expect-stdout: inner finally
+// expect-stdout: outer finally
+// expect-stdout: registered defer
+// expect-stdout: fail
+fnc failed(): Result<int,Error> { return Err(Error("fail")); }
+fnc checked(): Result<int,Error> {
+  defer || -> { stdio.println("registered defer"); };
+  try {
+    try {
+      val Result<int,Error> r = trap failed();
+      val int n = r?;
+      return Ok(n);
+    } finally { stdio.println("inner finally"); }
+  } finally { stdio.println("outer finally"); }
+}
+pub fnc main(): int {
+  val Result<int,Error> r = checked();
+  match r over
+    on Ok(v) -> { return 0; }
+    on Err(e) -> { stdio.println(e.message); return 42; }
+  end
+}
