@@ -154,6 +154,15 @@ impl Lower {
                 _ => return Err(err(e.pos,"E_UNSUPPORTED",
                     "guest Record projections need a statically known local receiver")),
             },
+            ExprKind::Index(recv,key) => match (&recv.kind,&key.kind) {
+                (ExprKind::Var(name),ExprKind::Str(field)) => match env.get(name) {
+                    Some(Value::Record(shape)) => shape.0.iter()
+                        .find(|(n,_)|n==field).map(|(_,ty)|*ty)
+                        .ok_or_else(||err(e.pos,"E_NO_FIELD",format!("Record has no field '{field}'")))?,
+                    _=>return Err(err(e.pos,"E_UNSUPPORTED","guest indexed Record field needs a known local receiver")),
+                },
+                _=>return Err(err(e.pos,"E_RECORD_KEY","guest Record bracket key must be a static string")),
+            },
             ExprKind::Unary(op, inner) => {
                 if *op == UnOp::Neg && matches!(&inner.kind,ExprKind::Int(None)) {
                     Type::Int
@@ -187,6 +196,68 @@ impl Lower {
         };
         Ok(ty)
     }
+
+    /// Convert source field labels, including punctuation and UTF-8 names,
+    /// to canonical private offsets after the structural checker has run.
+    fn rewrite_expr(&self, e: Expr, env: &BTreeMap<String,Value>, depth: usize) -> R<Expr> {
+        if depth > MAX_EXPR_DEPTH {
+            return Err(err(e.pos,"E_NESTING","guest Record projection too deep"));
+        }
+        let pos=e.pos;
+        let n=depth+1;
+        let kind=match e.kind {
+            ExprKind::Member(base,field) => {
+                if let ExprKind::Var(ref name)=base.kind {
+                    if let Some(Value::Record(shape))=env.get(name) {
+                        return Ok(expression(ExprKind::Member(base,field_slot(shape,&field,pos)?),pos));
+                    }
+                }
+                ExprKind::Member(Box::new(self.rewrite_expr(*base,env,n)?),field)
+            }
+            ExprKind::Index(base,key) => {
+                if let ExprKind::Var(ref name)=base.kind {
+                    if let Some(Value::Record(shape))=env.get(name) {
+                        let ExprKind::Str(ref field)=key.kind else {
+                            return Err(err(key.pos,"E_RECORD_KEY",
+                                "guest Record key must be a compile-time string"));
+                        };
+                        return Ok(expression(ExprKind::Member(
+                            base,field_slot(shape,field,pos)?),pos));
+                    }
+                }
+                ExprKind::Index(Box::new(self.rewrite_expr(*base,env,n)?),
+                    Box::new(self.rewrite_expr(*key,env,n)?))
+            }
+            ExprKind::Unary(op,v) => ExprKind::Unary(op,
+                Box::new(self.rewrite_expr(*v,env,n)?)),
+            ExprKind::Binary(op,a,b) => ExprKind::Binary(op,
+                Box::new(self.rewrite_expr(*a,env,n)?),
+                Box::new(self.rewrite_expr(*b,env,n)?)),
+            ExprKind::Ternary(c,a,b) => ExprKind::Ternary(
+                Box::new(self.rewrite_expr(*c,env,n)?),
+                Box::new(self.rewrite_expr(*a,env,n)?),
+                Box::new(self.rewrite_expr(*b,env,n)?)),
+            ExprKind::Call(name,args) => ExprKind::Call(name,
+                args.into_iter().map(|x|self.rewrite_expr(x,env,n)).collect::<R<Vec<_>>>()?),
+            ExprKind::New(name,args) => ExprKind::New(name,
+                args.into_iter().map(|x|self.rewrite_expr(x,env,n)).collect::<R<Vec<_>>>()?),
+            ExprKind::MethodCall(base,name,args) => ExprKind::MethodCall(
+                Box::new(self.rewrite_expr(*base,env,n)?),name,
+                args.into_iter().map(|x|self.rewrite_expr(x,env,n)).collect::<R<Vec<_>>>()?),
+            ExprKind::Ownership(op,mutable,v) => ExprKind::Ownership(
+                op,mutable,Box::new(self.rewrite_expr(*v,env,n)?)),
+            ExprKind::Propagate(v) => ExprKind::Propagate(
+                Box::new(self.rewrite_expr(*v,env,n)?)),
+            ExprKind::Trap(v) => ExprKind::Trap(
+                Box::new(self.rewrite_expr(*v,env,n)?)),
+            ExprKind::Record(_) | ExprKind::With(_,_) =>
+                return Err(err(pos,"E_UNSUPPORTED",
+                    "nested Record expression needs checked statement-level construction")),
+            other => other,
+        };
+        Ok(expression(kind,pos))
+    }
+
     fn temporary(&mut self, pre: &mut Vec<Stmt>, init: Expr, ty: Option<Type>) -> Expr {
         let pos=init.pos;
         let name=self.fresh();
@@ -212,7 +283,8 @@ impl Lower {
                     let ty=self.inferred_scalar(&value,env,0)?;
                     // A source-order temporary prevents canonical field sorting
                     // from reordering or duplicating any initializer.
-                    let temp=self.temporary(&mut pre,value,Some(ty));
+                    let rewritten=self.rewrite_expr(value,env,0)?;
+                    let temp=self.temporary(&mut pre,rewritten,Some(ty));
                     slots.insert(field,(ty,temp));
                 }
                 let shape=Shape(slots.iter().map(|(name,(ty,_))|(name.clone(),*ty)).collect());
@@ -244,14 +316,16 @@ impl Lower {
                         return Err(err(value.pos,"E_DUPLICATE","duplicate with update field"));
                     }
                     let ty=self.inferred_scalar(&value,env,0)?;
-                    let temp=self.temporary(&mut pre,value,Some(ty));
+                    let rewritten=self.rewrite_expr(value,env,0)?;
+                    let temp=self.temporary(&mut pre,rewritten,Some(ty));
                     updated.insert(field,(ty,temp));
                 }
                 let mut merged=BTreeMap::<String,(Type,Expr)>::new();
                 for (field,ty) in &original.0 {
                     if !updated.contains_key(field) {
                         merged.insert(field.clone(),(*ty,expression(
-                            ExprKind::Member(Box::new(receiver.clone()),field.clone()),pos)));
+                            ExprKind::Member(Box::new(receiver.clone()),
+                                field_slot(&original,field,pos)?),pos)));
                     }
                 }
                 for (field,pair) in updated { merged.insert(field,pair); }
