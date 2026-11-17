@@ -1,0 +1,11 @@
+// expect-error: E_UNSUPPORTED
+// Finally cannot replace a pending return with an implicit Err via '?'.
+fnc fail(): Result<int,Error> { return Err(Error("x")); }
+fnc checked(): Result<int,Error> {
+  try { return Ok(10); }
+  finally {
+    val Result<int,Error> r = fail();
+    val int n = r?;
+  }
+}
+pub fnc main(): int { return 0; }
