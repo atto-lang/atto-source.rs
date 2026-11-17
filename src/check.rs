@@ -28,6 +28,7 @@ pub mod callable_ir;
 #[allow(dead_code)]
 mod checked_handle_cfg;
 mod checked_handle_adapter;
+mod typed_handle_cfg;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
@@ -1361,6 +1362,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for (i, f) in funcs.iter().take(p.funcs.len()).enumerate() {
         check_unsafe_calls_during_handle_lifetime(
             &f.body, &may_early_exit, p.funcs[i].pos)?;
+        // Independent post-typecheck proof: resolve *actual slot identity*
+        // and branch/scope lifetimes from TStmt rather than source spelling.
+        // The source parser/borrow provenance proof remains a first gate.
+        typed_handle_cfg::verify(f, &may_early_exit, p.funcs[i].pos)?;
     }
     let strings = funcs
         .iter()
