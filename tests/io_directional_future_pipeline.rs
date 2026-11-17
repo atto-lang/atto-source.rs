@@ -15,6 +15,9 @@ fn directional_future_await_read_flow_is_recognized_but_never_emitted_as_guest_i
         "nb stdio.in >> val Future<string> pending |> suspends |f| -> await f >> val string line;",
         "nb stdio.in >> let pending: Future<Result<Option<string>,IoError>> |> susp |item| -> await item >> val outcome: Result<Option<string>,IoError>;",
         "nb stdio.in >> val pending: Future<Result<Option<string>,IoError>> |> suspends |p| -> await p >> let outcome: Result<Option<string>,IoError>;",
+        // Contextually legal reversed application must reach the guest-ABI
+        // gate, not merely fail for a parser error.
+        "nb stdio.in >> (val string line << |x| -> await x <| Future<string>);",
     ] {
         let diag = compile(&program(statement)).expect_err(
             "parser recognition must not falsely claim typed stdin guest execution",
@@ -44,15 +47,15 @@ fn directional_future_await_binder_and_type_errors_fail_closed() {
 
 #[test]
 fn await_is_not_a_function_and_future_type_is_not_a_reverse_pipe_value() {
-    for statement in [
-        "nb stdio.in >> val pending: Future<string> |> await pending >> val line: string;",
-        "nb stdio.in >> val pending: Future<string> |> susp |f| -> await f <| Future<string> >> val line: string;",
-        "nb stdio.in >> (val string line << |x| -> await x <| Future<string>);",
-        "nb stdio.in >> Future<string> x |> await x >> val string line;",
+    for (statement, expected) in [
+        ("nb stdio.in >> val pending: Future<string> |> await pending >> val line: string;", "E_SYNTAX"),
+        ("nb stdio.in >> val pending: Future<string> |> susp |f| -> await f <| Future<string> >> val line: string;", "E_IO_SYNTAX"),
+        ("nb stdio.in >> Future<string> x |> await x >> val string line;", "E_SYNTAX"),
     ] {
-        compile(&program(statement)).expect_err(
-            "type placeholders and bare await may not be runtime callable stages",
+        let diag = compile(&program(statement)).expect_err(
+            "type placeholders and bare await must not become runtime callable stages",
         );
+        assert_eq!(diag.code, expected, "{statement}: {diag}");
     }
 }
 

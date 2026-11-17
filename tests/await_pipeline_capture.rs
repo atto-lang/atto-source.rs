@@ -207,3 +207,66 @@ pub suspends fnc main(): int {
 "#;
     compile_ok(source);
 }
+
+
+#[test]
+fn optional_directional_equals_emits_identical_executable_wasm() {
+    // '=' is a spelling-only alias, not an extra assignment or a new
+    // observable evaluation. The emitted checked Future await is identical.
+    let canonical = r#"
+pub suspends fnc main(): int {
+    val pending = task { return 41; };
+    pending |> susp |f| -> await f >> val result: int;
+    return result + 1;
+}
+"#;
+    let alternate = canonical.replace(">> val result: int", ">> = val result: int");
+    assert_eq!(compile_ok(canonical), compile_ok(&alternate));
+}
+
+#[test]
+fn optional_equals_also_works_in_return_and_caret_terminal_capture() {
+    for keyword in ["return", "^"] {
+        let src = format!(r#"
+pub suspends fnc main(): int {{
+    val pending = task {{ return 42; }};
+    {keyword} pending |> susp |f| -> await f >> = val result: int;
+}}
+"#);
+        compile_ok(&src);
+    }
+}
+
+#[test]
+fn optional_equals_in_executable_capture_rejects_contiguous_or_repeated_markers() {
+    for suffix in [
+        ">>= val result: int",
+        ">> == val result: int",
+        ">> = = val result: int",
+        ">> = result",
+        "> > = val result: int",
+    ] {
+        let src = format!(
+            "pub suspends fnc main(): int {{ val p=task {{ return 42; }}; \
+             p |> susp |f| -> await f {suffix}; return 42; }}"
+        );
+        compile(&src).expect_err("invalid directional marker must not be executable");
+    }
+
+    let contiguous = "pub suspends fnc main(): int { val p=task {return 42;}; p |> susp |f| -> await f >>= val result: int; return 42; }";
+    let diag = compile(contiguous).expect_err(">>= must not silently alias >> =");
+    assert_eq!(diag.code, "E_IO_SYNTAX", "{diag}");
+
+    let collision = "pub suspends fnc main(): int { val p=task {return 42;}; val result=0; p |> susp |f| -> await f >> = val result:int; return 42; }";
+    compile(collision).expect_err("optional marker must not permit redeclaration");
+}
+
+#[test]
+fn an_equals_cannot_turn_plain_expressions_into_directional_capture() {
+    for src in [
+        "pub fnc main(): int { 42 >> = val answer: int; return answer; }",
+        "pub fnc main(): int { val answer = 41; answer >> = answer; return answer; }",
+    ] {
+        compile(src).expect_err("directional '=' is not an arithmetic or assignment operator");
+    }
+}
