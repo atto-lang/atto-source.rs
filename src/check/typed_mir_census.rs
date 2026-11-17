@@ -351,3 +351,173 @@ pub fn checked_borrow_issues(program: &TProgram) -> Result<Vec<CheckedBorrowIssu
     }
     Ok(issues)
 }
+
+
+/// A checked typed-MIR loan lifecycle event. The origin is the existing
+/// compiler's typechecker/NLL scanner, NOT an independent Polonius verdict.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScalarLoanEventKind {
+    Issue { owner_slot: u32, exclusive: bool },
+    Use { owner_slot: u32, write: bool },
+    End { owner_slot: u32 },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScalarLoanEvent {
+    pub function_index: u32,
+    pub instruction_ordinal: u32,
+    pub loan_id: u32,
+    pub kind: ScalarLoanEventKind,
+}
+#[derive(Clone, Copy)]
+struct ActiveLoan {
+    owner_slot: u32,
+    exclusive: bool,
+    used: bool,
+}
+
+/// Verify that the compiler-generated typed loan markers form a consistent
+/// straight-line lifecycle alongside the actual typed scalar load/store IR.
+///
+/// This model independently checks event order, uniqueness, invalidations,
+/// and provenance references, but CANNOT prove that lowering recorded all
+/// alias reads, a future escape, or every exceptional edge. It MUST NOT
+/// authorize guest codegen or substitute for the source ownership checker.
+pub fn audit_scalar_loan_lifecycle(
+    program: &TProgram,
+) -> Result<Vec<ScalarLoanEvent>, Diagnostic> {
+    if program.funcs.is_empty() || program.funcs.len() > MAX_CENSUS_FUNCTIONS
+        || !program.generators.is_empty() || !program.actors.is_empty()
+        || program.heap || program.guest_eh
+    {
+        return Err(unsupported("scalar loan lifecycle requires a closed pure scalar program"));
+    }
+    let mut result = Vec::new();
+    for (function_index, func) in program.funcs.iter().enumerate() {
+        if !simple_type(func.ret)
+            || func.params.iter().chain(func.locals.iter())
+                .any(|&ty| !simple_type(ty) || ty == Type::Void)
+            || func.body.len() > MAX_CENSUS_POINTS
+        {
+            return Err(unsupported("scalar loan lifecycle needs bounded scalar slots/statements"));
+        }
+        let slots = func.params.len().checked_add(func.locals.len())
+            .ok_or_else(|| budget("scalar loan slot count overflow"))?;
+        if slots > MAX_CENSUS_ORIGINS {
+            return Err(budget("scalar loan slot budget exceeded"));
+        }
+        let mut builder = Builder {
+            origins: BTreeMap::new(), next_origin: 1, points: Vec::new(),
+            use_facts: 0, expr_visits: 0, may_trap: false,
+            has_conditional: false, slots: slots as u32,
+        };
+        for slot in 0..func.params.len() as u32 {
+            builder.origins.insert(slot, builder.next_origin);
+            builder.next_origin += 1;
+        }
+        let mut active = BTreeMap::<u32, ActiveLoan>::new();
+        let mut all_issued = BTreeSet::new();
+        let mut pending_exclusive_write: Option<(u32, u32)> = None;
+        let mut terminal = false;
+        for (ordinal, stmt) in func.body.iter().enumerate() {
+            if terminal {
+                return Err(incomplete("typed scalar loan event after terminal return"));
+            }
+            let instruction_ordinal = ordinal as u32 + 1;
+            let mk = |loan_id, kind| ScalarLoanEvent {
+                function_index: function_index as u32,
+                instruction_ordinal, loan_id, kind,
+            };
+            match stmt {
+                TStmt::ScalarBorrowIssue { loan_id, owner_slot, exclusive, .. } => {
+                    if *loan_id == 0 || *owner_slot >= builder.slots
+                        || !builder.origins.contains_key(owner_slot)
+                        || !all_issued.insert(*loan_id)
+                        || active.values().any(|l| l.owner_slot == *owner_slot
+                            && (l.exclusive || *exclusive))
+                    {
+                        return Err(incomplete("duplicate/invalid/conflicting compiler loan issuance"));
+                    }
+                    active.insert(*loan_id, ActiveLoan {
+                        owner_slot: *owner_slot, exclusive: *exclusive, used: false,
+                    });
+                    result.push(mk(*loan_id, ScalarLoanEventKind::Issue {
+                        owner_slot: *owner_slot, exclusive: *exclusive,
+                    }));
+                    pending_exclusive_write = None;
+                }
+                TStmt::ScalarLoanUse { loan_id, owner_slot, write } => {
+                    let loan = active.get_mut(loan_id)
+                        .ok_or_else(|| incomplete("loan use has no live issued identity"))?;
+                    if loan.owner_slot != *owner_slot || (*write && !loan.exclusive) {
+                        return Err(incomplete("loan use owner/exclusive provenance mismatch"));
+                    }
+                    loan.used = true;
+                    result.push(mk(*loan_id, ScalarLoanEventKind::Use {
+                        owner_slot: *owner_slot, write: *write,
+                    }));
+                    pending_exclusive_write = if *write {
+                        Some((*loan_id, *owner_slot))
+                    } else {
+                        None
+                    };
+                }
+                TStmt::ScalarLoanEnd { loan_id, owner_slot } => {
+                    let loan = active.remove(loan_id)
+                        .ok_or_else(|| incomplete("loan ended without live issued identity"))?;
+                    if loan.owner_slot != *owner_slot || !loan.used {
+                        return Err(incomplete("loan end lacks matching owner and prior checked use"));
+                    }
+                    result.push(mk(*loan_id, ScalarLoanEventKind::End {
+                        owner_slot: *owner_slot,
+                    }));
+                    pending_exclusive_write = None;
+                }
+                TStmt::Set(slot, value) => {
+                    let mut reads = BTreeSet::new();
+                    builder.reads(value, 0, &mut reads)?;
+                    if *slot >= builder.slots {
+                        return Err(incomplete("scalar lifecycle writes undeclared slot"));
+                    }
+                    let direct = pending_exclusive_write.is_some_and(|(loan_id, owner)| {
+                        owner == *slot
+                            && active.get(&loan_id)
+                                .is_some_and(|loan| loan.exclusive && loan.owner_slot == owner)
+                    });
+                    if active.values().any(|l| l.owner_slot == *slot) && !direct {
+                        return Err(incomplete("owner write conflicts with a live loan"));
+                    }
+                    pending_exclusive_write = None;
+                    if builder.next_origin as usize > MAX_CENSUS_ORIGINS {
+                        return Err(budget("scalar lifecycle SSA origin budget exceeded"));
+                    }
+                    builder.origins.insert(*slot, builder.next_origin);
+                    builder.next_origin += 1;
+                }
+                TStmt::Expr(value) => {
+                    let mut reads = BTreeSet::new();
+                    builder.reads(value, 0, &mut reads)?;
+                    pending_exclusive_write = None;
+                }
+                TStmt::Return(value) => {
+                    let mut reads = BTreeSet::new();
+                    if let Some(value) = value {
+                        builder.reads(value, 0, &mut reads)?;
+                    }
+                    if !active.is_empty() {
+                        return Err(unsupported("return with an active loan needs scope/unwind cleanup facts"));
+                    }
+                    pending_exclusive_write = None;
+                    terminal = true;
+                }
+                _ => return Err(unsupported("control flow, effects or unknown lexical cleanup not yet audited")),
+            }
+            if result.len() > MAX_CENSUS_USES || all_issued.len() > MAX_CENSUS_ORIGINS {
+                return Err(budget("scalar loan lifecycle census fact budget exceeded"));
+            }
+        }
+        if !terminal || !active.is_empty() {
+            return Err(unsupported("scalar loan lifetime or terminal return not explicitly closed"));
+        }
+    }
+    Ok(result)
+}
