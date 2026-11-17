@@ -218,3 +218,51 @@ fn gaps_before_bang_and_inequality_are_not_handle_prefixes() {
         assert!(atto_compiler::compile(&source).is_err(), "{spelling}");
     }
 }
+
+#[test]
+fn block_keyword_ends_two_immutable_loans_before_unref() {
+    let source = program(r#"
+        val original = new Parcel();
+        val handle = ref! original;
+        block {
+            val first = deref! handle;
+            val second = deref! handle;
+            stdio.println(first.get() + second.get());
+        }
+        val restored = unref! handle;
+        return restored.get();
+    "#);
+    let bytes = atto_compiler::compile(&source)
+        .unwrap_or_else(|d| panic!("canonical block loan retirement: {d}"));
+    assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
+}
+
+#[test]
+fn standalone_braces_are_not_block_scope_syntax() {
+    let source = program(r#"
+        val original = new Parcel();
+        val handle = ref! original;
+        {
+            val view = deref! handle;
+            stdio.println(view.get());
+        }
+        val restored = unref! handle;
+        return restored.get();
+    "#);
+    let error = atto_compiler::compile(&source).unwrap_err();
+    assert_eq!(error.code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn lexical_loan_must_end_before_consuming_checked_handle() {
+    check_error(r#"
+        val original = new Parcel();
+        val handle = ref! original;
+        block {
+            val view = deref! handle;
+            val restored = unref! handle;
+            stdio.println(view.get());
+        }
+        return 42;
+    "#, "E_HANDLE");
+}
