@@ -18,6 +18,7 @@ use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
 mod scalar_lifetime;
+pub mod typed_mir_census;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
@@ -185,6 +186,15 @@ pub struct TE {
 
 #[derive(Clone, Debug)]
 pub enum TStmt {
+    /// Compiler-checked scalar borrow provenance marker. It emits NO Wasm
+    /// instruction, but must survive typed lowering so a lifetime census
+    /// cannot silently mistake a borrow for an empty source block.
+    /// This does not authorize escaping references or generic loan codegen.
+    ScalarBorrowIssue {
+        owner_slot: u32,
+        alias: String,
+        exclusive: bool,
+    },
     Set(u32, TE),
     /// store `value` into the field at `offset` of `obj`
     FieldSet {
@@ -1601,7 +1611,11 @@ impl<'a> FnCx<'a> {
         // The loan is a source-level reference, not a copy. The read and
         // write-through operations subsequently lower directly to the owner's
         // checked scalar local, with no guest pointer or heap alias.
-        Ok(TStmt::Block(Vec::new()))
+        Ok(TStmt::ScalarBorrowIssue {
+            owner_slot: slot,
+            alias: name.to_string(),
+            exclusive,
+        })
     }
 
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
