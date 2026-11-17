@@ -376,6 +376,9 @@ struct ClassInfo {
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
+    /// AOT-generated, private per-concrete-class copier, present only after
+    /// proving every stored field is a by-value/immutable scalar.
+    deep_copy_idx: Option<u32>,
     ctor_idx: Option<u32>,
     ctor_params: Vec<Type>,
 }
@@ -934,6 +937,15 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for m in &mut methods {
             m.idx = take();
         }
+        // This first AOT profile may copy only a flat class of verified
+        // identity-free slots. Class/actor/ADT handles require a graph memo,
+        // and protected actor-state objects cannot bypass their sealed leases.
+        // Custom copy_deep overrides need separate proof/hook chaining.
+        let deep_copy_idx = (!c.state_container
+            && !c.methods.iter().any(|m| m.name == "copy_deep")
+            && fields.iter().all(|f| matches!(f.ty,
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))))
+            .then(&mut take);
         let ctor_params = match &c.ctor {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
             None => Vec::new(),
@@ -944,6 +956,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             fields,
             methods,
             new_idx,
+            deep_copy_idx,
             ctor_idx,
             ctor_params,
         });
@@ -1187,6 +1200,34 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             locals: vec![me],
             body,
         });
+        // Generated source-independent whole-concrete-type copy plan. The
+        // checker has proved that each slot can be copied by value; emitting
+        // an allocation plus typed field loads/stores creates a fresh object
+        // without invoking any initializer or user constructor a second time.
+        // The copy function is private and has no reflective field access.
+        if let Some(copy_idx) = info.deep_copy_idx {
+            let source = TE { e: TExpr::Local(0), ty: me };
+            let cloned = TE { e: TExpr::Local(1), ty: me };
+            let mut body = vec![TStmt::Set(1, TE {
+                e: TExpr::Alloc((info.fields.len() as u32 * FIELD_BYTES).max(FIELD_BYTES)),
+                ty: me,
+            })];
+            for field in &info.fields {
+                body.push(TStmt::FieldSet {
+                    obj: cloned.clone(),
+                    offset: field.slot,
+                    ty: field.ty,
+                    value: TE { e: TExpr::FieldGet {
+                        obj: Box::new(source.clone()), offset: field.slot,
+                    }, ty: field.ty },
+                });
+            }
+            body.push(TStmt::Return(Some(cloned)));
+            funcs[copy_idx as usize] = Some(TFunc {
+                name: format!("{}.copy_deep$generated", c.name),
+                params: vec![me], ret: me, locals: vec![me], body,
+            });
+        }
         for (m, mi) in c.methods.iter().zip(&info.methods) {
             let owner = Owner::Class {
                 c: ci as u32,
