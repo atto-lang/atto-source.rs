@@ -381,3 +381,82 @@ pub fn compile_package_locked(root: &Path, entry: &str, expected_lock_sha256: &s
     let pins=parse_source_lock(&lock_text)?;
     compile_package_impl(root,entry,Some(&pins))
 }
+
+/// Immutable source input supplied by a caller holding an authenticated lock.
+#[derive(Clone, Copy, Debug)]
+pub struct SnapshotSource<'a> {
+    pub path: &'a str,
+    pub source: &'a str,
+}
+
+/// Compile a complete, hash-authenticated source graph without filesystem IO.
+/// The caller must independently authenticate the expected SHA-256 lock hash.
+/// Every provided source must be reachable from the entry and pinned by the
+/// lock. This avoids filesystem TOCTOU within the compiler itself.
+pub fn compile_locked_snapshot(
+    entry: &str,
+    manifest: &str,
+    lockfile: &str,
+    expected_lock_sha256: &str,
+    inputs: &[SnapshotSource<'_>],
+) -> R<Vec<u8>> {
+    if !linker::path_ok(entry) {
+        return Err(error("E_IMPORT_PATH", "snapshot entry path is not canonical"));
+    }
+    if !valid_sha256(expected_lock_sha256) {
+        return Err(error("E_LOCK", "trusted snapshot digest must be lowercase SHA-256"));
+    }
+    if crate::sha256::hex_digest(lockfile.as_bytes()) != expected_lock_sha256 {
+        return Err(error("E_LOCK_HASH", "snapshot lockfile digest mismatch"));
+    }
+    let pins = parse_source_lock(lockfile)?;
+    if crate::sha256::hex_digest(manifest.as_bytes()) != pins.manifest_sha256 {
+        return Err(error("E_LOCK_HASH", "snapshot manifest content mismatch"));
+    }
+    let identity = parse_package_identity(manifest)?;
+    if inputs.is_empty() || inputs.len() > MAX_FILES || inputs.len() != pins.files.len() {
+        return Err(error("E_LOCK_HASH", "snapshot file count differs from trusted lock"));
+    }
+    let mut sources = BTreeMap::new();
+    for input in inputs {
+        if !linker::path_ok(input.path) {
+            return Err(error("E_IMPORT_PATH", "snapshot source path is not canonical"));
+        }
+        if input.source.len() > crate::SOURCE_CAP {
+            return Err(error("E_SOURCE_LIMIT", "snapshot source exceeds compiler limit"));
+        }
+        let want = pins.files.get(input.path).ok_or_else(|| error("E_LOCK_HASH",
+            format!("untrusted snapshot source '{}'", input.path)))?;
+        if crate::sha256::hex_digest(input.source.as_bytes()) != *want {
+            return Err(error("E_LOCK_HASH",
+                format!("snapshot source content mismatch for '{}'", input.path)));
+        }
+        if sources.insert(input.path, input.source).is_some() {
+            return Err(error("E_DUPLICATE", "duplicate snapshot source path"));
+        }
+    }
+    if sources.len() != pins.files.len() {
+        return Err(error("E_LOCK_HASH", "missing snapshot source"));
+    }
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![entry.to_string()];
+    while let Some(path) = pending.pop() {
+        if !seen.insert(path.clone()) { continue; }
+        if seen.len() > MAX_FILES {
+            return Err(error("E_SOURCE_LIMIT", "snapshot graph too large"));
+        }
+        let source = sources.get(path.as_str()).ok_or_else(|| error("E_LOCK_HASH",
+            format!("snapshot omitted reachable source '{path}'")))?;
+        for child in linker::import_paths(source, &path)? {
+            pending.push(child);
+        }
+    }
+    if seen.len() != sources.len() {
+        return Err(error("E_LOCK_HASH",
+            "snapshot includes sources unreachable from its entry"));
+    }
+    let units: Vec<LinkUnit<'_>> = sources.iter().map(|(path, source)| LinkUnit {
+        path, source, package: &identity,
+    }).collect();
+    linker::compile_linked(entry, &units)
+}
