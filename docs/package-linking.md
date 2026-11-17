@@ -137,3 +137,50 @@ inheritance and validated external FFI are separate merge gates.
 CI tests should execute both the compiler and resulting guest, and record
 the exact source/tree Git SHAs of the files compiled. A pre-step failed job
 or an unexecuted fixture is not evidence of passing compiler behavior.
+
+## Authenticated in-memory snapshot inputs
+
+The host compiler also exposes `package_resolver::compile_locked_snapshot`
+for callers that already possess immutable source bytes and a **separately
+trusted** SHA-256 digest of a bounded package lockfile. Unlike
+`compile_package_locked`, this entrypoint performs **no filesystem IO**.
+
+```rust
+use atto_compiler::package_resolver::{compile_locked_snapshot, SnapshotSource};
+
+let wasm = compile_locked_snapshot(
+    "src/main.atto",
+    manifest_text,
+    lockfile_text,
+    independently_trusted_lock_sha256,
+    &[
+        SnapshotSource { path: "src/main.atto", source: main_source },
+        SnapshotSource { path: "lib/math.atto", source: math_source },
+    ],
+)?;
+```
+
+The API validates the supplied lockfile digest, manifest digest, every
+canonical source path and source content digest. It also rejects duplicate,
+missing, and **unreachable extra** source records before compilation, so the
+entire admitted source graph matches the authenticated lock.
+
+The digest must arrive via a trusted independent channel (such as a verified
+CI artifact or dependency attestation). **Reading the digest from the same
+untrusted source directory is not authentication.** This API does not
+implement package registry signature verification, external lockfile
+resolution, or a provenance attestation protocol.
+
+For Linux, the separately supported filesystem path continues to use
+descriptor-relative, symlink-free file reads. Other operating systems
+should prefer immutable input snapshots for hostile or concurrently mutable
+source directories until equivalent descriptor-based traversal is audited.
+
+### Verification receipt
+
+The source-only private runner
+[full browser compiler suite 44196885802](https://github.com/quaestor-ledger-test/atto-ci/actions/runs/44196885802)
+validated the 609 exact original Git blobs in the browser crate and passed
+387 Rust tests across 54 suites, plus four actual Node WebAssembly guest
+executions. This receipt does **not** include the separate native Cranelift
+workspace, Java/LLVM/.NET/Forge backends, or Rustfmt/Clippy/release checks.
