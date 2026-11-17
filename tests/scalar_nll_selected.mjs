@@ -64,6 +64,7 @@ const pass = [
   'ownership-borrow-nll-writer-release.atto',
   'ownership-borrow-nll-pure-suffix.atto',
   'ownership-borrow-nll-completed-call-release.atto',
+  'ownership-borrow-nll-named-take-release.atto',
 ];
 const fail = [
   'ownership-borrow-nll-live-after-mutation.atto',
