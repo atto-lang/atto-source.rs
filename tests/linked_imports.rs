@@ -98,9 +98,9 @@ fn missing_imports_and_wrong_owner_names_fail() {
 
 #[test]
 fn importing_does_not_authorize_reexport_of_an_unowned_module() {
-    let source = format!("export pub module Math;\n{MAIN}");
+    let source = MAIN.replace("pub fnc main", "export pub module Math;\npub fnc main");
     err(&source, EXPORTED, "another.library", "E_VISIBILITY");
-    let source2 = format!("export pub[pkg] Math;\n{MAIN}");
+    let source2 = MAIN.replace("pub fnc main", "export pub[pkg] Math;\npub fnc main");
     err(&source2, EXPORTED, "another.library", "E_VISIBILITY");
 }
 
