@@ -74,17 +74,51 @@ Named modules use a separate **`atto.exports.modules.v1`** local metadata sectio
 
 `internal fnc` is file-local and cannot be promoted via `export`. Unlinked `external fnc` prototypes cannot be called or exported. `protected` requires real subclass access analysis and currently rejects rather than silently translating to `private`. `final` is field-level single-assignment, not a visibility declaration. See the [visibility and linkage specification](https://github.com/atto-lang/atto-spec/pull/68) (draft PR #68 until merged).
 
-The single-file browser executable retains its existing Wasm exports and
-`main()` requirement. This metadata **does not yet implement multi-file
-package linking or enforce package boundaries at import time**; the native
-compilers and future module linker must consume the same visibility contract.
-In particular, `pub[pkg]` must never become a public host Wasm export.
+The standalone `compile(source)` API remains single-file and deliberately
+rejects namespace/import syntax. A **separate** `linker::compile_linked` API now
+accepts a bounded, explicitly supplied in-memory graph of source units and
+emits one statically linked browser guest for one-hop named-module imports.
+At link time it verifies the imported file actually declares the requested
+exported module, checks `pub[pkg]` package identity, rejects inaccessible
+members and imported re-exports, and enforces canonical relative paths and
+source-size limits. It does not simply expose package symbols as Wasm host
+exports.
 
-## Verified subset and missing linker
+This is NOT an on-disk package manager or complete package resolver:
+`LinkUnit.package` MUST come from an already trusted resolver of the package
+manifest, and the in-memory API cannot prove symlinks, physical paths, or
+external package identity. Transitive imports, cycles, module aliases,
+project-root `+` imports, general FFI, protected inheritance and native
+backend parity remain unsupported or fail closed. Namespace headers establish
+file-level ownership, not open imports or a globally usable name table.
 
-A SHA-bound, source-only private Actions carrier exercised 26 Rust browser-compiler tests at commit `b5e8b45827ff0a7f41eba7d32440720007e44fa6`; later commits require fresh exact-head validation. All 33 copied compiler/test blobs were independently matched to their source Git hashes. This does not establish the full repository test suite, native backend parity, or package linker behavior.
+Example:
 
-`use namespace` and cross-file `import module ... from ...` remain unsupported in this browser build and must fail closed.
+```atto
+// src/math.atto — package third.party
+use namespace library;
+export pub module Math;
+define module Math as
+  pub fnc double(int x): int { return x * 2; }
+  fnc secret(): int { return 99; }
+end
+
+// src/main.atto — package application
+use namespace frontend;
+import module Math from "./math.atto";
+pub fnc main(): int { return Math.double(21); }
+```
+
+The in-memory linker compiles these two separately supplied files into one
+guest. A `pub[pkg]` export is accepted only when the provided, verified
+canonical package identities are identical. `Math.secret()` is rejected.
+
+Exact-blob runner [44164708007](https://github.com/quaestor-ledger-test/atto-ci/actions/runs/44164708007)
+executed 40 Rust tests and two real Node WebAssembly guest runs on the
+source-only mirror of the compiler at commit
+`0c1ff72d9d8fc1f9b7097de7dd6c11606acc2eab`;
+later commits need refreshed receipts. This is a scoped source-only mirror,
+not the full repository test suite or cross-backend parity.
 
 ## Required cross-backend parity
 
