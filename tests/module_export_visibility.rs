@@ -73,6 +73,14 @@ fn host_exports(wasm: &[u8]) -> Vec<String> {
 const BODY: &str = "define module Math as\n pub fnc double(int x): int { return x * 2; }\n fnc secret(): int { return 7; }\nend\npub fnc main(): int { return Math.double(21); }\n";
 
 #[test]
+fn inferred_public_class_exports_equal_explicit_class_exports() {
+    let declarations = "define class Receipt as end\\npub fnc main(): int { return 0; }\\n";
+    let inferred = ok(&format!("export pub Receipt;\\n{declarations}"));
+    let explicit = ok(&format!("export pub class Receipt;\\n{declarations}"));
+    assert_eq!(inferred, explicit, "kind inference must not alter class visibility or Wasm");
+}
+
+#[test]
 fn module_exports_are_order_independent_and_not_host_wasm_exports() {
     let forward = ok(&format!("export pub module Math;\n{BODY}"));
     let trailing = ok(&format!("{BODY}export pub module Math;\n"));
