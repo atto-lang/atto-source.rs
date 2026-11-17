@@ -11,7 +11,7 @@
 //! Existing type checking owns all actual field loads, construction, and
 //! borrow/actor safety. No user-provided field offset or pointer is trusted.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
     BindKind, ClassDecl, Constructor, Expr, ExprKind, Field, FieldMode,
@@ -78,6 +78,64 @@ fn generated_class(name: String, fields: &[FieldType], pos: Pos)
     })
 }
 
+// Only literal string projection from an already lowerable, directly named
+// local closed Record is rewritten. Computed keys, Maps, open Record values,
+// aliases and any non-record receiver retain the explicit Index AST and the
+// normal E_UNSUPPORTED checker gate. We deliberately do not rewrite nested
+// blocks: their different lexical names/shadowing require an SSA scope proof.
+fn rewrite_projection(expr: &mut Expr, record_locals: &BTreeSet<String>, depth: usize) {
+    if depth >= 64 { return; }
+    match &mut expr.kind {
+        ExprKind::Index(receiver, key) => {
+            rewrite_projection(receiver, record_locals, depth + 1);
+            rewrite_projection(key, record_locals, depth + 1);
+            if let (ExprKind::Var(name), ExprKind::Str(field)) =
+                (&receiver.kind, &key.kind) {
+                if record_locals.contains(name) {
+                    expr.kind = ExprKind::Member(receiver.clone(), field.clone());
+                }
+            }
+        }
+        ExprKind::Unary(_, inner) | ExprKind::Trap(inner) |
+        ExprKind::Propagate(inner) | ExprKind::Ownership(_, _, inner) |
+        ExprKind::Member(inner, _) =>
+            rewrite_projection(inner, record_locals, depth + 1),
+        ExprKind::Binary(_, left, right) => {
+            rewrite_projection(left, record_locals, depth + 1);
+            rewrite_projection(right, record_locals, depth + 1);
+        }
+        ExprKind::Ternary(test, yes, no) => {
+            rewrite_projection(test, record_locals, depth + 1);
+            rewrite_projection(yes, record_locals, depth + 1);
+            rewrite_projection(no, record_locals, depth + 1);
+        }
+        ExprKind::Call(_, args) | ExprKind::New(_, args) |
+        ExprKind::Array(args) | ExprKind::Tuple(args) => {
+            for arg in args { rewrite_projection(arg, record_locals, depth + 1); }
+        }
+        ExprKind::MethodCall(recv, _, args) => {
+            rewrite_projection(recv, record_locals, depth + 1);
+            for arg in args { rewrite_projection(arg, record_locals, depth + 1); }
+        }
+        // These cannot be introduced by the narrow scalar profile.
+        ExprKind::Record(_) | ExprKind::Map(_) | ExprKind::Lambda {..} |
+        ExprKind::EmptyBraces | ExprKind::Int(_) | ExprKind::Float(_) |
+        ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) |
+        ExprKind::SelfRef | ExprKind::StateRead(_) | ExprKind::Spawn(_) => {}
+    }
+}
+fn rewrite_statement(stmt: &mut Stmt, records: &BTreeSet<String>) {
+    match stmt {
+        Stmt::Bind {init, ..} | Stmt::Assign {value: init, ..} |
+        Stmt::Expr(init) | Stmt::Return(Some(init), _) => {
+            rewrite_projection(init, records, 0);
+        }
+        // Nested statements aren't rewritten with an outer namespace
+        // without an independently checked lexical SSA shadow/escape proof.
+        _ => {}
+    }
+}
+
 /// Mutate only explicit direct local Record bindings. All other collection
 /// expressions retain pre-existing E_UNSUPPORTED rejection in check().
 ///
@@ -106,13 +164,19 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding])
     let mut ordinal = 0usize;
     for func in &mut program.funcs {
         let mut body = Vec::with_capacity(func.body.len());
+        let mut record_locals = BTreeSet::new();
         for statement in std::mem::take(&mut func.body) {
             let Stmt::Bind {kind, name, ty, init, pos} = statement else {
-                body.push(statement);
+                let mut other = statement;
+                rewrite_statement(&mut other, &record_locals);
+                body.push(other);
                 continue;
             };
             let ExprKind::Record(fields) = init.kind else {
-                body.push(Stmt::Bind {kind, name, ty, init, pos});
+                let mut ordinary = Stmt::Bind {kind, name: name.clone(), ty, init, pos};
+                rewrite_statement(&mut ordinary, &record_locals);
+                record_locals.remove(&name); // shadowed non-Record binding
+                body.push(ordinary);
                 continue;
             };
             if kind == BindKind::Const {
@@ -180,6 +244,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding])
                 checked_args.push(arg.ok_or_else(|| diagnostic(
                     pos, "E_SHAPE", "static record slot lacks its source initializer"))?);
             }
+            record_locals.insert(name.clone());
             body.push(Stmt::Bind {
                 kind, name, ty: Some(Type::Named(class_index)),
                 init: Expr {
