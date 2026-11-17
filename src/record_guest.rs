@@ -341,55 +341,144 @@ impl Lower {
                 "guest with source must be a known Record local or closed Record/with expression")),
         }
     }
-    fn lower_func(&mut self, f: &mut Func, type_names:&[(String,Pos)]) -> R<()> {
-        let mut env=BTreeMap::<String,Value>::new();
-        for param in &f.params {
-            if is_scalar(param.ty) {env.insert(param.name.clone(),Value::Scalar(param.ty));}
-        }
+    /// A nested lexical frame never exposes its bindings to outer statements.
+    fn nested(&mut self, body: Vec<Stmt>, frames: &mut Frames,
+              type_names: &[(String,Pos)]) -> R<Vec<Stmt>> {
+        frames.push(BTreeMap::new());
+        let result=self.lower_statements(body,frames,type_names);
+        frames.pop();
+        result
+    }
+
+    fn lower_statements(&mut self, body: Vec<Stmt>, frames: &mut Frames,
+        type_names: &[(String,Pos)]) -> R<Vec<Stmt>>
+    {
         let mut transformed=Vec::new();
-        for stmt in std::mem::take(&mut f.body) {
+        for stmt in body {
+            let env=flatten(frames);
             match stmt {
-                Stmt::Bind {kind,name,ty,init,pos} => {
-                    if matches!(init.kind,ExprKind::Record(_) | ExprKind::With(_,_)) {
+                Stmt::Bind{kind,name,ty,init,pos} => {
+                    if matches!(&init.kind,ExprKind::Record(_) | ExprKind::With(_,_)) {
                         if kind == BindKind::Const {
                             return Err(err(pos,"E_CONST",
                                 "runtime heap-allocated Record cannot initialize compile-time const"));
                         }
-                        let (mut pre, expr,shape)=self.lower_record(init,&env,0)?;
+                        let (mut pre,expr,shape)=self.lower_record(init,&env,0)?;
                         if let Some(t)=ty {
-                            let built_in=match t {
+                            let builtin=match t {
                                 Type::Named(i)=>type_names.get(i as usize)
                                     .is_some_and(|(name,_)|name=="@builtin/Record"),
                                 _=>false,
                             };
-                            if !built_in {
+                            if !builtin {
                                 return Err(err(pos,"E_TYPE",
                                     "executable Record requires an unannotated or Record-typed binding"));
                             }
                         }
                         transformed.append(&mut pre);
-                        // The static preflight already checked the source's
-                        // Record annotation; guest representation is private.
-                        transformed.push(Stmt::Bind {kind,name:name.clone(),ty:None,init:expr,pos});
-                        env.insert(name,Value::Record(shape));
+                        transformed.push(Stmt::Bind{
+                            kind,name:name.clone(),ty:None,init:expr,pos});
+                        frames.last_mut().unwrap().insert(name,Value::Record(shape));
                     } else {
-                        if let Some(t)=ty {
-                            if is_scalar(t) {env.insert(name.clone(),Value::Scalar(t));}
-                        } else if let Ok(t)=self.inferred_scalar(&init,&env,0) {
-                            env.insert(name.clone(),Value::Scalar(t));
-                        }
-                        transformed.push(Stmt::Bind {kind,name,ty,init,pos});
+                        let value=match ty {
+                            Some(t) if is_scalar(t) => Value::Scalar(t),
+                            Some(_) => Value::Unknown,
+                            None => self.inferred_scalar(&init,&env,0)
+                                .map(Value::Scalar).unwrap_or(Value::Unknown),
+                        };
+                        transformed.push(Stmt::Bind {
+                            kind,name:name.clone(),ty,
+                            init:self.rewrite_expr(init,&env,0)?,pos,
+                        });
+                        // Even an unknown new binding shadows an outer Record
+                        // and cannot inherit its field layout.
+                        frames.last_mut().unwrap().insert(name,value);
                     }
                 }
-                // Complex flow is still admitted by the ordinary compiler,
-                // but Record/with expressions in it remain fail-closed unless
-                // a later shape-aware CFG lowering proves their lifetime.
-                other => transformed.push(other),
+                Stmt::Assign{name,value,pos} => {
+                    if let Some(Value::Record(old_shape))=env.get(&name) {
+                        if !matches!(&value.kind,ExprKind::Record(_)|ExprKind::With(_,_)) {
+                            return Err(err(pos,"E_WITH_TYPE",
+                                "Record reassignment needs statically checked reconstruction"));
+                        }
+                        let (mut pre,expr,shape)=self.lower_record(value,&env,0)?;
+                        if &shape!=old_shape {
+                            return Err(err(pos,"E_TYPE",
+                                "Record reassignment must preserve its static shape"));
+                        }
+                        transformed.append(&mut pre);
+                        transformed.push(Stmt::Assign{name,value:expr,pos});
+                    } else {
+                        transformed.push(Stmt::Assign{name,
+                            value:self.rewrite_expr(value,&env,0)?,pos});
+                    }
+                }
+                Stmt::Block(body) => {
+                    transformed.push(Stmt::Block(self.nested(body,frames,type_names)?));
+                }
+                Stmt::StateWrite{body,pos} => {
+                    transformed.push(Stmt::StateWrite{
+                        body:self.nested(body,frames,type_names)?,pos});
+                }
+                Stmt::If{arms,otherwise,pos} => {
+                    let mut checked_arms=Vec::new();
+                    for (condition,body) in arms {
+                        let condition=self.rewrite_expr(condition,&env,0)?;
+                        let mut branch=frames.clone();
+                        let body=self.nested(body,&mut branch,type_names)?;
+                        checked_arms.push((condition,body));
+                    }
+                    let otherwise=if let Some(body)=otherwise {
+                        let mut branch=frames.clone();
+                        Some(self.nested(body,&mut branch,type_names)?)
+                    } else {None};
+                    transformed.push(Stmt::If{arms:checked_arms,otherwise,pos});
+                }
+                Stmt::While{cond,body,pos} => {
+                    let cond=self.rewrite_expr(cond,&env,0)?;
+                    let mut branch=frames.clone();
+                    let body=self.nested(body,&mut branch,type_names)?;
+                    transformed.push(Stmt::While{cond,body,pos});
+                }
+                Stmt::Loop{body,pos} => {
+                    let mut branch=frames.clone();
+                    let body=self.nested(body,&mut branch,type_names)?;
+                    transformed.push(Stmt::Loop{body,pos});
+                }
+                Stmt::Return(Some(value),pos) => transformed.push(
+                    Stmt::Return(Some(self.rewrite_expr(value,&env,0)?),pos)),
+                Stmt::Expr(value) => transformed.push(
+                    Stmt::Expr(self.rewrite_expr(value,&env,0)?)),
+                Stmt::Throw(value,pos) => transformed.push(
+                    Stmt::Throw(self.rewrite_expr(value,&env,0)?,pos)),
+                Stmt::Raise(value,pos) => transformed.push(
+                    Stmt::Raise(self.rewrite_expr(value,&env,0)?,pos)),
+                Stmt::FieldAssign{target,field,value,pos} => transformed.push(
+                    Stmt::FieldAssign {
+                        target:self.rewrite_expr(target,&env,0)?,
+                        field,value:self.rewrite_expr(value,&env,0)?,pos,
+                    }),
+                // Other control-flow remains in the original typed checker.
+                // No speculative field offset is invented in these forms.
+                other=>transformed.push(other),
             }
         }
-        f.body=transformed;
+        Ok(transformed)
+    }
+
+    fn lower_func(&mut self, f: &mut Func, type_names:&[(String,Pos)]) -> R<()> {
+        let mut params=BTreeMap::new();
+        for param in &f.params {
+            params.insert(param.name.clone(),if is_scalar(param.ty) {
+                Value::Scalar(param.ty)
+            } else { Value::Unknown });
+        }
+        let mut frames=vec![params];
+        f.body=self.lower_statements(std::mem::take(&mut f.body),
+            &mut frames,type_names)?;
         Ok(())
     }
+
 }
 
 /// Rewrite only flat closed Records to real constructor/field access IR.
