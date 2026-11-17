@@ -148,6 +148,11 @@ impl<'a> Scope<'a> {
                 }
                 Some(ty)
             }
+            // The parser represents the signed minimum as unary minus over
+            // the special i64::MAX+1 token. The inner token is intentionally
+            // invalid on its own; typecheck the complete negative literal.
+            ExprKind::Unary(UnOp::Neg,x) if matches!(&x.kind,ExprKind::Int(None)) =>
+                Some(Ty::Int),
             ExprKind::Unary(op,x) => {
                 let inner=self.expression(x,None,depth+1)?;
                 match (op,inner) {
