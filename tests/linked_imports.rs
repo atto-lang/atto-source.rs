@@ -1,7 +1,11 @@
 //! Executed Rust integration tests for the bounded in-memory linker.
 //! Linking is explicit and single-hop. Package identity is supplied by a
 //! trusted host resolver, never inferred from untrusted Atto source text.
-use atto_compiler::{linker::{compile_linked, LinkUnit}, lexer, parser::Parser};
+use atto_compiler::{
+    lexer,
+    linker::{compile_linked, LinkUnit},
+    parser::Parser,
+};
 
 const EXPORTED: &str = r#"
 use namespace accounting;
@@ -41,10 +45,10 @@ fn unit<'a>(path: &'a str, package: &'a str, source: &'a str) -> LinkUnit<'a> {
     LinkUnit { path, package, source }
 }
 fn run(main: &str, dep: &str, package: &str) -> Result<Vec<u8>, atto_compiler::diag::Diagnostic> {
-    compile_linked("src/main.atto", &[
-        unit("src/main.atto", "owner.storefront", main),
-        unit("src/math.atto", package, dep),
-    ])
+    compile_linked(
+        "src/main.atto",
+        &[unit("src/main.atto", "owner.storefront", main), unit("src/math.atto", package, dep)],
+    )
 }
 fn ok(main: &str, dep: &str, package: &str) -> Vec<u8> {
     let out = run(main, dep, package).unwrap_or_else(|e| panic!("expected compiled guest: {e}"));
@@ -62,10 +66,14 @@ fn cross_namespace_public_import_builds_guest_and_is_deterministic() {
     let a = ok(MAIN, EXPORTED, "another.library");
     let b = ok(MAIN, EXPORTED, "another.library");
     assert_eq!(a, b);
-    let reversed = compile_linked("src/main.atto", &[
-        unit("src/math.atto", "another.library", EXPORTED),
-        unit("src/main.atto", "owner.storefront", MAIN),
-    ]).expect("input list order must not affect linked guest");
+    let reversed = compile_linked(
+        "src/main.atto",
+        &[
+            unit("src/math.atto", "another.library", EXPORTED),
+            unit("src/main.atto", "owner.storefront", MAIN),
+        ],
+    )
+    .expect("input list order must not affect linked guest");
     assert_eq!(a, reversed);
 }
 
@@ -89,8 +97,8 @@ fn module_member_visibility_is_checked_after_linking() {
 
 #[test]
 fn missing_imports_and_wrong_owner_names_fail() {
-    let miss = compile_linked("src/main.atto", &[unit("src/main.atto","owner.storefront",MAIN)])
-        .expect_err("missing file cannot create guest");
+    let miss =
+        compile_linked("src/main.atto", &[unit("src/main.atto", "owner.storefront", MAIN)]).expect_err("missing file cannot create guest");
     assert_eq!(miss.code, "E_UNBOUND");
     let source = EXPORTED.replace("module Math", "module Counter");
     err(MAIN, &source, "another.library", "E_UNBOUND");
@@ -106,18 +114,20 @@ fn importing_does_not_authorize_reexport_of_an_unowned_module() {
 
 #[test]
 fn canonical_file_paths_forbid_traversal_and_synthetic_aliasing() {
-    let attempted = MAIN.replace("./math.atto","../math.atto");
+    let attempted = MAIN.replace("./math.atto", "../math.atto");
     err(&attempted, EXPORTED, "another.library", "E_IMPORT_PATH");
-    let attempted = MAIN.replace("./math.atto","././math.atto");
+    let attempted = MAIN.replace("./math.atto", "././math.atto");
     err(&attempted, EXPORTED, "another.library", "E_IMPORT_PATH");
-    let duplicate = compile_linked("src/main.atto", &[
-        unit("src/main.atto","owner.storefront",MAIN),
-        unit("src/main.atto","owner.storefront",MAIN),
-    ]).expect_err("duplicate file identity");
+    let duplicate = compile_linked(
+        "src/main.atto",
+        &[
+            unit("src/main.atto", "owner.storefront", MAIN),
+            unit("src/main.atto", "owner.storefront", MAIN),
+        ],
+    )
+    .expect_err("duplicate file identity");
     assert_eq!(duplicate.code, "E_DUPLICATE");
-    let invalid = compile_linked("src/../main.atto", &[
-        unit("src/../main.atto","owner.storefront",MAIN),
-    ]).expect_err("path traversal");
+    let invalid = compile_linked("src/../main.atto", &[unit("src/../main.atto", "owner.storefront", MAIN)]).expect_err("path traversal");
     assert_eq!(invalid.code, "E_IMPORT_PATH");
 }
 
@@ -156,7 +166,7 @@ end"#;
 fn source_cannot_smuggle_foreign_or_nonmodule_code_across_link_boundary() {
     let injected = format!("{}\nfnc helper(): int {{ return 42; }}", EXPORTED);
     err(MAIN, &injected, "another.library", "E_UNSUPPORTED");
-    let bad = format!("{}\nexternal fnc host_clock_ns(): int;",EXPORTED);
+    let bad = format!("{}\nexternal fnc host_clock_ns(): int;", EXPORTED);
     err(MAIN, &bad, "another.library", "E_UNSUPPORTED");
 }
 
@@ -176,7 +186,10 @@ fn direct_ast_parser_and_pre_lowering_consume_the_same_export_grammar() {
     assert_eq!(ast.parsed_exports.len(), 2);
     assert_eq!(ast.parsed_exports[0].name, "Foo");
     assert_eq!(ast.parsed_exports[1].kind, "fnc");
-    assert_eq!(ast.parsed_exports[1].visibility, atto_compiler::visibility_lower::Visibility::Package);
+    assert_eq!(
+        ast.parsed_exports[1].visibility,
+        atto_compiler::visibility_lower::Visibility::Package
+    );
     let lexical = atto_compiler::visibility_lower::lower(tokens).expect("lowering");
     assert_eq!(lexical.exports.len(), 2);
     for (p, l) in ast.parsed_exports.iter().zip(lexical.exports.iter()) {

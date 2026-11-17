@@ -18,7 +18,9 @@ fn leb(bytes: &[u8], p: &mut usize) -> usize {
         let byte = *bytes.get(*p).expect("truncated leb");
         *p += 1;
         n |= ((byte & 0x7f) as usize).checked_shl(shift).expect("leb overflow");
-        if byte & 0x80 == 0 { return n; }
+        if byte & 0x80 == 0 {
+            return n;
+        }
     }
     panic!("bad leb");
 }
@@ -33,7 +35,8 @@ fn sections(wasm: &[u8]) -> Vec<(u8, &[u8])> {
     let mut out = vec![];
     let mut p = 8;
     while p < wasm.len() {
-        let id = wasm[p]; p += 1;
+        let id = wasm[p];
+        p += 1;
         let len = leb(wasm, &mut p);
         let end = p.checked_add(len).expect("section overflow");
         out.push((id, wasm.get(p..end).expect("section bound")));
@@ -44,12 +47,17 @@ fn sections(wasm: &[u8]) -> Vec<(u8, &[u8])> {
 fn module_markers(wasm: &[u8]) -> Vec<(String, u8)> {
     let mut result = vec![];
     for (id, bytes) in sections(wasm) {
-        if id != 0 { continue; }
+        if id != 0 {
+            continue;
+        }
         let mut p = 0;
-        if wasm_name(bytes, &mut p) != "atto.exports.modules.v1" { continue; }
+        if wasm_name(bytes, &mut p) != "atto.exports.modules.v1" {
+            continue;
+        }
         for _ in 0..leb(bytes, &mut p) {
             let name = wasm_name(bytes, &mut p);
-            let visibility = *bytes.get(p).expect("missing visibility"); p += 1;
+            let visibility = *bytes.get(p).expect("missing visibility");
+            p += 1;
             result.push((name, visibility));
         }
         assert_eq!(p, bytes.len(), "module section must end exactly");
@@ -59,7 +67,9 @@ fn module_markers(wasm: &[u8]) -> Vec<(String, u8)> {
 fn host_exports(wasm: &[u8]) -> Vec<String> {
     let mut names = vec![];
     for (id, bytes) in sections(wasm) {
-        if id != 7 { continue; }
+        if id != 7 {
+            continue;
+        }
         let mut p = 0;
         for _ in 0..leb(bytes, &mut p) {
             names.push(wasm_name(bytes, &mut p));
@@ -96,7 +106,10 @@ fn inferred_package_export_and_inline_public_module() {
     assert_eq!(module_markers(&pkg), vec![("Math".into(), 2)]);
     let inline = ok(&BODY.replace("define module", "define pub module"));
     assert_eq!(module_markers(&inline), vec![("Math".into(), 1)]);
-    let explicit = ok(&format!("export pub module Math;\n{}", BODY.replace("define module", "define pub module")));
+    let explicit = ok(&format!(
+        "export pub module Math;\n{}",
+        BODY.replace("define module", "define pub module")
+    ));
     assert_eq!(inline, explicit, "matching inline and declarative pub cannot duplicate metadata");
 }
 #[test]
@@ -105,16 +118,40 @@ fn exports_cannot_cross_kind_or_publish_private_members() {
     err("export pub module Absent;\npub fnc main(): int { return 0; }", "E_UNBOUND");
     err(&format!("export pub fnc secret;\n{BODY}"), "E_UNBOUND");
     err(&format!("export pub module Math;\nexport pub Math;\n{BODY}"), "E_DUPLICATE");
-    err(&format!("export pub[pkg] module Math;\n{}", BODY.replace("define module", "define pub module")), "E_VISIBILITY");
-    err(&format!("export pub module Math;\n{}", BODY.replace("Math.double(21)", "Math.secret()")), "E_PRIVATE");
+    err(
+        &format!(
+            "export pub[pkg] module Math;\n{}",
+            BODY.replace("define module", "define pub module")
+        ),
+        "E_VISIBILITY",
+    );
+    err(
+        &format!("export pub module Math;\n{}", BODY.replace("Math.double(21)", "Math.secret()")),
+        "E_PRIVATE",
+    );
 }
 #[test]
 fn nested_exports_cannot_escape_block_or_nominal_scope() {
-    err("fnc helper(): int { return 42; }\npub fnc main(): int { export pub fnc helper; return 0; }", "E_SYNTAX");
-    err("define module M as\n export pub fnc helper;\n pub fnc helper(): int { return 42; }\nend\npub fnc main(): int { return 0; }", "E_SYNTAX");
-    err("define class C as\n pub get(): int { return 2; }\n export pub class C;\nend\npub fnc main(): int { return 0; }", "E_SYNTAX");
-    err("fnc helper(): int { return 42; }\nfnc main() -> int\n export pub fnc helper;\n return 0;\nend", "E_SYNTAX");
-    err("define class C as\n pub get() -> int\n   return 2;\n end\n export pub class C;\nend\npub fnc main(): int { return 0; }", "E_SYNTAX");
+    err(
+        "fnc helper(): int { return 42; }\npub fnc main(): int { export pub fnc helper; return 0; }",
+        "E_SYNTAX",
+    );
+    err(
+        "define module M as\n export pub fnc helper;\n pub fnc helper(): int { return 42; }\nend\npub fnc main(): int { return 0; }",
+        "E_SYNTAX",
+    );
+    err(
+        "define class C as\n pub get(): int { return 2; }\n export pub class C;\nend\npub fnc main(): int { return 0; }",
+        "E_SYNTAX",
+    );
+    err(
+        "fnc helper(): int { return 42; }\nfnc main() -> int\n export pub fnc helper;\n return 0;\nend",
+        "E_SYNTAX",
+    );
+    err(
+        "define class C as\n pub get() -> int\n   return 2;\n end\n export pub class C;\nend\npub fnc main(): int { return 0; }",
+        "E_SYNTAX",
+    );
 }
 #[test]
 fn export_function_overload_sets_remain_arity_based() {
@@ -152,13 +189,19 @@ fn v1_wasm_manifest_is_structurally_decodable_and_host_exports_unchanged() {
     let wasm = ok("export pub fnc answer;\nfnc answer(): int { return 42; }\npub fnc main(): int { return answer(); }");
     let mut found = vec![];
     for (id, bytes) in sections(&wasm) {
-        if id != 0 { continue; }
+        if id != 0 {
+            continue;
+        }
         let mut p = 0;
-        if wasm_name(bytes, &mut p) != "atto.exports.v1" { continue; }
+        if wasm_name(bytes, &mut p) != "atto.exports.v1" {
+            continue;
+        }
         for _ in 0..leb(bytes, &mut p) {
             let symbol = wasm_name(bytes, &mut p);
-            let kind = *bytes.get(p).expect("kind"); p += 1;
-            let visibility = *bytes.get(p).expect("visibility"); p += 1;
+            let kind = *bytes.get(p).expect("kind");
+            p += 1;
+            let visibility = *bytes.get(p).expect("visibility");
+            p += 1;
             found.push((symbol, kind, visibility));
         }
         assert_eq!(p, bytes.len(), "no trailing v1 manifest bytes");
@@ -171,11 +214,11 @@ fn v1_wasm_manifest_is_structurally_decodable_and_host_exports_unchanged() {
 #[test]
 fn actor_and_enum_exports_bind_to_distinct_declaration_kinds() {
     let source = "export pub actor Worker;\nexport pub[pkg] enum Status;\ndefine actor Worker as end\ndefine enum Status as Ready end\npub fnc main(): int { return 0; }";
-    let mut lowered = atto_compiler::visibility_lower::lower(
-        atto_compiler::lexer::lex(source).expect("lex")
-    ).expect("export syntax");
+    let mut lowered = atto_compiler::visibility_lower::lower(atto_compiler::lexer::lex(source).expect("lex")).expect("export syntax");
     let module = atto_compiler::module_lower::lower_with_manifest(lowered.tokens).expect("module pass");
-    let parsed = atto_compiler::parser::Parser::new(module.tokens).parse_program().expect("declarations");
+    let parsed = atto_compiler::parser::Parser::new(module.tokens)
+        .parse_program()
+        .expect("declarations");
     atto_compiler::visibility_lower::resolve_exports(&mut lowered.exports, &parsed, &module.modules)
         .expect("bind all locally owned actor/enum exports");
     assert!(lowered.exports.iter().any(|e| e.name == "Worker" && e.kind == "actor"));

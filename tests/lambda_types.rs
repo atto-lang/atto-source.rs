@@ -1,20 +1,24 @@
 //! Contextual noncapturing lambda type checking; no Wasm closure emission.
 use atto_compiler::{
     ast::{Expr, ExprKind, Stmt, Type},
-    check::lambda_types::check_noncapturing, lexer, parser::Parser,
+    check::lambda_types::check_noncapturing,
+    lexer,
+    parser::Parser,
 };
 
 fn callback(src: &str) -> Expr {
     let input = format!("pub fnc main(): int {{ val callback = {src}; return 0; }}");
-    let ast = Parser::new(lexer::lex(&input).unwrap()).parse_program()
+    let ast = Parser::new(lexer::lex(&input).unwrap())
+        .parse_program()
         .unwrap_or_else(|d| panic!("{src}: {d}"));
-    let Stmt::Bind { init, .. } = &ast.funcs[0].body[0] else { unreachable!() };
+    let Stmt::Bind { init, .. } = &ast.funcs[0].body[0] else {
+        unreachable!()
+    };
     assert!(matches!(init.kind, ExprKind::Lambda { .. }));
     init.clone()
 }
 
-fn check(src: &str, params: Option<&[Type]>, result: Option<Type>) ->
-    Result<Type, atto_compiler::Diagnostic> {
+fn check(src: &str, params: Option<&[Type]>, result: Option<Type>) -> Result<Type, atto_compiler::Diagnostic> {
     check_noncapturing(&callback(src), params, result).map(|c| c.result)
 }
 
@@ -36,7 +40,10 @@ fn contextual_filter_and_map_types_infer() {
 fn inferred_params_require_expected_callable_signature() {
     assert_eq!(check("|n| -> n + 1", None, None).unwrap_err().code, "E_INFER");
     assert_eq!(check("|n| -> n + 1", Some(&[]), None).unwrap_err().code, "E_ARITY");
-    assert_eq!(check("|n| -> n + 1", Some(&[Type::Void]), None).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+    assert_eq!(
+        check("|n| -> n + 1", Some(&[Type::Void]), None).unwrap_err().code,
+        "E_UNSUPPORTED_TYPE"
+    );
     assert_eq!(check("|| -> 42", None, None), Ok(Type::Int));
     assert_eq!(check("|| : bool -> true", Some(&[]), Some(Type::Bool)), Ok(Type::Bool));
     assert_eq!(check("|a,b| -> a + b", Some(&[Type::Int, Type::Int]), None), Ok(Type::Int));
@@ -49,12 +56,29 @@ fn return_annotations_and_all_paths_are_checked() {
     assert_eq!(check("|n| -> n * 2", p, Some(Type::Bool)).unwrap_err().code, "E_TYPE");
     assert_eq!(check("|n| : bool -> n < 4", p, Some(Type::Int)).unwrap_err().code, "E_TYPE");
     assert_eq!(check("|n| -> int { return n; }", p, None), Ok(Type::Int));
-    assert_eq!(check("|n| -> { if n < 4 then return n; else return n * 2; fi }", p, None), Ok(Type::Int));
-    assert_eq!(check("|n| -> { if n < 4 then return n; fi }", p, None).unwrap_err().code, "E_RETURN");
-    assert_eq!(check("|n| -> { if n < 4 then return n; else return true; fi }", p, None).unwrap_err().code, "E_TYPE");
-    assert_eq!(check("|n| : int -> { val doubled = n * 2; return doubled; }", p, None), Ok(Type::Int));
+    assert_eq!(
+        check("|n| -> { if n < 4 then return n; else return n * 2; fi }", p, None),
+        Ok(Type::Int)
+    );
+    assert_eq!(
+        check("|n| -> { if n < 4 then return n; fi }", p, None).unwrap_err().code,
+        "E_RETURN"
+    );
+    assert_eq!(
+        check("|n| -> { if n < 4 then return n; else return true; fi }", p, None)
+            .unwrap_err()
+            .code,
+        "E_TYPE"
+    );
+    assert_eq!(
+        check("|n| : int -> { val doubled = n * 2; return doubled; }", p, None),
+        Ok(Type::Int)
+    );
     assert_eq!(check("|n| : void -> { val doubled = n * 2; }", p, None), Ok(Type::Void));
-    assert_eq!(check("|n| : int -> { val doubled = n * 2; }", p, None).unwrap_err().code, "E_RETURN");
+    assert_eq!(
+        check("|n| : int -> { val doubled = n * 2; }", p, None).unwrap_err().code,
+        "E_RETURN"
+    );
 }
 
 #[test]
@@ -70,9 +94,15 @@ fn captures_unsafe_effects_and_assignments_fail_closed() {
         let code = check(src, p, None).unwrap_err().code;
         assert!(matches!(code, "E_CAPTURE" | "E_UNSUPPORTED"), "{src}: {code}");
     }
-    assert_eq!(check("|n| -> { val x = n; x = 3; return x; }", p, None).unwrap_err().code, "E_IMMUTABLE");
+    assert_eq!(
+        check("|n| -> { val x = n; x = 3; return x; }", p, None).unwrap_err().code,
+        "E_IMMUTABLE"
+    );
     assert_eq!(check("|n| -> { let x = n; x = 3; return x; }", p, None), Ok(Type::Int));
-    assert_eq!(check("|n| -> { let x = n; x = true; return x; }", p, None).unwrap_err().code, "E_TYPE");
+    assert_eq!(
+        check("|n| -> { let x = n; x = true; return x; }", p, None).unwrap_err().code,
+        "E_TYPE"
+    );
 }
 
 #[test]

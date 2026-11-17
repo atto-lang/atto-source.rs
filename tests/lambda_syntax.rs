@@ -1,5 +1,9 @@
 //! Lambda parser acceptance and fail-closed backend contract.
-use atto_compiler::{ast::{ExprKind, LambdaBody, Stmt}, lexer, parser::Parser};
+use atto_compiler::{
+    ast::{ExprKind, LambdaBody, Stmt},
+    lexer,
+    parser::Parser,
+};
 
 fn parse(source: &str) -> atto_compiler::ast::Program {
     Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap()
@@ -22,18 +26,30 @@ fn colon_annotated_rx_pipeline_and_arrays_parse() {
         }
     "#;
     let p = parse(source);
-    let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else { panic!("expected binding") };
-    let ExprKind::MethodCall(base, method, _) = &init.kind else { panic!("expected take") };
+    let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else {
+        panic!("expected binding")
+    };
+    let ExprKind::MethodCall(base, method, _) = &init.kind else {
+        panic!("expected take")
+    };
     assert_eq!(method, "take");
-    let ExprKind::MethodCall(base, method, args) = &base.kind else { panic!("expected map") };
+    let ExprKind::MethodCall(base, method, args) = &base.kind else {
+        panic!("expected map")
+    };
     assert_eq!(method, "map");
-    let ExprKind::Lambda { params, return_type, body } = &args[0].kind else { panic!("expected lambda") };
+    let ExprKind::Lambda { params, return_type, body } = &args[0].kind else {
+        panic!("expected lambda")
+    };
     assert_eq!(params, &["n"]);
     assert_eq!(return_type.as_deref(), Some("int"));
     assert!(matches!(body, LambdaBody::Statement(_)));
-    let ExprKind::MethodCall(_, method, args) = &base.kind else { panic!("expected filter") };
+    let ExprKind::MethodCall(_, method, args) = &base.kind else {
+        panic!("expected filter")
+    };
     assert_eq!(method, "filter");
-    let ExprKind::Lambda { return_type, .. } = &args[0].kind else { panic!("expected lambda") };
+    let ExprKind::Lambda { return_type, .. } = &args[0].kind else {
+        panic!("expected lambda")
+    };
     assert_eq!(return_type.as_deref(), Some("bool"));
 }
 
