@@ -108,3 +108,16 @@ conservative negative cases.
 These restrictions are not a substitute for future independent typed-MIR
 effect inventories. They specifically avoid guessing purity or control
 flow from the surface AST until those compiler proofs exist.
+
+### Statement-boundary effect ordering
+
+A future **effectful assignment** to the borrowed owner cannot authorize
+ending an active loan: the effectful right-hand side has no independent
+purity/unwind proof, so the old loan stays live and owner assignment is
+rejected. In contrast, when an effectful call or transfer **already
+completed as a preceding statement**, the next straight-line boundary
+may end a checked loan if there are no remaining uses. This is ordinary
+non-lexical last-use behavior, not permission to move a loan across an
+unverified call. The compiled guest suite contains both positive and
+negative cases for this distinction.
+
