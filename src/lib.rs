@@ -29,6 +29,8 @@ pub mod visibility_lower;
 pub mod linker;
 /// Host-only local package root resolver (strict .atto.pkg.toml subset).
 pub mod package_resolver;
+#[cfg(target_os = "linux")]
+mod secure_fs;
 /// Direct routine-only and statically specialized named callbacks.
 pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
