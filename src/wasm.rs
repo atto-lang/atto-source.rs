@@ -206,6 +206,9 @@ struct Emit<'a> {
     uw: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// Emitting a recovery callback body: `return` exits after defers ran.
     in_recover: bool,
+    /// Active nested `trap` handlers whose catch-depth increment must be
+    /// undone by a direct postfix-? return in a non-unwind function.
+    active_traps: u32,
 }
 
 impl Emit<'_> {
@@ -805,12 +808,19 @@ impl Emit<'_> {
                 self.op(0xA7); // i32.wrap_i64; Error is an owned heap identity
                 field_op(&mut self.code, Type::Str, 8, false);
             }
+            TExpr::ErrorSameIdentity(a, b) => {
+                self.expr(a);
+                self.expr(b);
+                self.op(0x51); // i64.eq: compare *handles*, never messages
+            }
             TExpr::Trap { value, value_tmp, some_tmp, none_tmp, error_tmp } => {
                 // Only the private ordinary-throw tag 0 is catchable.
                 // raise (tag 1), panic, cancellation and host faults bypass.
                 self.depth_add(1); // outrank callee recover in two-phase dispatch
                 self.open(0x06, I32, Frame::Other); // try (result i32)
+                self.active_traps += 1;
                 self.expr(value); // evaluate exactly once
+                self.active_traps -= 1;
                 if matches!(value.ty, Type::ResultIntError |
                     Type::ResultOptionIntError | Type::ResultVoidError) {
                     // Already Result: retain the ORIGINAL tagged pointer,
@@ -847,6 +857,12 @@ impl Emit<'_> {
                 self.get(*error_tmp);
                 field_op(&mut self.code, Type::Error, 8, true);
                 self.get(*none_tmp);
+                // A non-ordinary throw (raise/host tag) must bypass trap
+                // without leaking this handler into the next recover.
+                self.op(0x19); // catch_all: restore and rethrow unchanged
+                self.depth_add(-1);
+                self.op(0x09); // rethrow original exception, no conversion
+                uleb(&mut self.code, 0);
                 self.close(); // end try: one i32 Result record on the stack
             }
             TExpr::AdtNew { tag, payload, tmp } => {
@@ -890,7 +906,29 @@ impl Emit<'_> {
                 self.open(0x04, 0x40, Frame::Other); // if (void)
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
-                self.op(0x0F); // return original Err/None tagged pointer
+                if let Some((Some(ret), ..)) = self.uw {
+                    // The Error/None tagged handle is the function's exact
+                    // return object. Snapshot BEFORE executing cleanup.
+                    self.set(ret);
+                }
+                // Early propagation also exits owned generator loops.
+                for handle in self.active_iterators.clone().into_iter().rev() {
+                    self.get(handle);
+                    self.call(self.l.func(self.l.gen_first_func + 3));
+                }
+                if self.uw.is_some() {
+                    // Route through every enclosing finally and then the
+                    // function's LIFO defers; restore catch-depth at $ret.
+                    self.return_path();
+                } else {
+                    // No unwind frame exists, but propagation can occur
+                    // within one or more nested trap operands. Restore
+                    // each active handler's global catch depth before ret.
+                    if self.active_traps > 0 {
+                        self.depth_add(-(self.active_traps as i32));
+                    }
+                    self.op(0x0F); // original Err/None pointer, unchanged
+                }
                 self.close();
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
@@ -1368,6 +1406,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             state_write_depth: 0,
             uw: None,
             in_recover: false,
+            active_traps: 0,
         };
         if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
             // Creator is lazy: allocate a 56-byte checked continuation frame
@@ -1418,6 +1457,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             state_write_depth: 0,
             uw: None,
             in_recover: false,
+            active_traps: 0,
         };
         for (ai, a) in p.actors.iter().enumerate() {
             e.code.extend_from_slice(&[0x20, 0]);
