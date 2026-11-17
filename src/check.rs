@@ -745,6 +745,13 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // before emission; never substitute eager iterator materialization.
     for f in &p.funcs {
         if f.is_generator {
+            // Generators bypass ordinary body_check during specialized
+            // continuation lowering. Never admit a non-owning class param
+            // until its suspend/resume lifetime is proven in that IR.
+            if f.params.iter().any(|p| matches!(p.ty, Type::BorrowedNamed(_))) {
+                return Err(Diagnostic::new(f.pos, "E_BORROW",
+                    "borrow! class parameters are forbidden on generator continuations"));
+            }
             precheck_generator_body(&f.body, &p.funcs)?;
             // Build the exact bounded resume graph before the ABI-v2 gate.
             // It is a compiler IR only; no generator guest artifact is emitted.
