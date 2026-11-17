@@ -44,7 +44,8 @@ export_decl = "export", "pub", [ "[", "pkg", "]" ],
   explicitly supplied kind. `actor` and `enum` are also recognized by this
   frontend. Additional declaration categories need their own parser/checker
   support before they are exportable.
-* `export pub module Name;` and `define pub module Name as ... end` select the same public module interface; a module export does **not** expose private members.\n* `pub` makes the name publicly visible to importing packages; `pub[pkg]`
+* `export pub module Name;` and `define pub module Name as ... end` select the same public module interface; a module export does **not** expose private members.
+* `pub` makes the name publicly visible to importing packages; `pub[pkg]`
   limits visibility to the defining package. It is not a property of the
   declaration's position in the source.
 * A function name exports all local arity overloads of that function.
@@ -59,7 +60,8 @@ export_decl = "export", "pub", [ "[", "pkg", "]" ],
 ## Implementation and limits
 
 The browser compiler collects file-level export directives during lexical lowering, resolves them against the complete parsed file and module declaration table, carries them through the checked AST/IR, then writes a
-deterministic **`atto.exports.v1`** WebAssembly custom section. This is\nlanguage-level metadata, not a host Wasm export. A custom section contains a sequence of length-prefixed names followed
+deterministic **`atto.exports.v1`** WebAssembly custom section. This is
+language-level metadata, not a host Wasm export. A custom section contains a sequence of length-prefixed names followed
 by one kind byte (class=1, fnc=2, actor=3, enum=4) and one visibility byte
 (pub=1, pub[pkg]=2). Entries are sorted by name. Export names are
 restricted to **canonical ASCII identifiers of 1–256 bytes** at the compiler
@@ -70,7 +72,7 @@ would reject.
 
 Named modules use a separate **`atto.exports.modules.v1`** local metadata section, containing module name and visibility, because the established `atto.exports.v1` kind byte table has no module kind. The compiler carries all resolved export kinds through one checked AST/IR export table before serialization. A future package/namespace linker must adopt a versioned identity-aware ABI; the existing module section is **not** a cross-file linking contract.
 
-`internal fnc` is file-local and cannot be promoted via `export`. Unlinked `external fnc` prototypes cannot be called or exported. `protected` requires real subclass access analysis and currently rejects rather than silently translating to `private`. `final` is field-level single-assignment, not a visibility declaration. See the [visibility and linkage specification](https://github.com/atto-lang/atto-spec/blob/main/language/visibility-linkage-and-final-v1.md) (draft PR #68 until merged).
+`internal fnc` is file-local and cannot be promoted via `export`. Unlinked `external fnc` prototypes cannot be called or exported. `protected` requires real subclass access analysis and currently rejects rather than silently translating to `private`. `final` is field-level single-assignment, not a visibility declaration. See the [visibility and linkage specification](https://github.com/atto-lang/atto-spec/pull/68) (draft PR #68 until merged).
 
 The single-file browser executable retains its existing Wasm exports and
 `main()` requirement. This metadata **does not yet implement multi-file
