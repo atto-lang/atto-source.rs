@@ -2968,25 +2968,18 @@ impl Parser {
                     }
                 }
                 Tok::LBracket => {
-                    // Compile-time literal-name field projection only. The
-                    // normal checker must still prove the receiver has a
-                    // declared field with this exact spelling. Dynamic Map
-                    // key lookup, computed indexes and array indexing remain
-                    // unsupported until they have separate checked lowering.
-                    let at = self.pos();
+                    // Retain the key expression and exact receiver in the AST.
+                    // Record quoted fields are not lowered as object dot members,
+                    // and Map indexing is not implicitly considered safe.
+                    let bracket = self.pos();
                     self.advance();
-                    let name = match self.peek().clone() {
-                        Tok::Str(name) => name,
-                        _ => return Err(unsupported(at,
-                            "dynamic indexing; only a quoted literal field name is supported")),
-                    };
-                    self.advance();
-                    self.expect(Tok::RBracket, "']' after static field name")?;
+                    let key = self.parse_expr()?;
+                    self.expect(Tok::RBracket, "']' after indexed expression")?;
                     self.grow(1)?;
                     *chain += 1;
                     e = Expr {
-                        kind: ExprKind::Member(Box::new(e), name),
-                        pos: at,
+                        kind: ExprKind::Index(Box::new(e), Box::new(key)),
+                        pos: bracket,
                     };
                 },
                 Tok::Question if !self.question_opens_ternary() => {
