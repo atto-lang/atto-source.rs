@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_TYPE
 // Legacy Option-returning trap example: now rejected without guest output.
 // A guest Error thrown from a called function becomes None.
 fnc fail(): int {
