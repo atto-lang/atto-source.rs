@@ -50,8 +50,7 @@ fn copied_class_cannot_be_read_during_exclusive_mutable_loan() {
 
 #[test]
 fn copy_deep_disallows_mut_qualifier_and_missing_operand() {
-    let diagnostic = compile("pub fnc main(): int { val x = 1; return copy!! mut x; }")
-        .expect_err("mut qualifier is reserved for borrow!");
+    let diagnostic = compile("pub fnc main(): int { val x = 1; return copy!! mut x; }").expect_err("mut qualifier is reserved for borrow!");
     assert_eq!(diagnostic.code, "E_SYNTAX");
     assert!(compile("pub fnc main(): int { return copy!!; }").is_err());
 }
