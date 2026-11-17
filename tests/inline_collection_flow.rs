@@ -115,3 +115,26 @@ fn signed_minimum_is_not_a_positive_literal() {
     let typed = analyze("let rec={value:-9223372036854775808};").unwrap();
     assert_eq!(typed[0].value.ty,T::Record(vec![("value".into(),T::Int)]));
 }
+
+#[test]
+fn scalar_preflight_preserves_float_unary_mixed_numeric_and_string_concatenation() {
+    let typed = analyze(
+        "let offset=-2.5;
+         let ratio=2+1.5;
+         let tag=\"Atto\" + \"PL\";
+         let valid=!false;
+         let out={offset:offset, ratio:ratio, tag:tag, valid:valid};"
+    ).unwrap();
+    assert_eq!(typed.len(), 1);
+    assert_eq!(typed[0].value.ty, T::Record(vec![
+        ("offset".into(),T::Float),
+        ("ratio".into(),T::Float),
+        ("tag".into(),T::String),
+        ("valid".into(),T::Bool),
+    ]));
+}
+
+#[test]
+fn scalar_preflight_preserves_int_division_rejection() {
+    assert_eq!(analyze("let n=1/2;").unwrap_err().code,"E_TYPE");
+}
