@@ -81,7 +81,7 @@ fn private_or_package_only_imports_cannot_escape_package_boundary() {
     us[1].package="external";
     err(&us,2,"E_UNBOUND"); // root's exact import binding is missing
     // Package-only parent is inaccessible even when the external child is supplied.
-    let foreign_base=BASE.replace("animals/pets/dog","external/pets/dog");
+    let foreign_base=pkg.replace("animals/pets/dog","external/pets/dog");
     let mut us=units(&pkg,&foreign_dog,ROOT);
     us[0].source=&foreign_base;
     us[1].package="external";
@@ -146,4 +146,16 @@ fn linked_class_header_cannot_be_authorized_by_raw_string_or_prefix_forgeries() 
     err(&units(BASE,DOG,payload),2,"E_UNBOUND");
     let payload="pub fnc main(): int { val x = \"import class Dog from animals/pets/dog\"; return 42; }";
     guest_42(&compile_linked(&units(BASE,DOG,payload),2).unwrap()); // a string cannot forge an import
+}
+
+#[test]
+fn imported_class_alias_cannot_be_shadowed_by_type_first_scalar_binding() {
+    let source=r#"
+        import class Dog from "animals/pets/dog";
+        pub fnc main(): int {
+            int Dog: 12;
+            return Dog;
+        }
+    "#;
+    err(&units(BASE,DOG,source),2,"E_NAMESPACE");
 }
