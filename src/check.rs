@@ -444,6 +444,9 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Only a direct binding initializer may unwrap a checked handle.
+    /// Prevents unref! hidden in a conditional expression or function call.
+    allow_direct_unref: bool,
     /// Compiler-issued lexical protected state permissions.
     state_write_scope: bool,
     state_read_scope: bool,
@@ -1621,6 +1624,7 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            allow_direct_unref: false,
             state_write_scope: false,
             state_read_scope: false,
             imports,
@@ -1871,11 +1875,15 @@ impl<'a> FnCx<'a> {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
                 };
-                let v = match want {
-                    Some(t) => self.consume_expected(init, t)?,
-                    None if matches!(&init.kind, ExprKind::Ownership(OwnershipOp::Ref, false, _)) => self.value(init)?,
-                    None => self.consume(init)?,
+                let direct_unref = matches!(&init.kind, ExprKind::Ownership(OwnershipOp::Unref, false, _));
+                self.allow_direct_unref = direct_unref;
+                let checked = match want {
+                    Some(t) => self.consume_expected(init, t),
+                    None if matches!(&init.kind, ExprKind::Ownership(OwnershipOp::Ref, false, _)) => self.value(init),
+                    None => self.consume(init),
                 };
+                self.allow_direct_unref = false;
+                let v = checked?;
                 if let Some(t) = want {
                     if t != v.ty {
                         return Err(type_err(
@@ -2790,6 +2798,10 @@ impl<'a> FnCx<'a> {
             OwnershipOp::Deref => Err(Diagnostic::new(pos, "E_HANDLE",
                 "deref! must initialize a scoped immutable val binding")),
             OwnershipOp::Unref => {
+                if !self.allow_direct_unref {
+                    return Err(Diagnostic::new(pos, "E_HANDLE",
+                        "unref! must be the direct initializer of an owned val binding"));
+                }
                 if self.owner != Owner::TopLevel || self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
                     return Err(Diagnostic::new(pos, "E_HANDLE", "unref! requires straight-line function-body consumption"));
                 }
