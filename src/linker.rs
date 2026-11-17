@@ -4,7 +4,7 @@
 //! The caller must provide source units and trusted canonical package identities;
 //! no symlinks, network fetches or host capabilities are consulted. Reject
 //! import cycles, conflicting module names and untrusted re-exports before Wasm.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{self, Tok, Token};
 use crate::{module_lower, parser, visibility_lower};
@@ -77,7 +77,7 @@ fn span(source: &str, toks: &[Token], start: usize, semi: usize) -> R<(usize, us
     Ok((byte_at(source, toks[start].pos)?, byte_at(source, toks[semi].pos)? + 1))
 }
 
-fn path_ok(path: &str) -> bool {
+pub(crate) fn path_ok(path: &str) -> bool {
     path.len() <= 256 && !path.is_empty() && path.is_ascii() && path.ends_with(".atto") &&
         !path.starts_with('/') && !path.contains('\\') && !path.contains(':') &&
         path.split('/').all(|part| !part.is_empty() && part != "." && part != ".." &&
@@ -229,6 +229,12 @@ fn imported_module(imp: &Import, dependency: &LinkUnit<'_>,
         i += 1;
     }
     Ok(erase(hdr.body, spans))
+}
+
+/// Read only the declared import graph; the filesystem resolver uses this
+/// API to resolve physical source paths without scanning unrelated files.
+pub(crate) fn import_paths(source: &str, file: &str) -> R<Vec<String>> {
+    Ok(header(source, file)?.imports.into_iter().map(|i| i.path).collect())
 }
 
 /// Detect cycles and resolve all reachable modules before a single guest is
