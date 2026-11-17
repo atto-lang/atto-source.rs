@@ -69,6 +69,17 @@ fn expr_uses_alias(expr: &Expr, alias: &str, budget: &mut usize) -> Option<bool>
             | crate::ast::UnOp::Copy,
             inner,
         ) => expr_uses_alias(inner, alias, budget),
+        // A new scalar loan of a named local has no guest-side effect:
+        // bind_scalar_borrow subsequently checks its type, mutability and
+        // conflicts. A name referencing THIS alias remains a live use.
+        // Borrowing arbitrary expressions is not admitted by that gate.
+        ExprKind::Unary(crate::ast::UnOp::Borrow | crate::ast::UnOp::BorrowMut, inner) => {
+            if matches!(&inner.kind, ExprKind::Var(_)) {
+                expr_uses_alias(inner, alias, budget)
+            } else {
+                None
+            }
+        }
         ExprKind::Binary(_, a, b) => combine([
             expr_uses_alias(a, alias, budget),
             expr_uses_alias(b, alias, budget),
@@ -253,11 +264,46 @@ mod tests {
             ExprKind::Member(Box::new(var("other")), "state".to_string()),
             ExprKind::Array(vec![lit(3)]),
             ExprKind::Unary(UnOp::Take, Box::new(var("other"))),
-            ExprKind::Unary(UnOp::Borrow, Box::new(var("other"))),
-            ExprKind::Unary(UnOp::BorrowMut, Box::new(var("other"))),
         ];
         for effect in effects {
             assert!(!proves(&[Stmt::Expr(expr(effect))], "reader"));
+        }
+    }
+
+    #[test]
+    fn checked_named_borrow_forms_do_not_poison_completed_shared_loan() {
+        use crate::ast::UnOp;
+        for operation in [UnOp::Borrow, UnOp::BorrowMut] {
+            // New loan of the owner is allowed after reader's last use.
+            assert!(proves(
+                &[Stmt::Bind {
+                    kind: BindKind::Val,
+                    name: "writer".to_string(),
+                    ty: None,
+                    init: expr(ExprKind::Unary(operation, Box::new(var("owner")))),
+                    pos: Pos::default(),
+                }],
+                "reader",
+            ));
+            // New borrow of the alias itself is still a live use.
+            assert!(!proves(
+                &[Stmt::Expr(expr(ExprKind::Unary(
+                    operation,
+                    Box::new(var("reader")),
+                )))],
+                "reader",
+            ));
+            // No permission to borrow a computed or effectful expression.
+            assert!(!proves(
+                &[Stmt::Expr(expr(ExprKind::Unary(
+                    operation,
+                    Box::new(expr(ExprKind::Call(
+                        "get_owner".to_string(),
+                        vec![],
+                    ))),
+                )))],
+                "reader",
+            ));
         }
     }
 
