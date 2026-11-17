@@ -213,7 +213,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
-        ExprKind::Unary(UnOp::Neg, v) if matches!(v.kind, ExprKind::Int(_)) => {
+        ExprKind::Unary(UnOp::Neg, v) if matches!(&v.kind, ExprKind::Int(_)) => {
             // The exact signed-minimum literal is represented as i64::MAX+1.
             if let ExprKind::Int(Some(n)) = &v.kind {
                 if *n > (i64::MAX as u64) + 1 {
@@ -311,7 +311,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
 }
 
 fn starts_literal(e: &Expr) -> bool {
-    matches!(e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
+    matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
         ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
 }
 
