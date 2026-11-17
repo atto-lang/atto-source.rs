@@ -400,6 +400,9 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> R<Type> {
+        // Generic collections can nest recursively. Reuse the existing
+        // parser depth/AST budget rather than allowing unbounded recursion.
+        self.enter()?;
         let pos = self.pos();
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
@@ -562,6 +565,7 @@ impl Parser {
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
             return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
         }
+        self.leave();
         Ok(ty)
     }
 
