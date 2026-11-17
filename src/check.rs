@@ -3188,6 +3188,8 @@ impl<'a> FnCx<'a> {
             ExprKind::Record(_) | ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_) =>
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                     "record, map and tuple literals are parsed but require checked collection types and guest allocation")),
+            ExprKind::Index(_, _) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "bracket selection is parsed but requires checked field/key presence, ownership and guest lowering")),
             ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented")),
         })
