@@ -58,8 +58,6 @@ const positives=[
  ['pub fnc main(): int {let Record headers={"content-type":42,status_code:42}; val alias=headers; return alias["content-type"];}',42n,''],
  ['pub fnc main(): int {let Record headers={"status_code":42,"content-type":"ok"}; return headers.status_code+headers["status_code"]-42;}',42n,''],
  ['pub fnc main(): int {let Record headers={"":1,"café":41,"café":7}; return headers[""]+headers["café"];}',42n,''],
- [String.raw`pub fnc main(): int {let Record h={"x-y":41,"has\"quote":1,"line\nbreak":2}; return h["x\u{2d}y"]+h["has\"quote"];} `,42n,''],
- [String.raw`pub fnc main(): int {let Record h={"line\nbreak":42}; return h["line\nbreak"];} `,42n,''],
 ];
 const negatives=[
  ['pub fnc main(): int {let Record r={x:42}; let string key="x"; return r[key];}','E_UNSUPPORTED'],
@@ -72,10 +70,23 @@ const negatives=[
  ['pub fnc main(): int {let Record headers={"content-type":42}; return headers["content"+"-type"]; }','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record headers={"café":42}; return headers["café"]; }','E_NO_FIELD'],
  ['pub fnc main(): int {let Record headers={"content-type":42}; return headers[0]; }','E_UNSUPPORTED'],
- [String.raw`pub fnc main(): int {let Record h={"x-y":1,"x\u{2d}y":2}; return 0;} `,'E_DUPLICATE'],
- [String.raw`pub fnc main(): int {let Record h={"x-y":42}; return h["x\u{zz}y"];} `,'E_STRING'],
- [String.raw`pub fnc main(): int {let Record h={"content-type":"json",status_code:42}; return h["content-type"];} `,'E_TYPE'],
 ];
+// Additional full-contract dot/bracket tests including decoded string escapes.
+positives.push(["fnc double(value: int): int { return value + value; } pub fnc main(): int { let Record headers = {\"content-type\":\"application/json\",status_code:21}; let int a=headers.status_code; let int b=headers[\"status_code\"]; stdio.println(headers[\"content-type\"]); return double(a)+b-21; }", 42n, "application/json\n"]);
+positives.push(["pub fnc main(): int { let Record h={\"content\\\"type\":3,\"a\\\\b\":4,\"tab\\tfield\":5,\"uni\\u{63}ode\":30}; return h[\"content\\\"type\"]+h[\"a\\\\b\"]+h[\"tab\\tfield\"]+h[\"unicode\"]; }", 42n, ""]);
+positives.push(["pub fnc main(): int { let Record h={\"status_code\":21,\"\\u{63}ontent-type\":21}; return h.status_code+h[\"content-type\"]; }", 42n, ""]);
+negatives.push(["pub fnc main(): int {let Record h={\"content-type\":\"json\",status_code:42}; let int bad=h[\"content-type\"];return bad;}", "E_TYPE"]);
+negatives.push(["pub fnc main(): int {let Record h={\"content-type\":\"json\",status_code:42}; let string bad=h.status_code;return 0;}", "E_TYPE"]);
+negatives.push(["pub fnc main(): int {let Record h={\"content-type\":21,\"\\u{63}ontent-type\":21}; return 0;}", "E_DUPLICATE"]);
+negatives.push(["pub fnc main(): int {let Record h={\"content-type\":\"json\",status_code:42};return h.missing;}", "E_NO_FIELD"]);
+negatives.push(["pub fnc main(): int {let Record h={nested:{status_code:42}};return h.nested[\"status_code\"];}", "E_UNSUPPORTED"]);
+negatives.push(["pub fnc main(): int {let Record h={\"\\u{D800}\":42};return 0;}", "E_STRING"]);
+// Additional round-trip escapes, newline names and exact field-return typing.
+positives.push([String.raw`pub fnc main(): int {let Record h={"x-y":41,"has\"quote":1,"line\nbreak":2}; return h["x\u{2d}y"]+h["has\"quote"];} `, 42n, ""]);
+positives.push([String.raw`pub fnc main(): int {let Record h={"line\nbreak":42}; return h["line\nbreak"];} `, 42n, ""]);
+negatives.push([String.raw`pub fnc main(): int {let Record h={"x-y":1,"x\u{2d}y":2}; return 0;} `, "E_DUPLICATE"]);
+negatives.push([String.raw`pub fnc main(): int {let Record h={"x-y":42}; return h["x\u{zz}y"];} `, "E_STRING"]);
+negatives.push([String.raw`pub fnc main(): int {let Record h={"content-type":"json",status_code:42}; return h["content-type"];} `, "E_TYPE"]);
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
  let n=0;
