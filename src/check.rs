@@ -191,10 +191,15 @@ pub enum TStmt {
     /// cannot silently mistake a borrow for an empty source block.
     /// This does not authorize escaping references or generic loan codegen.
     ScalarBorrowIssue {
+        loan_id: u32,
         owner_slot: u32,
         alias: String,
         exclusive: bool,
     },
+    /// Source-checked alias access; zero guest instructions.
+    ScalarBorrowUse { loan_id: u32, owner_slot: u32, write: bool },
+    /// Proven NLL end or lexical scope fallthrough; zero guest instructions.
+    ScalarBorrowEnd { loan_id: u32, owner_slot: u32, scope_exit: bool },
     Set(u32, TE),
     /// store `value` into the field at `offset` of `obj`
     FieldSet {
@@ -385,6 +390,7 @@ struct Local {
     mail: Option<Type>,
     /// A compiler-only scalar loan alias; its slot is the source owner's slot.
     borrow: Option<BorrowKind>,
+    loan_id: Option<u32>,
     /// Remains an alias, but its source loan has ended at a compiler-proven
     /// straight-line last-use boundary. A subsequent alias access is rejected.
     borrow_retired: bool,
@@ -408,6 +414,8 @@ struct FnCx<'a> {
     /// A single work budget shared by all alias/suffix NLL scans in this function.
     /// Exhaustion simply leaves later loans live until lexical scope exit.
     nll_scan_budget: usize,
+    next_loan_id: u32,
+    pending_loan_events: Vec<TStmt>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -1328,6 +1336,7 @@ fn body_check(
             mutable: false,
             mail: Some(payload),
             borrow: None,
+            loan_id: None,
             borrow_retired: false,
             borrow_used: false,
         });
@@ -1340,6 +1349,7 @@ fn body_check(
                 mutable: *m,
                 mail: None,
                 borrow: None,
+                loan_id: None,
                 borrow_retired: false,
             borrow_used: false,
             });
@@ -1385,7 +1395,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
         TStmt::Block(b) => any_in_stmts(b, f),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable
-        | TStmt::ScalarBorrowIssue { .. } => false,
+        | TStmt::ScalarBorrowIssue { .. } | TStmt::ScalarBorrowUse { .. }
+        | TStmt::ScalarBorrowEnd { .. } => false,
     })
 }
 
@@ -1457,6 +1468,8 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             nll_scan_budget: scalar_lifetime::MAX_NLL_WORK_PER_FUNCTION,
+            next_loan_id: 1,
+            pending_loan_events: Vec::new(),
             imports,
             data,
         }
@@ -1502,6 +1515,7 @@ impl<'a> FnCx<'a> {
             mutable,
             mail: None,
             borrow: None,
+            loan_id: None,
             borrow_retired: false,
             borrow_used: false,
         });
@@ -1603,9 +1617,16 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
                 "too many simultaneously live local names and borrow aliases"));
         }
+        if self.next_loan_id > MAX_LOCALS as u32 {
+            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                "too many checked scalar loans in one function"));
+        }
+        let loan_id = self.next_loan_id;
+        self.next_loan_id += 1;
         self.scopes.last_mut().unwrap().push(Local {
             name: name.to_string(), slot, ty, mutable: false, mail: None,
             borrow: Some(if exclusive { BorrowKind::Exclusive } else { BorrowKind::Shared }),
+            loan_id: Some(loan_id),
             borrow_retired: false,
             borrow_used: false,
         });
@@ -1613,6 +1634,7 @@ impl<'a> FnCx<'a> {
         // write-through operations subsequently lower directly to the owner's
         // checked scalar local, with no guest pointer or heap alias.
         Ok(TStmt::ScalarBorrowIssue {
+            loan_id,
             owner_slot: slot,
             alias: name.to_string(),
             exclusive,
