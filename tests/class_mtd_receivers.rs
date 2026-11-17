@@ -1,7 +1,7 @@
 //! Class receivers are syntax-checked but MUST NOT be linked, typed or
 //! dispatched until the class mtd backend is implemented.
-use atto_compiler::{compile, lexer::lex};
 use atto_compiler::target_syntax::parse_target_declarations;
+use atto_compiler::{compile, lexer::lex};
 
 fn parse(src: &str) -> Result<atto_compiler::target_syntax::TargetHeaders, atto_compiler::Diagnostic> {
     parse_target_declarations(&lex(src).unwrap())
@@ -31,36 +31,47 @@ fn class_receivers_accept_all_five_bodies_and_canonical_aliases() {
     assert!(p.receivers.iter().all(|m| m.owner == "Calculator"));
     assert!(p.receivers[4].mutable);
     assert!(p.receivers[..4].iter().all(|m| !m.mutable));
-    assert_eq!(compile(src).unwrap_err().code, "E_UNSUPPORTED",
-        "recognized class receiver syntax is not executable");
+    assert_eq!(
+        compile(src).unwrap_err().code,
+        "E_UNSUPPORTED",
+        "recognized class receiver syntax is not executable"
+    );
 }
 
 #[test]
 fn duplicate_inline_and_out_of_line_signatures_fail_closed() {
-    let d = parse(r#"
+    let d = parse(
+        r#"
         define class C as
             fnc same() -> int :: 1 end
         end
         mtd (self: C) same() -> int :: 2 end
-    "#).unwrap_err();
+    "#,
+    )
+    .unwrap_err();
     assert_eq!(d.code, "E_DUPLICATE");
-    let duplicate_alias = parse(r#"
+    let duplicate_alias = parse(
+        r#"
         define class C as end
         mtd (self: C) same() -> int :: 1 end
         mtd (C self) same() -> int :: 2 end
-    "#).unwrap_err();
+    "#,
+    )
+    .unwrap_err();
     assert_eq!(duplicate_alias.code, "E_DUPLICATE");
 }
 
 #[test]
 fn unknown_owner_and_cross_kind_name_collisions_reject() {
-    assert_eq!(parse("mtd (self: Missing) same() -> int :: 1 end")
-        .unwrap_err().code, "E_UNBOUND");
-    let cross = parse(r#"
+    assert_eq!(parse("mtd (self: Missing) same() -> int :: 1 end").unwrap_err().code, "E_UNBOUND");
+    let cross = parse(
+        r#"
         declare actor C;
         define class C as end
         mtd (self: C) same() -> int :: 1 end
-    "#).unwrap_err();
+    "#,
+    )
+    .unwrap_err();
     assert_eq!(cross.code, "E_DUPLICATE");
 }
 
@@ -90,8 +101,11 @@ fn actor_mtd_is_an_interface_contract_not_a_duplicate_implementation() {
         end
         mtd (Foo self) foo(): bool { return true; }
     "#;
-    assert_eq!(compile(bad).unwrap_err().code, "E_SIGNATURE",
-        "actor interface mismatches are signatures, not class duplicates");
+    assert_eq!(
+        compile(bad).unwrap_err().code,
+        "E_SIGNATURE",
+        "actor interface mismatches are signatures, not class duplicates"
+    );
 
     let good = r#"
         use namespace workers;
@@ -103,6 +117,9 @@ fn actor_mtd_is_an_interface_contract_not_a_duplicate_implementation() {
     "#;
     let parsed = parse(good).unwrap();
     assert_eq!(parsed.receivers.len(), 1);
-    assert_eq!(compile(good).unwrap_err().code, "E_DUPLICATE",
-        "a matching inline/out-of-line actor method is still a duplicate declaration");
+    assert_eq!(
+        compile(good).unwrap_err().code,
+        "E_DUPLICATE",
+        "a matching inline/out-of-line actor method is still a duplicate declaration"
+    );
 }

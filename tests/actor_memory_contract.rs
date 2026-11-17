@@ -6,7 +6,9 @@ fn read_u32(bytes: &[u8], cursor: &mut usize) -> u32 {
         let byte = *bytes.get(*cursor).expect("truncated wasm LEB");
         *cursor += 1;
         result |= ((byte & 0x7f) as u32) << shift;
-        if byte & 0x80 == 0 { return result; }
+        if byte & 0x80 == 0 {
+            return result;
+        }
     }
     panic!("invalid wasm LEB")
 }
@@ -20,7 +22,9 @@ fn section<'a>(wasm: &'a [u8], wanted: u8) -> Option<&'a [u8]> {
         let len = read_u32(wasm, &mut pos) as usize;
         let end = pos + len;
         assert!(end <= wasm.len());
-        if id == wanted { return Some(&wasm[pos..end]); }
+        if id == wanted {
+            return Some(&wasm[pos..end]);
+        }
         pos = end;
     }
     None
@@ -34,9 +38,12 @@ fn exported_memory(wasm: &[u8]) -> bool {
         let len = read_u32(exports, &mut pos) as usize;
         let name = &exports[pos..pos + len];
         pos += len;
-        let kind = exports[pos]; pos += 1;
+        let kind = exports[pos];
+        pos += 1;
         let index = read_u32(exports, &mut pos);
-        if name == b"memory" && kind == 2 && index == 0 { return true; }
+        if name == b"memory" && kind == 2 && index == 0 {
+            return true;
+        }
     }
     false
 }
