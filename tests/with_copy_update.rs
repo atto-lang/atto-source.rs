@@ -127,12 +127,23 @@ fn unresolved_override_types_are_not_guessed() {
              let y = x with {a: unknown()};","E_WITH_TYPE");
 }
 #[test]
-fn browser_guest_remains_fail_closed() {
+fn bounded_flat_guest_record_copy_compiles() {
     let source="fnc main(): int {
-        let x = {a: 1};
-        let y = x with {b: 2};
+        val x = {a: 1};
+        val y = x with {b: 2};
+        return x.a * 10 + y.b;
+    }";
+    let wasm=compile(source).expect("flat scalar Record execution is now supported");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(wasm,compile(source).unwrap());
+}
+#[test]
+fn unsupported_nested_records_still_fail_closed() {
+    let source="fnc main(): int {
+        val x = {a: {nested: 1}};
+        val y = x with {b: 2};
         return 0;
     }";
-    let e=compile(source).expect_err("guest collection copy not implemented");
-    assert_eq!(e.code,"E_UNSUPPORTED","{e}");
+    let e=compile(source).expect_err("mutable or nested graph cannot use flat scalar layout");
+    assert_eq!(e.code,"E_WITH_OWNERSHIP","{e}");
 }
