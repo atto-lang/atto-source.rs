@@ -1677,6 +1677,12 @@ impl Parser {
             }
             Some("recover") if *self.peek_at(1) == Tok::LParen => self.parse_recover(pos),
             Some("if") => self.parse_if(),
+            // Canonical procedural conditional: do if condition then ... fi.
+            // Preserve the same typed If node as the legacy if form.
+            Some("do") if self.word_at(1) == Some("if") => {
+                self.advance();
+                self.parse_if()
+            },
             Some("guard") => self.parse_guard(),
             Some("while") => {
                 self.advance();
