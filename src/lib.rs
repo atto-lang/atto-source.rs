@@ -95,7 +95,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    let program = if target {
+    let mut program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
@@ -137,6 +137,17 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     visibility_lower::resolve_exports(&mut visibility.exports, &program, &file_modules.modules)?;
     // Export metadata is deterministic even if a directive was moved.
     visibility.exports.sort_by(|a, b| a.name.cmp(&b.name));
+    // An inferred 'export pub Foo' naming a class is semantically identical
+    // to 'export pub class Foo'; do not leave it private in the checked AST.
+    // Package-only exports retain their restricted metadata visibility.
+    for export in &visibility.exports {
+        if export.kind == "class" && export.visibility == visibility_lower::Visibility::Public {
+            if let Some(class) = program.classes.iter_mut()
+                .find(|class| class.name == export.name && !class.state_container) {
+                class.public = true;
+            }
+        }
+    }
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
