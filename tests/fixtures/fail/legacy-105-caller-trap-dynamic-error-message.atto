@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_TYPE
 // Legacy Option-returning trap example: now rejected without guest output.
 // Dynamic string message is evaluated once and carried by the guest tag.
 fnc fail(string message): int {
