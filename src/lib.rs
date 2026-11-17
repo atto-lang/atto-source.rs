@@ -49,7 +49,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
-    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    let nominal = nominal_lower::lower_with_hierarchy(module_lower::lower(visibility.tokens)?)?;
+    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal.tokens)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
@@ -122,6 +123,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
+    // Hierarchy restrictions survive nominal method composition as checked,
+    // source-local metadata. This is not a cross-module linking capability.
+    nominal_lower::metadata(&mut bytes, &nominal.classes);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
