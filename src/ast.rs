@@ -181,12 +181,22 @@ pub enum ActorPersistenceMode {
     Durable,
 }
 
+/// Parsed full persistence hook signature. Body is intentionally not typed
+/// or lowered while this restricted browser backend cannot run storage I/O.
+#[derive(Clone, Debug)]
+pub struct ActorPersistenceHook {
+    pub name: String,
+    pub pos: Pos,
+    pub body_provided: bool,
+}
+
 /// `define actor Name as ... end` or `actor Name ... end` (Java Parser).
 #[derive(Clone, Debug)]
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
     pub persistence: ActorPersistenceMode,
+    pub persistence_hooks: Vec<ActorPersistenceHook>,
     pub fields: Vec<Field>,
     pub receive: Option<Receive>,
     pub methods: Vec<Method>,
