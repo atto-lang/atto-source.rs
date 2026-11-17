@@ -2832,6 +2832,14 @@ impl<'a> FnCx<'a> {
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
+                // The current Wasm ? lowering emits a direct return. With
+                // registered defer/try/recover cleanup, that would skip the
+                // required unwinding path; reject until it can branch through
+                // the compiler-owned cleanup frame instead.
+                if self.unwind.is_some() {
+                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+                        "postfix '?' with defer/try/recover needs cleanup-aware early return lowering"));
+                }
                 let value = self.consume(inner)?;
                 let (success_tag, success_ty) = match value.ty {
                     Type::ResultIntStr | Type::ResultIntError => (0, Type::Int),
