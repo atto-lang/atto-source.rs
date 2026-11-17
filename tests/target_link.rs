@@ -14,9 +14,9 @@ fn link(source: &str) -> Result<(atto_compiler::target_typed::TypedActorModule, 
     Ok((typed, program))
 }
 fn reject(source: &str, code: &str) {
-    let d = link(source).err().expect("expected link failure");
+    let d = link(source).expect_err("expected link failure");
     assert_eq!(d.code, code, "link: {d}");
-    let d = atto_compiler::compile(source).err().expect("expected compile rejection");
+    let d = atto_compiler::compile(source).expect_err("expected compile rejection");
     assert_eq!(d.code, code, "compile: {d}");
 }
 
@@ -164,8 +164,7 @@ fn production_parser_rejects_malformed_concrete_actor_bodies() {
         define actor Foo as
             receive(ActorMail<int> mail): void { return; }",
     )
-    .err()
-    .expect("unclosed actor must fail");
+    .expect_err("unclosed actor must fail");
     assert_eq!(err.code, "E_EOF");
 }
 #[test]
