@@ -137,7 +137,7 @@ pub fn bind_program_exports(
     }
     let mut seen = BTreeSet::new();
     for e in &lexical {
-        if !seen.insert(e.name.as_str()) {
+        if !seen.insert(e.name.clone()) {
             return Err(error(e.pos, "E_DUPLICATE",
                 format!("duplicate exported name '{}'", e.name)));
         }
@@ -145,7 +145,7 @@ pub fn bind_program_exports(
     // Inline public modules synthesize one export, while a matching explicit
     // directive is validated for kind and visibility conflicts.
     for module in modules {
-        if module.inline_public && !seen.contains(module.name.as_str()) {
+        if module.inline_public && !seen.contains(&module.name) {
             if lexical.len() >= 128 {
                 return Err(error(module.pos, "E_SOURCE_LIMIT", "export budget exceeded"));
             }
