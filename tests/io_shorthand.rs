@@ -456,3 +456,57 @@ fn deeply_generic_future_annotations_are_not_direction_operators() {
     assert_eq!(parsed[0].mode, Mode::Nonblocking);
     assert_eq!(parsed[0].binder.as_deref(), Some("p"));
 }
+
+
+#[test]
+fn spaced_optional_equals_in_plain_read_and_select_binders_is_a_noop() {
+    use atto_compiler::io_shorthand::Mode;
+    let source = r#"
+stdio.in >> = val line: Result<Option<string>, IoError>;
+nb inbox >> = val pending: Future<Result<Option<string>, IoError>>;
+try inbox >> = let immediate;
+do select {
+    when inbox >> = val selected -> {}
+}
+"#;
+    let ops = parse(source);
+    assert_eq!(ops.len(), 4, "{ops:?}");
+    assert_eq!(ops[0].source_or_sink, "stdio.in");
+    assert_eq!(ops[0].binder.as_deref(), Some("line"));
+    assert_eq!(ops[1].mode, Mode::Nonblocking);
+    assert_eq!(ops[1].binder.as_deref(), Some("pending"));
+    assert_eq!(ops[2].mode, Mode::TryImmediate);
+    assert_eq!(ops[2].binder.as_deref(), Some("immediate"));
+    assert_eq!(ops[3].context, Context::SelectArm);
+    assert_eq!(ops[3].binder.as_deref(), Some("selected"));
+
+    for src in [
+        "pub fnc main(): void { stdio.in >> = val line; }",
+        "pub fnc main(): void { nb stdio.in >> = val pending; }",
+    ] {
+        let diag=atto_compiler::compile(src).expect_err(
+            "recognized read shorthand must fail closed without guest I/O");
+        assert_eq!(diag.code,"E_UNSUPPORTED","{src}: {diag}");
+    }
+}
+
+#[test]
+fn spaced_optional_equals_does_not_accept_shift_assignment_or_repeated_equals() {
+    for src in [
+        "inbox >>= val line;",
+        "inbox >>== val line;",
+        "inbox >> == val line;",
+        "inbox >> = = val line;",
+        "inbox >> = ;",
+        "inbox >> = existing_line;",
+        "inbox >> = const line;",
+    ] {
+        let diag=inspect(&lex(src).unwrap()).expect_err(src);
+        assert!(
+            matches!(diag.code,"E_IO_SYNTAX" | "E_CONST_EFFECT"),
+            "{src}: {diag}"
+        );
+    }
+    assert!(parse("scalar > > = val x;").is_empty());
+    assert!(parse("scalar >> 1;").is_empty());
+}
