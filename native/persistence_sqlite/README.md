@@ -63,3 +63,11 @@ The test is native C with no Python dependency.
 4. Real compiled actor guest sends 100 messages, process is killed, and a
    new native process revives the same logical ID and verifies state.
 5. Repeat on the other AttoLang backends with exact compiled guest evidence.
+
+## 100-message host revival demonstration
+
+The second native test (`test_counter_revival_v1.c`) uses a small host-side
+actor simulation: it admits and checkpoints 100 increments, kills the process,
+opens a new SQLite connection, obtains a new incarnation epoch, verifies the
+counter revives at 100, and commits increment 101. This tests the native
+storage integration boundary, **not** an actual AttoLang-compiled actor.

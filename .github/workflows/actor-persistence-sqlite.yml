@@ -35,6 +35,13 @@ jobs:
         run: |
           cd native/persistence_sqlite
           ASAN_OPTIONS=detect_leaks=1 timeout 30s ./actor_sqlite_test
+      - name: Compile and run 100-message host revival simulation
+        run: |
+          cd native/persistence_sqlite
+          cc -D_POSIX_C_SOURCE=200809L -std=c11 -g -O1 -Wall -Wextra -Werror -pedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            atto_actor_sqlite_v1.c test_counter_revival_v1.c -lsqlite3 -o actor_counter_test
+          ASAN_OPTIONS=detect_leaks=1 timeout 30s ./actor_counter_test
       - name: Evidence boundary
         run: |
           echo 'NATIVE_SQLITE_STATE_ONLY: no compiled Atto guest, durable mailbox, snapshot AOT emitter or supervisor revival'
