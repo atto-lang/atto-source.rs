@@ -315,6 +315,24 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
     Ok(TypedLiteral { pos: e.pos,ty,children })
 }
 
+/// Static typed-record field lookup, separate from eventual guest indexing.
+/// Closed records reject a missing name; bare open Record needs a proven
+/// presence/type guard. This helper does not certify guest field access.
+pub fn static_record_field_type(
+    ty: &LiteralType, field: &str, at: Pos
+) -> Result<LiteralType, Diagnostic> {
+    match ty {
+        LiteralType::Record(fields) => fields.iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, ty)| ty.clone())
+            .ok_or_else(|| diag(at, "E_NO_FIELD",
+                format!("closed record has no field '{field}'"))),
+        LiteralType::OpenRecord => Err(diag(at, "E_FIELD_PRESENCE",
+            format!("open Record field '{field}' requires a verified presence/type guard"))),
+        _ => Err(diag(at, "E_TYPE", "static record selection requires Record type")),
+    }
+}
+
 fn starts_literal(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
         ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
