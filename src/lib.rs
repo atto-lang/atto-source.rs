@@ -49,7 +49,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
-    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    let file_modules = module_lower::lower_with_manifest(visibility.tokens)?;
+    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(file_modules.tokens)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
@@ -118,7 +119,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     };
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
-    visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
+    visibility_lower::resolve_exports(&mut visibility.exports, &program, &file_modules.modules)?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
