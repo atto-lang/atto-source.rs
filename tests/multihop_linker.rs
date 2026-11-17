@@ -126,3 +126,24 @@ fn declaring_a_member_named_main_is_not_equivalent_to_calling_entry_main() {
     assert!(compile_linked("src/main.atto",
         &fixture(MAIN, &orders, MATH, "app", "app", "app")).is_ok());
 }
+
+
+#[test]
+fn linker_rejects_user_authored_compiler_qualified_symbol_names() {
+    let malicious=ORDERS.replace("pub fnc total(int x): int",
+        "fnc __atto_q_untrusted(): int { return 1; }\n    pub fnc total(int x): int");
+    reject(&fixture(MAIN,&malicious,MATH,"app","app","app"),"E_RESERVED");
+}
+
+#[test]
+fn qualified_id_namespace_distinguishes_same_leaf_without_source_disclosure() {
+    use atto_compiler::linked_symbols::QualifiedModuleId;
+    let a=QualifiedModuleId::new("billing@1.0","billing","lib/math.atto","Math").unwrap();
+    let b=QualifiedModuleId::new("analytics@1.0","analytics","lib/math.atto","Math").unwrap();
+    assert_ne!(a.internal_name(),b.internal_name());
+    assert!(a.internal_name().starts_with("__atto_q_"));
+    // Guest callers cannot choose the internal name to bypass export checks.
+    let forged=MAIN.replace("Math.double(21)",
+        "__atto_q_untrusted.double(21)");
+    reject(&fixture(&forged,ORDERS,MATH,"app","app","app"),"E_RESERVED");
+}
