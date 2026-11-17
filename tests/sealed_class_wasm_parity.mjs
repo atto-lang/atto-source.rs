@@ -82,6 +82,10 @@ try {
       assert.equal(browser.ok, true, id + ' browser compile');
       assert.deepEqual(browser.bytes, native.stdout, id + ' cross-host byte parity');
       const mod = new WebAssembly.Module(browser.bytes);
+      const hierarchy = WebAssembly.Module.customSections(mod, 'atto.nominal.hierarchy.v1');
+      assert.equal(hierarchy.length, 1, id + ' hierarchy metadata persists in both compiled hosts');
+      assert.equal(new Uint8Array(hierarchy[0])[0], 0,
+        id + ' source-local identity must not impersonate a verified package identity');
       assert.deepEqual(WebAssembly.Module.imports(mod), [], id + ' no unverified guest imports');
       const guest = new WebAssembly.Instance(mod, {});
       assert.equal(guest.exports.main(), 42n, id + ' compiled guest result');
