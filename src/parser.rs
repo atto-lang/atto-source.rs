@@ -2967,7 +2967,21 @@ impl Parser {
                         };
                     }
                 }
-                Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
+                Tok::LBracket => {
+                    // Retain the key expression and exact receiver in the AST.
+                    // Record quoted fields are not lowered as object dot members,
+                    // and Map indexing is not implicitly considered safe.
+                    let bracket = self.pos();
+                    self.advance();
+                    let key = self.parse_expr()?;
+                    self.expect(Tok::RBracket, "']' after indexed expression")?;
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = Expr {
+                        kind: ExprKind::Index(Box::new(e), Box::new(key)),
+                        pos: bracket,
+                    };
+                },
                 Tok::Question if !self.question_opens_ternary() => {
                     let question = self.pos();
                     self.advance();

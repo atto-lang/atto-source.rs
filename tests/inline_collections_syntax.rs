@@ -167,3 +167,68 @@ fn never_emit_unchecked_guest_collection_values() {
         assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{source}: {diagnostic}");
     }
 }
+
+
+#[test]
+fn bracket_access_keeps_receiver_and_literal_key_distinct_from_dot_members() {
+    let program = parse_binding(
+        "let Record headers = {\"content-type\": \"application/json\", status_code: 200};\n\
+         let string content = headers[\"content-type\"];\n\
+         let int status = headers.status_code;"
+    ).expect("bracket record access should be admitted as syntax");
+    match &program.funcs[0].body[1] {
+        Stmt::Bind { init, .. } => match &init.kind {
+            ExprKind::Index(base, key) => {
+                assert!(matches!(&base.kind, ExprKind::Var(name) if name == "headers"));
+                assert!(matches!(&key.kind, ExprKind::Str(name) if name == "content-type"));
+            }
+            _ => panic!("bracket access must not be converted to Member"),
+        },
+        _ => panic!("expected bracket binding"),
+    }
+    match &program.funcs[0].body[2] {
+        Stmt::Bind { init, .. } =>
+            assert!(matches!(&init.kind, ExprKind::Member(_, field) if field == "status_code")),
+        _ => panic!("expected dot-member binding"),
+    }
+    let map = parse_binding(
+        "let Map<string,int> m = {\"\" => 0, \"retry-count\" => 3};\n\
+         let int x = m[\"retry-count\"];"
+    ).unwrap();
+    assert!(matches!(&map.funcs[0].body[1],
+        Stmt::Bind { init, .. } if matches!(&init.kind, ExprKind::Index(_, _))));
+}
+
+#[test]
+fn computed_bracket_keys_are_not_misparsed_as_static_record_fields() {
+    let program = parse_binding(
+        "let Record headers = {\"content-type\": \"ok\"};\n\
+         let string key = \"content-type\";\n\
+         let string found = headers[key];"
+    ).unwrap();
+    assert!(matches!(&program.funcs[0].body[2],
+        Stmt::Bind { init, .. } if matches!(&init.kind, ExprKind::Index(_, key)
+            if matches!(&key.kind, ExprKind::Var(name) if name == "key"))));
+    let bad = parse_binding("let Record x = {a: 1}; let int y = x[\"a\";");
+    assert_eq!(bad.unwrap_err().code, "E_SYNTAX", "unclosed brackets reject");
+}
+
+#[test]
+fn quoted_record_key_duplicates_reject_after_string_decoding() {
+    for source in [
+        "let Record x = {\"\": 1, \"\": 2};",
+        "let Record x = {a: 1, \"a\": 2};",
+    ] {
+        assert_eq!(parse_binding(source).unwrap_err().code, "E_DUPLICATE", "{source}");
+    }
+    let program = parse_binding("let Record x = {\"\": 1, \"content-type\": 2};").unwrap();
+    assert!(matches!(init_kind(&program), ExprKind::Record(entries)
+        if entries[0].0 == "" && entries[1].0 == "content-type"));
+}
+
+#[test]
+fn indexing_is_never_emitted_as_unverified_guest_wasm() {
+    let source = "fnc main(): int { let int value = 3; return value[\"key\"]; }";
+    let diagnostic = compile(source).expect_err("no checked runtime indexing");
+    assert_eq!(diagnostic.code, "E_UNSUPPORTED");
+}
