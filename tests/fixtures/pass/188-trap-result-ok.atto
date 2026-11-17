@@ -1,0 +1,10 @@
+// expect-exit: 42
+// Already Result<int,Error>: one layer and no extra Ok wrapping.
+fnc checked(int n): Result<int,Error> { return Ok(n); }
+pub fnc main(): int {
+  val Result<int,Error> result = trap checked(42);
+  match result over
+    on Ok(v) -> { return v; }
+    on Err(e) -> { stdio.println(e.message); return 0; }
+  end
+}
