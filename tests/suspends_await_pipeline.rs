@@ -77,9 +77,9 @@ fn async_pipe_cannot_escape_non_suspends_or_pure_boundaries() {
 fn contextual_nb_stdin_read_await_forms_recognized_but_do_not_fake_guest_execution() {
     for operation in [
         "nb stdio.in >> (val String pending_line << await Future<string>);",
-        "nb stdio.in >> Future<string> x | await x >> val String pending_line;",
+        "nb stdio.in >> Future<string> x |> |f| -> await f >> val String pending_line;",
         "nb stdio.in >> (val outcome: Result<Option<string>,IoError> << await Future<Result<Option<string>,IoError>>);",
-        "nb stdio.in >> Future<Result<Option<string>,IoError>> x | await x >> val outcome: Result<Option<string>,IoError>;",
+        "nb stdio.in >> Future<Result<Option<string>,IoError>> x |> |f| -> await f >> val outcome: Result<Option<string>,IoError>;",
     ] {
         let src = format!("pub suspends fnc main(): int {{ {operation} return 42; }}");
         let diag = compile(&src).expect_err("typed stdin Future guest ABI remains unavailable");
@@ -92,15 +92,15 @@ fn contextual_nb_stdin_read_await_forms_recognized_but_do_not_fake_guest_executi
 #[test]
 fn contextual_read_await_rejects_binder_theft_and_lossy_future_payload_types() {
     for (operation, expected) in [
-        ("nb stdio.in >> Future<string> x | await y >> val String line;", "E_PIPE_BIND"),
-        ("nb stdio.in >> Future<int> x | await x >> val String line;", "E_TYPE"),
+        ("nb stdio.in >> Future<string> x |> |f| -> await y >> val String line;", "E_PIPE_BIND"),
+        ("nb stdio.in >> Future<int> x |> |f| -> await f >> val String line;", "E_TYPE"),
         ("nb stdio.in >> (val String line << await Future<int>);", "E_TYPE"),
         ("nb stdio.in >> (const String line << await Future<string>);", "E_CONST_EFFECT"),
-        ("nb stdio.in >> Future<string> x | await x >> const String line;", "E_CONST_EFFECT"),
+        ("nb stdio.in >> Future<string> x |> |f| -> await f >> const String line;", "E_CONST_EFFECT"),
         // A non-awaited Future<T> placeholder is an illegal I/O direction
         // operand, rejected by preflight with its stable I/O diagnostic.
         ("nb stdio.in >> (val String line << Future<string>);", "E_IO_SYNTAX"),
-        ("nb stdio.in >> Future<string> x | await x >> val String;", "E_SYNTAX"),
+        ("nb stdio.in >> Future<string> x |> |f| -> await f >> val String;", "E_SYNTAX"),
     ] {
         let src = format!("pub suspends fnc main(): int {{ {operation} return 42; }}");
         let diag = compile(&src).expect_err("malformed/lossy read await must fail without artifact");
