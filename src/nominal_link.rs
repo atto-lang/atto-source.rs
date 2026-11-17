@@ -19,6 +19,7 @@ const MAX_ID_BYTES: usize = 128;
 pub struct NominalId {
     pub package: String,
     pub namespace: String,
+    pub module: String,
     pub name: String,
 }
 #[derive(Clone, Debug)]
@@ -43,6 +44,7 @@ fn valid_segment(segment: &str, allow_hyphen: bool) -> bool {
 fn validate_identity(id: &NominalId, pos: Pos) -> R<()> {
     if !valid_segment(&id.package, true) ||
         !valid_segment(&id.namespace, true) ||
+        !valid_segment(&id.module, true) ||
         !valid_segment(&id.name, false) {
         return Err(error(pos, "E_NAMESPACE",
             "nominal identity must contain bounded, unambiguous package/namespace/class segments"));
@@ -53,14 +55,18 @@ fn validate_identity(id: &NominalId, pos: Pos) -> R<()> {
 /// package and namespace labels. Every edge is explicitly qualified to the
 /// SAME unit. It cannot make a foreign class look like a permitted local one.
 pub fn qualify_local(classes: &[ClassHierarchy], package: &str, namespace: &str) -> R<Vec<LinkClass>> {
+    qualify_unit(classes, package, namespace, "local")
+}
+/// Scope a compiler-validated class graph to the exact build-owned module ID.
+pub fn qualify_unit(classes: &[ClassHierarchy], package: &str, namespace: &str, module: &str) -> R<Vec<LinkClass>> {
     let mut result = Vec::with_capacity(classes.len());
     for class in classes {
         let id = NominalId {
-            package: package.into(), namespace: namespace.into(), name: class.name.clone(),
+            package: package.into(), namespace: namespace.into(), module: module.into(), name: class.name.clone(),
         };
         validate_identity(&id, class.pos)?;
         let scoped = |name: &String| NominalId {
-            package: package.into(), namespace: namespace.into(), name: name.clone(),
+            package: package.into(), namespace: namespace.into(), module: module.into(), name: name.clone(),
         };
         result.push(LinkClass {
             id,
@@ -74,7 +80,8 @@ pub fn qualify_local(classes: &[ClassHierarchy], package: &str, namespace: &str)
     Ok(result)
 }
 fn visible(from: &NominalId, to: &LinkClass) -> bool {
-    if from.package == to.id.package && from.namespace == to.id.namespace {
+    if from.package == to.id.package && from.namespace == to.id.namespace
+        && from.module == to.id.module {
         return true;
     }
     match to.visibility {
