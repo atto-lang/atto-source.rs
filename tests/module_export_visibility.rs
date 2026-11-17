@@ -74,9 +74,9 @@ const BODY: &str = "define module Math as\n pub fnc double(int x): int { return 
 
 #[test]
 fn inferred_public_class_exports_equal_explicit_class_exports() {
-    let declarations = "define class Receipt as end\\npub fnc main(): int { return 0; }\\n";
-    let inferred = ok(&format!("export pub Receipt;\\n{declarations}"));
-    let explicit = ok(&format!("export pub class Receipt;\\n{declarations}"));
+    let declarations = "define class Receipt as end\npub fnc main(): int { return 0; }\n";
+    let inferred = ok(&format!("export pub Receipt;\n{declarations}"));
+    let explicit = ok(&format!("export pub class Receipt;\n{declarations}"));
     assert_eq!(inferred, explicit, "kind inference must not alter class visibility or Wasm");
 }
 
