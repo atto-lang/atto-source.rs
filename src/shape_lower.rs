@@ -126,7 +126,9 @@ fn simple_literal(tok: &Tok) -> bool {
     matches!(tok, Tok::Int(Some(_)) | Tok::Float(_) | Tok::Str(_)) ||
         matches!(tok, Tok::Ident(s) if matches!(s.as_str(),"true"|"false"))
 }
-fn keyed(t: &[Token], open: usize) -> R<(BTreeMap<String, Token>, usize)> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyedMode { Named, InferNamed, InferAnonymous }
+fn keyed(t: &[Token], open: usize, mode: KeyedMode) -> R<(BTreeMap<String, Token>, usize)> {
     if t.get(open).is_none_or(|x| x.tok != Tok::LBrace) {
         return Err(error(t[open.saturating_sub(1)].pos,"E_SYNTAX","product initializer requires '{'"));
     }
@@ -136,12 +138,23 @@ fn keyed(t: &[Token], open: usize) -> R<(BTreeMap<String, Token>, usize)> {
         if values.len() >= MAX_FIELDS {
             return Err(error(t[j].pos,"E_SOURCE_LIMIT","too many product initializer fields"));
         }
+        if mode != KeyedMode::Named && matches!(&t[j].tok, Tok::Str(_)) {
+            return Err(error(t[j].pos,"E_STRUCT_FIELD_NAME",
+                "struct fields must use identifier names, not quoted Record keys"));
+        }
         let field=id(t,j,"initializer field")?;
         if t.get(j+1).is_none_or(|x| x.tok != Tok::Colon) {
             return Err(error(t[j].pos,"E_SYNTAX","product member initializer uses ':'"));
         }
         let value=t.get(j+2).ok_or_else(|| error(t[j].pos,"E_EOF","missing product value"))?;
         if !simple_literal(&value.tok) {
+            if mode == KeyedMode::InferAnonymous
+                && (matches!(&value.tok,Tok::LBracket)
+                    || matches!(&value.tok,Tok::Ident(name) if name == "None"))
+            {
+                return Err(error(value.pos,"E_TYPE_INFER_AMBIGUOUS",
+                    "anonymous struct field None/[] needs an expected payload or element type"));
+            }
             return Err(error(value.pos,"E_UNSUPPORTED",
                 "source-local keyed products currently require literal scalar fields"));
         }
@@ -361,7 +374,9 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         }
         if word(&first,i,"infer") && word(&first,i+1,"struct") {
             let expected = expected_struct_name(&first, i);
-            let (values,next)=keyed(&first,i+2)?;
+            let mode=if expected.is_some() { KeyedMode::InferNamed }
+                else { KeyedMode::InferAnonymous };
+            let (values,next)=keyed(&first,i+2,mode)?;
             if let Some(name) = expected {
                 // A known T selects exactly T, never a same-shape neighbor.
                 let target = declared.get(name).ok_or_else(||error(first[i].pos,
@@ -369,6 +384,18 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                 if target.kind != Kind::Struct {
                     return Err(error(first[i].pos,"E_TYPE",
                         format!("expected '{name}' is not a struct")));
+                }
+                if let Some(field)=values.keys().find(|f|
+                    !target.fields.iter().any(|decl| decl.name==**f))
+                {
+                    return Err(error(first[i].pos,"E_NO_FIELD",
+                        format!("struct '{name}' has no field '{field}'")));
+                }
+                if let Some(field)=target.fields.iter().find(|f|
+                    !values.contains_key(&f.name))
+                {
+                    return Err(error(first[i].pos,"E_STRUCT_MISSING_FIELD",
+                        format!("required field '{}.{}' is missing",name,field.name)));
                 }
                 out.extend(constructor_tokens(target,values,first[i].pos)?);
             } else {
@@ -393,7 +420,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         if let Tok::Ident(name)=&first[i].tok {
             if let Some(decl)=declared.get(name) {
                 if i+1<first.len() && first[i+1].tok==Tok::LBrace {
-                    let (values,next)=keyed(&first,i+1)?;
+                    let (values,next)=keyed(&first,i+1,KeyedMode::Named)?;
                     out.extend(constructor_tokens(decl,values,first[i].pos)?);
                     i=next;continue;
                 }
