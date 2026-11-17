@@ -56,7 +56,7 @@ fn is(t: &[Token], i: usize, value: &str) -> bool {
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
         Some(Token { tok: Tok::Ident(s), pos }) if s.len() <= 96 &&
-            !matches!(s.as_str(), "as" | "end" | "define" | "pub" | "class" | "trait" | "interface" | "extends" | "implements" | "sealed" | "non" | "final" | "permits") =>
+            !matches!(s.as_str(), "as" | "end" | "define" | "pub" | "class" | "trait" | "interface" | "extends" | "implements" | "sealed" | "final" | "permits") =>
             Ok(s.clone()),
         Some(t) => Err(Diagnostic::new(t.pos, "E_SYNTAX", "expected a bounded nominal identifier")),
         None => Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_EOF", "missing nominal identifier")),
