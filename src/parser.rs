@@ -465,12 +465,16 @@ impl Parser {
                 self.expect(Tok::Comma, "',' between Result type arguments")?;
                 let bad = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Result types")?;
-                if good != Type::Int || bad != Type::Str {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Result<int,string>"));
+                match (good, bad) {
+                    (Type::Int, Type::Str) => Type::ResultIntStr,
+                    (Type::Int, Type::Error) => Type::ResultIntError,
+                    (Type::OptionInt, Type::Error) => Type::ResultOptionIntError,
+                    (Type::Void, Type::Error) => Type::ResultVoidError,
+                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser Result admits int,string or int/Option<int>/void,Error; other joins require verified generic lowering")),
                 }
-                Type::ResultIntStr
             },
+            "Error" => Type::Error,
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
