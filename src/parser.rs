@@ -518,9 +518,16 @@ impl Parser {
     /// Bounded declaration-header scan; stop before a body or initializer.
     fn looks_bullet_header(&self) -> bool {
         let end = self.i.saturating_add(128).min(self.toks.len());
-        for token in &self.toks[self.i..end] {
+        for (offset, token) in self.toks[self.i..end].iter().enumerate() {
             match token.tok {
                 Tok::Bullet => return true,
+                // A callable type may contain parentheses; a normal function's
+                // name(...) marks the end of the relevant declaration prefix.
+                Tok::LParen if offset > 0 && matches!(
+                    &self.toks[self.i + offset - 1].tok,
+                    Tok::Ident(word) if word == "fnc"
+                ) => {}
+                Tok::LParen => return false,
                 Tok::LBrace | Tok::RBrace | Tok::Semi | Tok::Assign | Tok::Eof => return false,
                 _ => {}
             }
