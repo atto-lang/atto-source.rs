@@ -64,7 +64,7 @@ fn wrong_permitted_child_same_short_name_from_different_module_is_rejected() {
 #[test]
 fn missing_source_unit_or_unbound_class_never_emits_guest() {
     let us=units(BASE,DOG,ROOT);
-    err(&us[..2],1,"E_UNBOUND"); // base's permit binds to Dog, but Dog imports Base; entry is irrelevant
+    err(&us[..1],0,"E_UNBOUND"); // missing Dog source: exact import cannot resolve
     let mut us=units(BASE,DOG,ROOT);
     us[1].source="import class Animal from \"animals/core/unknown\"; export pub class Dog; define final class Dog extends Animal as end";
     err(&us,2,"E_UNBOUND");
@@ -145,5 +145,5 @@ fn linked_class_header_cannot_be_authorized_by_raw_string_or_prefix_forgeries() 
     let payload="import class Fake from \"animals/pets/dog\"; pub fnc main(): int { return 0; }";
     err(&units(BASE,DOG,payload),2,"E_UNBOUND");
     let payload="pub fnc main(): int { val x = \"import class Dog from animals/pets/dog\"; return 42; }";
-    err(&units(BASE,DOG,payload),2,"E_UNBOUND"); // base/dog still form the graph but root lacks class import? need adjust test
+    guest_42(&compile_linked(&units(BASE,DOG,payload),2).unwrap()); // a string cannot forge an import
 }
