@@ -31,6 +31,8 @@ pub mod linker;
 pub mod package_resolver;
 #[cfg(target_os = "linux")]
 mod secure_fs;
+/// Stable SHA-256 digests for namespace symbol IDs and verified source snapshots.
+pub mod sha256;
 /// Direct routine-only and statically specialized named callbacks.
 pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
