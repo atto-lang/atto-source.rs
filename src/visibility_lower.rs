@@ -124,6 +124,17 @@ fn reject_nested_exports(t: &[Token]) -> R<()> {
         match &t[i].tok {
             Tok::LBrace => braces += 1,
             Tok::RBrace => braces = braces.saturating_sub(1),
+            // Arrow-return callables may use an implicit or explicit
+            // 'end' body even WITHOUT '::'. Count that body separately from
+            // the surrounding class/module so its first 'end' cannot cause
+            // an inner export to masquerade as file scope.
+            Tok::Arrow if braces == 0 => {
+                let after_result = t.get(i + 2).map(|x| &x.tok);
+                if after_result != Some(&Tok::LBrace) &&
+                   after_result != Some(&Tok::ColonColon) {
+                    end_scopes += 1;
+                }
+            }
             Tok::ColonColon if braces == 0 => end_scopes += 1,
             Tok::Ident(s) if braces == 0 => {
                 if s == "define" {
