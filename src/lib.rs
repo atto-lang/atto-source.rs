@@ -124,7 +124,10 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // hierarchy metadata is serialized after lexical export lowering.
     for class in &mut nominal.classes {
         if let Some(export) = visibility.exports.iter().find(|e| e.kind == "class" && e.name == class.name) {
-            class.visibility_public = export.visibility == visibility_lower::Visibility::Public;
+            class.visibility = match export.visibility {
+                visibility_lower::Visibility::Public => nominal_lower::ClassVisibility::Public,
+                visibility_lower::Visibility::Package => nominal_lower::ClassVisibility::Package,
+            };
         }
     }
     let typed = check::check(&program)?;
