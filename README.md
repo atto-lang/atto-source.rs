@@ -183,13 +183,19 @@ and executed by both native and wasm32 compiler paths in CI. This work
 does not update the pinned public playground compiler or lift the
 syntax-preview labels.
 
-### Trap-to-Result migration: legacy Option lowering disabled
+### Executable caller-side `trap` with Result and preserved Error identity
 
-The canonical [trap-to-Result v1 contract](https://github.com/atto-lang/atto-spec/blob/main/language/trap-result-v1.md) changes `trap expression` to return `Result<T, Error>` for ordinary values, `Result<Option<T>,Error>` for Option values and a **single Result** with a lossless joined error type for already-Result values. Caught ordinary throws must remain `Err(original Error)`; `None` is not an error.
+The compiler's admitted guest subset now supports `trap` with `Result<int,Error>`, `Result<Option<int>,Error>`, and `Result<void,Error>`, alongside ordinary `int`, `Option<int>` and `void` operands. The normative contract is [atto-spec trap-result-v1](https://github.com/atto-lang/atto-spec/blob/main/language/trap-result-v1.md).
 
-This browser compiler previously admitted a narrow `trap expr` slice that emitted `Some(value)` on success and `None` on source throw. That **legacy behavior is no longer conformant**. Until the checker, typed IR, Error identity/payload representation, error joins and emitted Wasm are changed together, `trap` now returns a positioned `E_UNSUPPORTED` diagnostic and **no guest Wasm**. Ordinary `throw Error(message)` remains a separate guest exception path, but source `raise`, `panic`, cancellation and host faults must never be transformed into `Err`.
+- Ordinary completion of `T` becomes `Ok(T)`; `Option<int>` stays inside `Ok(Some(...))` or `Ok(None)`; `void` becomes `Ok()`.
+- When `T` is already one of the admitted `Result<...,Error>` profiles, the **original tagged Result handle** is reused on ordinary completion—there is no redundant wrapper or recursive flattening.
+- Built-in `Error(message)` allocates an immutable guest Error with identity represented by its heap address and preserved across the module-private ordinary-throw EH tag and `Result.Err`. `Err(error)` returned normally is not thrown, and `Error.message` reads the original message.
+- `raise` uses a separate private EH tag; panic, cancellation, OOM and host faults are not caught by `trap`. Existing caller-side catch priority over a callee's recover remains intact.
+- Contextual `Ok(...)`/`Err(Error(...))` constructors, exhaustive tagged `match`, `?` early-Err propagation, and the no-payload `Result<void,Error>` success case are compiled and tested for this bounded subset.
 
-The retained legacy `TExpr::Trap` emitter is deliberately unreachable from the checker. It is not executable proof of the new semantics and must not be reenabled through a type-only change. The old trap guest runs and public-preview Git blobs are historical candidate receipts, **not current pass cases**. The pinned public playground binary is not replaced or relabeled. Admission requires exact-head native and wasm32 guest tests for scalar/Option/Result outcomes, preservation of Error payload and identity, no nested Result, typed join failure, and source panic/raise bypass.
+**Fail closed for unproved joins.** `trap` on `Result<int,string>` raises `E_TRAP_ERROR_JOIN` and emits no guest because this backend cannot yet represent both returned string errors and thrown Error values losslessly. Other generic shapes and actor/method traps remain unsupported. The compiler does **not** claim arbitrary `Result<T,E>`, Error subclasses, reflection, async or cross-backend parity.
+
+The prior Option-valued `trap` was removed. Legacy `Some(Ok(...))`, `Some(Err(...))`, and caught `None` fixtures are now negative migration cases. The checked-in public playground binary is pinned separately and has **not** been replaced or relabeled by this candidate; any release requires independent approval and verified exact compiler/tree receipts.
 
 
 ## Where the syntax comes from
