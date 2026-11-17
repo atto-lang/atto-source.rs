@@ -382,12 +382,7 @@ struct AuditReads {
     direct_slots: BTreeSet<u32>,
     borrowed_loads: Vec<(u32, u32)>, // (loan_id, owner_slot), evaluation order
 }
-fn audit_expr_reads(
-    builder: &mut Builder,
-    expr: &TE,
-    depth: usize,
-    observed: &mut AuditReads,
-) -> Result<(), Diagnostic> {
+fn audit_expr_reads(builder: &mut Builder, expr: &TE, depth: usize, observed: &mut AuditReads) -> Result<(), Diagnostic> {
     builder.charge_expr(depth)?;
     if !simple_type(expr.ty) {
         return Err(unsupported("borrowed expression requires independent non-scalar effects proof"));
@@ -401,9 +396,7 @@ fn audit_expr_reads(
             observed.direct_slots.insert(*slot);
         }
         TExpr::LoanRead { loan_id, owner_slot } => {
-            if *loan_id == 0 || *owner_slot >= builder.slots
-                || !builder.origins.contains_key(owner_slot)
-            {
+            if *loan_id == 0 || *owner_slot >= builder.slots || !builder.origins.contains_key(owner_slot) {
                 return Err(incomplete("typed alias load has invalid loan/owner origin"));
             }
             observed.borrowed_loads.push((*loan_id, *owner_slot));
@@ -453,9 +446,11 @@ fn validate_audited_expression(
     if observed.borrowed_loads != *pending_reads {
         return Err(incomplete("typed alias loads differ from ordered loan-use markers"));
     }
-    if observed.direct_slots.iter().any(|slot| {
-        active.values().any(|loan| loan.exclusive && loan.owner_slot == *slot)
-    }) {
+    if observed
+        .direct_slots
+        .iter()
+        .any(|slot| active.values().any(|loan| loan.exclusive && loan.owner_slot == *slot))
+    {
         return Err(incomplete("direct read of an exclusively borrowed owner"));
     }
     // The flat audit has no unwind edges or expression-level phi mapping.
@@ -463,7 +458,8 @@ fn validate_audited_expression(
     if !active.is_empty() && (builder.may_trap || builder.has_conditional) {
         return Err(unsupported("borrowed expression needs trap/conditional cleanup CFG"));
     }
-    builder.use_facts = builder.use_facts
+    builder.use_facts = builder
+        .use_facts
         .checked_add(observed.borrowed_loads.len())
         .and_then(|n| n.checked_add(observed.direct_slots.len()))
         .ok_or_else(|| budget("scalar expression observation overflow"))?;
@@ -623,9 +619,7 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                     pending_exclusive_write = None;
                 }
                 TStmt::Set(slot, value) => {
-                    validate_audited_expression(
-                        &mut builder, Some(value), &active, &mut pending_reads
-                    )?;
+                    validate_audited_expression(&mut builder, Some(value), &active, &mut pending_reads)?;
                     if *slot >= builder.slots {
                         return Err(incomplete("scalar lifecycle writes undeclared slot"));
                     }
@@ -649,17 +643,13 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                     if pending_exclusive_write.is_some() {
                         return Err(incomplete("alias write marker cannot target expression-only statement"));
                     }
-                    validate_audited_expression(
-                        &mut builder, Some(value), &active, &mut pending_reads
-                    )?;
+                    validate_audited_expression(&mut builder, Some(value), &active, &mut pending_reads)?;
                 }
                 TStmt::Return(value) => {
                     if pending_exclusive_write.is_some() {
                         return Err(incomplete("alias write marker cannot target terminal return"));
                     }
-                    validate_audited_expression(
-                        &mut builder, value.as_ref(), &active, &mut pending_reads
-                    )?;
+                    validate_audited_expression(&mut builder, value.as_ref(), &active, &mut pending_reads)?;
                     if !active.is_empty() {
                         return Err(unsupported("return with an active loan needs scope/unwind cleanup facts"));
                     }
@@ -672,9 +662,7 @@ pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanE
                 return Err(budget("scalar loan lifecycle census fact budget exceeded"));
             }
         }
-        if !terminal || !active.is_empty() || !pending_reads.is_empty()
-            || pending_exclusive_write.is_some()
-        {
+        if !terminal || !active.is_empty() || !pending_reads.is_empty() || pending_exclusive_write.is_some() {
             return Err(unsupported("scalar loan lifetime or terminal return not explicitly closed"));
         }
     }
