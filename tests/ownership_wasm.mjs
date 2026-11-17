@@ -53,7 +53,11 @@ reject('pub fnc main(): int {let n=42; val b=borrow! n; n=43; return 0;}', 'E_BO
 reject('pub fnc main(): int {let n=42; val b=borrow! mut n; return n;}', 'E_BORROW');
 reject('pub fnc main(): int {let n=42; val a=borrow! n; val b=borrow! mut n; return 0;}', 'E_BORROW');
 reject('pub fnc main(): int {let n=42; val a=borrow! mut n; val b=borrow! n; return 0;}', 'E_BORROW');
-reject('pub fnc main(): int {let n=42; val a=borrow! mut n; a=41; return take! n;}', 'E_BORROW');
+// A used writer's loan expires at the next straight-line boundary, so
+// ownership may be transferred after the last checked write-through.
+accept('pub fnc main(): int {let n=42; val a=borrow! mut n; a=41; return take! n;}');
+// The same move is still rejected if the writer is needed afterward.
+reject('pub fnc main(): int {let n=42; val a=borrow! mut n; a=41; val stolen=take! n; return copy! a;}', 'E_BORROW');
 reject('pub fnc main(): int {val n=42; val b=share! n; return n;}', 'E_UNSUPPORTED');
 for (const t of ['Box', 'Arc', 'Atomic']) {
   reject('pub fnc main(): int {val n: '+t+'<int> = 0; return 0;}', 'E_UNSUPPORTED_TYPE');
@@ -68,5 +72,5 @@ reject('pub fnc main(): int {let n=40; val reader=borrow! n; n=42; if n>0 then s
 // Unused loans continue to fail closed; this narrow slice requires a checked
 // use before it will consider shortening a lexical borrow.
 reject('pub fnc main(): int {let n=40; val reader=borrow! n; n=42; return n;}', 'E_BORROW');
-console.log('PASS browser Wasm ownership ABI: 7 scalar admits, 17 fail-closed cases');
+console.log('PASS browser Wasm ownership ABI: 8 scalar admits, 17 fail-closed cases');
 
