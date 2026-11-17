@@ -172,7 +172,7 @@ impl<'a> Scope<'a> {
                     (BinOp::Add | BinOp::Sub | BinOp::Mul,
                         Some(Ty::Int | Ty::Float),Some(Ty::Float)) |
                     (BinOp::Add | BinOp::Sub | BinOp::Mul,
-                        Some(Ty::Float),Some(Ty::Int | Ty::Float)) => Some(Ty::Float),
+                        Some(Ty::Float),Some(Ty::Int)) => Some(Ty::Float),
                     (BinOp::Add,Some(Ty::String),Some(Ty::String)) => Some(Ty::String),
                     (BinOp::Eq | BinOp::Ne,
                         Some(Ty::Int),Some(Ty::Int)) |
