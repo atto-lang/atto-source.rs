@@ -101,6 +101,33 @@ fn reject_bad_generic_arities() {
     }
 }
 
+
+#[test]
+fn lowercase_aliases_have_identical_canonical_type_identity() {
+    fn name_of(source: &str) -> String {
+        let p = parse_binding(source).unwrap();
+        match &p.funcs[0].body[0] {
+            Stmt::Bind { ty: Some(Type::Named(i)), .. } =>
+                p.type_names[*i as usize].0.clone(),
+            _ => panic!("expected generic collection type"),
+        }
+    }
+    assert_eq!(name_of("let Array<Record> a = [];"),
+               name_of("let array<record> a = [];"));
+    assert_eq!(name_of("let Map<string,int> m = {};"),
+               name_of("let map<string,int> m = {};"));
+    assert_eq!(name_of("let Tuple t = ();"),
+               name_of("let tuple t = ();"));
+}
+
+#[test]
+fn generic_nesting_is_bounded_before_stack_exhaustion() {
+    let name = format!("{}int{}", "Array<".repeat(140), ">".repeat(140));
+    let source = format!("let {name} xs = [];");
+    assert_eq!(parse_binding(&source).expect_err("excessive type depth").code,
+               "E_NESTING");
+}
+
 #[test]
 fn never_emit_unchecked_guest_collection_values() {
     for source in [
