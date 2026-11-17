@@ -352,7 +352,6 @@ pub fn checked_borrow_issues(program: &TProgram) -> Result<Vec<CheckedBorrowIssu
     Ok(issues)
 }
 
-
 /// A checked typed-MIR loan lifecycle event. The origin is the existing
 /// compiler's typechecker/NLL scanner, NOT an independent Polonius verdict.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -382,33 +381,45 @@ struct ActiveLoan {
 /// and provenance references, but CANNOT prove that lowering recorded all
 /// alias reads, a future escape, or every exceptional edge. It MUST NOT
 /// authorize guest codegen or substitute for the source ownership checker.
-pub fn audit_scalar_loan_lifecycle(
-    program: &TProgram,
-) -> Result<Vec<ScalarLoanEvent>, Diagnostic> {
-    if program.funcs.is_empty() || program.funcs.len() > MAX_CENSUS_FUNCTIONS
-        || !program.generators.is_empty() || !program.actors.is_empty()
-        || program.heap || program.guest_eh
+pub fn audit_scalar_loan_lifecycle(program: &TProgram) -> Result<Vec<ScalarLoanEvent>, Diagnostic> {
+    if program.funcs.is_empty()
+        || program.funcs.len() > MAX_CENSUS_FUNCTIONS
+        || !program.generators.is_empty()
+        || !program.actors.is_empty()
+        || program.heap
+        || program.guest_eh
     {
         return Err(unsupported("scalar loan lifecycle requires a closed pure scalar program"));
     }
     let mut result = Vec::new();
     for (function_index, func) in program.funcs.iter().enumerate() {
         if !simple_type(func.ret)
-            || func.params.iter().chain(func.locals.iter())
+            || func
+                .params
+                .iter()
+                .chain(func.locals.iter())
                 .any(|&ty| !simple_type(ty) || ty == Type::Void)
             || func.body.len() > MAX_CENSUS_POINTS
         {
             return Err(unsupported("scalar loan lifecycle needs bounded scalar slots/statements"));
         }
-        let slots = func.params.len().checked_add(func.locals.len())
+        let slots = func
+            .params
+            .len()
+            .checked_add(func.locals.len())
             .ok_or_else(|| budget("scalar loan slot count overflow"))?;
         if slots > MAX_CENSUS_ORIGINS {
             return Err(budget("scalar loan slot budget exceeded"));
         }
         let mut builder = Builder {
-            origins: BTreeMap::new(), next_origin: 1, points: Vec::new(),
-            use_facts: 0, expr_visits: 0, may_trap: false,
-            has_conditional: false, slots: slots as u32,
+            origins: BTreeMap::new(),
+            next_origin: 1,
+            points: Vec::new(),
+            use_facts: 0,
+            expr_visits: 0,
+            may_trap: false,
+            has_conditional: false,
+            slots: slots as u32,
         };
         for slot in 0..func.params.len() as u32 {
             builder.origins.insert(slot, builder.next_origin);
@@ -425,51 +436,71 @@ pub fn audit_scalar_loan_lifecycle(
             let instruction_ordinal = ordinal as u32 + 1;
             let mk = |loan_id, kind| ScalarLoanEvent {
                 function_index: function_index as u32,
-                instruction_ordinal, loan_id, kind,
+                instruction_ordinal,
+                loan_id,
+                kind,
             };
             match stmt {
-                TStmt::ScalarBorrowIssue { loan_id, owner_slot, exclusive, .. } => {
-                    if *loan_id == 0 || *owner_slot >= builder.slots
+                TStmt::ScalarBorrowIssue {
+                    loan_id,
+                    owner_slot,
+                    exclusive,
+                    ..
+                } => {
+                    if *loan_id == 0
+                        || *owner_slot >= builder.slots
                         || !builder.origins.contains_key(owner_slot)
                         || !all_issued.insert(*loan_id)
-                        || active.values().any(|l| l.owner_slot == *owner_slot
-                            && (l.exclusive || *exclusive))
+                        || active.values().any(|l| l.owner_slot == *owner_slot && (l.exclusive || *exclusive))
                     {
                         return Err(incomplete("duplicate/invalid/conflicting compiler loan issuance"));
                     }
-                    active.insert(*loan_id, ActiveLoan {
-                        owner_slot: *owner_slot, exclusive: *exclusive, used: false,
-                    });
-                    result.push(mk(*loan_id, ScalarLoanEventKind::Issue {
-                        owner_slot: *owner_slot, exclusive: *exclusive,
-                    }));
+                    active.insert(
+                        *loan_id,
+                        ActiveLoan {
+                            owner_slot: *owner_slot,
+                            exclusive: *exclusive,
+                            used: false,
+                        },
+                    );
+                    result.push(mk(
+                        *loan_id,
+                        ScalarLoanEventKind::Issue {
+                            owner_slot: *owner_slot,
+                            exclusive: *exclusive,
+                        },
+                    ));
                     pending_exclusive_write = None;
                 }
-                TStmt::ScalarLoanUse { loan_id, owner_slot, write } => {
-                    let loan = active.get_mut(loan_id)
+                TStmt::ScalarLoanUse {
+                    loan_id,
+                    owner_slot,
+                    write,
+                } => {
+                    let loan = active
+                        .get_mut(loan_id)
                         .ok_or_else(|| incomplete("loan use has no live issued identity"))?;
                     if loan.owner_slot != *owner_slot || (*write && !loan.exclusive) {
                         return Err(incomplete("loan use owner/exclusive provenance mismatch"));
                     }
                     loan.used = true;
-                    result.push(mk(*loan_id, ScalarLoanEventKind::Use {
-                        owner_slot: *owner_slot, write: *write,
-                    }));
-                    pending_exclusive_write = if *write {
-                        Some((*loan_id, *owner_slot))
-                    } else {
-                        None
-                    };
+                    result.push(mk(
+                        *loan_id,
+                        ScalarLoanEventKind::Use {
+                            owner_slot: *owner_slot,
+                            write: *write,
+                        },
+                    ));
+                    pending_exclusive_write = if *write { Some((*loan_id, *owner_slot)) } else { None };
                 }
                 TStmt::ScalarLoanEnd { loan_id, owner_slot } => {
-                    let loan = active.remove(loan_id)
+                    let loan = active
+                        .remove(loan_id)
                         .ok_or_else(|| incomplete("loan ended without live issued identity"))?;
                     if loan.owner_slot != *owner_slot || !loan.used {
                         return Err(incomplete("loan end lacks matching owner and prior checked use"));
                     }
-                    result.push(mk(*loan_id, ScalarLoanEventKind::End {
-                        owner_slot: *owner_slot,
-                    }));
+                    result.push(mk(*loan_id, ScalarLoanEventKind::End { owner_slot: *owner_slot }));
                     pending_exclusive_write = None;
                 }
                 TStmt::Set(slot, value) => {
@@ -479,9 +510,7 @@ pub fn audit_scalar_loan_lifecycle(
                         return Err(incomplete("scalar lifecycle writes undeclared slot"));
                     }
                     let direct = pending_exclusive_write.is_some_and(|(loan_id, owner)| {
-                        owner == *slot
-                            && active.get(&loan_id)
-                                .is_some_and(|loan| loan.exclusive && loan.owner_slot == owner)
+                        owner == *slot && active.get(&loan_id).is_some_and(|loan| loan.exclusive && loan.owner_slot == owner)
                     });
                     if active.values().any(|l| l.owner_slot == *slot) && !direct {
                         return Err(incomplete("owner write conflicts with a live loan"));
