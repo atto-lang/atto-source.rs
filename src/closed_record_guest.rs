@@ -35,7 +35,7 @@ fn scalar_type(ty: &LiteralType, pos: Pos) -> Result<Type, Diagnostic> {
         LiteralType::Bool => Ok(Type::Bool),
         LiteralType::Float => Ok(Type::Float),
         LiteralType::String => Ok(Type::Str),
-        _ => Err(diagnostic(pos, "E_UNSUPPORTED_TYPE",
+        _ => Err(diagnostic(pos, "E_UNSUPPORTED",
             "executable closed Record fields must be owned int/bool/float/string scalars")),
     }
 }
