@@ -1,0 +1,15 @@
+// expect-exit: 33
+// ? unwraps Ok and propagates the original Err Error.
+fnc value(): int { return 32; }
+fnc checked(): Result<int,Error> {
+  val Result<int,Error> result = trap value();
+  val int n = result?;
+  return Ok(n + 1);
+}
+pub fnc main(): int {
+  val Result<int,Error> result = checked();
+  match result over
+    on Err(e) -> { return 0; }
+    on Ok(n) -> { return n; }
+  end
+}
