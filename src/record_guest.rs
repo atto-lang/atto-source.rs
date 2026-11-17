@@ -18,6 +18,9 @@ type R<T> = Result<T, Diagnostic>;
 const MAX_FIELDS: usize = 8;
 const MAX_SHAPES: usize = 48;
 const MAX_EXPR_DEPTH: usize = 48;
+/// Ordinary scalar expression chains are bounded by the parser, not the
+/// much smaller nesting budget for newly constructed Record values.
+const MAX_PROJECTION_DEPTH: usize = 512;
 const PREFIX: &str = "__atto_shape_with_";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,7 +203,12 @@ impl Lower {
     /// Convert source field labels, including punctuation and UTF-8 names,
     /// to canonical private offsets after the structural checker has run.
     fn rewrite_expr(&self, e: Expr, env: &BTreeMap<String,Value>, depth: usize) -> R<Expr> {
-        if depth > MAX_EXPR_DEPTH {
+        // Non-Record programs must never be reinterpreted by this optional
+        // lowering pass: preserve their original AST and diagnostics exactly.
+        if !env.values().any(|v|matches!(v,Value::Record(_))) {
+            return Ok(e);
+        }
+        if depth > MAX_PROJECTION_DEPTH {
             return Err(err(e.pos,"E_NESTING","guest Record projection too deep"));
         }
         let pos=e.pos;
