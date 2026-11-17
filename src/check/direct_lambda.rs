@@ -451,7 +451,7 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // Capture analysis must never silently omit names nested in an
         // unlowered record/map/tuple expression.
         ExprKind::Record(_) | ExprKind::Map(_) | ExprKind::EmptyBraces |
-        ExprKind::Tuple(_) => return Err(error(e.pos, "E_UNSUPPORTED",
+        ExprKind::Tuple(_) | ExprKind::Index(_, _) => return Err(error(e.pos, "E_UNSUPPORTED",
             "inline collection captures require verified ownership/lifetime analysis")),
         ExprKind::SelfRef | ExprKind::Spawn(_) | ExprKind::Lambda { .. } => {},
     }
