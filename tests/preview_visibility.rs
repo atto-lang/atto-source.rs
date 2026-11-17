@@ -79,13 +79,13 @@ fn class_method_names_do_not_forge_file_level_exports() {
 }
 
 #[test]
-fn overloaded_top_level_function_needs_nonambiguous_export_identity() {
-    err(r#"
+fn overloaded_top_level_function_exports_full_arity_set() {
+    ok(r#"
         export pub fnc score;
+        fnc score(): int { return 1; }
         fnc score(int n): int { return n; }
-        fnc score(bool b): int { return 42; }
-        pub fnc main(): int { return score(1); }
-    "#, "E_DUPLICATE");
+        pub fnc main(): int { return score() + score(41); }
+    "#);
 }
 
 #[test]
