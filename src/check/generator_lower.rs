@@ -98,6 +98,10 @@ fn value(expr: &Expr, bindings: &BTreeMap<String, Binding>) -> R<TE> {
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
                 BinOp::Gt | BinOp::Ge => (Type::Int, Type::Bool),
                 BinOp::And | BinOp::Or => (Type::Bool, Type::Bool),
+                BinOp::IdEq | BinOp::IdNe => {
+                    return Err(blocked(expr.pos,
+                        "reference identity comparison is not admitted in integer generator continuations"));
+                },
                 BinOp::Div => {
                     return Err(blocked(expr.pos,
                         "division in generator continuation is not yet supported"));

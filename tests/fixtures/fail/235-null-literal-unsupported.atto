@@ -1,0 +1,5 @@
+// expect-error: E_NULL
+pub fnc main(): int {
+    if null eq null then return 1; fi
+    return 0;
+}

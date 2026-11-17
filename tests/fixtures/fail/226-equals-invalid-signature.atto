@@ -1,0 +1,5 @@
+// expect-error: E_EQUALS_SIGNATURE
+define class Point as
+    pub equals(int other): bool { return true; }
+end
+pub fnc main(): int { return 0; }

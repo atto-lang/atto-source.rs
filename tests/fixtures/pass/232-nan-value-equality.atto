@@ -1,0 +1,7 @@
+// expect-exit: 52
+// IEEE NaN is not equal to itself; neq is the logical negation.
+pub fnc main(): int {
+    val nan = 0.0 / 0.0;
+    if nan neq nan, !(nan eq nan) then return 52; fi
+    return 0;
+}

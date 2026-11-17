@@ -1,0 +1,8 @@
+// expect-error: E_IDENTITY_TYPE
+// Class self is a reference, but an int remains a primitive.
+define class Marker as
+    pub invalid(): bool {
+        return self == 7;
+    }
+end
+pub fnc main(): int { return 0; }

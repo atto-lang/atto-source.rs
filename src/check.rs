@@ -929,6 +929,23 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for c in &p.classes {
         let fields = fields_of(&c.name, &c.fields, false, 0)?;
         let mut methods = methods_of(&c.name, &c.methods, &c.fields)?;
+        // A class may opt into value equality only through a checked,
+        // non-suspending instance method. Never silently reinterpret
+        // object 'eq' as reference identity or choose a malformed overload.
+        for (decl, info) in c.methods.iter().zip(&methods) {
+            if decl.name == "equals"
+                && (!decl.public || decl.is_static || decl.params.len() != 1
+                    || decl.params[0].mutable
+                    || info.params != [Type::Class(classes.len() as u32)]
+                    || info.ret != Type::Bool)
+            {
+                return Err(Diagnostic::new(
+                    decl.pos, "E_EQUALS_SIGNATURE",
+                    format!("{}.equals must be a public, non-static, non-mutating equals({} other): bool instance method",
+                        c.name, c.name),
+                ));
+            }
+        }
         let new_idx = take();
         let ctor_idx = c.ctor.as_ref().map(|_| take());
         for m in &mut methods {
@@ -1405,6 +1422,17 @@ fn body_check(
             });
         }
     }
+    // Operator 'eq' borrows both objects for the duration of the checked
+    // equals call. The second parameter must therefore be non-owning inside
+    // the method as well: forwarding/taking it as an owned class handle would
+    // manufacture an alias while the caller still owns the object.
+    if let Owner::Class { c, ctor: false, is_static: false } = owner {
+        if label == format!("{}.equals", g.classes[c as usize].name) {
+            // Registration checked the method's sole same-class parameter.
+            // Slot 0 is self, slot 1 is the borrowed other object.
+            cx.loans.insert(1, ScopedLoan { owner: 1, mutable: false });
+        }
+    }
     cx.scopes.push(Vec::new());
     let mut tbody = cx.stmts(body)?;
     if let Some((ret, saved, msg, kind, pending)) = cx.unwind {
@@ -1458,7 +1486,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
             // reviewed explicitly, even if they reuse TExpr::Bin.
             let read_only = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
-                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
+                BinOp::Eq | BinOp::Ne | BinOp::IdEq | BinOp::IdNe | BinOp::Lt | BinOp::Le |
                 BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or => true,
             };
             read_only && pure_expr(a, pure_indices) && pure_expr(b, pure_indices)
@@ -2777,6 +2805,13 @@ impl<'a> FnCx<'a> {
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
+            // Isolate the class-self identity path from the deeply recursive
+            // generic binary() frame. Primitive chains keep their former ABI.
+            ExprKind::Binary(op, l, r)
+                if matches!(op, BinOp::IdEq | BinOp::IdNe)
+                    && (matches!(l.kind, ExprKind::SelfRef)
+                        || matches!(r.kind, ExprKind::SelfRef)) =>
+                self.self_identity_binary(*op, l, r, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
@@ -2858,12 +2893,87 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    /// Resolve user-defined same-class equals without adding a large frame
+    /// to the deeply recursive primitive binary checker.
+    #[inline(never)]
+    fn class_value_equality(&self, op: BinOp, c: u32, left: TE, right: TE, pos: Pos) -> R<TE> {
+        let class = &self.g.classes[c as usize];
+        // value() already checked both operands once and did not transfer
+        // their owners. The bounded browser class ABI uses direct method
+        // indices, not reflection or speculative virtual dispatch.
+        let Some(m) = class.methods.iter().find(|m| m.name == "equals") else {
+            return Err(Diagnostic::new(pos, "E_EQUALS",
+                format!("class '{}' has no checked public equals({} other): bool method; 'eq' cannot fall back to identity",
+                    class.name, class.name)));
+        };
+        let call = TE {
+            e: TExpr::Call(m.idx, vec![left, right]),
+            ty: Type::Bool,
+        };
+        Ok(if op == BinOp::Ne {
+            TE { e: TExpr::Not(Box::new(call)), ty: Type::Bool }
+        } else {
+            call
+        })
+    }
+
+    /// An ordinary class method may compare the identity of its own live
+    /// receiver without turning `self` into an owned, movable expression.
+    /// This narrow projection is *only* used for == and !=. General `self`
+    /// values, actor `self`, and static method receivers remain forbidden.
+    #[inline(never)]
+    fn identity_operand(&mut self, expr: &Expr) -> R<TE> {
+        if matches!(expr.kind, ExprKind::SelfRef) {
+            if let Owner::Class { c, is_static: false, .. } = self.owner {
+                return Ok(TE { e: TExpr::Local(0), ty: Type::Class(c) });
+            }
+        }
+        self.value(expr)
+    }
+
+    /// Only the identity operator may project class self to an immutable
+    /// reference handle. Keep this outside general binary() to preserve its
+    /// recursively validated 3,000-operator source-limit stack behavior.
+    #[inline(never)]
+    fn self_identity_binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+        let a = self.identity_operand(l)?;
+        let b = self.identity_operand(r)?;
+        if a.ty != b.ty || !matches!(a.ty, Type::Class(_)) {
+            let suggestion = if op == BinOp::IdEq { "eq" } else { "neq" };
+            return Err(Diagnostic::new(pos, "E_IDENTITY_TYPE",
+                format!("'{}' requires references of the same class; use '{}' for value equality (found {} and {})",
+                    op.symbol(), suggestion, self.tn(a.ty), self.tn(b.ty))));
+        }
+        Ok(TE { e: TExpr::Bin(op, Box::new(a), Box::new(b)), ty: Type::Bool })
+    }
+
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
             let a = self.value(l)?;
             let b = self.value(r)?;
+            // Identity comparison must not fall through to primitive value equality.
+            // In this bounded guest runtime, class objects have stable i32 handles.
+            // Actor capabilities, value aggregates, strings and scalars are not
+            // admitted as reference-identity operands.
+            if matches!(op, BinOp::IdEq | BinOp::IdNe) {
+                if a.ty != b.ty || !matches!(a.ty, Type::Class(_)) {
+                    let suggestion = if *op == BinOp::IdEq { "eq" } else { "neq" };
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_IDENTITY_TYPE",
+                        format!(
+                            "'{}' requires references of the same class; use '{}' for value equality (found {} and {})",
+                            op.symbol(), suggestion, self.tn(a.ty), self.tn(b.ty)
+                        ),
+                    ));
+                }
+                return Ok(TE {
+                    e: TExpr::Bin(*op, Box::new(a), Box::new(b)),
+                    ty: Type::Bool,
+                });
+            }
             if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
                 let both = a.ty == Type::Str && b.ty == Type::Str;
                 return match op {
@@ -2948,6 +3058,7 @@ impl<'a> FnCx<'a> {
             let ty = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
                 BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::IdEq | BinOp::IdNe => unreachable!("identity handled before value equality"),
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Type::Bool,
                 BinOp::Eq | BinOp::Ne => {
                     if a.ty != b.ty {
@@ -2961,11 +3072,20 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+                    // Generator<int> is an opaque, affine continuation handle, not a
+                    // value-comparable scalar. Admitting it here would lower its
+                    // i64 representation using an i32 equality instruction and
+                    // could emit an invalid Wasm guest instead of a diagnostic.
+                    if let Type::Class(c) = a.ty {
+                        // Non-inlined helper preserves the shallow binary()
+                        // frame under adversarial 3,000-operator nesting.
+                        return self.class_value_equality(*op, c, a, b, pos);
+                    }
+                    if matches!(a.ty, Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr | Type::GeneratorInt) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
-                            "comparing object, actor or tagged ADT references is unsupported; pointer equality is not structural equality",
+                            "value equality on objects, actor references, tagged ADTs or generator handles is not supported; equality must not silently compare handles",
                         ));
                     }
                     if a.ty == Type::Str {
@@ -3620,6 +3740,21 @@ impl<'a> FnCx<'a> {
         }
         let label = format!("{cname}.{name}");
         self.arity(&label, m.params.len(), args.len(), pos)?;
+        if name == "equals" {
+            // Direct a.equals(b) has the SAME non-owning signature as a eq b.
+            // Ordinary self.args would consume 'b' as an owned argument;
+            // doing that here would violate the checked borrowed method ABI.
+            let other = self.value(&args[0])?;
+            if other.ty != Type::Class(c) {
+                return Err(type_err(args[0].pos,
+                    format!("{}.equals expects {} other, found {}",
+                        cname, cname, self.tn(other.ty))));
+            }
+            return Ok(TE {
+                e: TExpr::Call(m.idx, vec![recv, other]),
+                ty: Type::Bool,
+            });
+        }
         let mut targs = vec![recv];
         targs.extend(self.args(&label, args, &m.params)?);
         Ok(TE {

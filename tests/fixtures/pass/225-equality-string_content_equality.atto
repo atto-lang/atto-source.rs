@@ -1,0 +1,2 @@
+// expect-exit: 15
+pub fnc main(): int { if "hello" eq "hello" then return 15; fi return 0; }

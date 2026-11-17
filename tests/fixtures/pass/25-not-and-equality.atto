@@ -1,7 +1,7 @@
 // expect-exit: 23
 pub fnc main(): int {
   val b: bool = !(1 eq 2);
-  if b, 3 neq 4, 5 == 5, 6 != 7, !(true eq false) then
+  if b, 3 neq 4, 5 eq 5, 6 neq 7, !(true eq false) then
     return 23;
   fi
   return 0;

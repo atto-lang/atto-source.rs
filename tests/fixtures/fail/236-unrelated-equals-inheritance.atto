@@ -1,0 +1,9 @@
+// expect-error: E_AMBIGUOUS_MEMBER
+define class First as
+    pub equals(First other): bool { return true; }
+end
+define class Second as
+    pub equals(Second other): bool { return true; }
+end
+define class Child extends First, Second as end
+pub fnc main(): int { return 0; }

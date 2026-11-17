@@ -329,6 +329,55 @@ fn resolve(
     cached.insert(owner.to_owned(), answer.clone());
     Ok(answer)
 }
+/// Specialize inherited equals(Self other): bool for each concrete class
+/// created by the bounded nominal lowering path. The original checked base
+/// must have no fields or constructor (validated by resolve), and dynamic
+/// upcasts / virtual dispatch remain unsupported. Never reinterpret a
+/// differently typed or malformed inherited equals method as pointer equality.
+fn checked_equals_param(
+    method: &Method, child: &Decl, all: &BTreeMap<String, Decl>,
+) -> R<Option<Pos>> {
+    if method.name != "equals" { return Ok(None); }
+    let sig = &method.sig;
+    let source_ty = match sig.as_slice() {
+        [Tok::LParen, Tok::Ident(ty), Tok::Ident(_arg), Tok::RParen,
+            Tok::Colon, Tok::Ident(ret)] if ret == "bool" => ty,
+        _ => return Err(diag(method.pos, "E_EQUALS_INHERITANCE",
+            "inherited equals must have one same-class parameter and bool return")),
+    };
+    // A method from a trait or unrelated nominal declaration does not
+    // authorize class equality. Walk the source-local ancestor graph to
+    // authenticate the declared parameter's class provenance.
+    let mut pending = child.parents.clone();
+    let mut visited = BTreeSet::new();
+    let mut found = false;
+    while let Some(n) = pending.pop() {
+        if !visited.insert(n.clone()) { continue; }
+        if n == *source_ty {
+            found = all.get(&n).is_some_and(|d| d.kind == Kind::Class);
+            break;
+        }
+        if let Some(parent) = all.get(&n) {
+            pending.extend(parent.parents.iter().cloned());
+        }
+    }
+    if !found || !method.public {
+        return Err(diag(method.pos, "E_EQUALS_INHERITANCE",
+            "inherited equals parameter must be a public ancestor class; no unchecked widening or trait identity fallback"));
+    }
+    let open = method.tokens.iter().position(|t| t.tok == Tok::LParen)
+        .ok_or_else(|| diag(method.pos, "E_EQUALS_INHERITANCE",
+            "inherited equals has no parameter list"))?;
+    let param = method.tokens.get(open + 1)
+        .ok_or_else(|| diag(method.pos, "E_EQUALS_INHERITANCE",
+            "inherited equals has no parameter type"))?;
+    if param.tok != Tok::Ident(source_ty.clone()) {
+        return Err(diag(param.pos, "E_EQUALS_INHERITANCE",
+            "inherited equals parameter disagrees with checked source signature"));
+    }
+    Ok(Some(param.pos))
+}
+
 /// Desugar supported nominal composition into ordinary class methods while
 /// preserving each source token's original file position.
 pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
@@ -355,7 +404,20 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                 if method.tokens.iter().any(|t| is(std::slice::from_ref(t), 0, "super")) {
                     return Err(diag(method.pos, "E_UNSUPPORTED", "super receiver lowering is not implemented"));
                 }
-                additions.extend(method.tokens);
+                if name == "equals" {
+                    let param_pos = checked_equals_param(&method, d, &all)?
+                        .ok_or_else(|| diag(method.pos, "E_EQUALS_INHERITANCE",
+                            "cannot specialize inherited equals"))?;
+                    let mut specialized = method.tokens;
+                    for token in &mut specialized {
+                        if token.pos == param_pos {
+                            token.tok = Tok::Ident(d.name.clone());
+                        }
+                    }
+                    additions.extend(specialized);
+                } else {
+                    additions.extend(method.tokens);
+                }
             }
         }
         let mut output = Vec::new();
@@ -369,12 +431,23 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         // Remove only exact declaration-header override tokens. A token
         // spelled 'override' inside a method body is never a header marker.
         // Source coordinates remain unchanged for every retained token.
+        let override_equals_type = match d.methods.get("equals") {
+            Some(method) if method.overriding =>
+                checked_equals_param(method, d, &all)?,
+            _ => None,
+        };
         for token in &d.body {
             let header_override = is(std::slice::from_ref(token), 0, "override")
                 && d.methods.values().any(|m|
                     m.override_pos.is_some_and(|p|
                         p.line == token.pos.line && p.col == token.pos.col));
-            if !header_override { output.push(token.clone()); }
+            if !header_override {
+                if override_equals_type == Some(token.pos) {
+                    output.push(Token { pos: token.pos, tok: Tok::Ident(d.name.clone()) });
+                } else {
+                    output.push(token.clone());
+                }
+            }
         }
         output.extend(additions);
         output.push(Token { pos: d.pos, tok: Tok::Ident("end".into()) });

@@ -2602,8 +2602,8 @@ impl Parser {
         loop {
             let pos = self.pos();
             let op = match self.peek() {
-                Tok::EqEq => BinOp::Eq,
-                Tok::NotEq => BinOp::Ne,
+                Tok::EqEq => BinOp::IdEq,
+                Tok::NotEq => BinOp::IdNe,
                 Tok::Ident(s) if s == "eq" => BinOp::Eq,
                 Tok::Ident(s) if s == "neq" => BinOp::Ne,
                 Tok::Bang if self.word_at(1) == Some("eq") => {

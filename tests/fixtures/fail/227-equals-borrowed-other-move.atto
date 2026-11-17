@@ -1,0 +1,9 @@
+// expect-error: E_BORROW
+define class Point as
+    pub final int n: 3;
+    pub equals(Point other): bool {
+        val stolen = other;
+        return true;
+    }
+end
+pub fnc main(): int { return 0; }

@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_IDENTITY_TYPE
 fnc wrapped(): Option<Result<int,string>> { return Some(Ok(1)); }
 pub fnc main(): int {
   val a = wrapped();

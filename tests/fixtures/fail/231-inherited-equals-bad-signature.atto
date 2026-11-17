@@ -1,0 +1,6 @@
+// expect-error: E_EQUALS_INHERITANCE
+define class Base as
+    pub equals(int other): bool { return true; }
+end
+define class Child extends Base as end
+pub fnc main(): int { return 0; }

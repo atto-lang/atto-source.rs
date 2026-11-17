@@ -83,7 +83,8 @@ fn scalar_operators_have_native_checker_semantics() {
     assert_eq!(check("|n| -> n + true", Some(&[Type::Int]), None).unwrap_err().code, "E_TYPE");
     assert_eq!(check("|n| -> n eq 4", Some(&[Type::Int]), None), Ok(Type::Bool));
     assert_eq!(check("|n| -> n eq true", Some(&[Type::Int]), None).unwrap_err().code, "E_TYPE");
-    assert_eq!(check("|n| -> n == 4", Some(&[Type::Int]), None), Ok(Type::Bool));
+    assert_eq!(check("|n| -> n == 4", Some(&[Type::Int]), None).unwrap_err().code, "E_TYPE");
+    assert_eq!(check("|n| -> n != 4", Some(&[Type::Int]), None).unwrap_err().code, "E_TYPE");
     assert_eq!(check("|n| -> n + \"z\"", Some(&[Type::Str]), None), Ok(Type::Str));
 }
 

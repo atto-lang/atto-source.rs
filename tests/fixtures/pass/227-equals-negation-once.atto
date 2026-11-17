@@ -1,0 +1,17 @@
+// expect-exit: 42
+// expect-stdout: equals called
+// neq must call equals exactly once, without moving either operand.
+define class Thing as
+    pub final int n: 7;
+    pub equals(Thing other): bool {
+        stdio.println("equals called");
+        return self.n eq other.n;
+    }
+end
+pub fnc main(): int {
+    val a = new Thing();
+    val b = new Thing();
+    if a neq b then return 0; fi
+    if a == b then return 0; fi
+    return 42;
+}

@@ -440,7 +440,7 @@ const chains = {
   add: n => M(`  return ${Array(n).fill('1').join(' + ')};`),
   mul: n => M(`  return ${Array(n).fill('1').join(' * ')};`),
   cmp: n => M(`  val b = ${Array(n).fill('1').join(' - ')} < 0;\n  return 0;`),
-  eq: n => M(`  val b = ${Array(n).fill('true').join(' == ')};\n  return 0;`),
+  eq: n => M(`  val b = ${Array(n).fill('true').join(' eq ')};\n  return 0;`),
   and: n => M(`  val t = true;\n  if ${Array(n).fill('t').join(', ')} then\n    return 1;\n  fi\n  return 0;`),
   or: n => M(`  val t = false;\n  if ${Array(n).fill('t').join(' | ')} then\n    return 1;\n  fi\n  return 0;`),
   match: n => M(`  val x = ${n - 2};\n  match x\n${Array.from({ length: n - 1 }, (_, i) => `    ${i} -> { return ${i}; }\n`).join('')}    _ -> { return -1; }\n  end`),

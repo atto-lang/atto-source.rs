@@ -1,0 +1,8 @@
+// expect-error: E_SIGNATURE
+define class Base as
+    pub equals(Base other): bool { return true; }
+end
+define class Child extends Base as
+    pub override equals(Child other): bool { return true; }
+end
+pub fnc main(): int { return 0; }

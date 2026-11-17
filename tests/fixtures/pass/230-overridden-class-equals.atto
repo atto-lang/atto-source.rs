@@ -1,0 +1,15 @@
+// expect-exit: 50
+// Explicit override retains the inherited declaration signature;
+// AOT lowering specializes the checked child implementation.
+define class Base as
+    pub equals(Base other): bool { return false; }
+end
+define class Child extends Base as
+    pub override equals(Base other): bool { return true; }
+end
+pub fnc main(): int {
+    val a = new Child();
+    val b = new Child();
+    if a eq b, a == a, a != b then return 50; fi
+    return 0;
+}

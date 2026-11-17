@@ -1,0 +1,8 @@
+// expect-error: E_EQUALS
+define class Point as pub final int n: 2; end
+pub fnc main(): int {
+    val a = new Point();
+    val b = new Point();
+    if a eq b then return 1; fi
+    return 0;
+}

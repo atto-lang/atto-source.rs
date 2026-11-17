@@ -1,5 +1,5 @@
-// Java compares references; not admitted here yet.
-// expect-error: E_UNSUPPORTED
+// Value equality requires a checked class equals() method: no identity fallback.
+// expect-error: E_EQUALS
 // java: accepts
 define class P as
     pub int x: 1

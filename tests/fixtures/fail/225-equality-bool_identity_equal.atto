@@ -1,0 +1,2 @@
+// expect-error: E_IDENTITY_TYPE
+pub fnc main(): int { if true == true then return 1; fi return 0; }

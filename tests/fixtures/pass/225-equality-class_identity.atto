@@ -1,0 +1,8 @@
+// expect-exit: 14
+define class Thing as end
+pub fnc main(): int {
+  val a = new Thing();
+  val b = new Thing();
+  if a == a, a != b then return 14; fi
+  return 0;
+}

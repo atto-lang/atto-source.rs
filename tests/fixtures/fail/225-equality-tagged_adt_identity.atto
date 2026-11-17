@@ -1,0 +1,8 @@
+// expect-error: E_IDENTITY_TYPE
+fnc make_value(): Option<int> { return Some(1); }
+pub fnc main(): int {
+  val a = make_value();
+  val b = make_value();
+  if a == b then return 1; fi
+  return 0;
+}
