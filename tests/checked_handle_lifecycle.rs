@@ -266,3 +266,29 @@ fn lexical_loan_must_end_before_consuming_checked_handle() {
         return 42;
     "#, "E_HANDLE");
 }
+
+#[test]
+fn runtime_handle_ops_require_val_not_const_or_let() {
+    for keyword in ["const", "let"] {
+        check_error(&format!(r#"
+            val original = new Parcel();
+            {keyword} handle = ref! original;
+            return 42;
+        "#), "E_HANDLE");
+        check_error(&format!(r#"
+            val original = new Parcel();
+            val handle = ref! original;
+            block {{
+                {keyword} view = deref! handle;
+            }}
+            val restored = unref! handle;
+            return restored.value;
+        "#), "E_HANDLE");
+        check_error(&format!(r#"
+            val original = new Parcel();
+            val handle = ref! original;
+            {keyword} restored = unref! handle;
+            return restored.value;
+        "#), "E_HANDLE");
+    }
+}
