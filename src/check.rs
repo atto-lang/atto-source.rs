@@ -1837,6 +1837,20 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
+        // Until all-path affine destruction is represented in typed CFG/MIR,
+        // forbid branching, exceptions, loops and returns while an unreleased
+        // handle is live. Otherwise a return before unref! could leak ownership
+        // even when a later syntactic unref! exists on another path.
+        let live_handle = self.scopes.iter().flat_map(|scope| scope.iter()).any(|l|
+            matches!(l.ty, Type::CheckedRef(_)) && !self.moved.contains(&l.slot));
+        if live_handle && matches!(s,
+            Stmt::Return(..) | Stmt::If { .. } | Stmt::While { .. } | Stmt::Loop { .. } |
+            Stmt::For { .. } | Stmt::ForIn { .. } | Stmt::Break(..) | Stmt::Continue(..) |
+            Stmt::Try { .. } | Stmt::Throw(..) | Stmt::Raise(..) | Stmt::Defer { .. } |
+            Stmt::Recover { .. } | Stmt::Match { .. }) {
+            return Err(Diagnostic::new(crate::diag::Pos::default(), "E_HANDLE",
+                "control flow cannot bypass unref! while a checked handle is live"));
+        }
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
                 if let ExprKind::Ownership(OwnershipOp::Borrow, mutable, inner) = &init.kind {
@@ -2714,6 +2728,10 @@ impl<'a> FnCx<'a> {
     /// must be the unique compiler-minted local handle, not an arbitrary integer.
     fn checked_deref_binding(&mut self, kind: BindKind, name: &str, annotation: Option<Type>,
                              inner: &Expr, pos: Pos) -> R<TStmt> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_HANDLE",
+                "checked handles require local, single-worker top-level ownership"));
+        }
         if kind == BindKind::Let {
             return Err(Diagnostic::new(pos, "E_HANDLE", "deref! produces an immutable view"));
         }
@@ -2749,7 +2767,7 @@ impl<'a> FnCx<'a> {
         }
         match action {
             OwnershipOp::Ref => {
-                if self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
+                if self.owner != Owner::TopLevel || self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
                     return Err(Diagnostic::new(pos, "E_HANDLE", "ref! requires a straight-line function-body binding"));
                 }
                 if !matches!(&inner.kind, ExprKind::Var(_)) {
@@ -2764,7 +2782,7 @@ impl<'a> FnCx<'a> {
             OwnershipOp::Deref => Err(Diagnostic::new(pos, "E_HANDLE",
                 "deref! must initialize a scoped immutable val binding")),
             OwnershipOp::Unref => {
-                if self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
+                if self.owner != Owner::TopLevel || self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
                     return Err(Diagnostic::new(pos, "E_HANDLE", "unref! requires straight-line function-body consumption"));
                 }
                 let ExprKind::Var(handle_name) = &inner.kind else {
