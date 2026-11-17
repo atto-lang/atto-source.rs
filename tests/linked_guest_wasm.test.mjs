@@ -4,11 +4,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const paths = process.argv.slice(2);
-assert.equal(paths.length, 2, "two linked wasm guest paths required");
+assert.equal(paths.length, 4, "four linked wasm guest paths required");
 
 for (const [i, path] of paths.entries()) {
-  test(i === 0 ? "cross-package public module executes in linked guest" :
-    "same-package pub[pkg] module executes in linked guest", async () => {
+  const names = [
+    "cross-package public module executes in linked guest",
+    "same-package pub[pkg] module executes in linked guest",
+    "three-file chained namespace imports execute",
+    "filesystem manifest-rooted linked package executes",
+  ];
+  test(names[i], async () => {
     const bytes = readFileSync(path);
     assert.equal(WebAssembly.validate(bytes), true);
     const imports = WebAssembly.Module.imports(new WebAssembly.Module(bytes));
