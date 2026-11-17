@@ -339,6 +339,17 @@ impl Emit<'_> {
             self.set(err_slot); // retain exact i64 Error identity, no allocation
             self.depth_restore(saved);
             self.stmts(handler);
+            // A bare try/catch (without finally) must restore the caller's
+            // catch depth when a raise or other non-ordinary tag bypasses
+            // the ordinary Error handler. Otherwise later recover observes
+            // a fictitious active caller catch. With finally, the outer
+            // catch_all already restores depth and executes cleanup.
+            if finally.is_none() {
+                self.op(0x19); // catch_all: never convert raise into Error
+                self.depth_restore(saved);
+                self.op(0x09); // rethrow exact original tag and payload
+                uleb(&mut self.code, 0);
+            }
             self.close();
             self.depth_restore(saved);
         } else {
@@ -930,10 +941,12 @@ impl Emit<'_> {
                     self.op(0x0F); // original Err/None pointer, unchanged
                 }
                 self.close();
-                self.op(0x20);
-                uleb(&mut self.code, *tmp as u64);
+                // The success branch of Result<void,Error> returns *no*
+                // Wasm stack value. In particular do not leak the i32 ADT
+                // pointer into the following expression or block.
                 if v.ty != Type::Void {
-                    field_op(&mut self.code, v.ty, 8, false); // typed Ok/Some payload
+                    self.get(*tmp);
+                    field_op(&mut self.code, v.ty, 8, false);
                 }
             },
             TExpr::FieldGet { obj, offset } => {
