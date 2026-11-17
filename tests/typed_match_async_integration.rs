@@ -107,7 +107,7 @@ fn switch_task_effects_and_scope_are_checked_not_coerced() {
 }
 
 #[test]
-fn adt_payload_task_capture_is_rejected_until_owned_frames_exist() {
+fn adt_payload_task_capture_uses_checked_copied_i64_frame() {
     let source = r#"
         fnc choice(): Result<int,string> { return Ok(41); }
         pub suspends fnc main(): int {
@@ -117,8 +117,26 @@ fn adt_payload_task_capture_is_rejected_until_owned_frames_exist() {
             end;
         }
     "#;
-    let diagnostic = compile(source).expect_err("task must not read a parent case-local without a captured owned frame");
-    assert_eq!(diagnostic.code, "E_UNBOUND", "{diagnostic}");
+    let guest = compile(source).expect("one copied int case binder is supported in AOT task ABI v3");
+    assert!(guest.starts_with(b"\0asm\x01\0\0\0"));
+    for marker in [b"task_start_i64".as_slice(), b"task_invoke_i64", b"task_await"] {
+        assert!(has(&guest, marker), "missing checked i64 task ABI marker");
+    }
+    assert_eq!(guest, compile(source).expect("deterministic copied-int task guest"));
+
+    // Non-int payload capture remains explicitly unsupported. In particular,
+    // a string must never be reinterpreted as a forged i64 handle/pointer.
+    let bad = r#"
+        fnc choice(): Result<int,string> { return Err("bad"); }
+        pub suspends fnc main(): int {
+            return match<int> choice() over
+                on Err(error) : int -> await task { return error; },
+                on Ok(value) : int -> value,
+            end;
+        }
+    "#;
+    let diagnostic = compile(bad).expect_err("string payload capture must not emit guest Wasm");
+    assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{diagnostic}");
 }
 
 #[test]

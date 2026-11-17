@@ -2203,11 +2203,24 @@ impl<'a> FnCx<'a> {
         let get = || TE { e: TExpr::Local(tmp), ty: sty };
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
-        let mut out = Vec::new();
-        // A guard reads arm-local bindings before the selected arm body runs.
-        // Stage guarded values before dispatch, but only project a tagged
-        // payload when the scrutinee is confirmed to have that tag.
-        let mut match_setup = vec![TStmt::Set(tmp, subj)];
+        // A value-returning exhaustive match is a definite function exit.
+        // Non-returning statement matches must retain normal continuation.
+        let mut all_exiting = true;
+        // A previous arm's successful body must suppress every later arm.
+        // Keep dispatch linear in the number of cases; do not hoist payload
+        // reads for later candidates ahead of first-match selection.
+        let selected = self.temp(Type::Bool, pos)?;
+        let not_selected = || TE {
+            e: TExpr::Not(Box::new(TE {
+                e: TExpr::Local(selected),
+                ty: Type::Bool,
+            })),
+            ty: Type::Bool,
+        };
+        let mut out = vec![
+            TStmt::Set(tmp, subj),
+            TStmt::Set(selected, TE { e: TExpr::Bool(false), ty: Type::Bool }),
+        ];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             // The current executable profile has only definite-return arm
@@ -2263,7 +2276,7 @@ impl<'a> FnCx<'a> {
             });
             self.scopes.push(Vec::new());
             let r = (|| -> R<(TE, Vec<TStmt>)> {
-                let mut body = Vec::new();
+                let mut candidate_body = Vec::new();
                 if let Some(name) = payload_name {
                     let ty = payload_ty.expect("the pattern binds a value");
                     let slot = self.declare(name, ty, false, arm.pos)?;
@@ -2272,20 +2285,10 @@ impl<'a> FnCx<'a> {
                     } else {
                         TE { e: TExpr::AdtPayload(Box::new(get())), ty }
                     };
-                    let assignment = TStmt::Set(slot, value);
-                    if arm.guard.is_some() {
-                        if let Some(tag_test) = test.as_ref() {
-                            // Never inspect the inactive Result/Option variant.
-                            match_setup.push(TStmt::If(
-                                vec![(tag_test.clone(), vec![assignment])], None,
-                            ));
-                        } else {
-                            // A whole-scrutinee binder has no tag to check.
-                            match_setup.push(assignment);
-                        }
-                    } else {
-                        body.push(assignment);
-                    }
+                    // Binding takes place only when this candidate is reached
+                    // and its variant was confirmed by the outer If. Guarded
+                    // values must be available *before* the guard is called.
+                    candidate_body.push(TStmt::Set(slot, value));
                 }
                 let guard = match &arm.guard {
                     Some(g) => Some(self.cond(g, "match guard")?),
@@ -2293,29 +2296,41 @@ impl<'a> FnCx<'a> {
                 };
                 let at_arm = self.moved.clone();
                 let checked_body = self.stmts(&arm.body)?;
-                if arm.result_type.is_some() && !returns(&checked_body) {
+                let exits = returns(&checked_body);
+                if arm.result_type.is_some() && !exits {
                     return Err(Diagnostic::new(arm.pos, "E_RETURN",
                         "typed match arm must return or throw on every path in this compiler profile"));
                 }
-                body.extend(checked_body);
-                if !returns(&body) {
+                all_exiting &= exits;
+                if !exits {
                     after.extend(self.moved.iter().copied());
                 }
                 self.moved = at_arm;
-                let truth = TE { e: TExpr::Bool(true), ty: Type::Bool };
-                let cond = match (test, guard) {
-                    (None, None) => truth,
-                    (Some(t), None) => t,
-                    (None, Some(g)) => g,
-                    (Some(t), Some(g)) => TE {
+                let mut chosen_body = vec![TStmt::Set(selected, TE {
+                    e: TExpr::Bool(true),
+                    ty: Type::Bool,
+                })];
+                chosen_body.extend(checked_body);
+                if let Some(g) = guard {
+                    // A failed guard leaves 'selected' false so the next arm
+                    // is tried. A successful guard selects before entering a
+                    // possibly non-returning body.
+                    candidate_body.push(TStmt::If(vec![(g, chosen_body)], None));
+                } else {
+                    candidate_body.extend(chosen_body);
+                }
+                let cond = match test {
+                    None => not_selected(),
+                    Some(tag_test) => TE {
                         e: TExpr::Ternary(
-                            Box::new(t), Box::new(g),
+                            Box::new(not_selected()),
+                            Box::new(tag_test),
                             Box::new(TE { e: TExpr::Bool(false), ty: Type::Bool }),
                         ),
                         ty: Type::Bool,
                     },
                 };
-                Ok((cond, body))
+                Ok((cond, candidate_body))
             })();
             self.pop_scope();
             let (cond, body) = r?;
@@ -2328,15 +2343,27 @@ impl<'a> FnCx<'a> {
                     None => covered = true,
                 }
             }
-            out.push((cond, body));
+            out.push(TStmt::If(vec![(cond, body)], None));
         }
         if !covered {
             return Err(Diagnostic::new(pos, "E_MATCH",
                 format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
-        match_setup.push(TStmt::If(out, Some(vec![TStmt::Unreachable])));
-        Ok(TStmt::Block(match_setup))
+        // The static exhaustiveness proof guarantees selection.  When
+        // every chosen arm definitely exits, reaching the end is impossible,
+        // and the unconditional trap also preserves the function-level
+        // definite-return proof.  Otherwise, successful statement arms must
+        // continue after the match; trap only if no arm was selected.
+        if all_exiting {
+            out.push(TStmt::Unreachable);
+        } else {
+            out.push(TStmt::If(
+                vec![(not_selected(), vec![TStmt::Unreachable])],
+                None,
+            ));
+        }
+        Ok(TStmt::Block(out))
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
@@ -2713,7 +2740,7 @@ impl<'a> FnCx<'a> {
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
-            ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
+            ExprKind::Binary(..) => self.binary_chain(e),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
@@ -2795,11 +2822,32 @@ impl<'a> FnCx<'a> {
     }
 
     #[inline(never)]
-    fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+    /// Preserve exact left-associative evaluation without recursion over
+    /// an expression's left spine. A 250-term checked arithmetic chain is
+    /// admitted by the parser, and must not exhaust the native Rust or
+    /// browser/Wasm compiler stack while checking types.
+    fn binary_chain(&mut self, expr: &Expr) -> R<TE> {
+        let mut links: Vec<(BinOp, &Expr, Pos)> = Vec::new();
+        let mut current = expr;
+        while let ExprKind::Binary(op, lhs, rhs) = &current.kind {
+            if links.len() >= crate::parser::MAX_TREE_HEIGHT as usize {
+                return Err(Diagnostic::new(current.pos, "E_NESTING",
+                    "binary expression exceeds the checked tree-height bound"));
+            }
+            links.push((*op, rhs.as_ref(), current.pos));
+            current = lhs;
+        }
+        let mut left = self.value(current)?;
+        for (op, rhs, pos) in links.into_iter().rev() {
+            let right = self.value(rhs)?;
+            left = self.binary_values(op, left, right, pos)?;
+        }
+        Ok(left)
+    }
+
+    fn binary_values(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
                 let both = a.ty == Type::Str && b.ty == Type::Str;
                 return match op {
