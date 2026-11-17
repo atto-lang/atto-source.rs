@@ -1864,13 +1864,13 @@ impl Parser {
     /// Only a *spaced* optional '=' may follow a directional capture:
     /// '>> = val x' aliases '>> val x'. Contiguous '>>=' and '>> =='
     /// remain distinct, invalid spellings; this is never an assignment.
-    fn eat_optional_directional_bind_equal(&mut self) -> R<()> {
+    fn eat_optional_directional_bind_equal(&mut self) -> R<bool> {
         if *self.peek() == Tok::EqEq {
             return Err(Diagnostic::new(self.pos(), "E_IO_SYNTAX",
                 "'==' is equality, not a directional binding marker"));
         }
         if *self.peek() != Tok::Assign {
-            return Ok(());
+            return Ok(false);
         }
         let equal_at = self.pos();
         let second_gt = self.toks[self.i - 1].pos;
@@ -1885,7 +1885,7 @@ impl Parser {
             return Err(Diagnostic::new(self.pos(), "E_IO_SYNTAX",
                 "directional capture accepts at most one optional '='"));
         }
-        Ok(())
+        Ok(true)
     }
 
     /// A terminal directional binding after explicit suspension lowers to
@@ -2116,7 +2116,7 @@ impl Parser {
             return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
         }
         self.expect_io_double(Tok::Gt, ">>")?;
-        self.eat_optional_directional_bind_equal()?;
+        let had_optional_equal = self.eat_optional_directional_bind_equal()?;
         let (future_inner, resolved_type, propagated) = if self.eat(&Tok::LParen) {
             let bound = self.parse_io_resolved_binder_type()?;
             self.expect_io_double(Tok::Lt, "<<")?;
@@ -2174,7 +2174,15 @@ impl Parser {
             let bound = self.parse_io_resolved_binder_type()?;
             (inner, bound, propagated)
         } else {
-            return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
+            // A marked directional binding needs an actual fresh binder.
+            // Missing/malformed '>> = name' is a syntax error, not the
+            // missing-guest-ABI diagnostic for a valid typed continuation.
+            return Err(if had_optional_equal {
+                Diagnostic::new(self.pos(), "E_IO_SYNTAX",
+                    "'>> =' must be followed by a fresh typed Future or val/let binding")
+            } else {
+                unsupported(at, "nonblocking I/O without a typed await continuation")
+            });
         };
 
         // '?' converts Result<T,E> to T (and propagates E), but never unwraps
