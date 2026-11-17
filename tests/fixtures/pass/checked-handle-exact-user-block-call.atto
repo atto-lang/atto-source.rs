@@ -1,0 +1,22 @@
+// expect-exit: 42
+// expect-stdout: 42
+// java: rejects
+// Exact canonical user example: a standalone borrowed-argument call in block.
+define class Payload as
+  pub let int value = 42;
+end
+fnc make_payload(): Payload { return new Payload(); }
+fnc inspect_readonly(borrow! Payload item): void {
+  stdio.println(item.value);
+}
+pub fnc main(): int {
+  val original = make_payload();
+  val handle = ref! original;
+  // original has moved
+  block {
+    val view = deref! handle;
+    inspect_readonly(view);
+  }
+  val restored = unref! handle;
+  return restored.value;
+}
