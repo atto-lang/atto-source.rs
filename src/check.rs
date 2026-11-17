@@ -724,6 +724,10 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    if let Some(e) = p.parsed_exports.first() {
+        return Err(Diagnostic::new(e.pos, "E_UNBOUND",
+            "source exports must be resolved by the canonical export binder before typing"));
+    }
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
