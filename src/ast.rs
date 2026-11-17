@@ -24,6 +24,9 @@ pub enum Type {
     Callable(u32),
     /// Instance of `Program::classes[i]` (a heap reference).
     Class(u32),
+    /// Compiler-only affine handle to a local Wasm class allocation.
+    /// Not a general raw pointer, not sendable, and not a public source type.
+    CheckedRef(u32),
     /// Value of `Program::enums[i]`.
     Enum(u32),
     /// `ActorRef<A>` for `Program::actors[i]`: a copyable mailbox capability.
@@ -385,7 +388,7 @@ pub enum LambdaBody {
 
 /// Explicit Atto ownership operators, not pointer address syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnershipOp { Borrow, Copy, Take, Share }
+pub enum OwnershipOp { Borrow, Copy, Take, Share, Ref, Deref, Unref }
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
@@ -401,7 +404,8 @@ pub enum ExprKind {
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
     /// Prefix ownership: borrow! x, borrow! mut x, copy! x, take! x,
-    /// share! x. Parentheses are optional grouping, not call arguments.
+    /// share! x, ref! x, deref! handle, unref! handle.
+    /// Parentheses are optional grouping, not call arguments.
     Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),

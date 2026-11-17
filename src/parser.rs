@@ -2723,14 +2723,19 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
-                && *self.peek_at(1) == Tok::Bang =>
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "ref" | "deref" | "unref")
+                && *self.peek_at(1) == Tok::Bang
+                && self.toks[self.i + 1].pos.line == pos.line
+                && self.toks[self.i + 1].pos.col == pos.col + s.chars().count() as u32 =>
             {
                 let action = match s.as_str() {
                     "borrow" => OwnershipOp::Borrow,
                     "copy" => OwnershipOp::Copy,
                     "take" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
+                    "ref" => OwnershipOp::Ref,
+                    "deref" => OwnershipOp::Deref,
+                    "unref" => OwnershipOp::Unref,
                     _ => unreachable!(),
                 };
                 self.advance(); // name
@@ -2742,6 +2747,24 @@ impl Parser {
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
             },
+            // Legacy compatibility. Canonical source formatter uses ref!/deref!/unref!.
+            // Keep the same AST variant and checker path; do not desugar to a call.
+            Tok::Ident(s) if s == "rt" => {
+                self.advance();
+                let action = match self.peek() {
+                    Tok::Ident(s) if s == "ref" => OwnershipOp::Ref,
+                    Tok::Ident(s) if s == "deref" => OwnershipOp::Deref,
+                    Tok::Ident(s) if s == "unref" => OwnershipOp::Unref,
+                    _ => return Err(Diagnostic::new(self.pos(), "E_UNSUPPORTED",
+                        "this browser profile admits rt ref/deref/unref only through checked handles")),
+                };
+                self.advance();
+                if self.is_word("mut") {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "checked handles do not permit mut qualifiers"));
+                }
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Ownership(action, false, Box::new(inner)), pos });
+            }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
