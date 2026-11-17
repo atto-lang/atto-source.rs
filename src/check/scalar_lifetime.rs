@@ -103,3 +103,109 @@ fn stmt_uses_alias(stmt: &Stmt, alias: &str, budget: &mut usize) -> Option<bool>
         _ => None,
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{BinOp, BindKind, ExprKind};
+    use crate::diag::Pos;
+
+    fn expr(kind: ExprKind) -> Expr {
+        Expr { kind, pos: Pos::default() }
+    }
+    fn var(name: &str) -> Expr {
+        expr(ExprKind::Var(name.to_string()))
+    }
+    fn lit(value: u64) -> Expr {
+        expr(ExprKind::Int(Some(value)))
+    }
+    fn assign(name: &str, value: Expr) -> Stmt {
+        Stmt::Assign { name: name.to_string(), value, pos: Pos::default() }
+    }
+
+    #[test]
+    fn no_alias_use_in_remaining_straight_line_proves_dead() {
+        assert!(proven_dead_after_boundary(&[
+            assign("owner", lit(42)),
+            Stmt::Return(Some(var("owner")), Pos::default()),
+        ], "reader"));
+    }
+
+    #[test]
+    fn copy_and_return_alias_keeps_loan_live() {
+        assert!(!proven_dead_after_boundary(&[
+            Stmt::Return(Some(expr(ExprKind::Unary(
+                crate::ast::UnOp::Copy,
+                Box::new(var("reader")),
+            ))), Pos::default()),
+        ], "reader"));
+    }
+
+    #[test]
+    fn assignment_through_exclusive_alias_keeps_loan_live() {
+        assert!(!proven_dead_after_boundary(&[assign("writer", lit(41))], "writer"));
+    }
+
+    #[test]
+    fn nested_condition_without_verified_cfg_retains_loan() {
+        assert!(!proven_dead_after_boundary(&[
+            Stmt::If {
+                arms: vec![(expr(ExprKind::Bool(true)), vec![Stmt::Expr(var("reader"))])],
+                otherwise: None,
+                pos: Pos::default(),
+            },
+        ], "reader"));
+    }
+
+    #[test]
+    fn calls_nested_binary_and_ternary_operands_are_fully_scanned() {
+        let call = expr(ExprKind::Call(
+            "inspect".to_string(),
+            vec![expr(ExprKind::Binary(
+                BinOp::Add,
+                Box::new(lit(2)),
+                Box::new(expr(ExprKind::Ternary(
+                    Box::new(expr(ExprKind::Bool(true))),
+                    Box::new(lit(5)),
+                    Box::new(var("reader")),
+                ))),
+            ))],
+        ));
+        assert!(!proven_dead_after_boundary(&[Stmt::Expr(call)], "reader"));
+    }
+
+    #[test]
+    fn initializer_alias_read_cannot_be_omitted_from_scan() {
+        assert!(!proven_dead_after_boundary(&[
+            Stmt::Bind {
+                kind: BindKind::Val,
+                name: "copy".to_string(),
+                ty: None,
+                init: var("reader"),
+                pos: Pos::default(),
+            },
+        ], "reader"));
+    }
+
+    #[test]
+    fn unknown_callable_and_control_flow_fail_closed() {
+        assert!(!proven_dead_after_boundary(&[
+            Stmt::Expr(expr(ExprKind::Lambda {
+                params: vec![],
+                return_type: None,
+                body: crate::ast::LambdaBody::Expression(Box::new(lit(42))),
+            })),
+        ], "reader"));
+        assert!(!proven_dead_after_boundary(&[
+            Stmt::Block(vec![Stmt::Expr(lit(2))]),
+        ], "reader"));
+    }
+
+    #[test]
+    fn oversized_tail_fails_closed_instead_of_scanning_unbounded_source() {
+        let stmts: Vec<Stmt> = (0..257).map(|_| Stmt::Expr(lit(42))).collect();
+        assert!(!proven_dead_after_boundary(&stmts, "reader"));
+        assert!(!proven_dead_after_boundary(&[], ""));
+    }
+}
