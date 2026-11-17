@@ -2688,9 +2688,17 @@ impl<'a> FnCx<'a> {
                 }
                 Ok(value)
             }
-            OwnershipOp::Copy | OwnershipOp::Share => {
+            OwnershipOp::Copy | OwnershipOp::DeepCopy | OwnershipOp::Share => {
+                // Identity-free admitted scalars have no mutable descendants:
+                // shallow and deep copies are the same guest value operation.
+                // Heap graphs have NO generated AOT copier in this backend yet;
+                // refuse them rather than emit a shallow alias for copy!!.
                 let value = self.value(inner)?;
                 if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    if action == OwnershipOp::DeepCopy {
+                        return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+                            "copy!! requires a verified concrete graph copier; class, actor, collection and resource handles are not yet admitted by the Rust/Wasm backend"));
+                    }
                     let name = if action == OwnershipOp::Copy { "copy!" } else { "share!" };
                     return Err(Diagnostic::new(pos, if action == OwnershipOp::Copy { "E_COPY" } else { "E_SHARE" },
                         format!("{name} requires a verified immutable copyable scalar; class, actor and generator handles are not shareable")));
