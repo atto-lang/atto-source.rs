@@ -431,6 +431,10 @@ pub enum ExprKind {
     Map(Vec<(Expr, Expr)>),
     /// Contextually typed record/map empty braces.
     EmptyBraces,
+    /// Parsed bracket selection. Kept separate from dot-member syntax so
+    /// neither Map indexing nor computed keys can masquerade as struct fields.
+    /// Guest and ownership-aware access lowering remain explicitly gated.
+    Index(Box<Expr>, Box<Expr>),
     /// Arity-preserving tuple expression, including zero-arity unit tuple.
     Tuple(Vec<Expr>),
     /// Parsed lambda signature/body. The browser backend deliberately rejects
