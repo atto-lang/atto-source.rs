@@ -203,3 +203,11 @@ fn public_export_of_modified_class_does_not_drop_hierarchy_proof() {
         pub fnc main(): int { return 42; }
     "#);
 }
+
+#[test]
+fn hierarchy_keywords_are_not_user_type_identifiers() {
+    for word in ["sealed", "final", "permits"] {
+        let source = format!("define class {word} as end pub fnc main(): int {{ return 0; }}");
+        err(&source, "E_RESERVED");
+    }
+}
