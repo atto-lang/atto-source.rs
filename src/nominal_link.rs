@@ -83,9 +83,9 @@ fn visible(from: &NominalId, to: &LinkClass) -> bool {
         ClassVisibility::Private => false,
     }
 }
-fn visit<'a>(
-    id: &'a NominalId,
-    graph: &BTreeMap<NominalId, &'a LinkClass>,
+fn visit(
+    id: &NominalId,
+    graph: &BTreeMap<NominalId, &LinkClass>,
     visited: &mut BTreeSet<NominalId>,
     visiting: &mut BTreeSet<NominalId>,
 ) -> R<()> {
