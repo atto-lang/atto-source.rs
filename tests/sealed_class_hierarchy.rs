@@ -211,3 +211,51 @@ fn hierarchy_keywords_are_not_user_type_identifiers() {
         err(&source, "E_RESERVED");
     }
 }
+
+#[test]
+fn unsupported_trait_and_interface_hierarchy_edges_never_disappear() {
+    err(r#"
+        define sealed class Root permits Child as end
+        define trait FakeChild extends Root as
+            pub ping(): int { return 1; }
+        end
+        define final class Child extends Root as end
+        pub fnc main(): int { return 0; }
+    "#, "E_TYPE");
+    err(r#"
+        define class Root as end
+        define interface FakeChild extends Root as
+            ping(): int;
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_TYPE");
+    err(r#"
+        define interface I as ping(): int; end
+        define trait T implements I as pub ping(): int { return 1; } end
+        pub fnc main(): int { return 0; }
+    "#, "E_TYPE");
+}
+
+#[test]
+fn multiply_inherited_sealed_parents_must_both_explicitly_permit_child() {
+    ok(r#"
+        define sealed class Left permits Leaf as
+            pub left(): int { return 20; }
+        end
+        define sealed class Right permits Leaf as
+            pub right(): int { return 22; }
+        end
+        define final class Leaf extends Left, Right as end
+        pub fnc main(): int {
+            val x = new Leaf();
+            return x.left() + x.right();
+        }
+    "#);
+    err(r#"
+        define sealed class Left permits Leaf as end
+        define sealed class Right permits Other as end
+        define final class Leaf extends Left, Right as end
+        define final class Other extends Right as end
+        pub fnc main(): int { return 0; }
+    "#, "E_SEALED");
+}
