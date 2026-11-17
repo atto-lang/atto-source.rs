@@ -58,4 +58,15 @@ reject('pub fnc main(): int {val n=42; val b=share! n; return n;}', 'E_UNSUPPORT
 for (const t of ['Box', 'Arc', 'Atomic']) {
   reject('pub fnc main(): int {val n: '+t+'<int> = 0; return 0;}', 'E_UNSUPPORTED_TYPE');
 }
-console.log('PASS browser Wasm ownership ABI: 4 scalar admits, 14 fail-closed cases');
+// Compiler-local, AST-derived NLL: the borrow is actually used, then its
+// last-use point is proven before the next straight-line owner mutation.
+accept('pub fnc main(): int {let n=40; val reader=borrow! n; stdio.println(copy! reader); n=42; return n;}');
+accept('pub fnc main(): int {let n=40; val reader=borrow! n; val prior=copy! reader; val writer=borrow! mut n; writer=prior+2; return n;}');
+accept('pub fnc main(): int {let n=40; val writer=borrow! mut n; writer=41; n=42; return n;}');
+reject('pub fnc main(): int {let n=40; val reader=borrow! n; val prior=copy! reader; n=42; return copy! reader;}', 'E_BORROW');
+reject('pub fnc main(): int {let n=40; val reader=borrow! n; n=42; if n>0 then stdio.println(copy! reader); fi return n;}', 'E_BORROW');
+// Unused loans continue to fail closed; this narrow slice requires a checked
+// use before it will consider shortening a lexical borrow.
+reject('pub fnc main(): int {let n=40; val reader=borrow! n; n=42; return n;}', 'E_BORROW');
+console.log('PASS browser Wasm ownership ABI: 7 scalar admits, 17 fail-closed cases');
+
