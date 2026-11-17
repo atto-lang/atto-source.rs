@@ -1,0 +1,8 @@
+// expect-exit: 42
+pub fnc main(): int {
+  let number = 40;
+  val writer = borrow! mut number;
+  writer = 41;
+  number = 42;
+  return number;
+}
