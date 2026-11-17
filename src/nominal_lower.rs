@@ -443,9 +443,16 @@ fn resolve(
 /// Desugar supported nominal composition into ordinary class methods while
 /// preserving each source token's original file position.
 pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
-    if !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s)
-        if matches!(s.as_str(), "trait" | "interface" | "extends" | "implements" |
-            "sealed" | "non" | "final" | "permits"))) {
+    let nominal_header_modifier = (0..t.len()).any(|i| {
+        if !is(&t, i, "define") { return false; }
+        let mut j = i + 1;
+        if is(&t, j, "pub") { j += 1; }
+        is(&t, j, "sealed") || is(&t, j, "final") || is(&t, j, "non") ||
+            (is(&t, j, "class") && is(&t, j + 2, "permits"))
+    });
+    if !nominal_header_modifier &&
+       !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s)
+            if matches!(s.as_str(), "trait" | "interface" | "extends" | "implements"))) {
         return Ok(t);
     }
     let all = decls(&t)?;
