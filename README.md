@@ -136,26 +136,26 @@ zeroization/generation checks, and unsupported construct rejection.
 
 ## Browser tagged ADT milestone (concrete generic profiles)
 
-The browser Rust-to-Wasm frontend executes **three concrete ADT profiles**:
-`Option<int>` (`Some(int)` / `None`), `Result<int,string>`
-(`Ok(int)` / `Err(string)`), and `Option<Result<int,string>>`
-(`Some(Result<int,string>)` / `None`). The nested profile preserves
-the inner Result discriminant, including `Some(Err(...))`, without flattening.
-General-purpose `Option<T>` and `Result<T,E>`, other nested ADTs,
-mutable ADT payloads, generic classes, and cross-actor ADT transfer
-remain unsupported and must not be advertised as implemented.
+The browser Rust-to-Wasm frontend executes **six concrete ADT profiles**:
+`Option<int>`, `Result<int,string>`, `Option<Result<int,string>>`,
+`Result<int,Error>`, `Result<Option<int>,Error>`, and `Result<void,Error>`.
+Nested Option/Result preserve discriminants without implicit flattening.
+General-purpose `Option<T>` and `Result<T,E>`, arbitrary error unions,
+generic classes, and cross-actor ADT transfer remain unsupported.
 
-Postfix `?` now propagates the first executable tagged ADT profiles:
-`Result<int,string>` (extract `Ok(int)`, return the original `Err`)
-and `Option<int>` (extract `Some(int)`, return the original `None`).
-The enclosing function must return the exact same ADT profile; a function
-returning `int` or a different ADT cannot use it. The source is evaluated
-once, the failure path reuses its original tagged allocation, and the
-compiler does not convert `Err` or `None` into a panic. Ternary `? :`
-remains a distinct expression operator. This does not yet support
-generic ADTs, conversions, or `trap` exception capture: no throwable
-function effects are executable in this browser subset, so caller-side
-`trap checked_id(5)` still rejects instead of being simulated.
+Postfix `?` extracts the success payload and returns the **original**
+`Err`/`None` handle on failure. It admits `Option<int>`,
+`Result<int,string>`, `Result<int,Error>`, `Result<Option<int>,Error>`,
+and `Result<void,Error>`, with exact matching enclosing return type.
+When try/finally/defer is registered, `?` exits through the same function
+unwind path as an explicit return: nested finally runs inner-to-outer,
+followed by registered defers in LIFO order, exactly once. Early `?`
+before a defer was registered does not run it. Returned `Err` never
+invokes a catch or recover handler. `?` **inside** defer/recover/finally
+bodies is still rejected with `E_UNSUPPORTED` because it could replace
+an already-pending failure or return. Owned generator iterators are closed
+on early exit; nested `trap` depths are restored before escaping the
+function. Ternary `? :` remains separate.
 
 Constructors are contextual: a typed function return, local binding,
 assignment, or argument supplies the exact declared ADT type. For example,
@@ -189,8 +189,8 @@ The compiler's admitted guest subset now supports `trap` with `Result<int,Error>
 
 - Ordinary completion of `T` becomes `Ok(T)`; `Option<int>` stays inside `Ok(Some(...))` or `Ok(None)`; `void` becomes `Ok()`.
 - When `T` is already one of the admitted `Result<...,Error>` profiles, the **original tagged Result handle** is reused on ordinary completion—there is no redundant wrapper or recursive flattening.
-- Built-in `Error(message)` allocates an immutable guest Error with identity represented by its heap address and preserved across the module-private ordinary-throw EH tag and `Result.Err`. `Err(error)` returned normally is not thrown, and `Error.message` reads the original message.
-- `raise` uses a separate private EH tag; panic, cancellation, OOM and host faults are not caught by `trap`. Existing caller-side catch priority over a callee's recover remains intact.
+- Built-in `Error(message)` allocates an immutable guest Error with identity represented by its heap address and preserved across the module-private ordinary-throw EH tag and `Result.Err`. `Err(error)` returned normally is not thrown, and `Error.message` reads the original message. `catch (Error caught)` binds that **same Error handle** in its lexical handler scope (no message-only clone). The bounded Error builtin `a.is_same_instance(b)` compares opaque object identity, not text; a separately allocated Error with an equal message is not identical.
+- `raise` uses a separate private EH tag; panic, cancellation, OOM and host faults are not caught by `trap`. Nested trap handler-depth is restored on direct `?` exit and on any rethrown non-ordinary Wasm exception. Existing caller-side catch priority over a callee's recover remains intact.
 - Contextual `Ok(...)`/`Err(Error(...))` constructors, exhaustive tagged `match`, `?` early-Err propagation, and the no-payload `Result<void,Error>` success case are compiled and tested for this bounded subset.
 
 **Fail closed for unproved joins.** `trap` on `Result<int,string>` raises `E_TRAP_ERROR_JOIN` and emits no guest because this backend cannot yet represent both returned string errors and thrown Error values losslessly. Other generic shapes and actor/method traps remain unsupported. The compiler does **not** claim arbitrary `Result<T,E>`, Error subclasses, reflection, async or cross-backend parity.
