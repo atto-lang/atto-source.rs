@@ -49,9 +49,9 @@ fn contextual_selector_has_sequence_ast_not_tuple_or_nested_return() {
         panic!("return ^ must lower to checked Sequence AST, not a tuple");
     };
     assert_eq!(steps.len(), 2);
-    assert!(matches!(steps[0], Stmt::Expr(_)));
-    assert!(matches!(steps[1], Stmt::Expr(_)));
-    assert!(matches!(tail.kind, ExprKind::Int(Some(42))));
+    assert!(matches!(&steps[0], Stmt::Expr(_)));
+    assert!(matches!(&steps[1], Stmt::Expr(_)));
+    assert!(matches!(&tail.kind, ExprKind::Int(Some(42))));
 }
 
 #[test]
