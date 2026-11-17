@@ -26,7 +26,7 @@ fn error(pos: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic
 }
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(n), pos }) if !n.is_empty()
+        Some(Token { tok: Tok::Ident(n), pos: _ }) if !n.is_empty()
             && !matches!(n.as_str(), "pub" | "export" | "class" | "fnc" | "module" | "namespace" | "as" | "end") =>
             Ok(n.clone()),
         Some(x) => Err(error(x.pos, "E_SYNTAX", "expected bounded export identifier")),
@@ -135,9 +135,10 @@ fn reject_nested_exports(t: &[Token]) -> R<()> {
     // expressions must not make a nested export appear file-local.
     let mut end_scopes = 0usize;
     for i in 0..t.len() {
-        if word(t, i, "export") && (braces > 0 || end_scopes > 0) {
+        if (word(t, i, "export") || word(t, i, "internal") ||
+            word(t, i, "external")) && (braces > 0 || end_scopes > 0) {
             return Err(error(t[i].pos, "E_SYNTAX",
-                "export is only allowed at file scope, not inside a declaration"));
+                "export, internal and external declarations are only allowed at file scope"));
         }
         match &t[i].tok {
             Tok::LBrace => braces += 1,
@@ -251,9 +252,9 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
                 return Err(error(pos, "E_UNSUPPORTED", "only source-file local internal fnc is admitted"));
             }
             let id = name(&t, i + 2)?;
-            if !internal.insert(id.clone()) {
-                return Err(error(pos, "E_DUPLICATE", format!("duplicate internal function '{id}'")));
-            }
+            // Internal overloads share one private symbol identity; their
+            // arities/signatures are checked by the ordinary type checker.
+            internal.insert(id);
             i += 1;
             continue;
         }
