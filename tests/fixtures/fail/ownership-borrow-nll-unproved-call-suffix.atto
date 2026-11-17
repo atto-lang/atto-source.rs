@@ -6,7 +6,6 @@ pub fnc main(): int {
   let number = 40;
   val reader = borrow! number;
   val prior = copy! reader;
-  val other = passthrough(prior);
-  number = 42;
+  number = passthrough(prior);
   return number;
 }
