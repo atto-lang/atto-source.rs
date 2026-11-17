@@ -2306,6 +2306,11 @@ impl Parser {
                 }
                 "Some" | "Ok" | "Err" => {
                     self.advance();
+                    // Result<void,Error>::Ok has no payload. The checker
+                    // rejects bare Ok for any Result with a value payload.
+                    if w == "Ok" && *self.peek() != Tok::LParen {
+                        return Ok(Pattern::Adt(w, None));
+                    }
                     self.expect(Tok::LParen, "'(' after payload variant")?;
                     let (name, _) = self.ident("a payload binding name")?;
                     self.expect(Tok::RParen, "')' after payload binding")?;
