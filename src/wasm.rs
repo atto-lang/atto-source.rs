@@ -421,7 +421,8 @@ impl Emit<'_> {
                 }
             }
             TExpr::Bool(b) => self.i32c(*b as i32),
-            TExpr::Local(slot) => {
+            TExpr::Local(slot) | TExpr::LoanRead { owner_slot: slot, .. } => {
+                // Provenance remains in typed MIR; guest loads identical slot.
                 self.op(0x20);
                 uleb(&mut self.code, *slot as u64);
             }

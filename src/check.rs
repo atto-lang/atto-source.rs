@@ -114,6 +114,10 @@ pub enum TExpr {
         newline: bool,
     },
     Local(u32),
+    /// Compiler typechecker-attested read through a scalar alias. Wasm
+    /// emits the exact same local.get as Local(owner_slot), but the typed
+    /// MIR retains this provenance so an audit can reconcile every use.
+    LoanRead { loan_id: u32, owner_slot: u32 },
     Neg(Box<TE>),
     Not(Box<TE>),
     /// operand type is the type of `l`
@@ -2859,12 +2863,15 @@ impl<'a> FnCx<'a> {
                         return Err(Diagnostic::new(pos, "E_BORROW",
                             format!("direct access to '{name}' is forbidden while its exclusive loan is live")));
                     }
-                    let (slot, ty, is_borrow) = (l.slot, l.ty, l.borrow.is_some());
-                    if is_borrow {
+                    let (slot, ty, loan_id) = (l.slot, l.ty, l.loan_id);
+                    if loan_id.is_some() {
                         self.mark_scalar_alias_used(name, false);
                     }
                     TE {
-                        e: TExpr::Local(slot),
+                        e: match loan_id {
+                            Some(loan_id) => TExpr::LoanRead { loan_id, owner_slot: slot },
+                            None => TExpr::Local(slot),
+                        },
                         ty,
                     }
                 }
