@@ -724,6 +724,55 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
     }
 }
 
+/// Gate every generated class copy against the **canonical** closed-world
+/// AOT descriptor checker, vendored byte-identically from the independently
+/// tested atto-borrow-checker.rs copy_graph_v1 module. No user annotations or
+/// method names can mint a witness, and this does not admit actor sends.
+fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()> {
+    use crate::copy_graph_v1::{
+        admit_copy, CopyMode, CopyRequest, Field as CopyField,
+        FieldKind as CopyFieldKind, TypeDescriptor,
+    };
+
+    let mut layouts = Vec::with_capacity(classes.len());
+    for (id, class) in classes.iter().enumerate() {
+        let fields = class.fields.iter().enumerate().map(|(i, f)| CopyField {
+            id: (i as u32) + 1,
+            kind: match f.ty {
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) =>
+                    CopyFieldKind::Scalar,
+                Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
+                _ => CopyFieldKind::Unresolved,
+            },
+        }).collect();
+        layouts.push(TypeDescriptor {
+            id: id as u32 + 1,
+            parent: None, // the browser compiler does not admit inheritance
+            fields,
+            deep_copy_witness: class.deep_copy_idx.is_some() && !class.state_container,
+            shallow_copy_witness: false, // a deep witness does not grant copy!
+            sendable: false, // actor Sendable is a separate, unimplemented proof
+        });
+    }
+    let requested = ci.checked_add(1).ok_or_else(|| Diagnostic::new(
+        pos, "E_COPY_AOT_WITNESS", "invalid concrete class identifier"))?;
+    let plan = admit_copy(&layouts, CopyRequest {
+        concrete_type: requested,
+        static_type: requested,
+        mode: CopyMode::Deep,
+        actor_send: false,
+    }).map_err(|err| Diagnostic::new(pos, err.0,
+        "class lacks a complete, concrete, closed-world compiler-generated deep copy witness"))?;
+    // The current AOT backend generates flat-object copies only. Do not
+    // broaden witness admission to transitive graphs until the generated
+    // copier has an identity memo and a rollback-safe graph allocation plan.
+    if plan.copied_type_ids != vec![requested] {
+        return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+            "nested mutable class graph requires a memoized AOT copy runtime"));
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
@@ -1206,6 +1255,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         // without invoking any initializer or user constructor a second time.
         // The copy function is private and has no reflective field access.
         if let Some(copy_idx) = info.deep_copy_idx {
+            authenticate_flat_copy_aot(&g.classes, ci as u32, c.pos)?;
             let source = TE { e: TExpr::Local(0), ty: me };
             let cloned = TE { e: TExpr::Local(1), ty: me };
             let mut body = vec![TStmt::Set(1, TE {
@@ -2757,6 +2807,7 @@ impl<'a> FnCx<'a> {
                             return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
                                 "copy!! class graph contains unproved mutable/reference slots or protected actor state"));
                         };
+                        authenticate_flat_copy_aot(&self.g.classes, ci, pos)?;
                         return Ok(TE { e: TExpr::Call(copy_idx, vec![value]), ty: Type::Class(ci) });
                     }
                 }
