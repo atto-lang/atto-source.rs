@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_IDENTITY_TYPE
 // java: rejects
 fnc a(): Option<int> { return Some(1); }
 pub fnc main(): int {
