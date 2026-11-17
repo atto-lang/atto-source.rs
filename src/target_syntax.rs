@@ -461,13 +461,11 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
                 Some(Tok::Assign | Tok::PlusAssign | Tok::PlusPlus | Tok::MinusMinus) =>
                     return Err(diagnostic(toks, i, "E_OWNERSHIP",
                         "immutable class mtd cannot mutate instance fields")),
-                Some(Tok::LParen) => {
-                    if !headers.receivers.iter().any(|other|
-                        other.owner == receiver.owner && other.name == method &&
-                        !other.mutable) {
-                        return Err(diagnostic(toks, i, "E_UNSUPPORTED",
-                            "immutable mtd may call only checked immutable class mtd"));
-                    }
+                Some(Tok::LParen) if !headers.receivers.iter().any(|other|
+                    other.owner == receiver.owner && other.name == method &&
+                    !other.mutable) => {
+                    return Err(diagnostic(toks, i, "E_UNSUPPORTED",
+                        "immutable mtd may call only checked immutable class mtd"));
                 }
                 _ => {}
             }
@@ -565,8 +563,8 @@ fn close_paren(toks: &[Token], start: usize, limit: usize) -> R<usize> {
 fn count_args(toks: &[Token], open: usize, close: usize) -> usize {
     if close == open + 1 { return 0; }
     let (mut n, mut round, mut square, mut braces) = (1, 0, 0, 0);
-    for i in open + 1..close {
-        match toks[i].tok {
+    for token in toks.iter().take(close).skip(open + 1) {
+        match token.tok {
             Tok::LParen => round += 1,
             Tok::RParen => round -= 1,
             Tok::LBracket => square += 1,
@@ -726,11 +724,10 @@ fn validate_spawned_actor_calls(
     for i in first..end.saturating_sub(1) {
         if let Some((name, _)) = actor_refs.iter().find(|(n,_)| word_at(toks, i, n)) {
             if at(toks, i+1, &Tok::Dot) &&
-                matches!(toks.get(i+2).map(|t| &t.tok), Some(Tok::Ident(_))) {
-                if !(word_at(toks, i+2, "send") || word_at(toks, i+2, "get_done")) {
-                    return Err(diagnostic(toks, i, "E_ISOLATION",
-                        "ActorRef cannot call receiver methods synchronously; send a mailbox message"));
-                }
+                matches!(toks.get(i+2).map(|t| &t.tok), Some(Tok::Ident(_))) &&
+                !(word_at(toks, i+2, "send") || word_at(toks, i+2, "get_done")) {
+                return Err(diagnostic(toks, i, "E_ISOLATION",
+                    "ActorRef cannot call receiver methods synchronously; send a mailbox message"));
             }
             let _ = name;
         }

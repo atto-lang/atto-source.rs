@@ -137,7 +137,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         Type::Bool, Type::Bool, Type::Bool,
         Type::GeneratorInt, Type::Bool, Type::Int,
     ];
-    next_locals.extend(std::iter::repeat(Type::Int).take(FRAME_LIVE_SLOTS));
+    next_locals.extend(std::iter::repeat_n(Type::Int, FRAME_LIVE_SLOTS));
     next_locals.push(Type::Bool); // dispatch fuel i32
     let mut e = make(&next_locals);
     e.get(0); e.call(first + 1); e.set(1);
