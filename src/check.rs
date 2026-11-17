@@ -505,9 +505,9 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
                 Type::Class(c as u32)
             } else if let Some(e) = enums.iter().position(|e| e.name == *n) {
                 Type::Enum(e as u32)
-            } else if n.starts_with("@builtin/") {
+            } else if let Some(builtin) = n.strip_prefix("@builtin/") {
                 return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    format!("built-in collection type {} is syntax-only in the browser compiler", &n["@builtin/".len()..])));
+                    format!("built-in collection type {builtin} is syntax-only in the browser compiler")));
             } else if actors.iter().any(|a| a == n) {
                 return Err(type_err(*pos, format!("'{n}' is an actor; its references have type ActorRef<{n}>")));
             } else {
