@@ -427,6 +427,9 @@ pub enum ExprKind {
     Array(Vec<Expr>),
     /// Parsed record with unique named fields. Browser allocation is gated.
     Record(Vec<(String, Expr)>),
+    /// Immutable copy-and-update; the source is not mutated or implicitly moved.
+    /// Static Record shape recomputation is checked before guest allocation.
+    With(Box<Expr>, Vec<(String, Expr)>),
     /// Parsed map key/value pairs. Browser allocation is gated.
     Map(Vec<(Expr, Expr)>),
     /// Contextually typed record/map empty braces.
