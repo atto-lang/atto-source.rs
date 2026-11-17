@@ -30,6 +30,24 @@ pub fnc main(): int {
 }
 ```
 
+### Canonical scoped block admission
+
+Use **`block { ... }`** to introduce an independent lexical loan lifetime inside a callable. Bare `{ ... }` at statement position is **not** interchangeable syntax; the parser rejects it rather than silently manufacturing a scope. Braces used for callable bodies, `if` arms, class declarations and other constructs keep their existing grammar and are not affected.
+
+```atto
+val original = make_payload();
+val handle = ref! original;
+
+block {
+  val view = deref! handle;
+  stdio.println(view.value);
+}
+
+val restored = unref! handle;
+```
+
+The `block` statement must retire all view loans when its lexical scope exits. Multiple read-only views are admissible within the same `block`, but `unref!` before its closing brace fails. A view cannot escape the lexical scope or acquire mutable authority. The current first slice permits the `view.field` and `view.method()` forms proved by its type checker; passing an arbitrary borrowed class view as a free-function argument still fails closed pending explicit borrowed-parameter ABI support.
+
 ### Fail-closed restrictions
 
 - Only a **named owned class local** is accepted by `ref!`; arbitrary computed expressions, scalars, actors and foreign memory do not become checked handles.
