@@ -255,7 +255,6 @@ mod tests {
 
     #[test]
     fn unmodeled_effects_cannot_prove_loan_dead_even_without_alias_mentions() {
-        use crate::ast::UnOp;
         let effects = vec![
             ExprKind::Call("might_throw".to_string(), vec![lit(1)]),
             ExprKind::New("Object".to_string(), vec![]),
