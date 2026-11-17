@@ -1,11 +1,9 @@
 //! Real AttoLang compiler-owned typed MIR census, not fabricated loan facts.
 //! Host-only Rust checks are separate from executable Wasm guest conformance.
-use atto_compiler::check::typed_mir_census::{
-    checked_borrow_issues, from_checked_program, Operation, CONTRACT,
-};
+use atto_compiler::ast::Type;
+use atto_compiler::check::typed_mir_census::{checked_borrow_issues, from_checked_program, Operation, CONTRACT};
 use atto_compiler::check::{TExpr, TFunc, TProgram, TStmt, TE};
 use atto_compiler::{check, compile, compile_with_typed_scalar_census, lexer, parser};
-use atto_compiler::ast::Type;
 
 fn lowered(source: &str) -> TProgram {
     let toks = lexer::lex(source).unwrap();
@@ -41,7 +39,10 @@ fn typed_phi_and_branch_is_not_guessed_from_a_ternary() {
     assert_eq!(bytes, compile(src).unwrap());
     let main = census.functions.iter().find(|f| f.name == "main").unwrap();
     assert_eq!(main.points[2].used_origins, vec![1, 2], "pure ternary has MAY reads on both arms");
-    assert!(main.points[2].has_conditional, "conditional expression must not be claimed as a single linear path");
+    assert!(
+        main.points[2].has_conditional,
+        "conditional expression must not be claimed as a single linear path"
+    );
 }
 #[test]
 fn checked_source_borrow_issue_survives_typed_lowering() {
@@ -80,10 +81,16 @@ fn compiler_rejects_unsafe_guest_before_a_census_can_authorize_it() {
 fn calls_and_control_flow_fail_closed_in_opt_in_census_not_default_compilation() {
     let call = "fnc plus(int a, int b): int { return a + b; } pub fnc main(): int { return plus(40, 2); }";
     assert!(compile(call).is_ok());
-    assert_eq!(compile_with_typed_scalar_census(call).unwrap_err().code, "E_TYPED_MIR_CENSUS_UNSUPPORTED");
+    assert_eq!(
+        compile_with_typed_scalar_census(call).unwrap_err().code,
+        "E_TYPED_MIR_CENSUS_UNSUPPORTED"
+    );
     let branch = "pub fnc main(): int { if true then return 42; else return 4; fi }";
     assert!(compile(branch).is_ok());
-    assert_eq!(compile_with_typed_scalar_census(branch).unwrap_err().code, "E_TYPED_MIR_CENSUS_UNSUPPORTED");
+    assert_eq!(
+        compile_with_typed_scalar_census(branch).unwrap_err().code,
+        "E_TYPED_MIR_CENSUS_UNSUPPORTED"
+    );
 }
 fn fabricated(expr: TExpr) -> TProgram {
     TProgram {
@@ -119,9 +126,15 @@ fn effectful_expression_cannot_be_pretended_pure() {
 }
 #[test]
 fn deep_typed_expression_exhausts_bound_without_unbounded_recursion() {
-    let mut expr = TE { e: TExpr::I64(42), ty: Type::Int };
+    let mut expr = TE {
+        e: TExpr::I64(42),
+        ty: Type::Int,
+    };
     for _ in 0..150 {
-        expr = TE { e: TExpr::Neg(Box::new(expr)), ty: Type::Int };
+        expr = TE {
+            e: TExpr::Neg(Box::new(expr)),
+            ty: Type::Int,
+        };
     }
     let p = fabricated(expr.e);
     assert_eq!(from_checked_program(&p).unwrap_err().code, "E_TYPED_MIR_CENSUS_BUDGET");
