@@ -1876,6 +1876,10 @@ impl<'a> FnCx<'a> {
                     None => None,
                 };
                 let direct_unref = matches!(&init.kind, ExprKind::Ownership(OwnershipOp::Unref, false, _));
+                if direct_unref && *kind != BindKind::Val {
+                    return Err(Diagnostic::new(*pos, "E_HANDLE",
+                        "unref! must directly initialize a val binding"));
+                }
                 self.allow_direct_unref = direct_unref;
                 let checked = match want {
                     Some(t) => self.consume_expected(init, t),
@@ -1901,7 +1905,7 @@ impl<'a> FnCx<'a> {
                         return Err(Diagnostic::new(*pos, "E_HANDLE",
                             "checked handles cannot be aliased; initialize directly with ref!"));
                     }
-                    if *kind == BindKind::Let || self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
+                    if *kind != BindKind::Val || self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
                         return Err(Diagnostic::new(*pos, "E_HANDLE",
                             "ref! requires an immutable straight-line function-body binding"));
                     }
@@ -2748,8 +2752,9 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_HANDLE",
                 "checked handles require local, single-worker top-level ownership"));
         }
-        if kind == BindKind::Let {
-            return Err(Diagnostic::new(pos, "E_HANDLE", "deref! produces an immutable view"));
+        if kind != BindKind::Val {
+            return Err(Diagnostic::new(pos, "E_HANDLE",
+                "deref! must initialize a scoped val view; const requires compile-time initialization"));
         }
         let ExprKind::Var(handle_name) = &inner.kind else {
             return Err(Diagnostic::new(inner.pos, "E_HANDLE", "deref! requires a named checked handle"));
