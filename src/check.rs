@@ -191,10 +191,16 @@ pub enum TStmt {
     /// cannot silently mistake a borrow for an empty source block.
     /// This does not authorize escaping references or generic loan codegen.
     ScalarBorrowIssue {
+        loan_id: u32,
         owner_slot: u32,
         alias: String,
         exclusive: bool,
     },
+    /// Compiler-checked alias read/write, ordered before its owning typed statement.
+    ScalarLoanUse { loan_id: u32, owner_slot: u32, write: bool },
+    /// Non-lexical last-use boundary proven by the existing source checker.
+    /// This is a diagnostic fact, not independent permission for codegen.
+    ScalarLoanEnd { loan_id: u32, owner_slot: u32 },
     Set(u32, TE),
     /// store `value` into the field at `offset` of `obj`
     FieldSet {
@@ -391,6 +397,8 @@ struct Local {
     /// This conservative NLL slice requires an actual checked alias use.
     /// Unused aliases retain their prior lexical conflict behavior.
     borrow_used: bool,
+    /// Distinct compiler-issued identity, never inferred from a mutable slot.
+    loan_id: Option<u32>,
 }
 
 struct FnCx<'a> {
@@ -408,6 +416,10 @@ struct FnCx<'a> {
     /// A single work budget shared by all alias/suffix NLL scans in this function.
     /// Exhaustion simply leaves later loans live until lexical scope exit.
     nll_scan_budget: usize,
+    /// Intra-function loan identities, monotonically allocated.
+    next_loan_id: u32,
+    /// Facts accumulated while typechecking one source statement.
+    pending_loan_events: Vec<TStmt>,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -1330,6 +1342,7 @@ fn body_check(
             borrow: None,
             borrow_retired: false,
             borrow_used: false,
+            loan_id: None,
         });
     } else {
         for (i, (n, t, m)) in named.iter().enumerate() {
@@ -1342,6 +1355,7 @@ fn body_check(
                 borrow: None,
                 borrow_retired: false,
             borrow_used: false,
+            loan_id: None,
             });
         }
     }
@@ -1385,7 +1399,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
         TStmt::Block(b) => any_in_stmts(b, f),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable
-        | TStmt::ScalarBorrowIssue { .. } => false,
+        | TStmt::ScalarBorrowIssue { .. }
+        | TStmt::ScalarLoanUse { .. } | TStmt::ScalarLoanEnd { .. } => false,
     })
 }
 
@@ -1457,6 +1472,8 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             nll_scan_budget: scalar_lifetime::MAX_NLL_WORK_PER_FUNCTION,
+            next_loan_id: 1,
+            pending_loan_events: Vec::new(),
             imports,
             data,
         }
@@ -1504,6 +1521,7 @@ impl<'a> FnCx<'a> {
             borrow: None,
             borrow_retired: false,
             borrow_used: false,
+            loan_id: None,
         });
         Ok(slot)
     }
@@ -1603,16 +1621,22 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
                 "too many simultaneously live local names and borrow aliases"));
         }
+        let loan_id = self.next_loan_id;
+        self.next_loan_id = self.next_loan_id.checked_add(1).ok_or_else(|| {
+            Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many checked scalar loan identities")
+        })?;
         self.scopes.last_mut().unwrap().push(Local {
             name: name.to_string(), slot, ty, mutable: false, mail: None,
             borrow: Some(if exclusive { BorrowKind::Exclusive } else { BorrowKind::Shared }),
             borrow_retired: false,
             borrow_used: false,
+            loan_id: Some(loan_id),
         });
         // The loan is a source-level reference, not a copy. The read and
         // write-through operations subsequently lower directly to the owner's
         // checked scalar local, with no guest pointer or heap alias.
         Ok(TStmt::ScalarBorrowIssue {
+            loan_id,
             owner_slot: slot,
             alias: name.to_string(),
             exclusive,
@@ -1639,12 +1663,19 @@ impl<'a> FnCx<'a> {
     /// straight-line AST statement for future uses. Restricted to aliases
     /// declared in THIS scope; outer aliases may be used after this block.
     /// No loop backedge, exception, async, or unknown control flow is inferred.
-    fn mark_scalar_alias_used(&mut self, name: &str) {
+    fn mark_scalar_alias_used(&mut self, name: &str, write: bool) {
         if let Some(local) = self.scopes.iter_mut().rev()
             .flat_map(|scope| scope.iter_mut().rev())
             .find(|local| local.name == name && local.borrow.is_some())
         {
             local.borrow_used = true;
+            if let Some(loan_id) = local.loan_id {
+                self.pending_loan_events.push(TStmt::ScalarLoanUse {
+                    loan_id,
+                    owner_slot: local.slot,
+                    write,
+                });
+            }
         }
     }
 
@@ -1662,6 +1693,12 @@ impl<'a> FnCx<'a> {
                 )
             {
                 local.borrow_retired = true;
+                if let Some(loan_id) = local.loan_id {
+                    self.pending_loan_events.push(TStmt::ScalarLoanEnd {
+                        loan_id,
+                        owner_slot: local.slot,
+                    });
+                }
             }
         }
     }
@@ -1670,7 +1707,10 @@ impl<'a> FnCx<'a> {
         let mut out = Vec::with_capacity(body.len());
         for (index, statement) in body.iter().enumerate() {
             self.retire_dead_scalar_loans(&body[index..]);
-            out.push(self.stmt(statement)?);
+            out.append(&mut self.pending_loan_events);
+            let typed = self.stmt(statement)?;
+            out.append(&mut self.pending_loan_events);
+            out.push(typed);
         }
         Ok(out)
     }
@@ -1744,7 +1784,7 @@ impl<'a> FnCx<'a> {
                             format!("cannot assign {} through borrow of {}", self.tn(v.ty), self.tn(ty))));
                     }
                     // Assignment changes the referent, NOT the alias binding.
-                    self.mark_scalar_alias_used(name);
+                    self.mark_scalar_alias_used(name, true);
                     return Ok(TStmt::Set(slot, v));
                 }
                 self.ensure_unloaned(slot, *pos)?;
@@ -2821,7 +2861,7 @@ impl<'a> FnCx<'a> {
                     }
                     let (slot, ty, is_borrow) = (l.slot, l.ty, l.borrow.is_some());
                     if is_borrow {
-                        self.mark_scalar_alias_used(name);
+                        self.mark_scalar_alias_used(name, false);
                     }
                     TE {
                         e: TExpr::Local(slot),
