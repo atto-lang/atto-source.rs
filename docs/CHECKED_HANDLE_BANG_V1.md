@@ -50,7 +50,7 @@ The `block` statement must retire all view loans when its lexical scope exits. M
 
 ### Fail-closed restrictions
 
-- Only a **named owned class local** is accepted by `ref!`; arbitrary computed expressions, scalars, actors and foreign memory do not become checked handles.
+- Only a **named owned class local** is accepted by `ref!`; arbitrary computed expressions, scalars, actors and foreign memory do not become checked handles. In this initial profile `ref!`, `deref!` and `unref!` must each directly initialize a `val` binding. `const` is forbidden because these are runtime operations; `let` is deferred until a full rebinding/alias proof exists.
 - `deref!` must directly initialize an immutable (`val`) scoped view; it cannot grant mutable access, escape as an owned object, or reborrow an existing view without proven provenance.
 - `unref!` must directly initialize a new owned binding, must not run with any live view, and cannot be nested in ternaries or other expressions.
 - Every locally minted handle must be consumed; plain aliasing, copying, sharing, use-after-`unref!`, double-`unref!` and missing `unref!` fail compilation.
