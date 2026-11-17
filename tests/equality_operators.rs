@@ -213,3 +213,22 @@ fn explicit_equals_calls_borrow_other_without_implicit_moves() {
     "#;
     assert_eq!(compile(wrong).unwrap_err().code, "E_TYPE");
 }
+
+#[test]
+fn class_self_identity_is_available_without_general_self_escape() {
+    let source = include_str!("fixtures/pass/228-class-self-identity.atto");
+    let wasm = compile(source).expect("read-only self identity must be allowed in instance methods");
+    assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(wasm, compile(source).unwrap(), "same source must emit identical Wasm");
+
+    let escaped = include_str!("fixtures/fail/229-class-self-owner-escape.atto");
+    let d = compile(escaped).expect_err("identity must not allow returning an owned self alias");
+    assert_eq!(d.code, "E_UNSUPPORTED", "{d}");
+
+    let wrong = include_str!("fixtures/fail/230-class-self-primitive-identity.atto");
+    let d = compile(wrong).expect_err("primitive is never a class identity operand");
+    assert_eq!(d.code, "E_IDENTITY_TYPE", "{d}");
+
+    let invalid_top_level = "pub fnc main(): int { if self == self then return 1; fi return 0; }";
+    assert_eq!(compile(invalid_top_level).unwrap_err().code, "E_UNBOUND");
+}

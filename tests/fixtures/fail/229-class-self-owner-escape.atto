@@ -1,0 +1,9 @@
+// expect-error: E_UNSUPPORTED
+// Identity projection of self must not admit ownership transfer.
+define class Marker as
+    pub final int n: 7;
+    pub unsafe_escape(): Marker {
+        return self;
+    }
+end
+pub fnc main(): int { return 0; }
