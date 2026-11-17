@@ -1434,7 +1434,28 @@ impl Parser {
                 Ok(Stmt::Yield(value, pos))
             }
             Some("return") => {
+                // A literal `return ^ (...)` is a contextual last-value
+                // sequence, *not* two returns. A leading statement `^ (...)`
+                // keeps its existing tuple/grouped-expression meaning.
+                let keyword_return = self.is_word("return");
                 self.advance();
+                if keyword_return && self.eat(&Tok::Caret) {
+                    self.expect(Tok::LParen, "'(' after 'return ^'")?;
+                    if *self.peek() == Tok::RParen {
+                        return Err(Diagnostic::new(self.pos(), "E_EMPTY_SEQUENCE",
+                            "return ^ (...) requires at least one expression"));
+                    }
+                    // Reuse the exact lexical sequence AST/checker/lowering
+                    // employed by `seq` and `(> ... )`. No tuple fallback.
+                    let value = self.parse_comma_sequence(Tok::RParen, pos)?;
+                    self.expect(Tok::RParen, "')' after return sequence")?;
+                    if self.in_generator {
+                        return Err(Diagnostic::new(pos, "E_RETURN",
+                            "generator cannot return a sequence value"));
+                    }
+                    self.terminator()?;
+                    return Ok(Stmt::Return(Some(value), pos));
+                }
                 if self.is_word("match") {
                     // Return-position match is a value. Generators cannot
                     // return values, including an exhaustive match.
