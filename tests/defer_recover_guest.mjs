@@ -93,7 +93,7 @@ const cases = [
     stdout: 'callee defer\ncaller catch\ncaller finally\n', value: 21n,
   },
   {
-    name: 'a caller-side trap also outranks a callee recover',
+    name: 'legacy caller-side Option trap is rejected pending Result lowering',
     src: `fnc callee(): int {
       recover (|int v| -> |err, c| -> { stdio.println("UNEXPECTED"); return v; })(-1);
       throw Error("x");
@@ -106,7 +106,7 @@ const cases = [
       end
       return 3;
     }`,
-    stdout: 'trap won\n', value: 3n,
+    reject: 'E_UNSUPPORTED', // no guest: new Result trap must be implemented first
   },
   {
     name: 'throw through nested calls: inner defers, outer defers, then recover',
@@ -193,6 +193,13 @@ try {
     const out = join(work, `case${i}.wasm`);
     await writeFile(src, c.src);
     const built = spawnSync(attoc, [src, '-o', out], { encoding: 'utf8', timeout: 30_000 });
+    if (c.reject) {
+      assert.notEqual(built.status, 0, c.name + ': legacy Option trap must not compile');
+      assert.match(built.stderr, new RegExp(c.reject), c.name + ': expected typed diagnostic');
+      await assert.rejects(readFile(out), { code: 'ENOENT' }, 'failure must leave no guest artifact');
+      console.log('PASS negative no-artifact:', c.name);
+      continue;
+    }
     assert.equal(built.status, 0, c.name + ': attoc failed: ' + built.stderr);
     const r = runGuest(await readFile(out));
     assert.equal(r.stdout, c.stdout, c.name + ': stdout');
