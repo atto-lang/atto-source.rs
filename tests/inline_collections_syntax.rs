@@ -43,6 +43,27 @@ fn all_requested_forms_parse_without_guest_execution() {
 }
 
 #[test]
+fn builtin_aliases_share_interned_identity_within_one_program() {
+    let program = parse_binding(
+        "let Array<Record> first = [];
+         let array<record> second = [];
+         let Tuple t = ();
+         let tuple u = ();"
+    ).unwrap();
+    let mut refs = Vec::new();
+    for stmt in &program.funcs[0].body[..4] {
+        if let Stmt::Bind { ty: Some(Type::Named(id)), .. } = stmt {
+            refs.push(*id);
+        } else {
+            panic!("expected four explicitly typed collection bindings");
+        }
+    }
+    assert_eq!(refs[0], refs[1], "Array aliases must share type identity");
+    assert_eq!(refs[2], refs[3], "Tuple aliases must share type identity");
+    assert_ne!(refs[0], refs[2], "distinct collection types must remain distinct");
+}
+
+#[test]
 fn brace_entries_distinguish_maps_from_records() {
     let records = parse_binding("let Record foo = {bar: [], \"quoted\": {nested: true}};").unwrap();
     match init_kind(&records) {
