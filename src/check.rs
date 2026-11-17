@@ -460,6 +460,9 @@ struct FnCx<'a> {
     unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// > 0 while checking an isolated defer/recover body.
     cleanup_depth: u32,
+    /// A finally body must not early-return through postfix '?' and replace
+    /// a prior pending exception/return, even when it has a Result type.
+    finally_depth: u32,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
 }
@@ -1637,6 +1640,7 @@ impl<'a> FnCx<'a> {
             data,
             unwind: None,
             cleanup_depth: 0,
+            finally_depth: 0,
             recover_cursor: None,
         }
     }
@@ -1944,7 +1948,10 @@ impl<'a> FnCx<'a> {
                     };
                     let finally = match finally {
                         Some(cleanup) => {
-                            let cleanup = self.scoped(cleanup)?;
+                            self.finally_depth += 1;
+                            let checked = self.scoped(cleanup);
+                            self.finally_depth -= 1;
+                            let cleanup = checked?;
                             if exits_anywhere(&cleanup) {
                                 return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
                                     "a finally block must not return, throw or raise: it would replace the pending outcome"));
@@ -2841,9 +2848,9 @@ impl<'a> FnCx<'a> {
                 // unwind frame so registered defer/finally cleanup runs once.
                 // A return *within* a defer/recover handler could still replace
                 // the pending outcome; keep that separate control flow gated.
-                if self.cleanup_depth > 0 {
+                if self.cleanup_depth > 0 || self.finally_depth > 0 {
                     return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
-                        "postfix '?' in defer/recover cleanup cannot replace the pending outcome"));
+                        "postfix '?' inside defer/recover/finally cannot replace the pending outcome"));
                 }
                 let value = self.consume(inner)?;
                 let (success_tag, success_ty) = match value.ty {
