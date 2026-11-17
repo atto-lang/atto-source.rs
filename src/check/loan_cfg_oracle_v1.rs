@@ -9,10 +9,10 @@
 //! Diagnostic only. Facts and emitted ops still originate from the same
 //! Atto compiler; this is not cross-compiler Polonius or codegen authority.
 //! Loops, exceptional, async, actor, heap, FFI and unmodeled effects reject.
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::ast::Type;
 use crate::check::{TExpr, TProgram, TStmt, TE};
 use crate::diag::{Diagnostic, Pos};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const MAX_FUNCTIONS: usize = 256;
 const MAX_POINTS: usize = 1024;
@@ -99,11 +99,26 @@ fn collect(expr: Option<&TE>, work: &mut usize, slots: usize) -> Result<Reads, D
 
 #[derive(Clone, Copy, Debug)]
 pub enum Kind {
-    Issue { loan_id: u32, owner_slot: u32, exclusive: bool },
+    Issue {
+        loan_id: u32,
+        owner_slot: u32,
+        exclusive: bool,
+    },
     /// A marker, not a codegen load. Must be reconciled independently.
-    Marker { loan_id: u32, owner_slot: u32, write: bool },
-    End { loan_id: u32, owner_slot: u32, lexical: bool },
-    Set { owner_slot: u32, via: Option<u32> },
+    Marker {
+        loan_id: u32,
+        owner_slot: u32,
+        write: bool,
+    },
+    End {
+        loan_id: u32,
+        owner_slot: u32,
+        lexical: bool,
+    },
+    Set {
+        owner_slot: u32,
+        via: Option<u32>,
+    },
     Eval,
     Condition,
     Return,
@@ -162,14 +177,51 @@ impl Build {
         for (stmt_index, stmt) in body.iter().enumerate().rev() {
             let successors = next.into_iter().collect::<Vec<_>>();
             let entry = match stmt {
-                TStmt::ScalarBorrowIssue { loan_id, owner_slot, exclusive, .. } =>
-                    self.add(Kind::Issue { loan_id: *loan_id, owner_slot: *owner_slot, exclusive: *exclusive }, Reads::default(), successors)?,
-                TStmt::ScalarLoanUse { loan_id, owner_slot, write } =>
-                    self.add(Kind::Marker { loan_id: *loan_id, owner_slot: *owner_slot, write: *write }, Reads::default(), successors)?,
-                TStmt::ScalarLoanEnd { loan_id, owner_slot } =>
-                    self.add(Kind::End { loan_id: *loan_id, owner_slot: *owner_slot, lexical: false }, Reads::default(), successors)?,
-                TStmt::ScalarLoanScopeEnd { loan_id, owner_slot } =>
-                    self.add(Kind::End { loan_id: *loan_id, owner_slot: *owner_slot, lexical: true }, Reads::default(), successors)?,
+                TStmt::ScalarBorrowIssue {
+                    loan_id,
+                    owner_slot,
+                    exclusive,
+                    ..
+                } => self.add(
+                    Kind::Issue {
+                        loan_id: *loan_id,
+                        owner_slot: *owner_slot,
+                        exclusive: *exclusive,
+                    },
+                    Reads::default(),
+                    successors,
+                )?,
+                TStmt::ScalarLoanUse {
+                    loan_id,
+                    owner_slot,
+                    write,
+                } => self.add(
+                    Kind::Marker {
+                        loan_id: *loan_id,
+                        owner_slot: *owner_slot,
+                        write: *write,
+                    },
+                    Reads::default(),
+                    successors,
+                )?,
+                TStmt::ScalarLoanEnd { loan_id, owner_slot } => self.add(
+                    Kind::End {
+                        loan_id: *loan_id,
+                        owner_slot: *owner_slot,
+                        lexical: false,
+                    },
+                    Reads::default(),
+                    successors,
+                )?,
+                TStmt::ScalarLoanScopeEnd { loan_id, owner_slot } => self.add(
+                    Kind::End {
+                        loan_id: *loan_id,
+                        owner_slot: *owner_slot,
+                        lexical: true,
+                    },
+                    Reads::default(),
+                    successors,
+                )?,
                 TStmt::Set(slot, value) => {
                     if *slot as usize >= self.slots {
                         return Err(incomplete("typed scalar set targets unknown slot"));
@@ -178,11 +230,15 @@ impl Build {
                     // Checked exclusive alias writes end with a write-use
                     // marker immediately before their actual local.set.
                     // Reconciliation independently verifies the pair.
-                    let via = stmt_index.checked_sub(1)
+                    let via = stmt_index
+                        .checked_sub(1)
                         .and_then(|i| body.get(i))
                         .and_then(|previous| match previous {
-                            TStmt::ScalarLoanUse { loan_id, owner_slot, write: true }
-                                if *owner_slot == *slot => Some(*loan_id),
+                            TStmt::ScalarLoanUse {
+                                loan_id,
+                                owner_slot,
+                                write: true,
+                            } if *owner_slot == *slot => Some(*loan_id),
                             _ => None,
                         });
                     self.add(Kind::Set { owner_slot: *slot, via }, reads, successors)?
@@ -216,7 +272,11 @@ impl Build {
                     }
                     false_path.expect("nonempty if arms have condition")
                 }
-                _ => return Err(unsupported("loop, abrupt exit, opaque scope or effect requires more CFG provenance")),
+                _ => {
+                    return Err(unsupported(
+                        "loop, abrupt exit, opaque scope or effect requires more CFG provenance",
+                    ))
+                }
             };
             next = Some(entry);
         }
@@ -234,7 +294,11 @@ fn reconcile_sequence(body: &[TStmt], work: &mut usize, slots: usize, depth: usi
     let mut write_expected: Option<(u32, u32)> = None;
     for stmt in body {
         match stmt {
-            TStmt::ScalarLoanUse { loan_id, owner_slot, write } => {
+            TStmt::ScalarLoanUse {
+                loan_id,
+                owner_slot,
+                write,
+            } => {
                 if *write {
                     if write_expected.replace((*loan_id, *owner_slot)).is_some() {
                         return Err(incomplete("multiple unmatched alias write markers"));
@@ -256,8 +320,7 @@ fn reconcile_sequence(body: &[TStmt], work: &mut usize, slots: usize, depth: usi
                         }
                         write_expected = None;
                     }
-                    _ if write_expected.is_some() =>
-                        return Err(incomplete("alias write marker precedes non-store")),
+                    _ if write_expected.is_some() => return Err(incomplete("alias write marker precedes non-store")),
                     _ => {}
                 }
             }
@@ -303,7 +366,11 @@ fn reconcile_sequence(body: &[TStmt], work: &mut usize, slots: usize, depth: usi
 }
 
 fn audit_function(name: &str, body: &[TStmt], slots: usize) -> Result<Function, Diagnostic> {
-    let mut maker = Build { nodes: Vec::new(), expr_work: 0, slots };
+    let mut maker = Build {
+        nodes: Vec::new(),
+        expr_work: 0,
+        slots,
+    };
     reconcile_sequence(body, &mut maker.expr_work, slots, 0)?;
     let entry = maker.seq(body, None, 0)?.ok_or_else(|| unsupported("empty typed function CFG"))?;
     let nodes = &maker.nodes;
@@ -311,9 +378,13 @@ fn audit_function(name: &str, body: &[TStmt], slots: usize) -> Result<Function, 
     let mut seen = vec![false; n];
     let mut queue = VecDeque::from([entry]);
     while let Some(id) = queue.pop_front() {
-        if seen[id] { continue; }
+        if seen[id] {
+            continue;
+        }
         seen[id] = true;
-        for &next in &nodes[id].successors { queue.push_back(next as usize); }
+        for &next in &nodes[id].successors {
+            queue.push_back(next as usize);
+        }
     }
     if seen.iter().any(|is_seen| !is_seen) {
         return Err(incomplete("typed CFG contains unconnected/unreachable operation"));
@@ -323,10 +394,13 @@ fn audit_function(name: &str, body: &[TStmt], slots: usize) -> Result<Function, 
     // No markers are taken as authoritative origin facts.
     let mut loan_owner = BTreeMap::<u32, (u32, bool)>::new();
     for node in nodes {
-        if let Kind::Issue { loan_id, owner_slot, exclusive } = node.kind {
-            if loan_id == 0 || owner_slot as usize >= slots
-                || loan_owner.insert(loan_id, (owner_slot, exclusive)).is_some()
-            {
+        if let Kind::Issue {
+            loan_id,
+            owner_slot,
+            exclusive,
+        } = node.kind
+        {
+            if loan_id == 0 || owner_slot as usize >= slots || loan_owner.insert(loan_id, (owner_slot, exclusive)).is_some() {
                 return Err(incomplete("non-unique or invalid typed loan issue identity"));
             }
         }
@@ -347,17 +421,26 @@ fn audit_function(name: &str, body: &[TStmt], slots: usize) -> Result<Function, 
             }
             let node = &nodes[idx];
             let mut live = BTreeSet::new();
-            for &to in &node.successors { live.extend(future_in[to as usize].iter().copied()); }
+            for &to in &node.successors {
+                live.extend(future_in[to as usize].iter().copied());
+            }
             for &(loan, owner) in &node.borrowed_reads {
                 if loan_owner.get(&loan).is_none_or(|(slot, _)| *slot != owner) {
                     return Err(incomplete("typed loan load lacks verified owner/issue identity"));
                 }
                 live.insert(loan);
             }
-            if let Kind::Issue { loan_id, .. } = node.kind { live.remove(&loan_id); }
-            if live != future_in[idx] { future_in[idx] = live; changed = true; }
+            if let Kind::Issue { loan_id, .. } = node.kind {
+                live.remove(&loan_id);
+            }
+            if live != future_in[idx] {
+                future_in[idx] = live;
+                changed = true;
+            }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
     for node in nodes {
         if let Kind::End { loan_id, owner_slot, .. } = node.kind {
@@ -388,7 +471,10 @@ fn audit_function(name: &str, body: &[TStmt], slots: usize) -> Result<Function, 
             return Err(unsupported("live loan crosses unchecked trap or conditional expression"));
         }
         for &slot in &node.direct_reads {
-            if active.iter().any(|loan| loan_owner.get(loan).is_some_and(|(owner, exclusive)| *owner == slot && *exclusive)) {
+            if active
+                .iter()
+                .any(|loan| loan_owner.get(loan).is_some_and(|(owner, exclusive)| *owner == slot && *exclusive))
+            {
                 return Err(incomplete("direct owner read while exclusive loan is active"));
             }
         }
@@ -398,14 +484,32 @@ fn audit_function(name: &str, body: &[TStmt], slots: usize) -> Result<Function, 
             }
         }
         match node.kind {
-            Kind::Issue { loan_id, owner_slot, exclusive } => {
-                if active.contains(&loan_id) || active.iter().any(|loan| loan_owner.get(loan).is_some_and(|(owner, ex)| *owner == owner_slot && (*ex || exclusive))) {
+            Kind::Issue {
+                loan_id,
+                owner_slot,
+                exclusive,
+            } => {
+                if active.contains(&loan_id)
+                    || active.iter().any(|loan| {
+                        loan_owner
+                            .get(loan)
+                            .is_some_and(|(owner, ex)| *owner == owner_slot && (*ex || exclusive))
+                    })
+                {
                     return Err(incomplete("overlapping/conflicting loan issued on reachable CFG path"));
                 }
                 active.insert(loan_id);
             }
-            Kind::Marker { loan_id, owner_slot, write } => {
-                if !active.contains(&loan_id) || loan_owner.get(&loan_id).is_none_or(|(owner, ex)| *owner != owner_slot || (write && !ex)) {
+            Kind::Marker {
+                loan_id,
+                owner_slot,
+                write,
+            } => {
+                if !active.contains(&loan_id)
+                    || loan_owner
+                        .get(&loan_id)
+                        .is_none_or(|(owner, ex)| *owner != owner_slot || (write && !ex))
+                {
                     return Err(incomplete("loan marker references unavailable owner/permission"));
                 }
             }
@@ -415,14 +519,22 @@ fn audit_function(name: &str, body: &[TStmt], slots: usize) -> Result<Function, 
                 }
             }
             Kind::Set { owner_slot, via } => {
-                if active.iter().any(|loan| loan_owner.get(loan).is_some_and(|(owner, _)| *owner == owner_slot)) {
+                if active
+                    .iter()
+                    .any(|loan| loan_owner.get(loan).is_some_and(|(owner, _)| *owner == owner_slot))
+                {
                     // The exact write-through marker is checked by the
                     // separate statement reconciliation, but this flat node
                     // needs the verified associated loan to authorize it.
-                    if via.is_none_or(|loan_id| !active.contains(&loan_id)
-                        || loan_owner.get(&loan_id).is_none_or(|(owner, exclusive)| *owner != owner_slot || !exclusive)
-                        || active.iter().any(|other| *other != loan_id && loan_owner.get(other).is_some_and(|(owner, _)| *owner == owner_slot)))
-                    {
+                    if via.is_none_or(|loan_id| {
+                        !active.contains(&loan_id)
+                            || loan_owner
+                                .get(&loan_id)
+                                .is_none_or(|(owner, exclusive)| *owner != owner_slot || !exclusive)
+                            || active
+                                .iter()
+                                .any(|other| *other != loan_id && loan_owner.get(other).is_some_and(|(owner, _)| *owner == owner_slot))
+                    }) {
                         return Err(incomplete("owner write without sole live exclusive loan right"));
                     }
                 }
@@ -440,34 +552,52 @@ fn audit_function(name: &str, body: &[TStmt], slots: usize) -> Result<Function, 
         for &next in &node.successors {
             let slot = &mut inbound[next as usize];
             match slot {
-                Some(existing) if *existing != active =>
-                    return Err(unsupported("CFG join has path-dependent loan state; require phi/ownership merge proof")),
+                Some(existing) if *existing != active => {
+                    return Err(unsupported(
+                        "CFG join has path-dependent loan state; require phi/ownership merge proof",
+                    ))
+                }
                 Some(_) => {}
-                None => { *slot = Some(active.clone()); worklist.push_back(next as usize); }
+                None => {
+                    *slot = Some(active.clone());
+                    worklist.push_back(next as usize);
+                }
             }
         }
     }
-    Ok(Function { name: name.to_string(), entry: entry as u32, points: maker.nodes })
+    Ok(Function {
+        name: name.to_string(),
+        entry: entry as u32,
+        points: maker.nodes,
+    })
 }
 
 /// Opt-in typed-MIR CFG oracle for *closed* scalar branches.
 /// Rejecting is not a judgment about production AttoLang compilation.
 pub fn audit_checked_program(program: &TProgram) -> Result<Report, Diagnostic> {
-    if program.funcs.is_empty() || program.funcs.len() > MAX_FUNCTIONS
-        || !program.generators.is_empty() || !program.actors.is_empty()
-        || program.heap || program.guest_eh
+    if program.funcs.is_empty()
+        || program.funcs.len() > MAX_FUNCTIONS
+        || !program.generators.is_empty()
+        || !program.actors.is_empty()
+        || program.heap
+        || program.guest_eh
     {
         return Err(unsupported("non-scalar/actor/exception program requires other CFG ownership proof"));
     }
     let mut functions = Vec::new();
     for f in &program.funcs {
-        let slots = f.params.len().checked_add(f.locals.len()).ok_or_else(|| budget("scalar slot count overflow"))?;
-        if slots > MAX_POINTS || !scalar(f.ret) && f.ret != Type::Void
-            || f.params.iter().chain(f.locals.iter()).any(|&ty| !scalar(ty))
-        {
+        let slots = f
+            .params
+            .len()
+            .checked_add(f.locals.len())
+            .ok_or_else(|| budget("scalar slot count overflow"))?;
+        if slots > MAX_POINTS || !scalar(f.ret) && f.ret != Type::Void || f.params.iter().chain(f.locals.iter()).any(|&ty| !scalar(ty)) {
             return Err(unsupported("typed CFG requires bounded pure scalar function slots"));
         }
         functions.push(audit_function(&f.name, &f.body, slots)?);
     }
-    Ok(Report { contract: CONTRACT, functions })
+    Ok(Report {
+        contract: CONTRACT,
+        functions,
+    })
 }
