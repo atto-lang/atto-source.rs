@@ -386,7 +386,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                         format!("expected '{name}' is not a struct")));
                 }
                 if let Some(field)=values.keys().find(|f|
-                    !target.fields.iter().any(|decl| decl.name==**f))
+                    !target.fields.iter().any(|decl| decl.name.as_str()==f.as_str()))
                 {
                     return Err(error(first[i].pos,"E_NO_FIELD",
                         format!("struct '{name}' has no field '{field}'")));
