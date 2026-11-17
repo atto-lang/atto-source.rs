@@ -13,6 +13,11 @@ for (const [i, path] of paths.entries()) {
     assert.equal(WebAssembly.validate(bytes), true);
     const imports = WebAssembly.Module.imports(new WebAssembly.Module(bytes));
     assert.deepEqual(imports, [], "pure linked guest may not acquire host imports");
+    assert.equal(
+      WebAssembly.Module.customSections(new WebAssembly.Module(bytes), "atto.exports.modules.v1").length,
+      0,
+      "an imported module must not be re-exported in language-level metadata",
+    );
     const { instance } = await WebAssembly.instantiate(bytes, {});
     assert.equal(typeof instance.exports.main, "function");
     assert.equal(instance.exports.main(), 42n);
