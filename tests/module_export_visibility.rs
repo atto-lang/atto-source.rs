@@ -134,3 +134,36 @@ fn namespace_headers_and_cross_file_imports_fail_closed_until_linked() {
     assert!(compile("use namespace shop;\nexport pub module Math;\ndefine module Math as\n pub fnc answer(): int { return 42; }\nend\npub fnc main(): int { return 0; }").is_err());
     assert!(compile("import module Math from \"./math.atto\";\nexport pub module Math;\npub fnc main(): int { return 0; }").is_err());
 }
+
+#[test]
+fn export_identifier_abi_accepts_256_ascii_bytes_and_rejects_out_of_range() {
+    let name = format!("A{}", "z".repeat(255));
+    let source = format!("export pub fnc {name};\nfnc {name}(): int {{ return 1; }}\npub fnc main(): int {{ return 0; }}\n");
+    ok(&source);
+    let long_name = format!("A{}", "z".repeat(256));
+    let long_source = format!("export pub fnc {long_name};\nfnc {long_name}(): int {{ return 1; }}\npub fnc main(): int {{ return 0; }}\n");
+    err(&long_source, "E_EXPORT_NAME_TOO_LONG");
+    let unicode = "export pub fnc Éclair;\nfnc Éclair(): int { return 1; }\npub fnc main(): int { return 0; }";
+    err(unicode, "E_EXPORT_NAME");
+}
+
+#[test]
+fn v1_wasm_manifest_is_structurally_decodable_and_host_exports_unchanged() {
+    let wasm = ok("export pub fnc answer;\nfnc answer(): int { return 42; }\npub fnc main(): int { return answer(); }");
+    let mut found = vec![];
+    for (id, bytes) in sections(&wasm) {
+        if id != 0 { continue; }
+        let mut p = 0;
+        if wasm_name(bytes, &mut p) != "atto.exports.v1" { continue; }
+        for _ in 0..leb(bytes, &mut p) {
+            let symbol = wasm_name(bytes, &mut p);
+            let kind = *bytes.get(p).expect("kind"); p += 1;
+            let visibility = *bytes.get(p).expect("visibility"); p += 1;
+            found.push((symbol, kind, visibility));
+        }
+        assert_eq!(p, bytes.len(), "no trailing v1 manifest bytes");
+    }
+    assert_eq!(found, vec![("answer".into(), 2, 1)]);
+    assert!(!host_exports(&wasm).contains(&"answer".to_string()));
+    assert!(host_exports(&wasm).contains(&"main".to_string()));
+}
