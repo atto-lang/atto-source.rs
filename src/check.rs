@@ -3196,8 +3196,33 @@ impl<'a> FnCx<'a> {
             ExprKind::Record(_) | ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_) =>
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                     "record, map and tuple literals are parsed but require checked collection types and guest allocation")),
-            ExprKind::Index(_, _) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "bracket selection requires a proven static closed Record receiver and literal field name")),
+            ExprKind::Index(receiver, key) => {
+                // Bracket indexing is NOT interchangeable with Map lookup or
+                // class dot access. Admit only a quoted literal static field
+                // on a resolved compiler-generated closed Record value.
+                // The normal lexical checker resolves the receiver here, so
+                // shadowed names and nested blocks cannot inherit privileges
+                // from a different local with the same source spelling.
+                if !matches!(receiver.kind, ExprKind::Var(_)) {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "closed Record bracket selection requires a named receiver"));
+                }
+                let ExprKind::Str(field) = &key.kind else {
+                    return Err(Diagnostic::new(key.pos, "E_UNSUPPORTED",
+                        "computed bracket keys require separately checked Map/index lowering"));
+                };
+                let obj = self.value(receiver)?;
+                let Type::Class(c) = obj.ty else {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "bracket access is supported only for closed Record fields"));
+                };
+                if !self.g.classes[c as usize].name
+                    .starts_with(crate::closed_record_guest::PRIVATE_PREFIX) {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "indexing a nominal class or Struct is not Record field selection"));
+                }
+                self.field_get(obj, field, pos)?
+            },
             ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented")),
         })
