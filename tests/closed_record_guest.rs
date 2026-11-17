@@ -103,7 +103,7 @@ fn maps_open_records_and_computed_indexing_still_fail_closed() {
             let Record r = {x: 42};
             return r["missing"];
         }
-    "#, "E_NO_FIELD");
+    "#, "E_UNBOUND");
 }
 
 #[test]
@@ -132,7 +132,19 @@ fn rejected_fields_and_ownership_do_not_emit_guest_wasm() {
             r.x = 1;
             return r.x;
         }
-    "#, "E_FIELD_WRITE");
+    "#, "E_OWNERSHIP");
+}
+
+#[test]
+fn mutable_borrow_cannot_turn_closed_record_fields_into_writable_class_storage() {
+    invalid(r#"
+        pub fnc main(): int {
+            let Record r = {x: 42};
+            let writer = borrow! mut r;
+            writer.x = 7;
+            return writer.x;
+        }
+    "#, "E_BORROW");
 }
 
 #[test]
