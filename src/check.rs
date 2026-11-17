@@ -929,6 +929,23 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for c in &p.classes {
         let fields = fields_of(&c.name, &c.fields, false, 0)?;
         let mut methods = methods_of(&c.name, &c.methods, &c.fields)?;
+        // A class may opt into value equality only through a checked,
+        // non-suspending instance method. Never silently reinterpret
+        // object 'eq' as reference identity or choose a malformed overload.
+        for (decl, info) in c.methods.iter().zip(&methods) {
+            if decl.name == "equals"
+                && (!decl.public || decl.is_static || decl.params.len() != 1
+                    || decl.params[0].mutable
+                    || info.params != [Type::Class(classes.len() as u32)]
+                    || info.ret != Type::Bool)
+            {
+                return Err(Diagnostic::new(
+                    decl.pos, "E_EQUALS_SIGNATURE",
+                    format!("{}.equals must be a public, non-static, non-mutating equals({} other): bool instance method",
+                        c.name, c.name),
+                ));
+            }
+        }
         let new_idx = take();
         let ctor_idx = c.ctor.as_ref().map(|_| take());
         for m in &mut methods {
@@ -1403,6 +1420,17 @@ fn body_check(
                 mutable: *m,
                 mail: None,
             });
+        }
+    }
+    // Operator 'eq' borrows both objects for the duration of the checked
+    // equals call. The second parameter must therefore be non-owning inside
+    // the method as well: forwarding/taking it as an owned class handle would
+    // manufacture an alias while the caller still owns the object.
+    if let Owner::Class { c, ctor: false, is_static: false } = owner {
+        if label == format!("{}.equals", g.classes[c as usize].name) {
+            // Registration checked the method's sole same-class parameter.
+            // Slot 0 is self, slot 1 is the borrowed other object.
+            cx.loans.insert(1, ScopedLoan { owner: 1, mutable: false });
         }
     }
     cx.scopes.push(Vec::new());
@@ -2987,7 +3015,29 @@ impl<'a> FnCx<'a> {
                     // value-comparable scalar. Admitting it here would lower its
                     // i64 representation using an i32 equality instruction and
                     // could emit an invalid Wasm guest instead of a diagnostic.
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr | Type::GeneratorInt) {
+                    if let Type::Class(c) = a.ty {
+                        let class = &self.g.classes[c as usize];
+                        // Both operands have already been checked by value():
+                        // no ownership transfer, no duplicate evaluation.
+                        // The current bounded class ABI resolves concrete
+                        // methods statically; dynamic subclass dispatch is
+                        // intentionally not admitted in this browser profile.
+                        let Some(m) = class.methods.iter().find(|m| m.name == "equals") else {
+                            return Err(Diagnostic::new(pos, "E_EQUALS",
+                                format!("class '{}' has no checked public equals({} other): bool method; 'eq' cannot fall back to identity",
+                                    class.name, class.name)));
+                        };
+                        let call = TE {
+                            e: TExpr::Call(m.idx, vec![a, b]),
+                            ty: Type::Bool,
+                        };
+                        return Ok(if *op == BinOp::Ne {
+                            TE { e: TExpr::Not(Box::new(call)), ty: Type::Bool }
+                        } else {
+                            call
+                        });
+                    }
+                    if matches!(a.ty, Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr | Type::GeneratorInt) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
