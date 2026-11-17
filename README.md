@@ -37,8 +37,27 @@ executed on the exact branch commit can be reported as PASS.** Source-org
 GitHub Actions currently failed with zero recorded steps; those jobs are
 `NOT_EXECUTED`, not compiler or guest failures.
 
+The compiler now imports the canonical closed-world copy-plan preflight
+directly from the borrow-checker. `src/copy_graph_v1.rs` has **identical Git
+blob SHA** `3008a139cfba41131839de3567a263163152cf00` to the
+Rustfmt-hardened borrow-checker model. The compiler constructs copy
+descriptors from actual resolved class field types and authenticates the
+concrete flat class before **both** emitting generated copy code and lowering
+a `copy!!` call. The source CI hashes the vendored module to detect drift.
+This cannot authenticate dynamic mutable Array graphs or prove actor Sendable.
+
+A full **728-blob source-tree** mirror passed funded alternate-org CI:
+Rust 1.85.1 full Cargo tests, 492 AttoLang conformance assertions, 444
+native-versus-Wasm compiler comparisons, and native/Wasm compiler builds
+([CI run #44137504046](https://github.com/gha-indie-worker/atto-ci/actions/runs/44137504046)).
+Whole-project formatting and strict Clippy still have pre-existing drift;
+no green whole-project lint claim is made. The bounded actor graph copying
+model has its own 196-test Rust receipt, but does not lower `Array<T>`
+or actor messages in this compiler.
+
 Candidate normative contract: atto-lang/atto-spec PR #39. Canonical
-type-graph admission model: ores-truffle-oreslang/atto-borrow-checker.rs PR #32.
+type-graph admission and the nonproduction GraphCopyContext model:
+ores-truffle-oreslang/atto-borrow-checker.rs PR #32.
 Shared conformance candidates: atto-lang/atto-platform-conformance PR #64.
 
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
