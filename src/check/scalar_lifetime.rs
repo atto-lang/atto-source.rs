@@ -57,12 +57,22 @@ fn expr_uses_alias(expr: &Expr, alias: &str, budget: &mut usize) -> Option<bool>
     *budget -= 1;
     match &expr.kind {
         ExprKind::Var(name) => Some(name == alias),
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_)
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
         | ExprKind::SelfRef => Some(false),
-        ExprKind::Unary(op, inner) if matches!(
-            op, crate::ast::UnOp::Neg | crate::ast::UnOp::Plus
-                | crate::ast::UnOp::Not | crate::ast::UnOp::Copy
-        ) => expr_uses_alias(inner, alias, budget),
+        ExprKind::Unary(op, inner)
+            if matches!(
+                op,
+                crate::ast::UnOp::Neg
+                    | crate::ast::UnOp::Plus
+                    | crate::ast::UnOp::Not
+                    | crate::ast::UnOp::Copy
+            ) =>
+        {
+            expr_uses_alias(inner, alias, budget)
+        }
         ExprKind::Binary(_, a, b) => combine([
             expr_uses_alias(a, alias, budget),
             expr_uses_alias(b, alias, budget),
@@ -76,10 +86,15 @@ fn expr_uses_alias(expr: &Expr, alias: &str, budget: &mut usize) -> Option<bool>
         // Actor spawns, ownership transfer, propagation, field/heap accesses,
         // callbacks and captures require a real typed CFG/effect proof.
         // Retaining the lexical loan is safer than claiming source purity.
-        ExprKind::Call(..) | ExprKind::MethodCall(..) | ExprKind::New(..)
-        | ExprKind::Array(..) | ExprKind::Spawn(..)
-        | ExprKind::Trap(..) | ExprKind::Propagate(..)
-        | ExprKind::Member(..) | ExprKind::Unary(..)
+        ExprKind::Call(..)
+        | ExprKind::MethodCall(..)
+        | ExprKind::New(..)
+        | ExprKind::Array(..)
+        | ExprKind::Spawn(..)
+        | ExprKind::Trap(..)
+        | ExprKind::Propagate(..)
+        | ExprKind::Member(..)
+        | ExprKind::Unary(..)
         | ExprKind::Lambda { .. } => None,
     }
 }
@@ -103,8 +118,7 @@ fn stmt_uses_alias(stmt: &Stmt, alias: &str, budget: &mut usize) -> Option<bool>
             expr_uses_alias(target, alias, budget),
             expr_uses_alias(value, alias, budget),
         ]),
-        Stmt::Expr(value) | Stmt::Return(Some(value), _) =>
-            expr_uses_alias(value, alias, budget),
+        Stmt::Expr(value) | Stmt::Return(Some(value), _) => expr_uses_alias(value, alias, budget),
         Stmt::Return(None, _) => Some(false),
         // If, match, blocks, loop, throw, yield or abrupt exits require
         // actual CFG/cleanup provenance. The current V1 does not release
@@ -112,7 +126,6 @@ fn stmt_uses_alias(stmt: &Stmt, alias: &str, budget: &mut usize) -> Option<bool>
         _ => None,
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -126,7 +139,10 @@ mod tests {
     }
 
     fn expr(kind: ExprKind) -> Expr {
-        Expr { kind, pos: Pos::default() }
+        Expr {
+            kind,
+            pos: Pos::default(),
+        }
     }
     fn var(name: &str) -> Expr {
         expr(ExprKind::Var(name.to_string()))
@@ -135,25 +151,36 @@ mod tests {
         expr(ExprKind::Int(Some(value)))
     }
     fn assign(name: &str, value: Expr) -> Stmt {
-        Stmt::Assign { name: name.to_string(), value, pos: Pos::default() }
+        Stmt::Assign {
+            name: name.to_string(),
+            value,
+            pos: Pos::default(),
+        }
     }
 
     #[test]
     fn no_alias_use_in_remaining_straight_line_proves_dead() {
-        assert!(proves(&[
-            assign("owner", lit(42)),
-            Stmt::Return(Some(var("owner")), Pos::default()),
-        ], "reader"));
+        assert!(proves(
+            &[
+                assign("owner", lit(42)),
+                Stmt::Return(Some(var("owner")), Pos::default()),
+            ],
+            "reader"
+        ));
     }
 
     #[test]
     fn copy_and_return_alias_keeps_loan_live() {
-        assert!(!proves(&[
-            Stmt::Return(Some(expr(ExprKind::Unary(
-                crate::ast::UnOp::Copy,
-                Box::new(var("reader")),
-            ))), Pos::default()),
-        ], "reader"));
+        assert!(!proves(
+            &[Stmt::Return(
+                Some(expr(ExprKind::Unary(
+                    crate::ast::UnOp::Copy,
+                    Box::new(var("reader")),
+                ))),
+                Pos::default()
+            ),],
+            "reader"
+        ));
     }
 
     #[test]
@@ -163,13 +190,14 @@ mod tests {
 
     #[test]
     fn nested_condition_without_verified_cfg_retains_loan() {
-        assert!(!proves(&[
-            Stmt::If {
+        assert!(!proves(
+            &[Stmt::If {
                 arms: vec![(expr(ExprKind::Bool(true)), vec![Stmt::Expr(var("reader"))])],
                 otherwise: None,
                 pos: Pos::default(),
-            },
-        ], "reader"));
+            },],
+            "reader"
+        ));
     }
 
     #[test]
@@ -191,29 +219,29 @@ mod tests {
 
     #[test]
     fn initializer_alias_read_cannot_be_omitted_from_scan() {
-        assert!(!proves(&[
-            Stmt::Bind {
+        assert!(!proves(
+            &[Stmt::Bind {
                 kind: BindKind::Val,
                 name: "copy".to_string(),
                 ty: None,
                 init: var("reader"),
                 pos: Pos::default(),
-            },
-        ], "reader"));
+            },],
+            "reader"
+        ));
     }
 
     #[test]
     fn unknown_callable_and_control_flow_fail_closed() {
-        assert!(!proves(&[
-            Stmt::Expr(expr(ExprKind::Lambda {
+        assert!(!proves(
+            &[Stmt::Expr(expr(ExprKind::Lambda {
                 params: vec![],
                 return_type: None,
                 body: crate::ast::LambdaBody::Expression(Box::new(lit(42))),
-            })),
-        ], "reader"));
-        assert!(!proves(&[
-            Stmt::Block(vec![Stmt::Expr(lit(2))]),
-        ], "reader"));
+            })),],
+            "reader"
+        ));
+        assert!(!proves(&[Stmt::Block(vec![Stmt::Expr(lit(2))]),], "reader"));
     }
 
     #[test]
@@ -255,7 +283,11 @@ mod tests {
     fn shared_function_budget_is_consumed_and_exhaustion_is_fail_closed() {
         let single = [Stmt::Expr(lit(42))];
         let mut remaining = 5;
-        assert!(proven_dead_after_boundary(&single, "reader", &mut remaining));
+        assert!(proven_dead_after_boundary(
+            &single,
+            "reader",
+            &mut remaining
+        ));
         assert_eq!(remaining, 3);
         assert!(!proven_dead_after_boundary(
             &[Stmt::Expr(lit(1)), Stmt::Expr(lit(2))],
@@ -263,7 +295,11 @@ mod tests {
             &mut remaining,
         ));
         assert_eq!(remaining, 0);
-        assert!(!proven_dead_after_boundary(&single, "reader", &mut remaining));
+        assert!(!proven_dead_after_boundary(
+            &single,
+            "reader",
+            &mut remaining
+        ));
     }
 
     #[test]
