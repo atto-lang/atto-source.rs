@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_TRAP_ERROR_JOIN
 // Result-based trap is canonical: old Option lowering must fail closed.
 // No guest artifact may be emitted until Result<T, Error> and typed error joins
 // preserve the original throw Error payload and identity across Wasm unwinding.
