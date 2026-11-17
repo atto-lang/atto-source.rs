@@ -46,7 +46,7 @@ fn module_markers(wasm: &[u8]) -> Vec<(String, u8)> {
     for (id, bytes) in sections(wasm) {
         if id != 0 { continue; }
         let mut p = 0;
-        if wasm_name(bytes, &mut p) != "atto.visibility.modules.v1" { continue; }
+        if wasm_name(bytes, &mut p) != "atto.exports.modules.v1" { continue; }
         for _ in 0..leb(bytes, &mut p) {
             let name = wasm_name(bytes, &mut p);
             let visibility = *bytes.get(p).expect("missing visibility"); p += 1;
