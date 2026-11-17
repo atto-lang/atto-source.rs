@@ -183,6 +183,17 @@ fn direct_ast_parser_and_pre_lowering_consume_the_same_export_grammar() {
         assert_eq!(p.visibility, l.visibility);
         assert_eq!(p.pos, l.pos);
     }
+    // A raw parsed export cannot bypass the linker/checker. Binding it
+    // explicitly produces the same validated AST export table.
+    let unbound = atto_compiler::check::check(&ast).expect_err("unchecked AST export");
+    assert_eq!(unbound.code, "E_UNBOUND");
+    let mut resolved = ast.clone();
+    atto_compiler::visibility_lower::bind_program_exports(&mut resolved, vec![], &[])
+        .expect("bind direct AST using same resolver as compile()");
+    assert!(resolved.parsed_exports.is_empty());
+    assert_eq!(resolved.exports.len(), 2);
+    assert_eq!(resolved.exports[0].name, "Foo");
+    assert_eq!(resolved.exports[1].name, "calculate");
     let guest = atto_compiler::compile(source).expect("same source through checked compiler");
     assert!(guest.starts_with(b"\0asm\x01\0\0\0"));
 }
