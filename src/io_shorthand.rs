@@ -181,6 +181,36 @@ fn read_binder(tokens: &[Token], start: usize, end: usize, pos: Pos) -> Result<S
     Ok(name.to_owned())
 }
 
+/// A single separated '=' after a read direction is a spelling-only
+/// declaration marker, not an assignment and not the contiguous '>>=' token.
+/// The source and destination are otherwise checked by the same read binder.
+fn directional_read_binder_start(tokens: &[Token], start: usize, end: usize, pos: Pos)
+    -> Result<usize, Diagnostic>
+{
+    let Some(next) = tokens.get(start) else { return Ok(start); };
+    if next.tok == Tok::EqEq {
+        return Err(syntax(pos, "'==' is equality, not a directional binder"));
+    }
+    if next.tok != Tok::Assign {
+        return Ok(start);
+    }
+    let second_gt = tokens[start - 1].pos;
+    if next.pos.line == second_gt.line
+        && second_gt.col.checked_add(1) == Some(next.pos.col)
+    {
+        return Err(syntax(pos,
+            "contiguous '>>=' is not a directional capture; separate '=' or omit it"));
+    }
+    if start + 1 == end
+        || tokens.get(start + 1).is_some_and(|t|
+            matches!(t.tok, Tok::Assign | Tok::EqEq))
+    {
+        return Err(syntax(pos,
+            "directional read accepts exactly zero or one optional '='"));
+    }
+    Ok(start + 1)
+}
+
 /// Bounded syntax preflight. Recognition is distinct from capability typing,
 /// suspension-effect verification and guest execution. Unimplemented forms
 /// are subsequently rejected by the browser compiler before guest emission.
@@ -286,7 +316,8 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
                     "reversed read requires a qualified readable source; computed expressions are not yet supported"))?;
             (Direction::Read, source, Some(binding))
         } else if operator == Direction::Read {
-            let binding = read_binder(tokens, rhs_start, end, op_pos)?;
+            let binder_start = directional_read_binder_start(tokens, rhs_start, end, op_pos)?;
+            let binding = read_binder(tokens, binder_start, end, op_pos)?;
             (Direction::Read, lhs_path.unwrap(), Some(binding))
         } else {
             for j in rhs_start..end {
