@@ -45,6 +45,37 @@ fn export_name(t: &[Token], i: usize) -> R<String> {
     }
     Ok(id)
 }
+/// One parser for file-level export directives, shared between the normal
+/// pre-lowering pipeline and direct AST parser. The binder is still responsible
+/// for symbol ownership and declaration-kind validation.
+pub fn parse_export_directive(t: &[Token], start: usize) -> R<(Export, usize)> {
+    let pos = t.get(start).map(|x| x.pos).unwrap_or(Pos {line: 1, col: 1});
+    if !word(t, start, "export") || !word(t, start + 1, "pub") {
+        return Err(error(pos, "E_SYNTAX", "export requires pub or pub[pkg]"));
+    }
+    let mut j = start + 2;
+    let visibility = if t.get(j).map(|x| &x.tok) == Some(&Tok::LBracket) {
+        if !word(t, j + 1, "pkg") || t.get(j + 2).map(|x| &x.tok) != Some(&Tok::RBracket) {
+            return Err(error(pos, "E_SYNTAX", "only pub[pkg] package visibility is supported"));
+        }
+        j += 3;
+        Visibility::Package
+    } else { Visibility::Public };
+    let mut kind = "";
+    if ["class", "fnc", "module", "actor", "enum"].iter().any(|k| word(t, j, k)) {
+        kind = if word(t, j, "class") { "class" }
+            else if word(t, j, "module") { "module" }
+            else if word(t, j, "actor") { "actor" }
+            else if word(t, j, "enum") { "enum" } else { "fnc" };
+        j += 1;
+    }
+    let id = export_name(t, j)?;
+    if t.get(j + 1).map(|x| &x.tok) != Some(&Tok::Semi) {
+        return Err(error(pos, "E_SYNTAX", "export must end with semicolon"));
+    }
+    Ok((Export { name: id, kind, visibility, pos }, j + 2))
+}
+
 /// Resolve exports against the checked parser's actual declaration table,
 /// not arbitrary tokens: a class member named Foo is NOT a top-level fnc
 /// Foo, and a foreign prototype never grants source-level export authority.
@@ -202,35 +233,13 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
         let pos = t[i].pos;
         if word(&t, i, "export") {
             if exports.len() >= 128 { return Err(error(pos, "E_SOURCE_LIMIT", "export budget exceeded")); }
-            if !word(&t, i + 1, "pub") {
-                return Err(error(pos, "E_SYNTAX", "export requires pub or pub[pkg]"));
+            let (export, next) = parse_export_directive(&t, i)?;
+            if exports.iter().any(|e| e.name == export.name) {
+                return Err(error(pos, "E_DUPLICATE",
+                    format!("duplicate exported name '{}'", export.name)));
             }
-            let mut j = i + 2;
-            let visibility = if t.get(j).map(|x| &x.tok) == Some(&Tok::LBracket) {
-                if !word(&t, j + 1, "pkg") ||
-                   t.get(j + 2).map(|x| &x.tok) != Some(&Tok::RBracket) {
-                    return Err(error(pos, "E_SYNTAX", "only pub[pkg] package visibility is supported"));
-                }
-                j += 3;
-                Visibility::Package
-            } else { Visibility::Public };
-            let mut kind = "";
-            if ["class", "fnc", "module", "actor", "enum"].iter().any(|k| word(&t, j, k)) {
-                kind = if word(&t, j, "class") { "class" }
-                    else if word(&t, j, "module") { "module" }
-                    else if word(&t, j, "actor") { "actor" }
-                    else if word(&t, j, "enum") { "enum" } else { "fnc" };
-                j += 1;
-            }
-            let id = export_name(&t, j)?;
-            if t.get(j + 1).map(|x| &x.tok) != Some(&Tok::Semi) {
-                return Err(error(pos, "E_SYNTAX", "export must end with semicolon"));
-            }
-            if exports.iter().any(|e| e.name == id) {
-                return Err(error(pos, "E_DUPLICATE", format!("duplicate exported name '{id}'")));
-            }
-            exports.push(Export { name: id, kind, visibility, pos });
-            i = j + 2;
+            exports.push(export);
+            i = next;
             continue;
         }
         if word(&t, i, "external") {
