@@ -329,6 +329,8 @@ pub struct TProgram {
     pub funcs: Vec<TFunc>,
     pub generators: Vec<TGenerator>,
     pub main: u32,
+    /// Checked language exports, distinct from host Wasm exports.
+    pub exports: Vec<crate::ast::ExportDecl>,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
     /// Classes exist: the module owns a bounded bump heap.
@@ -1310,6 +1312,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     Ok(TProgram {
         funcs,
         main,
+        exports: p.exports.clone(),
         imports,
         data,
         heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
