@@ -136,7 +136,7 @@ import module Math from "./math.atto";"#;
 }
 
 #[test]
-fn cyclic_and_transitive_imports_fail_closed() {
+fn cyclic_and_unresolved_transitive_imports_fail_closed() {
     let cycle = MAIN.replace("./math.atto", "./main.atto");
     err(&cycle, EXPORTED, "owner.storefront", "E_IMPORT_CYCLE");
     let two_hops = format!("import module Math from \"./math.atto\";\n{}", EXPORTED);
@@ -147,7 +147,9 @@ export pub module Math;
 define module Math as
     pub fnc double(int x): int { return x * 2; }
 end"#;
-    err(MAIN, dep, "another.library", "E_UNSUPPORTED");
+    // Multi-hop is now supported, but the missing Helpers unit must still
+    // fail closed rather than silently skipping a deeper dependency.
+    err(MAIN, dep, "another.library", "E_UNBOUND");
 }
 
 #[test]
