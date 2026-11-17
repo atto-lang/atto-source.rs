@@ -16,6 +16,10 @@ const MAX_BASES: usize = 8;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Kind { Class, Trait, Interface }
+/// Declaration-local hierarchy restrictions; no runtime subclass registry or
+/// cross-module exhaustiveness proof is provided by the browser subset.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Hierarchy { Open, Sealed, NonSealed, Final }
 #[derive(Clone)]
 struct Method {
     name: String,
@@ -39,6 +43,8 @@ struct Decl {
     body: Vec<Token>,
     parents: Vec<String>,
     contracts: Vec<String>,
+    hierarchy: Hierarchy,
+    permitted: Vec<String>,
     methods: BTreeMap<String, Method>,
     has_fields_or_ctor: bool,
     export: bool,
@@ -50,7 +56,7 @@ fn is(t: &[Token], i: usize, value: &str) -> bool {
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
         Some(Token { tok: Tok::Ident(s), pos }) if s.len() <= 96 &&
-            !matches!(s.as_str(), "as" | "end" | "define" | "pub" | "class" | "trait" | "interface" | "extends" | "implements") =>
+            !matches!(s.as_str(), "as" | "end" | "define" | "pub" | "class" | "trait" | "interface" | "extends" | "implements" | "sealed" | "non" | "final" | "permits") =>
             Ok(s.clone()),
         Some(t) => Err(Diagnostic::new(t.pos, "E_SYNTAX", "expected a bounded nominal identifier")),
         None => Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_EOF", "missing nominal identifier")),
@@ -166,10 +172,32 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
         if !is(t, j, "define") { i += 1; continue; }
         j += 1;
         if is(t, j, "pub") { export = true; j += 1; }
+        let hierarchy = if is(t, j, "sealed") {
+            j += 1;
+            Hierarchy::Sealed
+        } else if is(t, j, "final") {
+            j += 1;
+            Hierarchy::Final
+        } else if is(t, j, "non") && t.get(j + 1).map(|x| &x.tok) == Some(&Tok::Minus)
+            && is(t, j + 2, "sealed") {
+            j += 3;
+            Hierarchy::NonSealed
+        } else {
+            Hierarchy::Open
+        };
         let kind = if is(t, j, "class") { Kind::Class }
             else if is(t, j, "trait") { Kind::Trait }
             else if is(t, j, "interface") { Kind::Interface }
-            else { i += 1; continue; };
+            else {
+                if hierarchy != Hierarchy::Open {
+                    return Err(diag(t[start].pos, "E_SEALED",
+                        "sealed/final/non-sealed modifiers apply only to class declarations"));
+                }
+                i += 1; continue;
+            };
+        if kind != Kind::Class && hierarchy != Hierarchy::Open {
+            return Err(diag(t[start].pos, "E_SEALED", "hierarchy modifier requires class"));
+        }
         j += 1;
         if out.len() >= MAX_DECLS { return Err(diag(t[start].pos, "E_SOURCE_LIMIT", "too many nominal definitions")); }
         let owner = name(t, j)?;
@@ -204,6 +232,30 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
                 j += 1;
             }
         }
+        let mut permitted = Vec::new();
+        if is(t, j, "permits") {
+            if hierarchy != Hierarchy::Sealed {
+                return Err(diag(t[j].pos, "E_SEALED", "permits is valid only on a sealed class"));
+            }
+            j += 1;
+            loop {
+                if permitted.len() >= MAX_DECLS {
+                    return Err(diag(t[start].pos, "E_SOURCE_LIMIT", "too many permitted subclasses"));
+                }
+                let child = name(t, j)?;
+                if child == owner || permitted.contains(&child) {
+                    return Err(diag(t[j].pos, "E_SEALED", "duplicate or self-referential permitted subclass"));
+                }
+                permitted.push(child);
+                j += 1;
+                if t.get(j).map(|x| &x.tok) != Some(&Tok::Comma) { break; }
+                j += 1;
+            }
+        }
+        if hierarchy == Hierarchy::Sealed && permitted.is_empty() {
+            return Err(diag(t[start].pos, "E_SEALED",
+                "sealed class requires an explicit nonempty permits list"));
+        }
         if !is(t, j, "as") { return Err(diag(t[j.min(t.len()-1)].pos, "E_SYNTAX", "expected 'as' after nominal header")); }
         j += 1;
         let body_start = j;
@@ -226,8 +278,10 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
         let d = Decl {
             name: owner.clone(), pos: t[start].pos, kind, start, end: j + 1,
             body, parents: parents.clone(), contracts: contracts.clone(),
+            hierarchy, permitted,
             methods, has_fields_or_ctor, export,
-            requires_lowering: kind != Kind::Class || !parents.is_empty() || !contracts.is_empty(),
+            requires_lowering: hierarchy != Hierarchy::Open ||
+                kind != Kind::Class || !parents.is_empty() || !contracts.is_empty(),
         };
         if out.insert(owner.clone(), d).is_some() {
             return Err(diag(t[start].pos, "E_DUPLICATE", format!("duplicate nominal declaration '{owner}'")));
@@ -235,6 +289,54 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
         i = j + 1;
     }
     Ok(out)
+}
+
+/// Authenticate the *entire* source-local direct-subclass graph before token
+/// rewriting. Neither a permitted name nor inherited-method desugaring is a
+/// runtime capability: absent/foreign classes must fail closed.
+fn validate_hierarchies(all: &BTreeMap<String, Decl>) -> R<()> {
+    for d in all.values().filter(|d| d.kind == Kind::Class) {
+        let mut direct_sealed_parent = false;
+        for parent in &d.parents {
+            let base = all.get(parent).ok_or_else(|| diag(d.pos, "E_UNBOUND",
+                format!("unknown class '{parent}'")))?;
+            if base.kind != Kind::Class { continue; } // resolve() reports E_TYPE.
+            if base.hierarchy == Hierarchy::Final {
+                return Err(diag(d.pos, "E_FINAL",
+                    format!("final class '{parent}' cannot be extended")));
+            }
+            if base.hierarchy == Hierarchy::Sealed {
+                direct_sealed_parent = true;
+                if !base.permitted.contains(&d.name) {
+                    return Err(diag(d.pos, "E_SEALED",
+                        format!("class '{}' is not permitted to extend sealed class '{parent}'", d.name)));
+                }
+                if d.hierarchy == Hierarchy::Open {
+                    return Err(diag(d.pos, "E_SEALED",
+                        "direct subclass of sealed class must be final, sealed, or non-sealed"));
+                }
+            }
+        }
+        if d.hierarchy == Hierarchy::NonSealed && !direct_sealed_parent {
+            return Err(diag(d.pos, "E_SEALED",
+                "non-sealed class must directly extend a sealed class"));
+        }
+        if d.hierarchy == Hierarchy::Sealed {
+            for child_name in &d.permitted {
+                let child = all.get(child_name).ok_or_else(|| diag(d.pos, "E_SEALED",
+                    format!("permitted subclass '{child_name}' is not declared in this compilation unit")))?;
+                if child.kind != Kind::Class || !child.parents.contains(&d.name) {
+                    return Err(diag(child.pos, "E_SEALED",
+                        format!("permitted subclass '{child_name}' must directly extend '{}'", d.name)));
+                }
+                if child.hierarchy == Hierarchy::Open {
+                    return Err(diag(child.pos, "E_SEALED",
+                        "permitted subclass must be final, sealed, or non-sealed"));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 fn resolve(
     owner: &str, all: &BTreeMap<String, Decl>,
@@ -332,10 +434,13 @@ fn resolve(
 /// Desugar supported nominal composition into ordinary class methods while
 /// preserving each source token's original file position.
 pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
-    if !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s) if s == "trait" || s == "interface" || s == "extends" || s == "implements")) {
+    if !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s)
+        if matches!(s.as_str(), "trait" | "interface" | "extends" | "implements" |
+            "sealed" | "non" | "final" | "permits"))) {
         return Ok(t);
     }
     let all = decls(&t)?;
+    validate_hierarchies(&all)?;
     if !all.values().any(|d| d.requires_lowering) { return Ok(t); }
     let mut cache = BTreeMap::new();
     let mut visiting = BTreeSet::new();
