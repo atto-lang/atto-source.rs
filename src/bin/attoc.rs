@@ -1,17 +1,19 @@
 //! Native CLI for browser-guest Wasm compilation.
 //! Single file: attoc input.atto [-o out.wasm]
 //! Checked package: attoc --package-root DIR --entry src/main.atto [-o out.wasm]
+//! Discovered root: attoc --package path/to/main.atto [-o out.wasm]
 use std::process::ExitCode;
 use std::path::Path;
 
 enum Input {
     Single(String),
+    Discovered(String),
     Package { root: String, entry: String },
 }
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: attoc <input.atto> [-o out.wasm]\n       attoc --package-root <dir> --entry <relative.atto> [-o out.wasm]"
+        "usage: attoc <input.atto> [-o out.wasm]\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root <dir> --entry <relative.atto> [-o out.wasm]"
     );
     ExitCode::from(2)
 }
@@ -22,6 +24,10 @@ fn main() -> ExitCode {
         [i] if !i.starts_with('-') => (Input::Single(i.clone()), None),
         [i, o, out] if !i.starts_with('-') && o == "-o" =>
             (Input::Single(i.clone()), Some(out.clone())),
+        [flag, entry] if flag == "--package" =>
+            (Input::Discovered(entry.clone()), None),
+        [flag, entry, o, out] if flag == "--package" && o == "-o" =>
+            (Input::Discovered(entry.clone()), Some(out.clone())),
         [p, root, e, entry] if p == "--package-root" && e == "--entry" =>
             (Input::Package { root: root.clone(), entry: entry.clone() }, None),
         [p, root, e, entry, o, out]
@@ -39,6 +45,10 @@ fn main() -> ExitCode {
                 }
             };
             (path, atto_compiler::compile(&source))
+        }
+        Input::Discovered(path) => {
+            let label = path.clone();
+            (label, atto_compiler::package_resolver::compile_discovered(Path::new(&path)))
         }
         Input::Package { root, entry } => {
             let label = format!("{root}/{entry}");
