@@ -1687,8 +1687,32 @@ impl<'a> FnCx<'a> {
         r
     }
 
-    /// The message of an admitted `throw`/`raise` operand:
-    /// `Error(message)` or `new Error(message)`.
+    /// First-class, nominal built-in Error. The private guest heap holds
+    /// the message, while the opaque address is the identity preserved in
+    /// both Result.Err and the WebAssembly exception tag.
+    fn error_new(&mut self, args: &[Expr], pos: Pos) -> R<TE> {
+        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() ||
+            self.lookup("Error").is_some() {
+            return Err(Diagnostic::new(pos, "E_RESERVED",
+                "the guest Error constructor cannot be shadowed"));
+        }
+        if args.len() != 1 {
+            return Err(Diagnostic::new(pos, "E_ARITY",
+                "Error(message) requires exactly one string argument"));
+        }
+        let msg = self.value(&args[0])?;
+        if msg.ty != Type::Str {
+            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
+        }
+        let tmp = self.temp(Type::Error, pos)?;
+        Ok(TE {
+            e: TExpr::ErrorNew { message: Box::new(msg), tmp },
+            ty: Type::Error,
+        })
+    }
+
+    /// Ordinary source throw/raise receives a real Error object, not just
+    /// its message string. Re-throwing a typed Error preserves identity.
     fn guest_error_message(&mut self, error: &Expr, what: &str, pos: Pos) -> R<TE> {
         if self.owner != Owner::TopLevel {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
@@ -1698,24 +1722,12 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 format!("'{what}' inside a defer/recover body would replace the pending failure")));
         }
-        let args = match &error.kind {
-            ExprKind::Call(name, args) | ExprKind::New(name, args) if name == "Error" => args,
-            _ => return Err(type_err(error.pos,
-                format!("{what} requires an Error subclass; this browser slice admits only {what} Error(message)"))),
-        };
-        if args.len() != 1 {
-            return Err(Diagnostic::new(error.pos, "E_ARITY",
-                "Error(message) requires exactly one string argument"));
+        let value = self.value(error)?;
+        if value.ty != Type::Error {
+            return Err(type_err(error.pos,
+                format!("{what} requires an Error subclass, found {}", self.tn(value.ty))));
         }
-        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
-            return Err(Diagnostic::new(error.pos, "E_RESERVED",
-                "the guest Error constructor cannot be shadowed"));
-        }
-        let msg = self.value(&args[0])?;
-        if msg.ty != Type::Str {
-            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
-        }
-        Ok(msg)
+        Ok(value)
     }
 
     fn tn(&self, t: Type) -> String {
@@ -2762,18 +2774,34 @@ impl<'a> FnCx<'a> {
     // These non-inlined helpers keep the per-level stack frame of the
     // recursively invoked expression checker bounded on the browser runner.
     #[inline(never)]
-    fn trap_value(&mut self, _inner: &Expr, pos: Pos) -> R<TE> {
-        // Canonical atto-spec/language/trap-result-v1.md mandates a typed
-        // Result<T, Error> (or one joined Result<T, E>) and Err(original Error)
-        // for ordinary throws. This compiler's legacy TExpr::Trap emits
-        // Option<T> / Some / None and erases the caught Error. Do not emit
-        // that obsolete, semantically unsafe guest lowering.
-        //
-        // Reenable ONLY when the checker, IR, guest Error payload representation,
-        // error-type join and wasm emitter all implement the normative Result
-        // contract; require executed native+wasm32 guest and negative tests.
-        Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-            "trap requires Result-based ordinary-throw lowering and typed Error preservation; legacy Option lowering is disabled"))
+    fn trap_value(&mut self, inner: &Expr, pos: Pos) -> R<TE> {
+        if self.owner != Owner::TopLevel || self.cleanup_depth > 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "trap in actor/class or cleanup needs validated unwind integration"));
+        }
+        // Evaluate/typecheck exactly once; do not recursively flatten Result.
+        let value = self.expr(inner)?;
+        let result_ty = match value.ty {
+            Type::Int => Type::ResultIntError,
+            Type::OptionInt => Type::ResultOptionIntError,
+            Type::Void => Type::ResultVoidError,
+            Type::ResultIntError => Type::ResultIntError,
+            Type::ResultOptionIntError => Type::ResultOptionIntError,
+            Type::ResultVoidError => Type::ResultVoidError,
+            Type::ResultIntStr => return Err(Diagnostic::new(pos, "E_TRAP_ERROR_JOIN",
+                "cannot losslessly join returned string Err with thrown Error; convert to Result<*,Error> explicitly")),
+            _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                format!("trap of {} needs a verified Result error representation", self.tn(value.ty)))),
+        };
+        let value_tmp = match value.ty {
+            Type::Void | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError => None,
+            t => Some(self.temp(t, pos)?),
+        };
+        let some_tmp = self.temp(result_ty, pos)?;
+        let none_tmp = self.temp(result_ty, pos)?;
+        let error_tmp = self.temp(Type::Error, pos)?;
+        Ok(TE { e: TExpr::Trap { value: Box::new(value),
+            value_tmp, some_tmp, none_tmp, error_tmp }, ty: result_ty })
     }
 
     #[inline(never)]
@@ -3226,6 +3254,7 @@ impl<'a> FnCx<'a> {
     }
 
     fn new_object(&mut self, class: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if class == "Error" { return self.error_new(args, pos); }
         if let Some(me) = self.actor_name() {
             return Err(isolation(pos, me, "sibling class", class));
         }
@@ -3386,6 +3415,7 @@ impl<'a> FnCx<'a> {
             return Err(string_member_err(name, pos));
         }
         match obj.ty {
+            Type::Error if name == "message" => Ok(TE { e: TExpr::ErrorMessage(Box::new(obj)), ty: Type::Str }),
             Type::Class(_) => self.field_get(obj, name, pos),
             Type::ActorRef(_) => Err(Diagnostic::new(
                 pos,
@@ -3642,6 +3672,7 @@ impl<'a> FnCx<'a> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if name == "Error" { return self.error_new(args, pos); }
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
         }
