@@ -234,3 +234,62 @@ fn locked_build_rejects_stale_and_extra_source_records() {
     f.write(".atto.pkg.lock",&old);
     assert!(compile_package_locked(f.root(),"src/main.atto",&expected).is_ok());
 }
+
+
+#[test]
+fn authenticated_immutable_snapshot_compiles_without_filesystem() {
+    use atto_compiler::package_resolver::{compile_locked_snapshot,SnapshotSource};
+    let manifest="[package]\nname=\"shop\"\nversion=\"1.0.0\"\n";
+    let mut lock=format!("[lock]\nmanifest_sha256=\"{}\"\n[files]\n",
+        hex_digest(manifest.as_bytes()));
+    for (path,source) in [
+        ("lib/math.atto",MATH),
+        ("lib/orders.atto",ORDERS),
+        ("src/main.atto",MAIN),
+    ] { lock.push_str(&format!("\"{path}\"=\"{}\"\n",hex_digest(source.as_bytes()))); }
+    let digest=hex_digest(lock.as_bytes());
+    let snapshot=[
+        SnapshotSource {path:"src/main.atto",source:MAIN},
+        SnapshotSource {path:"lib/math.atto",source:MATH},
+        SnapshotSource {path:"lib/orders.atto",source:ORDERS},
+    ];
+    let guest=compile_locked_snapshot("src/main.atto",manifest,&lock,&digest,&snapshot)
+        .expect("valid immutable snapshot");
+    assert!(guest.starts_with(b"\0asm\x01\0\0\0"));
+    let reordered=[snapshot[2],snapshot[1],snapshot[0]];
+    assert_eq!(guest,compile_locked_snapshot("src/main.atto",manifest,&lock,&digest,&reordered).unwrap());
+    let modified=MATH.replace("x * 2","x * 3");
+    let forged=[snapshot[0], SnapshotSource{path:"lib/math.atto",source:&modified}, snapshot[2]];
+    assert_eq!(compile_locked_snapshot("src/main.atto",manifest,&lock,&digest,&forged)
+        .unwrap_err().code,"E_LOCK_HASH");
+    assert_eq!(compile_locked_snapshot("src/main.atto",manifest,&lock,&"0".repeat(64),&snapshot)
+        .unwrap_err().code,"E_LOCK_HASH");
+    assert_eq!(compile_locked_snapshot("src/main.atto",manifest,&lock,&digest,&snapshot[..2])
+        .unwrap_err().code,"E_LOCK_HASH");
+    let dupe=[snapshot[0],snapshot[0],snapshot[2]];
+    assert_eq!(compile_locked_snapshot("src/main.atto",manifest,&lock,&digest,&dupe)
+        .unwrap_err().code,"E_DUPLICATE");
+}
+
+#[test]
+fn signed_snapshot_rejects_unreachable_extra_content() {
+    use atto_compiler::package_resolver::{compile_locked_snapshot,SnapshotSource};
+    let manifest="[package]\nname=\"shop\"\nversion=\"1.0.0\"\n";
+    let other="define module Unused as end";
+    let mut lock=format!("[lock]\nmanifest_sha256=\"{}\"\n[files]\n",
+        hex_digest(manifest.as_bytes()));
+    for (path,source) in [
+        ("lib/math.atto",MATH),
+        ("lib/orders.atto",ORDERS),
+        ("src/main.atto",MAIN),
+        ("lib/unused.atto",other),
+    ] { lock.push_str(&format!("\"{path}\"=\"{}\"\n",hex_digest(source.as_bytes()))); }
+    let sources=[
+        SnapshotSource{path:"lib/math.atto",source:MATH},
+        SnapshotSource{path:"lib/orders.atto",source:ORDERS},
+        SnapshotSource{path:"src/main.atto",source:MAIN},
+        SnapshotSource{path:"lib/unused.atto",source:other},
+    ];
+    assert_eq!(compile_locked_snapshot("src/main.atto",manifest,&lock,
+        &hex_digest(lock.as_bytes()),&sources).unwrap_err().code,"E_LOCK_HASH");
+}
