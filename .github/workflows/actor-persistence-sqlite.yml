@@ -1,0 +1,40 @@
+name: Native actor SQLite WAL/FULL checkpoint and SIGKILL tests
+on:
+  push:
+    paths:
+      - 'native/persistence_sqlite/**'
+      - '.github/workflows/actor-persistence-sqlite.yml'
+  pull_request:
+    paths:
+      - 'native/persistence_sqlite/**'
+      - '.github/workflows/actor-persistence-sqlite.yml'
+permissions:
+  contents: read
+jobs:
+  native-sqlite-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Native compiler and SQLite
+        run: |
+          cc --version
+          if ! pkg-config --exists sqlite3; then
+            sudo apt-get update
+            sudo apt-get install -y libsqlite3-dev
+          fi
+      - name: Compile native store with ASan and UBSan
+        run: |
+          cd native/persistence_sqlite
+          cc -D_POSIX_C_SOURCE=200809L -std=c11 -g -O1 -Wall -Wextra -Werror -pedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            atto_actor_sqlite_v1.c test_actor_sqlite_v1.c -lsqlite3 -o actor_sqlite_test
+      - name: Kill/reopen, corruption, epoch and sequence tests
+        run: |
+          cd native/persistence_sqlite
+          ASAN_OPTIONS=detect_leaks=1 timeout 30s ./actor_sqlite_test
+      - name: Evidence boundary
+        run: |
+          echo 'NATIVE_SQLITE_STATE_ONLY: no compiled Atto guest, durable mailbox, snapshot AOT emitter or supervisor revival'
