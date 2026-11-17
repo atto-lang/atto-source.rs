@@ -269,7 +269,8 @@ impl Emit<'_> {
         match s {
             // Source-validated scalar loan; the guest reads the original
             // scalar slot directly. The marker exists for typed-MIR audits.
-            TStmt::ScalarBorrowIssue { .. } => {}
+            TStmt::ScalarBorrowIssue { .. } | TStmt::ScalarBorrowUse { .. }
+            | TStmt::ScalarBorrowEnd { .. } => {}
             TStmt::Set(slot, v) => {
                 self.expr(v);
                 self.op(0x21);

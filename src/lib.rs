@@ -25,7 +25,7 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
-    compile_internal(source, false).map(|(bytes, _)| bytes)
+    compile_internal(source, false, false).map(|(bytes, _, _)| bytes)
 }
 
 /// Opt-in restricted compiler-owned typed-MIR read/definition census.
@@ -35,14 +35,29 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
 pub fn compile_with_typed_scalar_census(
     source: &str,
 ) -> Result<(Vec<u8>, check::typed_mir_census::Census), Diagnostic> {
-    let (bytes, census) = compile_internal(source, true)?;
+    let (bytes, census, _) = compile_internal(source, true, false)?;
     Ok((bytes, census.expect("requested census always produced or rejected")))
+}
+
+/// Opt-in independent diagnostic comparison on exactly the checked typed IR.
+/// It cannot relax any source ownership rejection, and rejects every control,
+/// heap or alias effect not modeled by this intentionally restricted slice.
+pub fn compile_with_scalar_loan_census(
+    source: &str,
+) -> Result<(Vec<u8>, check::scalar_loan_census::Census), Diagnostic> {
+    let (bytes, _, loans) = compile_internal(source, false, true)?;
+    Ok((bytes, loans.expect("requested loan census produced or rejected")))
 }
 
 fn compile_internal(
     source: &str,
     census_requested: bool,
-) -> Result<(Vec<u8>, Option<check::typed_mir_census::Census>), Diagnostic> {
+    loans_requested: bool,
+) -> Result<(
+    Vec<u8>,
+    Option<check::typed_mir_census::Census>,
+    Option<check::scalar_loan_census::Census>,
+), Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -92,6 +107,11 @@ fn compile_internal(
     } else {
         None
     };
+    let loans = if loans_requested {
+        Some(check::scalar_loan_census::from_checked_program(&typed)?)
+    } else {
+        None
+    };
     let bytes = wasm::emit(&typed);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
@@ -100,7 +120,7 @@ fn compile_internal(
             "generated module exceeds 1 MiB",
         ));
     }
-    Ok((bytes, census))
+    Ok((bytes, census, loans))
 }
 
 /// Browser host ABI (`atto-playground` compiler contract v2). One instance is
