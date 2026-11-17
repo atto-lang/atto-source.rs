@@ -57,14 +57,21 @@ fn ordinary_throw_without_recover_keeps_single_private_guest_tag() {
     let tag = bytes.windows(3).position(|w| w == [13, 3, 1]);
     assert!(tag.is_some(), "single ordinary-throw tag expected");
 
-    // The old trap-to-Option codegen must be unreachable on this branch.
-    reject("E_UNSUPPORTED", r#"
+    // Result-valued trap keeps the same private ordinary-throw tag and
+    // must compile without an Option wrapper or a separate EH tag.
+    let trapped = r#"
         fnc t(): int { throw Error("x"); }
         pub fnc main(): int {
-            val r = trap t();
-            return 0;
+            val Result<int,Error> r = trap t();
+            match r over
+              on Ok(v) -> { return v; }
+              on Err(e) -> { return 1; }
+            end
         }
-    "#);
+    "#;
+    let compiled = compile(trapped).expect("trap must compile to Result guest");
+    assert!(compiled.windows(3).any(|w| w == [13, 3, 1]));
+
 }
 
 #[test]
