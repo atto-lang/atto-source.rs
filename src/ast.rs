@@ -67,6 +67,9 @@ pub struct Program {
     pub actors: Vec<ActorDecl>,
     /// Compiler-validated, file-owned exports (not native host exports).
     pub exports: Vec<ExportDecl>,
+    /// Direct parser's unbound source directives. This is NOT checked IR;
+    /// the compile() lowering path resolves these before emitting a guest.
+    pub parsed_exports: Vec<crate::visibility_lower::Export>,
     /// Optional non-executable out-of-line actor interface in the production AST.
     /// Executable actor code still uses the normal actors field above.
     pub actor_interface: Option<ActorInterface>,
