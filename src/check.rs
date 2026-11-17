@@ -150,6 +150,8 @@ pub enum TExpr {
     ErrorNew { message: Box<TE>, tmp: u32 },
     /// Immutable Error.message; heap object holds the i64 string view.
     ErrorMessage(Box<TE>),
+    /// Exact guest Error handle identity (not string/message equality).
+    ErrorSameIdentity(Box<TE>, Box<TE>),
     /// One-layer Result-aware ordinary-throw handler. Existing Result
     /// handles pass through unchanged; a caught throw preserves Error identity.
     Trap {
@@ -1457,6 +1459,8 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::ErrorMessage(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
             pure_expr(a, pure_indices),
+        TExpr::ErrorSameIdentity(a, b) =>
+            pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
         TExpr::Bin(op, a, b) => {
             // Arithmetic, comparisons and eager boolean logic have no
             // observable external effects; newly added operators must be
@@ -1563,7 +1567,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::ErrorNew { message, .. } => any_in(message, f),
         TExpr::ErrorMessage(obj) => any_in(obj, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
-        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
+        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) |
+        TExpr::ErrorSameIdentity(a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
@@ -3598,6 +3603,19 @@ impl<'a> FnCx<'a> {
             return self.string_method(recv, name, args, pos);
         }
         match recv.ty {
+            Type::Error => {
+                if name != "is_same_instance" {
+                    return Err(type_err(pos, format!("Error has no method '{name}'")));
+                }
+                self.arity("Error.is_same_instance", 1, args.len(), pos)?;
+                let other = self.value(&args[0])?;
+                if other.ty != Type::Error {
+                    return Err(type_err(args[0].pos, format!(
+                        "Error.is_same_instance requires Error, found {}", self.tn(other.ty))));
+                }
+                Ok(TE { e: TExpr::ErrorSameIdentity(Box::new(recv), Box::new(other)),
+                    ty: Type::Bool })
+            }
             Type::Class(c) => {
                 // Calls on a loan may only return copyable, lifetime-independent
                 // values. Owned object returns need result-lifetime provenance.
