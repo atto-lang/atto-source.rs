@@ -2617,6 +2617,11 @@ impl<'a> FnCx<'a> {
     /// Construct an ADT only where the full expected type is unambiguous.
     /// Neither Null nor a bare payload implicitly converts to an ADT.
     fn consume_expected(&mut self, e: &Expr, want: Type) -> R<TE> {
+        if want == Type::ResultVoidError &&
+            matches!(&e.kind, ExprKind::Call(name, args) if name == "Ok" && args.is_empty()) {
+            let tmp = self.temp(want, e.pos)?;
+            return Ok(TE { e: TExpr::AdtNew { tag: 0, payload: None, tmp }, ty: want });
+        }
         let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
             ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
                 if args.len() != 1 {
@@ -2822,11 +2827,12 @@ impl<'a> FnCx<'a> {
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
-                let success_tag = match value.ty {
-                    Type::ResultIntStr => 0,
-                    Type::OptionInt => 1,
+                let (success_tag, success_ty) = match value.ty {
+                    Type::ResultIntStr | Type::ResultIntError => (0, Type::Int),
+                    Type::ResultOptionIntError => (0, Type::OptionInt),
+                    Type::OptionInt => (1, Type::Int),
                     _ => return Err(type_err(e.pos,
-                        format!("postfix '?' requires Option<int> or Result<int,string>, found {}", self.tn(value.ty)))),
+                        format!("postfix '?' requires an admitted Option or Result payload, found {}", self.tn(value.ty)))),
                 };
                 if self.ret != value.ty {
                     return Err(type_err(e.pos,
@@ -2835,7 +2841,7 @@ impl<'a> FnCx<'a> {
                 let tmp = self.temp(value.ty, e.pos)?;
                 Ok(TE { e: TExpr::AdtPropagate {
                     source: Box::new(value), tmp, success_tag
-                }, ty: Type::Int })
+                }, ty: success_ty })
             }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
@@ -3002,7 +3008,9 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::Error |
+                        Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+                        Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
