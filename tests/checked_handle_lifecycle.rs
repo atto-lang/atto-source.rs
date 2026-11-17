@@ -23,9 +23,11 @@ fn check_error(body: &str, code: &str) {
 
 #[test]
 fn canonical_and_legacy_lifecycle_compile() {
-    for form in ["bang", "rt"] {
+    for form in ["bang", "rt", "compact"] {
         let (create, read, release) = if form == "bang" {
             ("ref! original", "deref! handle", "unref! handle")
+        } else if form == "compact" {
+            ("ref!original", "deref!handle", "unref!handle")
         } else {
             ("rt ref original", "rt deref handle", "rt unref handle")
         };
@@ -203,4 +205,16 @@ fn forbids_conditional_unwrap_and_handle_argument_escape() {
         val restored = unref! handle;
         return restored.value;
     "#, "E_HANDLE");
+}
+
+#[test]
+fn gaps_before_bang_and_inequality_are_not_handle_prefixes() {
+    for spelling in ["ref !original", "ref!=original", "deref !original", "unref !original"] {
+        let source = program(&format!(r#"
+            val original = new Parcel();
+            val handle = {spelling};
+            return 42;
+        "#));
+        assert!(atto_compiler::compile(&source).is_err(), "{spelling}");
+    }
 }
