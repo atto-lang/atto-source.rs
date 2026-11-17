@@ -241,6 +241,13 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
                 j += 1;
             }
         }
+        // This frontend only supports extends/implements on concrete classes.
+        // Never silently erase unsupported hierarchy edges on traits/interfaces:
+        // doing so would make source-level obligations disappear before checking.
+        if kind != Kind::Class && (!parents.is_empty() || !contracts.is_empty()) {
+            return Err(diag(t[start].pos, "E_TYPE",
+                "trait/interface inheritance and implements require explicit checked lowering"));
+        }
         let mut permitted = Vec::new();
         if is(t, j, "permits") {
             if hierarchy != Hierarchy::Sealed {
