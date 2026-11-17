@@ -56,9 +56,63 @@ fn record_annotation_is_checked_before_guest_erasure() {
     pass("fnc main(): int { val r: Record={a:20}; val s: record=r with {b:22}; return r.a+s.b; }");
 }
 #[test]
-fn reject_quoted_punctuation_until_guest_bracket_layout_is_verified() {
-    fail(r#"fnc main(): int { val x={"content-type":"json"}; return 1; }"#,"E_UNSUPPORTED");
+fn quoted_utf8_headers_and_literal_keys_execute_in_guest() {
+    pass(r#"fnc main(): int {
+      val headers={status_code:200,"content-type":"application/json"};
+      val updated=headers with {"content-type":"application/msgpack","x-request-id":"abc"};
+      if updated["content-type"] eq "application/msgpack" then
+        return updated.status_code;
+      else return 0; fi
+    }"#);
+    pass(r#"fnc main(): int {
+      val r={"":40,"some field":2,"🦙":1};
+      val s=r with {"🦙":3};
+      return s[""]+s["some field"]+s["🦙"];
+    }"#);
 }
+#[test]
+fn lexical_blocks_and_shadowed_shapes_execute() {
+    pass(r#"fnc main():int {
+        val r={n:8};
+        block {
+            val r={"other-key":10};
+            val copy=r with {"other-key":20};
+            if copy["other-key"] eq 20 then
+                stdio.println(copy["other-key"]);
+            fi
+        }
+        return r.n;
+    }"#);
+}
+#[test]
+fn branches_and_loops_can_construct_scoped_records() {
+    pass(r#"fnc main():int {
+        val r={n:20};
+        if r.n eq 20 then
+            val s=r with {n:22};
+            if s.n eq 22 then return r.n+s.n; fi
+        fi
+        return 0;
+    }"#);
+    pass(r#"fnc main():int {
+        let i=0;
+        let sum=0;
+        while i < 3 do
+            val r={n:i};
+            val copy=r with {n:r.n+1};
+            sum=sum+copy.n;
+            i=i+1;
+        done
+        return sum;
+    }"#);
+}
+#[test]
+fn source_level_field_spelling_cannot_access_compiler_slot_by_accident() {
+    fail(r#"fnc main():int { val r={"content-type":"ok"};return r.f0; }"#,"E_NO_FIELD");
+    fail(r#"fnc main():int { val r={n:42};return r["not-here"]; }"#,"E_NO_FIELD");
+    fail(r#"fnc main():int { val r={n:42};val x="n";return r[x]; }"#,"E_RECORD_KEY");
+}
+
 #[test]
 fn reject_nested_object_ownership_and_dynamic_value() {
     fail("fnc main(): int { val r={a:{nested:1}}; return 0; }","E_UNSUPPORTED");
