@@ -145,14 +145,21 @@ pub enum TExpr {
     /// Immutable tagged ADT value: 16-byte allocation, i32 tag at 0,
     /// i64 payload at 8; no payload for None. tmp is a fresh i32 local.
     AdtNew { tag: u32, payload: Option<Box<TE>>, tmp: u32 },
-    /// Typed prefix trap: the operand is evaluated exactly once before
-    /// allocating Some; only the private guest ordinary-throw tag yields None.
-    /// All temporaries are function-local to avoid shared error state.
+    /// Builtin Error allocation: the object identity is the heap address,
+    /// represented as i64 for private EH tags and Result Err payloads.
+    ErrorNew { message: Box<TE>, tmp: u32 },
+    /// Immutable Error.message; heap object holds the i64 string view.
+    ErrorMessage(Box<TE>),
+    /// Exact guest Error handle identity (not string/message equality).
+    ErrorSameIdentity(Box<TE>, Box<TE>),
+    /// One-layer Result-aware ordinary-throw handler. Existing Result
+    /// handles pass through unchanged; a caught throw preserves Error identity.
     Trap {
         value: Box<TE>,
-        value_tmp: u32,
+        value_tmp: Option<u32>,
         some_tmp: u32,
         none_tmp: u32,
+        error_tmp: u32,
     },
     /// Compare the discriminant with a known variant tag.
     AdtIs { obj: Box<TE>, tag: u32 },
@@ -237,7 +244,8 @@ pub enum TStmt {
     Try {
         saved: u32,
         body: Vec<TStmt>,
-        catch: Option<Vec<TStmt>>,
+        /// Bound original Error handle and handler body (no message-only copy).
+        catch: Option<(u32, Vec<TStmt>)>,
         finally: Option<Vec<TStmt>>,
     },
     /// Registration point of a top-level `defer`: sets `flag`. The body
@@ -453,6 +461,9 @@ struct FnCx<'a> {
     unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// > 0 while checking an isolated defer/recover body.
     cleanup_depth: u32,
+    /// A finally body must not early-return through postfix '?' and replace
+    /// a prior pending exception/return, even when it has a Result type.
+    finally_depth: u32,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
 }
@@ -1302,7 +1313,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ErrorNew { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
@@ -1430,7 +1441,7 @@ fn returns(body: &[TStmt]) -> bool {
         TStmt::Raise(_) | TStmt::RecoverNext => true,
         TStmt::Try { body, catch, finally, .. } =>
             finally.as_ref().is_some_and(|f| returns(f))
-                || (returns(body) && catch.as_ref().is_none_or(|c| returns(c))),
+                || (returns(body) && catch.as_ref().is_none_or(|(_, c)| returns(c))),
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
@@ -1449,9 +1460,11 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
         TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
         TExpr::IntToFloat(a) | TExpr::FNeg(a) |
-        TExpr::Neg(a) | TExpr::Not(a) |
+        TExpr::Neg(a) | TExpr::Not(a) | TExpr::ErrorMessage(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
             pure_expr(a, pure_indices),
+        TExpr::ErrorSameIdentity(a, b) =>
+            pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
         TExpr::Bin(op, a, b) => {
             // Arithmetic, comparisons and eager boolean logic have no
             // observable external effects; newly added operators must be
@@ -1494,7 +1507,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
-        TExpr::AdtNew { .. } | TExpr::Trap { .. } |
+        TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ErrorNew { .. } |
         TExpr::AdtPropagate { .. } => false,
     }
 }
@@ -1539,7 +1552,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
         TStmt::Raise(e) => any_in(e, f),
         TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
-            || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
+            || catch.as_ref().is_some_and(|(_, b)| any_in_stmts(b, f))
             || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
         TStmt::Defer { body, .. } => any_in_stmts(body, f),
         TStmt::Recover { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
@@ -1555,8 +1568,11 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
+        TExpr::ErrorNew { message, .. } => any_in(message, f),
+        TExpr::ErrorMessage(obj) => any_in(obj, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
-        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
+        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) |
+        TExpr::ErrorSameIdentity(a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
         TExpr::Str(_, a, b) => any_in(a, f) || b.as_ref().is_some_and(|b| any_in(b, f)),
         TExpr::Call(_, args) => args.iter().any(|a| any_in(a, f)),
@@ -1625,6 +1641,7 @@ impl<'a> FnCx<'a> {
             data,
             unwind: None,
             cleanup_depth: 0,
+            finally_depth: 0,
             recover_cursor: None,
         }
     }
@@ -1680,8 +1697,32 @@ impl<'a> FnCx<'a> {
         r
     }
 
-    /// The message of an admitted `throw`/`raise` operand:
-    /// `Error(message)` or `new Error(message)`.
+    /// First-class, nominal built-in Error. The private guest heap holds
+    /// the message, while the opaque address is the identity preserved in
+    /// both Result.Err and the WebAssembly exception tag.
+    fn error_new(&mut self, args: &[Expr], pos: Pos) -> R<TE> {
+        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() ||
+            self.lookup("Error").is_some() {
+            return Err(Diagnostic::new(pos, "E_RESERVED",
+                "the guest Error constructor cannot be shadowed"));
+        }
+        if args.len() != 1 {
+            return Err(Diagnostic::new(pos, "E_ARITY",
+                "Error(message) requires exactly one string argument"));
+        }
+        let msg = self.value(&args[0])?;
+        if msg.ty != Type::Str {
+            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
+        }
+        let tmp = self.temp(Type::Error, pos)?;
+        Ok(TE {
+            e: TExpr::ErrorNew { message: Box::new(msg), tmp },
+            ty: Type::Error,
+        })
+    }
+
+    /// Ordinary source throw/raise receives a real Error object, not just
+    /// its message string. Re-throwing a typed Error preserves identity.
     fn guest_error_message(&mut self, error: &Expr, what: &str, pos: Pos) -> R<TE> {
         if self.owner != Owner::TopLevel {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
@@ -1691,24 +1732,12 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 format!("'{what}' inside a defer/recover body would replace the pending failure")));
         }
-        let args = match &error.kind {
-            ExprKind::Call(name, args) | ExprKind::New(name, args) if name == "Error" => args,
-            _ => return Err(type_err(error.pos,
-                format!("{what} requires an Error subclass; this browser slice admits only {what} Error(message)"))),
-        };
-        if args.len() != 1 {
-            return Err(Diagnostic::new(error.pos, "E_ARITY",
-                "Error(message) requires exactly one string argument"));
+        let value = self.value(error)?;
+        if value.ty != Type::Error {
+            return Err(type_err(error.pos,
+                format!("{what} requires an Error subclass, found {}", self.tn(value.ty))));
         }
-        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
-            return Err(Diagnostic::new(error.pos, "E_RESERVED",
-                "the guest Error constructor cannot be shadowed"));
-        }
-        let msg = self.value(&args[0])?;
-        if msg.ty != Type::Str {
-            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
-        }
-        Ok(msg)
+        Ok(value)
     }
 
     fn tn(&self, t: Type) -> String {
@@ -1915,12 +1944,23 @@ impl<'a> FnCx<'a> {
                     // Conservative ownership: the handler and finally see
                     // every move the body might have made before failing.
                     let catch = match catch {
-                        Some((_binder, handler)) => Some(self.scoped(handler)?),
+                        Some((binder, handler)) => {
+                            self.scopes.push(Vec::new());
+                            let checked = (|| -> R<(u32, Vec<TStmt>)> {
+                                let slot = self.declare(binder, Type::Error, false, *pos)?;
+                                Ok((slot, self.stmts(handler)?))
+                            })();
+                            self.pop_scope();
+                            Some(checked?)
+                        },
                         None => None,
                     };
                     let finally = match finally {
                         Some(cleanup) => {
-                            let cleanup = self.scoped(cleanup)?;
+                            self.finally_depth += 1;
+                            let checked = self.scoped(cleanup);
+                            self.finally_depth -= 1;
+                            let cleanup = checked?;
                             if exits_anywhere(&cleanup) {
                                 return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
                                     "a finally block must not return, throw or raise: it would replace the pending outcome"));
@@ -2148,7 +2188,8 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -2366,6 +2407,12 @@ impl<'a> FnCx<'a> {
                     let (tag, needed) = match (sty, name.as_str()) {
                         (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+                        (Type::ResultIntError, "Ok") => (0, Some(Type::Int)),
+                        (Type::ResultIntError, "Err") => (1, Some(Type::Error)),
+                        (Type::ResultOptionIntError, "Ok") => (0, Some(Type::OptionInt)),
+                        (Type::ResultOptionIntError, "Err") => (1, Some(Type::Error)),
+                        (Type::ResultVoidError, "Ok") => (0, None),
+                        (Type::ResultVoidError, "Err") => (1, Some(Type::Error)),
                         (Type::OptionInt, "None") => (0, None),
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
                         (Type::OptionResultIntStr, "None") => (0, None),
@@ -2585,6 +2632,11 @@ impl<'a> FnCx<'a> {
     /// Construct an ADT only where the full expected type is unambiguous.
     /// Neither Null nor a bare payload implicitly converts to an ADT.
     fn consume_expected(&mut self, e: &Expr, want: Type) -> R<TE> {
+        if want == Type::ResultVoidError &&
+            matches!(&e.kind, ExprKind::Call(name, args) if name == "Ok" && args.is_empty()) {
+            let tmp = self.temp(want, e.pos)?;
+            return Ok(TE { e: TExpr::AdtNew { tag: 0, payload: None, tmp }, ty: want });
+        }
         let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
             ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
                 if args.len() != 1 {
@@ -2599,6 +2651,12 @@ impl<'a> FnCx<'a> {
         let (tag, payload_type) = match (want, variant) {
             (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
             (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+            (Type::ResultIntError, "Ok") => (0, Some(Type::Int)),
+            (Type::ResultIntError, "Err") => (1, Some(Type::Error)),
+            (Type::ResultOptionIntError, "Ok") => (0, Some(Type::OptionInt)),
+            (Type::ResultOptionIntError, "Err") => (1, Some(Type::Error)),
+            (Type::ResultVoidError, "Ok") => (0, None),
+            (Type::ResultVoidError, "Err") => (1, Some(Type::Error)),
             (Type::OptionInt, "None") => (0, None),
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
             (Type::OptionResultIntStr, "None") => (0, None),
@@ -2743,24 +2801,33 @@ impl<'a> FnCx<'a> {
     // recursively invoked expression checker bounded on the browser runner.
     #[inline(never)]
     fn trap_value(&mut self, inner: &Expr, pos: Pos) -> R<TE> {
-        if self.owner != Owner::TopLevel {
+        if self.owner != Owner::TopLevel || self.cleanup_depth > 0 {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "caller-side trap inside class/actor requires lifecycle integration"));
+                "trap in actor/class or cleanup needs validated unwind integration"));
         }
-        let value = self.consume(inner)?;
-        let option_ty = match value.ty {
-            Type::Int => Type::OptionInt,
-            Type::ResultIntStr => Type::OptionResultIntStr,
+        // Evaluate/typecheck exactly once; do not recursively flatten Result.
+        let value = self.expr(inner)?;
+        let result_ty = match value.ty {
+            Type::Int => Type::ResultIntError,
+            Type::OptionInt => Type::ResultOptionIntError,
+            Type::Void => Type::ResultVoidError,
+            Type::ResultIntError => Type::ResultIntError,
+            Type::ResultOptionIntError => Type::ResultOptionIntError,
+            Type::ResultVoidError => Type::ResultVoidError,
+            Type::ResultIntStr => return Err(Diagnostic::new(pos, "E_TRAP_ERROR_JOIN",
+                "cannot losslessly join returned string Err with thrown Error; convert to Result<*,Error> explicitly")),
             _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                format!("browser trap supports only int and Result<int,string> operands, found {}", self.tn(value.ty)))),
+                format!("trap of {} needs a verified Result error representation", self.tn(value.ty)))),
         };
-        let value_tmp = self.temp(value.ty, pos)?;
-        let some_tmp = self.temp(option_ty, pos)?;
-        let none_tmp = self.temp(option_ty, pos)?;
-        Ok(TE {
-            e: TExpr::Trap { value: Box::new(value), value_tmp, some_tmp, none_tmp },
-            ty: option_ty,
-        })
+        let value_tmp = match value.ty {
+            Type::Void | Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError => None,
+            t => Some(self.temp(t, pos)?),
+        };
+        let some_tmp = self.temp(result_ty, pos)?;
+        let none_tmp = self.temp(result_ty, pos)?;
+        let error_tmp = self.temp(Type::Error, pos)?;
+        Ok(TE { e: TExpr::Trap { value: Box::new(value),
+            value_tmp, some_tmp, none_tmp, error_tmp }, ty: result_ty })
     }
 
     #[inline(never)]
@@ -2780,12 +2847,22 @@ impl<'a> FnCx<'a> {
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
+                // Early Err/None now branches through the typed function
+                // unwind frame so registered defer/finally cleanup runs once.
+                // A return *within* a defer/recover handler could still replace
+                // the pending outcome; keep that separate control flow gated.
+                if self.cleanup_depth > 0 || self.finally_depth > 0 {
+                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+                        "postfix '?' inside defer/recover/finally cannot replace the pending outcome"));
+                }
                 let value = self.consume(inner)?;
-                let success_tag = match value.ty {
-                    Type::ResultIntStr => 0,
-                    Type::OptionInt => 1,
+                let (success_tag, success_ty) = match value.ty {
+                    Type::ResultIntStr | Type::ResultIntError => (0, Type::Int),
+                    Type::ResultOptionIntError => (0, Type::OptionInt),
+                    Type::ResultVoidError => (0, Type::Void),
+                    Type::OptionInt => (1, Type::Int),
                     _ => return Err(type_err(e.pos,
-                        format!("postfix '?' requires Option<int> or Result<int,string>, found {}", self.tn(value.ty)))),
+                        format!("postfix '?' requires an admitted Option or Result payload, found {}", self.tn(value.ty)))),
                 };
                 if self.ret != value.ty {
                     return Err(type_err(e.pos,
@@ -2794,7 +2871,7 @@ impl<'a> FnCx<'a> {
                 let tmp = self.temp(value.ty, e.pos)?;
                 Ok(TE { e: TExpr::AdtPropagate {
                     source: Box::new(value), tmp, success_tag
-                }, ty: Type::Int })
+                }, ty: success_ty })
             }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
@@ -2961,7 +3038,9 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::Error |
+                        Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+                        Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
@@ -3213,6 +3292,7 @@ impl<'a> FnCx<'a> {
     }
 
     fn new_object(&mut self, class: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if class == "Error" { return self.error_new(args, pos); }
         if let Some(me) = self.actor_name() {
             return Err(isolation(pos, me, "sibling class", class));
         }
@@ -3373,6 +3453,7 @@ impl<'a> FnCx<'a> {
             return Err(string_member_err(name, pos));
         }
         match obj.ty {
+            Type::Error if name == "message" => Ok(TE { e: TExpr::ErrorMessage(Box::new(obj)), ty: Type::Str }),
             Type::Class(_) => self.field_get(obj, name, pos),
             Type::ActorRef(_) => Err(Diagnostic::new(
                 pos,
@@ -3532,6 +3613,19 @@ impl<'a> FnCx<'a> {
             return self.string_method(recv, name, args, pos);
         }
         match recv.ty {
+            Type::Error => {
+                if name != "is_same_instance" {
+                    return Err(type_err(pos, format!("Error has no method '{name}'")));
+                }
+                self.arity("Error.is_same_instance", 1, args.len(), pos)?;
+                let other = self.value(&args[0])?;
+                if other.ty != Type::Error {
+                    return Err(type_err(args[0].pos, format!(
+                        "Error.is_same_instance requires Error, found {}", self.tn(other.ty))));
+                }
+                Ok(TE { e: TExpr::ErrorSameIdentity(Box::new(recv), Box::new(other)),
+                    ty: Type::Bool })
+            }
             Type::Class(c) => {
                 // Calls on a loan may only return copyable, lifetime-independent
                 // values. Owned object returns need result-lifetime provenance.
@@ -3629,6 +3723,7 @@ impl<'a> FnCx<'a> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if name == "Error" { return self.error_new(args, pos); }
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
         }
@@ -3967,7 +4062,7 @@ fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
         TStmt::ForIn { body, .. } => stmt_exists(body, f),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => stmt_exists(b, f),
         TStmt::Try { body, catch, finally, .. } => stmt_exists(body, f)
-            || catch.as_ref().is_some_and(|b| stmt_exists(b, f))
+            || catch.as_ref().is_some_and(|(_, b)| stmt_exists(b, f))
             || finally.as_ref().is_some_and(|b| stmt_exists(b, f)),
         TStmt::Defer { body, .. } | TStmt::Recover { body, .. } => stmt_exists(body, f),
         _ => false,

@@ -1,0 +1,20 @@
+// expect-exit: 41
+// expect-stdout: cleanup B
+// expect-stdout: cleanup A
+// expect-stdout: boom
+// Err takes the same function-return path as explicit return, running defers LIFO.
+fnc failed(): Result<int,Error> { return Err(Error("boom")); }
+fnc checked(): Result<int,Error> {
+  defer || -> { stdio.println("cleanup A"); };
+  defer || -> { stdio.println("cleanup B"); };
+  val Result<int,Error> result = trap failed();
+  val int n = result?;
+  return Ok(n);
+}
+pub fnc main(): int {
+  val Result<int,Error> result = checked();
+  match result over
+    on Ok(v) -> { return 0; }
+    on Err(e) -> { stdio.println(e.message); return 41; }
+  end
+}

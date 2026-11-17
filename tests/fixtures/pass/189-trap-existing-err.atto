@@ -1,0 +1,14 @@
+// expect-exit: 7
+// Returned Err Error is an ordinary result, not a trapped throw.
+fnc checked(int n): Result<int,Error> {
+  if n < 0 then return Err(Error("already failed")); fi
+  return Ok(n);
+}
+pub fnc main(): int {
+  val Result<int,Error> result = trap checked(-1);
+  match result over
+    on Ok(v) -> { return v; }
+    on Err(e) -> { stdio.println(e.message); return 7; }
+  end
+}
+// expect-stdout: already failed

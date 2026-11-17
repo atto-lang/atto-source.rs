@@ -1,0 +1,26 @@
+// expect-exit: 44
+// expect-stdout: deferred
+// A rethrown Error is the SAME object; an equal-message Error is not.
+fnc fail_with(Error err): int throws(Error) { throw err; }
+fnc checked(Error original): Result<int,Error> {
+  defer || -> { stdio.println("deferred"); };
+  val Result<int,Error> r = trap fail_with(original);
+  val int n = r?;
+  return Ok(n);
+}
+pub fnc main(): int {
+  val Error original = Error("same text");
+  val Error distinct = Error("same text");
+  val Result<int,Error> r = checked(original);
+  match r over
+    on Ok(v) -> { return 0; }
+    on Err(e) -> {
+      if e.is_same_instance(original) then
+        if e.is_same_instance(distinct) then return 0;
+        else return 44;
+        fi
+      else return 0;
+      fi
+    }
+  end
+}

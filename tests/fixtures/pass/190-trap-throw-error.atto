@@ -1,0 +1,11 @@
+// expect-exit: 13
+// Ordinary throw Error carries original heap identity through the guest tag.
+fnc fail(): int throws(Error) { throw Error("caught Error"); }
+pub fnc main(): int {
+  val Result<int,Error> result = trap fail();
+  match result over
+    on Ok(v) -> { return v; }
+    on Err(e) -> { stdio.println(e.message); return 13; }
+  end
+}
+// expect-stdout: caught Error
