@@ -53,12 +53,14 @@ fn is(t: &[Token], i: usize, value: &str) -> bool {
 }
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(s), pos: _ })
-            if s.len() <= 96
-                && !matches!(
-                    s.as_str(),
-                    "as" | "end" | "define" | "pub" | "class" | "trait" | "interface" | "extends" | "implements"
-                ) =>
+        Some(Token {
+            tok: Tok::Ident(s),
+            pos: _,
+        }) if s.len() <= 96
+            && !matches!(
+                s.as_str(),
+                "as" | "end" | "define" | "pub" | "class" | "trait" | "interface" | "extends" | "implements"
+            ) =>
         {
             Ok(s.clone())
         }
