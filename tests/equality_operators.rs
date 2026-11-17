@@ -218,7 +218,7 @@ fn explicit_equals_calls_borrow_other_without_implicit_moves() {
 fn class_self_identity_is_available_without_general_self_escape() {
     let source = include_str!("fixtures/pass/228-class-self-identity.atto");
     let wasm = compile(source).expect("read-only self identity must be allowed in instance methods");
-    assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
     assert_eq!(wasm, compile(source).unwrap(), "same source must emit identical Wasm");
 
     let escaped = include_str!("fixtures/fail/229-class-self-owner-escape.atto");
