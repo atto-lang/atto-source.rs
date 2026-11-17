@@ -127,16 +127,19 @@ try{
   console.log('PASS browser: recursion, for loop and granted stdio imports');
   assert.match(await run('pub fnc main(): int {\n  stdio.println("hi");\n  val x: int = 9223372036854775807;\n  return x + 1;\n}','E_PANIC'),/hi\nE_PANIC: integer overflow/);
   console.log('PASS browser: checked int overflow panics with output preserved');
-  // Canonical trap produces Result<T, Error>, not Option<T>. Until true typed
-  // guest Error propagation is implemented, the actual wasm32 compiler must
-  // reject every trap expression rather than silently emit the old lowering.
+  // Execute real Result-valued trap guests through Chromium + dedicated
+  // compiler worker, and prove that old Option patterns fail statically.
+  const scalarTrap = 'fnc checked(int n): Result<int,Error> { return Ok(n); }\npub fnc main(): int { val Result<int,Error> r = trap checked(41); match r over on Ok(v) -> { return v; } on Err(e) -> { return 0; } end }';
+  assert.match(await run(scalarTrap, 'main() -> 41'), /main\(\) -> 41/);
+  const caughtTrap = 'fnc fail(): int throws(Error) { throw Error("guest failed"); }\npub fnc main(): int { val Result<int,Error> r = trap fail(); match r over on Ok(v) -> { return v; } on Err(e) -> { stdio.println(e.message); return 13; } end }';
+  assert.match(await run(caughtTrap, 'main() -> 13'), /guest failed\nmain\(\) -> 13/);
+  const optionalTrap = 'fnc maybe(): Option<int> { return None; }\npub fnc main(): int { val Result<Option<int>,Error> r = trap maybe(); match r over on Err(e) -> { return 0; } on Ok(v) -> { match v over on None -> { return 17; } on Some(n) -> { return n; } end } end }';
+  assert.match(await run(optionalTrap, 'main() -> 17'), /main\(\) -> 17/);
   const legacyTrap = 'pub fnc main(): int { match trap 42 over on Some(x) -> { return x; } on None -> { return 0; } end }';
-  assert.match(await run(legacyTrap, 'E_UNSUPPORTED'), /E_UNSUPPORTED/);
-  const resultTrap = 'fnc parse(int n): Result<int,string> { return Ok(n); }\npub fnc main(): int { val x = trap parse(42); return 0; }';
-  assert.match(await run(resultTrap, 'E_UNSUPPORTED'), /E_UNSUPPORTED/);
-  const ordinaryTrap = 'fnc fail(): int { throw Error("bad"); }\npub fnc main(): int { val x = trap fail(); return x; }';
-  assert.match(await run(ordinaryTrap, 'E_UNSUPPORTED'), /E_UNSUPPORTED/);
-  console.log('PASS browser: obsolete Option trap lowered to no artifact (E_UNSUPPORTED)');
+  assert.match(await run(legacyTrap, 'E_TYPE'), /E_TYPE/);
+  const invalidJoin = 'fnc parse(int n): Result<int,string> { return Ok(n); }\npub fnc main(): int { val x = trap parse(42); return 0; }';
+  assert.match(await run(invalidJoin, 'E_TRAP_ERROR_JOIN'), /E_TRAP_ERROR_JOIN/);
+  console.log('PASS browser: Result trap Ok/Err/Option guests execute; legacy Option and lossy joins reject');
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: error recovery restores valid execution');
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
