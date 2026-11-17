@@ -21,6 +21,7 @@ const negatives = [
   '991-copy-doublebang-class-unproved.atto',
   '992-copy-doublebang-mut-invalid.atto',
   '996-copy-doublebang-exclusive-loan.atto',
+  '997-copy-doublebang-nested-array-no-runtime.atto',
 ];
 const imports = {
   atto: {
