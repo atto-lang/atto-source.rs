@@ -62,6 +62,25 @@ fn chained_updates_use_latest_static_shape() {
             let a: string = y.a; let b: bool = y.b;").unwrap();
 }
 #[test]
+fn computed_scalar_updates_are_inferred_without_retyping_original() {
+    scoped("let x = {age: 30, tag: \"A\"};
+            let y = x with {age: x.age + 1, tag: x.tag + \"!\"};
+            let before: int = x.age;
+            let after: int = y.age;
+            let text: string = y.tag;").unwrap();
+}
+#[test]
+fn computed_update_incompatible_context_is_rejected() {
+    failure("let x = {age: 30};
+             let y = x with {age: x.age eq 30};
+             let invalid: int = y.age;", "E_TYPE");
+}
+#[test]
+fn negative_oversized_literal_update_is_rejected() {
+    failure("let x = {age: 1};
+             let y = x with {age: -9223372036854775809};", "E_INTEGER_RANGE");
+}
+#[test]
 fn duplicates_are_rejected_even_if_quoted_and_bare_are_mixed() {
     for source in [
         "let x = {a: 1}; let y = x with {a: 2, a: 3};",
