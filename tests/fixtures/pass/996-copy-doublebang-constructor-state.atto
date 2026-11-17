@@ -1,0 +1,14 @@
+// expect-exit: 42
+// java: rejects
+// copy!! must copy the post-constructor state, not run the constructor again.
+define class Counter as
+    mut int value = 1;
+    constructor(int x) {
+        self.value = x;
+    }
+end
+pub fnc main(): int {
+    val source = new Counter(42);
+    val detached = copy!! source;
+    return detached.value;
+}
