@@ -187,3 +187,20 @@ fn rejects_early_exit_before_later_unwrap() {
         val recovered = unref! handle;
     "#, "E_HANDLE");
 }
+
+#[test]
+fn forbids_conditional_unwrap_and_handle_argument_escape() {
+    check_error(r#"
+        val original = new Parcel();
+        val handle = ref! original;
+        val restored = true ? unref! handle : new Parcel();
+        return restored.value;
+    "#, "E_HANDLE");
+    check_error(r#"
+        val original = new Parcel();
+        val handle = ref! original;
+        stdio.println(handle);
+        val restored = unref! handle;
+        return restored.value;
+    "#, "E_HANDLE");
+}
