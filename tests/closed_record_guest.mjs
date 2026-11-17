@@ -52,7 +52,7 @@ const positives=[
  ['pub fnc main(): int {let Record p={y:2,x:40}; return p.x+p.y;}',42n,''],
  ['pub fnc main(): int {let Record h={"content-type":"application/json","über field":40,status_code:2}; stdio.println(h["content-type"]); return h["über field"]+h.status_code;}',42n,'application/json\n'],
  ['pub fnc main(): int {let Record x={z:true,a:40}; let record y={a:41,z:false}; return x.a+y.a-39;}',42n,''],
- ['define struct Point as int x; int y; end pub fnc main(): int {val p=Point{y:2,x:40}; let Record c={x:40,y:2}; return p.x+c.y;}',42n,'']
+ ['define struct Point as int x; int y; end pub fnc main(): int {val p=Point{y:2,x:40}; let Record c={x:40,y:2}; return p.x+c.y;}',42n,''],
  ['pub fnc main(): int {let Record headers={status_code:42,"content-type":"ok"}; headers.status_code; headers["content-type"]; return headers.status_code;}',42n,''],
  ['pub fnc main(): int {let Record headers={"content-type":"application/json",status_code:42}; block { stdio.println(headers["content-type"]); headers.status_code; } return headers["status_code"];}',42n,'application/json\n'],
  ['pub fnc main(): int {let Record headers={"content-type":42,status_code:42}; val alias=headers; return alias["content-type"];}',42n,''],
@@ -64,7 +64,7 @@ const negatives=[
  ['pub fnc main(): int {let Record r={x:42}; return r["missing"]; }','E_NO_FIELD'],
  ['pub fnc main(): int {let Map<string,int> m={"x"=>42}; return m["x"]; }','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:1,"x":2}; return 0; }','E_DUPLICATE'],
- ['pub fnc main(): int {const Record r={x:42}; return r.x;}','E_UNSUPPORTED']
+ ['pub fnc main(): int {const Record r={x:42}; return r.x;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record headers={"content-type":42}; block {let headers=7; stdio.println(headers["content-type"]);} return 0;}','E_UNSUPPORTED'],
  ['define struct Header as int status_code; end pub fnc main(): int {val h=Header{status_code:42}; return h["status_code"]; }','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record headers={"content-type":42}; return headers["content"+"-type"]; }','E_UNSUPPORTED'],
