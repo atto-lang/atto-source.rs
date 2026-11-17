@@ -125,17 +125,20 @@ fn actual_unsafe_program_is_rejected_before_diagnostic_manifest() {
     assert_eq!(compile(unsafe_source).unwrap_err().code, "E_BORROW");
 }
 
-
 #[test]
 fn alias_reads_in_checked_expressions_retain_unique_loan_provenance() {
     let p = typed(shared_source());
-    let (id, owner_slot) = p.funcs[0].body.iter().find_map(|s| {
-        if let TStmt::ScalarBorrowIssue { loan_id, owner_slot, .. } = s {
-            Some((*loan_id, *owner_slot))
-        } else {
-            None
-        }
-    }).expect("compiled borrow issue");
+    let (id, owner_slot) = p.funcs[0]
+        .body
+        .iter()
+        .find_map(|s| {
+            if let TStmt::ScalarBorrowIssue { loan_id, owner_slot, .. } = s {
+                Some((*loan_id, *owner_slot))
+            } else {
+                None
+            }
+        })
+        .expect("compiled borrow issue");
     assert!(p.funcs[0].body.iter().any(|s| matches!(
         s,
         TStmt::Set(_, TE {
@@ -151,8 +154,11 @@ fn missing_one_of_two_alias_use_markers_is_rejected_even_if_prior_use_exists() {
     let source = "pub fnc main(): int { let number = 40; val reader = borrow! number; val first = copy! reader; val second = copy! reader; number = 42; return number; }";
     let mut p = typed(source);
     assert_eq!(audit_scalar_loan_lifecycle(&p).unwrap().len(), 4);
-    let use_indices: Vec<_> = p.funcs[0].body.iter().enumerate()
-        .filter_map(|(i,s)| matches!(s, TStmt::ScalarLoanUse { write: false, .. }).then_some(i))
+    let use_indices: Vec<_> = p.funcs[0]
+        .body
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| matches!(s, TStmt::ScalarLoanUse { write: false, .. }).then_some(i))
         .collect();
     assert_eq!(use_indices.len(), 2);
     p.funcs[0].body.remove(use_indices[1]);
@@ -162,9 +168,22 @@ fn missing_one_of_two_alias_use_markers_is_rejected_even_if_prior_use_exists() {
 #[test]
 fn fabricated_loan_use_marker_with_plain_direct_load_is_rejected() {
     let mut p = typed(shared_source());
-    let stmt = p.funcs[0].body.iter_mut().find(|s| matches!(
-        s, TStmt::Set(_, TE { e: TExpr::LoanRead { .. }, .. })
-    )).expect("loan alias value use");
+    let stmt = p.funcs[0]
+        .body
+        .iter_mut()
+        .find(|s| {
+            matches!(
+                s,
+                TStmt::Set(
+                    _,
+                    TE {
+                        e: TExpr::LoanRead { .. },
+                        ..
+                    }
+                )
+            )
+        })
+        .expect("loan alias value use");
     if let TStmt::Set(_, TE { e, .. }) = stmt {
         let TExpr::LoanRead { owner_slot, .. } = e else { unreachable!() };
         *e = TExpr::Local(*owner_slot);
@@ -175,12 +194,17 @@ fn fabricated_loan_use_marker_with_plain_direct_load_is_rejected() {
 #[test]
 fn duplicate_loan_read_marker_without_second_guest_load_is_rejected() {
     let mut p = typed(shared_source());
-    let first_use = p.funcs[0].body.iter().find(|s| matches!(
-        s, TStmt::ScalarLoanUse { write: false, .. }
-    )).unwrap().clone();
-    let pos = p.funcs[0].body.iter().position(|s| matches!(
-        s, TStmt::ScalarLoanUse { write: false, .. }
-    )).unwrap();
+    let first_use = p.funcs[0]
+        .body
+        .iter()
+        .find(|s| matches!(s, TStmt::ScalarLoanUse { write: false, .. }))
+        .unwrap()
+        .clone();
+    let pos = p.funcs[0]
+        .body
+        .iter()
+        .position(|s| matches!(s, TStmt::ScalarLoanUse { write: false, .. }))
+        .unwrap();
     p.funcs[0].body.insert(pos, first_use);
     assert_eq!(audit_scalar_loan_lifecycle(&p).unwrap_err().code, "E_TYPED_MIR_CENSUS_INCOMPLETE");
 }
@@ -188,13 +212,18 @@ fn duplicate_loan_read_marker_without_second_guest_load_is_rejected() {
 #[test]
 fn direct_owner_read_under_exclusive_loan_cannot_hide_as_plain_typed_local() {
     let mut p = typed(exclusive_source());
-    let issue = p.funcs[0].body.iter().position(|s| matches!(
-        s, TStmt::ScalarBorrowIssue { exclusive: true, .. }
-    )).unwrap();
-    p.funcs[0].body.insert(issue + 1, TStmt::Expr(TE {
-        e: TExpr::Local(0),
-        ty: Type::Int,
-    }));
+    let issue = p.funcs[0]
+        .body
+        .iter()
+        .position(|s| matches!(s, TStmt::ScalarBorrowIssue { exclusive: true, .. }))
+        .unwrap();
+    p.funcs[0].body.insert(
+        issue + 1,
+        TStmt::Expr(TE {
+            e: TExpr::Local(0),
+            ty: Type::Int,
+        }),
+    );
     assert_eq!(audit_scalar_loan_lifecycle(&p).unwrap_err().code, "E_TYPED_MIR_CENSUS_INCOMPLETE");
 }
 
@@ -202,7 +231,14 @@ fn direct_owner_read_under_exclusive_loan_cannot_hide_as_plain_typed_local() {
 fn wrong_alias_loan_id_inside_real_guest_load_is_rejected() {
     let mut p = typed(shared_source());
     for stmt in &mut p.funcs[0].body {
-        if let TStmt::Set(_, TE { e: TExpr::LoanRead { loan_id, .. }, .. }) = stmt {
+        if let TStmt::Set(
+            _,
+            TE {
+                e: TExpr::LoanRead { loan_id, .. },
+                ..
+            },
+        ) = stmt
+        {
             *loan_id = 999;
             break;
         }
@@ -212,18 +248,25 @@ fn wrong_alias_loan_id_inside_real_guest_load_is_rejected() {
 
 #[test]
 fn possible_trap_with_live_scalar_loan_requires_exceptional_cfg() {
-    let source = "pub fnc main(): int { let number = 40; val reader = borrow! number; val total = copy! reader + 2; number = 42; return number; }";
+    let source =
+        "pub fnc main(): int { let number = 40; val reader = borrow! number; val total = copy! reader + 2; number = 42; return number; }";
     let program = typed(source);
     assert!(compile(source).is_ok());
-    assert_eq!(audit_scalar_loan_lifecycle(&program).unwrap_err().code, "E_TYPED_MIR_CENSUS_UNSUPPORTED");
+    assert_eq!(
+        audit_scalar_loan_lifecycle(&program).unwrap_err().code,
+        "E_TYPED_MIR_CENSUS_UNSUPPORTED"
+    );
 }
 
 #[test]
 fn unsupported_typed_borrow_read_cannot_launder_into_pure_scalar_census() {
     let mut p = typed(shared_source());
-    p.funcs[0].body.retain(|s| !matches!(
-        s, TStmt::ScalarBorrowIssue { .. } | TStmt::ScalarLoanUse { .. } | TStmt::ScalarLoanEnd { .. }
-    ));
+    p.funcs[0].body.retain(|s| {
+        !matches!(
+            s,
+            TStmt::ScalarBorrowIssue { .. } | TStmt::ScalarLoanUse { .. } | TStmt::ScalarLoanEnd { .. }
+        )
+    });
     assert_eq!(
         atto_compiler::check::typed_mir_census::from_checked_program(&p).unwrap_err().code,
         "E_TYPED_MIR_CENSUS_UNSUPPORTED"
