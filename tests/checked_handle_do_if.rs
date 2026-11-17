@@ -9,6 +9,7 @@ fn do_if_scoped_readonly_branches_preserve_handle_and_restore_owned_class() {
     for source in [
         include_str!("fixtures/pass/checked-handle-do-if-branch-v1.atto"),
         include_str!("fixtures/pass/checked-handle-do-if-nested-v1.atto"),
+        include_str!("fixtures/pass/checked-handle-do-if-branch-local-views-v1.atto"),
     ] {
         let artifact = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("do if checked-handle proof rejected: {e}"));
