@@ -126,3 +126,42 @@ fn nested_generic_types_have_distinct_shapes() {
     assert_eq!(one("let map<string,tuple<int,bool>> foo = {\"x\" => (1,true)};").value.ty,
         T::Map(Box::new(T::String), Box::new(T::Tuple(vec![T::Int,T::Bool]))));
 }
+
+
+#[test]
+fn record_shape_is_order_independent_but_initializer_order_is_retained() {
+    let left = one("let Record x = {\"content-type\": 1, status_code: true};");
+    let right = one("let record x = {status_code: true, \"content-type\": 1};");
+    assert_eq!(left.value.ty, right.value.ty,
+        "structural record type identity must not depend on declaration order");
+    assert_eq!(left.value.children.iter().map(|v| &v.ty).collect::<Vec<_>>(),
+        vec![&T::Int, &T::Bool], "initializer order remains source order");
+    assert_eq!(right.value.children.iter().map(|v| &v.ty).collect::<Vec<_>>(),
+        vec![&T::Bool, &T::Int], "reordered initializer order is preserved");
+    assert_eq!(
+        collection_types::static_record_field_type(&left.value.ty, "content-type", left.value.pos).unwrap(),
+        T::Int
+    );
+    assert_eq!(
+        collection_types::static_record_field_type(&right.value.ty, "status_code", right.value.pos).unwrap(),
+        T::Bool
+    );
+}
+
+#[test]
+fn closed_record_missing_fields_and_open_record_unguarded_reads_reject() {
+    let row = one("let Record x = {\"\": 1, \"x-y\": true};");
+    assert_eq!(
+        collection_types::static_record_field_type(&row.value.ty, "", row.value.pos).unwrap(),
+        T::Int
+    );
+    let missing = collection_types::static_record_field_type(&row.value.ty, "absent", row.value.pos).unwrap_err();
+    assert_eq!(missing.code, "E_NO_FIELD");
+    let open = collection_types::static_record_field_type(&T::OpenRecord, "x-y", row.value.pos).unwrap_err();
+    assert_eq!(open.code, "E_FIELD_PRESENCE");
+    assert_eq!(
+        collection_types::static_record_field_type(&T::Map(Box::new(T::String), Box::new(T::Int)),
+            "x-y", row.value.pos).unwrap_err().code,
+        "E_TYPE"
+    );
+}
