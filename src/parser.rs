@@ -93,6 +93,8 @@ const RESERVED: &[&str] = &[
     "trap",
     "defer",
     "actor",
+    "persistent",
+    "durable",
     "isoactor",
     "shared",
     "untrusted",
@@ -135,6 +137,8 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "spawn",
     "await",
     "actor",
+    "persistent",
+    "durable",
     "isoactor",
     "define",
     "import",
@@ -527,7 +531,7 @@ impl Parser {
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("actor")?;
-        let decl = p.parse_actor(true)?;
+        let decl = p.parse_actor(true, ActorPersistenceMode::Volatile)?;
         Ok((decl, p.i))
     }
 
@@ -548,6 +552,31 @@ impl Parser {
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
+            // Canonical 'define [pub] (persistent | durable) actor'.
+            // Also retain legacy 'pub define ...' visibility placement.
+            // Never downgrade a qualified actor to ordinary volatile state.
+            if self.word_at(at) == Some("define") {
+                let mut qualifier = at + 1;
+                if self.word_at(qualifier) == Some("pub") {
+                    qualifier += 1;
+                }
+                let mode = match self.word_at(qualifier) {
+                    Some("persistent") => Some(ActorPersistenceMode::Persistent),
+                    Some("durable") => Some(ActorPersistenceMode::Durable),
+                    _ => None,
+                };
+                if let Some(mode) = mode {
+                    if self.word_at(qualifier + 1) != Some("actor") {
+                        return Err(Diagnostic::new(
+                            start, "E_ACTOR_PERSISTENCE_MODIFIER",
+                            "persistent/durable must occur once before 'actor'; not a class modifier",
+                        ));
+                    }
+                    self.i += qualifier + 2;
+                    prog.actors.push(self.parse_actor(true, mode)?);
+                    continue;
+                }
+            }
             match (self.word_at(at), self.word_at(at + 1)) {
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
@@ -562,7 +591,7 @@ impl Parser {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 2;
-                    let decl = self.parse_actor(true)?;
+                    let decl = self.parse_actor(true, ActorPersistenceMode::Volatile)?;
                     prog.actors.push(decl);
                 }
                 (Some("actor"), Some(w)) if w != "fnc" => {
@@ -570,7 +599,7 @@ impl Parser {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 1;
-                    let decl = self.parse_actor(false)?;
+                    let decl = self.parse_actor(false, ActorPersistenceMode::Volatile)?;
                     prog.actors.push(decl);
                 }
                 (Some("define"), Some("enum")) => {
@@ -693,7 +722,7 @@ impl Parser {
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
-    fn parse_actor(&mut self, defined: bool) -> R<ActorDecl> {
+    fn parse_actor(&mut self, defined: bool, persistence: ActorPersistenceMode) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
         self.decl_head("actor")?;
         let close = if defined {
@@ -708,6 +737,7 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
+            persistence,
             fields: m.fields,
             receive: m.receive,
             methods: m.methods,
@@ -838,6 +868,14 @@ impl Parser {
                     let params = self.parse_params()?;
                     let body = self.parse_block()?;
                     m.ctor = Some(Constructor { pos: mpos, params, body });
+                }
+                Some("state") if actor => {
+                    self.advance();
+                    // Explicit actor-owned sealed state with a typed initializer.
+                    // The browser profile currently admits only int/bool.
+                    let mut f = self.parse_named_field(public, true)?;
+                    f.mode = FieldMode::ActorState;
+                    m.fields.push(f);
                 }
                 Some("final") => {
                     self.advance();

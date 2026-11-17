@@ -170,11 +170,23 @@ pub struct Receive {
     pub body: Vec<Stmt>,
 }
 
+/// Actor persistence is nominal and cannot be inferred from user code.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActorPersistenceMode {
+    #[default]
+    Volatile,
+    /// Developer-defined load_state/save_state hooks and storage.
+    Persistent,
+    /// Compiler/runtime-managed disk commits, without user storage hooks.
+    Durable,
+}
+
 /// `define actor Name as ... end` or `actor Name ... end` (Java Parser).
 #[derive(Clone, Debug)]
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    pub persistence: ActorPersistenceMode,
     pub fields: Vec<Field>,
     pub receive: Option<Receive>,
     pub methods: Vec<Method>,
