@@ -1384,7 +1384,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
         TStmt::Block(b) => any_in_stmts(b, f),
-        TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
+        TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable
+        | TStmt::ScalarBorrowIssue { .. } => false,
     })
 }
 
