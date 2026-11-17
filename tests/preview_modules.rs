@@ -28,12 +28,17 @@ fn private_member_can_be_called_only_inside_own_module() {
         end
         pub fnc main(): int { return Counter.answer(41); }
     "#);
-    assert_eq!(code(r#"
+    assert_eq!(
+        code(
+            r#"
         define module Counter as
             fnc increment(int x): int { return x + 1; }
         end
         pub fnc main(): int { return Counter.increment(41); }
-    "#), "E_PRIVATE");
+    "#
+        ),
+        "E_PRIVATE"
+    );
 }
 
 #[test]
@@ -52,43 +57,67 @@ fn names_are_distinct_and_qualified_calls_are_resolved_at_compile_time() {
 #[test]
 fn forged_identifiers_duplicate_members_and_module_values_fail_closed() {
     for (source, expected) in [
-        (r#"
+        (
+            r#"
             define module Math as pub fnc f(): int { return 1; } end
             define module Math as pub fnc g(): int { return 2; } end
             pub fnc main(): int { return 0; }
-        "#, "E_DUPLICATE"),
-        (r#"
+        "#,
+            "E_DUPLICATE",
+        ),
+        (
+            r#"
             define module Math as
                 pub fnc f(): int { return 1; }
                 pub fnc f(int v): int { return v; }
             end
             pub fnc main(): int { return 0; }
-        "#, "E_DUPLICATE"),
-        (r#"
+        "#,
+            "E_DUPLICATE",
+        ),
+        (
+            r#"
             define module Math as pub fnc f(): int { return 1; } end
             pub fnc main(): int { return Math.missing(); }
-        "#, "E_UNBOUND"),
-        (r#"
+        "#,
+            "E_UNBOUND",
+        ),
+        (
+            r#"
             define module Math as pub fnc f(): int { return 1; } end
             pub fnc main(): int { val Math = 42; return Math; }
-        "#, "E_UNSUPPORTED"),
-        (r#"
+        "#,
+            "E_UNSUPPORTED",
+        ),
+        (
+            r#"
             define module Math as pub fnc f(): int { return 1; } end
             pub fnc main(): int { val captured = Math; return 0; }
-        "#, "E_UNSUPPORTED"),
-        (r#"
+        "#,
+            "E_UNSUPPORTED",
+        ),
+        (
+            r#"
             define module Math as pub fnc f(): int { return 1; } end
             fnc __atto_internal_module_4_Math_1_f(): int { return 99; }
             pub fnc main(): int { return Math.f(); }
-        "#, "E_RESERVED"),
-        (r#"
+        "#,
+            "E_RESERVED",
+        ),
+        (
+            r#"
             define module Math as pub fnc f(): int { return 1; } end
             pub fnc main(): int { return (Math.f); }
-        "#, "E_UNSUPPORTED"),
-        (r#"
+        "#,
+            "E_UNSUPPORTED",
+        ),
+        (
+            r#"
             define module Math as int state: 10; end
             pub fnc main(): int { return 0; }
-        "#, "E_UNSUPPORTED"),
+        "#,
+            "E_UNSUPPORTED",
+        ),
     ] {
         assert_eq!(code(source), expected, "{source}");
     }
@@ -97,8 +126,11 @@ fn forged_identifiers_duplicate_members_and_module_values_fail_closed() {
 
 #[test]
 fn module_is_not_a_cross_file_import_or_linker() {
-    assert!(compile(r#"
+    assert!(compile(
+        r#"
         import module External from "./external.atto";
         pub fnc main(): int { return External.answer(); }
-    "#).is_err());
+    "#
+    )
+    .is_err());
 }

@@ -20,7 +20,8 @@ fn explicit_semicolon_end_body_supports_nested_fi_and_result() {
     // A double colon is currently also used as an optional header delimiter
     // in the exact site sample. Its semicolon mode must preserve explicit return.
     compiled("fnc answer() -> int :: return 42; end pub fnc main(): int { return answer(); }");
-    compiled(r#"
+    compiled(
+        r#"
         fnc validate(int n) -> Result<int, string>
             if n <= 0 then
                 return Err("negative");
@@ -33,12 +34,14 @@ fn explicit_semicolon_end_body_supports_nested_fi_and_result() {
                 on Err(_) -> { return 0; }
             end
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn legacy_comma_implicit_tail_remains_supported() {
-    compiled(r#"
+    compiled(
+        r#"
         fnc five() -> int
             let int three = 3,
             three + 2
@@ -48,13 +51,14 @@ fn legacy_comma_implicit_tail_remains_supported() {
             three + 2
         end
         pub fnc main(): int { return five() + other() + 32; }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn double_colon_implicit_tail_keeps_its_original_return_type_check() {
-    let error = compile("fnc wrong() -> int :: true end pub fnc main(): int { return wrong(); }")
-        .expect_err("bool tail cannot be typed as int");
+    let error =
+        compile("fnc wrong() -> int :: true end pub fnc main(): int { return wrong(); }").expect_err("bool tail cannot be typed as int");
     assert_eq!(error.code, "E_TYPE", "{error}");
     compiled("fnc answer() -> int :: 42 end pub fnc main(): int { return answer(); }");
 }
