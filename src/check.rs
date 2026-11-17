@@ -145,14 +145,19 @@ pub enum TExpr {
     /// Immutable tagged ADT value: 16-byte allocation, i32 tag at 0,
     /// i64 payload at 8; no payload for None. tmp is a fresh i32 local.
     AdtNew { tag: u32, payload: Option<Box<TE>>, tmp: u32 },
-    /// Typed prefix trap: the operand is evaluated exactly once before
-    /// allocating Some; only the private guest ordinary-throw tag yields None.
-    /// All temporaries are function-local to avoid shared error state.
+    /// Builtin Error allocation: the object identity is the heap address,
+    /// represented as i64 for private EH tags and Result Err payloads.
+    ErrorNew { message: Box<TE>, tmp: u32 },
+    /// Immutable Error.message; heap object holds the i64 string view.
+    ErrorMessage(Box<TE>),
+    /// One-layer Result-aware ordinary-throw handler. Existing Result
+    /// handles pass through unchanged; a caught throw preserves Error identity.
     Trap {
         value: Box<TE>,
-        value_tmp: u32,
+        value_tmp: Option<u32>,
         some_tmp: u32,
         none_tmp: u32,
+        error_tmp: u32,
     },
     /// Compare the discriminant with a known variant tag.
     AdtIs { obj: Box<TE>, tag: u32 },
@@ -1302,7 +1307,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ErrorNew { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
@@ -1449,7 +1454,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
         TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
         TExpr::IntToFloat(a) | TExpr::FNeg(a) |
-        TExpr::Neg(a) | TExpr::Not(a) |
+        TExpr::Neg(a) | TExpr::Not(a) | TExpr::ErrorMessage(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
             pure_expr(a, pure_indices),
         TExpr::Bin(op, a, b) => {
@@ -1494,7 +1499,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
-        TExpr::AdtNew { .. } | TExpr::Trap { .. } |
+        TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ErrorNew { .. } |
         TExpr::AdtPropagate { .. } => false,
     }
 }
@@ -1555,6 +1560,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
+        TExpr::ErrorNew { message, .. } => any_in(message, f),
+        TExpr::ErrorMessage(obj) => any_in(obj, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
@@ -2148,7 +2155,8 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -2366,6 +2374,18 @@ impl<'a> FnCx<'a> {
                     let (tag, needed) = match (sty, name.as_str()) {
                         (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+            (Type::ResultIntError, "Ok") => (0, Some(Type::Int)),
+            (Type::ResultIntError, "Err") => (1, Some(Type::Error)),
+            (Type::ResultOptionIntError, "Ok") => (0, Some(Type::OptionInt)),
+            (Type::ResultOptionIntError, "Err") => (1, Some(Type::Error)),
+            (Type::ResultVoidError, "Ok") => (0, None),
+            (Type::ResultVoidError, "Err") => (1, Some(Type::Error)),
+                        (Type::ResultIntError, "Ok") => (0, Some(Type::Int)),
+                        (Type::ResultIntError, "Err") => (1, Some(Type::Error)),
+                        (Type::ResultOptionIntError, "Ok") => (0, Some(Type::OptionInt)),
+                        (Type::ResultOptionIntError, "Err") => (1, Some(Type::Error)),
+                        (Type::ResultVoidError, "Ok") => (0, None),
+                        (Type::ResultVoidError, "Err") => (1, Some(Type::Error)),
                         (Type::OptionInt, "None") => (0, None),
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
                         (Type::OptionResultIntStr, "None") => (0, None),
