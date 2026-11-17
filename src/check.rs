@@ -1642,10 +1642,27 @@ impl<'a> FnCx<'a> {
     }
 
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
+        // Preserve condition/argument loan uses at their parent boundary.
+        let outer_pending = std::mem::take(&mut self.pending_loan_events);
         self.scopes.push(Vec::new());
         let r = self.stmts(body);
-        self.scopes.pop();
-        r
+        let ending = self.scopes.pop().expect("scope was pushed");
+        self.pending_loan_events = outer_pending;
+        r.map(|mut typed| {
+            // Fallthrough ends lexical loans; an earlier return already exits
+            // the function and strict linear differential checking rejects
+            // unknown/abrupt control flow.
+            for local in ending {
+                if !local.borrow_retired {
+                    if let Some(loan_id) = local.loan_id {
+                        typed.push(TStmt::ScalarBorrowEnd {
+                            loan_id, owner_slot: local.slot, scope_exit: true,
+                        });
+                    }
+                }
+            }
+            typed
+        })
     }
 
     fn looped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
@@ -1661,16 +1678,21 @@ impl<'a> FnCx<'a> {
     /// straight-line AST statement for future uses. Restricted to aliases
     /// declared in THIS scope; outer aliases may be used after this block.
     /// No loop backedge, exception, async, or unknown control flow is inferred.
-    fn mark_scalar_alias_used(&mut self, name: &str) {
+    fn mark_scalar_alias_used(&mut self, name: &str, write: bool) {
         if let Some(local) = self.scopes.iter_mut().rev()
             .flat_map(|scope| scope.iter_mut().rev())
             .find(|local| local.name == name && local.borrow.is_some())
         {
             local.borrow_used = true;
+            if let Some(loan_id) = local.loan_id {
+                self.pending_loan_events.push(TStmt::ScalarBorrowUse {
+                    loan_id, owner_slot: local.slot, write,
+                });
+            }
         }
     }
 
-    fn retire_dead_scalar_loans(&mut self, tail: &[Stmt]) {
+    fn retire_dead_scalar_loans(&mut self, tail: &[Stmt], out: &mut Vec<TStmt>) {
         if self.loops != 0 || self.scopes.last().is_none_or(|s| s.len() > 32) {
             return;
         }
@@ -1684,6 +1706,11 @@ impl<'a> FnCx<'a> {
                 )
             {
                 local.borrow_retired = true;
+                if let Some(loan_id) = local.loan_id {
+                    out.push(TStmt::ScalarBorrowEnd {
+                        loan_id, owner_slot: local.slot, scope_exit: false,
+                    });
+                }
             }
         }
     }
@@ -1691,8 +1718,10 @@ impl<'a> FnCx<'a> {
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         let mut out = Vec::with_capacity(body.len());
         for (index, statement) in body.iter().enumerate() {
-            self.retire_dead_scalar_loans(&body[index..]);
-            out.push(self.stmt(statement)?);
+            self.retire_dead_scalar_loans(&body[index..], &mut out);
+            let typed = self.stmt(statement)?;
+            out.extend(self.pending_loan_events.drain(..));
+            out.push(typed);
         }
         Ok(out)
     }
@@ -1766,7 +1795,7 @@ impl<'a> FnCx<'a> {
                             format!("cannot assign {} through borrow of {}", self.tn(v.ty), self.tn(ty))));
                     }
                     // Assignment changes the referent, NOT the alias binding.
-                    self.mark_scalar_alias_used(name);
+                    self.mark_scalar_alias_used(name, true);
                     return Ok(TStmt::Set(slot, v));
                 }
                 self.ensure_unloaned(slot, *pos)?;
@@ -2843,7 +2872,7 @@ impl<'a> FnCx<'a> {
                     }
                     let (slot, ty, is_borrow) = (l.slot, l.ty, l.borrow.is_some());
                     if is_borrow {
-                        self.mark_scalar_alias_used(name);
+                        self.mark_scalar_alias_used(name, false);
                     }
                     TE {
                         e: TExpr::Local(slot),
