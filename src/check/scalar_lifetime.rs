@@ -73,7 +73,7 @@ fn expr_uses_alias(expr: &Expr, alias: &str, budget: &mut usize) -> Option<bool>
         // bind_scalar_borrow subsequently checks its type, mutability and
         // conflicts. A name referencing THIS alias remains a live use.
         // Borrowing arbitrary expressions is not admitted by that gate.
-        ExprKind::Unary(crate::ast::UnOp::Borrow | crate::ast::UnOp::BorrowMut, inner) => {
+        ExprKind::Unary(crate::ast::UnOp::Borrow | crate::ast::UnOp::BorrowMut | crate::ast::UnOp::Take, inner) => {
             if matches!(&inner.kind, ExprKind::Var(_)) {
                 expr_uses_alias(inner, alias, budget)
             } else {
@@ -263,7 +263,6 @@ mod tests {
             ExprKind::Propagate(Box::new(var("other"))),
             ExprKind::Member(Box::new(var("other")), "state".to_string()),
             ExprKind::Array(vec![lit(3)]),
-            ExprKind::Unary(UnOp::Take, Box::new(var("other"))),
         ];
         for effect in effects {
             assert!(!proves(&[Stmt::Expr(expr(effect))], "reader"));
@@ -271,10 +270,10 @@ mod tests {
     }
 
     #[test]
-    fn checked_named_borrow_forms_do_not_poison_completed_shared_loan() {
+    fn checked_named_ownership_forms_do_not_poison_completed_scalar_loan() {
         use crate::ast::UnOp;
-        for operation in [UnOp::Borrow, UnOp::BorrowMut] {
-            // New loan of the owner is allowed after reader's last use.
+        for operation in [UnOp::Borrow, UnOp::BorrowMut, UnOp::Take] {
+            // New borrow or move of a named owner is allowed after last use.
             assert!(proves(
                 &[Stmt::Bind {
                     kind: BindKind::Val,
@@ -285,7 +284,7 @@ mod tests {
                 }],
                 "reader",
             ));
-            // New borrow of the alias itself is still a live use.
+            // New borrow or take of the alias itself is still a live use.
             assert!(!proves(
                 &[Stmt::Expr(expr(ExprKind::Unary(
                     operation,
@@ -293,7 +292,7 @@ mod tests {
                 )))],
                 "reader",
             ));
-            // No permission to borrow a computed or effectful expression.
+            // No permission to borrow or take a computed/effectful expression.
             assert!(!proves(
                 &[Stmt::Expr(expr(ExprKind::Unary(
                     operation,
