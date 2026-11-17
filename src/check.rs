@@ -1316,6 +1316,37 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 format!("pure fnc '{}' cannot perform I/O, use shared state, or call an impure function", f.name)));
         }
     }
+    // A live checked handle is not safely reclaimed if a nested call
+    // throws/raises or returns early through a propagation operator. The
+    // lexical stmt checker already rejects direct exits and branches; this
+    // transitive typed-call gate closes the missed indirect-exit path.
+    //
+    // Conservative by design: we require a separate handler/cleanup CFG
+    // before permitting such calls under an outstanding handle.
+    let mut may_early_exit: Vec<bool> = funcs.iter().map(|f|
+        guest_eh_in_stmts(&f.body) ||
+        any_in_stmts(&f.body, &|e| matches!(e.e,
+            TExpr::Trap { .. } | TExpr::AdtPropagate { .. } |
+            TExpr::Spawn(_) | TExpr::Send { .. }))
+    ).collect();
+    for _ in 0..funcs.len() {
+        let prior = may_early_exit.clone();
+        for (i, f) in funcs.iter().enumerate() {
+            if !may_early_exit[i] && any_in_stmts(&f.body, &|e|
+                matches!(&e.e, TExpr::Call(target, _)
+                    if prior.get(*target as usize).copied().unwrap_or(true))
+            ) {
+                may_early_exit[i] = true;
+            }
+        }
+        if prior == may_early_exit { break; }
+    }
+    // Only top-level callables can mint the prototype checked handles.
+    // Nested block scopes are walked in source execution order.
+    for (i, f) in funcs.iter().take(p.funcs.len()).enumerate() {
+        check_unsafe_calls_during_handle_lifetime(
+            &f.body, &may_early_exit, p.funcs[i].pos)?;
+    }
     let strings = funcs
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
@@ -1558,6 +1589,45 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
         TStmt::Raise(_) | TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
         TStmt::Defer { .. } | TStmt::Recover { .. } | TStmt::RecoverNext => false,
     })
+}
+
+/// Check transitive guest-unwind effects while a checked handle is live.
+///
+/// The first compiler profile admits only straight-line handle mint/release
+/// and nested explicit block scopes. Typed Set(_, CheckedRef) is the mint;
+/// Set(_, Class(Local(handle_slot))) is the direct unref! restoration, whose
+/// source shape has already been admitted by the lexical ownership checker.
+/// Do not infer this proof for arbitrary CFG joins or actor/task boundaries.
+fn check_unsafe_calls_during_handle_lifetime(
+    body: &[TStmt], may_early_exit: &[bool], pos: Pos
+) -> R<()> {
+    let mut live_handles = BTreeSet::<u32>::new();
+    let mut work = vec![(body, 0usize)];
+    while let Some((statements, index)) = work.pop() {
+        if index >= statements.len() { continue; }
+        work.push((statements, index + 1));
+        let stmt = &statements[index];
+        if !live_handles.is_empty() && any_in_stmts(std::slice::from_ref(stmt), &|e|
+            matches!(&e.e, TExpr::Call(target, _)
+                if may_early_exit.get(*target as usize).copied().unwrap_or(true))
+        ) {
+            return Err(Diagnostic::new(pos, "E_HANDLE",
+                "a call may throw, raise or propagate an early exit while a checked handle is live"));
+        }
+        if let TStmt::Set(slot, value) = stmt {
+            if matches!(value.ty, Type::CheckedRef(_)) {
+                live_handles.insert(*slot);
+            } else if matches!(value.ty, Type::Class(_)) {
+                if let TExpr::Local(source) = &value.e {
+                    live_handles.remove(source);
+                }
+            }
+        }
+        if let TStmt::Block(inner) = stmt {
+            work.push((inner, 0));
+        }
+    }
+    Ok(())
 }
 
 /// Whether any expression node in `body` satisfies `f`.
