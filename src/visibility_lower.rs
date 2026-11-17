@@ -26,12 +26,24 @@ fn error(pos: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic
 }
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(n), pos }) if n.len() <= 96
+        Some(Token { tok: Tok::Ident(n), pos }) if !n.is_empty()
             && !matches!(n.as_str(), "pub" | "export" | "class" | "fnc" | "module" | "namespace" | "as" | "end") =>
             Ok(n.clone()),
         Some(x) => Err(error(x.pos, "E_SYNTAX", "expected bounded export identifier")),
         None => Err(error(Pos { line: 1, col: 1 }, "E_EOF", "missing export name")),
     }
+}
+/// Export ABI admits canonical ASCII identifiers of at most 256 bytes.
+fn export_name(t: &[Token], i: usize) -> R<String> {
+    let id = name(t, i)?;
+    let pos = t[i].pos;
+    if !id.is_ascii() {
+        return Err(error(pos, "E_EXPORT_NAME", "export identifier must be ASCII"));
+    }
+    if id.len() > 256 {
+        return Err(error(pos, "E_EXPORT_NAME_TOO_LONG", "export identifier exceeds 256 bytes"));
+    }
+    Ok(id)
 }
 /// Resolve exports against the checked parser's actual declaration table,
 /// not arbitrary tokens: a class member named Foo is NOT a top-level fnc
@@ -48,20 +60,26 @@ pub fn resolve_exports(
         // declaration. Duplicate signatures are rejected by the typechecker.
         let fnc_count = parsed.funcs.iter().filter(|f| f.name == export.name).count();
         let module = modules.iter().find(|m| m.name == export.name);
+        let actor_count = parsed.actors.iter().filter(|a| a.name == export.name).count();
+        let enum_count = parsed.enums.iter().filter(|e| e.name == export.name).count();
         let kind_count = usize::from(class_count > 0) +
-            usize::from(fnc_count > 0) + usize::from(module.is_some());
+            usize::from(fnc_count > 0) + usize::from(module.is_some()) +
+            usize::from(actor_count > 0) + usize::from(enum_count > 0);
         if kind_count == 0 {
             return Err(error(export.pos, "E_UNBOUND",
                 format!("export '{}' has no file-local declaration", export.name)));
         }
-        if kind_count > 1 || class_count > 1 {
+        if kind_count > 1 || class_count > 1 || actor_count > 1 || enum_count > 1 {
             return Err(error(export.pos, "E_DUPLICATE",
                 format!("export '{}' resolves to ambiguous declaration kinds", export.name)));
         }
         let kind = if class_count > 0 { "class" }
-            else if fnc_count > 0 { "fnc" } else { "module" };
+            else if fnc_count > 0 { "fnc" }
+            else if actor_count > 0 { "actor" }
+            else if enum_count > 0 { "enum" }
+            else { "module" };
         if !export.kind.is_empty() && export.kind != kind {
-            return Err(error(export.pos, "E_TYPE", "export declaration kind mismatch"));
+            return Err(error(export.pos, "E_EXPORT_KIND", "export declaration kind mismatch"));
         }
         if module.is_some_and(|m| m.inline_public) && export.visibility == Visibility::Package {
             return Err(error(export.pos, "E_VISIBILITY",
@@ -176,6 +194,7 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
     reject_nested_exports(&t)?;
     let mut exports: Vec<Export> = Vec::new();
     let mut foreign = BTreeSet::new();
+    let mut internal = BTreeSet::new();
     let mut out = Vec::new();
     let mut i = 0;
     while i < t.len() {
@@ -195,12 +214,14 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
                 Visibility::Package
             } else { Visibility::Public };
             let mut kind = "";
-            if word(&t, j, "class") || word(&t, j, "fnc") || word(&t, j, "module") {
+            if ["class", "fnc", "module", "actor", "enum"].iter().any(|k| word(&t, j, k)) {
                 kind = if word(&t, j, "class") { "class" }
-                    else if word(&t, j, "module") { "module" } else { "fnc" };
+                    else if word(&t, j, "module") { "module" }
+                    else if word(&t, j, "actor") { "actor" }
+                    else if word(&t, j, "enum") { "enum" } else { "fnc" };
                 j += 1;
             }
-            let id = name(&t, j)?;
+            let id = export_name(&t, j)?;
             if t.get(j + 1).map(|x| &x.tok) != Some(&Tok::Semi) {
                 return Err(error(pos, "E_SYNTAX", "export must end with semicolon"));
             }
@@ -212,6 +233,9 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
             continue;
         }
         if word(&t, i, "external") {
+            if i > 0 && word(&t, i - 1, "pub") {
+                return Err(error(pos, "E_VISIBILITY", "external prototype cannot be declared pub"));
+            }
             let (next, foreign_name) = external_prototype(&t, i)?;
             if !foreign.insert(foreign_name) {
                 return Err(error(pos, "E_DUPLICATE", "duplicate external prototype"));
@@ -220,32 +244,31 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
             continue;
         }
         if word(&t, i, "internal") {
+            if (i > 0 && word(&t, i - 1, "pub")) || word(&t, i + 1, "pub") {
+                return Err(error(pos, "E_VISIBILITY", "internal function cannot also be pub"));
+            }
             if !word(&t, i + 1, "fnc") {
                 return Err(error(pos, "E_UNSUPPORTED", "only source-file local internal fnc is admitted"));
+            }
+            let id = name(&t, i + 2)?;
+            if !internal.insert(id.clone()) {
+                return Err(error(pos, "E_DUPLICATE", format!("duplicate internal function '{id}'")));
             }
             i += 1;
             continue;
         }
         if word(&t, i, "protected") {
-            if !word(&t, i + 1, "final") {
-                return Err(error(pos, "E_UNSUPPORTED", "protected field requires final class-only profile"));
-            }
-            out.push(Token { tok: Tok::Ident("private".into()), pos });
-            i += 1;
-            continue;
-        }
-        if t[i].tok == Tok::Colon && out.len() >= 4 {
-            let n = out.len();
-            if word(&out, n - 4, "private") && word(&out, n - 3, "let") &&
-                matches!(out[n - 2].tok, Tok::Ident(_)) &&
-                matches!(out[n - 1].tok, Tok::Ident(_)) {
-                out.push(Token { tok: Tok::Assign, pos });
-                i += 1;
-                continue;
-            }
+            return Err(error(pos, "E_UNSUPPORTED",
+                "protected requires checked subclass visibility; it cannot be lowered as private"));
         }
         out.push(t[i].clone());
         i += 1;
+    }
+    for export in &exports {
+        if internal.contains(&export.name) {
+            return Err(error(export.pos, "E_VISIBILITY",
+                format!("internal function '{}' cannot be exported", export.name)));
+        }
     }
     for x in &out {
         if let Tok::Ident(n) = &x.tok {
@@ -257,61 +280,6 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
     }
     // Export-name resolution is deferred to resolve_exports after parsing.
     // A token sweep cannot prove source-level class/function membership.
-    let mut lowered = Vec::with_capacity(out.len() + exports.len());
-    for j in 0..out.len() {
-        if word(&out, j, "define") && word(&out, j + 1, "class") {
-            if let Some(Tok::Ident(id)) = out.get(j + 2).map(|x| &x.tok) {
-                if exports.iter().any(|e| e.name == *id && e.kind == "class" &&
-                       e.visibility == Visibility::Public) &&
-                    !(j > 0 && word(&out, j - 1, "pub")) {
-                    lowered.push(Token { tok: Tok::Ident("pub".into()), pos: out[j].pos });
-                }
-            }
-        }
-        lowered.push(out[j].clone());
-    }
-    Ok(Lowered { tokens: lowered, exports })
+    Ok(Lowered { tokens: out, exports })
 }
-fn leb(bytes: &mut Vec<u8>, mut v: usize) {
-    while v >= 128 { bytes.push((v as u8 & 127) | 128); v >>= 7; }
-    bytes.push(v as u8);
-}
-/// Versioned and deterministic local metadata; never a host Wasm export.
-/// Module markers have their own section so legacy v1 file-export decoders
-/// cannot mistake a module for a fnc or a class. Neither is a package linker.
-pub fn metadata(bytes: &mut Vec<u8>, exports: &[Export]) {
-    if exports.is_empty() { return; }
-    let ordinary: Vec<&Export> = exports.iter().filter(|e| e.kind != "module").collect();
-    if !ordinary.is_empty() {
-        let name = b"atto.visibility.profile.v1";
-        let mut section = vec![];
-        leb(&mut section, name.len());
-        section.extend_from_slice(name);
-        leb(&mut section, ordinary.len());
-        for e in ordinary {
-            leb(&mut section, e.name.len());
-            section.extend_from_slice(e.name.as_bytes());
-            section.push(match e.visibility { Visibility::Public => 1, Visibility::Package => 2 });
-            section.push(if e.kind == "class" { 1 } else { 2 });
-        }
-        bytes.push(0);
-        leb(bytes, section.len());
-        bytes.extend_from_slice(&section);
-    }
-    let modules: Vec<&Export> = exports.iter().filter(|e| e.kind == "module").collect();
-    if !modules.is_empty() {
-        let name = b"atto.visibility.modules.v1";
-        let mut section = vec![];
-        leb(&mut section, name.len());
-        section.extend_from_slice(name);
-        leb(&mut section, modules.len());
-        for e in modules {
-            leb(&mut section, e.name.len());
-            section.extend_from_slice(e.name.as_bytes());
-            section.push(match e.visibility { Visibility::Public => 1, Visibility::Package => 2 });
-        }
-        bytes.push(0);
-        leb(bytes, section.len());
-        bytes.extend_from_slice(&section);
-    }
-}
+
