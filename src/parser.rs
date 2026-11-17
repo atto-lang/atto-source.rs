@@ -2734,7 +2734,22 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance(); // name
-                self.advance(); // !
+                let first_bang = self.advance(); // !
+                // 'copy!!' is a single canonical operator only when the word
+                // and both bangs are adjacent. 'copy! !x' stays a shallow copy
+                // of the logical negation, never a deep copy.
+                let copy_word_is_adjacent = first_bang.pos.line == pos.line
+                    && first_bang.pos.col == pos.col + 4;
+                let second_bang_is_adjacent = *self.peek() == Tok::Bang
+                    && self.pos().line == first_bang.pos.line
+                    && self.pos().col == first_bang.pos.col + 1;
+                let action = if action == OwnershipOp::Copy && copy_word_is_adjacent
+                    && second_bang_is_adjacent {
+                    self.advance();
+                    OwnershipOp::DeepCopy
+                } else {
+                    action
+                };
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
                 if action != OwnershipOp::Borrow && self.is_word("mut") {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
