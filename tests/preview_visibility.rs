@@ -42,7 +42,7 @@ fn duplicate_missing_and_wrong_kind_exports_reject_without_guest() {
         export pub fnc Foo;
         define class Foo as end
         pub fnc main(): int { return 0; }
-    "#, "E_TYPE");
+    "#, "E_EXPORT_KIND");
     err("export pub[guest] Foo; pub fnc main(): int { return 0; }", "E_SYNTAX");
 }
 #[test]
