@@ -18,8 +18,23 @@ const MAX_BASES: usize = 8;
 enum Kind { Class, Trait, Interface }
 /// Declaration-local hierarchy restrictions; no runtime subclass registry or
 /// cross-module exhaustiveness proof is provided by the browser subset.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Hierarchy { Open, Sealed, NonSealed, Final }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Hierarchy { Open, Sealed, NonSealed, Final }
+/// Compiler-validated class graph, preserved independently of token rewriting.
+/// Names are source-unit-local until a real namespace/package linker binds them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClassHierarchy {
+    pub name: String,
+    pub pos: Pos,
+    pub visibility_public: bool,
+    pub hierarchy: Hierarchy,
+    pub direct_parents: Vec<String>,
+    pub permitted_children: Vec<String>,
+}
+pub struct Lowered {
+    pub tokens: Vec<Token>,
+    pub classes: Vec<ClassHierarchy>,
+}
 #[derive(Clone)]
 struct Method {
     name: String,
@@ -450,6 +465,13 @@ fn resolve(
 /// Desugar supported nominal composition into ordinary class methods while
 /// preserving each source token's original file position.
 pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
+    Ok(lower_with_hierarchy(t)?.tokens)
+}
+
+/// Preserve a checked, deterministic class hierarchy alongside lowered tokens.
+/// A later linker must assign/verify a unit identity; these local names alone
+/// are never authority to extend a class from another source module.
+pub fn lower_with_hierarchy(t: Vec<Token>) -> R<Lowered> {
     let nominal_header_modifier = (0..t.len()).any(|i| {
         if !is(&t, i, "define") { return false; }
         let mut j = i + 1;
@@ -460,11 +482,24 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     if !nominal_header_modifier &&
        !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s)
             if matches!(s.as_str(), "trait" | "interface" | "extends" | "implements"))) {
-        return Ok(t);
+        return Ok(Lowered { tokens: t, classes: Vec::new() });
     }
     let all = decls(&t)?;
     validate_hierarchies(&all)?;
-    if !all.values().any(|d| d.requires_lowering) { return Ok(t); }
+    let classes: Vec<ClassHierarchy> = all.values()
+        .filter(|d| d.kind == Kind::Class)
+        .map(|d| ClassHierarchy {
+            name: d.name.clone(),
+            pos: d.pos,
+            visibility_public: d.export,
+            hierarchy: d.hierarchy,
+            direct_parents: d.parents.clone(),
+            permitted_children: d.permitted.clone(),
+        })
+        .collect();
+    if !all.values().any(|d| d.requires_lowering) {
+        return Ok(Lowered { tokens: t, classes });
+    }
     let mut cache = BTreeMap::new();
     let mut visiting = BTreeSet::new();
     let mut replace = BTreeMap::<usize, (usize, Vec<Token>)>::new();
@@ -523,5 +558,45 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         return Err(diag(t.first().map(|x| x.pos).unwrap_or_default(), "E_SOURCE_LIMIT",
             "expanded nominal methods exceed compiler token budget"));
     }
-    Ok(out)
+    Ok(Lowered { tokens: out, classes })
+}
+
+/// A deterministic *description*, not permission to dynamically link or
+/// instantiate subclasses. This section is appended only after the production
+/// parser, borrow/type checker and guest emitter have all succeeded.
+pub fn metadata(bytes: &mut Vec<u8>, classes: &[ClassHierarchy]) {
+    if classes.is_empty() { return; }
+    fn leb(out: &mut Vec<u8>, mut n: usize) {
+        while n >= 128 {
+            out.push((n as u8 & 0x7f) | 0x80);
+            n >>= 7;
+        }
+        out.push(n as u8);
+    }
+    fn name(out: &mut Vec<u8>, text: &str) {
+        leb(out, text.len());
+        out.extend_from_slice(text.as_bytes());
+    }
+    let mut body = Vec::new();
+    name(&mut body, "atto.nominal.hierarchy.v1");
+    // Identity domain flag: 0 means strictly local, never linker-authorized.
+    body.push(0);
+    leb(&mut body, classes.len());
+    for class in classes {
+        name(&mut body, &class.name);
+        body.push(match class.hierarchy {
+            Hierarchy::Open => 0,
+            Hierarchy::Sealed => 1,
+            Hierarchy::NonSealed => 2,
+            Hierarchy::Final => 3,
+        });
+        body.push(u8::from(class.visibility_public));
+        leb(&mut body, class.direct_parents.len());
+        for parent in &class.direct_parents { name(&mut body, parent); }
+        leb(&mut body, class.permitted_children.len());
+        for child in &class.permitted_children { name(&mut body, child); }
+    }
+    bytes.push(0); // WebAssembly custom section
+    leb(bytes, body.len());
+    bytes.extend(body);
 }
