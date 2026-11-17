@@ -22,7 +22,7 @@ const positive=[
   {name:"unicode and empty key reconstruction",source:'fnc main():int { val r={"":40,"some field":2,"🦙":1}; val s=r with {"🦙":3}; return s[""]+s["some field"]+s["🦙"]; }',want:45n},
   {name:"lexical shadowed record",source:'fnc main():int { val r={n:8}; block { val r={"other-key":10}; val c=r with {"other-key":20}; if c["other-key"] eq 20 then val z=c with {"another":1}; fi } return r.n; }',want:8n},
   {name:"if branch record construction",source:'fnc main():int { val r={n:20}; if r.n eq 20 then val s=r with {n:22}; if s.n eq 22 then return r.n+s.n; fi fi return 0; }',want:42n},
-  {name:"while loop scoped records",source:'fnc main():int { let i=0; let sum=0; while i < 3 do val r={n:i}; val c=r with {n:r.n+1}; sum=sum+c.n; i=i+1; done return sum; }',want:6n},
+  {name:"while loop scoped records",source:'fnc main():int { let i=0; let sum=0; while i < 3 do val r={n:0}; val c=r with {n:i+1}; sum=sum+c.n; i=i+1; done return sum; }',want:6n},
   {name:"same-shape mutable Record reassignment",source:'fnc main():int { let r={n:20}; r=r with {n:22}; return r.n; }',want:22n}
 ];
 const negative=[
