@@ -184,3 +184,22 @@ fn inherited_method_abi_still_requires_explicit_correct_override() {
         pub fnc main(): int { return 0; }
     "#, "E_OVERRIDE_REQUIRED");
 }
+
+#[test]
+fn nonsealed_modifier_must_be_contiguous() {
+    err(r#"
+        define sealed class Root permits Child as end
+        define non - sealed class Child extends Root as end
+        pub fnc main(): int { return 0; }
+    "#, "E_SEALED");
+}
+
+#[test]
+fn public_export_of_modified_class_does_not_drop_hierarchy_proof() {
+    ok(r#"
+        export pub class Root;
+        define sealed class Root permits Leaf as end
+        define final class Leaf extends Root as end
+        pub fnc main(): int { return 42; }
+    "#);
+}
