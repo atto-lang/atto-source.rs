@@ -62,11 +62,14 @@ const pass = [
   'ownership-borrow-nll-last-use.atto',
   'ownership-borrow-nll-exclusive-transition.atto',
   'ownership-borrow-nll-writer-release.atto',
+  'ownership-borrow-nll-pure-suffix.atto',
 ];
 const fail = [
   'ownership-borrow-nll-live-after-mutation.atto',
   'ownership-borrow-nll-still-live-at-exclusive-reborrow.atto',
   'ownership-borrow-nll-unknown-control-flow-retained.atto',
+  'ownership-borrow-nll-unproved-call-suffix.atto',
+  'ownership-borrow-nll-transfer-effect-suffix.atto',
 ];
 let nativeComparisons = 0;
 for (const [kind, names] of [['pass', pass], ['fail', fail]]) {
