@@ -49,6 +49,13 @@ fn copied_class_cannot_be_read_during_exclusive_mutable_loan() {
 }
 
 #[test]
+fn nested_array_copy_fails_closed_before_codegen() {
+    let source = include_str!("fixtures/fail/997-copy-doublebang-nested-array-no-runtime.atto");
+    let diagnostic = compile(source).expect_err("Array<Array<int>> requires a checked allocation/index ABI");
+    assert_eq!(diagnostic.code, "E_UNSUPPORTED_TYPE", "{diagnostic}");
+}
+
+#[test]
 fn copy_deep_disallows_mut_qualifier_and_missing_operand() {
     let diagnostic = compile("pub fnc main(): int { val x = 1; return copy!! mut x; }").expect_err("mut qualifier is reserved for borrow!");
     assert_eq!(diagnostic.code, "E_SYNTAX");
