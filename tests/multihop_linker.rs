@@ -99,3 +99,30 @@ fn namespace_in_middle_of_dependency_never_passes_as_header() {
     let b = ORDERS.replace("define module Orders", "use namespace stolen;\ndefine module Orders");
     reject(&fixture(MAIN,&b,MATH,"app","app","app"),"E_SYNTAX");
 }
+
+#[test]
+fn imports_are_not_ambient_authority_across_sibling_source_files() {
+    // main imports both Math and Orders, but Orders has no Math import.
+    // The old flattening approach would accidentally make Math available
+    // to Orders via the entry's import, bypassing direct importer rules.
+    let main = MAIN.replace("pub fnc main(): int",
+        "import module Math from \"+lib/math.atto\";\npub fnc main(): int");
+    let orders = ORDERS.replace("import module Math from \"./math.atto\";", "");
+    reject(&fixture(&main, &orders, MATH, "app", "app", "mathlib"), "E_VISIBILITY");
+}
+
+#[test]
+fn imported_module_cannot_capture_private_entry_file_functions() {
+    let main = MAIN.replace("pub fnc main(): int",
+        "fnc private_helper(): int { return 42; }\npub fnc main(): int");
+    let orders = ORDERS.replace("Math.double(x)", "private_helper()");
+    reject(&fixture(&main, &orders, MATH, "app", "app", "app"), "E_VISIBILITY");
+}
+
+#[test]
+fn declaring_a_member_named_main_is_not_equivalent_to_calling_entry_main() {
+    let orders = ORDERS.replace("pub fnc total(int x): int",
+        "pub fnc main(): int { return 7; }\n    pub fnc total(int x): int");
+    assert!(compile_linked("src/main.atto",
+        &fixture(MAIN, &orders, MATH, "app", "app", "app")).is_ok());
+}
