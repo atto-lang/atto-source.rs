@@ -22,7 +22,7 @@ fn take_name(bytes: &[u8], cursor: &mut usize) -> String {
     text
 }
 fn hierarchy_section(wasm: &[u8]) -> Option<Vec<u8>> {
-    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
     let mut cursor = 8usize;
     let mut found = None;
     while cursor < wasm.len() {
