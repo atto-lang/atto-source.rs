@@ -78,6 +78,26 @@ The compiler resolves `borrow! Payload` as a distinct signature type, lowers bot
 
 This is a deliberately restricted compiler profile: borrowed parameters are allowed only on top-level synchronous `fnc` declarations, not constructors, class/actor methods, generators, FFI, suspension, escaped closures or cross-worker sends. These are **authored tests and typed-source changes, not a completed real-Wasm verification**.
 
+### Transitive guest unwind while a handle is live
+
+A function call inside a `block` that still has an outstanding `ref!` handle is admitted only when the typed guest-call graph does not contain a known `throw`, `raise`, `trap`, `?` early-exit, actor send/spawn, or other modeled guest unwind path. The compiler computes a fixed-point reachability summary over typed direct calls, including instance calls. This rejects a wrapper that calls another function which throws, even if the outer wrapper's body contains no explicit `throw`:
+
+```atto
+fnc fail(): int { throw Error("boom"); }
+fnc wrapper(): int { return fail(); }
+
+// Rejected: wrapper() can bypass the later unref!.
+val original = make_payload();
+val handle = ref! original;
+block {
+  val view = deref! handle;
+  stdio.println(view.value + wrapper());
+}
+val restored = unref! handle;
+```
+
+This is intentionally **not** a general exception-safe automatic destructor: no typed cleanup/unwind edges, cancellation cleanup or guarantees after a fatal Wasm trap or host termination are implemented here. Before permitting exceptions, suspendable tasks, or arbitrary control-flow regions containing checked handles, the compiler must connect a path-sensitive lifecycle proof to typed CFG/MIR and a real runtime cleanup mechanism. The separate `atto-borrow-checker.rs` CFG oracle is a first independent proof foundation, not yet wired to this compiler.
+
 ### Fail-closed restrictions
 
 - Only a **named owned class local** is accepted by `ref!`; arbitrary computed expressions, scalars, actors and foreign memory do not become checked handles. In this initial profile `ref!`, `deref!` and `unref!` must each directly initialize a `val` binding. `const` is forbidden because these are runtime operations; `let` is deferred until a full rebinding/alias proof exists.
