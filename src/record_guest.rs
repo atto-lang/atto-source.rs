@@ -6,7 +6,7 @@
 //! Only flat, statically typed, identity-free scalar fields are admitted.
 //! All other shapes (including quoted nonidentifier keys, nested mutable
 //! graphs and open Record) retain an explicit unsupported diagnostic.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::ast::{
     BinOp, BindKind, ClassDecl, Constructor, Expr, ExprKind, Field, FieldMode,
@@ -143,7 +143,7 @@ impl Lower {
                     "guest Record projections need a statically known local receiver")),
             },
             ExprKind::Unary(op, inner) => {
-                if matches!((&op,&inner.kind), (UnOp::Neg,ExprKind::Int(None))) {
+                if *op == UnOp::Neg && matches!(&inner.kind,ExprKind::Int(None)) {
                     Type::Int
                 } else {
                     let it=self.inferred_scalar(inner,env,depth+1)?;
