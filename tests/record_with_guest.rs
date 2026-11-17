@@ -146,3 +146,15 @@ fn boolean_and_float_fields_stay_copyable_without_aliases() {
 fn shape_and_field_limits_fail_closed() {
     fail("fnc main(): int { val r={a:1,b:2,c:3,d:4,e:5,f:6,g:7,h:8,i:9}; return 0; }","E_UNSUPPORTED");
 }
+
+#[test]
+fn signed_minimum_survives_unrelated_scoped_record_preflight() {
+    pass("fnc main():int { val min:int=-9223372036854775808; return 0; }");
+    pass("fnc main():int { val r={n:40}; val min:int=-9223372036854775808; return r.n; }");
+}
+#[test]
+fn long_scalar_expression_never_inherits_record_nesting_limit() {
+    let chain=vec!["1";250].join(" + ");
+    pass(&format!("fnc main():int {{ return {chain}; }}"));
+    pass(&format!("fnc main():int {{ val r={{n:1}}; return {chain}; }}"));
+}
