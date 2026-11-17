@@ -62,6 +62,10 @@ jobs:
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
           node tests/browser-e2e.mjs
+      - name: Chromium JSPI Future/await and I/O coexistence with fail-closed nb/do
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium)"
+          node tests/browser-async-e2e.mjs
       - name: Build immutable compiler artifact receipt
         run: |
           mkdir -p dist
