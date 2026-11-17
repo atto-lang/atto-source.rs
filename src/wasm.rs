@@ -80,12 +80,13 @@ fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 
 fn vt(t: Type) -> Option<u8> {
     match t {
-        Type::Int => Some(I64),
+        Type::Int | Type::Error => Some(I64),
         Type::Bool => Some(I32),
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultIntError | Type::ResultOptionIntError | Type::ResultVoidError => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
@@ -160,8 +161,8 @@ impl Layout {
 /// Load (`store = false`) or store a field slot of type `t` at `offset`.
 fn field_op(code: &mut Vec<u8>, t: Type, offset: u32, store: bool) {
     let (op, align) = match (t, store) {
-        (Type::Int | Type::Str, false) => (0x29, 3),
-        (Type::Int | Type::Str, true) => (0x37, 3),
+        (Type::Int | Type::Str | Type::Error, false) => (0x29, 3),
+        (Type::Int | Type::Str | Type::Error, true) => (0x37, 3),
         (Type::Float, false) => (0x2B, 3),
         (Type::Float, true) => (0x39, 3),
         (_, false) => (0x28, 2),
@@ -785,42 +786,68 @@ impl Emit<'_> {
                 }
             }
             TExpr::EnumVal(i) => self.i32c(*i as i32),
-            TExpr::Trap { value, value_tmp, some_tmp, none_tmp } => {
-                // The only caught signal is our private ordinary-throw tag.
-                // WebAssembly engine traps, arithmetic panic, cancellation,
-                // host exceptions, and any other tag bypass this catch.
-                // A trap is an active ordinary-throw handler: a callee recover
-                // must defer to it (two-phase dispatch). No-op without recover.
-                self.depth_add(1);
+            TExpr::ErrorNew { message, tmp } => {
+                // Allocate one immutable guest Error, keep the pointer as an
+                // opaque i64 identity in the EH payload and Result.Err.
+                // Object layout: reserved 8-byte header, i64 message at +8.
+                self.i32c(16);
+                self.call(self.l.helper(H_ALLOC));
+                self.op(0xAD); // i64.extend_i32_u
+                self.set(*tmp);
+                self.get(*tmp);
+                self.op(0xA7); // i32.wrap_i64
+                self.expr(message);
+                field_op(&mut self.code, Type::Str, 8, true);
+                self.get(*tmp);
+            }
+            TExpr::ErrorMessage(obj) => {
+                self.expr(obj);
+                self.op(0xA7); // i32.wrap_i64; Error is an owned heap identity
+                field_op(&mut self.code, Type::Str, 8, false);
+            }
+            TExpr::Trap { value, value_tmp, some_tmp, none_tmp, error_tmp } => {
+                // Only the private ordinary-throw tag 0 is catchable.
+                // raise (tag 1), panic, cancellation and host faults bypass.
+                self.depth_add(1); // outrank callee recover in two-phase dispatch
                 self.open(0x06, I32, Frame::Other); // try (result i32)
-                self.expr(value); // evaluate once, before any Some allocation
-                self.op(0x21); // local.set value_tmp
-                uleb(&mut self.code, *value_tmp as u64);
+                self.expr(value); // evaluate exactly once
+                if matches!(value.ty, Type::ResultIntError |
+                    Type::ResultOptionIntError | Type::ResultVoidError) {
+                    // Already Result: retain the ORIGINAL tagged pointer,
+                    // including any Err(Error) with its exact identity.
+                } else {
+                    if let Some(slot) = value_tmp {
+                        self.set(*slot);
+                    }
+                    self.i32c(16);
+                    self.call(self.l.helper(H_ALLOC));
+                    self.set(*some_tmp);
+                    self.get(*some_tmp);
+                    self.i32c(0); // Ok
+                    field_op(&mut self.code, Type::Bool, 0, true);
+                    if let Some(slot) = value_tmp {
+                        self.get(*some_tmp);
+                        self.get(*slot);
+                        field_op(&mut self.code, value.ty, 8, true);
+                    }
+                    self.get(*some_tmp);
+                }
                 self.depth_add(-1);
-                self.i32c(16);
-                self.call(self.l.helper(H_ALLOC));
-                self.op(0x21);
-                uleb(&mut self.code, *some_tmp as u64);
-                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
-                self.i32c(1); // Some
-                field_op(&mut self.code, Type::Bool, 0, true);
-                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
-                self.op(0x20); uleb(&mut self.code, *value_tmp as u64);
-                field_op(&mut self.code, value.ty, 8, true);
-                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
-
-                self.op(0x07); // catch private tag 0
+                self.op(0x07); // catch private ordinary-throw tag 0
                 uleb(&mut self.code, 0);
-                self.op(0x1A); // drop i64 Error message (not a panic)
+                self.set(*error_tmp); // i64 original guest Error identity
                 self.depth_add(-1);
                 self.i32c(16);
                 self.call(self.l.helper(H_ALLOC));
-                self.op(0x21); uleb(&mut self.code, *none_tmp as u64);
-                self.op(0x20); uleb(&mut self.code, *none_tmp as u64);
-                self.i32c(0); // None
+                self.set(*none_tmp);
+                self.get(*none_tmp);
+                self.i32c(1); // Err
                 field_op(&mut self.code, Type::Bool, 0, true);
-                self.op(0x20); uleb(&mut self.code, *none_tmp as u64);
-                self.close(); // end try: one i32 Option record on stack
+                self.get(*none_tmp);
+                self.get(*error_tmp);
+                field_op(&mut self.code, Type::Error, 8, true);
+                self.get(*none_tmp);
+                self.close(); // end try: one i32 Result record on the stack
             }
             TExpr::AdtNew { tag, payload, tmp } => {
                 self.i32c(16); // 8-aligned, fixed immutable tagged record
@@ -867,7 +894,7 @@ impl Emit<'_> {
                 self.close();
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
-                field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
+                field_op(&mut self.code, v.ty, 8, false); // typed Ok/Some payload
             },
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
