@@ -7,6 +7,8 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Versioned actor-owned scalar snapshot codec groundwork (not disk recovery).
+pub mod actor_persistence;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;

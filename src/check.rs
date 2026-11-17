@@ -783,6 +783,32 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
     }
     for a in &p.actors {
+        if a.persistence != ActorPersistenceMode::Volatile {
+            // Validate an AOT-friendly scalar snapshot schema first. No guest
+            // emission may silently treat durable/persistent as volatile.
+            let _schema = crate::actor_persistence::ActorStateSchema::for_actor(a)?;
+            let has_load = a.methods.iter().any(|m| m.name == "load_state");
+            let has_save = a.methods.iter().any(|m| m.name == "save_state");
+            match a.persistence {
+                ActorPersistenceMode::Persistent => {
+                    if !has_load || !has_save {
+                        return Err(Diagnostic::new(a.pos, "E_PERSIST_HOOKS",
+                            "persistent actors require load_state and save_state"));
+                    }
+                    return Err(Diagnostic::new(a.pos, "E_PERSIST_SIGNATURE",
+                        "generic suspended persistence hooks and verified storage effects are not supported by this browser compiler yet"));
+                }
+                ActorPersistenceMode::Durable => {
+                    if has_load || has_save {
+                        return Err(Diagnostic::new(a.pos, "E_DURABLE_HOOK_OVERRIDE",
+                            "durable actor storage is runtime-owned; user load/save hooks cannot override it"));
+                    }
+                    return Err(Diagnostic::new(a.pos, "E_DURABLE_RUNTIME_UNAVAILABLE",
+                        "automatic durable disk commits and revival are not implemented by this browser backend"));
+                }
+                ActorPersistenceMode::Volatile => unreachable!(),
+            }
+        }
         if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
             || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
             return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
