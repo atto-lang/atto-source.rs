@@ -17,6 +17,7 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod scalar_lifetime;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
@@ -374,6 +375,9 @@ struct Local {
     mail: Option<Type>,
     /// A compiler-only scalar loan alias; its slot is the source owner's slot.
     borrow: Option<BorrowKind>,
+    /// Remains an alias, but its source loan has ended at a compiler-proven
+    /// straight-line last-use boundary. A subsequent alias access is rejected.
+    borrow_retired: bool,
 }
 
 struct FnCx<'a> {
@@ -1308,6 +1312,7 @@ fn body_check(
             mutable: false,
             mail: Some(payload),
             borrow: None,
+            borrow_retired: false,
         });
     } else {
         for (i, (n, t, m)) in named.iter().enumerate() {
@@ -1318,6 +1323,7 @@ fn body_check(
                 mutable: *m,
                 mail: None,
                 borrow: None,
+                borrow_retired: false,
             });
         }
     }
@@ -1476,6 +1482,7 @@ impl<'a> FnCx<'a> {
             mutable,
             mail: None,
             borrow: None,
+            borrow_retired: false,
         });
         Ok(slot)
     }
@@ -1502,8 +1509,10 @@ impl<'a> FnCx<'a> {
         for local in self.scopes.iter().flatten() {
             if local.slot == owner_slot {
                 if let Some(kind) = local.borrow {
-                    count += 1;
-                    exclusive |= kind == BorrowKind::Exclusive;
+                    if !local.borrow_retired {
+                        count += 1;
+                        exclusive |= kind == BorrowKind::Exclusive;
+                    }
                 }
             }
         }
@@ -1576,6 +1585,7 @@ impl<'a> FnCx<'a> {
         self.scopes.last_mut().unwrap().push(Local {
             name: name.to_string(), slot, ty, mutable: false, mail: None,
             borrow: Some(if exclusive { BorrowKind::Exclusive } else { BorrowKind::Shared }),
+            borrow_retired: false,
         });
         // The loan is a source-level reference, not a copy. The read and
         // write-through operations subsequently lower directly to the owner's
@@ -1599,8 +1609,32 @@ impl<'a> FnCx<'a> {
         r
     }
 
+    /// End a scalar loan only after independently scanning *every* remaining
+    /// straight-line AST statement for future uses. Restricted to aliases
+    /// declared in THIS scope; outer aliases may be used after this block.
+    /// No loop backedge, exception, async, or unknown control flow is inferred.
+    fn retire_dead_scalar_loans(&mut self, tail: &[Stmt]) {
+        if self.loops != 0 || self.scopes.last().is_none_or(|s| s.len() > 32) {
+            return;
+        }
+        let current = self.scopes.last_mut().expect("active scope");
+        for local in current {
+            if local.borrow.is_some()
+                && !local.borrow_retired
+                && scalar_lifetime::proven_dead_after_boundary(tail, &local.name)
+            {
+                local.borrow_retired = true;
+            }
+        }
+    }
+
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
-        body.iter().map(|s| self.stmt(s)).collect()
+        let mut out = Vec::with_capacity(body.len());
+        for (index, statement) in body.iter().enumerate() {
+            self.retire_dead_scalar_loans(&body[index..]);
+            out.push(self.stmt(statement)?);
+        }
+        Ok(out)
     }
 
     fn cond(&mut self, e: &Expr, what: &str) -> R<TE> {
@@ -2728,6 +2762,10 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 Some(l) => {
+                    if l.borrow.is_some() && l.borrow_retired {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            "scalar loan alias was used after its compiler-proven last use"));
+                    }
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
