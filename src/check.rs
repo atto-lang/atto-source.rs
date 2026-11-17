@@ -395,6 +395,9 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// A single work budget shared by all alias/suffix NLL scans in this function.
+    /// Exhaustion simply leaves later loans live until lexical scope exit.
+    nll_scan_budget: usize,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
 }
@@ -1442,6 +1445,7 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            nll_scan_budget: scalar_lifetime::MAX_NLL_WORK_PER_FUNCTION,
             imports,
             data,
         }
@@ -1638,7 +1642,9 @@ impl<'a> FnCx<'a> {
             if local.borrow.is_some()
                 && local.borrow_used
                 && !local.borrow_retired
-                && scalar_lifetime::proven_dead_after_boundary(tail, &local.name)
+                && scalar_lifetime::proven_dead_after_boundary(
+                    tail, &local.name, &mut self.nll_scan_budget
+                )
             {
                 local.borrow_retired = true;
             }
