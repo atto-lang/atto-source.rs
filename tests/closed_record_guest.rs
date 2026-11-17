@@ -417,7 +417,6 @@ fn quoted_key_unicode_and_empty_fields_are_not_normalized_or_conflated() {
     );
 }
 
-
 #[test]
 fn dot_and_static_bracket_share_exact_typed_field_offset_and_type() {
     use atto_compiler::ast::Type;
@@ -443,25 +442,38 @@ fn dot_and_static_bracket_share_exact_typed_field_offset_and_type() {
     closed_record_guest::lower(&mut lowered, &collected).unwrap();
     let typed = check::check(&lowered).unwrap();
     let main = typed.funcs.iter().find(|f| f.name == "main").unwrap();
-    let reads: Vec<(u32, Type)> = main.body.iter().filter_map(|stmt| {
-        match stmt {
+    let reads: Vec<(u32, Type)> = main
+        .body
+        .iter()
+        .filter_map(|stmt| match stmt {
             TStmt::Expr(v) => match &v.e {
                 TExpr::FieldGet { offset, .. } => Some((*offset, v.ty)),
                 _ => None,
             },
             _ => None,
-        }
-    }).collect();
-    assert_eq!(reads.len(), 3, "both notations should use typed direct-offset reads");
-    assert_eq!(reads[0], reads[1], "dot and quoted field name have one type and offset");
+        })
+        .collect();
+    assert_eq!(
+        reads.len(),
+        3,
+        "both notations should use typed direct-offset reads"
+    );
+    assert_eq!(
+        reads[0], reads[1],
+        "dot and quoted field name have one type and offset"
+    );
     assert_eq!(reads[0].1, Type::Int);
     assert_eq!(reads[2].1, Type::Str);
-    assert_ne!(reads[0].0, reads[2].0, "distinct fields cannot alias a slot");
+    assert_ne!(
+        reads[0].0, reads[2].0,
+        "distinct fields cannot alias a slot"
+    );
 }
 
 #[test]
 fn decoded_escaped_field_names_are_exactly_equivalent() {
-    wasm(r#"
+    wasm(
+        r#"
         pub fnc main(): int {
             let Record headers = {
                 "x-y": 41,
@@ -470,24 +482,32 @@ fn decoded_escaped_field_names_are_exactly_equivalent() {
             };
             return headers["x\u{2d}y"] + headers["has\"quote"];
         }
-    "#);
-    invalid(r#"
+    "#,
+    );
+    invalid(
+        r#"
         pub fnc main(): int {
             let Record headers = {"x-y": 1, "x\u{2d}y": 2};
             return 0;
         }
-    "#, "E_DUPLICATE");
-    invalid(r#"
+    "#,
+        "E_DUPLICATE",
+    );
+    invalid(
+        r#"
         pub fnc main(): int {
             let Record headers = {"x-y": 42};
             return headers["x\u{zz}y"];
         }
-    "#, "E_STRING");
+    "#,
+        "E_STRING",
+    );
 }
 
 #[test]
 fn static_bracket_read_infers_field_type_in_return_checker() {
-    invalid(r#"
+    invalid(
+        r#"
         pub fnc main(): int {
             let Record headers = {
                 "content-type": "application/json",
@@ -495,28 +515,38 @@ fn static_bracket_read_infers_field_type_in_return_checker() {
             };
             return headers["content-type"];
         }
-    "#, "E_TYPE");
-    wasm(r#"
+    "#,
+        "E_TYPE",
+    );
+    wasm(
+        r#"
         pub fnc main(): int {
             let Record headers = {"content-type": "application/json", status_code: 42};
             return headers["status_code"];
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn nested_field_index_and_computed_map_key_stay_fail_closed() {
-    invalid(r#"
+    invalid(
+        r#"
         pub fnc main(): int {
             let Record headers = {"content-type": 42};
             return headers["content-type"][0];
         }
-    "#, "E_UNSUPPORTED");
-    invalid(r#"
+    "#,
+        "E_UNSUPPORTED",
+    );
+    invalid(
+        r#"
         pub fnc main(): int {
             let Record headers = {"content-type": 42};
             let string field = "content-type";
             return headers[field];
         }
-    "#, "E_UNSUPPORTED");
+    "#,
+        "E_UNSUPPORTED",
+    );
 }
