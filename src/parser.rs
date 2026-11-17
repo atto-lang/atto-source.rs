@@ -201,6 +201,29 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Only statically known, stable scalar keys are fingerprinted here. Other
+/// keys are admitted to the AST for later checked Hash/Eq typing, never
+/// silently evaluated or presumed unique. Signed zero has one key identity.
+fn constant_map_key(value: &Expr) -> Option<String> {
+    match &value.kind {
+        ExprKind::Str(s) => Some(format!("str:{s}")),
+        ExprKind::Bool(b) => Some(format!("bool:{b}")),
+        ExprKind::Int(Some(v)) => Some(format!("int:{v}")),
+        ExprKind::Int(None) => Some("int:9223372036854775808".into()),
+        ExprKind::Unary(UnOp::Plus, operand) => match &operand.kind {
+            ExprKind::Int(Some(v)) => Some(format!("int:{v}")),
+            _ => None,
+        },
+        ExprKind::Unary(UnOp::Neg, operand) => match &operand.kind {
+            ExprKind::Int(Some(0)) => Some("int:0".into()),
+            ExprKind::Int(Some(v)) => Some(format!("int:-{v}")),
+            ExprKind::Int(None) => Some("int:-9223372036854775808".into()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
 }
@@ -3145,24 +3168,11 @@ impl Parser {
                 let value = self.parse_expr()?;
                 // Constant duplicate keys are definite mistakes. Dynamically
                 // computed keys need checked equality/hash rules at runtime.
-                let fingerprint = match &key.kind {
-                    ExprKind::Str(s) => Some(format!("str:{s}")),
-                    ExprKind::Int(n) => Some(format!("int:{n:?}")),
-                    ExprKind::Bool(b) => Some(format!("bool:{b}")),
-                    _ => None,
-                };
-                if let Some(fp) = fingerprint {
-                    for (prior, _) in &map {
-                        let previous = match &prior.kind {
-                            ExprKind::Str(s) => Some(format!("str:{s}")),
-                            ExprKind::Int(n) => Some(format!("int:{n:?}")),
-                            ExprKind::Bool(b) => Some(format!("bool:{b}")),
-                            _ => None,
-                        };
-                        if previous.as_deref() == Some(fp.as_str()) {
-                            return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
-                                "duplicate constant map key"));
-                        }
+                if let Some(fingerprint) = constant_map_key(&key) {
+                    if map.iter().any(|(prior, _)| constant_map_key(prior).as_deref() ==
+                        Some(fingerprint.as_str())) {
+                        return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
+                            "duplicate constant map key"));
                     }
                 }
                 map.push((key, value));
