@@ -2805,6 +2805,13 @@ impl<'a> FnCx<'a> {
             ExprKind::Unary(op, inner) => self.unary(*op, inner, e.pos),
             ExprKind::Trap(inner) => self.trap_value(inner, e.pos),
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
+            // Isolate the class-self identity path from the deeply recursive
+            // generic binary() frame. Primitive chains keep their former ABI.
+            ExprKind::Binary(op, l, r)
+                if matches!(op, BinOp::IdEq | BinOp::IdNe)
+                    && (matches!(l.kind, ExprKind::SelfRef)
+                        || matches!(r.kind, ExprKind::SelfRef)) =>
+                self.self_identity_binary(*op, l, r, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
             ExprKind::Propagate(inner) => {
@@ -2924,16 +2931,28 @@ impl<'a> FnCx<'a> {
         self.value(expr)
     }
 
+    /// Only the identity operator may project class self to an immutable
+    /// reference handle. Keep this outside general binary() to preserve its
+    /// recursively validated 3,000-operator source-limit stack behavior.
+    #[inline(never)]
+    fn self_identity_binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+        let a = self.identity_operand(l)?;
+        let b = self.identity_operand(r)?;
+        if a.ty != b.ty || !matches!(a.ty, Type::Class(_)) {
+            let suggestion = if op == BinOp::IdEq { "eq" } else { "neq" };
+            return Err(Diagnostic::new(pos, "E_IDENTITY_TYPE",
+                format!("'{}' requires references of the same class; use '{}' for value equality (found {} and {})",
+                    op.symbol(), suggestion, self.tn(a.ty), self.tn(b.ty))));
+        }
+        Ok(TE { e: TExpr::Bin(op, Box::new(a), Box::new(b)), ty: Type::Bool })
+    }
+
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            // Keep primitive operators on their previous recursive stack path.
-            // Only reference identity may project class `self` as a read-only
-            // i32 handle, never as a transferable owner.
-            let identity = matches!(op, BinOp::IdEq | BinOp::IdNe);
-            let a = if identity { self.identity_operand(l)? } else { self.value(l)? };
-            let b = if identity { self.identity_operand(r)? } else { self.value(r)? };
+            let a = self.value(l)?;
+            let b = self.value(r)?;
             // Identity comparison must not fall through to primitive value equality.
             // In this bounded guest runtime, class objects have stable i32 handles.
             // Actor capabilities, value aggregates, strings and scalars are not
