@@ -1,0 +1,21 @@
+// expect-exit: 53
+// expect-stdout: first
+// expect-stdout: second
+// A chain of void ? expressions must be stack neutral, each once.
+fnc done(): Result<void,Error> { return Ok(); }
+fnc checked(): Result<void,Error> {
+  val Result<void,Error> a = done();
+  a?;
+  stdio.println("first");
+  val Result<void,Error> b = trap done();
+  b?;
+  stdio.println("second");
+  return Ok();
+}
+pub fnc main(): int {
+  val Result<void,Error> result = checked();
+  match result over
+    on Ok -> { return 53; }
+    on Err(e) -> { return 0; }
+  end
+}
