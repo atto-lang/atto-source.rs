@@ -78,6 +78,35 @@ The compiler resolves `borrow! Payload` as a distinct signature type, lowers bot
 
 This is a deliberately restricted compiler profile: borrowed parameters are allowed only on top-level synchronous `fnc` declarations, not constructors, class/actor methods, generators, FFI, suspension, escaped closures or cross-worker sends. These are **authored tests and typed-source changes, not a completed real-Wasm verification**.
 
+### Scoped, loan-preserving `do if` (Rust/browser profile)
+
+The **canonical procedural spelling** for these conditional arms is `do if ... then ... else ... fi`. The parser lowers `do if` to the same typed conditional as the legacy `if`. This restricted form is now admitted while a checked handle is live **only if every branch preserves the outstanding handle and borrowed views**. `ref!` and `unref!` still require direct, top-level, straight-line `val` bindings; early return, mutable/escaping loans, loops, suspension, and exceptional exits remain rejected.
+
+```atto
+fnc inspect_readonly(borrow! Payload item): int { return item.value; }
+fnc inspect_other(borrow! Payload item): int { return item.value; }
+
+fnc inspect_branch(bool condition): Payload {
+  val original = make_payload();
+  val handle = ref! original;
+
+  block {
+    val view = deref! handle;
+
+    do if condition then
+      inspect_readonly(view);
+    else
+      inspect_other(view);
+    fi
+  }
+
+  val restored = unref! handle;
+  return restored;
+}
+```
+
+In addition to local type checking, the compiler copies the pinned standalone Rust all-path CFG oracle from `atto-borrow-checker.rs` and lowers *type-admitted checked-handle source events* to `Ref`, `Deref`, `EndView`, `Unref`, normal/early `Exit`, and actual branch edges. It keeps distinct facts across a join, so cleanup on only one path cannot certify another. This is a deliberately bounded **typed-admitted AST-to-CFG preflight**, not yet a full typed-MIR proof contract or an exception-safe runtime destructor. Other backends must fail closed until equivalent enforcement is verified.
+
 ### Transitive guest unwind while a handle is live
 
 A function call inside a `block` that still has an outstanding `ref!` handle is admitted only when the typed guest-call graph does not contain a known `throw`, `raise`, `trap`, `?` early-exit, actor send/spawn, or other modeled guest unwind path. The compiler computes a fixed-point reachability summary over typed direct calls, including instance calls. This rejects a wrapper that calls another function which throws, even if the outer wrapper's body contains no explicit `throw`:
