@@ -138,7 +138,7 @@ fn maps_open_records_and_computed_indexing_still_fail_closed() {
             return r["missing"];
         }
     "#,
-        "E_UNBOUND",
+        "E_NO_FIELD",
     );
 }
 
