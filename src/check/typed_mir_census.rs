@@ -304,6 +304,7 @@ pub fn from_checked_program(program: &TProgram) -> Result<Census, Diagnostic> {
 pub struct CheckedBorrowIssue {
     pub function_index: u32,
     pub instruction_ordinal: u32,
+    pub loan_id: u32,
     pub owner_slot: u32,
     pub alias: String,
     pub exclusive: bool,
@@ -323,17 +324,19 @@ pub fn checked_borrow_issues(program: &TProgram) -> Result<Vec<CheckedBorrowIssu
         }
         for (ordinal, statement) in f.body.iter().enumerate() {
             if let TStmt::ScalarBorrowIssue {
+                loan_id,
                 owner_slot,
                 alias,
                 exclusive,
             } = statement
             {
-                if alias.is_empty() || *owner_slot as usize >= f.params.len() + f.locals.len() {
+                if *loan_id == 0 || alias.is_empty() || *owner_slot as usize >= f.params.len() + f.locals.len() {
                     return Err(incomplete("checked scalar borrow has malformed owner/alias provenance"));
                 }
                 issues.push(CheckedBorrowIssue {
                     function_index: index as u32,
                     instruction_ordinal: ordinal as u32 + 1,
+                    loan_id: *loan_id,
                     owner_slot: *owner_slot,
                     alias: alias.clone(),
                     exclusive: *exclusive,
