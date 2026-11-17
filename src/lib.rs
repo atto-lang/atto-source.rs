@@ -23,6 +23,12 @@ pub mod any_type_lower;
 pub mod shape_lower;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
+/// Qualified-identity prelink policy; no foreign executable linkage.
+pub mod nominal_link;
+/// Verified source-catalogue linker for a bounded executable class profile.
+pub mod source_link;
+/// Portable digest of exact source bytes, independent of ambient build I/O.
+pub mod source_digest;
 /// Explicitly unlinked foreign prototypes and source-only exports.
 pub mod visibility_lower;
 /// Direct routine-only and statically specialized named callbacks.
@@ -48,8 +54,19 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
-    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    compile_token_stream(lexer::lex(source)?)
+}
+
+/// Compile a compiler-owned fully lexed and relocated source token stream.
+/// Only the build-bound source linker may call this without the source wrapper.
+pub(crate) fn compile_token_stream(tokens: Vec<lexer::Token>) -> Result<Vec<u8>, Diagnostic> {
+    if tokens.len() > lexer::MAX_TOKENS {
+        return Err(Diagnostic::new(Pos {line:1,col:1},"E_SOURCE_LIMIT",
+            "compiled source token budget exceeded"));
+    }
+    let mut visibility = visibility_lower::lower(tokens)?;
+    let mut nominal = nominal_lower::lower_with_hierarchy(module_lower::lower(visibility.tokens)?)?;
+    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal.tokens)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
@@ -119,9 +136,22 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
+    // A pub[pkg] export must not be elevated to public when class
+    // hierarchy metadata is serialized after lexical export lowering.
+    for class in &mut nominal.classes {
+        if let Some(export) = visibility.exports.iter().find(|e| e.kind == "class" && e.name == class.name) {
+            class.visibility = match export.visibility {
+                visibility_lower::Visibility::Public => nominal_lower::ClassVisibility::Public,
+                visibility_lower::Visibility::Package => nominal_lower::ClassVisibility::Package,
+            };
+        }
+    }
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
+    // Hierarchy restrictions survive nominal method composition as checked,
+    // source-local metadata. This is not a cross-module linking capability.
+    nominal_lower::metadata(&mut bytes, &nominal.classes);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },

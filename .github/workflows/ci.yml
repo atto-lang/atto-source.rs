@@ -28,8 +28,12 @@ jobs:
           rustc --version
       - name: Test native compiler core over the fixture corpus
         run: cargo test --locked --verbose
-      - name: Build native attoc host
-        run: cargo build --locked --release --bin attoc
+      - name: Build native attoc host and bounded source linker
+        run: cargo build --locked --release --bin attoc --bin attoc-linked
+      - name: Execute exact catalogued cross-source sealed-class guest
+        env:
+          ATTOC_LINKED: target/release/attoc-linked
+        run: node tests/sealed_source_link_guest.mjs
       - name: Execute real native-compiled output I/O shorthand guest in Wasm
         env:
           ATTOC: target/release/attoc
