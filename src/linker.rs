@@ -329,6 +329,10 @@ fn preflight_file_authority(
         modules.modules.iter().map(|m| m.name.as_str()).collect();
     for (i, token) in tokens.iter().enumerate() {
         let Tok::Ident(ref name) = token.tok else { continue };
+        if name.starts_with("__atto_q_") {
+            return Err(err(token.pos, "E_RESERVED",
+                "source must not forge a compiler-owned module identity"));
+        }
         // A direct call to a root-level function cannot become visible to an
         // imported module just because the final guest has one symbol table.
         if !is_entry && root_funcs.contains_key(name) &&
@@ -350,6 +354,39 @@ fn preflight_file_authority(
         }
     }
     Ok(())
+}
+
+/// Rewrite only checked module declarations and direct qualified callsites
+/// to a source-owned internal ID. Source files are scanned independently;
+/// strings and comments never become symbol sites, and all user-authored
+/// reserved prefixes were rejected before this rewrite.
+fn qualify_bound_modules(source: &str, aliases: &BTreeMap<String,String>) -> R<String> {
+    let tokens=lexer::lex(source)?;
+    let mut edits:Vec<(usize,usize,&str)>=Vec::new();
+    for i in 0..tokens.len() {
+        let Tok::Ident(ref name)=tokens[i].tok else { continue };
+        let Some(alias)=aliases.get(name) else { continue };
+        let declaration =
+            (i>=2 && word(&tokens,i-2,"define") && word(&tokens,i-1,"module")) ||
+            (i>=3 && word(&tokens,i-3,"define") && word(&tokens,i-2,"pub") &&
+                word(&tokens,i-1,"module"));
+        let qualified_call = tokens.get(i+1).map(|t| &t.tok)==Some(&Tok::Dot) &&
+            matches!(tokens.get(i+2).map(|t| &t.tok),Some(Tok::Ident(_))) &&
+            tokens.get(i+3).map(|t| &t.tok)==Some(&Tok::LParen);
+        if declaration || qualified_call {
+            let start=byte_at(source,tokens[i].pos)?;
+            if edits.len()>=2048 {
+                return Err(err(tokens[i].pos,"E_SOURCE_LIMIT",
+                    "too many source-owned module symbol references"));
+            }
+            edits.push((start,start+name.len(),alias.as_str()));
+        }
+    }
+    let mut rewritten=source.to_owned();
+    for (start,end,alias) in edits.into_iter().rev() {
+        rewritten.replace_range(start..end,alias);
+    }
+    Ok(rewritten)
 }
 
 /// Compile a bounded, explicit source graph into one linked guest Wasm module.
@@ -413,8 +450,32 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
             preflight_file_authority(path, unit.source, &names, &root_funcs, *path == entry_path)?;
         }
     }
-    let mut pieces: Vec<String> = ordered.into_iter().map(|(_, data)| data).collect();
-    pieces.push(hdr.body);
+    // Translate source-owned qualified module identities to deterministic
+    // backend-safe aliases before lowering. This is an intermediate bridge;
+    // future backends should directly consume typed linked IR instead.
+    let mut aliases = BTreeMap::<String,String>::new();
+    let mut alias_owners = BTreeMap::<String,String>::new();
+    for (name,path) in &names {
+        let dep=files.get(*path).ok_or_else(|| err(Pos::default(),
+            "E_UNBOUND","module owner vanished during linking"))?;
+        let owner_header=header(dep.source,path)?;
+        let namespace=owner_header.namespace.unwrap_or_else(|| "_file".into());
+        let key=crate::linked_symbols::QualifiedModuleId::new(
+            dep.package,&namespace,path,name)?;
+        let alias=key.internal_name();
+        if let Some(previous)=alias_owners.insert(alias.clone(),path.to_string()) {
+            if previous!=*path {
+                return Err(err(Pos::default(),"E_SYMBOL_ID",
+                    "two distinct modules collide after qualified symbol mangling"));
+            }
+        }
+        aliases.insert(name.clone(),alias);
+    }
+    let mut pieces:Vec<String>=Vec::with_capacity(ordered.len()+1);
+    for (_,data) in ordered {
+        pieces.push(qualify_bound_modules(&data,&aliases)?);
+    }
+    pieces.push(qualify_bound_modules(&hdr.body,&aliases)?);
     let linked = pieces.join("\n");
     if linked.len() > crate::SOURCE_CAP {
         return Err(err(Pos::default(), "E_SOURCE_LIMIT",
