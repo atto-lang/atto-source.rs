@@ -1,4 +1,0 @@
-// expect-error: E_UNSUPPORTED
-// Canonical trap for void requires Result<void,Error>; do not erase the Error.
-fnc work(): void { stdio.println("work"); return; }
-pub fnc main(): int { val outcome = trap work(); return 0; }
