@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_TYPE
 // Canonical trap returns Result<int,Error>, not Option<int>; this browser lowering is not yet admitted.
 fnc checked_id(int id): int { return id; }
 pub fnc main(): int { return trap checked_id(5); }
