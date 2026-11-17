@@ -1,0 +1,20 @@
+// expect-exit: 42
+// expect-stdout: 84
+// java: rejects
+// Canonical block scopes revoke both read-only loans before unref!.
+define class Payload as
+  pub let int value = 42;
+  pub get(): int { return self.value; }
+end
+fnc make_payload(): Payload { return new Payload(); }
+pub fnc main(): int {
+  val original = make_payload();
+  val handle = ref! original;
+  block {
+    val first = deref! handle;
+    val second = deref! handle;
+    stdio.println(first.get() + second.get());
+  }
+  val restored = unref! handle;
+  return restored.get();
+}
