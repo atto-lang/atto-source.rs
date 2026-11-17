@@ -1,4 +1,4 @@
-use atto_compiler::{compile, lexer::lex, parser::Parser, ast::Stmt};
+use atto_compiler::{ast::Stmt, compile, lexer::lex, parser::Parser};
 
 #[test]
 fn five_body_spellings_parse_and_compile() {
@@ -45,10 +45,7 @@ fn routine_and_member_grammar_use_same_body_rules() {
 
 #[test]
 fn parser_keeps_ordinary_c_body_returns_explicit() {
-    for src in [
-        "pub fnc main(): int { 5; }",
-        "pub fnc main() -> int { 5; }"
-    ] {
+    for src in ["pub fnc main(): int { 5; }", "pub fnc main() -> int { 5; }"] {
         let p = Parser::new(lex(src).unwrap()).parse_program().unwrap();
         assert!(matches!(p.funcs[0].body.last(), Some(Stmt::Expr(_))));
         assert!(compile(src).is_err(), "C-style implicit return must remain invalid");

@@ -1,7 +1,11 @@
 //! Generator syntax admission and fail-closed unsupported-feature boundary.
 //! These tests check AST identity, diagnostics, and restricted guest generator admission.
 //! Do not turn the playground preview runnable until continuation lowering lands.
-use atto_compiler::{ast::{ExprKind, Stmt, Type}, lexer::{lex, Tok}, parser::Parser};
+use atto_compiler::{
+    ast::{ExprKind, Stmt, Type},
+    lexer::{lex, Tok},
+    parser::Parser,
+};
 
 const SAMPLE: &str = r#"
 fnc *gen count_to(int limit): Generator<int> {
@@ -50,14 +54,16 @@ fn generator_declaration_and_delegation_have_distinct_ast_nodes() {
 #[test]
 fn yield_star_is_contiguous_and_never_conflated_with_multiplication_or_literals() {
     let ts = lex(r#"yield* other(); yield * other(); 2 * 3; "yield*"; // yield*
-    /* yield* */ yield*other();"#).unwrap();
+    /* yield* */ yield*other();"#)
+    .unwrap();
     let kinds: Vec<_> = ts.iter().map(|t| &t.tok).collect();
     assert_eq!(kinds.iter().filter(|t| matches!(t, Tok::YieldStar)).count(), 2);
     assert_eq!(kinds.iter().filter(|t| matches!(t, Tok::Star)).count(), 2);
     assert!(kinds.iter().any(|t| matches!(t, Tok::Str(s) if s == "yield*")));
     // Spaces around the delegation operator are not silently accepted.
     let err = Parser::new(lex("fnc *gen a(): Generator<int> { yield *other(); }").unwrap())
-        .parse_program().unwrap_err();
+        .parse_program()
+        .unwrap_err();
     assert!(matches!(err.code, "E_SYNTAX" | "E_UNSUPPORTED"));
 }
 
@@ -78,7 +84,8 @@ fn forbidden_generator_uses_have_precise_diagnostics() {
         assert_eq!(e.code, "E_RETURN", "{src}");
     }
     let err = Parser::new(lex("fnc *gen wrong(): int { yield 1; }").unwrap())
-        .parse_program().unwrap_err();
+        .parse_program()
+        .unwrap_err();
     assert_eq!(err.code, "E_TYPE");
 }
 
@@ -92,12 +99,11 @@ fn malformed_or_unsupported_generator_types_reject_without_a_guest_artifact() {
     }
     // Parameterized live-int counter frames and parametric yield* are now
     // supported by the restricted native-Wasm generator profile.
-    let executable_original = atto_compiler::compile(SAMPLE)
-        .expect("parameterized count_to and delegated limit must compile to guest Wasm");
+    let executable_original =
+        atto_compiler::compile(SAMPLE).expect("parameterized count_to and delegated limit must compile to guest Wasm");
     assert!(executable_original.starts_with(b"\0asm\x01\0\0\0"));
-    let executable = atto_compiler::compile(
-        "fnc *gen foo(): Generator<int> { yield 1; } pub fnc main(): int { return 0; }"
-    ).expect("finite int generator must compile to actual Wasm");
+    let executable = atto_compiler::compile("fnc *gen foo(): Generator<int> { yield 1; } pub fnc main(): int { return 0; }")
+        .expect("finite int generator must compile to actual Wasm");
     assert!(executable.starts_with(b"\0asm\x01\0\0\0"));
     let err = atto_compiler::compile("pub fnc main(): Generator<int> { return 0; }").unwrap_err();
     assert_eq!(err.code, "E_UNSUPPORTED_TYPE");
@@ -114,7 +120,9 @@ fn plus_assign_desugars_to_checked_binary_addition_without_disabling_mutability_
     assert!(guest.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(
         atto_compiler::compile("pub fnc main(): int { val sum = 0; sum += 1; return sum; }")
-            .unwrap_err().code, "E_IMMUTABLE"
+            .unwrap_err()
+            .code,
+        "E_IMMUTABLE"
     );
 }
 
@@ -142,7 +150,6 @@ fn generator_item_and_delegation_type_checks_precede_wasm_unsupported_gate() {
         fnc *gen outer(): Generator<int> { yield* inner(); }
         pub fnc main(): int { return 0; }
     "#;
-    let bytes = atto_compiler::compile(valid_delegation)
-        .expect("zero-argument finite yield* delegates compile to real guest Wasm");
+    let bytes = atto_compiler::compile(valid_delegation).expect("zero-argument finite yield* delegates compile to real guest Wasm");
     assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
 }

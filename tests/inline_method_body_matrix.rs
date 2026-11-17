@@ -1,6 +1,6 @@
 //! Accepted inline-method spelling matrix. Parser assertions deliberately
 //! do not pretend that out-of-line receiver dispatch is executable.
-use atto_compiler::{lexer::lex, parser::Parser, ast::Stmt};
+use atto_compiler::{ast::Stmt, lexer::lex, parser::Parser};
 
 #[test]
 fn inline_methods_accept_five_body_styles_with_legacy_prefixes() {

@@ -3,7 +3,9 @@ use atto_compiler::visibility_lower::Visibility;
 use atto_compiler::{compile, lexer, parser};
 
 fn parse(source: &str) -> atto_compiler::ast::Program {
-    parser::Parser::new(lexer::lex(source).expect("lex")).parse_program().expect("parse")
+    parser::Parser::new(lexer::lex(source).expect("lex"))
+        .parse_program()
+        .expect("parse")
 }
 
 const DECLS: &str = r#"
@@ -45,9 +47,7 @@ fn moving_exports_from_top_to_bottom_preserves_binary_and_metadata() {
 
 #[test]
 fn explicit_and_inferred_export_kinds_agree() {
-    let src = format!(
-        "export pub class Foo;\nexport pub Bar;\nexport pub[pkg] fnc calculate;\n{DECLS}"
-    );
+    let src = format!("export pub class Foo;\nexport pub Bar;\nexport pub[pkg] fnc calculate;\n{DECLS}");
     assert!(compile(&src).is_ok());
 }
 
@@ -65,8 +65,14 @@ fn bad_targets_and_duplicate_exports_fail_closed() {
     let cases = [
         ("export pub Missing;\npub fnc main(): int { return 0; }", "E_UNBOUND"),
         ("export pub fnc Foo;\n", "E_UNBOUND"),
-        ("export pub fnc Foo;\ndefine class Foo as end\npub fnc main(): int { return 0; }", "E_EXPORT_KIND"),
-        ("export pub Foo;\nexport pub class Foo;\ndefine class Foo as end\npub fnc main(): int { return 0; }", "E_DUPLICATE"),
+        (
+            "export pub fnc Foo;\ndefine class Foo as end\npub fnc main(): int { return 0; }",
+            "E_EXPORT_KIND",
+        ),
+        (
+            "export pub Foo;\nexport pub class Foo;\ndefine class Foo as end\npub fnc main(): int { return 0; }",
+            "E_DUPLICATE",
+        ),
         ("export pub[pkg] Ghost;\npub fnc main(): int { return 0; }", "E_UNBOUND"),
     ];
     for (src, want) in cases {
@@ -99,17 +105,14 @@ fn export_name_abi_rejects_non_ascii_and_over_256_bytes() {
     // bytes of canonical ASCII, even though the source lexer accepts Unicode.
     let max_name = format!("A{}", "z".repeat(255));
     assert_eq!(max_name.len(), 256);
-    let accepted = format!(
-        "export pub fnc {max_name};\nfnc {max_name}(): int {{ return 7; }}\npub fnc main(): int {{ return 0; }}"
-    );
+    let accepted = format!("export pub fnc {max_name};\nfnc {max_name}(): int {{ return 7; }}\npub fnc main(): int {{ return 0; }}");
     assert!(compile(&accepted).is_ok(), "256-byte ASCII export should compile");
 
     let overlong = format!("A{}", "z".repeat(256));
     assert_eq!(overlong.len(), 257);
     for visibility in ["pub", "pub[pkg]"] {
-        let source = format!(
-            "export {visibility} fnc {overlong};\nfnc {overlong}(): int {{ return 7; }}\npub fnc main(): int {{ return 0; }}"
-        );
+        let source =
+            format!("export {visibility} fnc {overlong};\nfnc {overlong}(): int {{ return 7; }}\npub fnc main(): int {{ return 0; }}");
         let diagnostic = compile(&source).expect_err("257-byte export must fail");
         assert_eq!(diagnostic.code, "E_EXPORT_NAME_TOO_LONG");
     }
@@ -117,9 +120,7 @@ fn export_name_abi_rejects_non_ascii_and_over_256_bytes() {
     // Unicode declaration names remain a lexer feature, but may not become
     // language-export names until the shared metadata ABI supports them.
     for name in ["Éclair", "Ωmega"] {
-        let source = format!(
-            "export pub fnc {name};\nfnc {name}(): int {{ return 7; }}\npub fnc main(): int {{ return 0; }}"
-        );
+        let source = format!("export pub fnc {name};\nfnc {name}(): int {{ return 7; }}\npub fnc main(): int {{ return 0; }}");
         let diagnostic = compile(&source).expect_err("non-ASCII export must fail");
         assert_eq!(diagnostic.code, "E_EXPORT_NAME");
     }
@@ -131,7 +132,9 @@ fn read_uleb(bytes: &[u8], offset: &mut usize) -> usize {
         let byte = *bytes.get(*offset).expect("truncated wasm LEB");
         *offset += 1;
         value |= ((byte & 0x7f) as usize).checked_shl(shift).expect("LEB overflow");
-        if byte & 0x80 == 0 { return value; }
+        if byte & 0x80 == 0 {
+            return value;
+        }
     }
     panic!("unterminated wasm LEB");
 }
@@ -191,14 +194,19 @@ fn export_metadata_is_structurally_typed_and_pkg_is_not_a_wasm_export() {
             assert_eq!(pos, section.len(), "host export section must be well-formed");
         }
     }
-    assert_eq!(metadata, vec![
-        ("Bar".to_string(), 1, 2),
-        ("Foo".to_string(), 1, 1),
-        ("calculate".to_string(), 2, 1),
-    ]);
+    assert_eq!(
+        metadata,
+        vec![
+            ("Bar".to_string(), 1, 2),
+            ("Foo".to_string(), 1, 1),
+            ("calculate".to_string(), 2, 1),
+        ]
+    );
     assert!(host_exports.iter().any(|name| name == "main"));
     for name in ["Bar", "Foo", "calculate"] {
-        assert!(!host_exports.iter().any(|s| s == name),
-            "language export {name} must not become a host Wasm export");
+        assert!(
+            !host_exports.iter().any(|s| s == name),
+            "language export {name} must not become a host Wasm export"
+        );
     }
 }
