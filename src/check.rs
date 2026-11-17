@@ -3703,6 +3703,21 @@ impl<'a> FnCx<'a> {
         }
         let label = format!("{cname}.{name}");
         self.arity(&label, m.params.len(), args.len(), pos)?;
+        if name == "equals" {
+            // Direct a.equals(b) has the SAME non-owning signature as a eq b.
+            // Ordinary self.args would consume 'b' as an owned argument;
+            // doing that here would violate the checked borrowed method ABI.
+            let other = self.value(&args[0])?;
+            if other.ty != Type::Class(c) {
+                return Err(type_err(args[0].pos,
+                    format!("{}.equals expects {} other, found {}",
+                        cname, cname, self.tn(other.ty))));
+            }
+            return Ok(TE {
+                e: TExpr::Call(m.idx, vec![recv, other]),
+                ty: Type::Bool,
+            });
+        }
         let mut targs = vec![recv];
         targs.extend(self.args(&label, args, &m.params)?);
         Ok(TE {

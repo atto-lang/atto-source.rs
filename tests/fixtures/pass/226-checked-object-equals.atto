@@ -13,7 +13,8 @@ pub fnc main(): int {
     val b = new Point(7);
     val c = new Point(9);
     val view = borrow! a;
-    if a eq b, a neq c, a != b, a == a, view eq b then
+    // The explicit method spelling must use the same borrowed call contract.
+    if a eq b, a.equals(b), a neq c, a != b, a == a, view eq b, b == b then
         return 42;
     fi
     return 0;

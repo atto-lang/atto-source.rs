@@ -183,3 +183,33 @@ fn malformed_or_missing_equals_never_uses_identity_as_a_fallback() {
         assert_eq!(d.code, "E_EQUALS", "{op}: {d}");
     }
 }
+
+#[test]
+fn explicit_equals_calls_borrow_other_without_implicit_moves() {
+    let src = r#"
+        define class Point as
+            pub final int n: 12;
+            pub equals(Point other): bool { return self.n eq other.n; }
+        end
+        pub fnc main(): int {
+            val a = new Point();
+            val b = new Point();
+            if a.equals(b), a eq b, b == b then return 42; fi
+            return 0;
+        }
+    "#;
+    let wasm = compile(src).expect("explicit method and operator equality must both borrow");
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+
+    let wrong = r#"
+        define class Point as
+            pub equals(Point other): bool { return true; }
+        end
+        pub fnc main(): int {
+            val a = new Point();
+            if a.equals(42) then return 1; fi
+            return 0;
+        }
+    "#;
+    assert_eq!(compile(wrong).unwrap_err().code, "E_TYPE");
+}
