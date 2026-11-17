@@ -120,6 +120,10 @@ fn checked_path(root: &Path, relative: &str) -> R<PathBuf> {
 /// Cross-package dependencies require an authenticated dependency lock and
 /// are deliberately not supported by this first host resolver.
 pub fn compile_package(root: &Path, entry: &str) -> R<Vec<u8>> {
+    compile_package_impl(root, entry, None)
+}
+
+fn compile_package_impl(root: &Path, entry: &str, pins: Option<&LockedSources>) -> R<Vec<u8>> {
     if !linker::path_ok(entry) {
         return Err(error("E_IMPORT_PATH", "entry path must be canonical and package-relative"));
     }
@@ -154,6 +158,11 @@ pub fn compile_package(root: &Path, entry: &str) -> R<Vec<u8>> {
         fs::read_to_string(&manifest_path)
             .map_err(|e| io_error("cannot read .atto.pkg.toml", e))?
     };
+    if let Some(pins) = pins {
+        if crate::sha256::hex_digest(manifest.as_bytes()) != pins.manifest_sha256 {
+            return Err(error("E_LOCK_HASH", "package manifest does not match authenticated lock digest"));
+        }
+    }
     let identity = parse_package_identity(&manifest)?;
     let mut pending = vec![entry.to_string()];
     let mut loaded = BTreeMap::<String, String>::new();
@@ -181,10 +190,24 @@ pub fn compile_package(root: &Path, entry: &str) -> R<Vec<u8>> {
             }
             src
         };
+        if let Some(pins) = pins {
+            let want = pins.files.get(&relative).ok_or_else(|| error("E_LOCK_HASH",
+                format!("missing pinned source digest for '{relative}'")))?;
+            if crate::sha256::hex_digest(src.as_bytes()) != *want {
+                return Err(error("E_LOCK_HASH",
+                    format!("source content changed after trusted lock for '{relative}'")));
+            }
+        }
         for child in linker::import_paths(&src, &relative)? {
             pending.push(child);
         }
         loaded.insert(relative, src);
+    }
+    if let Some(pins) = pins {
+        if pins.files.len() != loaded.len() {
+            return Err(error("E_LOCK_HASH",
+                "trusted lockfile contains unexpected/unreachable source pins"));
+        }
     }
     let units: Vec<LinkUnit<'_>> = loaded.iter().map(|(path, source)| LinkUnit {
         path, source, package: &identity,
@@ -260,4 +283,101 @@ pub fn discover_package_root(entry: &Path) -> R<(PathBuf, String)> {
 pub fn compile_discovered(entry: &Path) -> R<Vec<u8>> {
     let (root, relative) = discover_package_root(entry)?;
     compile_package(&root, &relative)
+}
+
+
+/// A small, non-registry, SHA-256-verified local source lock. Authenticity
+/// comes ONLY from a trusted expected lockfile digest supplied by the caller;
+/// an unsigned lockfile stored alongside mutable sources is not a trust root.
+#[derive(Clone, Debug)]
+struct LockedSources {
+    manifest_sha256: String,
+    files: BTreeMap<String,String>,
+}
+fn valid_sha256(s: &str) -> bool {
+    s.len()==64 && s.bytes().all(|x| x.is_ascii_digit() ||
+        (b'a'..=b'f').contains(&x))
+}
+fn lock_string(s: &str) -> R<String> {
+    let x=s.trim();
+    if x.len()<2 || !x.starts_with('"') || !x.ends_with('"') ||
+        x[1..x.len()-1].contains('"') ||
+        x[1..x.len()-1].contains('\\') {
+        return Err(error("E_LOCK", "source lockfile values must be simple quoted strings"));
+    }
+    Ok(x[1..x.len()-1].to_string())
+}
+fn parse_source_lock(contents: &str) -> R<LockedSources> {
+    if contents.len()>MAX_MANIFEST*4 || contents.contains('\0') {
+        return Err(error("E_LOCK", "source lockfile exceeds budget or contains NUL"));
+    }
+    let mut phase=0;
+    let mut manifest=None;
+    let mut files=BTreeMap::new();
+    for line in contents.lines() {
+        let line=line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        match line {
+            "[lock]" if phase==0 => { phase=1; continue; }
+            "[files]" if phase==1 => { phase=2; continue; }
+            _ if line.starts_with('[') => return Err(error("E_LOCK",
+                "unexpected or duplicate lock section")),
+            _ => {}
+        }
+        let (key,value)=line.split_once('=').ok_or_else(|| error("E_LOCK",
+            "expected lockfile key=value"))?;
+        let value=lock_string(value)?;
+        if !valid_sha256(&value) {
+            return Err(error("E_LOCK", "SHA-256 source digest must be 64 lowercase hex characters"));
+        }
+        if phase==1 && key.trim()=="manifest_sha256" && manifest.is_none() {
+            manifest=Some(value);
+        } else if phase==2 {
+            let path=lock_string(key)?;
+            if !linker::path_ok(&path) {
+                return Err(error("E_LOCK", "lockfile source path is not canonical"));
+            }
+            if files.len()>=MAX_FILES || files.insert(path,value).is_some() {
+                return Err(error("E_LOCK", "duplicate or excessive source locks"));
+            }
+        } else {
+            return Err(error("E_LOCK", "unknown or duplicate trusted lock key"));
+        }
+    }
+    Ok(LockedSources {
+        manifest_sha256: manifest.ok_or_else(|| error("E_LOCK", "missing manifest digest"))?,
+        files,
+    })
+}
+
+/// Hash-authenticated bounded source snapshot. The *expected lock SHA-256*
+/// MUST arrive over an independently trusted channel. A caller who accepts
+/// an arbitrary lock digest read from the same untrusted directory has no
+/// authentication. Files are still loaded through the Linux FD-rooted
+/// resolver and are content-pinned before linking.
+pub fn compile_package_locked(root: &Path, entry: &str, expected_lock_sha256: &str) -> R<Vec<u8>> {
+    if !valid_sha256(expected_lock_sha256) {
+        return Err(error("E_LOCK", "expected trusted lock digest must be a lowercase SHA-256"));
+    }
+    #[cfg(target_os = "linux")]
+    let lock_text=crate::secure_fs::LockedRoot::open(root)?
+        .read(".atto.pkg.lock", MAX_MANIFEST*4, "E_LOCK")?;
+    #[cfg(not(target_os = "linux"))]
+    let lock_text={
+        let physical=fs::canonicalize(root)
+            .map_err(|e| io_error("cannot canonicalize lockfile root",e))?;
+        let file=physical.join(".atto.pkg.lock");
+        let meta=fs::symlink_metadata(&file)
+            .map_err(|e| io_error("cannot inspect lockfile",e))?;
+        if !meta.is_file() || meta.file_type().is_symlink() ||
+           meta.len() as usize > MAX_MANIFEST*4 {
+            return Err(error("E_LOCK","source lockfile is not a regular bounded file"));
+        }
+        fs::read_to_string(file).map_err(|e| io_error("cannot read source lockfile",e))?
+    };
+    if crate::sha256::hex_digest(lock_text.as_bytes()) != expected_lock_sha256 {
+        return Err(error("E_LOCK_HASH", "source lockfile does not match trusted SHA-256"));
+    }
+    let pins=parse_source_lock(&lock_text)?;
+    compile_package_impl(root,entry,Some(&pins))
 }
