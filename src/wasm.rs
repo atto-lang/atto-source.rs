@@ -894,7 +894,9 @@ impl Emit<'_> {
                 self.close();
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
-                field_op(&mut self.code, v.ty, 8, false); // typed Ok/Some payload
+                if v.ty != Type::Void {
+                    field_op(&mut self.code, v.ty, 8, false); // typed Ok/Some payload
+                }
             },
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
