@@ -1,5 +1,33 @@
 # atto-source.rs: AttoLang browser compiler
 
+## Explicit deep-copy operator (first compiler milestone; scalar-only)
+
+The actual Rust/Wasm frontend now recognizes contiguous copy!! as a distinct
+ownership prefix AST operation. The separated spelling copy! !expr retains
+shallow-copy-of-negation semantics, not a deep copy. The parser evaluates the
+operand once through the existing scalar typed expression path.
+
+For existing admitted identity-free int/bool/float/string/enum values, copy!!
+emits the same guest value as a scalar copy because no mutable nested graph
+exists. Class/actor/collection/opaque resource graphs are **NOT implemented**:
+type checking returns E_COPY_DEEP_UNSUPPORTED instead of emitting a shallow
+alias or claiming a copy proof. This is not the root Object copy_deep()
+implementation and has no generated type descriptors, superclass dispatch,
+mailman integration, or actor-arena copier.
+
+New pass/fail .atto fixtures are automatically picked up by the existing
+compiler + Wasm guest fixture harness, and tests/copy_doublebang.rs additionally
+checks real source-to-Wasm emission and fail-closed class diagnostics. Any
+PASS result requires an actual compiled and executed runner receipt at the
+exact PR source head; static host checks or zero-step Actions are NOT_EXECUTED.
+
+The canonical type-graph admission model resides in
+ores-truffle-oreslang/atto-borrow-checker.rs and the normative candidate
+is atto-lang/atto-spec PR #39. Full AOT object-graph implementation, typed
+ownership witness integration and true independent actor-copy execution remain
+required before copy!! on heap objects can be enabled.
+
+
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
 ## Namespace and out-of-line receiver syntax (parse-only)
