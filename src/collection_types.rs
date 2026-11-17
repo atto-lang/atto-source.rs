@@ -131,7 +131,7 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
 
 /// Parse a type annotation as far as the literal preflight needs. A user-defined
 /// nominal type remains owned by the ordinary checker; no fake structural alias.
-fn annotation(ty: Type, program: &Program, pos: Pos) -> Result<Option<LiteralType>, Diagnostic> {
+pub(crate) fn annotation(ty: Type, program: &Program, pos: Pos) -> Result<Option<LiteralType>, Diagnostic> {
     match ty {
         Type::Int => Ok(Some(LiteralType::Int)),
         Type::Bool => Ok(Some(LiteralType::Bool)),
@@ -186,7 +186,7 @@ fn common(a: LiteralType, b: LiteralType, at: Pos) -> Result<LiteralType, Diagno
     }
 }
 
-fn matches_expected(actual: &LiteralType, expected: Option<&LiteralType>, at: Pos)
+pub(crate) fn matches_expected(actual: &LiteralType, expected: Option<&LiteralType>, at: Pos)
     -> Result<(), Diagnostic>
 {
     if let Some(expected) = expected {
@@ -198,7 +198,7 @@ fn matches_expected(actual: &LiteralType, expected: Option<&LiteralType>, at: Po
     Ok(())
 }
 
-fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
+pub(crate) fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
     -> Result<TypedLiteral, Diagnostic>
 {
     use LiteralType::*;
@@ -352,6 +352,12 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
                     LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
                     || starts_literal(init)
                 {
+                    // Literal-only typing is handled here. Scoped aliases
+                    // and selections are checked by collection_scopes.
+                    if !starts_literal(init) && matches!(&init.kind,
+                        ExprKind::Var(_) | ExprKind::Member(_, _) | ExprKind::Index(_, _)) {
+                        continue;
+                    }
                     let value = inferred(init,wanted.as_ref(),0)?;
                     if ty.is_none() && (matches!(&init.kind, ExprKind::EmptyBraces) ||
                         matches!(&init.kind, ExprKind::Array(v) if v.is_empty())) {
