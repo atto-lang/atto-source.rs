@@ -352,6 +352,9 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
                     LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
                     || starts_literal(init)
                 {
+                    // Update expressions require scope-aware type information.
+                    // Do not feed them to the literal-only analyzer.
+                    if matches!(&init.kind, ExprKind::With(_, _)) { continue; }
                     // Literal-only typing is handled here. Scoped aliases
                     // and selections are checked by collection_scopes.
                     if !starts_literal(init) && matches!(&init.kind,
