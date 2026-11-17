@@ -16,8 +16,8 @@ fn err(src: &str, code: &str) {
 #[test]
 fn exact_website_visibility_source_executes_and_has_deterministic_metadata() {
     let wasm = ok(include_str!("playground_previews/visibility-modifiers.atto"));
-    assert!(wasm.windows(b"atto.visibility.profile.v1".len())
-        .any(|w| w == b"atto.visibility.profile.v1"));
+    assert!(wasm.windows(b"atto.exports.v1".len())
+        .any(|w| w == b"atto.exports.v1"));
 }
 #[test]
 fn forward_export_and_package_export_have_no_host_functions() {
@@ -104,6 +104,6 @@ fn genuine_top_level_function_export_resolves_without_host_function_leak() {
         fnc get_value(): int { return 42; }
         pub fnc main(): int { return get_value(); }
     "#);
-    assert!(wasm.windows(b"atto.visibility.profile.v1".len())
-        .any(|w| w == b"atto.visibility.profile.v1"));
+    assert!(wasm.windows(b"atto.exports.v1".len())
+        .any(|w| w == b"atto.exports.v1"));
 }
