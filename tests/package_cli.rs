@@ -99,3 +99,32 @@ fn discovered_cli_never_falls_back_to_untrusted_single_file_mode() {
     assert_eq!(result.status.code(),Some(1));
     assert!(!output.exists());
 }
+
+
+#[test]
+fn authenticated_cli_lock_digest_rejects_tampered_source() {
+    use atto_compiler::sha256::hex_digest;
+    let w=Workspace::new();
+    let manifest=fs::read(w.root.join(".atto.pkg.toml")).unwrap();
+    let mut lock=format!("[lock]\nmanifest_sha256=\"{}\"\n[files]\n",
+        hex_digest(&manifest));
+    for file in ["lib/math.atto","src/main.atto"] {
+        let contents=fs::read(w.root.join(file)).unwrap();
+        lock.push_str(&format!("\"{file}\"=\"{}\"\n", hex_digest(&contents)));
+    }
+    fs::write(w.root.join(".atto.pkg.lock"),&lock).unwrap();
+    let digest=hex_digest(lock.as_bytes());
+    let output=w.root.join("verified.wasm");
+    let cmd=|| cli(&["--package-root",w.root.to_str().unwrap(),
+        "--entry","src/main.atto","--trusted-lock-sha256",&digest,
+        "-o",output.to_str().unwrap()]);
+    let good=cmd();
+    assert!(good.status.success(),"{}",String::from_utf8_lossy(&good.stderr));
+    fs::remove_file(&output).unwrap();
+    let tampered=fs::read_to_string(w.root.join("lib/math.atto")).unwrap()
+        .replace("x * 2","x * 3");
+    fs::write(w.root.join("lib/math.atto"),tampered).unwrap();
+    let bad=cmd();
+    assert_eq!(bad.status.code(),Some(1));
+    assert!(!output.exists());
+}
