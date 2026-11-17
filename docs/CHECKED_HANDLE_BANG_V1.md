@@ -46,7 +46,37 @@ block {
 val restored = unref! handle;
 ```
 
-The `block` statement must retire all view loans when its lexical scope exits. Multiple read-only views are admissible within the same `block`, but `unref!` before its closing brace fails. A view cannot escape the lexical scope or acquire mutable authority. The current first slice permits the `view.field` and `view.method()` forms proved by its type checker; passing an arbitrary borrowed class view as a free-function argument still fails closed pending explicit borrowed-parameter ABI support.
+The `block` statement must retire all view loans when its lexical scope exits. Multiple read-only views are admissible within the same `block`, but `unref!` before its closing brace fails. A view cannot escape the lexical scope or acquire mutable authority. The current first slice permits the `view.field` and `view.method()` forms proved by its type checker; a read-only view can be passed only to a function that explicitly declares a `borrow! Class` parameter; ordinary by-value function arguments still transfer ownership.
+
+### Explicit borrowed function parameters — first executable proposal
+
+A function must **declare** that it accepts a non-owning class loan using `borrow! Payload name`. A caller then writes the ordinary function invocation `inspect_readonly(view)` exactly as in the canonical user-facing example. This is **not** a change to the usual move semantics of `fnc consume(Payload name)`: the latter still consumes an owned argument and rejects a scoped view.
+
+```atto
+define class Payload as
+  pub let int value = 42;
+end
+
+fnc make_payload(): Payload { return new Payload(); }
+fnc inspect_readonly(borrow! Payload item): int {
+  return item.value;
+}
+
+pub fnc main(): int {
+  val original = make_payload();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    stdio.println(inspect_readonly(view));
+  }
+  val restored = unref! handle;
+  return restored.value;
+}
+```
+
+The compiler resolves `borrow! Payload` as a distinct signature type, lowers both the signature and the call argument to the ordinary class-reference `i32` Wasm ABI, and treats the callee's parameter as a readonly lexical loan. Callees cannot move or return the borrowed class, assign its fields, or forward it to an owned argument. They may forward the loan to another explicitly `borrow!`-typed synchronous function. Only *named class bindings* are admitted as borrowed arguments, preventing temporary value lifetime ambiguities.
+
+This is a deliberately restricted compiler profile: borrowed parameters are allowed only on top-level synchronous `fnc` declarations, not constructors, class/actor methods, generators, FFI, suspension, escaped closures or cross-worker sends. These are **authored tests and typed-source changes, not a completed real-Wasm verification**.
 
 ### Fail-closed restrictions
 
