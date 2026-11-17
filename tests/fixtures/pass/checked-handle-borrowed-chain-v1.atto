@@ -1,0 +1,20 @@
+// expect-exit: 42
+// expect-stdout: 84
+// java: rejects
+define class Payload as
+  pub let int value = 42;
+  pub get(): int { return self.value; }
+end
+
+fnc inspect_readonly(borrow! Payload item): int { return item.get(); }
+fnc inspect_more(borrow! Payload item): int { return inspect_readonly(item); }
+pub fnc main(): int {
+  val original = new Payload();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    stdio.println(inspect_readonly(view) + inspect_more(view));
+  }
+  val restored = unref! handle;
+  return restored.value;
+}

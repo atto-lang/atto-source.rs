@@ -1,0 +1,23 @@
+// expect-exit: 42
+// expect-stdout: 42
+// java: rejects
+// The exact canonical block lifecycle with an explicitly readonly callee.
+define class Payload as
+  pub let int value = 42;
+  pub get(): int { return self.value; }
+end
+
+fnc make_payload(): Payload { return new Payload(); }
+fnc inspect_readonly(borrow! Payload item): int {
+  return item.get();
+}
+pub fnc main(): int {
+  val original = make_payload();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    stdio.println(inspect_readonly(view));
+  }
+  val restored = unref! handle;
+  return restored.value;
+}

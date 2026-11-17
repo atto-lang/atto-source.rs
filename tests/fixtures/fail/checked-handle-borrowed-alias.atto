@@ -1,0 +1,12 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Payload as
+  pub let int value = 42;
+  pub get(): int { return self.value; }
+end
+
+fnc inspect_readonly(borrow! Payload item): int {
+  val alias = item;
+  return 42;
+}
+pub fnc main(): int { return 42; }

@@ -1,0 +1,18 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Payload as
+  pub let int value = 42;
+  pub get(): int { return self.value; }
+end
+
+fnc consume(Payload item): int { return item.value; }
+pub fnc main(): int {
+  val original = new Payload();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    stdio.println(consume(view));
+  }
+  val restored = unref! handle;
+  return restored.value;
+}
