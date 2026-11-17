@@ -80,3 +80,25 @@ fn no_fake_external_or_protected_symbols_appear_in_export_metadata() {
     assert!(!wasm.windows("host_clock_ns".len()).any(|w| w == b"host_clock_ns"));
     assert!(!wasm.windows("protected".len()).any(|w| w == b"protected"));
 }
+
+#[test]
+fn internal_functions_preserve_valid_overload_sets() {
+    let source = "internal fnc choose(): int { return 1; }\ninternal fnc choose(int n): int { return n; }\npub fnc main(): int { return choose() + choose(41); }\n";
+    assert!(compile(source).is_ok());
+}
+
+#[test]
+fn nested_linkage_modifiers_cannot_escape_their_own_scopes() {
+    reject(
+        "define class C as\n internal fnc helper(): int { return 42; }\nend\npub fnc main(): int { return 0; }\n",
+        "E_SYNTAX",
+    );
+    reject(
+        "define class C as\n external fnc host_clock_ns(): int;\nend\npub fnc main(): int { return 0; }\n",
+        "E_SYNTAX",
+    );
+    reject(
+        "pub fnc main(): int { external fnc host_clock_ns(): int; return 0; }",
+        "E_SYNTAX",
+    );
+}
