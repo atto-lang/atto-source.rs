@@ -1,0 +1,19 @@
+// expect-error: E_HANDLE
+// java: rejects
+define class Parcel as pub let int value = 42; end
+fnc fail(borrow! Parcel item): int { throw Error("boom"); }
+fnc wrapper(borrow! Parcel item): int { return fail(item); }
+pub fnc main(): int {
+  val original = new Parcel();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    do if true then
+      stdio.println(wrapper(view));
+    else
+      stdio.println(view.value);
+    fi
+  }
+  val restored = unref! handle;
+  return restored.value;
+}
