@@ -13,5 +13,10 @@ pub fnc main(): int {
         val writer = borrow! mut left;
         writer.value = 99;
     }
-    return original.value + right.value;
+    block {
+        val writer = borrow! mut right;
+        writer.value = 20;
+    }
+    // 21 + 20 + (99 - 98) = 42. Catches source/left/right aliases.
+    return original.value + right.value + (left.value - 98);
 }
