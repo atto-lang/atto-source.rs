@@ -1279,6 +1279,29 @@ impl Parser {
 
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
+        // A borrowed class parameter is declared explicitly. This syntax
+        // cannot occur in ordinary expressions or type positions.
+        // The callee gets a readonly loan, not an owned class value.
+        if self.is_word("borrow") && *self.peek_at(1) == Tok::Bang {
+            let marker = self.toks[self.i + 1].pos;
+            if marker.line != pos.line || marker.col != pos.col + 6 {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "borrowed parameters use contiguous borrow!"));
+            }
+            self.advance();
+            self.advance();
+            let ty = self.parse_type()?;
+            let Type::Named(index) = ty else {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "borrow! parameters require a named class type"));
+            };
+            if self.is_word("mut") {
+                return Err(Diagnostic::new(self.pos(), "E_BORROW",
+                    "borrow! parameter views are readonly; mutable loans need a separate ABI"));
+            }
+            let (name, p) = self.ident("a borrowed parameter name")?;
+            return self.finish_param(name, Type::BorrowedNamed(index), false, p);
+        }
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }

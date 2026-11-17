@@ -17,6 +17,10 @@ pub enum Type {
     Named(u32),
     /// Unresolved `ActorRef<Name>`: index into [`Program::type_names`].
     NamedRef(u32),
+    /// Unresolved class-only borrowed parameter contract: borrow! Payload view.
+    BorrowedNamed(u32),
+    /// Resolved readonly, nonescaping class parameter; Wasm ABI is a class i32.
+    BorrowedClass(u32),
     /// Source-level `fnc(T1, T2) -> R` signature. The index refers to a
     /// canonical, compiler-interned signature in `Program::type_names`.
     /// This type is recognized and checked, but cannot yet be represented

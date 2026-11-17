@@ -482,6 +482,7 @@ impl Globals<'_> {
         match t {
             Type::Class(i) => self.classes[i as usize].name.clone(),
             Type::CheckedRef(i) => format!("CheckedRef<{}>", self.classes[i as usize].name),
+            Type::BorrowedClass(i) => format!("borrow! {}", self.classes[i as usize].name),
             Type::Enum(i) => self.enums[i as usize].name.clone(),
             Type::ActorRef(i) => format!("ActorRef<{}>", self.actors[i as usize].name),
             Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
@@ -503,6 +504,14 @@ impl Globals<'_> {
 /// Resolve parser type names against the declaration tables.
 fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> R<Type> {
     Ok(match t {
+        Type::BorrowedNamed(i) => {
+            let (name, pos) = &type_names[i as usize];
+            match classes.iter().position(|c| c == name) {
+                Some(c) => Type::BorrowedClass(c as u32),
+                None => return Err(Diagnostic::new(*pos, "E_BORROW",
+                    format!("borrow! parameter type '{name}' must name a class"))),
+            }
+        }
         Type::Named(i) => {
             let (n, pos) = &type_names[i as usize];
             if let Some(c) = classes.iter().position(|c| c == n) {
@@ -1330,6 +1339,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
 fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> String {
     match t {
         Type::Class(i) => classes[i as usize].clone(),
+        Type::BorrowedClass(i) => format!("borrow! {}", classes[i as usize]),
         Type::Enum(i) => enums[i as usize].name.clone(),
         Type::ActorRef(i) => format!("ActorRef<{}>", actors[i as usize]),
         Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => tn[i as usize].0.clone(),
@@ -1340,7 +1350,7 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
 /// Actors are isolated from sibling classes, enums and other actors.
 fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
     match t {
-        Type::Class(i) => Err(isolation(pos, actor, "sibling class", &g.classes[i as usize].name)),
+        Type::Class(i) | Type::BorrowedClass(i) => Err(isolation(pos, actor, "sibling class", &g.classes[i as usize].name)),
         Type::Enum(i) => Err(isolation(pos, actor, "sibling enum", &g.enums[i as usize].name)),
         Type::ActorRef(i) => Err(isolation(pos, actor, "actor", &g.actors[i as usize].name)),
         _ => Ok(()),
@@ -1400,10 +1410,25 @@ fn body_check(
         });
     } else {
         for (i, (n, t, m)) in named.iter().enumerate() {
+            // A borrowed parameter is a read-only lexical loan over a caller-
+            // owned class; its provenance cannot be promoted to ownership.
+            let local_ty = match t {
+                Type::BorrowedClass(c) => Type::Class(*c),
+                t => *t,
+            };
+            if matches!(t, Type::BorrowedClass(_)) {
+                if *m || owner != Owner::TopLevel {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "borrowed parameters require immutable top-level synchronous functions"));
+                }
+                cx.loans.insert(i as u32, ScopedLoan {
+                    owner: i as u32, mutable: false,
+                });
+            }
             cx.scopes[0].push(Local {
                 name: n.to_string(),
                 slot: i as u32,
-                ty: *t,
+                ty: local_ty,
                 mutable: *m,
                 mail: None,
             });
@@ -3407,15 +3432,29 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
-            let v = self.consume_expected(a, *want)?;
-            if v.ty != *want {
+            let expected = match want {
+                Type::BorrowedClass(c) => Type::Class(*c),
+                t => *t,
+            };
+            let v = if matches!(want, Type::BorrowedClass(_)) {
+                // The guest only passes a verified borrowed class local; do
+                // not call consume(), which transfers ownership by design.
+                if !matches!(&a.kind, ExprKind::Var(_)) {
+                    return Err(Diagnostic::new(a.pos, "E_BORROW",
+                        "borrowed parameters require a named class local or readonly view"));
+                }
+                self.value(a)?
+            } else {
+                self.consume_expected(a, *want)?
+            };
+            if v.ty != expected {
                 return Err(type_err(
                     a.pos,
                     format!(
                         "argument {} of '{callee}' has type {} but expected {}",
                         i + 1,
                         self.tn(v.ty),
-                        self.tn(*want)
+                        self.tn(expected)
                     ),
                 ));
             }
