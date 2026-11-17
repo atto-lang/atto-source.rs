@@ -114,7 +114,11 @@ fn parse_decl(t: &[Token], i: usize, kind: Kind) -> R<(Decl, usize)> {
         fields.push(Field { name: field,ty:ty.to_owned() });
         j+=3;
     }
-    if fields.is_empty() {return Err(error(pos,"E_UNSUPPORTED","empty product shapes are not in the executable profile"));}
+    // A zero-field named struct has a real (zero-arity) constructor.
+    // The record product profile remains explicitly nonempty.
+    if fields.is_empty() && kind == Kind::Record {
+        return Err(error(pos, "E_UNSUPPORTED", "empty records require the typed Record profile"));
+    }
     Ok((Decl{name,kind,fields,pos}, j+1))
 }
 
@@ -170,6 +174,62 @@ fn constructor_tokens(decl: &Decl, values: BTreeMap<String,Token>, pos: Pos) -> 
 }
 fn synthetic_name(kind: &str, a: &str, b: &str) -> String {
     format!("{PREFIX}{kind}_{a}_{b}")
+}
+
+/// Only a binding's explicit nominal annotation supplies a struct type in
+/// this bounded lowering profile. Never guess one from similarly named fields.
+/// Full contextual argument/return inference belongs in the typed AST pass.
+fn binding_keyword(t: &[Token], i: usize) -> bool {
+    word(t, i, "val") || word(t, i, "const") || word(t, i, "let")
+}
+fn token_name(t: &[Token], i: usize) -> Option<&str> {
+    match t.get(i).map(|x| &x.tok) {
+        Some(Tok::Ident(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+fn expected_struct_name(t: &[Token], at: usize) -> Option<&str> {
+    if at < 4 || t.get(at - 1).is_none_or(|x| x.tok != Tok::Assign) {
+        return None;
+    }
+    // val x: T = infer struct {...}
+    if at >= 5 && binding_keyword(t, at - 5)
+        && t.get(at - 3).is_some_and(|x| x.tok == Tok::Colon)
+        && token_name(t, at - 4).is_some()
+    {
+        return token_name(t, at - 2);
+    }
+    // const T x = infer struct {...}
+    if binding_keyword(t, at - 4) && token_name(t, at - 2).is_some() {
+        return token_name(t, at - 3);
+    }
+    None
+}
+fn literal_type(tok: &Tok) -> Option<&'static str> {
+    match tok {
+        Tok::Int(Some(_)) => Some("int"),
+        Tok::Float(_) => Some("float"),
+        Tok::Str(_) => Some("string"),
+        Tok::Ident(s) if s == "true" || s == "false" => Some("bool"),
+        _ => None,
+    }
+}
+/// The narrow guest-AOT profile admits only literal scalar initializers.
+/// Collect in source order, not BTreeMap's sorted field-name order.
+fn anonymous_fields(t: &[Token], start: usize, end: usize) -> R<Vec<Field>> {
+    let mut fields = Vec::new();
+    let mut j = start;
+    while j < end {
+        let name = id(t, j, "anonymous struct field")?;
+        let value = t.get(j + 2).ok_or_else(|| error(t[j].pos, "E_EOF",
+            "missing anonymous struct field value"))?;
+        let ty = literal_type(&value.tok).ok_or_else(|| error(value.pos,
+            "E_TYPE_INFER_AMBIGUOUS", "anonymous struct field needs a uniquely known static type"))?;
+        fields.push(Field { name, ty: ty.to_owned() });
+        j += 3;
+        if j < end && t[j].tok == Tok::Comma { j += 1; }
+    }
+    Ok(fields)
 }
 fn generics(t: &[Token], index: usize) -> R<(String,String,usize)> {
     let pos=t[index].pos;
@@ -292,6 +352,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         i+=1;
     }
     let mut synthetic=BTreeMap::<String,Vec<Field>>::new();
+    let mut anonymous_counter=0usize;
     let mut out=Vec::new();
     i=0;
     while i<first.len() {
@@ -299,17 +360,34 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             out.extend(product);i=next;continue;
         }
         if word(&first,i,"infer") && word(&first,i+1,"struct") {
+            let expected = expected_struct_name(&first, i);
             let (values,next)=keyed(&first,i+2)?;
-            let mut compatible=declared.values().filter(|d| d.kind==Kind::Struct &&
-                d.fields.len()==values.len() &&
-                d.fields.iter().all(|f|values.contains_key(&f.name)));
-            let found=compatible.next().ok_or_else(||error(first[i].pos,"E_SHAPE",
-                "no declared struct has this exact set of fields"))?;
-            if compatible.next().is_some() {
-                return Err(error(first[i].pos,"E_AMBIGUOUS_MEMBER",
-                    "anonymous struct matches multiple declared named shapes"));
+            if let Some(name) = expected {
+                // A known T selects exactly T, never a same-shape neighbor.
+                let target = declared.get(name).ok_or_else(||error(first[i].pos,
+                    "E_UNKNOWN_TYPE",format!("expected '{name}' is not a declared struct")))?;
+                if target.kind != Kind::Struct {
+                    return Err(error(first[i].pos,"E_TYPE",
+                        format!("expected '{name}' is not a struct")));
+                }
+                out.extend(constructor_tokens(target,values,first[i].pos)?);
+            } else {
+                // No expected T: create a per-site nominal struct, even when
+                // one or several declared structs have exactly these fields.
+                if declared.len()+synthetic.len()>=MAX_SHAPES {
+                    return Err(error(first[i].pos,"E_SOURCE_LIMIT",
+                        "too many product shapes for bounded inference"));
+                }
+                let fields=anonymous_fields(&first,i+3,next-1)?;
+                let name=format!("{PREFIX}infer_{anonymous_counter}");
+                anonymous_counter+=1;
+                if synthetic.insert(name.clone(),fields.clone()).is_some() {
+                    return Err(error(first[i].pos,"E_DUPLICATE",
+                        "anonymous struct internal identity collision"));
+                }
+                let anon=Decl{name,kind:Kind::Struct,fields,pos:first[i].pos};
+                out.extend(constructor_tokens(&anon,values,first[i].pos)?);
             }
-            out.extend(constructor_tokens(found,values,first[i].pos)?);
             i=next;continue;
         }
         if let Tok::Ident(name)=&first[i].tok {
