@@ -34,3 +34,22 @@ PR #44 new-head runs for the private CI policy, runner admission and Rust compil
 - Mirror tests fail or lack executed steps: keep PR blocked, report NOT_EXECUTED/FAIL honestly.
 
 This file is a proposal, **not** authorization and not a test receipt.
+
+## Independent carrier admission observations (2026-11-17)
+
+The proposed carriers have **not** demonstrated available Actions capacity:
+
+| Carrier | Examined run | Job observation | Admission |
+| --- | --- | --- | --- |
+| `benefactor-cc/atto-ci` | `43921171507` | Ubuntu and macOS jobs both failed with zero executed steps | NOT_EXECUTED |
+| `anticaptrad/atto-ci` | `43983775257` | `real-compiler` job failed with zero executed steps | NOT_EXECUTED |
+
+These are existing carrier runs, **not** tests of Rust PR #44. Their failure reason is not established; do not claim budget exhaustion from the job result alone. A usable alternate carrier must first show a source-free canary with at least one executed step and successful completion. Do not mirror any private source into either carrier while the source export policy remains denied.
+
+### Authorization and tree-check implementation cautions
+
+- A Git tree SHA verifies the contents, paths, modes and nested trees, but not the original commit identity. Record the original commit SHA separately; the destination snapshot commit SHA will differ.
+- GitHub's Git Data API does not automatically transfer blob objects between repositories. Fetch each blob from the authorized source and create it in the authorized destination, verify each returned blob SHA, and construct the tree using exact modes/types. Never assume source blob SHAs are resolvable in the destination.
+- A subtree path prefix necessarily changes the enclosing tree SHA. Compare the destination **subtree** SHA with the source root tree SHA, not the destination top-level tree SHA.
+- Ensure no source-provided workflow can run with elevated permissions in the destination. Audit `.github/workflows` and the destination's active workflow triggers before the branch is pushed; isolate the test harness and do not execute untrusted PR workflows.
+- Reject Git LFS pointers unless the referenced object content is separately approved and verified; matching pointer blob SHAs alone does not verify LFS payloads.
