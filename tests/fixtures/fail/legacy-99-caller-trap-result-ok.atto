@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED
+// expect-error: E_TRAP_ERROR_JOIN
 // Legacy Option-returning trap example: now rejected without guest output.
 // trap is caller-side; normal Ok becomes Some(Ok(...)).
 fnc checked_id(int id): Result<int,string> {
