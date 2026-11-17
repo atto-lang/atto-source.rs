@@ -65,6 +65,8 @@ pub struct Program {
     pub classes: Vec<ClassDecl>,
     pub enums: Vec<EnumDecl>,
     pub actors: Vec<ActorDecl>,
+    /// Compiler-validated, file-owned exports (not native host exports).
+    pub exports: Vec<ExportDecl>,
     /// Optional non-executable out-of-line actor interface in the production AST.
     /// Executable actor code still uses the normal actors field above.
     pub actor_interface: Option<ActorInterface>,
@@ -73,6 +75,22 @@ pub struct Program {
     pub type_names: Vec<(String, Pos)>,
 }
 
+
+/// Export visibility is evaluated by a package-aware linker, not the host ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportVisibility { Public, Package }
+
+/// Kind is resolved against the checked file-local declaration table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportKind { Class, Fnc, Actor, Enum, Module }
+
+#[derive(Clone, Debug)]
+pub struct ExportDecl {
+    pub name: String,
+    pub pos: Pos,
+    pub kind: ExportKind,
+    pub visibility: ExportVisibility,
+}
 
 /// Target-only nominal actor interface retained in the production Program AST.
 /// Indices in method ActorRef types refer to forwards, NOT executable actors.
