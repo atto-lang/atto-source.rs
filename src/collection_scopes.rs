@@ -91,7 +91,13 @@ impl<'a> Scope<'a> {
                 }
             }
             ExprKind::Record(_) | ExprKind::Map(_) | ExprKind::Array(_) |
-            ExprKind::EmptyBraces | ExprKind::Tuple(_) => Some(inferred(e,expected,depth)?.ty),
+            ExprKind::EmptyBraces | ExprKind::Tuple(_) => {
+                let ty=inferred(e,expected,depth)?.ty;
+                if matches!(ty,Ty::Record(_)) {
+                    let _plan=crate::layout_plan::record(&ty,e.pos)?;
+                }
+                Some(ty)
+            }
             ExprKind::Ownership(_,_,x) | ExprKind::Unary(_,x) | ExprKind::Trap(x) |
             ExprKind::Propagate(x) => { self.expression(x,None,depth+1)?; None }
             ExprKind::Binary(_,a,b) => {
@@ -170,12 +176,14 @@ impl<'a> Scope<'a> {
                     self.expression(cond,None,0)?;
                     let mut iter=self.clone();
                     iter.nested(body)?;
-                    self.join(&[self.clone(),iter]);
+                    let before=self.clone();
+                    self.join(&[before,iter]);
                 }
                 Stmt::Loop {body,..} => {
                     let mut iter=self.clone();
                     iter.nested(body)?;
-                    self.join(&[self.clone(),iter]);
+                    let before=self.clone();
+                    self.join(&[before,iter]);
                 }
                 Stmt::For {init,cond,update,body,..} => {
                     let mut iter=self.clone();
@@ -185,7 +193,8 @@ impl<'a> Scope<'a> {
                     iter.nested(body)?;
                     if let Some(s)=update {iter.walk(std::slice::from_ref(s.as_ref()))?;}
                     iter.frames.pop();
-                    self.join(&[self.clone(),iter]);
+                    let before=self.clone();
+                    self.join(&[before,iter]);
                 }
                 Stmt::ForIn {name,source,body,..} => {
                     self.expression(source,None,0)?;
@@ -195,7 +204,8 @@ impl<'a> Scope<'a> {
                         Local {actual:None,annotated:None});
                     iter.nested(body)?;
                     iter.frames.pop();
-                    self.join(&[self.clone(),iter]);
+                    let before=self.clone();
+                    self.join(&[before,iter]);
                 }
                 Stmt::Match {subject,arms,..} => {
                     self.expression(subject,None,0)?;
