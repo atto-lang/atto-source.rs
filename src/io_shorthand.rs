@@ -197,8 +197,12 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
             start -= 1;
         }
         // This narrowly-scoped syntax family has its own complete parser:
-        // nb source >> Future<T> x | await x >> val T resolved;
-        // nb source >> (val T resolved << await Future<T>);
+        // nb source >> Future<T> pending |> |f| -> (await f)? >> val U resolved;
+        // nb source >> (val U resolved << |f| -> (await f)? <| Future<T>);
+        // The typed slot T and resolved binder U must agree on Result.Err
+        // propagation; this preflight delegates the full check to the parser.
+        // A bare '|> await pending' or legacy '| await pending' is NOT
+        // an admitted function stage.
         // Otherwise this legacy direction scanner would diagnose the nested
         // operators as illegal chains before the checked continuation parser
         // can validate them. Skipping this *preflight* does not authorize I/O:
