@@ -32,6 +32,7 @@ const invalid = [
   ['double-comma', 'return 1,,42;', 'E_SYNTAX'],
   ['bad-final-type', 'return 1, true;', 'E_TYPE'],
   ['bare-caret-not-expression', 'return ^ 42;', 'E_SYNTAX'],
+  ['moved-prefix', 'val value = 42; return take! value, value;', 'E_MOVED'],
   ['ordinary-tuple-not-sequence', 'return (1, 42);', 'E_UNSUPPORTED'],
 ];
 const permittedImports = new Set(['print_i64','print_bool','print_str','print_newline','print_f64',
