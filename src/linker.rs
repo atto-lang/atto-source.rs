@@ -1,9 +1,9 @@
-//! Bounded, in-memory single-hop namespace/module linking for the browser guest.
+//! Bounded, in-memory multi-hop namespace/module linking for the browser guest.
 //!
-//! This is a deterministic static source linker, NOT an on-disk package resolver.
+//! Deterministic static source linker. The host-side package resolver is separate.
 //! The caller must provide source units and trusted canonical package identities;
 //! no symlinks, network fetches or host capabilities are consulted. Reject
-//! unsupported transitive imports and untrusted re-exports before emitting Wasm.
+//! import cycles, conflicting module names and untrusted re-exports before Wasm.
 use std::collections::{BTreeMap, BTreeSet};
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{self, Tok, Token};
@@ -90,13 +90,21 @@ fn package_ok(package: &str) -> bool {
             matches!(b, b'_' | b'-' | b'.' | b'@'))
 }
 fn relative_path(from: &str, rel: &str, pos: Pos) -> R<String> {
-    if !rel.starts_with("./") || !path_ok(&rel[2..]) {
+    let (prefix, suffix) = if let Some(rest) = rel.strip_prefix("./") {
+        ("relative", rest)
+    } else if let Some(rest) = rel.strip_prefix('+') {
+        ("root", rest)
+    } else {
         return Err(err(pos, "E_IMPORT_PATH",
-            "imports must use canonical './name.atto' relative paths without traversal"));
+            "imports require './name.atto' or '+name.atto' canonical paths"));
+    };
+    if !path_ok(suffix) {
+        return Err(err(pos, "E_IMPORT_PATH",
+            "import path has noncanonical components or traversal"));
     }
     let dir = from.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
-    let resolved = if dir.is_empty() { rel[2..].to_string() }
-                   else { format!("{dir}/{}", &rel[2..]) };
+    let resolved = if prefix == "root" || dir.is_empty() { suffix.to_string() }
+                   else { format!("{dir}/{suffix}") };
     if !path_ok(&resolved) {
         return Err(err(pos, "E_IMPORT_PATH", "invalid canonical import destination"));
     }
@@ -159,13 +167,9 @@ fn header(source: &str, file: &str) -> R<Header> {
 fn imported_module(imp: &Import, dependency: &LinkUnit<'_>,
                    entry_package: &str) -> R<String> {
     let hdr = header(dependency.source, dependency.path)?;
-    if !hdr.imports.is_empty() {
-        if hdr.imports.iter().any(|child| child.path == imp.path) {
-            return Err(err(imp.pos, "E_IMPORT_CYCLE", "module imports cannot cycle"));
-        }
-        return Err(err(imp.pos, "E_UNSUPPORTED",
-            "transitive module import linking is not yet supported"));
-    }
+    // Each import edge was validated against the whole graph before this
+    // function is called. Module imports in the header are not declarations
+    // and are erased before local parsing; no transitive runtime authority.
     let tokens = lexer::lex(&hdr.body)?;
     // Only a real, file-owned module declaration may satisfy an import.
     let mut visible = visibility_lower::lower(tokens.clone())?;
@@ -227,13 +231,88 @@ fn imported_module(imp: &Import, dependency: &LinkUnit<'_>,
     Ok(erase(hdr.body, spans))
 }
 
-/// Compile a bounded, explicit source graph into one guest Wasm module.
-/// Exactly one entry file and at most one import hop. Package identities
-/// MUST originate from a trusted package resolver, not self-asserted
-/// untrusted source attributes. No filesystem, network or symlink traversal.
+/// Detect cycles and resolve all reachable modules before a single guest is
+/// emitted. Postorder ensures that imported declarations precede their users.
+/// Every edge checks visibility against its immediate *consumer's* package,
+/// never against a globally trusted entry-package string.
+fn visit<'a>(
+    path: &'a str,
+    files: &BTreeMap<&'a str, &'a LinkUnit<'a>>,
+    states: &mut BTreeMap<&'a str, u8>,
+    names: &mut BTreeMap<String, &'a str>,
+    ordered: &mut Vec<(String, String)>,
+    edges: &mut usize,
+    entry: &'a str,
+) -> R<()> {
+    match states.get(path).copied() {
+        Some(1) => return Err(err(Pos::default(), "E_IMPORT_CYCLE",
+            format!("cyclic module import at '{path}'"))),
+        Some(2) => return Ok(()),
+        _ => {}
+    }
+    let unit = files.get(path).ok_or_else(|| err(Pos::default(), "E_UNBOUND",
+        format!("missing source file '{path}'")))?;
+    states.insert(path, 1);
+    let hdr = header(unit.source, path)?;
+    // A file may import different file-local modules, but this executable
+    // profile permits exactly one module declaration per imported source.
+    if path != entry {
+        let source = lexer::lex(&hdr.body)?;
+        let vis = visibility_lower::lower(source)?;
+        let module = module_lower::lower_with_manifest(vis.tokens)?;
+        if module.modules.len() != 1 {
+            return Err(err(Pos::default(), "E_UNSUPPORTED",
+                "imported files must own exactly one named module"));
+        }
+        let name = &module.modules[0].name;
+        if let Some(previous) = names.insert(name.clone(), path) {
+            if previous != path {
+                return Err(err(Pos::default(), "E_DUPLICATE",
+                    format!("ambiguous module name '{name}' in '{previous}' and '{path}'")));
+            }
+        }
+    }
+    for imp in &hdr.imports {
+        *edges += 1;
+        if *edges > MAX_UNITS * MAX_IMPORTS {
+            return Err(err(imp.pos, "E_SOURCE_LIMIT", "module import graph edge budget exceeded"));
+        }
+        if imp.path == path {
+            return Err(err(imp.pos, "E_IMPORT_CYCLE", "module cannot import itself"));
+        }
+        let dep = files.get(imp.path.as_str()).ok_or_else(|| err(imp.pos,
+            "E_UNBOUND", format!("missing imported source '{}'", imp.path)))?;
+        // Module visibility and real ownership must be checked on every
+        // edge, even when another parent already traversed this dependency.
+        let _ = imported_module(imp, dep, unit.package)?;
+        visit(dep.path, files, states, names, ordered, edges, entry)?;
+    }
+    states.insert(path, 2);
+    if path != entry {
+        // All imports were visited first. Pick the owning module name from
+        // its only checked declaration; foreign exports cannot forge it.
+        let tokens = lexer::lex(&hdr.body)?;
+        let lowered = visibility_lower::lower(tokens)?;
+        let manifest = module_lower::lower_with_manifest(lowered.tokens)?;
+        let m = manifest.modules.first().ok_or_else(|| err(Pos::default(),
+            "E_UNBOUND", "module missing after graph traversal"))?;
+        let synthetic = Import { name: m.name.clone(), path: path.to_string(), pos: m.pos };
+        ordered.push((path.to_string(), imported_module(&synthetic, unit, unit.package)?));
+    }
+    Ok(())
+}
+
+/// Compile a bounded, explicit source graph into one linked guest Wasm module.
+/// The package identity of each LinkUnit must be authenticated by its trusted
+/// caller; this function does not read the filesystem or package manifests.
+/// Root '+' and local './' imports both resolve within the supplied file map.
+/// Cyclic edges, duplicate module identities and re-exports fail closed.
 pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
     if units.is_empty() || units.len() > MAX_UNITS {
         return Err(err(Pos::default(), "E_SOURCE_LIMIT", "invalid linked source-unit count"));
+    }
+    if !path_ok(entry_path) {
+        return Err(err(Pos::default(), "E_IMPORT_PATH", "entry source path is not canonical"));
     }
     let mut files = BTreeMap::new();
     for unit in units {
@@ -245,39 +324,38 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
             return Err(err(Pos::default(), "E_DUPLICATE", "duplicate canonical source file path"));
         }
     }
-    let entry = files.get(entry_path).ok_or_else(|| err(Pos::default(), "E_UNBOUND",
-        "entry source file does not exist in the explicitly supplied unit set"))?;
-    let root = header(entry.source, entry_path)?;
-    let mut pieces = Vec::new();
-    let mut seen = BTreeSet::new();
-    for imp in &root.imports {
-        if imp.path == entry_path {
-            return Err(err(imp.pos, "E_IMPORT_CYCLE", "module cannot import itself"));
-        }
-        if !seen.insert(imp.name.as_str()) {
-            return Err(err(imp.pos, "E_DUPLICATE", "imported module alias is duplicated"));
-        }
-        let dep = files.get(imp.path.as_str()).ok_or_else(|| err(imp.pos,
-            "E_UNBOUND", format!("missing imported file '{}'", imp.path)))?;
-        pieces.push(imported_module(imp, dep, entry.package)?);
-    }
-    // Re-exporting an imported module is not equivalent to declaring it
-    // locally. This explicit denial is independent of the flattening pass.
-    let own_exports = visibility_lower::lower(lexer::lex(&root.body)?)?;
-    for export in own_exports.exports {
-        if seen.contains(export.name.as_str()) {
+    let root = files.get(entry_path).ok_or_else(|| err(Pos::default(), "E_UNBOUND",
+        "entry file does not exist in the supplied source graph"))?;
+    let hdr = header(root.source, entry_path)?;
+    let mut ordered = Vec::new();
+    let mut states = BTreeMap::new();
+    let mut names = BTreeMap::new();
+    let mut edges = 0;
+    visit(entry_path, &files, &mut states, &mut names, &mut ordered, &mut edges, entry_path)?;
+    // Imported module names cannot be locally defined *or* exported in the
+    // entry file. Otherwise the combined frontend could incorrectly grant
+    // the entry's own export visibility to another package's symbol.
+    let own = visibility_lower::lower(lexer::lex(&hdr.body)?)?;
+    for export in &own.exports {
+        if names.contains_key(&export.name) {
             return Err(err(export.pos, "E_VISIBILITY",
-                "imported modules are not implicitly or explicitly re-exportable in linker v1"));
+                "imported module is not re-exportable in this linker profile"));
         }
     }
-    pieces.push(root.body);
+    let local = module_lower::lower_with_manifest(own.tokens)?;
+    for module in &local.modules {
+        if names.contains_key(&module.name) {
+            return Err(err(module.pos, "E_DUPLICATE",
+                "entry file module conflicts with imported module"));
+        }
+    }
+    let mut pieces: Vec<String> = ordered.into_iter().map(|(_, data)| data).collect();
+    pieces.push(hdr.body);
     let linked = pieces.join("\n");
     if linked.len() > crate::SOURCE_CAP {
-        return Err(err(Pos::default(), "E_SOURCE_LIMIT", "linked guest source exceeds browser limit"));
+        return Err(err(Pos::default(), "E_SOURCE_LIMIT",
+            "linked guest source exceeds browser source limit"));
     }
-    // Namespace headers establish ownership only; they never open imported
-    // packages for unqualified name resolution. Exactly named imports are
-    // flattened with their verified visibility above.
-    let _entry_namespace = root.namespace;
+    let _entry_namespace = hdr.namespace;
     crate::compile(&linked)
 }
