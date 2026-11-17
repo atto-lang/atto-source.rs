@@ -104,7 +104,6 @@ fn expr_uses_alias(expr: &Expr, alias: &str, budget: &mut usize) -> Option<bool>
         | ExprKind::Trap(..)
         | ExprKind::Propagate(..)
         | ExprKind::Member(..)
-        | ExprKind::Unary(..)
         | ExprKind::Lambda { .. } => None,
     }
 }
