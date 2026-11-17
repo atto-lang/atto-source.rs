@@ -1,5 +1,6 @@
 //! Host-side package path and manifest security regression tests.
-use atto_compiler::package_resolver::{compile_package, compile_discovered, discover_package_root, parse_package_identity};
+use atto_compiler::package_resolver::{compile_package, compile_package_locked, compile_discovered, discover_package_root, parse_package_identity};
+use atto_compiler::sha256::hex_digest;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -173,4 +174,63 @@ fn discovery_rejects_symlink_source_alias_before_package_scan() {
     let alias=f.root().join("src/alias.atto");
     symlink(f.root().join("src/main.atto"),&alias).unwrap();
     assert_eq!(discover_package_root(&alias).unwrap_err().code,"E_IMPORT_PATH");
+}
+
+
+fn trusted_lock(f: &Fixture) -> String {
+    let manifest=fs::read_to_string(f.root().join(".atto.pkg.toml")).unwrap();
+    let mut lock = format!("[lock]\nmanifest_sha256=\"{}\"\n[files]\n",
+        hex_digest(manifest.as_bytes()));
+    for path in ["lib/math.atto", "lib/orders.atto", "src/main.atto"] {
+        let bytes=fs::read(f.root().join(path)).unwrap();
+        lock.push_str(&format!("\"{path}\"=\"{}\"\n",hex_digest(&bytes)));
+    }
+    f.write(".atto.pkg.lock", &lock);
+    hex_digest(lock.as_bytes())
+}
+#[test]
+fn authenticated_package_lock_pins_manifest_and_transitive_sources() {
+    let f=Fixture::new();f.with_graph();
+    let expected=trusted_lock(&f);
+    let a=compile_package_locked(f.root(),"src/main.atto",&expected)
+        .expect("valid trusted package lock");
+    assert_eq!(a,compile_package(f.root(),"src/main.atto").unwrap());
+    // Change transitive content without changing the manifest's public name.
+    f.write("lib/math.atto",&MATH.replace("x * 2","x * 3"));
+    assert_eq!(compile_package_locked(f.root(),"src/main.atto",&expected)
+        .unwrap_err().code,"E_LOCK_HASH");
+    f.write("lib/math.atto",MATH);
+    f.write(".atto.pkg.toml","[package]\nname=\"imposter\"\nversion=\"1.2.3\"\n");
+    assert_eq!(compile_package_locked(f.root(),"src/main.atto",&expected)
+        .unwrap_err().code,"E_LOCK_HASH");
+}
+#[test]
+fn caller_trusted_lock_digest_prevents_rewriting_both_lock_and_sources() {
+    let f=Fixture::new();f.with_graph();
+    let expected=trusted_lock(&f);
+    let bad=fs::read_to_string(f.root().join(".atto.pkg.lock")).unwrap();
+    f.write(".atto.pkg.lock",&bad.replace("manifest_sha256","manifext_sha256"));
+    assert_eq!(compile_package_locked(f.root(),"src/main.atto",&expected)
+        .unwrap_err().code,"E_LOCK_HASH");
+    assert_eq!(compile_package_locked(f.root(),"src/main.atto",&"a".repeat(63))
+        .unwrap_err().code,"E_LOCK");
+}
+#[test]
+fn locked_build_rejects_stale_and_extra_source_records() {
+    let f=Fixture::new();f.with_graph();
+    let expected=trusted_lock(&f);
+    let old=fs::read_to_string(f.root().join(".atto.pkg.lock")).unwrap();
+    let altered=old.replace("[files]","[files]\n\"not_needed.atto\"=\"".to_string().as_str());
+    // A syntactically invalid lock must fail with E_LOCK if signed as such.
+    f.write(".atto.pkg.lock",&altered);
+    let new_digest=hex_digest(altered.as_bytes());
+    assert_eq!(compile_package_locked(f.root(),"src/main.atto",&new_digest)
+        .unwrap_err().code,"E_LOCK");
+    f.write(".atto.pkg.lock",&old.replace("[files]",
+        "[files]\n\"extra.atto\"=\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n"));
+    let contents=fs::read(f.root().join(".atto.pkg.lock")).unwrap();
+    assert_eq!(compile_package_locked(f.root(),"src/main.atto",
+        &hex_digest(&contents)).unwrap_err().code,"E_LOCK_HASH");
+    f.write(".atto.pkg.lock",&old);
+    assert!(compile_package_locked(f.root(),"src/main.atto",&expected).is_ok());
 }
