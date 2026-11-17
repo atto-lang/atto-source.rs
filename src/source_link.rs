@@ -104,7 +104,8 @@ fn list(t: &[Token], index: &mut usize) -> R<Vec<String>> {
     let mut result = Vec::new();
     loop {
         if result.len() >= MAX_CLASSES {
-            return Err(err(t[*index].pos,"E_SOURCE_LIMIT","too many linked class edges"));
+            return Err(err(t.get(*index).map_or(Pos {line:1,col:1},|x|x.pos),
+                "E_SOURCE_LIMIT","too many linked class edges"));
         }
         result.push(identifier(t,*index)?);
         *index += 1;
