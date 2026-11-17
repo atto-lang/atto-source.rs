@@ -1,0 +1,16 @@
+// expect-exit: 42
+// java: rejects
+// Adjacent ! marker, no whitespace after marker; same AST as spaced forms.
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val original = new Parcel();
+  val handle = ref!original;
+  block {
+    val view = deref!handle;
+    stdio.println(view.value);
+  }
+  val restored = unref!handle;
+  return restored.value;
+}
