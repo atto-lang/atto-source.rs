@@ -153,12 +153,37 @@ fn rejects_mutable_views_nested_release_and_bad_qualifiers() {
 #[test]
 fn reject_borrowed_view_escape() {
     let source = format!(r#"{CLASS}
-    pub fnc main(): Parcel {{
+    fnc invalid_escape(): Parcel {{
         val original = new Parcel();
         val handle = ref! original;
         val view = deref! handle;
         return view;
-    }}"#);
+    }}
+    pub fnc main(): int {{ return 42; }}"#);
     let d = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(d.code, "E_BORROW");
+}
+
+#[test]
+fn rejects_early_exit_before_later_unwrap() {
+    check_error(r#"
+        val original = new Parcel();
+        val handle = ref! original;
+        if true then return 1; fi
+        val recovered = unref! handle;
+        return recovered.value;
+    "#, "E_HANDLE");
+    check_error(r#"
+        val original = new Parcel();
+        val handle = ref! original;
+        block { return 1; }
+        val recovered = unref! handle;
+        return recovered.value;
+    "#, "E_HANDLE");
+    check_error(r#"
+        val original = new Parcel();
+        val handle = ref! original;
+        return 1;
+        val recovered = unref! handle;
+    "#, "E_HANDLE");
 }
