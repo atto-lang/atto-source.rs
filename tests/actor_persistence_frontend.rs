@@ -227,7 +227,7 @@ fn golden_scalar_wire_matches_shared_cross_backend_fixture() {
     let schema = ActorStateSchema::for_actor(&p.actors[0]).unwrap();
     assert_eq!(schema.schema_id, 0xbd8486fc17afa1c9);
     let encoded = schema.encode(&[StateScalar::Int(100), StateScalar::Bool(true)]).unwrap();
-    let hex: String = encoded.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = encoded.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("");
     assert_eq!(
         hex,
         "4154544f5354303101c9a1af17fc8684bd020001640000000000000002018fd7fcf2f2744e29"
