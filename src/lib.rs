@@ -33,6 +33,8 @@ pub mod package_resolver;
 mod secure_fs;
 /// Stable SHA-256 digests for namespace symbol IDs and verified source snapshots.
 pub mod sha256;
+/// Source-owned qualified identifiers used by checked module bindings.
+pub mod linked_symbols;
 /// Direct routine-only and statically specialized named callbacks.
 pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
