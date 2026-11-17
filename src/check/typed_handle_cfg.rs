@@ -211,3 +211,75 @@ pub(super) fn verify(function: &TFunc, may_exit: &[bool], pos: Pos)
         Diagnostic::new(pos, "E_HANDLE", message)
     })
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::{TExpr, TE};
+
+    fn obj(slot: u32) -> TE {
+        TE { e: TExpr::Local(slot), ty: Type::Class(0) }
+    }
+    fn mint() -> TStmt {
+        TStmt::Set(1, TE { e: TExpr::Local(0), ty: Type::CheckedRef(0) })
+    }
+    fn basic(body: Vec<TStmt>) -> TFunc {
+        TFunc {
+            name: "typed_loan_test".to_string(),
+            params: Vec::new(),
+            ret: Type::Class(0),
+            locals: vec![Type::Class(0), Type::CheckedRef(0),
+                         Type::Class(0), Type::Class(0), Type::Class(0)],
+            body,
+        }
+    }
+
+    #[test]
+    fn typed_if_with_distinct_arm_local_loans_is_proved() {
+        let body = vec![
+            mint(),
+            TStmt::Block(vec![
+                TStmt::If(
+                    vec![(TE { e: TExpr::Bool(true), ty: Type::Bool },
+                          vec![TStmt::Set(2, obj(1))])],
+                    Some(vec![TStmt::Set(3, obj(1))]),
+                ),
+            ]),
+            TStmt::Set(4, obj(1)),
+            TStmt::Return(Some(obj(4))),
+        ];
+        assert!(verify(&basic(body), &[], Pos::default()).is_ok());
+    }
+
+    #[test]
+    fn typed_exit_with_outstanding_handle_is_rejected() {
+        let func = basic(vec![mint(), TStmt::Return(Some(obj(0)))]);
+        assert_eq!(verify(&func, &[], Pos::default()).unwrap_err().code, "E_HANDLE");
+    }
+
+    #[test]
+    fn typed_double_restore_is_rejected_on_same_slot() {
+        let func = basic(vec![
+            mint(),
+            TStmt::Set(3, obj(1)),
+            TStmt::Set(4, obj(1)),
+            TStmt::Return(Some(obj(4))),
+        ]);
+        assert_eq!(verify(&func, &[], Pos::default()).unwrap_err().code, "E_HANDLE");
+    }
+
+    #[test]
+    fn typed_unknown_guest_exit_under_loan_is_rejected() {
+        let func = basic(vec![
+            mint(),
+            TStmt::Block(vec![
+                TStmt::Set(2, obj(1)),
+                TStmt::Expr(TE { e: TExpr::Call(0, Vec::new()), ty: Type::Void }),
+            ]),
+            TStmt::Set(4, obj(1)),
+            TStmt::Return(Some(obj(4))),
+        ]);
+        assert_eq!(verify(&func, &[true], Pos::default()).unwrap_err().code, "E_HANDLE");
+    }
+}
