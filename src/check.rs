@@ -2742,25 +2742,18 @@ impl<'a> FnCx<'a> {
     // These non-inlined helpers keep the per-level stack frame of the
     // recursively invoked expression checker bounded on the browser runner.
     #[inline(never)]
-    fn trap_value(&mut self, inner: &Expr, pos: Pos) -> R<TE> {
-        if self.owner != Owner::TopLevel {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "caller-side trap inside class/actor requires lifecycle integration"));
-        }
-        let value = self.consume(inner)?;
-        let option_ty = match value.ty {
-            Type::Int => Type::OptionInt,
-            Type::ResultIntStr => Type::OptionResultIntStr,
-            _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                format!("browser trap supports only int and Result<int,string> operands, found {}", self.tn(value.ty)))),
-        };
-        let value_tmp = self.temp(value.ty, pos)?;
-        let some_tmp = self.temp(option_ty, pos)?;
-        let none_tmp = self.temp(option_ty, pos)?;
-        Ok(TE {
-            e: TExpr::Trap { value: Box::new(value), value_tmp, some_tmp, none_tmp },
-            ty: option_ty,
-        })
+    fn trap_value(&mut self, _inner: &Expr, pos: Pos) -> R<TE> {
+        // Canonical atto-spec/language/trap-result-v1.md mandates a typed
+        // Result<T, Error> (or one joined Result<T, E>) and Err(original Error)
+        // for ordinary throws. This compiler's legacy TExpr::Trap emits
+        // Option<T> / Some / None and erases the caught Error. Do not emit
+        // that obsolete, semantically unsafe guest lowering.
+        //
+        // Reenable ONLY when the checker, IR, guest Error payload representation,
+        // error-type join and wasm emitter all implement the normative Result
+        // contract; require executed native+wasm32 guest and negative tests.
+        Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+            "trap requires Result-based ordinary-throw lowering and typed Error preservation; legacy Option lowering is disabled"))
     }
 
     #[inline(never)]
