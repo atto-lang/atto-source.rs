@@ -131,6 +131,6 @@ fn effect_annotated_brace_body_does_not_spoil_trailing_export_scope() {
 
 #[test]
 fn namespace_headers_and_cross_file_imports_fail_closed_until_linked() {
-    assert!(compile("use namespace shop;\nexport pub module Math;\n").is_err());
+    assert!(compile("use namespace shop;\nexport pub module Math;\ndefine module Math as\n pub fnc answer(): int { return 42; }\nend\npub fnc main(): int { return 0; }").is_err());
     assert!(compile("import module Math from \"./math.atto\";\nexport pub module Math;\npub fnc main(): int { return 0; }").is_err());
 }
