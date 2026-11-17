@@ -16,7 +16,7 @@ fn unsupported(pos: Pos, msg: &'static str) -> Diagnostic {
     Diagnostic::new(pos, "E_HANDLE", msg)
 }
 
-fn has_checked_operation(stmts: &[Stmt]) -> bool {
+pub(super) fn has_checked_operation(stmts: &[Stmt]) -> bool {
     stmts.iter().any(|stmt| match stmt {
         Stmt::Bind { init, .. } => matches!(&init.kind,
             ExprKind::Ownership(OwnershipOp::Ref | OwnershipOp::Deref | OwnershipOp::Unref, _, _)),
@@ -160,10 +160,6 @@ pub(super) fn verify_type_admitted_body(body: &[Stmt], pos: Pos) -> Result<(), D
     let mut lower = Lower::new(pos);
     let entry = lower.node(Action::Nop, &[])?;
     let tails = lower.scope(body, vec![entry], 0)?;
-    for _ in &tails {
-        // A branch with multiple incoming ends gets its own explicit Exit;
-        // solver tracks each incoming set of live handle and view facts.
-    }
     if !tails.is_empty() {
         let _ = lower.node(Action::Exit, &tails)?;
     }
