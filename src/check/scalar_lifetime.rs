@@ -217,6 +217,66 @@ mod tests {
     }
 
     #[test]
+    fn unmodeled_effects_cannot_prove_loan_dead_even_without_alias_mentions() {
+        use crate::ast::UnOp;
+        let effects = vec![
+            ExprKind::Call("might_throw".to_string(), vec![lit(1)]),
+            ExprKind::New("Object".to_string(), vec![]),
+            ExprKind::Spawn("Worker".to_string()),
+            ExprKind::MethodCall(Box::new(var("other")), "send".to_string(), vec![lit(2)]),
+            ExprKind::Trap(Box::new(var("other"))),
+            ExprKind::Propagate(Box::new(var("other"))),
+            ExprKind::Member(Box::new(var("other")), "state".to_string()),
+            ExprKind::Array(vec![lit(3)]),
+            ExprKind::Unary(UnOp::Take, Box::new(var("other"))),
+            ExprKind::Unary(UnOp::Borrow, Box::new(var("other"))),
+            ExprKind::Unary(UnOp::BorrowMut, Box::new(var("other"))),
+        ];
+        for effect in effects {
+            assert!(!proves(&[Stmt::Expr(expr(effect))], "reader"));
+        }
+    }
+
+    #[test]
+    fn pure_nested_operands_without_alias_still_can_end_a_loan() {
+        let e = expr(ExprKind::Ternary(
+            Box::new(expr(ExprKind::Bool(true))),
+            Box::new(expr(ExprKind::Binary(
+                BinOp::Add,
+                Box::new(lit(40)),
+                Box::new(lit(2)),
+            ))),
+            Box::new(lit(0)),
+        ));
+        assert!(proves(&[Stmt::Expr(e)], "reader"));
+    }
+
+    #[test]
+    fn shared_function_budget_is_consumed_and_exhaustion_is_fail_closed() {
+        let single = [Stmt::Expr(lit(42))];
+        let mut remaining = 5;
+        assert!(proven_dead_after_boundary(&single, "reader", &mut remaining));
+        assert_eq!(remaining, 3);
+        assert!(!proven_dead_after_boundary(
+            &[Stmt::Expr(lit(1)), Stmt::Expr(lit(2))],
+            "reader",
+            &mut remaining,
+        ));
+        assert_eq!(remaining, 0);
+        assert!(!proven_dead_after_boundary(&single, "reader", &mut remaining));
+    }
+
+    #[test]
+    fn single_scan_budget_and_statement_count_are_both_bounded() {
+        let stmts: Vec<Stmt> = (0..MAX_STRAIGHT_STATEMENTS + 1)
+            .map(|_| Stmt::Expr(lit(42)))
+            .collect();
+        let mut budget = MAX_NLL_WORK_PER_FUNCTION;
+        assert!(!proven_dead_after_boundary(&stmts, "reader", &mut budget));
+        assert_eq!(budget, MAX_NLL_WORK_PER_FUNCTION);
+    }
+
+    #[test]
     fn oversized_tail_fails_closed_instead_of_scanning_unbounded_source() {
         let stmts: Vec<Stmt> = (0..257).map(|_| Stmt::Expr(lit(42))).collect();
         assert!(!proves(&stmts, "reader"));
