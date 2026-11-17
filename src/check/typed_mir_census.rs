@@ -35,6 +35,12 @@ pub struct Point {
     pub instruction_id: u32,
     pub operation: Operation,
     pub used_origins: Vec<u32>,
+    /// Checked arithmetic, numeric negation or comparison might trap.
+    /// Not an exception-edge proof; no borrowed resources are admitted here.
+    pub may_trap: bool,
+    /// Pure ternary reads conservatively include both arms, but its
+    /// internal conditional control-flow is not silently erased.
+    pub has_conditional: bool,
     pub successor: Option<u32>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +74,8 @@ struct Builder {
     points: Vec<Point>,
     use_facts: usize,
     expr_visits: usize,
+    may_trap: bool,
+    has_conditional: bool,
     slots: u32,
 }
 impl Builder {
@@ -96,17 +104,26 @@ impl Builder {
                     .ok_or_else(|| incomplete("typed expression reads local before definition"))?;
                 uses.insert(*origin);
             }
-            TExpr::Neg(inner)
-            | TExpr::Not(inner)
-            | TExpr::FNeg(inner)
-            | TExpr::IntToFloat(inner) => self.reads(inner, depth + 1, uses)?,
-            TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => {
+            TExpr::Neg(inner) | TExpr::FNeg(inner) => {
+                self.may_trap = true;
+                self.reads(inner, depth + 1, uses)?;
+            }
+            TExpr::Not(inner) | TExpr::IntToFloat(inner) => self.reads(inner, depth + 1, uses)?,
+            TExpr::Bin(_, a, b) => {
+                // Integer operations are checked and may trap. Conservatively
+                // mark EVERY typed binary rather than guessing a safe opcode.
+                self.may_trap = true;
+                self.reads(a, depth + 1, uses)?;
+                self.reads(b, depth + 1, uses)?;
+            }
+            TExpr::Builtin(_, a, b) => {
                 self.reads(a, depth + 1, uses)?;
                 self.reads(b, depth + 1, uses)?;
             }
             TExpr::Ternary(c, a, b) => {
-                // Both arms contribute MAY reads; only pure expressions are
-                // admitted here, so this cannot omit side-effect edges.
+                self.has_conditional = true;
+                // Both arms contribute MAY reads, with a distinct conditional
+                // flag rather than a fabricated single-path effect proof.
                 self.reads(c, depth + 1, uses)?;
                 self.reads(a, depth + 1, uses)?;
                 self.reads(b, depth + 1, uses)?;
@@ -138,8 +155,12 @@ impl Builder {
             instruction_id: id,
             operation,
             used_origins: uses.into_iter().collect(),
+            may_trap: self.may_trap,
+            has_conditional: self.has_conditional,
             successor: None,
         });
+        self.may_trap = false;
+        self.has_conditional = false;
         Ok(())
     }
     fn walk_stmt(&mut self, stmt: &TStmt) -> Result<(), Diagnostic> {
@@ -172,6 +193,9 @@ impl Builder {
             }
             TStmt::Block(stmts) if !stmts.is_empty() => {
                 for child in stmts {
+                    if self.points.last().is_some_and(|p| matches!(p.operation, Operation::Return)) {
+                        return Err(incomplete("typed block contains operations after terminal return"));
+                    }
                     self.walk_stmt(child)?;
                 }
             }
@@ -204,6 +228,8 @@ fn function(index: usize, func: &TFunc) -> Result<Function, Diagnostic> {
         points: Vec::new(),
         use_facts: 0,
         expr_visits: 0,
+        may_trap: false,
+        has_conditional: false,
         slots: slots as u32,
     };
     let mut initial_parameter_origins = Vec::new();
