@@ -2636,6 +2636,12 @@ impl<'a> FnCx<'a> {
         let (tag, payload_type) = match (want, variant) {
             (Type::ResultIntStr, "Ok") => (0, Some(Type::Int)),
             (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
+            (Type::ResultIntError, "Ok") => (0, Some(Type::Int)),
+            (Type::ResultIntError, "Err") => (1, Some(Type::Error)),
+            (Type::ResultOptionIntError, "Ok") => (0, Some(Type::OptionInt)),
+            (Type::ResultOptionIntError, "Err") => (1, Some(Type::Error)),
+            (Type::ResultVoidError, "Ok") => (0, None),
+            (Type::ResultVoidError, "Err") => (1, Some(Type::Error)),
             (Type::OptionInt, "None") => (0, None),
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
             (Type::OptionResultIntStr, "None") => (0, None),
