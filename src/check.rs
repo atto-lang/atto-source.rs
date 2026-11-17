@@ -1707,11 +1707,18 @@ impl<'a> FnCx<'a> {
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
-                let (slot, ty, mutable, mail, borrow) = match self.lookup(name) {
-                    Some(l) => (l.slot, l.ty, l.mutable, l.mail.is_some(), l.borrow),
+                let (slot, ty, mutable, mail, borrow, retired) = match self.lookup(name) {
+                    Some(l) => (l.slot, l.ty, l.mutable, l.mail.is_some(), l.borrow, l.borrow_retired),
                     None => return Err(Diagnostic::new(*pos, "E_UNBOUND", format!("unknown name '{name}'"))),
                 };
                 if let Some(kind) = borrow {
+                    // Defense-in-depth: never permit alias assignment after
+                    // non-lexical retirement, even if a future scanner change
+                    // mistakenly omitted a write from the use inventory.
+                    if retired {
+                        return Err(Diagnostic::new(*pos, "E_BORROW",
+                            "cannot assign through a retired scalar loan alias"));
+                    }
                     if kind != BorrowKind::Exclusive {
                         return Err(Diagnostic::new(*pos, "E_BORROW",
                             "cannot write through a shared borrow"));
