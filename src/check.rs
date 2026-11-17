@@ -2732,9 +2732,34 @@ impl<'a> FnCx<'a> {
             OwnershipOp::Copy | OwnershipOp::DeepCopy | OwnershipOp::Share => {
                 // Identity-free admitted scalars have no mutable descendants:
                 // shallow and deep copies are the same guest value operation.
-                // Heap graphs have NO generated AOT copier in this backend yet;
-                // refuse them rather than emit a shallow alias for copy!!.
+                // Copy!! can also use a *compiler-emitted* AOT copier for an
+                // ordinary flat class whose full stored field layout was
+                // independently checked before this expression was lowered.
                 let value = self.value(inner)?;
+                if action == OwnershipOp::DeepCopy {
+                    if let Type::Class(ci) = value.ty {
+                        if let ExprKind::Var(name) = &inner.kind {
+                            if let Some(owner_slot) = self.lookup(name).map(|l| l.slot) {
+                                if self.loans.contains_key(&owner_slot)
+                                    || self.loans.values().any(|l| l.owner == owner_slot && l.mutable)
+                                {
+                                    return Err(Diagnostic::new(pos, "E_BORROW",
+                                        "copy!! cannot read a mutable/exclusive borrowed class owner"));
+                                }
+                            }
+                        }
+                        let class = &self.g.classes[ci as usize];
+                        if class.methods.iter().any(|m| m.name == "copy_deep") {
+                            return Err(Diagnostic::new(pos, "E_COPY_OVERRIDE",
+                                "custom copy_deep overrides need verified complete-plan/hook support"));
+                        }
+                        let Some(copy_idx) = class.deep_copy_idx else {
+                            return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+                                "copy!! class graph contains unproved mutable/reference slots or protected actor state"));
+                        };
+                        return Ok(TE { e: TExpr::Call(copy_idx, vec![value]), ty: Type::Class(ci) });
+                    }
+                }
                 if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
                     if action == OwnershipOp::DeepCopy {
                         return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
