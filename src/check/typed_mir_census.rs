@@ -80,8 +80,7 @@ struct Builder {
 }
 impl Builder {
     fn charge_expr(&mut self, depth: usize) -> Result<(), Diagnostic> {
-        self.expr_visits = self.expr_visits.checked_add(1)
-            .ok_or_else(|| budget("expression work overflow"))?;
+        self.expr_visits = self.expr_visits.checked_add(1).ok_or_else(|| budget("expression work overflow"))?;
         if self.expr_visits > MAX_EXPR_VISITS || depth > MAX_EXPR_DEPTH {
             return Err(budget("typed expression depth/work exceeds bounded census"));
         }
@@ -100,7 +99,9 @@ impl Builder {
                 if *slot >= self.slots {
                     return Err(incomplete("typed expression uses out-of-range local slot"));
                 }
-                let origin = self.origins.get(slot)
+                let origin = self
+                    .origins
+                    .get(slot)
                     .ok_or_else(|| incomplete("typed expression reads local before definition"))?;
                 uses.insert(*origin);
             }
@@ -142,7 +143,9 @@ impl Builder {
         if self.points.len() >= MAX_CENSUS_POINTS {
             return Err(budget("typed MIR exceeds point limit"));
         }
-        self.use_facts = self.use_facts.checked_add(uses.len())
+        self.use_facts = self
+            .use_facts
+            .checked_add(uses.len())
             .ok_or_else(|| budget("typed use inventory overflow"))?;
         if self.use_facts > MAX_CENSUS_USES {
             return Err(budget("typed origin use inventory exceeded"));
@@ -177,7 +180,13 @@ impl Builder {
                 let new_origin = self.next_origin;
                 self.next_origin += 1;
                 self.origins.insert(*slot, new_origin);
-                self.add_point(Operation::Define { local_slot: *slot, new_origin }, uses)?;
+                self.add_point(
+                    Operation::Define {
+                        local_slot: *slot,
+                        new_origin,
+                    },
+                    uses,
+                )?;
             }
             TStmt::Expr(value) => {
                 let mut uses = BTreeSet::new();
@@ -213,11 +222,18 @@ impl Builder {
 
 fn function(index: usize, func: &TFunc) -> Result<Function, Diagnostic> {
     if !simple_type(func.ret)
-        || func.params.iter().chain(func.locals.iter()).any(|&ty| !simple_type(ty) || ty == Type::Void)
+        || func
+            .params
+            .iter()
+            .chain(func.locals.iter())
+            .any(|&ty| !simple_type(ty) || ty == Type::Void)
     {
         return Err(unsupported("aggregate, handle and reference storage need typed ownership proof"));
     }
-    let slots = func.params.len().checked_add(func.locals.len())
+    let slots = func
+        .params
+        .len()
+        .checked_add(func.locals.len())
         .ok_or_else(|| budget("local slot count overflow"))?;
     if slots > MAX_CENSUS_ORIGINS {
         return Err(budget("too many scalar slots"));
@@ -260,19 +276,26 @@ fn function(index: usize, func: &TFunc) -> Result<Function, Diagnostic> {
 /// This does not authenticate source/emitted-code completeness, CFG beyond
 /// straight-line instructions, or any borrow loan-use inventory.
 pub fn from_checked_program(program: &TProgram) -> Result<Census, Diagnostic> {
-    if program.funcs.is_empty() || program.funcs.len() > MAX_CENSUS_FUNCTIONS
-        || !program.generators.is_empty() || !program.actors.is_empty()
-        || program.heap || program.guest_eh
+    if program.funcs.is_empty()
+        || program.funcs.len() > MAX_CENSUS_FUNCTIONS
+        || !program.generators.is_empty()
+        || !program.actors.is_empty()
+        || program.heap
+        || program.guest_eh
     {
-        return Err(unsupported("program has unsupported generators, actors, memory or exception effects"));
+        return Err(unsupported(
+            "program has unsupported generators, actors, memory or exception effects",
+        ));
     }
     let mut functions = Vec::with_capacity(program.funcs.len());
     for (i, func) in program.funcs.iter().enumerate() {
         functions.push(function(i, func)?);
     }
-    Ok(Census { contract: CONTRACT, functions })
+    Ok(Census {
+        contract: CONTRACT,
+        functions,
+    })
 }
-
 
 /// One borrow issuance whose owner identity and exclusivity were validated by
 /// the *actual* AttoLang type/ownership pass. Does NOT include loan uses,
@@ -299,7 +322,12 @@ pub fn checked_borrow_issues(program: &TProgram) -> Result<Vec<CheckedBorrowIssu
             return Err(budget("too many typed statements in borrow issue census"));
         }
         for (ordinal, statement) in f.body.iter().enumerate() {
-            if let TStmt::ScalarBorrowIssue { owner_slot, alias, exclusive } = statement {
+            if let TStmt::ScalarBorrowIssue {
+                owner_slot,
+                alias,
+                exclusive,
+            } = statement
+            {
                 if alias.is_empty() || *owner_slot as usize >= f.params.len() + f.locals.len() {
                     return Err(incomplete("checked scalar borrow has malformed owner/alias provenance"));
                 }
@@ -310,9 +338,10 @@ pub fn checked_borrow_issues(program: &TProgram) -> Result<Vec<CheckedBorrowIssu
                     alias: alias.clone(),
                     exclusive: *exclusive,
                 });
-            } else if matches!(statement, TStmt::If(..) | TStmt::Loop { .. }
-                | TStmt::ForIn { .. } | TStmt::Block(..))
-            {
+            } else if matches!(
+                statement,
+                TStmt::If(..) | TStmt::Loop { .. } | TStmt::ForIn { .. } | TStmt::Block(..)
+            ) {
                 return Err(unsupported("nonlinear or nested borrow issue sites require CFG census"));
             }
         }
