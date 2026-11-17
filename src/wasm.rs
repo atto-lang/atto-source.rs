@@ -267,6 +267,9 @@ impl Emit<'_> {
 
     fn stmt(&mut self, s: &TStmt) {
         match s {
+            // Source-validated scalar loan; the guest reads the original
+            // scalar slot directly. The marker exists for typed-MIR audits.
+            TStmt::ScalarBorrowIssue { .. } => {}
             TStmt::Set(slot, v) => {
                 self.expr(v);
                 self.op(0x21);
