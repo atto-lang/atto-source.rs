@@ -391,3 +391,49 @@ fn borrowed_parameter_requires_named_class_and_nonescaping_call() {
     "#;
     assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_BORROW");
 }
+
+
+#[test]
+fn borrowed_calls_that_throw_cannot_bypass_checked_unref() {
+    for body in [
+        "throw Error(\"boom\");",
+        "return indirect_throw(payload);",
+    ] {
+        let functions = if body.contains("indirect_throw") {
+            "fnc indirect_throw(borrow! Parcel payload): int { throw Error(\"boom\"); }"
+        } else { "" };
+        let source = format!(r#"{CLASS}
+            {functions}
+            fnc risky(borrow! Parcel payload): int {{ {body} }}
+            pub fnc main(): int {{
+                val original = new Parcel();
+                val handle = ref! original;
+                block {{
+                    val view = deref! handle;
+                    stdio.println(risky(view));
+                }}
+                val restored = unref! handle;
+                return restored.value;
+            }}"#);
+        let diagnostic = atto_compiler::compile(&source).unwrap_err();
+        assert_eq!(diagnostic.code, "E_HANDLE", "{body}: {diagnostic}");
+    }
+}
+
+#[test]
+fn a_throwing_function_is_legal_only_after_the_checked_handle_is_retired() {
+    let source = format!(r#"{CLASS}
+        fnc fail(): int {{ throw Error("ordinary guest failure"); }}
+        pub fnc main(): int {{
+            val original = new Parcel();
+            val handle = ref! original;
+            block {{
+                val view = deref! handle;
+                stdio.println(view.value);
+            }}
+            val restored = unref! handle;
+            return fail();
+        }}"#);
+    // This checks compilation, not runtime behavior of an unhandled throw.
+    assert!(atto_compiler::compile(&source).is_ok());
+}
