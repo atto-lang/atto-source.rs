@@ -226,3 +226,45 @@ fn fixed_slot_plan_is_not_guest_codegen_authorization() {
     let err = atto_compiler::compile(code).expect_err("Record guest lowering not yet supported");
     assert_eq!(err.code, "E_UNSUPPORTED");
 }
+
+
+#[test]
+fn existing_declared_scalar_record_guest_constructor_is_field_order_independent() {
+    // Existing `define record Name` is a NOMINAL class lowering, unlike
+    // future structural inline Record. This checks real guest Wasm bytes and
+    // doesn't claim that the host shape interner is wired into emission.
+    const HEAD: &str = "define record Receipt as int id; string status; end\n";
+    let first = format!(
+        "{HEAD}pub fnc main(): int {{
+             val r = Receipt{{id: 7, status: \"ok\"}};
+             return r.id;
+         }}"
+    );
+    let second = format!(
+        "{HEAD}pub fnc main(): int {{
+             val r = Receipt{{status: \"ok\", id: 7}};
+             return r.id;
+         }}"
+    );
+    let a = atto_compiler::compile(&first).expect("declared nominal record guest must compile");
+    let b = atto_compiler::compile(&second).expect("permuted nominal record guest must compile");
+    assert!(a.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(a, b, "equivalent named-record initializer orders should lower to the same guest module");
+}
+
+#[test]
+fn existing_declared_struct_guest_constructor_uses_checked_fixed_fields() {
+    let source = r#"
+        define struct Point as
+            int x;
+            int y;
+        end
+        pub fnc main(): int {
+            val p = Point{y: 2, x: 40};
+            return p.x + p.y;
+        }
+    "#;
+    let bytes = atto_compiler::compile(source).expect("restricted declared Struct uses checked nominal class lowering");
+    assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
+    assert_eq!(bytes, atto_compiler::compile(source).unwrap());
+}
