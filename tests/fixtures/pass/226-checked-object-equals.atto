@@ -1,0 +1,20 @@
+// expect-exit: 42
+// Checked same-class value comparison dispatches a public equals method.
+// Operator arguments are borrowed: a and b remain usable afterward.
+define class Point as
+    pub mut int n = 0;
+    constructor(int n) { self.n = n; }
+    pub equals(Point other): bool {
+        return self.n eq other.n;
+    }
+end
+pub fnc main(): int {
+    val a = new Point(7);
+    val b = new Point(7);
+    val c = new Point(9);
+    val view = borrow! a;
+    if a eq b, a neq c, a != b, a == a, view eq b then
+        return 42;
+    fi
+    return 0;
+}

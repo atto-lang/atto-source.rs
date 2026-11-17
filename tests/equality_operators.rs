@@ -49,9 +49,8 @@ fn object_identity_is_separate_from_object_value_equality() {
             return 0;
         }
     "#;
-    // The subset deliberately rejects object equals() until virtual dispatch
-    // and the value-equality method contract are implemented.
-    assert_eq!(compile(unsupported).unwrap_err().code, "E_UNSUPPORTED");
+    // No user-defined equals method: no pointer-identity fallback.
+    assert_eq!(compile(unsupported).unwrap_err().code, "E_EQUALS");
 }
 
 #[test]
@@ -119,5 +118,68 @@ fn generator_handles_are_not_value_or_reference_equal() {
             if matches!(spelling, "==" | "!=") { "E_IDENTITY_TYPE" } else { "E_UNSUPPORTED" },
             "{spelling}: {d}"
         );
+    }
+}
+
+#[test]
+fn checked_equals_dispatch_preserves_distinct_identity_and_ownership() {
+    let source = include_str!("fixtures/pass/226-checked-object-equals.atto");
+    let wasm = compile(source).expect("checked non-moving equals method must compile");
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+    assert_eq!(wasm, compile(source).unwrap(), "exact guest compiler deterministic");
+}
+
+#[test]
+fn equals_signature_validation_is_fail_closed_even_when_unused() {
+    for declaration in [
+        "pub equals(int other): bool { return true; }",
+        "pub equals(Point other): int { return 1; }",
+        "equals(Point other): bool { return true; }",
+        "pub static fnc equals(Point other): bool { return true; }",
+        "pub equals(): bool { return true; }",
+    ] {
+        let source = format!("define class Point as {declaration} end pub fnc main(): int {{ return 0; }}");
+        let err = compile(&source).expect_err(&source);
+        assert_eq!(err.code, "E_EQUALS_SIGNATURE", "{declaration}: {err}");
+    }
+}
+
+#[test]
+fn equality_borrows_both_objects_and_rejects_transferring_other_parameter() {
+    for transfer in [
+        "val stolen = other;",
+        "val stolen = take! other;",
+        "sink(other);",
+    ] {
+        let src = format!(r#"
+            define class Point as
+                pub final int n: 41;
+                pub equals(Point other): bool {{
+                    {transfer}
+                    return self.n eq other.n;
+                }}
+            end
+            fnc sink(Point p): void {{}}
+            pub fnc main(): int {{ return 0; }}
+        "#);
+        let d = compile(&src).expect_err(&src);
+        assert_eq!(d.code, "E_BORROW", "{transfer}: {d}");
+    }
+}
+
+#[test]
+fn malformed_or_missing_equals_never_uses_identity_as_a_fallback() {
+    for op in ["eq", "neq"] {
+        let src = format!(r#"
+            define class Point as pub final int n: 41; end
+            pub fnc main(): int {{
+                val a = new Point();
+                val b = new Point();
+                if a {op} b then return 1; fi
+                return 0;
+            }}
+        "#);
+        let d = compile(&src).expect_err(&src);
+        assert_eq!(d.code, "E_EQUALS", "{op}: {d}");
     }
 }
