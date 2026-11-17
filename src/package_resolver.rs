@@ -93,6 +93,7 @@ pub fn parse_package_identity(manifest: &str) -> R<String> {
 
 /// Verify every physical path component and containment, not just string
 /// prefixes. No source read is permitted through a symlink or outside root.
+#[cfg(not(target_os = "linux"))]
 fn checked_path(root: &Path, relative: &str) -> R<PathBuf> {
     if !linker::path_ok(relative) {
         return Err(error("E_IMPORT_PATH", "noncanonical package source path"));
@@ -122,22 +123,37 @@ pub fn compile_package(root: &Path, entry: &str) -> R<Vec<u8>> {
     if !linker::path_ok(entry) {
         return Err(error("E_IMPORT_PATH", "entry path must be canonical and package-relative"));
     }
-    let root_meta = fs::symlink_metadata(root)
-        .map_err(|e| io_error("cannot inspect package root", e))?;
-    if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
-        return Err(error("E_IMPORT_PATH", "package root must be a directory, not a symlink"));
-    }
-    let canonical = fs::canonicalize(root)
-        .map_err(|e| io_error("cannot canonicalize package root", e))?;
-    let manifest_path = canonical.join(".atto.pkg.toml");
-    let meta = fs::symlink_metadata(&manifest_path)
-        .map_err(|e| io_error("missing .atto.pkg.toml", e))?;
-    if !meta.is_file() || meta.file_type().is_symlink() ||
-       meta.len() as usize > MAX_MANIFEST {
-        return Err(error("E_MANIFEST", "manifest must be a bounded, regular non-symlink file"));
-    }
-    let manifest = fs::read_to_string(&manifest_path)
-        .map_err(|e| io_error("cannot read .atto.pkg.toml", e))?;
+    // Linux: pin and traverse directory *handles*, and read from opened file
+    // descriptors. No second by-path read after a path-only validation.
+    #[cfg(target_os = "linux")]
+    let root_reader = crate::secure_fs::LockedRoot::open(root)?;
+    #[cfg(target_os = "linux")]
+    let manifest = root_reader.read(".atto.pkg.toml", MAX_MANIFEST, "E_MANIFEST")?;
+    // Other platforms temporarily retain the conservative stable-tree path
+    // profile and MUST NOT advertise adversarial concurrency resistance.
+    #[cfg(not(target_os = "linux"))]
+    let canonical = {
+        let root_meta = fs::symlink_metadata(root)
+            .map_err(|e| io_error("cannot inspect package root", e))?;
+        if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
+            return Err(error("E_IMPORT_PATH",
+                "package root must be a directory, not a symlink"));
+        }
+        fs::canonicalize(root).map_err(|e| io_error("cannot canonicalize package root", e))?
+    };
+    #[cfg(not(target_os = "linux"))]
+    let manifest = {
+        let manifest_path = canonical.join(".atto.pkg.toml");
+        let meta = fs::symlink_metadata(&manifest_path)
+            .map_err(|e| io_error("missing .atto.pkg.toml", e))?;
+        if !meta.is_file() || meta.file_type().is_symlink() ||
+            meta.len() as usize > MAX_MANIFEST {
+            return Err(error("E_MANIFEST",
+                "manifest must be a bounded, regular non-symlink file"));
+        }
+        fs::read_to_string(&manifest_path)
+            .map_err(|e| io_error("cannot read .atto.pkg.toml", e))?
+    };
     let identity = parse_package_identity(&manifest)?;
     let mut pending = vec![entry.to_string()];
     let mut loaded = BTreeMap::<String, String>::new();
@@ -147,17 +163,24 @@ pub fn compile_package(root: &Path, entry: &str) -> R<Vec<u8>> {
         if seen.len() > MAX_FILES {
             return Err(error("E_SOURCE_LIMIT", "too many reachable package source files"));
         }
-        let physical = checked_path(&canonical, &relative)?;
-        let size = fs::metadata(&physical)
-            .map_err(|e| io_error("cannot inspect package source", e))?.len();
-        if size > crate::SOURCE_CAP as u64 {
-            return Err(error("E_SOURCE_LIMIT", "source file exceeds browser compiler limit"));
-        }
-        let src = fs::read_to_string(&physical)
-            .map_err(|e| io_error("cannot read package source file", e))?;
-        if src.len() > crate::SOURCE_CAP {
-            return Err(error("E_SOURCE_LIMIT", "package source file is too large"));
-        }
+        #[cfg(target_os = "linux")]
+        let src = root_reader.read(&relative, crate::SOURCE_CAP, "E_IMPORT_PATH")?;
+        #[cfg(not(target_os = "linux"))]
+        let src = {
+            let physical = checked_path(&canonical, &relative)?;
+            let size = fs::metadata(&physical)
+                .map_err(|e| io_error("cannot inspect package source", e))?.len();
+            if size > crate::SOURCE_CAP as u64 {
+                return Err(error("E_SOURCE_LIMIT",
+                    "source file exceeds browser compiler limit"));
+            }
+            let src = fs::read_to_string(&physical)
+                .map_err(|e| io_error("cannot read package source file", e))?;
+            if src.len() > crate::SOURCE_CAP {
+                return Err(error("E_SOURCE_LIMIT", "package source file is too large"));
+            }
+            src
+        };
         for child in linker::import_paths(&src, &relative)? {
             pending.push(child);
         }
