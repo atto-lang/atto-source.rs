@@ -25,6 +25,8 @@ pub mod shape_lower;
 pub mod nominal_lower;
 /// Qualified-identity prelink policy; no foreign executable linkage.
 pub mod nominal_link;
+/// Verified source-catalogue linker for a bounded executable class profile.
+pub mod source_link;
 /// Explicitly unlinked foreign prototypes and source-only exports.
 pub mod visibility_lower;
 /// Direct routine-only and statically specialized named callbacks.
@@ -50,7 +52,17 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    compile_token_stream(lexer::lex(source)?)
+}
+
+/// Compile a compiler-owned fully lexed and relocated source token stream.
+/// Only the build-bound source linker may call this without the source wrapper.
+pub(crate) fn compile_token_stream(tokens: Vec<lexer::Token>) -> Result<Vec<u8>, Diagnostic> {
+    if tokens.len() > lexer::MAX_TOKENS {
+        return Err(Diagnostic::new(Pos {line:1,col:1},"E_SOURCE_LIMIT",
+            "compiled source token budget exceeded"));
+    }
+    let mut visibility = visibility_lower::lower(tokens)?;
     let mut nominal = nominal_lower::lower_with_hierarchy(module_lower::lower(visibility.tokens)?)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal.tokens)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
