@@ -311,7 +311,7 @@ pub suspends fnc main(): int {
 
   for (const source of [
     'pub suspends fnc main(): int { nb stdio.in >> (val String line << await Future<string>); return 42; }',
-    'pub suspends fnc main(): int { nb stdio.in >> Future<string> x | await x >> val String line; return 42; }',
+    'pub suspends fnc main(): int { nb stdio.in >> Future<string> x |> |f| -> await f >> val String line; return 42; }',
   ]) {
     assert.match(await run(source,'E_UNSUPPORTED'),/E_UNSUPPORTED/);
   }
