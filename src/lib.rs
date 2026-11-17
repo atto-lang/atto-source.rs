@@ -119,61 +119,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     } else {
         parser::Parser::new(toks).parse_program()?
     };
-    // Validate exports against the parsed top-level symbol table, never a
-    // lexical occurrence inside a class, nested method or foreign prototype.
-    // Inline 'define pub module' has the same exported interface as an
-    // explicit file export. One matching explicit directive is not a duplicate.
-    for module in &file_modules.modules {
-        if module.inline_public && !visibility.exports.iter().any(|e| e.name == module.name) {
-            if visibility.exports.len() >= 128 {
-                return Err(Diagnostic::new(module.pos, "E_SOURCE_LIMIT", "export budget exceeded"));
-            }
-            visibility.exports.push(visibility_lower::Export {
-                name: module.name.clone(),
-                kind: "module",
-                visibility: visibility_lower::Visibility::Public,
-                pos: module.pos,
-            });
-        }
-    }
-    visibility_lower::resolve_exports(&mut visibility.exports, &program, &file_modules.modules)?;
-    // Export metadata is deterministic even if a directive was moved.
-    visibility.exports.sort_by(|a, b| a.name.cmp(&b.name));
-    // An inferred 'export pub Foo' naming a class is semantically identical
-    // to 'export pub class Foo'; do not leave it private in the checked AST.
-    // Package-only exports retain their restricted metadata visibility.
-    for export in &visibility.exports {
-        if export.kind == "class" && export.visibility == visibility_lower::Visibility::Public {
-            if let Some(class) = program.classes.iter_mut()
-                .find(|class| class.name == export.name && !class.state_container) {
-                class.public = true;
-            }
-        }
-    }
-    // One canonical, resolved export surface on the program AST feeds the
-    // checker and all guest metadata. No second lexical metadata writer.
-    program.exports = visibility.exports.iter().map(|e| {
-        let kind = match e.kind {
-            "class" => ast::ExportKind::Class,
-            "fnc" => ast::ExportKind::Fnc,
-            "actor" => ast::ExportKind::Actor,
-            "enum" => ast::ExportKind::Enum,
-            "module" => ast::ExportKind::Module,
-            _ => return Err(Diagnostic::new(e.pos, "E_EXPORT_KIND",
-                        "unresolved or unsupported export kind")),
-        };
-        Ok(ast::ExportDecl {
-            name: e.name.clone(),
-            pos: e.pos,
-            kind,
-            visibility: match e.visibility {
-                visibility_lower::Visibility::Public => ast::ExportVisibility::Public,
-                visibility_lower::Visibility::Package => ast::ExportVisibility::Package,
-            },
-        })
-    }).collect::<Result<Vec<_>, Diagnostic>>()?;
+    // One shared binder for direct-parser and pre-lowered exports.
+    visibility_lower::bind_program_exports(
+        &mut program, visibility.exports, &file_modules.modules,
+    )?;
     let typed = check::check(&program)?;
-    let mut bytes = wasm::emit(&typed);
+    let bytes = wasm::emit(&typed);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
