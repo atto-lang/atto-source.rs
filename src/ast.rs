@@ -345,6 +345,10 @@ pub enum BinOp {
     Div,
     Eq,
     Ne,
+    /// Reference identity equality (`==`), not value equality.
+    IdEq,
+    /// Reference identity inequality (`!=`), not value inequality.
+    IdNe,
     Lt,
     Le,
     Gt,
@@ -364,6 +368,8 @@ impl BinOp {
             BinOp::Div => "/",
             BinOp::Eq => "eq",
             BinOp::Ne => "neq",
+            BinOp::IdEq => "==",
+            BinOp::IdNe => "!=",
             BinOp::Lt => "<",
             BinOp::Le => "<=",
             BinOp::Gt => ">",

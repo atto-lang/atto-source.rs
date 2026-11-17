@@ -1458,7 +1458,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
             // reviewed explicitly, even if they reuse TExpr::Bin.
             let read_only = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
-                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
+                BinOp::Eq | BinOp::Ne | BinOp::IdEq | BinOp::IdNe | BinOp::Lt | BinOp::Le |
                 BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or => true,
             };
             read_only && pure_expr(a, pure_indices) && pure_expr(b, pure_indices)
@@ -2864,6 +2864,27 @@ impl<'a> FnCx<'a> {
         Ok({
             let a = self.value(l)?;
             let b = self.value(r)?;
+            // Identity comparison must not fall through to primitive value equality.
+            // In this bounded guest runtime, class objects have stable i32 handles.
+            // Actor capabilities, value aggregates, strings and scalars are not
+            // admitted as reference-identity operands.
+            if matches!(op, BinOp::IdEq | BinOp::IdNe) {
+                if a.ty != b.ty || !matches!(a.ty, Type::Class(_)) {
+                    let suggestion = if *op == BinOp::IdEq { "eq" } else { "neq" };
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_IDENTITY_TYPE",
+                        format!(
+                            "'{}' requires references of the same class; use '{}' for value equality (found {} and {})",
+                            op.symbol(), suggestion, self.tn(a.ty), self.tn(b.ty)
+                        ),
+                    ));
+                }
+                return Ok(TE {
+                    e: TExpr::Bin(*op, Box::new(a), Box::new(b)),
+                    ty: Type::Bool,
+                });
+            }
             if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
                 let both = a.ty == Type::Str && b.ty == Type::Str;
                 return match op {
@@ -2948,6 +2969,7 @@ impl<'a> FnCx<'a> {
             let ty = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
                 BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::IdEq | BinOp::IdNe => unreachable!("identity handled before value equality"),
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Type::Bool,
                 BinOp::Eq | BinOp::Ne => {
                     if a.ty != b.ty {

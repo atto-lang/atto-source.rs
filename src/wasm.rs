@@ -718,6 +718,7 @@ impl Emit<'_> {
                         BinOp::Div => 0xA3,
                         BinOp::Eq => 0x61,
                         BinOp::Ne => 0x62,
+                        BinOp::IdEq | BinOp::IdNe => unreachable!("identity requires a class handle"),
                         BinOp::Lt => 0x63,
                         BinOp::Gt => 0x64,
                         BinOp::Le => 0x65,
@@ -738,6 +739,9 @@ impl Emit<'_> {
                     BinOp::Ge => self.op(0x59),
                     BinOp::Eq => self.op(if int { 0x51 } else { 0x46 }),
                     BinOp::Ne => self.op(if int { 0x52 } else { 0x47 }),
+                    // Class objects are stable i32 handles in the current guest ABI.
+                    BinOp::IdEq => self.op(0x46), // i32.eq
+                    BinOp::IdNe => self.op(0x47), // i32.ne
                     BinOp::Div => unreachable!("division not admitted by checker"),
                 }
             }

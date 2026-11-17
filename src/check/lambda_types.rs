@@ -264,6 +264,7 @@ impl Context {
                         if (num(left) && num(right))
                             || (left == Type::Str && right == Type::Str) => Ok(Type::Bool),
                     BinOp::Eq | BinOp::Ne if left == right => Ok(Type::Bool),
+                    BinOp::IdEq | BinOp::IdNe if left == right && matches!(left, Type::Class(_)) => Ok(Type::Bool),
                     BinOp::And | BinOp::Or
                         if left == Type::Bool && right == Type::Bool => Ok(Type::Bool),
                     _ => Err(err(e.pos, "E_TYPE", format!(
