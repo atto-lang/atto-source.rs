@@ -114,3 +114,103 @@ fn codec_rejects_torn_corrupt_and_noncanonical_snapshots() {
     corrupt[len - 1] ^= 0x40;
     assert_eq!(schema.decode(&corrupt).unwrap_err().code, "E_PERSISTENCE_IO");
 }
+
+#[test]
+fn suspended_hook_signatures_are_structurally_checked_without_executing_bodies() {
+    let source = r#"
+define persistent actor Cart as
+    state count: int = 0;
+    susp fnc load_state(ctx: PersistenceContext):
+      Result<Option<ActorStateSnapshot<Cart>>, PersistenceError> {
+        return None;
+    }
+    susp fnc save_state(
+        ctx: PersistenceContext, snapshot: ActorStateSnapshot<Cart>
+    ): Result<CheckpointReceipt, PersistenceError> {
+        return 1;
+    }
+end
+pub fnc main(): int { return 0; }
+"#;
+    let p = parse(source).unwrap();
+    assert_eq!(p.actors[0].persistence_hooks.len(), 2);
+    assert!(p.actors[0].persistence_hooks.iter().all(|hook| hook.body_provided));
+    assert_eq!(p.actors[0].persistence_hooks[0].name, "load_state");
+    assert_eq!(p.actors[0].persistence_hooks[1].name, "save_state");
+    // Bodies are intentionally not semantically typechecked or emitted.
+    let d = atto_compiler::check::check(&p).unwrap_err();
+    assert_eq!(d.code, "E_PERSIST_RUNTIME_UNAVAILABLE");
+}
+
+#[test]
+fn persistent_hook_declarations_without_bodies_are_not_implementations() {
+    let source = r#"
+define persistent actor Cart as
+    susp fnc load_state(ctx: PersistenceContext):
+      Result<Option<ActorStateSnapshot<State>>, PersistenceError>;
+    susp fnc save_state(
+      ctx: PersistenceContext, snapshot: ActorStateSnapshot<State>
+    ): Result<CheckpointReceipt, PersistenceError>;
+end
+pub fnc main(): int { return 0; }
+"#;
+    let p = parse(source).unwrap();
+    assert!(p.actors[0].persistence_hooks.iter().all(|hook| !hook.body_provided));
+    assert_eq!(atto_compiler::check::check(&p).unwrap_err().code, "E_PERSIST_HOOKS");
+}
+
+#[test]
+fn wrong_susp_effect_or_return_signature_cannot_satisfy_persistent_trait() {
+    let incorrect_return = r#"
+define persistent actor Cart as
+    susp fnc load_state(ctx: PersistenceContext): Result<CheckpointReceipt, PersistenceError>;
+end
+"#;
+    assert_eq!(parse(incorrect_return).unwrap_err().code, "E_PERSIST_SIGNATURE");
+    let incorrect_snapshot = r#"
+define persistent actor Cart as
+    susp fnc save_state(ctx: PersistenceContext, snapshot: ActorStateSnapshot<Other>):
+      Result<CheckpointReceipt, PersistenceError>;
+end
+"#;
+    assert_eq!(parse(incorrect_snapshot).unwrap_err().code, "E_PERSIST_SIGNATURE");
+
+    // A synchronous method does not implement a suspended storage hook.
+    let wrong_effect = r#"
+define persistent actor Cart as
+    load_state(): void { return; }
+    save_state(): void { return; }
+end
+pub fnc main(): int { return 0; }
+"#;
+    let p = parse(wrong_effect).unwrap();
+    assert_eq!(atto_compiler::check::check(&p).unwrap_err().code, "E_PERSIST_SIGNATURE");
+}
+
+#[test]
+fn duplicate_and_illegal_suspended_hooks_fail_closed() {
+    let duplicate = r#"
+define persistent actor Cart as
+    susp fnc load_state(ctx: PersistenceContext):
+      Result<Option<ActorStateSnapshot<Cart>>, PersistenceError>;
+    susp fnc load_state(ctx: PersistenceContext):
+      Result<Option<ActorStateSnapshot<Cart>>, PersistenceError>;
+end
+"#;
+    assert_eq!(parse(duplicate).unwrap_err().code, "E_DUPLICATE");
+    let durable_override = r#"
+define durable actor Cart as
+    susp fnc load_state(ctx: PersistenceContext):
+      Result<Option<ActorStateSnapshot<Cart>>, PersistenceError>;
+end
+"#;
+    assert_eq!(parse(durable_override).unwrap_err().code, "E_DURABLE_HOOK_OVERRIDE");
+    let non_persistent = durable_override.replace("durable actor", "actor");
+    assert_eq!(parse(&non_persistent).unwrap_err().code, "E_PERSIST_SIGNATURE");
+    let other_susp_method = r#"
+define persistent actor Cart as
+    susp fnc generic_timer(): void { return; }
+end
+"#;
+    assert_eq!(parse(other_susp_method).unwrap_err().code, "E_PERSIST_SIGNATURE");
+}

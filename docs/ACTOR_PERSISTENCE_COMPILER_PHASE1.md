@@ -56,3 +56,19 @@ There must never be an accepted, executable `durable actor` that is secretly emi
 `cargo test --locked --test actor_persistence_frontend` covers syntax, modifier diagnostics, fail-closed compilation, scalar roundtrip, tampering, truncation and incompatible schema. Check actual executed CI steps and exact Git SHA before calling tests verified. A workflow with no executed steps is **NOT_EXECUTED**, not passing evidence.
 
 Next implementation slices: compile the full `ActorPersistence<State>` trait and suspended hooks; generate codec entry points from typed actor state; add an authorized SQLite WAL/FULL storage adapter for native workers; implement epoch-fenced commit and real post-SIGKILL revival; then expand types and verify backend parity.
+
+## Phase 1b: suspended persistence signature preflight
+
+The production parser now recognizes the two exact actor-private hook shapes,
+with `susp` or `suspends` effect and nested
+`Result<Option<ActorStateSnapshot<State>>, PersistenceError>` /
+`Result<CheckpointReceipt, PersistenceError>` returns. The `State` binding
+may be the declaring actor's name or the generic placeholder `State`.
+Malformed signatures, duplicate hooks, non-suspended substitutes, public
+hooks and durable overrides fail closed. A semicolon-only method does not
+count as a hook implementation. The signature checker brace-balances bodies
+but **does not** type-check their statements; even syntactically valid hooks
+return `E_PERSIST_RUNTIME_UNAVAILABLE` before any code generation.
+
+The separate native SQLite store in draft PR #266 is real native host code,
+but is not connected to these parsed Atto methods or to the browser backend.
