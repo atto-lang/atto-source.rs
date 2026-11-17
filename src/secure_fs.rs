@@ -114,3 +114,60 @@ impl LockedRoot {
             "package source is not valid UTF-8"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::LockedRoot;
+    use std::{fs,os::unix::fs::symlink,sync::atomic::{AtomicUsize,Ordering}};
+    static NEXT:AtomicUsize=AtomicUsize::new(0);
+    struct Temp { path:std::path::PathBuf }
+    impl Temp {
+        fn new() -> Self {
+            let n=NEXT.fetch_add(1,Ordering::Relaxed);
+            let path=std::env::temp_dir().join(format!("atto-fd-{}-{n}",std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self{path}
+        }
+    }
+    impl Drop for Temp { fn drop(&mut self){let _=fs::remove_dir_all(&self.path);} }
+
+    #[test]
+    fn root_fd_stays_with_original_inode_after_directory_swap() {
+        let t=Temp::new();
+        let real=t.path.join("real");
+        let evil=t.path.join("evil");
+        fs::create_dir_all(real.join("lib")).unwrap();
+        fs::create_dir_all(evil.join("lib")).unwrap();
+        fs::write(real.join("lib/math.atto"),"original").unwrap();
+        fs::write(evil.join("lib/math.atto"),"forged").unwrap();
+        let handle=LockedRoot::open(&real).unwrap();
+        fs::rename(&real,t.path.join("retired")).unwrap();
+        symlink(&evil,&real).unwrap();
+        let data=handle.read("lib/math.atto",128,"E_IMPORT_PATH").unwrap();
+        assert_eq!(data,"original","FD pin must not follow replaced package root");
+        assert_eq!(LockedRoot::open(&real).err().unwrap().code,"E_IMPORT_PATH");
+    }
+    #[test]
+    fn intermediate_directory_symlinks_never_follow_through_fd() {
+        let t=Temp::new();
+        fs::create_dir_all(t.path.join("lib")).unwrap();
+        fs::write(t.path.join("lib/math.atto"),"original").unwrap();
+        let handle=LockedRoot::open(&t.path).unwrap();
+        fs::rename(t.path.join("lib"),t.path.join("previous")).unwrap();
+        symlink(t.path.join("previous"),t.path.join("lib")).unwrap();
+        assert_eq!(handle.read("lib/math.atto",128,"E_IMPORT_PATH")
+            .err().unwrap().code,"E_IMPORT_PATH");
+    }
+    #[test]
+    fn opened_file_rejects_non_regular_or_oversized() {
+        let t=Temp::new();
+        fs::write(t.path.join("foo.atto"),"a".repeat(100)).unwrap();
+        let handle=LockedRoot::open(&t.path).unwrap();
+        assert_eq!(handle.read("foo.atto",99,"E_IMPORT_PATH").unwrap_err().code,
+            "E_SOURCE_LIMIT");
+        assert_eq!(handle.read("foo.atto/",100,"E_IMPORT_PATH").unwrap_err().code,
+            "E_IMPORT_PATH");
+        assert_eq!(handle.read("../foo.atto",100,"E_IMPORT_PATH").unwrap_err().code,
+            "E_IMPORT_PATH");
+    }
+}
