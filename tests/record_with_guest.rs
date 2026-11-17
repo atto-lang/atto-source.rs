@@ -98,8 +98,8 @@ fn branches_and_loops_can_construct_scoped_records() {
         let i=0;
         let sum=0;
         while i < 3 do
-            val r={n:i};
-            val copy=r with {n:r.n+1};
+            val r={n:0};
+            val copy=r with {n:i+1};
             sum=sum+copy.n;
             i=i+1;
         done
