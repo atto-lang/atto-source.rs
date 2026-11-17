@@ -1,6 +1,6 @@
 // expect-exit: 53
 pub fnc main(): int {
     val inf = 1.0 / 0.0;
-    if inf eq inf, inf neq -inf eq false then return 53; fi
+    if inf eq inf, inf neq -inf then return 53; fi
     return 0;
 }
