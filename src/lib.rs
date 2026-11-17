@@ -25,6 +25,8 @@ pub mod shape_lower;
 pub mod nominal_lower;
 /// Explicitly unlinked foreign prototypes and source-only exports.
 pub mod visibility_lower;
+/// Trusted in-memory package/module linker; no filesystem or network access.
+pub mod linker;
 /// Direct routine-only and statically specialized named callbacks.
 pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
