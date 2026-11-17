@@ -30,6 +30,7 @@ fn compiler_derived_origins_match_executable_guest_bytes() {
     assert!(matches!(main.points[3].operation, Operation::Return));
     // New SSA origin per definition, including replacement of number.
     assert_eq!(main.points[2].used_origins, vec![1, 2]);
+    assert!(main.points[2].may_trap, "checked arithmetic needs an explicit possible-trap fact");
     assert_eq!(main.points[3].used_origins, vec![3]);
     assert!(main.points[3].successor.is_none());
 }
@@ -40,6 +41,7 @@ fn typed_phi_and_branch_is_not_guessed_from_a_ternary() {
     assert_eq!(bytes, compile(src).unwrap());
     let main = census.functions.iter().find(|f| f.name == "main").unwrap();
     assert_eq!(main.points[2].used_origins, vec![1, 2], "pure ternary has MAY reads on both arms");
+    assert!(main.points[2].has_conditional, "conditional expression must not be claimed as a single linear path");
 }
 #[test]
 fn checked_source_borrow_issue_survives_typed_lowering() {
