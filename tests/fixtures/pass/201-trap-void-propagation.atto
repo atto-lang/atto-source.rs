@@ -1,0 +1,15 @@
+// expect-exit: 32
+// expect-stdout: finished
+fnc work(): void { stdio.println("finished"); return; }
+fnc checked(): Result<void,Error> {
+  val Result<void,Error> result = trap work();
+  result?;
+  return Ok();
+}
+pub fnc main(): int {
+  val Result<void,Error> result = checked();
+  match result over
+    on Ok -> { return 32; }
+    on Err(e) -> { return 0; }
+  end
+}
