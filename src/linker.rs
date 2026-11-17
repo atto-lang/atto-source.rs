@@ -333,7 +333,8 @@ fn preflight_file_authority(
         // imported module just because the final guest has one symbol table.
         if !is_entry && root_funcs.contains_key(name) &&
            tokens.get(i+1).map(|t| &t.tok) == Some(&Tok::LParen) &&
-           (i == 0 || tokens[i-1].tok != Tok::Dot) {
+           (i == 0 || tokens[i-1].tok != Tok::Dot) &&
+           (i == 0 || !word(&tokens, i-1, "fnc")) {
             return Err(err(token.pos, "E_VISIBILITY",
                 format!("imported source cannot capture entry-local function '{name}'")));
         }
