@@ -1,0 +1,12 @@
+// expect-exit: 51
+define class Root as
+    pub equals(Root other): bool { return true; }
+end
+define class Middle extends Root as end
+define class Leaf extends Middle as end
+pub fnc main(): int {
+    val a = new Leaf();
+    val b = new Leaf();
+    if a eq b, a neq b eq false then return 51; fi
+    return 0;
+}

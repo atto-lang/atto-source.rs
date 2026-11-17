@@ -232,3 +232,31 @@ fn class_self_identity_is_available_without_general_self_escape() {
     let invalid_top_level = "pub fnc main(): int { if self == self then return 1; fi return 0; }";
     assert_eq!(compile(invalid_top_level).unwrap_err().code, "E_UNBOUND");
 }
+
+#[test]
+fn inherited_checked_equals_is_static_monomorphized_per_concrete_class() {
+    for case in [
+        include_str!("fixtures/pass/229-inherited-class-equals.atto"),
+        include_str!("fixtures/pass/230-overridden-class-equals.atto"),
+        include_str!("fixtures/pass/231-transitive-inherited-equals.atto"),
+    ] {
+        let bytes = compile(case).expect("checked source-local inheritance must compile");
+        assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
+        assert_eq!(bytes, compile(case).unwrap(), "deterministic exact guest ABI");
+    }
+}
+
+#[test]
+fn inherited_equals_and_nullable_class_boundaries_fail_closed() {
+    for (case, code) in [
+        (include_str!("fixtures/fail/231-inherited-equals-bad-signature.atto"), "E_EQUALS_INHERITANCE"),
+        (include_str!("fixtures/fail/232-override-equals-wrong-type.atto"), "E_SIGNATURE"),
+        (include_str!("fixtures/fail/233-inherited-equals-with-fields.atto"), "E_UNSUPPORTED"),
+        (include_str!("fixtures/fail/234-option-class-unsupported.atto"), "E_UNSUPPORTED_TYPE"),
+        (include_str!("fixtures/fail/235-null-literal-unsupported.atto"), "E_NULL"),
+        (include_str!("fixtures/fail/236-unrelated-equals-inheritance.atto"), "E_AMBIGUOUS_MEMBER"),
+    ] {
+        let d = compile(case).expect_err("unsupported nominal or null must never emit Wasm");
+        assert_eq!(d.code, code, "{d}");
+    }
+}

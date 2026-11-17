@@ -1,0 +1,13 @@
+// expect-exit: 49
+// A stateless base's equals(Self) is specialized to the child class.
+// The inherited implementation uses identity, not a hidden pointer fallback.
+define class Base as
+    pub equals(Base other): bool { return self == other; }
+end
+define class Child extends Base as end
+pub fnc main(): int {
+    val a = new Child();
+    val b = new Child();
+    if a eq a, a neq b, a == a, a != b then return 49; fi
+    return 0;
+}

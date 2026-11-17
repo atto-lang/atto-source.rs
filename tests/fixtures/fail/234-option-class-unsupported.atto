@@ -1,0 +1,4 @@
+// expect-error: E_UNSUPPORTED_TYPE
+define class Node as end
+fnc check(Option<Node> item): bool { return true; }
+pub fnc main(): int { return 0; }

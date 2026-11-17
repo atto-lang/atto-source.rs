@@ -1,0 +1,7 @@
+// expect-error: E_UNSUPPORTED
+define class Base as
+    pub final int n: 7;
+    pub equals(Base other): bool { return self.n eq other.n; }
+end
+define class Child extends Base as end
+pub fnc main(): int { return 0; }
