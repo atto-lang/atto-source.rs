@@ -159,3 +159,12 @@ fn imported_class_alias_cannot_be_shadowed_by_type_first_scalar_binding() {
     "#;
     err(&units(BASE,DOG,source),2,"E_NAMESPACE");
 }
+
+#[test]
+fn malformed_or_oversized_permits_lists_reject_without_panicking() {
+    let bad="define sealed class Animal permits";
+    err(&units(bad,DOG,ROOT),2,"E_EOF");
+    let names=(0..97).map(|i|format!("Child{i}")).collect::<Vec<_>>().join(", ");
+    let oversized=format!("define sealed class Animal permits {names} as end");
+    err(&units(&oversized,DOG,ROOT),2,"E_SOURCE_LIMIT");
+}
