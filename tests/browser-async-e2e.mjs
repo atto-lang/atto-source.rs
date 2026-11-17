@@ -124,6 +124,12 @@ try{
   assert.match(await run(typedCase,'main() -> 42'),/^main\(\) -> 42$/);
   assert.equal(await evaluate('window.__attoLastCooperativeYields'),1,'only selected switch case awaits once');
   console.log('PASS integration: typed switch<int> case executes awaited task with one scheduler handoff');
+  const boundedChain250='pub fnc main(): int { return '+Array(250).fill('1').join(' + ')+'; }';
+  assert.match(await run(boundedChain250,'main() -> 250'),/^main\(\) -> 250$/);
+  console.log('PASS browser compiler stack: allowed 250-term checked sum executes');
+  const rejectedChain3000='pub fnc main(): int { return '+Array(3000).fill('1').join(' + ')+'; }';
+  assert.match(await run(rejectedChain3000,'E_NESTING'),/E_NESTING/);
+  console.log('PASS browser compiler stack: 3000-term sum rejects without guest execution');
   // Candidate-local bindings: no later guard effects after a selected arm.
   const lazyGuardSkipped='fnc observe(int n): bool { stdio.println("SHOULD_NOT_RUN"); return n > 0; } fnc optional(): Option<int> { return Some(41); } pub fnc main(): int { return match<int> optional() over on Some(n) when n > 40 : int -> 42, on Some(n) when observe(n) : int -> 3, on Some() : int -> 1, on None : int -> 0, end; }';
   assert.match(await run(lazyGuardSkipped,'main() -> 42'),/^main\(\) -> 42$/,'unselected later guard must not execute effects');
