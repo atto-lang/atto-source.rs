@@ -308,6 +308,49 @@ fn visit<'a>(
     Ok(())
 }
 
+/// Validate file-local import authority before flattening source scopes.
+/// Concatenation MUST NOT turn an import in A into ambient authority in B.
+/// In this module profile, each file can use only its own named module
+/// or modules it explicitly imports, even if another file imports the name.
+fn preflight_file_authority(
+    path: &str,
+    source: &str,
+    names: &BTreeMap<String, &str>,
+    root_funcs: &BTreeMap<String, ()>,
+    is_entry: bool,
+) -> R<()> {
+    let hdr = header(source, path)?;
+    let tokens = lexer::lex(&hdr.body)?;
+    let lexical = visibility_lower::lower(tokens.clone())?;
+    let modules = module_lower::lower_with_manifest(lexical.tokens)?;
+    let imported: std::collections::BTreeSet<&str> =
+        hdr.imports.iter().map(|i| i.name.as_str()).collect();
+    let owned: std::collections::BTreeSet<&str> =
+        modules.modules.iter().map(|m| m.name.as_str()).collect();
+    for (i, token) in tokens.iter().enumerate() {
+        let Tok::Ident(ref name) = token.tok else { continue };
+        // A direct call to a root-level function cannot become visible to an
+        // imported module just because the final guest has one symbol table.
+        if !is_entry && root_funcs.contains_key(name) &&
+           tokens.get(i+1).map(|t| &t.tok) == Some(&Tok::LParen) &&
+           (i == 0 || tokens[i-1].tok != Tok::Dot) {
+            return Err(err(token.pos, "E_VISIBILITY",
+                format!("imported source cannot capture entry-local function '{name}'")));
+        }
+        // All module-qualified callsites must be owned or explicitly
+        // imported in this file, not in another parent of the graph.
+        if names.contains_key(name) &&
+           tokens.get(i+1).map(|t| &t.tok) == Some(&Tok::Dot) &&
+           matches!(tokens.get(i+2).map(|t| &t.tok), Some(Tok::Ident(_))) &&
+           tokens.get(i+3).map(|t| &t.tok) == Some(&Tok::LParen) &&
+           !owned.contains(name.as_str()) && !imported.contains(name.as_str()) {
+            return Err(err(token.pos, "E_VISIBILITY",
+                format!("module '{name}' is not explicitly imported in '{path}'")));
+        }
+    }
+    Ok(())
+}
+
 /// Compile a bounded, explicit source graph into one linked guest Wasm module.
 /// The package identity of each LinkUnit must be authenticated by its trusted
 /// caller; this function does not read the filesystem or package manifests.
@@ -353,6 +396,20 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
         if names.contains_key(&module.name) {
             return Err(err(module.pos, "E_DUPLICATE",
                 "entry file module conflicts with imported module"));
+        }
+    }
+    // Identify entry-owned top-level functions before concatenation, then
+    // reject cross-file free-function capture and ambient module authority.
+    let root_parsed = parser::Parser::new(local.tokens).parse_program()?;
+    let mut root_funcs = BTreeMap::new();
+    for function in root_parsed.funcs {
+        if !function.name.starts_with("__atto_internal_module_") {
+            root_funcs.insert(function.name, ());
+        }
+    }
+    for (path, unit) in &files {
+        if states.get(*path) == Some(&2) {
+            preflight_file_authority(path, unit.source, &names, &root_funcs, *path == entry_path)?;
         }
     }
     let mut pieces: Vec<String> = ordered.into_iter().map(|(_, data)| data).collect();
