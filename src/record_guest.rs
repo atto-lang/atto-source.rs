@@ -27,6 +27,25 @@ struct Shape(Vec<(String, Type)>);
 enum Value {
     Scalar(Type),
     Record(Shape),
+    Unknown,
+}
+
+type Frames = Vec<BTreeMap<String, Value>>;
+
+fn flatten(frames: &Frames) -> BTreeMap<String, Value> {
+    let mut visible = BTreeMap::new();
+    for frame in frames {
+        for (name, value) in frame {
+            visible.insert(name.clone(), value.clone());
+        }
+    }
+    visible
+}
+
+fn field_slot(shape: &Shape, field: &str, pos: Pos) -> R<String> {
+    shape.0.iter().position(|(name, _)| name == field)
+        .map(|index| format!("f{index}"))
+        .ok_or_else(|| err(pos,"E_NO_FIELD",format!("Record has no field '{field}'")))
 }
 
 fn err(pos: Pos, code: &'static str, what: impl Into<String>) -> Diagnostic {
@@ -39,13 +58,7 @@ fn is_scalar(t: Type) -> bool {
 
 fn expression(kind: ExprKind, pos: Pos) -> Expr { Expr { kind, pos } }
 
-fn name_eligible(s: &str) -> bool {
-    let mut cs = s.chars();
-    cs.next().is_some_and(|c| c.is_alphabetic() || c == '_')
-        && cs.all(|c| c.is_alphanumeric() || c == '_')
-        && !crate::parser::is_reserved(s)
-        && s.len() <= 64
-}
+const MAX_KEY_BYTES: usize = 128;
 
 fn initializer(ty: Type, pos: Pos) -> Expr {
     let kind = match ty {
@@ -84,9 +97,8 @@ impl Lower {
             return Err(err(pos, "E_UNSUPPORTED", "guest Record needs 1..8 scalar fields"));
         }
         for (field, ty) in &shape.0 {
-            if !name_eligible(field) {
-                return Err(err(pos, "E_UNSUPPORTED",
-                    format!("guest Record field '{field}' needs an identifier-safe name; quoted labels remain static-only")));
+            if field.len() > MAX_KEY_BYTES {
+                return Err(err(pos, "E_SOURCE_LIMIT", "guest Record label exceeds 128 UTF-8 bytes"));
             }
             if !is_scalar(*ty) {
                 return Err(err(pos, "E_WITH_OWNERSHIP",
@@ -94,17 +106,17 @@ impl Lower {
             }
         }
         let name = format!("{PREFIX}record_{}", self.shapes.len());
-        let fields = shape.0.iter().map(|(field,ty)| Field {
-            name: field.clone(), pos, ty: *ty, public: true,
+        let fields = shape.0.iter().enumerate().map(|(index,(_,ty))| Field {
+            name: format!("f{index}"), pos, ty: *ty, public: true,
             mode: FieldMode::Constructor, init: initializer(*ty,pos),
         }).collect::<Vec<_>>();
         let mut params = Vec::new();
         let mut body = Vec::new();
-        for (index,(field,ty)) in shape.0.iter().enumerate() {
+        for (index,(_,ty)) in shape.0.iter().enumerate() {
             let parameter = format!("{PREFIX}arg_{index}");
             params.push(Param {name:parameter.clone(),ty:*ty,mutable:false,pos});
             body.push(Stmt::FieldAssign {
-                target: expression(ExprKind::SelfRef,pos), field:field.clone(),
+                target: expression(ExprKind::SelfRef,pos), field:format!("f{index}"),
                 value: expression(ExprKind::Var(parameter),pos),pos,
             });
         }
