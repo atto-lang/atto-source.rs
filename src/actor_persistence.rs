@@ -129,7 +129,7 @@ impl ActorStateSchema {
         if bytes.len() < MIN || bytes.len() > MAX_SNAPSHOT_BYTES {
             return Err(codec_error("invalid snapshot length"));
         }
-        if &bytes[..8] != MAGIC || bytes[8] != VERSION {
+        if &bytes[..8] != MAGIC.as_slice() || bytes[8] != VERSION {
             return Err(codec_error("invalid snapshot magic/version"));
         }
         let header_schema = u64::from_le_bytes(bytes[9..17].try_into().expect("checked length"));

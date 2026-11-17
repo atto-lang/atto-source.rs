@@ -67,16 +67,12 @@ fn custom_durable_hooks_are_not_silently_granted_authority() {
 
 #[test]
 fn nonpersistable_type_fails_before_disk_emission() {
-    let src = "define durable actor A as state socket: Socket = new Socket(); end\n\
+    let src = "define durable actor A as state socket: Socket = 0; end\n\
                  pub fnc main(): int { return 0; }";
-    // The parser can reject unsupported object construction even earlier.
-    let p = parse(src);
-    if let Ok(p) = p {
-        assert_eq!(ActorStateSchema::for_actor(&p.actors[0]).unwrap_err().code,
-            "E_NON_PERSISTABLE_STATE");
-    } else {
-        assert!(matches!(p.unwrap_err().code, "E_UNSUPPORTED" | "E_SYNTAX" | "E_UNKNOWN_TYPE"));
-    }
+    let p = parse(src).unwrap();
+    assert_eq!(ActorStateSchema::for_actor(&p.actors[0]).unwrap_err().code,
+        "E_NON_PERSISTABLE_STATE");
+    assert_eq!(compile(src).unwrap_err().code, "E_NON_PERSISTABLE_STATE");
 }
 
 #[test]
@@ -88,7 +84,7 @@ fn compiled_scalar_schema_is_stable_and_roundtrips_owned_values() {
     let schema = ActorStateSchema::for_actor(&p.actors[0]).unwrap();
     let values = [StateScalar::Int(i64::MIN), StateScalar::Bool(true)];
     let bytes = schema.encode(&values).unwrap();
-    assert_eq!(schema.decode(&bytes).unwrap(), values);
+    assert_eq!(schema.decode(&bytes).unwrap(), values.to_vec());
     assert_eq!(ActorStateSchema::for_actor(&p.actors[0]).unwrap().schema_id,
         schema.schema_id);
     let mismatch = schema.encode(&[StateScalar::Bool(true), StateScalar::Int(7)]);
