@@ -245,10 +245,11 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
         Some(Stmt::Block(inner)) => guard_failure_exits(inner),
-        Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
-            !arms.is_empty()
-                && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
-                && guard_failure_exits(other),
+        Some(Stmt::If {
+            arms,
+            otherwise: Some(other),
+            ..
+        }) => !arms.is_empty() && arms.iter().all(|(_, branch)| guard_failure_exits(branch)) && guard_failure_exits(other),
         _ => false,
     }
 }
@@ -406,31 +407,43 @@ impl Parser {
                 if *self.peek() != Tok::RParen {
                     loop {
                         if params.len() >= MAX_PARAMS {
-                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
-                                "callable signature exceeds maximum parameter count"));
+                            return Err(Diagnostic::new(
+                                self.pos(),
+                                "E_SOURCE_LIMIT",
+                                "callable signature exceeds maximum parameter count",
+                            ));
                         }
                         let arg_pos = self.pos();
                         let arg = self.parse_type()?;
                         if !matches!(arg, Type::Int | Type::Bool | Type::Float | Type::Str) {
-                            return Err(Diagnostic::new(arg_pos, "E_UNSUPPORTED_TYPE",
-                                "callable parameter must be a non-void scalar type"));
+                            return Err(Diagnostic::new(
+                                arg_pos,
+                                "E_UNSUPPORTED_TYPE",
+                                "callable parameter must be a non-void scalar type",
+                            ));
                         }
                         params.push(arg);
-                        if !self.eat(&Tok::Comma) { break; }
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
                     }
                 }
                 self.expect(Tok::RParen, "')' after callable parameters")?;
                 self.expect(Tok::Arrow, "'->' before callable result type")?;
                 let result_pos = self.pos();
                 let result = self.parse_type()?;
-                if !matches!(result,
-                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
-                    return Err(Diagnostic::new(result_pos, "E_UNSUPPORTED_TYPE",
-                        "callable return type must be scalar or void"));
+                if !matches!(result, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
+                    return Err(Diagnostic::new(
+                        result_pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "callable return type must be scalar or void",
+                    ));
                 }
-                let spelling = format!("fnc({})->{}",
+                let spelling = format!(
+                    "fnc({})->{}",
                     params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
-                    result.name());
+                    result.name()
+                );
                 // Identical contracts have identical Type identity across
                 // declarations, regardless of whitespace and type aliases.
                 let id = match self.type_names.iter().position(|(n, _)| *n == spelling) {
@@ -446,8 +459,13 @@ impl Parser {
                 match inner {
                     Type::Int => Type::OptionInt,
                     Type::ResultIntStr => Type::OptionResultIntStr,
-                    _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT admits only Option<int> and Option<Result<int,string>>")),
+                    _ => {
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_UNSUPPORTED_TYPE",
+                            "browser ADT admits only Option<int> and Option<Result<int,string>>",
+                        ))
+                    }
                 }
             }
             "Generator" => {
@@ -455,8 +473,11 @@ impl Parser {
                 let inner = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Generator item type")?;
                 if inner != Type::Int {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "the browser generator frontend currently recognizes only Generator<int>"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "the browser generator frontend currently recognizes only Generator<int>",
+                    ));
                 }
                 Type::GeneratorInt
             }
@@ -467,11 +488,14 @@ impl Parser {
                 let bad = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Result types")?;
                 if good != Type::Int || bad != Type::Str {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Result<int,string>"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_UNSUPPORTED_TYPE",
+                        "browser ADT v1 admits only Result<int,string>",
+                    ));
                 }
                 Type::ResultIntStr
-            },
+            }
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
@@ -552,8 +576,11 @@ impl Parser {
                 }
                 let (export, next) = crate::visibility_lower::parse_export_directive(&self.toks, self.i)?;
                 if prog.parsed_exports.iter().any(|e| e.name == export.name) {
-                    return Err(Diagnostic::new(export.pos, "E_DUPLICATE",
-                        format!("duplicate exported name '{}'", export.name)));
+                    return Err(Diagnostic::new(
+                        export.pos,
+                        "E_DUPLICATE",
+                        format!("duplicate exported name '{}'", export.name),
+                    ));
                 }
                 prog.parsed_exports.push(export);
                 self.i = next;
@@ -628,7 +655,6 @@ impl Parser {
         })
     }
 
-
     /// Browser-only single-worker state profile; class instances cannot cross
     /// guest Wasm memories. This does not provide a cross-worker RW lock.
     fn parse_state_container(&mut self, public: bool) -> R<ClassDecl> {
@@ -643,25 +669,43 @@ impl Parser {
                 return Err(self.expected("'end' to close state container"));
             }
             if fields.len() >= 128 || methods.len() >= 64 {
-                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "protected state fields (128) or methods (64) exceed Java reference budget"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SOURCE_LIMIT",
+                    "protected state fields (128) or methods (64) exceed Java reference budget",
+                ));
             }
             if self.eat_word("state") {
-                if seen { return Err(Diagnostic::new(self.pos(), "E_DUPLICATE", "duplicate state {} block")); }
+                if seen {
+                    return Err(Diagnostic::new(self.pos(), "E_DUPLICATE", "duplicate state {} block"));
+                }
                 seen = true;
                 self.expect(Tok::LBrace, "'{' after state")?;
                 while !self.eat(&Tok::RBrace) {
-                    if *self.peek() == Tok::Eof { return Err(self.expected("'}' after state fields")); }
+                    if *self.peek() == Tok::Eof {
+                        return Err(self.expected("'}' after state fields"));
+                    }
                     if fields.len() >= 128 {
-                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "protected state field budget exceeded (128)"));
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_SOURCE_LIMIT",
+                            "protected state field budget exceeded (128)",
+                        ));
                     }
                     if !self.eat_word("let") {
-                        return Err(Diagnostic::new(self.pos(), "E_STATE",
-                            "protected state fields must start with let, as in Java"));
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_STATE",
+                            "protected state fields must start with let, as in Java",
+                        ));
                     }
                     let parsed = self.parse_type_first_field(false, FieldMode::ActorState)?;
                     if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
-                        return Err(Diagnostic::new(parsed.field.pos, "E_UNSUPPORTED_TYPE",
-                            "Worker-local state container admits only owned int/bool fields"));
+                        return Err(Diagnostic::new(
+                            parsed.field.pos,
+                            "E_UNSUPPORTED_TYPE",
+                            "Worker-local state container admits only owned int/bool fields",
+                        ));
                     }
                     if fields.iter().any(|f: &Field| f.name == parsed.field.name) {
                         return Err(Diagnostic::new(parsed.field.pos, "E_DUPLICATE", "duplicate state field"));
@@ -671,39 +715,64 @@ impl Parser {
                 continue;
             }
             if !seen {
-                return Err(Diagnostic::new(self.pos(), "E_STATE",
-                    "protected state {} schema must precede instance methods"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_STATE",
+                    "protected state {} schema must precede instance methods",
+                ));
             }
             let method_public = self.eat_word("pub");
             self.eat_word("fnc");
             self.eat_word("method");
             if self.is_word("handle_state") {
-                return Err(Diagnostic::new(self.pos(), "E_STATE",
-                    "handle_state is compiler-owned and cannot be overridden"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_STATE",
+                    "handle_state is compiler-owned and cannot be overridden",
+                ));
             }
             if *self.peek_at(1) != Tok::LParen {
-                return Err(Diagnostic::new(self.pos(), "E_STATE",
-                    "state container supports only a state {} block and instance methods"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_STATE",
+                    "state container supports only a state {} block and instance methods",
+                ));
             }
             self.state_method = true;
             let result = self.parse_method(method_public, false);
             self.state_method = false;
             let method = result?;
             if method.params.iter().any(|p| p.name == "s") {
-                return Err(Diagnostic::new(method.pos, "E_STATE_BORROW",
-                    "parameter s would shadow the critical lease binder"));
+                return Err(Diagnostic::new(
+                    method.pos,
+                    "E_STATE_BORROW",
+                    "parameter s would shadow the critical lease binder",
+                ));
             }
             if methods.iter().any(|m: &Method| m.name == method.name) {
                 return Err(Diagnostic::new(method.pos, "E_DUPLICATE", "duplicate state method"));
             }
             methods.push(method);
         }
-        if !seen { return Err(Diagnostic::new(pos, "E_STATE", "define state requires state {}")); }
-        if fields.is_empty() {
-            return Err(Diagnostic::new(pos, "E_STATE", "protected state requires at least one scalar field"));
+        if !seen {
+            return Err(Diagnostic::new(pos, "E_STATE", "define state requires state {}"));
         }
-        Ok(ClassDecl { name, pos, public, state_container: true,
-            fields, ctor: None, methods })
+        if fields.is_empty() {
+            return Err(Diagnostic::new(
+                pos,
+                "E_STATE",
+                "protected state requires at least one scalar field",
+            ));
+        }
+        Ok(ClassDecl {
+            name,
+            pos,
+            public,
+            state_container: true,
+            fields,
+            ctor: None,
+            methods,
+        })
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
@@ -1155,12 +1224,18 @@ impl Parser {
         let ret = self.parse_return_spec()?;
         self.parse_effect_clauses()?;
         if is_pure && is_generator {
-            return Err(Diagnostic::new(pos, "E_PURE",
-                "pure generator effects require verified continuation semantics"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_PURE",
+                "pure generator effects require verified continuation semantics",
+            ));
         }
         if is_generator && ret != Type::GeneratorInt {
-            return Err(Diagnostic::new(pos, "E_TYPE",
-                "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_TYPE",
+                "a 'fnc *gen' declaration must return Generator<int> in this frontend stage",
+            ));
         }
         self.in_generator = is_generator;
         let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
@@ -1204,10 +1279,15 @@ impl Parser {
             loop {
                 let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
                 if ty != "Error" {
-                    return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                        format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
+                    return Err(Diagnostic::new(
+                        ty_pos,
+                        "E_TYPE",
+                        format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'"),
+                    ));
                 }
-                if !self.eat(&Tok::Comma) { break; }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
             }
             self.expect(Tok::RParen, "')' to close the effect clause")?;
             // `throws(Error), raises(Error)`: a comma may separate clauses.
@@ -1228,8 +1308,11 @@ impl Parser {
             self.expect(Tok::LParen, "'(' after 'catch'")?;
             let (ty, ty_pos) = self.ident("the caught Error type")?;
             if ty != "Error" {
-                return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                    "this browser slice catches only the built-in Error"));
+                return Err(Diagnostic::new(
+                    ty_pos,
+                    "E_TYPE",
+                    "this browser slice catches only the built-in Error",
+                ));
             }
             let (binder, _) = self.ident("a catch binding name")?;
             self.expect(Tok::RParen, "')' after the catch binding")?;
@@ -1240,7 +1323,11 @@ impl Parser {
         if self.is_word("catch") {
             return Err(unsupported(self.pos(), "multiple catch clauses"));
         }
-        let finally = if self.eat_word("finally") { Some(self.parse_block()?) } else { None };
+        let finally = if self.eat_word("finally") {
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
         if catch.is_none() && finally.is_none() {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "'try' requires a 'catch' or 'finally' clause"));
         }
@@ -1256,7 +1343,11 @@ impl Parser {
         if !self.eat(&Tok::Pipe) {
             loop {
                 if params.len() >= MAX_PARAMS {
-                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many recovery factory parameters"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SOURCE_LIMIT",
+                        "too many recovery factory parameters",
+                    ));
                 }
                 let ty = self.parse_type()?;
                 let (name, p) = self.ident("a recovery factory parameter name")?;
@@ -1264,7 +1355,9 @@ impl Parser {
                     return Err(Diagnostic::new(p, "E_DUPLICATE", format!("duplicate parameter '{name}'")));
                 }
                 params.push((name, ty, p));
-                if self.eat(&Tok::Pipe) { break; }
+                if self.eat(&Tok::Pipe) {
+                    break;
+                }
                 self.expect(Tok::Comma, "',' or '|' after a factory parameter")?;
             }
         }
@@ -1274,7 +1367,11 @@ impl Parser {
         self.expect(Tok::Comma, "',' between the error and cursor parameters")?;
         let (cursor, cursor_pos) = self.ident("the recovery cursor parameter")?;
         if cursor == err || params.iter().any(|(n, ..)| *n == err || *n == cursor) {
-            return Err(Diagnostic::new(cursor_pos, "E_DUPLICATE", "recovery parameter names must be distinct"));
+            return Err(Diagnostic::new(
+                cursor_pos,
+                "E_DUPLICATE",
+                "recovery parameter names must be distinct",
+            ));
         }
         self.expect(Tok::Pipe, "'|' after the recovery cursor")?;
         self.expect(Tok::Arrow, "'->' before the recovery handler body")?;
@@ -1288,7 +1385,14 @@ impl Parser {
         }
         let args = self.parse_args()?;
         self.terminator()?;
-        Ok(Stmt::Recover { params, err, cursor, body, args, pos })
+        Ok(Stmt::Recover {
+            params,
+            err,
+            cursor,
+            body,
+            args,
+            pos,
+        })
     }
 
     fn parse_param(&mut self) -> R<Param> {
@@ -1335,8 +1439,11 @@ impl Parser {
             // positions, symbol interning or nesting-budget state.
             let explicit_comma = self.eat(&Tok::ColonColon);
             if explicit_comma && *self.peek() == Tok::LBrace {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "'::' requires a comma/end body, not a brace block"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "'::' requires a comma/end body, not a brace block",
+                ));
             }
             // The pinned website also uses '::' as an optional header
             // separator before explicit semicolon/return statements. Until
@@ -1358,8 +1465,11 @@ impl Parser {
             return self.parse_erlang_body(ret);
         }
         if colon_type && self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
-            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                "a ': Type ->' callable body must open with '{'"));
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_SYNTAX",
+                "a ': Type ->' callable body must open with '{'",
+            ));
         }
         self.parse_block()
     }
@@ -1379,22 +1489,31 @@ impl Parser {
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut body = Vec::new();
             if self.is_word("end") {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "explicit/end callable bodies require a statement"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "explicit/end callable bodies require a statement",
+                ));
             }
             while !self.is_word("end") {
                 if *self.peek() == Tok::Eof {
                     return Err(self.expected("'end'"));
                 }
                 if *self.peek() == Tok::Comma {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "explicit/end callable bodies cannot contain comma-separated items"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SYNTAX",
+                        "explicit/end callable bodies cannot contain comma-separated items",
+                    ));
                 }
                 let start = self.i;
                 body.push(self.parse_stmt()?);
                 if self.i == start {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "explicit/end body statement did not consume source"));
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SYNTAX",
+                        "explicit/end body statement did not consume source",
+                    ));
                 }
             }
             self.expect_word("end")?;
@@ -1418,22 +1537,23 @@ impl Parser {
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut out: Vec<Stmt> = Vec::new();
             if self.is_word("end") {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "Erlang-style callable bodies require at least one item"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "Erlang-style callable bodies require at least one item",
+                ));
             }
             while !self.is_word("end") {
                 if *self.peek() == Tok::Eof {
                     return Err(self.expected("'end'"));
                 }
                 if *self.peek() == Tok::Comma {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "empty item in Erlang-style callable body"));
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "empty item in Erlang-style callable body"));
                 }
                 let start = self.i;
                 let stmt = self.parse_stmt()?;
                 if self.i == start {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "callable body did not consume a statement"));
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "callable body did not consume a statement"));
                 }
                 // Ordinary statements consume the comma in terminator().
                 // Compound statements like if/fi leave the comma for us.
@@ -1441,10 +1561,12 @@ impl Parser {
                 if !consumed_comma && !self.is_word("end") {
                     self.expect(Tok::Comma, "',' between Erlang-style body items")?;
                 }
-                if self.is_word("end") &&
-                    (consumed_comma || (self.i > 0 && self.toks[self.i - 1].tok == Tok::Comma)) {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                        "trailing comma in Erlang-style callable body"));
+                if self.is_word("end") && (consumed_comma || (self.i > 0 && self.toks[self.i - 1].tok == Tok::Comma)) {
+                    return Err(Diagnostic::new(
+                        self.pos(),
+                        "E_SYNTAX",
+                        "trailing comma in Erlang-style callable body",
+                    ));
                 }
                 out.push(stmt);
             }
@@ -1538,8 +1660,11 @@ impl Parser {
             if *self.peek() == Tok::Eof {
                 return Err(self.expected("'end'"));
             }
-            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                "Erlang-style callable body items require ',' or 'end', not ';' or newline"));
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_SYNTAX",
+                "Erlang-style callable body items require ',' or 'end', not ';' or newline",
+            ));
         }
         if self.eat(&Tok::Semi) {
             return Ok(());
@@ -1568,8 +1693,11 @@ impl Parser {
         // Contiguous yield* is a dedicated token, not multiplication.
         if *self.peek() == Tok::YieldStar {
             if !self.in_generator {
-                return Err(Diagnostic::new(pos, "E_YIELD",
-                    "'yield*' is only valid inside a 'fnc *gen' generator"));
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_YIELD",
+                    "'yield*' is only valid inside a 'fnc *gen' generator",
+                ));
             }
             self.advance();
             let source = self.parse_expr()?;
@@ -1844,7 +1972,6 @@ impl Parser {
         }
     }
 
-
     /// The Java/LLVM compound-keyword contract requires exactly adjacent
     /// ASCII critical-read / critical-write, not spaced subtraction tokens.
     /// The lexer intentionally keeps '-' separate for arithmetic; this
@@ -1854,23 +1981,30 @@ impl Parser {
         self.expect_word("critical")?;
         if self.peek() != &Tok::Minus {
             if read_only {
-                return Err(Diagnostic::new(keyword_pos, "E_SYNTAX",
-                    "critical-read must use one contiguous compound keyword"));
+                return Err(Diagnostic::new(
+                    keyword_pos,
+                    "E_SYNTAX",
+                    "critical-read must use one contiguous compound keyword",
+                ));
             }
             return Ok(true); // bare critical is the exclusive write alias
         }
         let minus_pos = self.pos();
-        if minus_pos.line != keyword_pos.line ||
-            minus_pos.col != keyword_pos.col + 8 {
-            return Err(Diagnostic::new(minus_pos, "E_SYNTAX",
-                "critical-read / critical-write must not contain whitespace around '-'"));
+        if minus_pos.line != keyword_pos.line || minus_pos.col != keyword_pos.col + 8 {
+            return Err(Diagnostic::new(
+                minus_pos,
+                "E_SYNTAX",
+                "critical-read / critical-write must not contain whitespace around '-'",
+            ));
         }
         self.advance();
         let suffix_pos = self.pos();
-        if suffix_pos.line != minus_pos.line ||
-            suffix_pos.col != minus_pos.col + 1 {
-            return Err(Diagnostic::new(suffix_pos, "E_SYNTAX",
-                "critical-read / critical-write must not contain whitespace around '-'"));
+        if suffix_pos.line != minus_pos.line || suffix_pos.col != minus_pos.col + 1 {
+            return Err(Diagnostic::new(
+                suffix_pos,
+                "E_SYNTAX",
+                "critical-read / critical-write must not contain whitespace around '-'",
+            ));
         }
         if self.eat_word("read") {
             return Ok(false);
@@ -1878,8 +2012,11 @@ impl Parser {
         if self.eat_word("write") && !read_only {
             return Ok(true);
         }
-        Err(Diagnostic::new(suffix_pos, "E_SYNTAX",
-            "expected a contiguous critical-read or critical-write state mode"))
+        Err(Diagnostic::new(
+            suffix_pos,
+            "E_SYNTAX",
+            "expected a contiguous critical-read or critical-write state mode",
+        ))
     }
 
     /// A lexical, non-suspending state loan. Syntactic admission is deliberately
@@ -1888,8 +2025,11 @@ impl Parser {
     fn parse_state_critical_stmt(&mut self) -> R<Stmt> {
         let pos = self.pos();
         if self.state_binder.is_some() {
-            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                "nested critical scopes cannot mint a second state loan"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_STATE_BORROW",
+                "nested critical scopes cannot mint a second state loan",
+            ));
         }
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
@@ -1898,13 +2038,17 @@ impl Parser {
         // requests an exclusive write ticket from the trusted Worker host.
         // Reads are accepted only as nonescaping by-value s.field projections.
         if !write {
-            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                "critical-read is by-value s.field only; block scopes cannot request a write lease"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_STATE_BORROW",
+                "critical-read is by-value s.field only; block scopes cannot request a write lease",
+            ));
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, _) = self.ident("state lease binder")?;
-        if binder != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-            "this browser profile uses the binder s")); }
+        if binder != "s" {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW", "this browser profile uses the binder s"));
+        }
         self.expect(Tok::Pipe, "'|' after lease binder")?;
         self.expect(Tok::Arrow, "'->' after lease binder")?;
         self.state_binder = Some(binder);
@@ -1914,10 +2058,14 @@ impl Parser {
         for stmt in &body {
             match stmt {
                 Stmt::FieldAssign { target, value, .. }
-                    if write && matches!(target.kind, ExprKind::SelfRef)
-                        && Self::pure_state_value(value) => {}
-                _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                    "critical block permits only pure state assignments (no calls, return, await or escapes)")),
+                    if write && matches!(target.kind, ExprKind::SelfRef) && Self::pure_state_value(value) => {}
+                _ => {
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_STATE_BORROW",
+                        "critical block permits only pure state assignments (no calls, return, await or escapes)",
+                    ))
+                }
             }
         }
         self.expect(Tok::RParen, "')' after critical scope")?;
@@ -1939,24 +2087,32 @@ impl Parser {
     /// A single by-value immutable state projection, not a reference loan.
     fn parse_state_critical_read(&mut self) -> R<ExprKind> {
         if self.state_binder.is_some() {
-            return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
-                "critical-read cannot nest inside an active critical state write"));
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_STATE_BORROW",
+                "critical-read cannot nest inside an active critical state write",
+            ));
         }
         self.expect_word("handle_state")?;
         self.expect(Tok::LParen, "'('")?;
         if self.parse_state_critical_mode(true)? {
-            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                "critical-read must be immutable"));
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "critical-read must be immutable"));
         }
         self.expect(Tok::Pipe, "'|' before lease binder")?;
         let (binder, _) = self.ident("state lease binder")?;
-        if binder != "s" { return Err(Diagnostic::new(self.pos(), "E_STATE_BORROW",
-            "this browser profile uses the binder s")); }
+        if binder != "s" {
+            return Err(Diagnostic::new(
+                self.pos(),
+                "E_STATE_BORROW",
+                "this browser profile uses the binder s",
+            ));
+        }
         self.expect(Tok::Pipe, "'|' after lease binder")?;
         self.expect(Tok::Arrow, "'->' after lease binder")?;
         let (projector, pos) = self.ident("s.field state projection")?;
-        if projector != "s" { return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-            "critical-read requires s.field")); }
+        if projector != "s" {
+            return Err(Diagnostic::new(pos, "E_STATE_BORROW", "critical-read requires s.field"));
+        }
         self.expect(Tok::Dot, "'.' in s.field")?;
         let (field, _) = self.ident("state field")?;
         self.expect(Tok::RParen, "')' after critical-read")?;
@@ -1994,8 +2150,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
-                    && *self.peek_at(1) == Tok::Lt))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef")) && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
             // 'Option' as a variable name and '<' as a comparison.
@@ -2007,8 +2162,11 @@ impl Parser {
             (name, None)
         };
         if self.state_method && name == "s" {
-            return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                "a local named s would shadow the critical lease binder"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_STATE_BORROW",
+                "a local named s would shadow the critical lease binder",
+            ));
         }
         if ty == Some(Type::Void) {
             return Err(Diagnostic::new(pos, "E_TYPE", "a variable cannot have type void"));
@@ -2035,13 +2193,15 @@ impl Parser {
         self.expect_word("guard")?;
         let predicate = self.parse_cond_head()?;
         if *self.peek() != Tok::LBrace {
-            return Err(Diagnostic::new(self.pos(), "E_GUARD",
-                "guard requires a braced failure branch"));
+            return Err(Diagnostic::new(self.pos(), "E_GUARD", "guard requires a braced failure branch"));
         }
         let failure = self.parse_block()?;
         if !guard_failure_exits(&failure) {
-            return Err(Diagnostic::new(pos, "E_GUARD",
-                "guard failure branch must exit the enclosing function on every path"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_GUARD",
+                "guard failure branch must exit the enclosing function on every path",
+            ));
         }
         Ok(Stmt::If {
             arms: vec![(
@@ -2237,18 +2397,17 @@ impl Parser {
             // The guard sees a pattern binding only after that pattern
             // matches. A guarded catch-all does not prove exhaustiveness.
             // The existing match type checker enforces these properties.
-            let guard = if self.eat_word("when") {
-                Some(self.parse_expr()?)
-            } else {
-                None
-            };
+            let guard = if self.eat_word("when") { Some(self.parse_expr()?) } else { None };
             self.expect(Tok::Arrow, "'->' in a return match arm")?;
             let braced = *self.peek() == Tok::LBrace;
             let body = if braced {
                 let body = self.parse_block()?;
                 if !guard_failure_exits(&body) {
-                    return Err(Diagnostic::new(apos, "E_RETURN",
-                        "braced return match arm must return or throw on every path"));
+                    return Err(Diagnostic::new(
+                        apos,
+                        "E_RETURN",
+                        "braced return match arm must return or throw on every path",
+                    ));
                 }
                 body
             } else {
@@ -2267,8 +2426,11 @@ impl Parser {
             if braced {
                 self.eat(&Tok::Comma);
             } else if !self.eat(&Tok::Comma) && !self.is_word("end") {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "expected ',' between return match value arms"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "expected ',' between return match value arms",
+                ));
             }
         }
         self.expect_word("end")?;
@@ -2309,8 +2471,11 @@ impl Parser {
                 "None" => {
                     self.advance();
                     if *self.peek() == Tok::LParen {
-                        return Err(Diagnostic::new(self.pos(), "E_ARITY",
-                            "None is a zero-payload variant; write 'on None'"));
+                        return Err(Diagnostic::new(
+                            self.pos(),
+                            "E_ARITY",
+                            "None is a zero-payload variant; write 'on None'",
+                        ));
                     }
                     Ok(Pattern::Adt(w, None))
                 }
@@ -2320,7 +2485,7 @@ impl Parser {
                     let (name, _) = self.ident("a payload binding name")?;
                     self.expect(Tok::RParen, "')' after payload binding")?;
                     Ok(Pattern::Adt(w, Some(name)))
-                },
+                }
                 "_" => {
                     self.advance();
                     Ok(Pattern::Wild)
@@ -2528,7 +2693,10 @@ impl Parser {
             self.grow(1)?;
             links += 1;
             args.insert(0, c);
-            c = Expr { kind: ExprKind::Call(name, args), pos };
+            c = Expr {
+                kind: ExprKind::Call(name, args),
+                pos,
+            };
         }
         self.height -= links;
         match self.peek() {
@@ -2574,7 +2742,10 @@ impl Parser {
             left = Expr {
                 kind: ExprKind::Ternary(
                     Box::new(left),
-                    Box::new(Expr { kind: ExprKind::Bool(true), pos }),
+                    Box::new(Expr {
+                        kind: ExprKind::Bool(true),
+                        pos,
+                    }),
                     Box::new(right),
                 ),
                 pos,
@@ -2601,7 +2772,10 @@ impl Parser {
                 kind: ExprKind::Ternary(
                     Box::new(left),
                     Box::new(right),
-                    Box::new(Expr { kind: ExprKind::Bool(false), pos }),
+                    Box::new(Expr {
+                        kind: ExprKind::Bool(false),
+                        pos,
+                    }),
                 ),
                 pos,
             };
@@ -2737,9 +2911,7 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
-                && *self.peek_at(1) == Tok::Bang =>
-            {
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share") && *self.peek_at(1) == Tok::Bang => {
                 let action = match s.as_str() {
                     "borrow" => OwnershipOp::Borrow,
                     "copy" => OwnershipOp::Copy,
@@ -2754,12 +2926,18 @@ impl Parser {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
                 }
                 let inner = self.parse_unary()?;
-                return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
-            },
+                return Ok(Expr {
+                    kind: ExprKind::Ownership(action, mutable, Box::new(inner)),
+                    pos,
+                });
+            }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
-                return Ok(Expr { kind: ExprKind::Trap(Box::new(inner)), pos });
+                return Ok(Expr {
+                    kind: ExprKind::Trap(Box::new(inner)),
+                    pos,
+                });
             }
             _ => return self.parse_postfix(),
         };
@@ -2816,9 +2994,7 @@ impl Parser {
                 Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
                 Tok::Colon if depth == 0 => return true,
                 Tok::Semi | Tok::Comma | Tok::Eof if depth == 0 => return false,
-                Tok::Ident(w) if depth == 0 && matches!(
-                    w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else"
-                ) => return false,
+                Tok::Ident(w) if depth == 0 && matches!(w.as_str(), "fi" | "end" | "done" | "elif" | "elseif" | "else") => return false,
                 _ => {}
             }
         }
@@ -2893,7 +3069,10 @@ impl Parser {
                     self.advance();
                     self.grow(1)?;
                     *chain += 1;
-                    e = Expr { kind: ExprKind::Propagate(Box::new(e)), pos: question };
+                    e = Expr {
+                        kind: ExprKind::Propagate(Box::new(e)),
+                        pos: question,
+                    };
                 }
                 Tok::Question => break, // true ternary: parsed by parse_ternary
 
@@ -2926,7 +3105,10 @@ impl Parser {
                 // (e.g. my.types.Response). After '.', the token is never
                 // parsed as a control-flow keyword.
                 let part = match self.peek().clone() {
-                    Tok::Ident(part) => { self.advance(); part }
+                    Tok::Ident(part) => {
+                        self.advance();
+                        part
+                    }
                     _ => return Err(self.expected("a qualified type name")),
                 };
                 name.push('.');
@@ -2936,7 +3118,9 @@ impl Parser {
                 name.push('<');
                 loop {
                     name.push_str(&self.parse_lambda_type()?);
-                    if !self.eat(&Tok::Comma) { break; }
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
                     name.push(',');
                 }
                 self.expect(Tok::Gt, "'>' after lambda type arguments")?;
@@ -2961,17 +3145,24 @@ impl Parser {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
                 }
                 params.push(name);
-                if self.eat(&Tok::Pipe) { break; }
+                if self.eat(&Tok::Pipe) {
+                    break;
+                }
                 self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
             }
         }
         let mut return_type = if self.eat(&Tok::Colon) {
             Some(self.parse_lambda_type()?)
-        } else { None };
+        } else {
+            None
+        };
         if self.eat(&Tok::FatArrow) {
             if return_type.is_some() {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "use ':' rather than combining a return annotation with '=>'"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SYNTAX",
+                    "use ':' rather than combining a return annotation with '=>'",
+                ));
             }
             return_type = Some(self.parse_lambda_type()?);
             self.expect(Tok::Arrow, "'->' after legacy '=>' return type")?;
@@ -3017,8 +3208,11 @@ impl Parser {
                 Some(self.parse_expr()?)
             };
             if !self.eat(&Tok::Semi) {
-                return Err(Diagnostic::new(self.pos(), "E_SEMICOLON",
-                    "a braceless lambda return requires ';' before its closing delimiter"));
+                return Err(Diagnostic::new(
+                    self.pos(),
+                    "E_SEMICOLON",
+                    "a braceless lambda return requires ';' before its closing delimiter",
+                ));
             }
             LambdaBody::Statement(Box::new(Stmt::Return(value, pos)))
         } else {
@@ -3036,8 +3230,12 @@ impl Parser {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "array literal exceeds 1024 elements"));
                 }
                 items.push(self.parse_expr()?);
-                if !self.eat(&Tok::Comma) { break; }
-                if *self.peek() == Tok::RBracket { break; }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                if *self.peek() == Tok::RBracket {
+                    break;
+                }
             }
             self.expect(Tok::RBracket, "']' after array items")?;
         }
@@ -3084,8 +3282,11 @@ impl Parser {
                 "null" => return Err(Diagnostic::new(pos, "E_NULL", "AttoLang has no null value; use Option<T>")),
                 "self" => {
                     if self.state_method {
-                        return Err(Diagnostic::new(pos, "E_STATE_ACCESS",
-                            "state fields are sealed; use a critical state lease"));
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_STATE_ACCESS",
+                            "state fields are sealed; use a critical state lease",
+                        ));
                     }
                     self.advance();
                     ExprKind::SelfRef
@@ -3131,8 +3332,7 @@ impl Parser {
                 }
                 _ if self.state_binder.as_deref() == Some(s.as_str()) => {
                     if *self.peek_at(1) != Tok::Dot {
-                        return Err(Diagnostic::new(pos, "E_ESCAPE",
-                            "state borrow cannot escape or be passed by value"));
+                        return Err(Diagnostic::new(pos, "E_ESCAPE", "state borrow cannot escape or be passed by value"));
                     }
                     self.advance();
                     ExprKind::SelfRef

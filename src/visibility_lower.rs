@@ -2,14 +2,17 @@
 //! This is not a package linker or a foreign-function runtime.
 //! Public exports add deterministic Wasm metadata; private/package entries
 //! cannot be imported as host functions.
-use std::collections::BTreeSet;
-use crate::module_lower::ModuleDecl;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use crate::module_lower::ModuleDecl;
+use std::collections::BTreeSet;
 type R<T> = Result<T, Diagnostic>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Visibility { Public, Package }
+pub enum Visibility {
+    Public,
+    Package,
+}
 #[derive(Clone, Debug)]
 pub struct Export {
     pub name: String,
@@ -17,7 +20,10 @@ pub struct Export {
     pub visibility: Visibility,
     pub pos: Pos,
 }
-pub struct Lowered { pub tokens: Vec<Token>, pub exports: Vec<Export> }
+pub struct Lowered {
+    pub tokens: Vec<Token>,
+    pub exports: Vec<Export>,
+}
 fn word(t: &[Token], i: usize, value: &str) -> bool {
     matches!(t.get(i).map(|x| &x.tok), Some(Tok::Ident(s)) if s == value)
 }
@@ -26,9 +32,17 @@ fn error(pos: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic
 }
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(n), pos: _ }) if !n.is_empty()
-            && !matches!(n.as_str(), "pub" | "export" | "class" | "fnc" | "module" | "namespace" | "as" | "end") =>
-            Ok(n.clone()),
+        Some(Token {
+            tok: Tok::Ident(n),
+            pos: _,
+        }) if !n.is_empty()
+            && !matches!(
+                n.as_str(),
+                "pub" | "export" | "class" | "fnc" | "module" | "namespace" | "as" | "end"
+            ) =>
+        {
+            Ok(n.clone())
+        }
         Some(x) => Err(error(x.pos, "E_SYNTAX", "expected bounded export identifier")),
         None => Err(error(Pos { line: 1, col: 1 }, "E_EOF", "missing export name")),
     }
@@ -49,7 +63,7 @@ fn export_name(t: &[Token], i: usize) -> R<String> {
 /// pre-lowering pipeline and direct AST parser. The binder is still responsible
 /// for symbol ownership and declaration-kind validation.
 pub fn parse_export_directive(t: &[Token], start: usize) -> R<(Export, usize)> {
-    let pos = t.get(start).map(|x| x.pos).unwrap_or(Pos {line: 1, col: 1});
+    let pos = t.get(start).map(|x| x.pos).unwrap_or(Pos { line: 1, col: 1 });
     if !word(t, start, "export") || !word(t, start + 1, "pub") {
         return Err(error(pos, "E_SYNTAX", "export requires pub or pub[pkg]"));
     }
@@ -60,61 +74,94 @@ pub fn parse_export_directive(t: &[Token], start: usize) -> R<(Export, usize)> {
         }
         j += 3;
         Visibility::Package
-    } else { Visibility::Public };
+    } else {
+        Visibility::Public
+    };
     let mut kind = "";
     if ["class", "fnc", "module", "actor", "enum"].iter().any(|k| word(t, j, k)) {
-        kind = if word(t, j, "class") { "class" }
-            else if word(t, j, "module") { "module" }
-            else if word(t, j, "actor") { "actor" }
-            else if word(t, j, "enum") { "enum" } else { "fnc" };
+        kind = if word(t, j, "class") {
+            "class"
+        } else if word(t, j, "module") {
+            "module"
+        } else if word(t, j, "actor") {
+            "actor"
+        } else if word(t, j, "enum") {
+            "enum"
+        } else {
+            "fnc"
+        };
         j += 1;
     }
     let id = export_name(t, j)?;
     if t.get(j + 1).map(|x| &x.tok) != Some(&Tok::Semi) {
         return Err(error(pos, "E_SYNTAX", "export must end with semicolon"));
     }
-    Ok((Export { name: id, kind, visibility, pos }, j + 2))
+    Ok((
+        Export {
+            name: id,
+            kind,
+            visibility,
+            pos,
+        },
+        j + 2,
+    ))
 }
 
 /// Resolve exports against the checked parser's actual declaration table,
 /// not arbitrary tokens: a class member named Foo is NOT a top-level fnc
 /// Foo, and a foreign prototype never grants source-level export authority.
-pub fn resolve_exports(
-    exports: &mut [Export],
-    parsed: &crate::ast::Program,
-    modules: &[ModuleDecl],
-) -> R<()> {
+pub fn resolve_exports(exports: &mut [Export], parsed: &crate::ast::Program, modules: &[ModuleDecl]) -> R<()> {
     for export in exports {
-        let class_count = parsed.classes.iter()
-            .filter(|c| c.name == export.name && !c.state_container).count();
+        let class_count = parsed
+            .classes
+            .iter()
+            .filter(|c| c.name == export.name && !c.state_container)
+            .count();
         // A function export selects the whole checked overload set, not one
         // declaration. Duplicate signatures are rejected by the typechecker.
         let fnc_count = parsed.funcs.iter().filter(|f| f.name == export.name).count();
         let module = modules.iter().find(|m| m.name == export.name);
         let actor_count = parsed.actors.iter().filter(|a| a.name == export.name).count();
         let enum_count = parsed.enums.iter().filter(|e| e.name == export.name).count();
-        let kind_count = usize::from(class_count > 0) +
-            usize::from(fnc_count > 0) + usize::from(module.is_some()) +
-            usize::from(actor_count > 0) + usize::from(enum_count > 0);
+        let kind_count = usize::from(class_count > 0)
+            + usize::from(fnc_count > 0)
+            + usize::from(module.is_some())
+            + usize::from(actor_count > 0)
+            + usize::from(enum_count > 0);
         if kind_count == 0 {
-            return Err(error(export.pos, "E_UNBOUND",
-                format!("export '{}' has no file-local declaration", export.name)));
+            return Err(error(
+                export.pos,
+                "E_UNBOUND",
+                format!("export '{}' has no file-local declaration", export.name),
+            ));
         }
         if kind_count > 1 || class_count > 1 || actor_count > 1 || enum_count > 1 {
-            return Err(error(export.pos, "E_DUPLICATE",
-                format!("export '{}' resolves to ambiguous declaration kinds", export.name)));
+            return Err(error(
+                export.pos,
+                "E_DUPLICATE",
+                format!("export '{}' resolves to ambiguous declaration kinds", export.name),
+            ));
         }
-        let kind = if class_count > 0 { "class" }
-            else if fnc_count > 0 { "fnc" }
-            else if actor_count > 0 { "actor" }
-            else if enum_count > 0 { "enum" }
-            else { "module" };
+        let kind = if class_count > 0 {
+            "class"
+        } else if fnc_count > 0 {
+            "fnc"
+        } else if actor_count > 0 {
+            "actor"
+        } else if enum_count > 0 {
+            "enum"
+        } else {
+            "module"
+        };
         if !export.kind.is_empty() && export.kind != kind {
             return Err(error(export.pos, "E_EXPORT_KIND", "export declaration kind mismatch"));
         }
         if module.is_some_and(|m| m.inline_public) && export.visibility == Visibility::Package {
-            return Err(error(export.pos, "E_VISIBILITY",
-                "public module declaration conflicts with package-only export"));
+            return Err(error(
+                export.pos,
+                "E_VISIBILITY",
+                "public module declaration conflicts with package-only export",
+            ));
         }
         export.kind = kind;
     }
@@ -122,14 +169,9 @@ pub fn resolve_exports(
 }
 /// Resolve direct-parser or pre-lowered directives into one checked AST
 /// export table. No metadata can originate from an unresolved source export.
-pub fn bind_program_exports(
-    program: &mut crate::ast::Program,
-    mut lexical: Vec<Export>,
-    modules: &[ModuleDecl],
-) -> R<()> {
+pub fn bind_program_exports(program: &mut crate::ast::Program, mut lexical: Vec<Export>, modules: &[ModuleDecl]) -> R<()> {
     if !program.exports.is_empty() {
-        return Err(error(Pos::default(), "E_DUPLICATE",
-            "program already has a resolved export table"));
+        return Err(error(Pos::default(), "E_DUPLICATE", "program already has a resolved export table"));
     }
     lexical.extend(std::mem::take(&mut program.parsed_exports));
     if lexical.len() > 128 {
@@ -138,8 +180,7 @@ pub fn bind_program_exports(
     let mut seen = BTreeSet::new();
     for e in &lexical {
         if !seen.insert(e.name.clone()) {
-            return Err(error(e.pos, "E_DUPLICATE",
-                format!("duplicate exported name '{}'", e.name)));
+            return Err(error(e.pos, "E_DUPLICATE", format!("duplicate exported name '{}'", e.name)));
         }
     }
     // Inline public modules synthesize one export, while a matching explicit
@@ -150,8 +191,10 @@ pub fn bind_program_exports(
                 return Err(error(module.pos, "E_SOURCE_LIMIT", "export budget exceeded"));
             }
             lexical.push(Export {
-                name: module.name.clone(), kind: "module",
-                visibility: Visibility::Public, pos: module.pos,
+                name: module.name.clone(),
+                kind: "module",
+                visibility: Visibility::Public,
+                pos: module.pos,
             });
         }
     }
@@ -159,30 +202,37 @@ pub fn bind_program_exports(
     lexical.sort_by(|a, b| a.name.cmp(&b.name));
     for export in &lexical {
         if export.kind == "class" && export.visibility == Visibility::Public {
-            if let Some(class) = program.classes.iter_mut()
-                .find(|class| class.name == export.name && !class.state_container) {
+            if let Some(class) = program
+                .classes
+                .iter_mut()
+                .find(|class| class.name == export.name && !class.state_container)
+            {
                 class.public = true;
             }
         }
     }
-    program.exports = lexical.into_iter().map(|e| {
-        let kind = match e.kind {
-            "class" => crate::ast::ExportKind::Class,
-            "fnc" => crate::ast::ExportKind::Fnc,
-            "actor" => crate::ast::ExportKind::Actor,
-            "enum" => crate::ast::ExportKind::Enum,
-            "module" => crate::ast::ExportKind::Module,
-            _ => return Err(error(e.pos, "E_EXPORT_KIND",
-                "unresolved or unsupported export kind")),
-        };
-        Ok(crate::ast::ExportDecl {
-            name: e.name, pos: e.pos, kind,
-            visibility: match e.visibility {
-                Visibility::Public => crate::ast::ExportVisibility::Public,
-                Visibility::Package => crate::ast::ExportVisibility::Package,
-            },
+    program.exports = lexical
+        .into_iter()
+        .map(|e| {
+            let kind = match e.kind {
+                "class" => crate::ast::ExportKind::Class,
+                "fnc" => crate::ast::ExportKind::Fnc,
+                "actor" => crate::ast::ExportKind::Actor,
+                "enum" => crate::ast::ExportKind::Enum,
+                "module" => crate::ast::ExportKind::Module,
+                _ => return Err(error(e.pos, "E_EXPORT_KIND", "unresolved or unsupported export kind")),
+            };
+            Ok(crate::ast::ExportDecl {
+                name: e.name,
+                pos: e.pos,
+                kind,
+                visibility: match e.visibility {
+                    Visibility::Public => crate::ast::ExportVisibility::Public,
+                    Visibility::Package => crate::ast::ExportVisibility::Package,
+                },
+            })
         })
-    }).collect::<R<Vec<_>>>()?;
+        .collect::<R<Vec<_>>>()?;
     Ok(())
 }
 
@@ -201,14 +251,21 @@ fn external_prototype(t: &[Token], start: usize) -> R<(usize, String)> {
         match t.get(i).map(|x| &x.tok) {
             Some(Tok::LParen) => level += 1,
             Some(Tok::RParen) => {
-                if level == 0 { return Err(error(p, "E_SYNTAX", "invalid external parentheses")); }
+                if level == 0 {
+                    return Err(error(p, "E_SYNTAX", "invalid external parentheses"));
+                }
                 level -= 1;
-                if level == 0 { i += 1; break; }
-            },
+                if level == 0 {
+                    i += 1;
+                    break;
+                }
+            }
             Some(Tok::Eof) | None => return Err(error(p, "E_EOF", "unclosed external prototype")),
             _ => {}
         }
-        if level > 32 { return Err(error(p, "E_NESTING", "external signature nesting limit")); }
+        if level > 32 {
+            return Err(error(p, "E_NESTING", "external signature nesting limit"));
+        }
         i += 1;
     }
     if !matches!(t.get(i).map(|x| &x.tok), Some(Tok::Colon | Tok::Arrow)) {
@@ -220,7 +277,11 @@ fn external_prototype(t: &[Token], start: usize) -> R<(usize, String)> {
     }
     i += 1;
     if t.get(i).map(|x| &x.tok) != Some(&Tok::Semi) {
-        return Err(error(p, "E_UNSUPPORTED", "external definitions and foreign ABI calls remain unsupported"));
+        return Err(error(
+            p,
+            "E_UNSUPPORTED",
+            "external definitions and foreign ABI calls remain unsupported",
+        ));
     }
     Ok((i + 1, id))
 }
@@ -232,10 +293,12 @@ fn reject_nested_exports(t: &[Token]) -> R<()> {
     // expressions must not make a nested export appear file-local.
     let mut end_scopes = 0usize;
     for i in 0..t.len() {
-        if (word(t, i, "export") || word(t, i, "internal") ||
-            word(t, i, "external")) && (braces > 0 || end_scopes > 0) {
-            return Err(error(t[i].pos, "E_SYNTAX",
-                "export, internal and external declarations are only allowed at file scope"));
+        if (word(t, i, "export") || word(t, i, "internal") || word(t, i, "external")) && (braces > 0 || end_scopes > 0) {
+            return Err(error(
+                t[i].pos,
+                "E_SYNTAX",
+                "export, internal and external declarations are only allowed at file scope",
+            ));
         }
         match &t[i].tok {
             Tok::LBrace => braces += 1,
@@ -249,19 +312,21 @@ fn reject_nested_exports(t: &[Token]) -> R<()> {
                 // before its braced body. Do not mistake such a function
                 // for an end-delimited one and poison later top-level exports.
                 let mut j = i + 2;
-                while ["throws", "raises", "panics"].iter().any(|k| word(t, j, k))
-                    && t.get(j + 1).map(|x| &x.tok) == Some(&Tok::LParen) {
+                while ["throws", "raises", "panics"].iter().any(|k| word(t, j, k)) && t.get(j + 1).map(|x| &x.tok) == Some(&Tok::LParen) {
                     j += 2;
                     while j < t.len() && !matches!(t[j].tok, Tok::RParen | Tok::Eof) {
                         j += 1;
                     }
-                    if t.get(j).map(|x| &x.tok) != Some(&Tok::RParen) { break; }
+                    if t.get(j).map(|x| &x.tok) != Some(&Tok::RParen) {
+                        break;
+                    }
                     j += 1;
-                    if t.get(j).map(|x| &x.tok) == Some(&Tok::Comma) { j += 1; }
+                    if t.get(j).map(|x| &x.tok) == Some(&Tok::Comma) {
+                        j += 1;
+                    }
                 }
                 let body_start = t.get(j).map(|x| &x.tok);
-                if body_start != Some(&Tok::LBrace) &&
-                   body_start != Some(&Tok::ColonColon) {
+                if body_start != Some(&Tok::LBrace) && body_start != Some(&Tok::ColonColon) {
                     end_scopes += 1;
                 }
             }
@@ -285,9 +350,14 @@ fn reject_nested_exports(t: &[Token]) -> R<()> {
 }
 
 pub fn lower(t: Vec<Token>) -> R<Lowered> {
-    if !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s)
-        if matches!(s.as_str(), "export" | "external" | "internal" | "protected"))) {
-        return Ok(Lowered { tokens: t, exports: vec![] });
+    if !t.iter().any(|x| {
+        matches!(&x.tok, Tok::Ident(s)
+        if matches!(s.as_str(), "export" | "external" | "internal" | "protected"))
+    }) {
+        return Ok(Lowered {
+            tokens: t,
+            exports: vec![],
+        });
     }
     reject_nested_exports(&t)?;
     let mut exports: Vec<Export> = Vec::new();
@@ -298,11 +368,12 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
     while i < t.len() {
         let pos = t[i].pos;
         if word(&t, i, "export") {
-            if exports.len() >= 128 { return Err(error(pos, "E_SOURCE_LIMIT", "export budget exceeded")); }
+            if exports.len() >= 128 {
+                return Err(error(pos, "E_SOURCE_LIMIT", "export budget exceeded"));
+            }
             let (export, next) = parse_export_directive(&t, i)?;
             if exports.iter().any(|e| e.name == export.name) {
-                return Err(error(pos, "E_DUPLICATE",
-                    format!("duplicate exported name '{}'", export.name)));
+                return Err(error(pos, "E_DUPLICATE", format!("duplicate exported name '{}'", export.name)));
             }
             exports.push(export);
             i = next;
@@ -334,23 +405,32 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
             continue;
         }
         if word(&t, i, "protected") {
-            return Err(error(pos, "E_UNSUPPORTED",
-                "protected requires checked subclass visibility; it cannot be lowered as private"));
+            return Err(error(
+                pos,
+                "E_UNSUPPORTED",
+                "protected requires checked subclass visibility; it cannot be lowered as private",
+            ));
         }
         out.push(t[i].clone());
         i += 1;
     }
     for export in &exports {
         if internal.contains(&export.name) {
-            return Err(error(export.pos, "E_VISIBILITY",
-                format!("internal function '{}' cannot be exported", export.name)));
+            return Err(error(
+                export.pos,
+                "E_VISIBILITY",
+                format!("internal function '{}' cannot be exported", export.name),
+            ));
         }
     }
     for x in &out {
         if let Tok::Ident(n) = &x.tok {
             if foreign.contains(n) {
-                return Err(error(x.pos, "E_UNSUPPORTED",
-                    format!("foreign prototype '{n}' cannot be referenced without a validated ABI")));
+                return Err(error(
+                    x.pos,
+                    "E_UNSUPPORTED",
+                    format!("foreign prototype '{n}' cannot be referenced without a validated ABI"),
+                ));
             }
         }
     }
@@ -358,4 +438,3 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
     // A token sweep cannot prove source-level class/function membership.
     Ok(Lowered { tokens: out, exports })
 }
-
