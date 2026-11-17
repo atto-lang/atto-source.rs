@@ -21,6 +21,11 @@ pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
 // Exact upstream path-sensitive checked-handle oracle + typed-admitted adapter.
+// The pinned standalone solver exposes CallUnknown/Suspend variants for
+// the eventual MIR effect/pinning adapter. The current straight-line bridge
+// rejects those cases before constructing events; keep the upstream solver
+// byte-identical rather than pruning its API to satisfy dead-code lint.
+#[allow(dead_code)]
 mod checked_handle_cfg;
 mod checked_handle_adapter;
 
