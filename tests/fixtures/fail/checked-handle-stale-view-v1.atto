@@ -1,0 +1,14 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Payload as
+  pub let int value = 42;
+end
+fnc escaped(): Payload {
+  val original = new Payload();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    return view;
+  }
+}
+pub fnc main(): int { return 42; }
