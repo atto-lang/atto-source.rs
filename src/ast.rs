@@ -78,14 +78,22 @@ pub struct Program {
     pub type_names: Vec<(String, Pos)>,
 }
 
-
 /// Export visibility is evaluated by a package-aware linker, not the host ABI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExportVisibility { Public, Package }
+pub enum ExportVisibility {
+    Public,
+    Package,
+}
 
 /// Kind is resolved against the checked file-local declaration table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExportKind { Class, Fnc, Actor, Enum, Module }
+pub enum ExportKind {
+    Class,
+    Fnc,
+    Actor,
+    Enum,
+    Module,
+}
 
 #[derive(Clone, Debug)]
 pub struct ExportDecl {
@@ -275,7 +283,10 @@ pub enum Stmt {
         pos: Pos,
     },
     /// `defer || -> { ... };` registers a LIFO cleanup without running it.
-    Defer { body: Vec<Stmt>, pos: Pos },
+    Defer {
+        body: Vec<Stmt>,
+        pos: Pos,
+    },
     /// `recover (|T a, ..| -> |err, c| -> { ... })(args);` registers a
     /// recovery callback whose factory arguments are evaluated once, now.
     Recover {
@@ -406,7 +417,12 @@ pub enum LambdaBody {
 
 /// Explicit Atto ownership operators, not pointer address syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnershipOp { Borrow, Copy, Take, Share }
+pub enum OwnershipOp {
+    Borrow,
+    Copy,
+    Take,
+    Share,
+}
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
