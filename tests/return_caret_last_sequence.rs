@@ -24,6 +24,11 @@ fn last_value_return_compiles_as_checked_sequence() {
     for src in [
         "pub fnc main(): int { return ^ (42); }",
         "pub fnc main(): int { return ^ (1, 42); }",
+        "pub fnc main(): int { return 1, 42; }",
+        "pub fnc main(): int { ^ 1, 42; }",
+        "pub fnc main(): int { return 1, 2, 42; }",
+        "pub fnc main(): int { return (40), 42; }",
+        "pub fnc main(): int { return (> let x = 40, x), 42; }",
         "pub fnc main(): int { return ^ (1, 2, 42); }",
         "pub fnc main(): int { return^(1,42); }",
         "pub fnc main(): int { return ^ (val x = 40, x + 2); }",
@@ -32,6 +37,7 @@ fn last_value_return_compiles_as_checked_sequence() {
         "pub fnc main(): int { ^ seq let x = 40, x + 2; }",
         "pub fnc main(): int { ^ (> let x = 40, x + 2); }",
         "fnc f(int n): int { return ^ (n + 1, n + 2); } pub fnc main(): int { return f(40); }",
+        "fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add(10, 20), add(20, 22); }",
         "pub fnc main(): int { return ^ (40, (42)); }",
     ] {
         accepted(src);
@@ -52,6 +58,26 @@ fn contextual_selector_has_sequence_ast_not_tuple_or_nested_return() {
     assert!(matches!(&steps[0], Stmt::Expr(_)));
     assert!(matches!(&steps[1], Stmt::Expr(_)));
     assert!(matches!(&tail.kind, ExprKind::Int(Some(42))));
+}
+
+#[test]
+fn bare_comma_return_has_same_sequence_ast_as_explicit_seq() {
+    for source in [
+        "pub fnc main(): int { return 10, 20, 42; }",
+        "pub fnc main(): int { ^ 10, 20, 42; }",
+        "pub fnc main(): int { return seq 10, 20, 42; }",
+        "pub fnc main(): int { return ^ (10, 20, 42); }",
+    ] {
+        let program = Parser::new(lex(source).unwrap()).parse_program().unwrap();
+        let Stmt::Return(Some(expr), _) = &program.funcs[0].body[0] else {
+            panic!("expected a checked return: {source}");
+        };
+        let ExprKind::Sequence(prefix, tail) = &expr.kind else {
+            panic!("expected lexical last-value sequence: {source}");
+        };
+        assert_eq!(prefix.len(), 2, "{source}");
+        assert!(matches!(&tail.kind, ExprKind::Int(Some(42))), "{source}");
+    }
 }
 
 #[test]
@@ -77,7 +103,10 @@ fn malformed_or_ambiguous_forms_fail_closed() {
         "pub fnc main(): int { return ^ 42; }",
         "pub fnc main(): int { return ^ seq 1, 42; }",
         "pub fnc main(): int { return ^ (1, 42) + 5; }",
-        "pub fnc main(): int { return 1, 42; }",
+        "pub fnc main(): int { return 1,; }",
+        "pub fnc main(): int { return 1,,42; }",
+        "pub fnc main(): int { return 1, 2,; }",
+        "pub fnc main(): int { return 1, val x = 42; }",
         "pub fnc main(): int { val x = ^ (1, 42); return x; }",
         "pub fnc main(): int { return ^ (1, true); }",
         "pub fnc main(): int { return ^ (val x = 42); }",
@@ -104,6 +133,7 @@ fn tuple_parentheses_never_become_a_last_value_sequence() {
 fn preceding_effects_and_ownership_are_not_skipped() {
     // Every prefix is checked through the same sequence typing path as seq.
     rejected("pure fnc f(): int { return ^ (stdio.println(1), 42); } pub fnc main(): int { return f(); }");
+    rejected("pure fnc f(): int { return stdio.println(1), 42; } pub fnc main(): int { return f(); }");
     // Scoped bindings cannot escape the sequence.
     rejected("pub fnc main(): int { val n = (> val hidden = 42, hidden); return ^ (n, hidden); }");
 }
