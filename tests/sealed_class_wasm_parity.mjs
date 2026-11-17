@@ -20,7 +20,7 @@ const decoder = new TextDecoder('utf-8', {fatal: true});
 const tmp = mkdtempSync(join(tmpdir(), 'atto-sealed-parity-'));
 const main = 'pub fnc main(): int { return 42; }';
 const cases = [
-  ['final-leaf', 'define sealed class Root permits Leaf as pub answer(): int {return 42;} end define final class Leaf extends Root as end pub fnc main(): int {val obj = new Leaf(); return obj.answer();}', null],
+  ['final-leaf', 'define sealed class Root permits Leaf as pub answer(): int {return 42;} end define final class Leaf extends Root as end pub fnc main(): int {val leaf_value = new Leaf(); return leaf_value.answer();}', null],
   ['nonsealed-descendant', 'define sealed class Root permits Branch as end define non-sealed class Branch extends Root as end define class Child extends Branch as end ' + main, null],
   ['recursive-closure', 'define sealed class Root permits Middle as end define sealed class Middle extends Root permits Leaf as end define final class Leaf extends Middle as end ' + main, null],
   ['authorized-diamond', 'define sealed class A permits Leaf as pub left(): int {return 20;} end define sealed class B permits Leaf as pub right(): int {return 22;} end define final class Leaf extends A, B as end pub fnc main(): int {val x = new Leaf(); return x.left() + x.right();}', null],
