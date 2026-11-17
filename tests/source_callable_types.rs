@@ -3,12 +3,14 @@
 use atto_compiler::{
     ast::Type,
     check::{self, callable_ir::CallableSignature},
-    lexer, parser::Parser,
+    lexer,
+    parser::Parser,
 };
 
 fn parse(src: &str) -> atto_compiler::ast::Program {
     Parser::new(lexer::lex(src).expect("lexer"))
-        .parse_program().expect("source callable syntax")
+        .parse_program()
+        .expect("source callable syntax")
 }
 fn err(src: &str) -> atto_compiler::diag::Diagnostic {
     atto_compiler::compile(src).expect_err("unsupported callable or invalid syntax")
@@ -17,10 +19,13 @@ const MAIN: &str = "pub fnc main(): int { return 42; }";
 
 #[test]
 fn scalar_callable_parameter_is_a_source_type_with_typed_metadata() {
-    let p = parse(&format!("pub fnc apply(fnc(int) -> int callback, int n): int {{ return n; }} {MAIN}"));
-    let Type::Callable(index) = p.funcs[0].params[0].ty else { panic!("expected callable type"); };
-    let signature = CallableSignature::from_source_type(
-        Type::Callable(index), &p.type_names, p.funcs[0].pos).unwrap();
+    let p = parse(&format!(
+        "pub fnc apply(fnc(int) -> int callback, int n): int {{ return n; }} {MAIN}"
+    ));
+    let Type::Callable(index) = p.funcs[0].params[0].ty else {
+        panic!("expected callable type");
+    };
+    let signature = CallableSignature::from_source_type(Type::Callable(index), &p.type_names, p.funcs[0].pos).unwrap();
     assert_eq!(signature.params, [Type::Int]);
     assert_eq!(signature.result, Type::Int);
     assert_eq!(signature.source_spelling(), "fnc(int)->int");
@@ -45,8 +50,7 @@ fn identical_source_signatures_are_interned_structurally() {
 #[test]
 fn zero_parameter_void_callback_is_a_well_formed_source_type() {
     let p = parse(&format!("pub fnc schedule(fnc()->void callback): int {{ return 1; }} {MAIN}"));
-    let signature = CallableSignature::from_source_type(
-        p.funcs[0].params[0].ty, &p.type_names, p.funcs[0].pos).unwrap();
+    let signature = CallableSignature::from_source_type(p.funcs[0].params[0].ty, &p.type_names, p.funcs[0].pos).unwrap();
     assert!(signature.params.is_empty());
     assert_eq!(signature.result, Type::Void);
 }
@@ -56,8 +60,13 @@ fn callable_return_type_and_annotated_binding_are_retained_by_parser() {
     let f = parse(&format!("pub fnc factory(): fnc(int)->int {{ return 0; }} {MAIN}"));
     assert!(matches!(f.funcs[0].ret, Type::Callable(_)));
     let b = parse("pub fnc main(): int { val callback: fnc(int)->int = |n| -> n + 1; return 0; }");
-    let atto_compiler::ast::Stmt::Bind { ty: Some(Type::Callable(_)), .. } =
-        &b.funcs[0].body[0] else { panic!("typed callable binding was not parsed"); };
+    let atto_compiler::ast::Stmt::Bind {
+        ty: Some(Type::Callable(_)),
+        ..
+    } = &b.funcs[0].body[0]
+    else {
+        panic!("typed callable binding was not parsed");
+    };
 }
 
 #[test]
@@ -75,9 +84,13 @@ fn callable_value_source_signatures_fail_closed_before_guest_emission() {
 
 #[test]
 fn invalid_parameter_profiles_are_not_silently_accepted() {
-    for t in ["fnc(void)->int", "fnc(Option<int>)->int",
-        "fnc(fnc(int)->int)->int", "fnc(int)->Option<int>",
-        "fnc(int)->fnc(int)->int"] {
+    for t in [
+        "fnc(void)->int",
+        "fnc(Option<int>)->int",
+        "fnc(fnc(int)->int)->int",
+        "fnc(int)->Option<int>",
+        "fnc(int)->fnc(int)->int",
+    ] {
         let src = format!("pub fnc apply({t} cbx): int {{ return 0; }} {MAIN}");
         let d = err(&src);
         assert_eq!(d.code, "E_UNSUPPORTED_TYPE", "{t}: {d}");
@@ -104,8 +117,13 @@ fn syntax_requires_arrow_and_result_type() {
 fn direct_ast_cannot_forge_callable_metadata_or_indices() {
     let p = parse(&format!("pub fnc apply(fnc(int)->int callback): int {{ return 0; }} {MAIN}"));
     let t = p.funcs[0].params[0].ty;
-    for forged in ["fnc(bool)->int", "fnc(void)->int", "fnc(int)->nope",
-        "fnc(int,)->int", "fnc(int)->int trailing"] {
+    for forged in [
+        "fnc(bool)->int",
+        "fnc(void)->int",
+        "fnc(int)->nope",
+        "fnc(int,)->int",
+        "fnc(int)->int trailing",
+    ] {
         let mut names = p.type_names.clone();
         names[0].0 = forged.into();
         let result = CallableSignature::from_source_type(t, &names, p.funcs[0].pos);
@@ -115,10 +133,18 @@ fn direct_ast_cannot_forge_callable_metadata_or_indices() {
             assert_eq!(result.unwrap_err().code, "E_UNSUPPORTED_TYPE", "{forged}");
         }
     }
-    assert_eq!(CallableSignature::from_source_type(Type::Callable(9999),
-        &p.type_names, p.funcs[0].pos).unwrap_err().code, "E_UNSUPPORTED_TYPE");
-    assert_eq!(CallableSignature::from_source_type(Type::Int,
-        &p.type_names, p.funcs[0].pos).unwrap_err().code, "E_TYPE");
+    assert_eq!(
+        CallableSignature::from_source_type(Type::Callable(9999), &p.type_names, p.funcs[0].pos)
+            .unwrap_err()
+            .code,
+        "E_UNSUPPORTED_TYPE"
+    );
+    assert_eq!(
+        CallableSignature::from_source_type(Type::Int, &p.type_names, p.funcs[0].pos)
+            .unwrap_err()
+            .code,
+        "E_TYPE"
+    );
 }
 
 #[test]

@@ -18,8 +18,10 @@ fn ordinary_stdout_writes_do_not_require_a_suspends_modifier() {
     }"#;
     let bytes = compile(source).expect("stdout admission must be usable by an ordinary fnc");
     let expected = compile(explicit).expect("checked host print is already supported");
-    assert_eq!(bytes, expected,
-        "all admitted stdout spellings must reuse the typed nonparking print import");
+    assert_eq!(
+        bytes, expected,
+        "all admitted stdout spellings must reuse the typed nonparking print import"
+    );
 }
 
 #[test]
@@ -46,7 +48,6 @@ fn stdout_non_suspending_exception_is_not_generalized_to_other_streams() {
     ] {
         let source = format!("pub fnc main(): int {{ {statement} return 7; }}");
         let err = compile(&source).expect_err("other transports are not browser-backed");
-        assert!(matches!(err.code, "E_UNSUPPORTED" | "E_SYNTAX"),
-            "{statement}: {err}");
+        assert!(matches!(err.code, "E_UNSUPPORTED" | "E_SYNTAX"), "{statement}: {err}");
     }
 }

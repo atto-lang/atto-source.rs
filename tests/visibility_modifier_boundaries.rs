@@ -97,8 +97,5 @@ fn nested_linkage_modifiers_cannot_escape_their_own_scopes() {
         "define class C as\n external fnc host_clock_ns(): int;\nend\npub fnc main(): int { return 0; }\n",
         "E_SYNTAX",
     );
-    reject(
-        "pub fnc main(): int { external fnc host_clock_ns(): int; return 0; }",
-        "E_SYNTAX",
-    );
+    reject("pub fnc main(): int { external fnc host_clock_ns(): int; return 0; }", "E_SYNTAX");
 }
