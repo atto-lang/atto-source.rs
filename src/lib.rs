@@ -8,6 +8,9 @@
 
 pub mod ast;
 pub mod collection_types;
+/// Host-only canonical Record and nominal Struct static-slot layout plans.
+/// No guest ABI, allocation or Struct parsing is enabled by this module.
+pub mod record_struct_layout;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
