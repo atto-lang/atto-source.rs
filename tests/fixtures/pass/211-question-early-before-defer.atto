@@ -1,0 +1,16 @@
+// expect-exit: 49
+// A ? before defer registration returns Err without running a later defer.
+fnc fail(): Result<int,Error> { return Err(Error("early")); }
+fnc checked(): Result<int,Error> {
+  val Result<int,Error> r = fail();
+  val int n = r?;
+  defer || -> { stdio.println("UNREGISTERED"); };
+  return Ok(n);
+}
+pub fnc main(): int {
+  val Result<int,Error> r = checked();
+  match r over
+    on Ok(n) -> { return 0; }
+    on Err(e) -> { return 49; }
+  end
+}
