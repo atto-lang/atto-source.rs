@@ -86,7 +86,8 @@ fn duplicate_ids_and_spoofed_qualified_segments_are_rejected() {
     graph[1].id.namespace="../animals".into();
     assert_code(&graph,"E_NAMESPACE");
     graph=allowed();
-    graph[1].direct_parents.push(graph[0].id.clone());
+    let repeated_parent = graph[0].id.clone();
+    graph[1].direct_parents.push(repeated_parent);
     assert_code(&graph,"E_DUPLICATE");
 }
 #[test]
