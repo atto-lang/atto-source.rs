@@ -1,11 +1,14 @@
 //! Executable compiler-origin scalar loan lifecycle facts, not user-authored
 //! Polonius grants. The closed diagnostic verifier cannot authorize codegen.
 use atto_compiler::{
-    check::{self, typed_mir_census::{audit_scalar_loan_lifecycle, ScalarLoanEventKind},
-        TStmt, TExpr, TE},
     ast::Type,
-    lexer, parser::Parser,
-    compile,
+    check::{
+        self,
+        typed_mir_census::{audit_scalar_loan_lifecycle, ScalarLoanEventKind},
+        TExpr, TStmt, TE,
+    },
+    compile, lexer,
+    parser::Parser,
 };
 fn typed(source: &str) -> check::TProgram {
     let ast = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
@@ -29,7 +32,7 @@ fn real_checked_scalar_reader_issues_uses_and_ends_before_owner_mutation() {
     assert!(events[1].instruction_ordinal < events[2].instruction_ordinal);
     assert_eq!(events[0].loan_id, events[1].loan_id);
     assert_eq!(events[1].loan_id, events[2].loan_id);
-    assert_eq!(compile(shared_source()).unwrap()[..8], [0,97,115,109,1,0,0,0]);
+    assert_eq!(compile(shared_source()).unwrap()[..8], [0, 97, 115, 109, 1, 0, 0, 0]);
 }
 #[test]
 fn exclusive_write_is_checked_as_a_distinct_borrow_use() {
@@ -64,18 +67,38 @@ fn conflicting_write_inserted_before_proven_end_fails_closed() {
     let mut p = typed(shared_source());
     let func = &mut p.funcs[0];
     let insert_at = func.body.iter().position(|s| matches!(s, TStmt::ScalarLoanEnd { .. })).unwrap();
-    func.body.insert(insert_at, TStmt::Set(0, TE { e: TExpr::I64(41), ty: Type::Int }));
+    func.body.insert(
+        insert_at,
+        TStmt::Set(
+            0,
+            TE {
+                e: TExpr::I64(41),
+                ty: Type::Int,
+            },
+        ),
+    );
     assert_eq!(audit_scalar_loan_lifecycle(&p).unwrap_err().code, "E_TYPED_MIR_CENSUS_INCOMPLETE");
 }
 #[test]
 fn duplicated_loan_id_and_mismatched_owner_are_rejected() {
     let mut p = typed(shared_source());
-    let issue = p.funcs[0].body.iter().find(|s| matches!(s, TStmt::ScalarBorrowIssue { .. })).unwrap().clone();
+    let issue = p.funcs[0]
+        .body
+        .iter()
+        .find(|s| matches!(s, TStmt::ScalarBorrowIssue { .. }))
+        .unwrap()
+        .clone();
     p.funcs[0].body.insert(2, issue);
     assert_eq!(audit_scalar_loan_lifecycle(&p).unwrap_err().code, "E_TYPED_MIR_CENSUS_INCOMPLETE");
     let mut p = typed(shared_source());
-    let item = p.funcs[0].body.iter_mut().find(|s| matches!(s, TStmt::ScalarLoanUse { .. })).unwrap();
-    if let TStmt::ScalarLoanUse { owner_slot, .. } = item { *owner_slot = 999; }
+    let item = p.funcs[0]
+        .body
+        .iter_mut()
+        .find(|s| matches!(s, TStmt::ScalarLoanUse { .. }))
+        .unwrap();
+    if let TStmt::ScalarLoanUse { owner_slot, .. } = item {
+        *owner_slot = 999;
+    }
     assert_eq!(audit_scalar_loan_lifecycle(&p).unwrap_err().code, "E_TYPED_MIR_CENSUS_INCOMPLETE");
 }
 #[test]
@@ -91,7 +114,10 @@ fn effectful_calls_and_conditional_loans_are_not_authorized_by_flat_census() {
     let p = typed(with_call);
     assert_eq!(audit_scalar_loan_lifecycle(&p).unwrap_err().code, "E_TYPED_MIR_CENSUS_UNSUPPORTED");
     let branch = include_str!("fixtures/pass/ownership-borrow-branch-release.atto");
-    assert_eq!(audit_scalar_loan_lifecycle(&typed(branch)).unwrap_err().code, "E_TYPED_MIR_CENSUS_UNSUPPORTED");
+    assert_eq!(
+        audit_scalar_loan_lifecycle(&typed(branch)).unwrap_err().code,
+        "E_TYPED_MIR_CENSUS_UNSUPPORTED"
+    );
 }
 #[test]
 fn actual_unsafe_program_is_rejected_before_diagnostic_manifest() {
