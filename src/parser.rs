@@ -1762,8 +1762,7 @@ impl Parser {
                 // Terminal directional value capture follows a real
                 // suspending identity-await pipeline stage. This binder
                 // creates a normal local, not a second I/O operation.
-                if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
-                    && matches!(self.word_at(2), Some("val" | "let" | "const")) {
+                if self.starts_directional_capture() {
                     return self.parse_await_pipeline_capture(e, expr_start);
                 }
                 if matches!(self.peek(), Tok::PlusPlus | Tok::MinusMinus) {
@@ -1806,8 +1805,7 @@ impl Parser {
         // This is legal only for the existing identity-await pipeline
         // subset; it cannot turn an arbitrary '>> val' into assignment.
         if let Some(value) = value.as_ref() {
-            if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
-                && matches!(self.word_at(2), Some("val" | "let" | "const")) {
+            if self.starts_directional_capture() {
                 if self.in_generator {
                     return Err(Diagnostic::new(pos, "E_RETURN",
                         "generators cannot return a captured pipeline value"));
@@ -1847,6 +1845,49 @@ impl Parser {
         }
     }
 
+    /// Recognize contiguous directional '>>', followed by an optional
+    /// separate '=' and a fresh declaration binder. Arithmetic and generic
+    /// angle brackets must not be mistaken for contextual capture.
+    fn starts_directional_capture(&self) -> bool {
+        if *self.peek() != Tok::Gt || *self.peek_at(1) != Tok::Gt {
+            return false;
+        }
+        let first = self.toks[self.i].pos;
+        let second = self.toks[self.i + 1].pos;
+        if first.line != second.line || first.col.checked_add(1) != Some(second.col) {
+            return false;
+        }
+        let binder_offset = if *self.peek_at(2) == Tok::Assign { 3 } else { 2 };
+        matches!(self.word_at(binder_offset), Some("val" | "let" | "const"))
+    }
+
+    /// Only a *spaced* optional '=' may follow a directional capture:
+    /// '>> = val x' aliases '>> val x'. Contiguous '>>=' and '>> =='
+    /// remain distinct, invalid spellings; this is never an assignment.
+    fn eat_optional_directional_bind_equal(&mut self) -> R<()> {
+        if *self.peek() == Tok::EqEq {
+            return Err(Diagnostic::new(self.pos(), "E_IO_SYNTAX",
+                "'==' is equality, not a directional binding marker"));
+        }
+        if *self.peek() != Tok::Assign {
+            return Ok(());
+        }
+        let equal_at = self.pos();
+        let second_gt = self.toks[self.i - 1].pos;
+        if equal_at.line == second_gt.line
+            && second_gt.col.checked_add(1) == Some(equal_at.col)
+        {
+            return Err(Diagnostic::new(equal_at, "E_IO_SYNTAX",
+                "contiguous '>>=' is not a capture; use '>> = val' or '>> val'"));
+        }
+        self.advance();
+        if matches!(self.peek(), Tok::Assign | Tok::EqEq) {
+            return Err(Diagnostic::new(self.pos(), "E_IO_SYNTAX",
+                "directional capture accepts at most one optional '='"));
+        }
+        Ok(())
+    }
+
     /// A terminal directional binding after explicit suspension lowers to
     /// a standard local binding. The checker enforces effects, types, moves,
     /// and scope exactly as it does for regular initialized declarations.
@@ -1864,6 +1905,7 @@ impl Parser {
                 "terminal '>> val/let' requires an explicit suspending await pipeline"));
         }
         self.expect_io_double(Tok::Gt, ">>")?;
+        self.eat_optional_directional_bind_equal()?;
         let kind = if self.eat_word("val") { BindKind::Val }
             else if self.eat_word("let") { BindKind::Let }
             else if self.eat_word("const") {
@@ -2074,6 +2116,7 @@ impl Parser {
             return Err(unsupported(at, "nonblocking I/O without a typed await continuation"));
         }
         self.expect_io_double(Tok::Gt, ">>")?;
+        self.eat_optional_directional_bind_equal()?;
         let (future_inner, resolved_type, propagated) = if self.eat(&Tok::LParen) {
             let bound = self.parse_io_resolved_binder_type()?;
             self.expect_io_double(Tok::Lt, "<<")?;
@@ -2109,6 +2152,7 @@ impl Parser {
             let propagated = self.parse_io_inline_await_lambda()?;
             let _ = pending; // the Future binder is retained for checked lowering
             self.expect_io_double(Tok::Gt, ">>")?;
+        self.eat_optional_directional_bind_equal()?;
             let bound = self.parse_io_resolved_binder_type()?;
             (future, bound, propagated)
         } else if self.is_word("val") || self.is_word("let") || self.is_word("const") {
@@ -2126,6 +2170,7 @@ impl Parser {
             self.expect(Tok::PipeGt, "'|>' after a Future<T> read binder")?;
             let propagated = self.parse_io_inline_await_lambda()?;
             self.expect_io_double(Tok::Gt, ">>")?;
+        self.eat_optional_directional_bind_equal()?;
             let bound = self.parse_io_resolved_binder_type()?;
             (inner, bound, propagated)
         } else {
@@ -2843,12 +2888,7 @@ impl Parser {
                 // Do not reinterpret a lambda tail such as "await v + 1"
                 // as arithmetic performed *outside* the lambda. General
                 // lambda bodies require real callable-value semantics.
-                let terminal_capture = *self.peek() == Tok::Gt
-                    && *self.peek_at(1) == Tok::Gt
-                    && matches!(self.word_at(2), Some("val" | "let" | "const"))
-                    && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
-                    && self.toks[self.i].pos.col.checked_add(1) ==
-                       Some(self.toks[self.i + 1].pos.col);
+                let terminal_capture = self.starts_directional_capture();
                 let stage_boundary = terminal_capture || matches!(self.peek(),
                     Tok::PipeGt | Tok::Semi | Tok::RParen | Tok::RBracket |
                     Tok::RBrace | Tok::Comma | Tok::Eof | Tok::Question);
@@ -2941,11 +2981,7 @@ impl Parser {
             // '>> val' cannot be parsed as two numeric comparisons.
             // A terminal value binder is only legal after the explicit
             // suspending pipeline stage handled at statement level.
-            if *self.peek() == Tok::Gt && *self.peek_at(1) == Tok::Gt
-                && matches!(self.word_at(2), Some("val" | "let" | "const"))
-                && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
-                && self.toks[self.i].pos.col.checked_add(1) ==
-                   Some(self.toks[self.i + 1].pos.col) {
+            if self.starts_directional_capture() {
                 // Leave the declaration to the statement or return parser.
                 // Reject there unless it followed a verified suspending
                 // identity-await pipeline. Erroring here rejects *valid*
