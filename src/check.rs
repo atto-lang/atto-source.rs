@@ -378,6 +378,9 @@ struct Local {
     /// Remains an alias, but its source loan has ended at a compiler-proven
     /// straight-line last-use boundary. A subsequent alias access is rejected.
     borrow_retired: bool,
+    /// This conservative NLL slice requires an actual checked alias use.
+    /// Unused aliases retain their prior lexical conflict behavior.
+    borrow_used: bool,
 }
 
 struct FnCx<'a> {
@@ -1313,6 +1316,7 @@ fn body_check(
             mail: Some(payload),
             borrow: None,
             borrow_retired: false,
+            borrow_used: false,
         });
     } else {
         for (i, (n, t, m)) in named.iter().enumerate() {
@@ -1324,6 +1328,7 @@ fn body_check(
                 mail: None,
                 borrow: None,
                 borrow_retired: false,
+            borrow_used: false,
             });
         }
     }
@@ -1483,6 +1488,7 @@ impl<'a> FnCx<'a> {
             mail: None,
             borrow: None,
             borrow_retired: false,
+            borrow_used: false,
         });
         Ok(slot)
     }
@@ -1586,6 +1592,7 @@ impl<'a> FnCx<'a> {
             name: name.to_string(), slot, ty, mutable: false, mail: None,
             borrow: Some(if exclusive { BorrowKind::Exclusive } else { BorrowKind::Shared }),
             borrow_retired: false,
+            borrow_used: false,
         });
         // The loan is a source-level reference, not a copy. The read and
         // write-through operations subsequently lower directly to the owner's
@@ -1613,6 +1620,15 @@ impl<'a> FnCx<'a> {
     /// straight-line AST statement for future uses. Restricted to aliases
     /// declared in THIS scope; outer aliases may be used after this block.
     /// No loop backedge, exception, async, or unknown control flow is inferred.
+    fn mark_scalar_alias_used(&mut self, name: &str) {
+        if let Some(local) = self.scopes.iter_mut().rev()
+            .flat_map(|scope| scope.iter_mut().rev())
+            .find(|local| local.name == name && local.borrow.is_some())
+        {
+            local.borrow_used = true;
+        }
+    }
+
     fn retire_dead_scalar_loans(&mut self, tail: &[Stmt]) {
         if self.loops != 0 || self.scopes.last().is_none_or(|s| s.len() > 32) {
             return;
@@ -1620,6 +1636,7 @@ impl<'a> FnCx<'a> {
         let current = self.scopes.last_mut().expect("active scope");
         for local in current {
             if local.borrow.is_some()
+                && local.borrow_used
                 && !local.borrow_retired
                 && scalar_lifetime::proven_dead_after_boundary(tail, &local.name)
             {
@@ -1699,6 +1716,7 @@ impl<'a> FnCx<'a> {
                             format!("cannot assign {} through borrow of {}", self.tn(v.ty), self.tn(ty))));
                     }
                     // Assignment changes the referent, NOT the alias binding.
+                    self.mark_scalar_alias_used(name);
                     return Ok(TStmt::Set(slot, v));
                 }
                 self.ensure_unloaned(slot, *pos)?;
@@ -2773,9 +2791,13 @@ impl<'a> FnCx<'a> {
                         return Err(Diagnostic::new(pos, "E_BORROW",
                             format!("direct access to '{name}' is forbidden while its exclusive loan is live")));
                     }
+                    let (slot, ty, is_borrow) = (l.slot, l.ty, l.borrow.is_some());
+                    if is_borrow {
+                        self.mark_scalar_alias_used(name);
+                    }
                     TE {
-                        e: TExpr::Local(l.slot),
-                        ty: l.ty,
+                        e: TExpr::Local(slot),
+                        ty,
                     }
                 }
                 None if self.g.names.contains_key(name) => {
