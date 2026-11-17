@@ -138,3 +138,27 @@ fn scalar_preflight_preserves_float_unary_mixed_numeric_and_string_concatenation
 fn scalar_preflight_preserves_int_division_rejection() {
     assert_eq!(analyze("let n=1/2;").unwrap_err().code,"E_TYPE");
 }
+
+#[test]
+fn invalid_map_key_contract_rejects_even_without_entries() {
+    for source in [
+        "let Map<float,string> values = {};",
+        "let Map<Record,int> values = {};",
+        "let List<Map<float,int>> values = [];",
+        "let Array<Map<Record,bool>> values = [];",
+        "let Map<int,Map<Record,int>> values = {1 => {}};",
+    ] {
+        assert_eq!(analyze(source).unwrap_err().code,"E_MAP_KEY","{source}");
+    }
+    assert_eq!(analyze("let Map<int,string> values = {};").unwrap().len(),1);
+}
+
+#[test]
+fn direct_mutation_of_tracked_owned_record_fails_closed() {
+    for body in [
+        "let rec={age:1};\nrec.age=2;",
+        "let Record rec={age:1};\nrec.age=2;",
+    ] {
+        assert_eq!(analyze(body).unwrap_err().code,"E_OWNERSHIP","{body}");
+    }
+}
