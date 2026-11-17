@@ -29,6 +29,7 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         state_write_depth: 0,
         uw: None,
         in_recover: false,
+        active_traps: 0,
     };
 
     // new(type_id: i32, arg: i64) -> i64 generation-fenced handle.
