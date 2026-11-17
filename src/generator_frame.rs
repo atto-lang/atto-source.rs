@@ -99,7 +99,7 @@ impl GeneratorHandle {
     /// Zero is never a live handle. Reserve the first 8 arena bytes so a
     /// nonzero offset can never alias a null or uninitialized handle.
     pub fn new(offset: u32, generation: u32, pos: Pos) -> Result<Self, Diagnostic> {
-        if offset < FRAME_ALIGNMENT || offset % FRAME_ALIGNMENT != 0
+        if offset < FRAME_ALIGNMENT || !offset.is_multiple_of(FRAME_ALIGNMENT)
             || offset >= MAX_GUEST_ARENA_BYTES || generation == 0 {
             return Err(frame_error(pos,
                 "invalid generator arena offset/alignment or zero generation"));
