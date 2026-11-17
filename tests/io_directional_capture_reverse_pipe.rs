@@ -129,3 +129,22 @@ fn contextual_equals_does_not_erase_result_or_option_payload() {
         assert_eq!(diag.code, "E_TYPE", "{operation}: {diag}");
     }
 }
+
+
+#[test]
+fn marked_nb_continuation_requires_a_fresh_typed_target_even_without_guest_abi() {
+    // Bypass the broad source I/O preflight to test the parser's own
+    // fail-closed invariant. A malformed marked capture cannot masquerade
+    // as a valid-but-unimplemented stdin Future.
+    use atto_compiler::{lexer::lex, parser::Parser};
+    for statement in [
+        "nb stdio.in >> = existing_variable;",
+        "nb stdio.in >> = ;",
+        "nb stdio.in >> = = Future<string> x |> |f| -> await f >> val string line;",
+    ] {
+        let source = program(statement);
+        let d = Parser::new(lex(&source).unwrap())
+            .parse_program().expect_err("invalid marked binder must be rejected");
+        assert_eq!(d.code, "E_IO_SYNTAX", "{statement}: {d}");
+    }
+}
