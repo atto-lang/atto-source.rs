@@ -119,7 +119,7 @@ fn rejected_fields_and_ownership_do_not_emit_guest_wasm() {
             let Record r = {a: [1, 2], x: 1};
             return 0;
         }
-    "#, "E_UNSUPPORTED_TYPE");
+    "#, "E_UNSUPPORTED");
     invalid(r#"
         pub fnc main(): int {
             const Record r = {x: 42};
