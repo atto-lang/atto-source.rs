@@ -23,6 +23,8 @@ pub mod any_type_lower;
 pub mod shape_lower;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
+/// Qualified-identity prelink policy; no foreign executable linkage.
+pub mod nominal_link;
 /// Explicitly unlinked foreign prototypes and source-only exports.
 pub mod visibility_lower;
 /// Direct routine-only and statically specialized named callbacks.
