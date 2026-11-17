@@ -101,7 +101,8 @@ impl<'a> ProofBuilder<'a> {
                             // Only the real typed handle slot can be a source
                             // for deref!/unref!: an ordinary class-typed
                             // local never qualifies, even if names shadow.
-                            if let TExpr::Local(handle) = value.e {
+                            if let TExpr::Local(handle) = &value.e {
+                                let handle = *handle;
                                 if self.slot_type(handle) == Some(Type::CheckedRef(c)) {
                                     if depth == 0 {
                                         tails = vec![self.node(Action::Unref { handle }, &tails)?];
