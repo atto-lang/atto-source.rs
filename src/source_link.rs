@@ -9,12 +9,13 @@
 //! still unsupported; method-copy composition is the only admitted ABI.
 //!
 //! This is intentionally NOT a generic package manager or binary Wasm linker.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{self, Tok, Token};
 use crate::nominal_link::{self, LinkClass, NominalId};
 use crate::nominal_lower::{ClassVisibility, Hierarchy};
+use crate::source_digest;
 type R<T> = Result<T, Diagnostic>;
 const MAX_UNITS: usize = 32;
 const MAX_CLASSES: usize = 96;
@@ -28,6 +29,86 @@ pub struct SourceUnit<'a> {
     pub namespace: &'a str,
     pub module: &'a str,
     pub source: &'a str,
+}
+
+/// Build-provided, versioned source pin. Digest binds exactly the UTF-8 bytes
+/// later passed to the compiler, but is NOT a signature of publisher authority.
+#[derive(Clone, Debug)]
+pub struct PinnedSourceUnit<'a> {
+    pub unit: SourceUnit<'a>,
+    pub package_version: &'a str,
+    pub source_sha256: &'a str,
+}
+fn valid_version(version: &str) -> bool {
+    !version.is_empty() && version.len() <= 64 &&
+    version.as_bytes()[0].is_ascii_alphanumeric() &&
+    version.bytes().all(|b|b.is_ascii_alphanumeric() || matches!(b,b'.' | b'+' | b'-' | b'_')) &&
+    !version.contains("..")
+}
+fn leb(out: &mut Vec<u8>, mut value: usize) {
+    while value >= 128 {
+        out.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+fn text_field(out: &mut Vec<u8>, value: &str) {
+    leb(out,value.len());
+    out.extend_from_slice(value.as_bytes());
+}
+/// Verify the complete compiler-owned input catalogue BEFORE symbol binding.
+/// This single-executable profile requires one locked version per package;
+/// two versions of one package in one link are rejected as ambiguous.
+pub fn compile_pinned(units: &[PinnedSourceUnit<'_>], entry: usize) -> R<Vec<u8>> {
+    if units.is_empty() || units.len() > MAX_UNITS || entry >= units.len() {
+        return Err(err(Pos{line:1,col:1},"E_SOURCE_LIMIT","invalid pinned source catalogue"));
+    }
+    let mut versions: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut keyed: BTreeMap<UnitKey, (&str, &str)> = BTreeMap::new();
+    let mut plain = Vec::with_capacity(units.len());
+    for pinned in units {
+        let unit = &pinned.unit;
+        let pos=Pos{line:1,col:1};
+        if !valid(unit.package) || !valid(unit.namespace) || !valid(unit.module) ||
+            !valid_version(pinned.package_version) {
+            return Err(err(pos,"E_NAMESPACE",
+                "source pin has an invalid package, module, namespace or package version"));
+        }
+        if !source_digest::valid_digest(pinned.source_sha256) {
+            return Err(err(pos,"E_SOURCE_DIGEST","source pin requires 64 lowercase SHA-256 hex characters"));
+        }
+        if source_digest::sha256_hex(unit.source.as_bytes()) != pinned.source_sha256 {
+            return Err(err(pos,"E_SOURCE_DIGEST","source bytes do not match the pinned SHA-256"));
+        }
+        if versions.insert(unit.package,pinned.package_version)
+            .is_some_and(|previous| previous != pinned.package_version) {
+            return Err(err(pos,"E_PACKAGE_VERSION",
+                "multiple versions of one package cannot share the closed-program link"));
+        }
+        if keyed.insert(UnitKey::of(unit),(pinned.package_version,pinned.source_sha256)).is_some() {
+            return Err(err(pos,"E_DUPLICATE","duplicated pinned source-unit identity"));
+        }
+        plain.push(unit.clone());
+    }
+    let mut bytes=compile_linked(&plain,entry)?;
+    // Deterministic output receipt, identity domain 0 = local pinned source,
+    // NOT a signed or independently authenticated published module.
+    let mut section=Vec::new();
+    text_field(&mut section,"atto.source.catalogue.v1");
+    section.push(0);
+    leb(&mut section,keyed.len());
+    for (unit,(version,digest)) in keyed {
+        for field in [&unit.package,&unit.namespace,&unit.module,version,digest] {
+            text_field(&mut section,field);
+        }
+    }
+    if bytes.len().saturating_add(section.len()).saturating_add(8) > crate::wasm::MAX_OUTPUT {
+        return Err(err(Pos{line:1,col:1},"E_OUTPUT_LIMIT","linked pinned source metadata exceeds guest budget"));
+    }
+    bytes.push(0);
+    leb(&mut bytes,section.len());
+    bytes.extend(section);
+    Ok(bytes)
 }
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct UnitKey {
@@ -98,6 +179,8 @@ struct Parsed {
     tokens: Vec<Token>,
     imports: Vec<Import>,
     decls: Vec<Decl>,
+    /// Only checked class headers are definition/extends/permits positions.
+    class_header_positions: BTreeSet<usize>,
     emitted: Vec<Token>,
 }
 fn list(t: &[Token], index: &mut usize) -> R<Vec<String>> {
@@ -235,6 +318,7 @@ fn parse(unit: &SourceUnit<'_>, entry: bool) -> R<Parsed> {
     }
     let first_source=i;
     let mut decls=Vec::new();
+    let mut class_header_positions=BTreeSet::new();
     let mut exports=BTreeMap::new();
     let mut braces=0usize;
     while i<tokens.len() {
@@ -262,6 +346,11 @@ fn parse(unit: &SourceUnit<'_>, entry: bool) -> R<Parsed> {
                 if decls.iter().any(|c:&Decl|c.name==decl.name) {
                     return Err(err(decl.pos,"E_DUPLICATE","duplicate class in one source unit"));
                 }
+                let header_end=(start..end).find(|&at|word(&tokens,at,"as"))
+                    .ok_or_else(||err(tokens[start].pos,"E_SYNTAX","class header lacks 'as'"))?;
+                for at in start..header_end {
+                    class_header_positions.insert(at);
+                }
                 decls.push(decl);
                 i=end;
                 continue;
@@ -285,8 +374,11 @@ fn parse(unit: &SourceUnit<'_>, entry: bool) -> R<Parsed> {
                 "E_UNBOUND","export must name a class declared in the same source unit"))?;
         decl.visibility=*vis;
     }
+    // Remap original token offsets after stripping leading import headers.
+    let class_header_positions=class_header_positions.into_iter()
+        .filter_map(|at|at.checked_sub(first_source)).collect();
     Ok(Parsed {key,tokens:tokens[first_source..].to_vec(),imports,decls,
-        emitted:Vec::new()})
+        class_header_positions,emitted:Vec::new()})
 }
 fn identity(key: &UnitKey, name: &str) -> NominalId {
     NominalId {package:key.package.clone(),namespace:key.namespace.clone(),
@@ -394,19 +486,15 @@ pub fn compile_linked(units: &[SourceUnit<'_>], entry: usize) -> R<Vec<u8>> {
                 if let Some(id)=symbols.get(name) {
                     if at>0 && matches!(&parsed.tokens[at-1].tok, Tok::Dot) {
                         // Class spelling in a field/method position is not a type use.
-                    } else {
-                        if at>0 && (word(&parsed.tokens,at-1,"val") ||
-                            word(&parsed.tokens,at-1,"let") ||
-                            word(&parsed.tokens,at-1,"fnc") ||
-                            word(&parsed.tokens,at-1,"method") ||
-                            matches!(&parsed.tokens[at-1].tok,
-                                Tok::Ident(t) if matches!(t.as_str(),
-                                    "int" | "bool" | "float" | "string" | "void") ||
-                                    symbols.contains_key(t))) {
-                            return Err(err(token.pos,"E_NAMESPACE",
-                                "class/import alias cannot be shadowed by a value or callable binder"));
-                        }
+                    } else if parsed.class_header_positions.contains(&at) ||
+                        (at>0 && word(&parsed.tokens,at-1,"new")) {
+                        // Exact nominal declaration/edge or construction site.
+                        // Do not guess that an unrelated bare identifier is a
+                        // class use; the typed symbol linker must handle that.
                         adjusted.tok=Tok::Ident(mangled[id].clone());
+                    } else {
+                        return Err(err(token.pos,"E_NAMESPACE",
+                            "ambiguous class/import alias use requires a verified nominal context; value or callable shadowing is forbidden"));
                     }
                 }
             }
