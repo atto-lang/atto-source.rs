@@ -73,3 +73,29 @@ fn package_mode_rejects_untrusted_manifest_and_traversal_without_guest() {
     assert_eq!(result.status.code(),Some(1));
     assert!(!out.exists(),"invalid manifest must not create output artifact");
 }
+
+#[test]
+fn discovered_cli_package_root_compiles_and_matches_explicit_mode() {
+    let w=Workspace::new();
+    let entry=w.root.join("src/main.atto");
+    let explicit=w.root.join("explicit.wasm");
+    let automatic=w.root.join("auto.wasm");
+    let a=cli(&["--package-root",w.root.to_str().unwrap(),
+        "--entry","src/main.atto","-o",explicit.to_str().unwrap()]);
+    let b=cli(&["--package",entry.to_str().unwrap(),
+        "-o",automatic.to_str().unwrap()]);
+    assert!(a.status.success(),"{}",String::from_utf8_lossy(&a.stderr));
+    assert!(b.status.success(),"{}",String::from_utf8_lossy(&b.stderr));
+    assert_eq!(fs::read(explicit).unwrap(),fs::read(automatic).unwrap());
+}
+#[test]
+fn discovered_cli_never_falls_back_to_untrusted_single_file_mode() {
+    let w=Workspace::new();
+    fs::remove_file(w.root.join(".atto.pkg.toml")).unwrap();
+    let entry=w.root.join("src/main.atto");
+    let output=w.root.join("unexpected.wasm");
+    let result=cli(&["--package",entry.to_str().unwrap(),
+        "-o",output.to_str().unwrap()]);
+    assert_eq!(result.status.code(),Some(1));
+    assert!(!output.exists());
+}
