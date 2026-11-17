@@ -41,6 +41,7 @@ const RESERVED: &[&str] = &[
     "implements",
     "impl",
     "import",
+    "export",
     "from",
     "as",
     "fnc",
@@ -545,6 +546,19 @@ impl Parser {
                 ));
             }
             decls += 1;
+            if self.is_word("export") {
+                if prog.parsed_exports.len() >= 128 {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "export budget exceeded"));
+                }
+                let (export, next) = crate::visibility_lower::parse_export_directive(&self.toks, self.i)?;
+                if prog.parsed_exports.iter().any(|e| e.name == export.name) {
+                    return Err(Diagnostic::new(export.pos, "E_DUPLICATE",
+                        format!("duplicate exported name '{}'", export.name)));
+                }
+                prog.parsed_exports.push(export);
+                self.i = next;
+                continue;
+            }
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
