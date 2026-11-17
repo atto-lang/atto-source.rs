@@ -185,12 +185,23 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
     // A token sweep cannot prove source-level class/function membership.
     let mut lowered = Vec::with_capacity(out.len() + exports.len());
     for j in 0..out.len() {
-        if word(&out, j, "define") && word(&out, j + 1, "class") {
-            if let Some(Tok::Ident(id)) = out.get(j + 2).map(|x| &x.tok) {
-                if exports.iter().any(|e| e.name == *id && e.kind == "class" &&
-                       e.visibility == Visibility::Public) &&
-                    !(j > 0 && word(&out, j - 1, "pub")) {
-                    lowered.push(Token { tok: Tok::Ident("pub".into()), pos: out[j].pos });
+        if word(&out, j, "define") {
+            let mut k = j + 1;
+            let already_pub = (j > 0 && word(&out, j - 1, "pub")) || word(&out, k, "pub");
+            if word(&out, k, "pub") { k += 1; }
+            if word(&out, k, "sealed") || word(&out, k, "final") {
+                k += 1;
+            } else if word(&out, k, "non") &&
+                out.get(k + 1).map(|x| &x.tok) == Some(&Tok::Minus) &&
+                word(&out, k + 2, "sealed") {
+                k += 3;
+            }
+            if word(&out, k, "class") {
+                if let Some(Tok::Ident(id)) = out.get(k + 1).map(|x| &x.tok) {
+                    if exports.iter().any(|e| e.name == *id && e.kind == "class" &&
+                           e.visibility == Visibility::Public) && !already_pub {
+                        lowered.push(Token { tok: Tok::Ident("pub".into()), pos: out[j].pos });
+                    }
                 }
             }
         }
