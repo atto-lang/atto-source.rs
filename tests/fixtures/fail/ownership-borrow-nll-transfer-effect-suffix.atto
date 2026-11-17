@@ -1,0 +1,10 @@
+// expect-error: E_BORROW
+pub fnc main(): int {
+  let number = 40;
+  let other = 1;
+  val reader = borrow! number;
+  val prior = copy! reader;
+  val consumed = take! other;
+  number = 42;
+  return number;
+}
