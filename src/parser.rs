@@ -1480,7 +1480,19 @@ impl Parser {
                 }
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
-                let value = if at_end { None } else { Some(self.parse_expr()?) };
+                let value = if at_end {
+                    None
+                } else {
+                    let first = self.parse_expr()?;
+                    // Top-level return commas are a checked sequence, not an
+                    // expression-level comma operator or a tuple constructor.
+                    // Preserve `::` body commas as *body* separators.
+                    if !self.erlang_body && *self.peek() == Tok::Comma {
+                        Some(self.parse_return_comma_sequence(first, pos)?)
+                    } else {
+                        Some(first)
+                    }
+                };
                 if self.in_generator && value.is_some() {
                     return Err(Diagnostic::new(pos, "E_RETURN",
                         "generators may terminate with 'return;' but cannot return a value"));
@@ -2717,6 +2729,44 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
+
+    /// Parse the extra top-level operands of `return a, b, ...;` and
+    /// `^ a, b, ...;` after the first complete expression. Reuses the
+    /// existing Sequence AST so checker, ownership and Wasm lowering are
+    /// identical to explicit `return seq a, b, ...;`.
+    ///
+    /// No tuple fallback, no silent comma operator and no speculative
+    /// backtracking into a different statement-body grammar.
+    fn parse_return_comma_sequence(&mut self, first: Expr, pos: Pos) -> R<Expr> {
+        self.enter()?;
+        let result = (|| -> R<Expr> {
+            let mut steps = vec![Stmt::Expr(first)];
+            loop {
+                if steps.len() >= MAX_MEMBERS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                        "too many return-sequence steps"));
+                }
+                self.expect(Tok::Comma, "',' between return-sequence values")?;
+                if matches!(self.peek(), Tok::Comma | Tok::Semi | Tok::RBrace | Tok::Eof)
+                    || matches!(self.word_at(0),
+                        Some("end" | "fi" | "done" | "else" | "elif" | "elseif"))
+                {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "missing expression after comma in return sequence"));
+                }
+                let value = self.parse_expr()?;
+                if *self.peek() != Tok::Comma {
+                    return Ok(Expr {
+                        kind: ExprKind::Sequence(steps, Box::new(value)),
+                        pos,
+                    });
+                }
+                steps.push(Stmt::Expr(value));
+            }
+        })();
+        self.leave();
+        result
+    }
 
     /// A bounded, lexical comma sequence: `(> a, b)`, `begin a, b end`,
     /// or statement-position `seq a, b;`. No tuple or comma operator.
