@@ -137,7 +137,7 @@ impl<'a> Scope<'a> {
         for statement in body {
             match statement {
                 Stmt::Bind {name,ty,init,pos,..} => {
-                    let annotated=ty.map(|t|annotation(*t,self.program,*pos))
+                    let annotated=ty.map(|t|annotation(t,self.program,*pos))
                         .transpose()?.flatten();
                     let actual=self.expression(init,annotated.as_ref(),0)?;
                     if annotated.as_ref().is_some_and(is_collection) && actual.is_none() {
