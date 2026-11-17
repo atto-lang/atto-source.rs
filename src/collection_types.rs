@@ -251,6 +251,11 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
                 typed_fields.push((field.clone(), child.ty.clone()));
                 children.push(child);
             }
+            // A Record is structurally keyed by its field-name/type set,
+            // not by the textual order of entries. Preserve *evaluation*
+            // order independently in `children`, but canonicalize the type
+            // shape for deterministic identity and AOT shape interning.
+            typed_fields.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
             Record(typed_fields)
         }
         ExprKind::Map(entries) => {
