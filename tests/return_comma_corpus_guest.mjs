@@ -12,8 +12,8 @@ const compiler=process.env.ATTOC, aot=process.env.ATTO_COMPILER_WASM,
       contract=process.env.ATTO_CONTRACT;
 assert.ok(compiler&&aot&&contract,'ATTOC, ATTO_COMPILER_WASM and ATTO_CONTRACT required');
 const suite=JSON.parse(await readFile(resolve(contract),'utf8'));
-assert.equal(suite.corpusRevision,2);
-assert.equal(suite.cases.length,37);
+assert.equal(suite.corpusRevision,3);
+assert.equal(suite.cases.length,38);
 const compilerBytes=await readFile(resolve(aot));
 assert.ok(WebAssembly.validate(compilerBytes),'AOT compiler is invalid Wasm');
 const compilerModule=new WebAssembly.Module(compilerBytes);
@@ -122,5 +122,5 @@ const summary={
 };
 console.log('ATTO_RETURN_CORPUS_RECEIPT='+JSON.stringify(summary));
 assert.equal(summary.failed,0,'conformance vectors contain incorrect compiler or normative expectations');
-assert.ok(summary.passed>=34,'unexpectedly few executed corpus cases');
-assert.equal(summary.passed+summary.unsupported,37);
+assert.ok(summary.passed>=35,'unexpectedly few executed corpus cases');
+assert.equal(summary.passed+summary.unsupported,38);
