@@ -1,7 +1,7 @@
 //! Checked nominal hierarchy metadata survives token method composition.
 //! The emitted identity domain is explicitly *local*; the WebAssembly custom
 //! section is never accepted as proof of a foreign package's type identity.
-use atto_compiler::{compile, lexer, nominal_lower::{self, Hierarchy}};
+use atto_compiler::{compile, lexer, nominal_lower::{self, Hierarchy, ClassVisibility}};
 
 fn take_leb(bytes: &[u8], cursor: &mut usize) -> usize {
     let mut value = 0usize;
@@ -47,7 +47,7 @@ fn hierarchy_section(wasm: &[u8]) -> Option<Vec<u8>> {
 struct Entry {
     name: String,
     status: u8,
-    public: u8,
+    visibility: u8,
     parents: Vec<String>,
     permits: Vec<String>,
 }
@@ -62,14 +62,14 @@ fn decode(wasm: &[u8]) -> (u8, Vec<Entry>) {
     for _ in 0..count {
         let name = take_name(&payload, &mut cursor);
         let status = payload[cursor]; cursor += 1;
-        let public = payload[cursor]; cursor += 1;
+        let visibility = payload[cursor]; cursor += 1;
         let parents_count = take_leb(&payload, &mut cursor);
         assert!(parents_count <= 8);
         let parents = (0..parents_count).map(|_| take_name(&payload, &mut cursor)).collect();
         let child_count = take_leb(&payload, &mut cursor);
         assert!(child_count <= 96);
         let permits = (0..child_count).map(|_| take_name(&payload, &mut cursor)).collect();
-        entries.push(Entry { name, status, public, parents, permits });
+        entries.push(Entry { name, status, visibility, parents, permits });
     }
     assert_eq!(cursor, payload.len(), "no unverified section suffix");
     (domain, entries)
@@ -91,7 +91,7 @@ fn validated_hierarchy_is_retained_in_typed_lowering_before_wasm() {
     assert_eq!(result.classes.len(), 4);
     let root = result.classes.iter().find(|c| c.name == "Root").unwrap();
     assert_eq!(root.hierarchy, Hierarchy::Sealed);
-    assert!(root.visibility_public);
+    assert_eq!(root.visibility, ClassVisibility::Public);
     assert_eq!(root.permitted_children, ["Flexible", "Leaf"]);
     assert!(root.direct_parents.is_empty());
     let leaf = result.classes.iter().find(|c| c.name == "Leaf").unwrap();
@@ -114,10 +114,10 @@ fn wasm_preserves_local_graph_metadata_without_claiming_link_authority() {
     let (domain, classes) = decode(&wasm);
     assert_eq!(domain, 0, "not a namespace-bound or link-authenticated artifact");
     assert_eq!(classes, vec![
-        Entry { name: "Flexible".into(), status: 2, public: 0, parents: vec!["Root".into()], permits: vec![] },
-        Entry { name: "Leaf".into(), status: 3, public: 0, parents: vec!["Root".into()], permits: vec![] },
-        Entry { name: "Open".into(), status: 0, public: 0, parents: vec!["Flexible".into()], permits: vec![] },
-        Entry { name: "Root".into(), status: 1, public: 1, parents: vec![], permits: vec!["Flexible".into(), "Leaf".into()] },
+        Entry { name: "Flexible".into(), status: 2, visibility: 0, parents: vec!["Root".into()], permits: vec![] },
+        Entry { name: "Leaf".into(), status: 3, visibility: 0, parents: vec!["Root".into()], permits: vec![] },
+        Entry { name: "Open".into(), status: 0, visibility: 0, parents: vec!["Flexible".into()], permits: vec![] },
+        Entry { name: "Root".into(), status: 1, visibility: 1, parents: vec![], permits: vec!["Flexible".into(), "Leaf".into()] },
     ]);
 }
 
@@ -160,6 +160,6 @@ fn package_export_is_never_mislabeled_globally_public() {
     assert_eq!(classes.len(), 2);
     let root = classes.iter().find(|c| c.name == "Root").unwrap();
     assert_eq!(root.status, 1);
-    assert_eq!(root.public, 0, "pub[pkg] cannot become globally public");
+    assert_eq!(root.visibility, 2, "pub[pkg] must retain its own visibility tier");
     assert_eq!(root.permits, ["Child"]);
 }
