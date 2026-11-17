@@ -2886,6 +2886,30 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    /// Resolve user-defined same-class equals without adding a large frame
+    /// to the deeply recursive primitive binary checker.
+    #[inline(never)]
+    fn class_value_equality(&self, op: BinOp, c: u32, left: TE, right: TE, pos: Pos) -> R<TE> {
+        let class = &self.g.classes[c as usize];
+        // value() already checked both operands once and did not transfer
+        // their owners. The bounded browser class ABI uses direct method
+        // indices, not reflection or speculative virtual dispatch.
+        let Some(m) = class.methods.iter().find(|m| m.name == "equals") else {
+            return Err(Diagnostic::new(pos, "E_EQUALS",
+                format!("class '{}' has no checked public equals({} other): bool method; 'eq' cannot fall back to identity",
+                    class.name, class.name)));
+        };
+        let call = TE {
+            e: TExpr::Call(m.idx, vec![left, right]),
+            ty: Type::Bool,
+        };
+        Ok(if op == BinOp::Ne {
+            TE { e: TExpr::Not(Box::new(call)), ty: Type::Bool }
+        } else {
+            call
+        })
+    }
+
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
         let op = &op;
@@ -3016,26 +3040,9 @@ impl<'a> FnCx<'a> {
                     // i64 representation using an i32 equality instruction and
                     // could emit an invalid Wasm guest instead of a diagnostic.
                     if let Type::Class(c) = a.ty {
-                        let class = &self.g.classes[c as usize];
-                        // Both operands have already been checked by value():
-                        // no ownership transfer, no duplicate evaluation.
-                        // The current bounded class ABI resolves concrete
-                        // methods statically; dynamic subclass dispatch is
-                        // intentionally not admitted in this browser profile.
-                        let Some(m) = class.methods.iter().find(|m| m.name == "equals") else {
-                            return Err(Diagnostic::new(pos, "E_EQUALS",
-                                format!("class '{}' has no checked public equals({} other): bool method; 'eq' cannot fall back to identity",
-                                    class.name, class.name)));
-                        };
-                        let call = TE {
-                            e: TExpr::Call(m.idx, vec![a, b]),
-                            ty: Type::Bool,
-                        };
-                        return Ok(if *op == BinOp::Ne {
-                            TE { e: TExpr::Not(Box::new(call)), ty: Type::Bool }
-                        } else {
-                            call
-                        });
+                        // Non-inlined helper preserves the shallow binary()
+                        // frame under adversarial 3,000-operator nesting.
+                        return self.class_value_equality(*op, c, a, b, pos);
                     }
                     if matches!(a.ty, Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr | Type::GeneratorInt) {
                         return Err(Diagnostic::new(
