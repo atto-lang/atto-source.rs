@@ -10,6 +10,8 @@ This stage builds useful **real** origin and use facts from AttoLang's **checked
 
 For each supported function it records a stable, one-based `instruction_id`, source-function index/name, parameters' initial SSA origins, and each typed scalar assignment/return/expression's root origin **uses**, SSA new **definitions**, and straight-line successor. Assigning the same local again allocates a new origin; reads after a definition name only the current origin. Both pure ternary arms contribute conservative MAY uses. There are explicit resource limits for function/point/origin/use counts and expression recursion.
 
+**Control/effect precision:** numeric negation and binary operations carry a conservative `may_trap` fact; pure ternary expressions carry `has_conditional` and the MAY union of both arms' reads. This is NOT an exception-edge or unwind/cleanup proof. Since the strict profile contains no guest loans or owned references, these flags are observational; any future borrowed-resource profile must add actual exceptional CFG and cleanup edges before admission.
+
 **Closed subset:** `int`, `bool`, `float`, straight-line scalar `Set`, pure literal/local/arithmetic/ternary expressions and explicit return. Only simple non-void/void scalar storage is accepted. Calls, actor/heap effects, object or field access, exception/cleanup, `await`, loops, branches, dynamic joins, shadow aliases, and other effects are **unsupported**, not silently dropped. Every unsupported operation returns `E_TYPED_MIR_CENSUS_UNSUPPORTED`.
 
 ## Critically: borrow issues no longer disappear during typing
