@@ -1,15 +1,15 @@
-// SYNTAX PREVIEW — export and access modifiers are not browser-lowered.
+// Export and final fields are executable in the bounded browser subset.
 // These export forms follow the intended Atto grammar; parser/linker scope
 // and foreign declarations still need tests on each compiler backend.
 // Exports may appear at the beginning OR end of a file.
-// pub exposes an API; internal/protected scopes must be typechecked.
-// final is assigned once. external requires an approved foreign ABI.
+// pub exposes an API; internal is local, protected requires subclass analysis.
+// final is assigned once. external declarations never grant foreign-call authority.
 
 // Forward export: refer to a type declared later in this file.
 export pub Foo;
 
 define class Foo as
-  protected final int id: 7;
+  final int id: 7;
   private let int balance: 0;
 
   pub get_balance(): int {
