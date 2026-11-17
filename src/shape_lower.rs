@@ -149,7 +149,8 @@ fn keyed(t: &[Token], open: usize, mode: KeyedMode) -> R<(BTreeMap<String, Token
         let value=t.get(j+2).ok_or_else(|| error(t[j].pos,"E_EOF","missing product value"))?;
         if !simple_literal(&value.tok) {
             if mode == KeyedMode::InferAnonymous
-                && (matches!(&value.tok,Tok::LBracket)
+                && ((matches!(&value.tok,Tok::LBracket)
+                      && t.get(j+3).is_some_and(|x| x.tok == Tok::RBracket))
                     || matches!(&value.tok,Tok::Ident(name) if name == "None"))
             {
                 return Err(error(value.pos,"E_TYPE_INFER_AMBIGUOUS",
