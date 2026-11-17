@@ -58,6 +58,8 @@ const positives=[
  ['pub fnc main(): int {let Record headers={"content-type":42,status_code:42}; val alias=headers; return alias["content-type"];}',42n,''],
  ['pub fnc main(): int {let Record headers={"status_code":42,"content-type":"ok"}; return headers.status_code+headers["status_code"]-42;}',42n,''],
  ['pub fnc main(): int {let Record headers={"":1,"café":41,"café":7}; return headers[""]+headers["café"];}',42n,''],
+ [String.raw`pub fnc main(): int {let Record h={"x-y":41,"has\"quote":1,"line\nbreak":2}; return h["x\u{2d}y"]+h["has\"quote"];} `,42n,''],
+ [String.raw`pub fnc main(): int {let Record h={"line\nbreak":42}; return h["line\nbreak"];} `,42n,''],
 ];
 const negatives=[
  ['pub fnc main(): int {let Record r={x:42}; let string key="x"; return r[key];}','E_UNSUPPORTED'],
@@ -70,6 +72,9 @@ const negatives=[
  ['pub fnc main(): int {let Record headers={"content-type":42}; return headers["content"+"-type"]; }','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record headers={"café":42}; return headers["café"]; }','E_NO_FIELD'],
  ['pub fnc main(): int {let Record headers={"content-type":42}; return headers[0]; }','E_UNSUPPORTED'],
+ [String.raw`pub fnc main(): int {let Record h={"x-y":1,"x\u{2d}y":2}; return 0;} `,'E_DUPLICATE'],
+ [String.raw`pub fnc main(): int {let Record h={"x-y":42}; return h["x\u{zz}y"];} `,'E_STRING'],
+ [String.raw`pub fnc main(): int {let Record h={"content-type":"json",status_code:42}; return h["content-type"];} `,'E_TYPE'],
 ];
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
