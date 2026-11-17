@@ -6,7 +6,7 @@
 //! an invented runtime type. Once this is wired to checked guest allocation the
 //! same type and tree structure can be consumed by the lowering stage.
 
-use crate::ast::{Expr, ExprKind, Pattern, Program, Stmt, Type, UnOp};
+use crate::ast::{Expr, ExprKind, Program, Stmt, Type, UnOp};
 use crate::diag::{Diagnostic, Pos};
 
 pub const MAX_LITERAL_DEPTH: usize = 128;
@@ -270,7 +270,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             let key_ty = if wanted_k == Bottom { keys } else { wanted_k };
             let val_ty = if wanted_v == Bottom { vals } else { wanted_v };
-            if !matches!(key_ty, Int | Bool | String | Float | Bottom) {
+            if !matches!(key_ty, Int | Bool | String | Bottom) {
                 return Err(diag(e.pos, "E_MAP_KEY",
                     "this profile permits only scalar hashable map key types"));
             }
@@ -330,8 +330,8 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
                     || starts_literal(init)
                 {
                     let value = inferred(init,wanted.as_ref(),0)?;
-                    if ty.is_none() && matches!(init.kind,ExprKind::EmptyBraces |
-                        ExprKind::Array(ref v) if v.is_empty()) {
+                    if ty.is_none() && (matches!(&init.kind, ExprKind::EmptyBraces) ||
+                        matches!(&init.kind, ExprKind::Array(v) if v.is_empty())) {
                         return Err(diag(init.pos,"E_INFER",
                             "empty collection without type annotation is ambiguous"));
                     }
@@ -346,9 +346,9 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
                 if let Some(inner) = otherwise { walk(inner,program,out)?; }
             }
             Stmt::For {init,update,body,..} => {
-                if let Some(s) = init { walk(std::slice::from_ref(s),program,out)?; }
+                if let Some(s) = init { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
                 walk(body,program,out)?;
-                if let Some(s) = update { walk(std::slice::from_ref(s),program,out)?; }
+                if let Some(s) = update { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
             }
             Stmt::Match {arms,..} => {
                 for arm in arms { walk(&arm.body,program,out)?; }
