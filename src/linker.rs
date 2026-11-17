@@ -4,10 +4,10 @@
 //! The caller must provide source units and trusted canonical package identities;
 //! no symlinks, network fetches or host capabilities are consulted. Reject
 //! import cycles, conflicting module names and untrusted re-exports before Wasm.
-use std::collections::BTreeMap;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{self, Tok, Token};
 use crate::{module_lower, parser, visibility_lower};
+use std::collections::BTreeMap;
 
 type R<T> = Result<T, Diagnostic>;
 const MAX_UNITS: usize = 64;
@@ -44,11 +44,15 @@ fn word(t: &[Token], i: usize, val: &str) -> bool {
 }
 fn ident(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(s), pos }) if
-            s.len() <= 64 && !s.is_empty() && s.is_ascii() &&
-            (s.as_bytes()[0].is_ascii_alphabetic() || s.starts_with('_')) &&
-            s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') =>
-            Ok(s.clone()),
+        Some(Token { tok: Tok::Ident(s), pos })
+            if s.len() <= 64
+                && !s.is_empty()
+                && s.is_ascii()
+                && (s.as_bytes()[0].is_ascii_alphabetic() || s.starts_with('_'))
+                && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') =>
+        {
+            Ok(s.clone())
+        }
         Some(t) => Err(err(t.pos, "E_SYNTAX", "expected bounded ASCII namespace/module identifier")),
         None => Err(err(Pos::default(), "E_EOF", "expected identifier")),
     }
@@ -59,15 +63,26 @@ fn ident(t: &[Token], i: usize) -> R<String> {
 fn byte_at(source: &str, pos: Pos) -> R<usize> {
     let (mut line, mut col) = (1u32, 1u32);
     for (offset, c) in source.char_indices() {
-        if line == pos.line && col == pos.col { return Ok(offset); }
-        if c == '\n' { line += 1; col = 1; } else { col += 1; }
+        if line == pos.line && col == pos.col {
+            return Ok(offset);
+        }
+        if c == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
     }
-    if line == pos.line && col == pos.col { return Ok(source.len()); }
+    if line == pos.line && col == pos.col {
+        return Ok(source.len());
+    }
     Err(err(pos, "E_SYNTAX", "invalid source token boundary"))
 }
 fn erase(mut source: String, mut spans: Vec<(usize, usize)>) -> String {
     spans.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-    for (start, end) in spans { source.replace_range(start..end, ""); }
+    for (start, end) in spans {
+        source.replace_range(start..end, "");
+    }
     source
 }
 fn span(source: &str, toks: &[Token], start: usize, semi: usize) -> R<(usize, usize)> {
@@ -78,16 +93,27 @@ fn span(source: &str, toks: &[Token], start: usize, semi: usize) -> R<(usize, us
 }
 
 pub(crate) fn path_ok(path: &str) -> bool {
-    path.len() <= 256 && !path.is_empty() && path.is_ascii() && path.ends_with(".atto") &&
-        !path.starts_with('/') && !path.contains('\\') && !path.contains(':') &&
-        path.split('/').all(|part| !part.is_empty() && part != "." && part != ".." &&
-            part.bytes().all(|b| b.is_ascii_alphanumeric() ||
-                matches!(b, b'_' | b'-' | b'.')))
+    path.len() <= 256
+        && !path.is_empty()
+        && path.is_ascii()
+        && path.ends_with(".atto")
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.contains(':')
+        && path.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+        })
 }
 fn package_ok(package: &str) -> bool {
-    !package.is_empty() && package.len() <= 128 && package.is_ascii() &&
-        package.bytes().all(|b| b.is_ascii_alphanumeric() ||
-            matches!(b, b'_' | b'-' | b'.' | b'@'))
+    !package.is_empty()
+        && package.len() <= 128
+        && package.is_ascii()
+        && package
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'@'))
 }
 fn relative_path(from: &str, rel: &str, pos: Pos) -> R<String> {
     let (prefix, suffix) = if let Some(rest) = rel.strip_prefix("./") {
@@ -95,16 +121,21 @@ fn relative_path(from: &str, rel: &str, pos: Pos) -> R<String> {
     } else if let Some(rest) = rel.strip_prefix('+') {
         ("root", rest)
     } else {
-        return Err(err(pos, "E_IMPORT_PATH",
-            "imports require './name.atto' or '+name.atto' canonical paths"));
+        return Err(err(
+            pos,
+            "E_IMPORT_PATH",
+            "imports require './name.atto' or '+name.atto' canonical paths",
+        ));
     };
     if !path_ok(suffix) {
-        return Err(err(pos, "E_IMPORT_PATH",
-            "import path has noncanonical components or traversal"));
+        return Err(err(pos, "E_IMPORT_PATH", "import path has noncanonical components or traversal"));
     }
     let dir = from.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
-    let resolved = if prefix == "root" || dir.is_empty() { suffix.to_string() }
-                   else { format!("{dir}/{suffix}") };
+    let resolved = if prefix == "root" || dir.is_empty() {
+        suffix.to_string()
+    } else {
+        format!("{dir}/{suffix}")
+    };
     if !path_ok(&resolved) {
         return Err(err(pos, "E_IMPORT_PATH", "invalid canonical import destination"));
     }
@@ -156,16 +187,22 @@ fn header(source: &str, file: &str) -> R<Header> {
     for token in &t[i..] {
         if let Tok::Ident(s) = &token.tok {
             if s == "import" || s == "namespace" || s == "use" {
-                return Err(err(token.pos, "E_SYNTAX",
-                    "namespace headers and module imports must precede all declarations"));
+                return Err(err(
+                    token.pos,
+                    "E_SYNTAX",
+                    "namespace headers and module imports must precede all declarations",
+                ));
             }
         }
     }
-    Ok(Header { namespace, imports, body: erase(source.to_string(), spans) })
+    Ok(Header {
+        namespace,
+        imports,
+        body: erase(source.to_string(), spans),
+    })
 }
 
-fn imported_module(imp: &Import, dependency: &LinkUnit<'_>,
-                   entry_package: &str) -> R<String> {
+fn imported_module(imp: &Import, dependency: &LinkUnit<'_>, entry_package: &str) -> R<String> {
     let hdr = header(dependency.source, dependency.path)?;
     // Each import edge was validated against the whole graph before this
     // function is called. Module imports in the header are not declarations
@@ -175,18 +212,30 @@ fn imported_module(imp: &Import, dependency: &LinkUnit<'_>,
     let mut visible = visibility_lower::lower(tokens.clone())?;
     let lowered = module_lower::lower_with_manifest(visible.tokens)?;
     if lowered.modules.len() != 1 || lowered.modules[0].name != imp.name {
-        return Err(err(imp.pos, "E_UNBOUND",
-            format!("import '{}' does not match exactly one declared module in its source", imp.name)));
+        return Err(err(
+            imp.pos,
+            "E_UNBOUND",
+            format!("import '{}' does not match exactly one declared module in its source", imp.name),
+        ));
     }
     let parsed = parser::Parser::new(lowered.tokens).parse_program()?;
-    if !parsed.classes.is_empty() || !parsed.actors.is_empty() || !parsed.enums.is_empty() ||
-       parsed.funcs.iter().any(|f| !f.name.starts_with("__atto_internal_module_")) {
-        return Err(err(imp.pos, "E_UNSUPPORTED",
-            "imported source must contain only the requested module and its functions"));
+    if !parsed.classes.is_empty()
+        || !parsed.actors.is_empty()
+        || !parsed.enums.is_empty()
+        || parsed.funcs.iter().any(|f| !f.name.starts_with("__atto_internal_module_"))
+    {
+        return Err(err(
+            imp.pos,
+            "E_UNSUPPORTED",
+            "imported source must contain only the requested module and its functions",
+        ));
     }
     if visible.exports.iter().any(|e| e.name != imp.name) {
-        return Err(err(imp.pos, "E_UNSUPPORTED",
-            "imported module source cannot expose unrelated file-level symbols"));
+        return Err(err(
+            imp.pos,
+            "E_UNSUPPORTED",
+            "imported module source cannot expose unrelated file-level symbols",
+        ));
     }
     visibility_lower::resolve_exports(&mut visible.exports, &parsed, &lowered.modules)?;
     let module = &lowered.modules[0];
@@ -195,11 +244,13 @@ fn imported_module(imp: &Import, dependency: &LinkUnit<'_>,
     if !exported {
         return Err(err(imp.pos, "E_VISIBILITY", "imported module is not exported"));
     }
-    let public = module.inline_public || allowed.is_some_and(|e|
-        e.visibility == visibility_lower::Visibility::Public);
+    let public = module.inline_public || allowed.is_some_and(|e| e.visibility == visibility_lower::Visibility::Public);
     if !public && dependency.package != entry_package {
-        return Err(err(imp.pos, "E_VISIBILITY",
-            "pub[pkg] module cannot be imported by a different package"));
+        return Err(err(
+            imp.pos,
+            "E_VISIBILITY",
+            "pub[pkg] module cannot be imported by a different package",
+        ));
     }
     // Erase all file export directives: a referenced module's visibility is
     // checked above, but must NOT be serialized as an entry-file re-export.
@@ -212,15 +263,16 @@ fn imported_module(imp: &Import, dependency: &LinkUnit<'_>,
             i = next;
             continue;
         }
-        if word(&tokens, i, "internal") || word(&tokens, i, "external") ||
-            word(&tokens, i, "protected") {
-            return Err(err(tokens[i].pos, "E_UNSUPPORTED",
-                "imported module cannot contain unresolved local/foreign/protected modifiers"));
+        if word(&tokens, i, "internal") || word(&tokens, i, "external") || word(&tokens, i, "protected") {
+            return Err(err(
+                tokens[i].pos,
+                "E_UNSUPPORTED",
+                "imported module cannot contain unresolved local/foreign/protected modifiers",
+            ));
         }
         // An imported inline-public module is made file-local in the
         // combined guest, so it cannot become an accidental re-export.
-        if word(&tokens, i, "define") && word(&tokens, i + 1, "pub") &&
-           word(&tokens, i + 2, "module") {
+        if word(&tokens, i, "define") && word(&tokens, i + 1, "pub") && word(&tokens, i + 2, "module") {
             let start = byte_at(&hdr.body, tokens[i + 1].pos)?;
             spans.push((start, start + 3)); // exact ASCII 'pub'
             i += 3;
@@ -251,13 +303,13 @@ fn visit<'a>(
     entry: &'a str,
 ) -> R<()> {
     match states.get(path).copied() {
-        Some(1) => return Err(err(Pos::default(), "E_IMPORT_CYCLE",
-            format!("cyclic module import at '{path}'"))),
+        Some(1) => return Err(err(Pos::default(), "E_IMPORT_CYCLE", format!("cyclic module import at '{path}'"))),
         Some(2) => return Ok(()),
         _ => {}
     }
-    let unit = files.get(path).ok_or_else(|| err(Pos::default(), "E_UNBOUND",
-        format!("missing source file '{path}'")))?;
+    let unit = files
+        .get(path)
+        .ok_or_else(|| err(Pos::default(), "E_UNBOUND", format!("missing source file '{path}'")))?;
     states.insert(path, 1);
     let hdr = header(unit.source, path)?;
     // A file may import different file-local modules, but this executable
@@ -267,14 +319,20 @@ fn visit<'a>(
         let vis = visibility_lower::lower(source)?;
         let module = module_lower::lower_with_manifest(vis.tokens)?;
         if module.modules.len() != 1 {
-            return Err(err(Pos::default(), "E_UNSUPPORTED",
-                "imported files must own exactly one named module"));
+            return Err(err(
+                Pos::default(),
+                "E_UNSUPPORTED",
+                "imported files must own exactly one named module",
+            ));
         }
         let name = &module.modules[0].name;
         if let Some(previous) = names.insert(name.clone(), path) {
             if previous != path {
-                return Err(err(Pos::default(), "E_DUPLICATE",
-                    format!("ambiguous module name '{name}' in '{previous}' and '{path}'")));
+                return Err(err(
+                    Pos::default(),
+                    "E_DUPLICATE",
+                    format!("ambiguous module name '{name}' in '{previous}' and '{path}'"),
+                ));
             }
         }
     }
@@ -286,8 +344,9 @@ fn visit<'a>(
         if imp.path == path {
             return Err(err(imp.pos, "E_IMPORT_CYCLE", "module cannot import itself"));
         }
-        let dep = files.get(imp.path.as_str()).ok_or_else(|| err(imp.pos,
-            "E_UNBOUND", format!("missing imported source '{}'", imp.path)))?;
+        let dep = files
+            .get(imp.path.as_str())
+            .ok_or_else(|| err(imp.pos, "E_UNBOUND", format!("missing imported source '{}'", imp.path)))?;
         // Module visibility and real ownership must be checked on every
         // edge, even when another parent already traversed this dependency.
         let _ = imported_module(imp, dep, unit.package)?;
@@ -300,9 +359,15 @@ fn visit<'a>(
         let tokens = lexer::lex(&hdr.body)?;
         let lowered = visibility_lower::lower(tokens)?;
         let manifest = module_lower::lower_with_manifest(lowered.tokens)?;
-        let m = manifest.modules.first().ok_or_else(|| err(Pos::default(),
-            "E_UNBOUND", "module missing after graph traversal"))?;
-        let synthetic = Import { name: m.name.clone(), path: path.to_string(), pos: m.pos };
+        let m = manifest
+            .modules
+            .first()
+            .ok_or_else(|| err(Pos::default(), "E_UNBOUND", "module missing after graph traversal"))?;
+        let synthetic = Import {
+            name: m.name.clone(),
+            path: path.to_string(),
+            pos: m.pos,
+        };
         ordered.push((path.to_string(), imported_module(&synthetic, unit, unit.package)?));
     }
     Ok(())
@@ -323,34 +388,45 @@ fn preflight_file_authority(
     let tokens = lexer::lex(&hdr.body)?;
     let lexical = visibility_lower::lower(tokens.clone())?;
     let modules = module_lower::lower_with_manifest(lexical.tokens)?;
-    let imported: std::collections::BTreeSet<&str> =
-        hdr.imports.iter().map(|i| i.name.as_str()).collect();
-    let owned: std::collections::BTreeSet<&str> =
-        modules.modules.iter().map(|m| m.name.as_str()).collect();
+    let imported: std::collections::BTreeSet<&str> = hdr.imports.iter().map(|i| i.name.as_str()).collect();
+    let owned: std::collections::BTreeSet<&str> = modules.modules.iter().map(|m| m.name.as_str()).collect();
     for (i, token) in tokens.iter().enumerate() {
         let Tok::Ident(ref name) = token.tok else { continue };
         if name.starts_with("__atto_q_") {
-            return Err(err(token.pos, "E_RESERVED",
-                "source must not forge a compiler-owned module identity"));
+            return Err(err(
+                token.pos,
+                "E_RESERVED",
+                "source must not forge a compiler-owned module identity",
+            ));
         }
         // A direct call to a root-level function cannot become visible to an
         // imported module just because the final guest has one symbol table.
-        if !is_entry && root_funcs.contains_key(name) &&
-           tokens.get(i+1).map(|t| &t.tok) == Some(&Tok::LParen) &&
-           (i == 0 || tokens[i-1].tok != Tok::Dot) &&
-           (i == 0 || !word(&tokens, i-1, "fnc")) {
-            return Err(err(token.pos, "E_VISIBILITY",
-                format!("imported source cannot capture entry-local function '{name}'")));
+        if !is_entry
+            && root_funcs.contains_key(name)
+            && tokens.get(i + 1).map(|t| &t.tok) == Some(&Tok::LParen)
+            && (i == 0 || tokens[i - 1].tok != Tok::Dot)
+            && (i == 0 || !word(&tokens, i - 1, "fnc"))
+        {
+            return Err(err(
+                token.pos,
+                "E_VISIBILITY",
+                format!("imported source cannot capture entry-local function '{name}'"),
+            ));
         }
         // All module-qualified callsites must be owned or explicitly
         // imported in this file, not in another parent of the graph.
-        if names.contains_key(name) &&
-           tokens.get(i+1).map(|t| &t.tok) == Some(&Tok::Dot) &&
-           matches!(tokens.get(i+2).map(|t| &t.tok), Some(Tok::Ident(_))) &&
-           tokens.get(i+3).map(|t| &t.tok) == Some(&Tok::LParen) &&
-           !owned.contains(name.as_str()) && !imported.contains(name.as_str()) {
-            return Err(err(token.pos, "E_VISIBILITY",
-                format!("module '{name}' is not explicitly imported in '{path}'")));
+        if names.contains_key(name)
+            && tokens.get(i + 1).map(|t| &t.tok) == Some(&Tok::Dot)
+            && matches!(tokens.get(i + 2).map(|t| &t.tok), Some(Tok::Ident(_)))
+            && tokens.get(i + 3).map(|t| &t.tok) == Some(&Tok::LParen)
+            && !owned.contains(name.as_str())
+            && !imported.contains(name.as_str())
+        {
+            return Err(err(
+                token.pos,
+                "E_VISIBILITY",
+                format!("module '{name}' is not explicitly imported in '{path}'"),
+            ));
         }
     }
     Ok(())
@@ -360,31 +436,32 @@ fn preflight_file_authority(
 /// to a source-owned internal ID. Source files are scanned independently;
 /// strings and comments never become symbol sites, and all user-authored
 /// reserved prefixes were rejected before this rewrite.
-fn qualify_bound_modules(source: &str, aliases: &BTreeMap<String,String>) -> R<String> {
-    let tokens=lexer::lex(source)?;
-    let mut edits:Vec<(usize,usize,&str)>=Vec::new();
+fn qualify_bound_modules(source: &str, aliases: &BTreeMap<String, String>) -> R<String> {
+    let tokens = lexer::lex(source)?;
+    let mut edits: Vec<(usize, usize, &str)> = Vec::new();
     for i in 0..tokens.len() {
-        let Tok::Ident(ref name)=tokens[i].tok else { continue };
-        let Some(alias)=aliases.get(name) else { continue };
-        let declaration =
-            (i>=2 && word(&tokens,i-2,"define") && word(&tokens,i-1,"module")) ||
-            (i>=3 && word(&tokens,i-3,"define") && word(&tokens,i-2,"pub") &&
-                word(&tokens,i-1,"module"));
-        let qualified_call = tokens.get(i+1).map(|t| &t.tok)==Some(&Tok::Dot) &&
-            matches!(tokens.get(i+2).map(|t| &t.tok),Some(Tok::Ident(_))) &&
-            tokens.get(i+3).map(|t| &t.tok)==Some(&Tok::LParen);
+        let Tok::Ident(ref name) = tokens[i].tok else { continue };
+        let Some(alias) = aliases.get(name) else { continue };
+        let declaration = (i >= 2 && word(&tokens, i - 2, "define") && word(&tokens, i - 1, "module"))
+            || (i >= 3 && word(&tokens, i - 3, "define") && word(&tokens, i - 2, "pub") && word(&tokens, i - 1, "module"));
+        let qualified_call = tokens.get(i + 1).map(|t| &t.tok) == Some(&Tok::Dot)
+            && matches!(tokens.get(i + 2).map(|t| &t.tok), Some(Tok::Ident(_)))
+            && tokens.get(i + 3).map(|t| &t.tok) == Some(&Tok::LParen);
         if declaration || qualified_call {
-            let start=byte_at(source,tokens[i].pos)?;
-            if edits.len()>=2048 {
-                return Err(err(tokens[i].pos,"E_SOURCE_LIMIT",
-                    "too many source-owned module symbol references"));
+            let start = byte_at(source, tokens[i].pos)?;
+            if edits.len() >= 2048 {
+                return Err(err(
+                    tokens[i].pos,
+                    "E_SOURCE_LIMIT",
+                    "too many source-owned module symbol references",
+                ));
             }
-            edits.push((start,start+name.len(),alias.as_str()));
+            edits.push((start, start + name.len(), alias.as_str()));
         }
     }
-    let mut rewritten=source.to_owned();
-    for (start,end,alias) in edits.into_iter().rev() {
-        rewritten.replace_range(start..end,alias);
+    let mut rewritten = source.to_owned();
+    for (start, end, alias) in edits.into_iter().rev() {
+        rewritten.replace_range(start..end, alias);
     }
     Ok(rewritten)
 }
@@ -404,15 +481,23 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
     let mut files = BTreeMap::new();
     for unit in units {
         if !path_ok(unit.path) || !package_ok(unit.package) {
-            return Err(err(Pos::default(), "E_IMPORT_PATH",
-                "source path or package identity is not canonical"));
+            return Err(err(
+                Pos::default(),
+                "E_IMPORT_PATH",
+                "source path or package identity is not canonical",
+            ));
         }
         if files.insert(unit.path, unit).is_some() {
             return Err(err(Pos::default(), "E_DUPLICATE", "duplicate canonical source file path"));
         }
     }
-    let root = files.get(entry_path).ok_or_else(|| err(Pos::default(), "E_UNBOUND",
-        "entry file does not exist in the supplied source graph"))?;
+    let root = files.get(entry_path).ok_or_else(|| {
+        err(
+            Pos::default(),
+            "E_UNBOUND",
+            "entry file does not exist in the supplied source graph",
+        )
+    })?;
     let hdr = header(root.source, entry_path)?;
     let mut ordered = Vec::new();
     let mut states = BTreeMap::new();
@@ -425,15 +510,17 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
     let own = visibility_lower::lower(lexer::lex(&hdr.body)?)?;
     for export in &own.exports {
         if names.contains_key(&export.name) {
-            return Err(err(export.pos, "E_VISIBILITY",
-                "imported module is not re-exportable in this linker profile"));
+            return Err(err(
+                export.pos,
+                "E_VISIBILITY",
+                "imported module is not re-exportable in this linker profile",
+            ));
         }
     }
     let local = module_lower::lower_with_manifest(own.tokens)?;
     for module in &local.modules {
         if names.contains_key(&module.name) {
-            return Err(err(module.pos, "E_DUPLICATE",
-                "entry file module conflicts with imported module"));
+            return Err(err(module.pos, "E_DUPLICATE", "entry file module conflicts with imported module"));
         }
     }
     // Identify entry-owned top-level functions before concatenation, then
@@ -453,33 +540,39 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
     // Translate source-owned qualified module identities to deterministic
     // backend-safe aliases before lowering. This is an intermediate bridge;
     // future backends should directly consume typed linked IR instead.
-    let mut aliases = BTreeMap::<String,String>::new();
-    let mut alias_owners = BTreeMap::<String,String>::new();
-    for (name,path) in &names {
-        let dep=files.get(*path).ok_or_else(|| err(Pos::default(),
-            "E_UNBOUND","module owner vanished during linking"))?;
-        let owner_header=header(dep.source,path)?;
-        let namespace=owner_header.namespace.unwrap_or_else(|| "_file".into());
-        let key=crate::linked_symbols::QualifiedModuleId::new(
-            dep.package,&namespace,path,name)?;
-        let alias=key.internal_name();
-        if let Some(previous)=alias_owners.insert(alias.clone(),path.to_string()) {
-            if previous!=*path {
-                return Err(err(Pos::default(),"E_SYMBOL_ID",
-                    "two distinct modules collide after qualified symbol mangling"));
+    let mut aliases = BTreeMap::<String, String>::new();
+    let mut alias_owners = BTreeMap::<String, String>::new();
+    for (name, path) in &names {
+        let dep = files
+            .get(*path)
+            .ok_or_else(|| err(Pos::default(), "E_UNBOUND", "module owner vanished during linking"))?;
+        let owner_header = header(dep.source, path)?;
+        let namespace = owner_header.namespace.unwrap_or_else(|| "_file".into());
+        let key = crate::linked_symbols::QualifiedModuleId::new(dep.package, &namespace, path, name)?;
+        let alias = key.internal_name();
+        if let Some(previous) = alias_owners.insert(alias.clone(), path.to_string()) {
+            if previous != *path {
+                return Err(err(
+                    Pos::default(),
+                    "E_SYMBOL_ID",
+                    "two distinct modules collide after qualified symbol mangling",
+                ));
             }
         }
-        aliases.insert(name.clone(),alias);
+        aliases.insert(name.clone(), alias);
     }
-    let mut pieces:Vec<String>=Vec::with_capacity(ordered.len()+1);
-    for (_,data) in ordered {
-        pieces.push(qualify_bound_modules(&data,&aliases)?);
+    let mut pieces: Vec<String> = Vec::with_capacity(ordered.len() + 1);
+    for (_, data) in ordered {
+        pieces.push(qualify_bound_modules(&data, &aliases)?);
     }
-    pieces.push(qualify_bound_modules(&hdr.body,&aliases)?);
+    pieces.push(qualify_bound_modules(&hdr.body, &aliases)?);
     let linked = pieces.join("\n");
     if linked.len() > crate::SOURCE_CAP {
-        return Err(err(Pos::default(), "E_SOURCE_LIMIT",
-            "linked guest source exceeds browser source limit"));
+        return Err(err(
+            Pos::default(),
+            "E_SOURCE_LIMIT",
+            "linked guest source exceeds browser source limit",
+        ));
     }
     let _entry_namespace = hdr.namespace;
     crate::compile(&linked)
