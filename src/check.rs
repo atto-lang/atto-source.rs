@@ -1608,8 +1608,12 @@ fn check_unsafe_calls_during_handle_lifetime(
         work.push((statements, index + 1));
         let stmt = &statements[index];
         if !live_handles.is_empty() && any_in_stmts(std::slice::from_ref(stmt), &|e|
-            matches!(&e.e, TExpr::Call(target, _)
-                if may_early_exit.get(*target as usize).copied().unwrap_or(true))
+            matches!(&e.e,
+                TExpr::Call(target, _)
+                    if may_early_exit.get(*target as usize).copied().unwrap_or(true))
+                || matches!(&e.e,
+                    TExpr::Trap { .. } | TExpr::AdtPropagate { .. } |
+                    TExpr::Spawn(_) | TExpr::Send { .. })
         ) {
             return Err(Diagnostic::new(pos, "E_HANDLE",
                 "a call may throw, raise or propagate an early exit while a checked handle is live"));
