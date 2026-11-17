@@ -1,32 +1,45 @@
 # atto-source.rs: AttoLang browser compiler
 
-## Explicit deep-copy operator (first compiler milestone; scalar-only)
+## Explicit deep-copy operator (bounded generated-class AOT milestone)
 
-The actual Rust/Wasm frontend now recognizes contiguous copy!! as a distinct
-ownership prefix AST operation. The separated spelling copy! !expr retains
-shallow-copy-of-negation semantics, not a deep copy. The parser evaluates the
-operand once through the existing scalar typed expression path.
+The production Rust/Wasm frontend recognizes contiguous `copy!!` as a
+separate ownership operator. The separated spelling `copy! !expr` remains
+a shallow scalar copy of logical negation. The source operand is evaluated
+**exactly once** and the sender's original local remains valid.
 
-For existing admitted identity-free int/bool/float/string/enum values, copy!!
-emits the same guest value as a scalar copy because no mutable nested graph
-exists. Class/actor/collection/opaque resource graphs are **NOT implemented**:
-type checking returns E_COPY_DEEP_UNSUPPORTED instead of emitting a shallow
-alias or claiming a copy proof. This is not the root Object copy_deep()
-implementation and has no generated type descriptors, superclass dispatch,
-mailman integration, or actor-arena copier.
+- Scalars (`int`, `bool`, `float`, immutable `string`, nominal `enum`) are
+  copied by value without a heap allocation.
+- **Ordinary flat classes** whose full stored field inventory consists only
+  of these identity-free values now receive a compiler-generated, private
+  AOT function. It bump-allocates a fresh class object, then performs typed
+  load/store of every field. It does not invoke the class constructor or
+  re-run field initializers. Each invocation allocates a separate root.
+- `copy!` on classes is **not** enabled by this milestone; it still requires
+  its own separately verified shallow Copyable witness.
+- Classes with nested class/actor/collection/resource references, state
+  containers, and erased/unproved types fail closed with
+  `E_COPY_DEEP_UNSUPPORTED`. A class with an explicit `copy_deep` method is
+  rejected for this operator with `E_COPY_OVERRIDE` until verified hook
+  chaining is implemented. Exclusive mutable loans reject with `E_BORROW`.
 
-New pass/fail .atto fixtures are automatically picked up by the existing
-compiler + Wasm guest fixture harness, and tests/copy_doublebang.rs additionally
-checks real source-to-Wasm emission and fail-closed class diagnostics. Any
-PASS result requires an actual compiled and executed runner receipt at the
-exact PR source head; static host checks or zero-step Actions are NOT_EXECUTED.
+This is **not yet a general graph copier**. The current Wasm object format
+has no general dynamic-subtype tag, and the baseline browser frontend does
+not lower mutable `Array<int>` or inherited class layouts. Graph cycles,
+nested reference identity, memoized copy contexts, native AOT targets,
+`Object.copy_deep()` methods, actor mailmen, and cross-actor Sendable/
+Serializable provenance all remain separate implementation milestones.
 
-The canonical type-graph admission model resides in
-ores-truffle-oreslang/atto-borrow-checker.rs and the normative candidate
-is atto-lang/atto-spec PR #39. Full AOT object-graph implementation, typed
-ownership witness integration and true independent actor-copy execution remain
-required before copy!! on heap objects can be enabled.
+Pass/fail `.atto` fixtures are consumed by the native Rust compiler test
+harness and the existing guest Wasm execution harness. The newly added
+`tests/copy_doublebang.rs` checks actual compiler-produced Wasm bytes;
+it does not alone prove runtime isolation. **Only a test run whose job steps
+executed on the exact branch commit can be reported as PASS.** Source-org
+GitHub Actions currently failed with zero recorded steps; those jobs are
+`NOT_EXECUTED`, not compiler or guest failures.
 
+Candidate normative contract: atto-lang/atto-spec PR #39. Canonical
+type-graph admission model: ores-truffle-oreslang/atto-borrow-checker.rs PR #32.
+Shared conformance candidates: atto-lang/atto-platform-conformance PR #64.
 
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
