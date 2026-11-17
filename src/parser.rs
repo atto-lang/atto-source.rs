@@ -10,6 +10,9 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+/// Safety cap on recursively nested lambda bodies; protects small runner stacks
+/// independently of the generic-type and expression-depth budgets.
+pub const MAX_LAMBDA_DEPTH: u32 = 32;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -202,6 +205,7 @@ pub struct Parser {
     toks: Vec<Token>,
     i: usize,
     depth: u32,
+    lambda_depth: u32,
     /// Height of the tree path being built; see [`MAX_TREE_HEIGHT`].
     height: u32,
     /// Nonzero while parsing an if/while condition head, where `,` and `|` are
@@ -250,6 +254,13 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
     match stmts.last() {
         Some(Stmt::Return(..) | Stmt::Throw(..)) => true,
         Some(Stmt::Block(inner)) => guard_failure_exits(inner),
+        // A nested `^ match` or `return match` exits iff all arm bodies
+        // exit. Exhaustiveness (including guarded-arm coverage) remains a
+        // separate mandatory check in the typed matcher; this syntactic
+        // termination preflight must not pretend to prove coverage itself.
+        Some(Stmt::Match { arms, .. }) =>
+            !arms.is_empty()
+                && arms.iter().all(|arm| guard_failure_exits(&arm.body)),
         Some(Stmt::If { arms, otherwise: Some(other), .. }) =>
             !arms.is_empty()
                 && arms.iter().all(|(_, branch)| guard_failure_exits(branch))
@@ -264,6 +275,7 @@ impl Parser {
             toks,
             i: 0,
             depth: 0,
+            lambda_depth: 0,
             height: 0,
             cond: 0,
             type_names: Vec::new(),
@@ -464,6 +476,27 @@ impl Parser {
                         "browser ADT admits only Option<int> and Option<Result<int,string>>")),
                 }
             }
+            "Channel" => {
+                self.expect(Tok::Lt, "'<' after Channel")?;
+                let item=self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Channel item")?;
+                if item!=Type::Int {
+                    return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser channel ABI v1 admits only Channel<int>"));
+                }
+                Type::ChannelInt
+            }
+            "Future" => {
+                self.expect(Tok::Lt, "'<' after Future")?;
+                let result=self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Future payload")?;
+                match result {
+                    Type::Int => Type::FutureInt,
+                    Type::ResultOptionIntIoError => Type::FutureReadInt,
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser Future v1 admits only int or Result<Option<int>,IoError>")),
+                }
+            }
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
                 let inner = self.parse_type()?;
@@ -480,16 +513,20 @@ impl Parser {
                 self.expect(Tok::Comma, "',' between Result type arguments")?;
                 let bad = self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Result types")?;
-                if good != Type::Int || bad != Type::Str {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                        "browser ADT v1 admits only Result<int,string>"));
+                match (good,bad) {
+                    (Type::Int,Type::Str) => Type::ResultIntStr,
+                    (Type::OptionInt,Type::IoError) => Type::ResultOptionIntIoError,
+                    (Type::ChannelInt,Type::IoError) => Type::ResultChannelIntIoError,
+                    (Type::Void,Type::IoError) => Type::ResultVoidIoError,
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser Result admits int/string or checked Channel<int>/Option<int>/IoError profiles")),
                 }
-                Type::ResultIntStr
             },
             "bool" | "boolean" => Type::Bool,
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
             "string" | "String" => Type::Str,
+            "IoError" => Type::IoError,
             n if UNSUPPORTED_TYPES.contains(&n) => {
                 return Err(Diagnostic::new(
                     pos,
@@ -2174,7 +2211,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Channel" | "Future"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -2219,9 +2256,7 @@ impl Parser {
                 "guard requires a braced failure branch"));
         }
         let failure = self.parse_block()?;
-        // The established guard contract deliberately has no Swift-style
-        // 'else' token. Diagnose it here rather than allowing the parser to
-        // misreport a trailing else as an unrelated expression.
+        // The guard contract has no Swift-style else arm; diagnose it here.
         if self.is_word("else") {
             return Err(Diagnostic::new(self.pos(), "E_GUARD_ELSE_NOT_REQUIRED",
                 "guard already uses its braced body as the failure branch; remove 'else'"));
@@ -2503,6 +2538,7 @@ impl Parser {
                 }
                 "Some" | "Ok" | "Err" => {
                     self.advance();
+                    if w=="Ok" && *self.peek()!=Tok::LParen {return Ok(Pattern::Adt(w,None));}
                     self.expect(Tok::LParen, "'(' after payload variant")?;
                     let (name, _) = self.ident("a payload binding name")?;
                     self.expect(Tok::RParen, "')' after payload binding")?;
@@ -2946,6 +2982,11 @@ impl Parser {
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
             },
+            Tok::Ident(s) if s == "nb" && self.word_at(1)==Some("readch") => {
+                self.advance();self.advance();
+                let ch=self.parse_postfix()?;
+                return Ok(Expr {kind:ExprKind::Call("$atto_ch_read".into(),vec![ch]),pos});
+            },
             Tok::Ident(s) if s == "await" => {
                 self.advance();
                 let inner = self.parse_unary()?;
@@ -3119,43 +3160,75 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        // A generic annotation such as Box<Box<...<int>>> can be 100+
+        // levels deep. Recursive generic parsing consumes multiple native
+        // stack frames per level and can abort before E_NESTING is returned
+        // on smaller runner stacks. Parse the same grammar iteratively.
         self.enter()?;
-        let result = (|| {
-            let mut name = match self.peek().clone() {
-                Tok::Ident(s) if !is_reserved(&s) || s == "void" => {
-                    self.advance();
-                    s
+        let parsed = (|| -> R<String> {
+            let mut spelling = String::new();
+            let mut generic_depth = 0u32;
+            let mut need_type = true;
+            loop {
+                if need_type {
+                    if self.depth.saturating_add(generic_depth) > MAX_DEPTH
+                        || self.height.saturating_add(generic_depth) > MAX_TREE_HEIGHT {
+                        return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                            "lambda type nesting exceeds the parser depth budget"));
+                    }
+                    let type_name = match self.peek().clone() {
+                        Tok::Ident(s) if !is_reserved(&s) || s == "void" => {
+                            self.advance();
+                            s
+                        }
+                        _ => return Err(self.expected("a lambda return type")),
+                    };
+                    spelling.push_str(&type_name);
+                    while self.eat(&Tok::Dot) {
+                        let segment = match self.peek().clone() {
+                            Tok::Ident(s) => { self.advance(); s }
+                            _ => return Err(self.expected("a qualified type name")),
+                        };
+                        spelling.push('.');
+                        spelling.push_str(&segment);
+                    }
+                    if self.eat(&Tok::Lt) {
+                        spelling.push('<');
+                        generic_depth += 1;
+                        need_type = true;
+                        continue;
+                    }
+                    need_type = false;
                 }
-                _ => return Err(self.expected("a lambda return type")),
-            };
-            while self.eat(&Tok::Dot) {
-                // Namespace/module segments may be spelled like keywords
-                // (e.g. my.types.Response). After '.', the token is never
-                // parsed as a control-flow keyword.
-                let part = match self.peek().clone() {
-                    Tok::Ident(part) => { self.advance(); part }
-                    _ => return Err(self.expected("a qualified type name")),
-                };
-                name.push('.');
-                name.push_str(&part);
-            }
-            if self.eat(&Tok::Lt) {
-                name.push('<');
-                loop {
-                    name.push_str(&self.parse_lambda_type()?);
-                    if !self.eat(&Tok::Comma) { break; }
-                    name.push(',');
+                if generic_depth == 0 {
+                    return Ok(spelling);
+                }
+                if self.eat(&Tok::Comma) {
+                    spelling.push(',');
+                    need_type = true;
+                    continue;
                 }
                 self.expect(Tok::Gt, "'>' after lambda type arguments")?;
-                name.push('>');
+                spelling.push('>');
+                generic_depth -= 1;
             }
-            Ok(name)
         })();
         self.leave();
-        result
+        parsed
     }
 
     fn parse_lambda(&mut self, suspends: bool) -> R<ExprKind> {
+        // Each nested expression-bodied lambda adds several recursive parser
+        // frames. Check a *lambda-specific* budget before descending; the
+        // general MAX_DEPTH check alone can overflow the native thread stack
+        // on adversarial chains such as "|x| -> " repeated many times.
+        self.lambda_depth += 1;
+        if self.lambda_depth > MAX_LAMBDA_DEPTH {
+            self.lambda_depth -= 1;
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambda bodies exceed the safe recursion budget"));
+        }
+        let result = (|| -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
@@ -3232,6 +3305,10 @@ impl Parser {
             LambdaBody::Expression(Box::new(self.parse_expr()?))
         };
         Ok(ExprKind::Lambda { params, return_type, body, suspends })
+        })();
+        // Always restore the guard, including on early syntax/limit errors.
+        self.lambda_depth -= 1;
+        result
     }
 
     fn parse_array_literal(&mut self) -> R<ExprKind> {
@@ -3277,6 +3354,12 @@ impl Parser {
                 return Ok(Expr { kind: inner.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
+                "Channel" if *self.peek_at(1)==Tok::Lt => {
+                    self.advance();self.expect(Tok::Lt,"'<'")?;
+                    self.expect_word("int")?;self.expect(Tok::Gt,"'>'")?;
+                    self.expect(Tok::Dot,"'.'")?;self.expect_word("bounded")?;
+                    ExprKind::Call("$atto_ch_open".into(),self.parse_args()?)
+                },
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }

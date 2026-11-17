@@ -63,18 +63,30 @@ fn lambda_parameters_respect_limit_and_uniqueness() {
     assert_eq!(parsed("|a,b,a| -> a").unwrap_err().code, "E_DUPLICATE");
 }
 
-#[test]
-fn nesting_limits_are_not_laundered_by_legacy_type_lookahead() {
-    let mut deep_type = "int".to_string();
+fn oversized_lambda_type() -> String {
+    let mut type_name = "int".to_string();
     for _ in 0..150 {
-        deep_type = format!("Box<{deep_type}>");
+        type_name = format!("Box<{type_name}>");
     }
-    let explicit = format!("|n| : {deep_type} -> n");
-    let legacy = format!("|n| -> {deep_type} {{ return n; }}");
-    assert_eq!(parsed(&explicit).unwrap_err().code, "E_NESTING");
-    assert_eq!(parsed(&legacy).unwrap_err().code, "E_NESTING");
-    let nested = format!("{}1", "|x| -> ".repeat(150));
-    assert_eq!(parsed(&nested).unwrap_err().code, "E_NESTING");
+    type_name
+}
+
+#[test]
+fn explicit_deep_generic_annotation_returns_nesting_diagnostic() {
+    let source = format!("|n| : {} -> n", oversized_lambda_type());
+    assert_eq!(parsed(&source).unwrap_err().code, "E_NESTING");
+}
+
+#[test]
+fn legacy_deep_generic_lookahead_preserves_nesting_diagnostic() {
+    let source = format!("|n| -> {} {{ return n; }}", oversized_lambda_type());
+    assert_eq!(parsed(&source).unwrap_err().code, "E_NESTING");
+}
+
+#[test]
+fn nested_lambda_expression_returns_nesting_diagnostic() {
+    let source = format!("{}1", "|x| -> ".repeat(150));
+    assert_eq!(parsed(&source).unwrap_err().code, "E_NESTING");
 }
 
 #[test]
@@ -135,4 +147,18 @@ fn braced_and_expression_forms_preserve_body_kinds() {
         let actual = match body { LambdaBody::Expression(_) => 0, LambdaBody::Statement(_) => 1, LambdaBody::Block(_) => 2 };
         assert_eq!(actual, expected, "{source}");
     }
+}
+
+#[test]
+fn lambda_recursion_limit_does_not_abort_and_parser_recovers() {
+    // A moderate nested lambda remains syntactically valid; execution is
+    // separately gated by closure lowering and ownership rules.
+    let valid=format!("{}1","|x| -> ".repeat(20));
+    parsed(&valid).expect("moderately nested lambdas parse");
+    for count in [33, 64, 150] {
+        let adversarial=format!("{}1","|x| -> ".repeat(count));
+        let err=parsed(&adversarial).expect_err("deep lambda source must fail closed");
+        assert_eq!(err.code,"E_NESTING","depth {count}: {err}");
+    }
+    parsed("|x| -> 41").expect("parser recovers after nesting rejection");
 }

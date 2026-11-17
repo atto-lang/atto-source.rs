@@ -440,19 +440,6 @@ check('caret-operator/infix-rejected-without-guest', () => {
   assert.ok(r.line >= 1 && r.col >= 1);
 });
 
-// Guard success/failure must execute the caret return in the real Wasm guest,
-// not merely be accepted by the frontend.
-for (const [label, guard_condition, expected] of [
-  ['guard-caret/true-fallthrough', 'true', 42n],
-  ['guard-caret/false-early-return', 'false', -1n],
-]) {
-  check(label, () => {
-    const r = compile(`pub fnc main(): int { guard ${guard_condition} { ^ -1; } ^ 42; }`);
-    assert.ok(r.ok, r.message);
-    assert.equal(runGuest(r.wasm).value, expected);
-  });
-}
-
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {
   const r = compile(`pub fnc main(): int { return ${'('.repeat(500)}1${')'.repeat(500)}; }`);

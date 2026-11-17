@@ -20,6 +20,7 @@ mod generator_lower;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
+mod channel_guest;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
@@ -56,10 +57,11 @@ pub enum Import {
     StateRegister,
     StateEnter,
     StateLeave,
+    ChannelOpen,ChannelSend,ChannelNbRead,ChannelAwaitRead,ChannelCancel,ChannelAbandon,ChannelClose,ChannelRelease,
 }
 
 impl Import {
-    pub const ALL: [Import; 15] = [
+    pub const ALL: [Import; 23] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -75,6 +77,9 @@ impl Import {
         Import::StateRegister,
         Import::StateEnter,
         Import::StateLeave,
+        Import::ChannelOpen,Import::ChannelSend,Import::ChannelNbRead,
+        Import::ChannelAwaitRead,Import::ChannelCancel,Import::ChannelAbandon,Import::ChannelClose,
+        Import::ChannelRelease,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -93,6 +98,14 @@ impl Import {
             Import::StateRegister => "state_register",
             Import::StateEnter => "state_enter",
             Import::StateLeave => "state_leave",
+            Import::ChannelOpen => "channel_int_open_v1",
+            Import::ChannelSend => "channel_int_send_v1",
+            Import::ChannelNbRead => "channel_int_nb_read_v1",
+            Import::ChannelAwaitRead => "channel_int_await_read_v1",
+            Import::ChannelCancel => "channel_int_cancel_v1",
+            Import::ChannelAbandon => "channel_int_abandon_v1",
+            Import::ChannelClose => "channel_int_close_v1",
+            Import::ChannelRelease => "channel_int_release_v1",
         }
     }
 }
@@ -207,6 +220,11 @@ pub enum TExpr {
     TaskStart(u32),
     /// Consume one typed future handle and yield until the task finishes.
     TaskAwait(Box<TE>),
+    ChannelOpen {capacity:i32,scratch:u32,status:u32,result:u32},
+    ChannelRead {channel:Box<TE>,scratch:u32,status:u32},
+    ChannelSend {channel:Box<TE>,value:Box<TE>,status:u32,result:u32},
+    ChannelFinish {channel:Box<TE>,operation:Import,status:u32,result:u32},
+    ChannelAwait {ticket:Box<TE>,scratch:u32,status:u32,result:u32,option:u32},
     /// Preserve evaluated value and release the worker carrier at least one event-loop turn.
     AwaitYield(Box<TE>),
     /// print an object; `tmp` is an i32 scratch local holding it
@@ -1310,6 +1328,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
+    let channel_heap=imports.iter().any(|i| matches!(i,Import::ChannelOpen | Import::ChannelSend |
+        Import::ChannelNbRead | Import::ChannelAwaitRead | Import::ChannelCancel | Import::ChannelAbandon |
+        Import::ChannelClose | Import::ChannelRelease));
     let tasks = p.funcs.iter().enumerate().filter(|(_, f)| f.name.starts_with("$atto_task_"))
         .map(|(i, _)| i as u32).collect();
     Ok(TProgram {
@@ -1318,7 +1339,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         main,
         imports,
         data,
-        heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
+        heap: !p.classes.is_empty() || concat || adt_alloc || channel_heap || !generators.is_empty(),
         generators,
         globals,
         actors: tactors,
@@ -1496,7 +1517,10 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } |
         TExpr::SleepMs(_) | TExpr::Barrier(_) | TExpr::TaskStart(_) |
-        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) => false,
+        TExpr::TaskAwait(_) | TExpr::AwaitYield(_) |
+        TExpr::ChannelOpen { .. } | TExpr::ChannelRead { .. } |
+        TExpr::ChannelSend { .. } | TExpr::ChannelFinish { .. } |
+        TExpr::ChannelAwait { .. } => false,
     }
 }
 
@@ -1547,6 +1571,11 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
     }
     match &e.e {
         TExpr::Trap { value, .. } => any_in(value, f),
+        TExpr::ChannelOpen { .. } => false,
+        TExpr::ChannelRead {channel,..} | TExpr::ChannelFinish {channel,..} =>
+            any_in(channel,f),
+        TExpr::ChannelSend {channel,value,..} => any_in(channel,f)||any_in(value,f),
+        TExpr::ChannelAwait {ticket,..} => any_in(ticket,f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a)
         | TExpr::SleepMs(a) | TExpr::Barrier(a) | TExpr::TaskAwait(a)
         | TExpr::AwaitYield(a) => any_in(a, f),
@@ -1975,7 +2004,8 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultOptionIntIoError | Type::ResultChannelIntIoError | Type::ResultVoidIoError) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -2197,6 +2227,12 @@ impl<'a> FnCx<'a> {
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
                         (Type::OptionResultIntStr, "None") => (0, None),
                         (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
+                        (Type::ResultOptionIntIoError, "Ok") => (0, Some(Type::OptionInt)),
+                        (Type::ResultOptionIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultChannelIntIoError, "Ok") => (0, Some(Type::ChannelInt)),
+                        (Type::ResultChannelIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultVoidIoError, "Ok") => (0, None),
+                        (Type::ResultVoidIoError, "Err") => (1, Some(Type::IoError)),
                         _ => return Err(type_err(arm.pos,
                             format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
@@ -2430,6 +2466,12 @@ impl<'a> FnCx<'a> {
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
             (Type::OptionResultIntStr, "None") => (0, None),
             (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
+                        (Type::ResultOptionIntIoError, "Ok") => (0, Some(Type::OptionInt)),
+                        (Type::ResultOptionIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultChannelIntIoError, "Ok") => (0, Some(Type::ChannelInt)),
+                        (Type::ResultChannelIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultVoidIoError, "Ok") => (0, None),
+                        (Type::ResultVoidIoError, "Err") => (1, Some(Type::IoError)),
             _ => return Err(type_err(e.pos,
                 format!("variant '{variant}' is not valid for {}", self.tn(want)))),
         };
@@ -2549,7 +2591,7 @@ impl<'a> FnCx<'a> {
     /// assignment, argument, return): naming an object local moves it.
     fn consume(&mut self, e: &Expr) -> R<TE> {
         let v = self.value(e)?;
-        if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_) | Type::FutureInt) = (&e.kind, &v.e, v.ty) {
+        if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_) | Type::FutureInt | Type::FutureReadInt | Type::ChannelInt) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
             if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
                 return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
@@ -2642,6 +2684,17 @@ impl<'a> FnCx<'a> {
                     }
                     self.imports.push(Import::TaskAwait);
                     TE {e: TExpr::TaskAwait(Box::new(v)), ty: Type::Int}
+                } else if v.ty==Type::FutureReadInt {
+                    if let ExprKind::Var(_) = &inner.kind {
+                        if let TExpr::Local(slot)=&v.e {self.moved.insert(*slot);}
+                    }
+                    self.imports.push(Import::ChannelAwaitRead);
+                    let scratch=self.temp(Type::ChannelInt,e.pos)?;
+                    let status=self.temp(Type::IoError,e.pos)?;
+                    let result=self.temp(Type::ResultOptionIntIoError,e.pos)?;
+                    let option=self.temp(Type::OptionInt,e.pos)?;
+                    TE {e:TExpr::ChannelAwait {ticket:Box::new(v),scratch,status,result,option},
+                        ty:Type::ResultOptionIntIoError}
                 } else if matches!(v.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
                     v
                 } else {
@@ -2744,10 +2797,29 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
+        // Left-associative operators are parsed without recursive descent,
+        // but checking the resulting left spine recursively consumes several
+        // host stack frames per operator. Reconstruct the typed chain in
+        // source order with a bounded explicit stack instead. This preserves
+        // eager evaluation, promotions, checked arithmetic and diagnostics.
+        let mut spine = vec![(op, r, pos)];
+        let mut cursor = l;
+        while let ExprKind::Binary(inner_op, inner_left, inner_right) = &cursor.kind {
+            spine.push((*inner_op, inner_right.as_ref(), cursor.pos));
+            cursor = inner_left;
+        }
+        let mut value = self.value(cursor)?;
+        for (op, right, at) in spine.into_iter().rev() {
+            let next = self.value(right)?;
+            value = self.binary_values(op, value, next, at)?;
+        }
+        Ok(value)
+    }
+
+    #[inline(never)]
+    fn binary_values(&mut self, op: BinOp, a: TE, b: TE, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
             if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
                 let both = a.ty == Type::Str && b.ty == Type::Str;
                 return match op {
@@ -3004,6 +3076,8 @@ impl<'a> FnCx<'a> {
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
+            ExprKind::Call(name,args) if name=="$atto_ch_open" => self.channel_open(args,pos)?,
+            ExprKind::Call(name,args) if name=="$atto_ch_read" => self.channel_read(args,pos)?,
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
             ExprKind::Task(name) => {
                 if !self.suspends { return Err(Diagnostic::new(pos, "E_EFFECT", "task requires a suspends fnc")); }
@@ -3429,6 +3503,8 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn method_on(&mut self, recv: TE, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if recv.ty==Type::ChannelInt {return self.channel_method(recv,name,args,pos);}
+        if recv.ty==Type::FutureReadInt {return self.channel_cancel(recv,name,args,pos);}
         if recv.ty == Type::Str {
             return self.string_method(recv, name, args, pos);
         }

@@ -112,6 +112,60 @@ test('strict i64 payload validation preserves signed 64-bit edges',async()=>{
   }
 });
 
+test('abandon_read releases pending registration and quota without dropping future messages',async()=>{
+  const rt=new ChannelIntHostV1({maxChannels:1,maxTickets:1,maxCapacity:0});
+  const ch=rt.open(0).value;
+  const old=rt.nb_read(ch).value;
+  assert.deepEqual(rt.nb_read(ch),error('Quota'));
+  assert.deepEqual(rt.abandon_read(old),{ok:true,value:{abandoned:true}});
+  assert.equal(rt.snapshot(ch).value.pending,0);
+  assert.equal(rt.snapshot(ch).value.outstanding,0);
+  assert.deepEqual(await rt.await_read(old),error('AlreadyConsumed'));
+  const fresh=rt.nb_read(ch).value;
+  assert.equal(rt.send(ch,41n).ok,true);
+  assert.deepEqual(await rt.await_read(fresh),item(41));
+  rt.close(ch);
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('abandon_read resolves an already-claimed pending await exactly once',async()=>{
+  const rt=new ChannelIntHostV1({maxTickets:1});
+  const ch=rt.open(0).value;
+  const ticket=rt.nb_read(ch).value;
+  const awaited=rt.await_read(ticket);
+  assert.deepEqual(rt.abandon_read(ticket),{ok:true,value:{abandoned:true}});
+  assert.deepEqual(await awaited,error('Cancelled'));
+  assert.deepEqual(rt.abandon_read(ticket),error('AlreadyConsumed'));
+  assert.equal(rt.snapshot(ch).value.outstanding,0);
+  assert.equal(rt.send(ch,4n).ok,false,'orphan read cannot admit a send');
+  rt.close(ch);
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('abandon_read refuses to discard an admitted value, even after close',async()=>{
+  const rt=new ChannelIntHostV1({maxChannels:1,maxTickets:1,maxCapacity:1});
+  const ch=rt.open(0).value;
+  const ticket=rt.nb_read(ch).value;
+  assert.equal(rt.send(ch,-9223372036854775808n).ok,true);
+  rt.close(ch);
+  assert.deepEqual(rt.abandon_read(ticket),error('Busy'));
+  assert.deepEqual(rt.release(ch),error('Busy'));
+  assert.deepEqual(await rt.await_read(ticket),item(-9223372036854775808n));
+  assert.deepEqual(rt.abandon_read(ticket),error('AlreadyConsumed'));
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('abandon_read reclaims settled EOF tickets, preserving close and release',async()=>{
+  const rt=new ChannelIntHostV1({maxChannels:1,maxTickets:1});
+  const ch=rt.open(0).value;
+  rt.close(ch);
+  const ticket=rt.nb_read(ch).value;
+  assert.deepEqual(rt.release(ch),error('Busy'));
+  assert.deepEqual(rt.abandon_read(ticket),{ok:true,value:{abandoned:true}});
+  assert.deepEqual(await rt.await_read(ticket),error('AlreadyConsumed'));
+  assert.equal(rt.release(ch).ok,true);
+});
+
 test('pending-read quota errors are checked and recover after settlement',async()=>{
   const rt=new ChannelIntHostV1({maxChannels:2,maxTickets:2,maxCapacity:2});
   const ch=rt.open(0).value;
@@ -190,4 +244,71 @@ test('release does not discard buffered payloads after close',async()=>{
   assert.deepEqual(rt.release(ch),error('Busy'));
   assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(41));
   assert.deepEqual(rt.release(ch),{ok:true,value:{released:true}});
+});
+
+// Keep v1 checked guest ABI probes in the existing channel CI gate.
+import './channel_int_guest_v1.test.mjs';
+
+test('consuming abandon reclaims unclaimed pending ticket quota',async()=>{
+  const rt=new ChannelIntHostV1({maxChannels:1,maxTickets:1,maxCapacity:0});
+  const ch=rt.open(0).value;
+  const a=rt.nb_read(ch).value;
+  assert.deepEqual(rt.nb_read(ch),error('Quota'));
+  assert.deepEqual(rt.abandon(a),{ok:true,value:{abandoned:true}});
+  assert.deepEqual(rt.abandon(a),error('AlreadyConsumed'));
+  const b=rt.nb_read(ch).value;
+  assert.notEqual(a,b);
+  const read=rt.await_read(b);
+  assert.equal(rt.send(ch,42n).ok,true);
+  assert.deepEqual(await read,item(42));
+  rt.close(ch);
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('consuming abandon rehomes committed value to next FIFO reader',async()=>{
+  const {rt,ch}=fresh(0);
+  const first=rt.nb_read(ch).value;
+  assert.equal(rt.send(ch,41n).ok,true);
+  const second=rt.nb_read(ch).value;
+  const next=rt.await_read(second);
+  assert.deepEqual(rt.abandon(first),{ok:true,value:{abandoned:true}});
+  assert.deepEqual(await next,item(41));
+  assert.deepEqual(await rt.await_read(first),error('AlreadyConsumed'));
+  rt.close(ch);
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('consuming abandon after close requeues committed rendezvous value',async()=>{
+  const {rt,ch}=fresh(0);
+  const a=rt.nb_read(ch).value;
+  rt.send(ch,-(1n<<63n));
+  rt.close(ch);
+  assert.deepEqual(rt.abandon(a),{ok:true,value:{abandoned:true}});
+  assert.deepEqual(rt.release(ch),error('Busy'));
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(-(1n<<63n)));
+  assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),eof);
+  assert.equal(rt.release(ch).ok,true);
+});
+
+test('finalizer cancels claimed awaits, retires abandoned reads and revokes handles',async()=>{
+  const rt=new ChannelIntHostV1({maxChannels:2,maxTickets:3,maxCapacity:1});
+  const a=rt.open(0).value,b=rt.open(1).value;
+  const wait=rt.await_read(rt.nb_read(a).value);
+  rt.nb_read(a);
+  const filled=rt.nb_read(b).value;rt.send(b,9223372036854775807n);
+  assert.deepEqual(rt.dispose(),{ok:true,value:{alreadyDisposed:false,channels:2,tickets:3}});
+  assert.deepEqual(await wait,error('Cancelled'));
+  assert.deepEqual(await rt.await_read(filled),error('AlreadyConsumed'));
+  assert.deepEqual(rt.dispose(),{ok:true,value:{alreadyDisposed:true,channels:0,tickets:0}});
+  assert.deepEqual(rt.send(a,41n),error('InvalidHandle'));
+  assert.deepEqual(rt.open(0),error('Closed'));
+});
+
+test('claimed Future cannot be consuming-abandoned while await owns it',async()=>{
+  const {rt,ch}=fresh(0);
+  const ticket=rt.nb_read(ch).value,pending=rt.await_read(ticket);
+  assert.deepEqual(rt.abandon(ticket),error('Busy'));
+  assert.equal(rt.cancel(ticket).ok,true);
+  assert.deepEqual(await pending,error('Cancelled'));
+  assert.deepEqual(rt.abandon(ticket),error('AlreadyConsumed'));
 });

@@ -14,6 +14,13 @@ pub enum Type {
     Str,
     /// Browser async MVP: an owned, single-use Future<int> task handle.
     FutureInt,
+    /// Staged, exact checked Channel<int> ABI types (no guest imports yet).
+    ChannelInt,
+    IoError,
+    FutureReadInt,
+    ResultOptionIntIoError,
+    ResultChannelIntIoError,
+    ResultVoidIoError,
     /// Unresolved user type name: index into [`Program::type_names`].
     /// The checker replaces it with `Class` or `Enum`.
     Named(u32),
@@ -52,6 +59,12 @@ impl Type {
             Type::Float => "float",
             Type::Str => "string",
             Type::FutureInt => "Future<int>",
+            Type::ChannelInt => "Channel<int>",
+            Type::IoError => "IoError",
+            Type::FutureReadInt => "Future<Result<Option<int>,IoError>>",
+            Type::ResultOptionIntIoError => "Result<Option<int>,IoError>",
+            Type::ResultChannelIntIoError => "Result<Channel<int>,IoError>",
+            Type::ResultVoidIoError => "Result<void,IoError>",
             Type::OptionInt => "Option<int>",
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
