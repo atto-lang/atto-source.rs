@@ -48,8 +48,8 @@ fn brace_entries_distinguish_maps_from_records() {
     match init_kind(&records) {
         ExprKind::Record(entries) => {
             assert_eq!(entries.len(), 2);
-            assert!(matches!(entries[0].1.kind, ExprKind::Array(_)));
-            assert!(matches!(entries[1].1.kind, ExprKind::Record(_)));
+            assert!(matches!(&entries[0].1.kind, ExprKind::Array(_)));
+            assert!(matches!(&entries[1].1.kind, ExprKind::Record(_)));
         }
         _ => panic!("record entry AST was not preserved"),
     }
