@@ -941,11 +941,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         // identity-free slots. Class/actor/ADT handles require a graph memo,
         // and protected actor-state objects cannot bypass their sealed leases.
         // Custom copy_deep overrides need separate proof/hook chaining.
-        let deep_copy_idx = (!c.state_container
+        let can_generate_deep_copy = !c.state_container
             && !c.methods.iter().any(|m| m.name == "copy_deep")
             && fields.iter().all(|f| matches!(f.ty,
-                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_))))
-            .then(&mut take);
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)));
+        let deep_copy_idx = if can_generate_deep_copy { Some(take()) } else { None };
         let ctor_params = match &c.ctor {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
             None => Vec::new(),
