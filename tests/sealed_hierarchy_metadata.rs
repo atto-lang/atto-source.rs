@@ -146,3 +146,20 @@ fn local_name_collision_does_not_infer_foreign_link_identity() {
     assert_eq!(b, 0);
     assert_eq!(a_entries, b_entries, "class labels alone are not globally unique");
 }
+
+#[test]
+fn package_export_is_never_mislabeled_globally_public() {
+    let source = r#"
+        export pub[pkg] class Root;
+        define sealed class Root permits Child as end
+        define final class Child extends Root as end
+        pub fnc main(): int { return 42; }
+    "#;
+    let (domain, classes) = decode(&compile(source).unwrap());
+    assert_eq!(domain, 0);
+    assert_eq!(classes.len(), 2);
+    let root = classes.iter().find(|c| c.name == "Root").unwrap();
+    assert_eq!(root.status, 1);
+    assert_eq!(root.public, 0, "pub[pkg] cannot become globally public");
+    assert_eq!(root.permits, ["Child"]);
+}
