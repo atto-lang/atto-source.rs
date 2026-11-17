@@ -17,10 +17,18 @@ const positive=[
   {name:"Record annotation",source:"fnc main(): int { val r: Record={a:20}; val s: record=r with {b:22}; return r.a+s.b; }",want:42n},
   {name:"checked computed replacement",source:"fnc main(): int { val r={n:20}; val s=r with {n:r.n+22}; return r.n+s.n; }",want:62n},
   {name:"boolean and float preserved",source:"fnc main():int { val r={f:2.5,active:true}; val s=r with {active:false}; if r.active then return 1; else return 0; fi }",want:1n},
-  {name:"quoted identifier label",source:'fnc main():int { val r={"answer":40}; val s=r with {answer:42}; return s.answer; }',want:42n}
+  {name:"quoted identifier label",source:'fnc main():int { val r={"answer":40}; val s=r with {answer:42}; return s.answer; }',want:42n},
+  {name:"quoted content type with dot and bracket",source:'fnc main():int { val r={status_code:200,"content-type":"json"}; val s=r with {"content-type":"msgpack","x-request-id":"id"}; if s["content-type"] eq "msgpack" then return r.status_code; else return 0; fi }',want:200n},
+  {name:"unicode and empty key reconstruction",source:'fnc main():int { val r={"":40,"some field":2,"🦙":1}; val s=r with {"🦙":3}; return s[""]+s["some field"]+s["🦙"]; }',want:45n},
+  {name:"lexical shadowed record",source:'fnc main():int { val r={n:8}; block { val r={"other-key":10}; val c=r with {"other-key":20}; if c["other-key"] eq 20 then val z=c with {"another":1}; fi } return r.n; }',want:8n},
+  {name:"if branch record construction",source:'fnc main():int { val r={n:20}; if r.n eq 20 then val s=r with {n:22}; if s.n eq 22 then return r.n+s.n; fi fi return 0; }',want:42n},
+  {name:"while loop scoped records",source:'fnc main():int { let i=0; let sum=0; while i < 3 do val r={n:i}; val c=r with {n:r.n+1}; sum=sum+c.n; i=i+1; done return sum; }',want:6n},
+  {name:"same-shape mutable Record reassignment",source:'fnc main():int { let r={n:20}; r=r with {n:22}; return r.n; }',want:22n}
 ];
 const negative=[
-  {name:"quoted nonidentifier",source:'fnc main(): int { val r={"content-type":"x"};return 0;}',want:"E_UNSUPPORTED"},
+  {name:"compiler private slot not visible to source",source:'fnc main():int { val r={"content-type":"x"};return r.f0; }',want:"E_NO_FIELD"},
+  {name:"unknown quoted field is rejected",source:'fnc main():int { val r={"content-type":"x"};return r["content_typo"]; }',want:"E_NO_FIELD"},
+  {name:"computed Record key is rejected",source:'fnc main():int { val r={n:5};val key="n";return r[key]; }',want:"E_RECORD_KEY"},
   {name:"nested graph",source:"fnc main(): int { val r={a:{nested:1}};return 0;}",want:"E_UNSUPPORTED"},
   {name:"unknown computed value",source:"fnc main(): int { val r={a:1}; val s=r with {b:unknown()};return 0;}",want:"E_WITH_TYPE"},
   {name:"open receiver",source:"fnc f(r:Record):int { val y=r with {a:1};return 0; } fnc main():int{return 0;}",want:"E_WITH_OPEN_RECORD"},
