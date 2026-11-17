@@ -13,21 +13,40 @@ use crate::ast::{Expr, ExprKind, Stmt};
 
 const MAX_STRAIGHT_STATEMENTS: usize = 256;
 const MAX_VISITED_EXPR_NODES: usize = 4096;
+/// Hard upper bound across ALL lifetime scans in one checked function;
+/// prevents many alias/suffix combinations from causing quadratic work.
+pub(super) const MAX_NLL_WORK_PER_FUNCTION: usize = 32_768;
 
 /// True is a conservative proof that the alias is unused in ALL remaining
 /// straight-line statements. False means either used or insufficient proof.
-pub(super) fn proven_dead_after_boundary(tail: &[Stmt], alias: &str) -> bool {
-    if alias.is_empty() || tail.len() > MAX_STRAIGHT_STATEMENTS {
+pub(super) fn proven_dead_after_boundary(
+    tail: &[Stmt],
+    alias: &str,
+    function_budget: &mut usize,
+) -> bool {
+    if alias.is_empty() || tail.len() > MAX_STRAIGHT_STATEMENTS || *function_budget == 0 {
         return false;
     }
-    let mut budget = MAX_VISITED_EXPR_NODES;
+    // Keep each individual scan finite as well as the entire function.
+    let mut scan_budget = (*function_budget).min(MAX_VISITED_EXPR_NODES);
+    let original = scan_budget;
+    let mut result = true;
     for stmt in tail {
-        match stmt_uses_alias(stmt, alias, &mut budget) {
+        if scan_budget == 0 {
+            result = false;
+            break;
+        }
+        scan_budget -= 1;
+        match stmt_uses_alias(stmt, alias, &mut scan_budget) {
             Some(false) => {}
-            Some(true) | None => return false,
+            Some(true) | None => {
+                result = false;
+                break;
+            }
         }
     }
-    true
+    *function_budget -= original - scan_budget;
+    result
 }
 
 /// None = unsupported or resource budget exhausted, i.e. MAY use alias.
@@ -39,9 +58,11 @@ fn expr_uses_alias(expr: &Expr, alias: &str, budget: &mut usize) -> Option<bool>
     match &expr.kind {
         ExprKind::Var(name) => Some(name == alias),
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_)
-        | ExprKind::SelfRef | ExprKind::Spawn(_) => Some(false),
-        ExprKind::Unary(_, inner) | ExprKind::Trap(inner) | ExprKind::Propagate(inner)
-        | ExprKind::Member(inner, _) => expr_uses_alias(inner, alias, budget),
+        | ExprKind::SelfRef => Some(false),
+        ExprKind::Unary(op, inner) if matches!(
+            op, crate::ast::UnOp::Neg | crate::ast::UnOp::Plus
+                | crate::ast::UnOp::Not | crate::ast::UnOp::Copy
+        ) => expr_uses_alias(inner, alias, budget),
         ExprKind::Binary(_, a, b) => combine([
             expr_uses_alias(a, alias, budget),
             expr_uses_alias(b, alias, budget),
@@ -51,16 +72,15 @@ fn expr_uses_alias(expr: &Expr, alias: &str, budget: &mut usize) -> Option<bool>
             expr_uses_alias(b, alias, budget),
             expr_uses_alias(c, alias, budget),
         ]),
-        ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) =>
-            expr_list_uses_alias(args, alias, budget),
-        ExprKind::MethodCall(recv, _, args) => {
-            let recv = expr_uses_alias(recv, alias, budget);
-            // Always scan all arguments, including those with side effects.
-            let args = expr_list_uses_alias(args, alias, budget);
-            combine([recv, args])
-        }
-        // Callables/captures cannot be certified without typed environment.
-        ExprKind::Lambda { .. } => None,
+        // A future call may throw or run an unmodeled cleanup path.
+        // Actor spawns, ownership transfer, propagation, field/heap accesses,
+        // callbacks and captures require a real typed CFG/effect proof.
+        // Retaining the lexical loan is safer than claiming source purity.
+        ExprKind::Call(..) | ExprKind::MethodCall(..) | ExprKind::New(..)
+        | ExprKind::Array(..) | ExprKind::Spawn(..)
+        | ExprKind::Trap(..) | ExprKind::Propagate(..)
+        | ExprKind::Member(..) | ExprKind::Unary(..)
+        | ExprKind::Lambda { .. } => None,
     }
 }
 fn combine<const N: usize>(items: [Option<bool>; N]) -> Option<bool> {
@@ -71,17 +91,6 @@ fn combine<const N: usize>(items: [Option<bool>; N]) -> Option<bool> {
     } else {
         Some(false)
     }
-}
-fn expr_list_uses_alias(items: &[Expr], alias: &str, budget: &mut usize) -> Option<bool> {
-    let mut unknown = false;
-    for item in items {
-        match expr_uses_alias(item, alias, budget) {
-            Some(true) => return Some(true),
-            Some(false) => {}
-            None => unknown = true,
-        }
-    }
-    if unknown { None } else { Some(false) }
 }
 fn stmt_uses_alias(stmt: &Stmt, alias: &str, budget: &mut usize) -> Option<bool> {
     match stmt {
@@ -111,6 +120,11 @@ mod tests {
     use crate::ast::{BinOp, BindKind, ExprKind};
     use crate::diag::Pos;
 
+    fn proves(tail: &[Stmt], alias: &str) -> bool {
+        let mut budget = MAX_VISITED_EXPR_NODES;
+        proven_dead_after_boundary(tail, alias, &mut budget)
+    }
+
     fn expr(kind: ExprKind) -> Expr {
         Expr { kind, pos: Pos::default() }
     }
@@ -126,7 +140,7 @@ mod tests {
 
     #[test]
     fn no_alias_use_in_remaining_straight_line_proves_dead() {
-        assert!(proven_dead_after_boundary(&[
+        assert!(proves(&[
             assign("owner", lit(42)),
             Stmt::Return(Some(var("owner")), Pos::default()),
         ], "reader"));
@@ -134,7 +148,7 @@ mod tests {
 
     #[test]
     fn copy_and_return_alias_keeps_loan_live() {
-        assert!(!proven_dead_after_boundary(&[
+        assert!(!proves(&[
             Stmt::Return(Some(expr(ExprKind::Unary(
                 crate::ast::UnOp::Copy,
                 Box::new(var("reader")),
@@ -144,12 +158,12 @@ mod tests {
 
     #[test]
     fn assignment_through_exclusive_alias_keeps_loan_live() {
-        assert!(!proven_dead_after_boundary(&[assign("writer", lit(41))], "writer"));
+        assert!(!proves(&[assign("writer", lit(41))], "writer"));
     }
 
     #[test]
     fn nested_condition_without_verified_cfg_retains_loan() {
-        assert!(!proven_dead_after_boundary(&[
+        assert!(!proves(&[
             Stmt::If {
                 arms: vec![(expr(ExprKind::Bool(true)), vec![Stmt::Expr(var("reader"))])],
                 otherwise: None,
@@ -172,12 +186,12 @@ mod tests {
                 ))),
             ))],
         ));
-        assert!(!proven_dead_after_boundary(&[Stmt::Expr(call)], "reader"));
+        assert!(!proves(&[Stmt::Expr(call)], "reader"));
     }
 
     #[test]
     fn initializer_alias_read_cannot_be_omitted_from_scan() {
-        assert!(!proven_dead_after_boundary(&[
+        assert!(!proves(&[
             Stmt::Bind {
                 kind: BindKind::Val,
                 name: "copy".to_string(),
@@ -190,14 +204,14 @@ mod tests {
 
     #[test]
     fn unknown_callable_and_control_flow_fail_closed() {
-        assert!(!proven_dead_after_boundary(&[
+        assert!(!proves(&[
             Stmt::Expr(expr(ExprKind::Lambda {
                 params: vec![],
                 return_type: None,
                 body: crate::ast::LambdaBody::Expression(Box::new(lit(42))),
             })),
         ], "reader"));
-        assert!(!proven_dead_after_boundary(&[
+        assert!(!proves(&[
             Stmt::Block(vec![Stmt::Expr(lit(2))]),
         ], "reader"));
     }
@@ -205,7 +219,7 @@ mod tests {
     #[test]
     fn oversized_tail_fails_closed_instead_of_scanning_unbounded_source() {
         let stmts: Vec<Stmt> = (0..257).map(|_| Stmt::Expr(lit(42))).collect();
-        assert!(!proven_dead_after_boundary(&stmts, "reader"));
-        assert!(!proven_dead_after_boundary(&[], ""));
+        assert!(!proves(&stmts, "reader"));
+        assert!(!proves(&[], ""));
     }
 }
