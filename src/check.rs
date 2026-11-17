@@ -19,6 +19,7 @@ use crate::diag::{Diagnostic, Pos};
 mod generator_lower;
 mod scalar_lifetime;
 pub mod typed_mir_census;
+pub mod loan_cfg_oracle_v1;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
@@ -205,6 +206,10 @@ pub enum TStmt {
     /// Non-lexical last-use boundary proven by the existing source checker.
     /// This is a diagnostic fact, not independent permission for codegen.
     ScalarLoanEnd { loan_id: u32, owner_slot: u32 },
+    /// Checked lexical scope termination for loans that remain live when
+    /// a nested block/if-arm finishes. NLL ends use ScalarLoanEnd instead.
+    /// This diagnostic event emits no guest bytes.
+    ScalarLoanScopeEnd { loan_id: u32, owner_slot: u32 },
     Set(u32, TE),
     /// store `value` into the field at `offset` of `obj`
     FieldSet {
@@ -1404,7 +1409,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::Block(b) => any_in_stmts(b, f),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable
         | TStmt::ScalarBorrowIssue { .. }
-        | TStmt::ScalarLoanUse { .. } | TStmt::ScalarLoanEnd { .. } => false,
+        | TStmt::ScalarLoanUse { .. } | TStmt::ScalarLoanEnd { .. }
+        | TStmt::ScalarLoanScopeEnd { .. } => false,
     })
 }
 
@@ -1650,8 +1656,23 @@ impl<'a> FnCx<'a> {
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.scopes.push(Vec::new());
         let r = self.stmts(body);
-        self.scopes.pop();
-        r
+        let scope = self.scopes.pop().expect("checked lexical scope");
+        r.map(|mut statements| {
+            // A real scoped exit closes every issued loan remaining active.
+            // These markers are diagnostic only: return/break/unwind edges
+            // still require explicit CFG proof before being certified.
+            for local in scope {
+                if local.borrow.is_some() && !local.borrow_retired {
+                    if let Some(loan_id) = local.loan_id {
+                        statements.push(TStmt::ScalarLoanScopeEnd {
+                            loan_id,
+                            owner_slot: local.slot,
+                        });
+                    }
+                }
+            }
+            statements
+        })
     }
 
     fn looped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {

@@ -271,7 +271,8 @@ impl Emit<'_> {
             // scalar slot directly. The marker exists for typed-MIR audits.
             TStmt::ScalarBorrowIssue { .. }
             | TStmt::ScalarLoanUse { .. }
-            | TStmt::ScalarLoanEnd { .. } => {}
+            | TStmt::ScalarLoanEnd { .. }
+            | TStmt::ScalarLoanScopeEnd { .. } => {}
             TStmt::Set(slot, v) => {
                 self.expr(v);
                 self.op(0x21);
