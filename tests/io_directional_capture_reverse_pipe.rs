@@ -67,3 +67,65 @@ fn bare_await_stage_remains_forbidden_outside_contextual_named_future_capture() 
     let diag = compile(src).expect_err("await is not a generic callable stage");
     assert_eq!(diag.code, "E_UNSUPPORTED");
 }
+
+
+#[test]
+fn optional_equals_is_accepted_independently_at_both_nb_directional_bindings() {
+    // The two spellings remain parser-only: a syntactically valid read must
+    // reach the explicit unsupported guest ABI gate, never emit fake Wasm.
+    for (initial, terminal) in [("", ""), ("= ", ""), ("", "= "), ("= ", "= ")] {
+        let operation = format!(
+            "nb stdio.in >> {initial}Future<Result<Option<string>,IoError>> x \
+             |> |f| -> (await f)? >> {terminal}val Option<string> pending_line;"
+        );
+        let diag = compile(&program(&operation))
+            .expect_err("guest stdin ABI is not present");
+        assert_eq!(diag.code, "E_UNSUPPORTED", "{operation}: {diag}");
+        assert!(diag.message.contains("guest ABI"), "{operation}: {diag}");
+    }
+}
+
+#[test]
+fn optional_equals_also_accepts_explicit_val_future_binder_and_reverse_capture() {
+    for operation in [
+        "nb stdio.in >> = val pending: Future<Result<Option<string>,IoError>> |> susp |f| -> (await f)? >> = val Option<string> line;",
+        "nb stdio.in >> = (val Option<string> line << |f| -> (await f)? <| Future<Result<Option<string>,IoError>>);",
+    ] {
+        let diag = compile(&program(operation))
+            .expect_err("typed stdin read is not guest executable");
+        assert_eq!(diag.code, "E_UNSUPPORTED", "{operation}: {diag}");
+        assert!(diag.message.contains("guest ABI"), "{operation}: {diag}");
+    }
+}
+
+#[test]
+fn direction_equals_is_one_optional_spaced_marker_not_an_assignment_operator() {
+    for operation in [
+        "nb stdio.in >>= Future<string> x |> |f| -> await f >> val string line;",
+        "nb stdio.in >>== Future<string> x |> |f| -> await f >> val string line;",
+        "nb stdio.in >> == Future<string> x |> |f| -> await f >> val string line;",
+        "nb stdio.in >> = = Future<string> x |> |f| -> await f >> val string line;",
+        "nb stdio.in >> = Future<string> x |> |f| -> await f >>= val string line;",
+        "nb stdio.in >> = Future<string> x |> |f| -> await f >> == val string line;",
+        "nb stdio.in >> = Future<string> x |> |f| -> await f >> = = val string line;",
+        "nb stdio.in >> = Future<string> x |> |f| -> await f >> = pending_line;",
+        "nb stdio.in >> = Future<string> x |> |f| -> await f >> = const string line;",
+    ] {
+        let diag = compile(&program(operation))
+            .expect_err("no arbitrary assignment, shift, or repeated direction marker");
+        assert_ne!(diag.code, "E_UNSUPPORTED",
+            "invalid grammar must not reach missing-ABI gate: {operation}: {diag}");
+    }
+}
+
+#[test]
+fn contextual_equals_does_not_erase_result_or_option_payload() {
+    for operation in [
+        "nb stdio.in >> = Future<Result<Option<string>,IoError>> x |> |f| -> await f >> = val Option<string> line;",
+        "nb stdio.in >> = Future<Result<Option<string>,IoError>> x |> |f| -> (await f)? >> = val string line;",
+        "nb stdio.in >> = Future<string> x |> |f| -> (await f)? >> = val string line;",
+    ] {
+        let diag = compile(&program(operation)).expect_err("lossy binding must be rejected");
+        assert_eq!(diag.code, "E_TYPE", "{operation}: {diag}");
+    }
+}
