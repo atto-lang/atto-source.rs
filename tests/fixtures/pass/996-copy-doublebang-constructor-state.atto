@@ -6,9 +6,13 @@ define class Counter as
     constructor(int x) {
         self.value = x;
     }
+    pub get_value(): int {
+        return self.value;
+    }
 end
 pub fnc main(): int {
     val source = new Counter(42);
     val detached = copy!! source;
-    return detached.value;
+    // Private fields remain private; the class's accessor sees cloned state.
+    return detached.get_value();
 }
