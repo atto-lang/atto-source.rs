@@ -62,3 +62,37 @@ node tests/browser-e2e.mjs
 
 Run on exact source HEAD root-tree via token-free SHA-verified private Actions carrier
 if source runner cannot allocate jobs. Never count skipped tests as success.
+
+
+## Expression-level provenance audit hardening (stage 2b)
+
+A source-checked alias read no longer appears as an indistinguishable
+`TExpr::Local(owner_slot)`. Its typed IR node is
+`TExpr::LoanRead { loan_id, owner_slot }`. The Wasm backend emits the **same**
+`local.get owner_slot` bytes and introduces no guest pointer, heap object
+or runtime loan machinery.
+
+The restricted diagnostic re-walks each typed scalar expression independently
+of the source-level `ScalarLoanUse` marker list. It now requires an exact
+ordered one-to-one match between each guest alias load and the preceding
+read marker; it rejects missing/duplicate markers, forged plain locals,
+invalid loan identities, and direct owner reads under exclusive loans.
+A pending exclusive write marker must be immediately consumed by a matching
+owner-slot store; it cannot be laundered through a different statement.
+
+A possible checked arithmetic trap or branch expression while any loan is
+live is **unsupported**, not silently certified by the straight-line
+lifecycle model, because no exceptional/conditional cleanup edge has been
+proved yet. Normal language compilation continues to use its pre-existing
+ownership checker and is not blocked by this opt-in diagnostic limitation.
+
+The strict pure-scalar census also rejects standalone `TExpr::LoanRead` even
+if a malformed caller removes loan lifecycle markers; this prevents stripping
+the markers to fabricate a pure proof.
+
+**Remaining trust boundary:** The same compiler lowering creates the
+expression-level loan identity and the event marker. Agreement is stronger
+consistency checking, not independent source-to-emitted-Wasm coverage or
+Polonius-equivalent liveness. The existing NLL scanner still determines
+loan-end points. Complete emitted-op receipts, phi/CFG, FFI, cancellation,
+actor and exceptional cleanup proof remain necessary for production.
