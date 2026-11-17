@@ -2910,12 +2910,30 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    /// An ordinary class method may compare the identity of its own live
+    /// receiver without turning `self` into an owned, movable expression.
+    /// This narrow projection is *only* used for == and !=. General `self`
+    /// values, actor `self`, and static method receivers remain forbidden.
+    #[inline(never)]
+    fn identity_operand(&mut self, expr: &Expr) -> R<TE> {
+        if matches!(expr.kind, ExprKind::SelfRef) {
+            if let Owner::Class { c, is_static: false, .. } = self.owner {
+                return Ok(TE { e: TExpr::Local(0), ty: Type::Class(c) });
+            }
+        }
+        self.value(expr)
+    }
+
     #[inline(never)]
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<TE> {
         let op = &op;
         Ok({
-            let a = self.value(l)?;
-            let b = self.value(r)?;
+            // Keep primitive operators on their previous recursive stack path.
+            // Only reference identity may project class `self` as a read-only
+            // i32 handle, never as a transferable owner.
+            let identity = matches!(op, BinOp::IdEq | BinOp::IdNe);
+            let a = if identity { self.identity_operand(l)? } else { self.value(l)? };
+            let b = if identity { self.identity_operand(r)? } else { self.value(r)? };
             // Identity comparison must not fall through to primitive value equality.
             // In this bounded guest runtime, class objects have stable i32 handles.
             // Actor capabilities, value aggregates, strings and scalars are not
