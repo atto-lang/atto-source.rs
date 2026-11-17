@@ -151,8 +151,11 @@ impl<'a> Scope<'a> {
             ExprKind::Unary(op,x) => {
                 let inner=self.expression(x,None,depth+1)?;
                 match (op,inner) {
-                    (UnOp::Neg | UnOp::Plus,Some(Ty::Int)) =>
-                        Some(inferred(e,None,depth).map(|t|t.ty).unwrap_or(Ty::Int)),
+                    (UnOp::Neg | UnOp::Plus,Some(Ty::Int)) => {
+                        if matches!(&x.kind, ExprKind::Int(_)) {
+                            Some(inferred(e,None,depth)?.ty)
+                        } else { Some(Ty::Int) }
+                    },
                     (UnOp::Neg | UnOp::Plus,Some(Ty::Float)) => Some(Ty::Float),
                     (UnOp::Not,Some(Ty::Bool)) => Some(Ty::Bool),
                     _ => None,
