@@ -1,0 +1,17 @@
+// expect-exit: 42
+// java: rejects
+// Both invocations must allocate their own root; modifying left does not
+// mutate the source or the independently allocated right.
+define class Parcel as
+    pub let int value = 21;
+end
+pub fnc main(): int {
+    let original = new Parcel();
+    let left = copy!! original;
+    let right = copy!! original;
+    block {
+        val writer = borrow! mut left;
+        writer.value = 99;
+    }
+    return original.value + right.value;
+}
