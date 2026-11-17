@@ -79,7 +79,7 @@ fn calls_and_control_flow_fail_closed_in_opt_in_census_not_default_compilation()
     let call = "fnc plus(int a, int b): int { return a + b; } pub fnc main(): int { return plus(40, 2); }";
     assert!(compile(call).is_ok());
     assert_eq!(compile_with_typed_scalar_census(call).unwrap_err().code, "E_TYPED_MIR_CENSUS_UNSUPPORTED");
-    let branch = "pub fnc main(): int { do if true then return 42; else return 4; fi }";
+    let branch = "pub fnc main(): int { if true then return 42; else return 4; fi }";
     assert!(compile(branch).is_ok());
     assert_eq!(compile_with_typed_scalar_census(branch).unwrap_err().code, "E_TYPED_MIR_CENSUS_UNSUPPORTED");
 }
