@@ -388,63 +388,168 @@ fn starts_literal(e: &Expr) -> bool {
         ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
 }
 
-/// Staged semantic preflight: checked declarations are *not* yet executable.
-/// Scalar-only statements remain the responsibility of the existing checker.
-fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
+/// A tracked owned variable used as a bare expression would require an
+/// ownership operation that the browser backend cannot lower yet.
+fn references_owned(e: &Expr, locals: &BTreeMap<String, LiteralType>) -> bool {
+    match &e.kind {
+        ExprKind::Var(name) => locals.get(name).is_some_and(owns_storage),
+        ExprKind::Member(base, _) => match &base.kind {
+            ExprKind::Var(name) => locals.get(name).is_some_and(owns_storage),
+            other => matches!(other, ExprKind::Record(_)),
+        },
+        _ => false,
+    }
+}
+
+fn scalar_seed(e: &Expr, locals: &BTreeMap<String, LiteralType>) -> bool {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+        ExprKind::Str(_) => true,
+        ExprKind::Unary(UnOp::Neg | UnOp::Plus, inner) =>
+            scalar_seed(inner, locals),
+        ExprKind::Var(name) => locals.get(name).is_some_and(|t| !owns_storage(t)),
+        ExprKind::Binary(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, a, b) =>
+            scalar_seed(a,locals) && scalar_seed(b,locals),
+        _ => false,
+    }
+}
+
+/// A scope-aware semantic preflight. Local type identities are conserved through
+/// sequential statements and lexical scopes, never propagated blindly across
+/// conditionals, loops or exception edges. Unknown expressions defer to the
+/// production checker; unknown expressions used in collection values reject.
+fn walk(body: &[Stmt], program: &Program,
+    locals: &mut BTreeMap<String, LiteralType>, out: &mut Vec<TypedBinding>)
     -> Result<(), Diagnostic>
 {
     for stmt in body {
         match stmt {
             Stmt::Bind {name, ty,init,pos,..} => {
                 let wanted = ty.map(|t| annotation(t,program,*pos)).transpose()?.flatten();
-                if wanted.as_ref().is_some_and(|t| matches!(t, LiteralType::Array(_) |
-                    LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::OpenRecord |
-                    LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
-                    || starts_literal(init)
-                {
-                    let value = inferred(init,wanted.as_ref(),0)?;
-                    if ty.is_none() && (matches!(&init.kind, ExprKind::EmptyBraces) ||
-                        matches!(&init.kind, ExprKind::Array(v) if v.is_empty())) {
-                        return Err(diag(init.pos,"E_INFER",
-                            "empty collection without type annotation is ambiguous"));
-                    }
-                    out.push(TypedBinding {name:name.clone(),declared:wanted,value});
+                let collection_context = wanted.as_ref().is_some_and(owns_storage);
+                let inspect = collection_context || starts_literal(init) ||
+                    references_owned(init,locals);
+                let is_seed = scalar_seed(init,locals);
+                let checked = if inspect || is_seed {
+                    Some(inferred(init,wanted.as_ref(),0,locals)?)
+                } else { None };
+                if ty.is_none() && (matches!(&init.kind, ExprKind::EmptyBraces) ||
+                    matches!(&init.kind, ExprKind::Array(items) if items.is_empty())) {
+                    return Err(diag(init.pos,"E_INFER",
+                        "empty collection without type annotation is ambiguous"));
+                }
+                if inspect {
+                    let value = checked.clone().expect("inspected literal must be checked");
+                    out.push(TypedBinding {name:name.clone(),declared:wanted.clone(),value});
+                }
+                let inferred_ty = checked.map(|item| item.ty);
+                // An explicit open Record or collection annotation remains the
+                // local's declared contract, even when its initializer was
+                // more specific. Prevents unguarded field assumptions after
+                // reassignment and preserves closed shape only for inferred
+                // bindings.
+                if let Some(stored) = wanted.or(inferred_ty) {
+                    locals.insert(name.clone(), stored);
+                } else {
+                    locals.remove(name);
                 }
             }
-            Stmt::Block(inner) | Stmt::While {body:inner,..} |
-            Stmt::Loop {body:inner,..} | Stmt::StateWrite {body:inner,..} |
-            Stmt::ForIn {body:inner,..} => walk(inner,program,out)?,
+            Stmt::Assign {name,value,pos} => {
+                if locals.get(name).is_some_and(owns_storage) {
+                    return Err(diag(*pos,"E_OWNERSHIP",
+                        format!("reassignment of owned collection '{name}' needs ownership-aware flow checking")));
+                }
+                // A scalar assignment cannot change its declared type in the
+                // existing checker. Retain only already verified scalar types.
+                if let Some(known) = locals.get(name).cloned() {
+                    if scalar_seed(value,locals) {
+                        inferred(value,Some(&known),0,locals)?;
+                    }
+                }
+            }
+            Stmt::Block(inner) | Stmt::StateWrite {body:inner,..} => {
+                walk(inner,program,&mut locals.clone(),out)?;
+            }
+            Stmt::While {body:inner,..} | Stmt::Loop {body:inner,..} => {
+                walk(inner,program,&mut locals.clone(),out)?;
+            }
+            Stmt::ForIn {name,body,..} => {
+                let mut child = locals.clone();
+                child.remove(name);
+                walk(body,program,&mut child,out)?;
+            }
             Stmt::If {arms,otherwise,..} => {
-                for (_,inner) in arms { walk(inner,program,out)?; }
-                if let Some(inner) = otherwise { walk(inner,program,out)?; }
+                for (_,inner) in arms {
+                    walk(inner,program,&mut locals.clone(),out)?;
+                }
+                if let Some(inner) = otherwise {
+                    walk(inner,program,&mut locals.clone(),out)?;
+                }
             }
             Stmt::For {init,update,body,..} => {
-                if let Some(s) = init { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
-                walk(body,program,out)?;
-                if let Some(s) = update { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
+                let mut loop_env = locals.clone();
+                if let Some(s) = init {
+                    walk(std::slice::from_ref(s.as_ref()),program,&mut loop_env,out)?;
+                }
+                walk(body,program,&mut loop_env,out)?;
+                if let Some(s) = update {
+                    walk(std::slice::from_ref(s.as_ref()),program,&mut loop_env,out)?;
+                }
             }
             Stmt::Match {arms,..} => {
-                for arm in arms { walk(&arm.body,program,out)?; }
+                for arm in arms {
+                    let mut child = locals.clone();
+                    if let Pattern::Bind(name) = &arm.pattern {
+                        child.remove(name);
+                    }
+                    walk(&arm.body,program,&mut child,out)?;
+                }
             }
             Stmt::Try {body,catch,finally,..} => {
-                walk(body,program,out)?;
-                if let Some((_,inner)) = catch { walk(inner,program,out)?; }
-                if let Some(inner) = finally { walk(inner,program,out)?; }
+                walk(body,program,&mut locals.clone(),out)?;
+                if let Some((name,inner)) = catch {
+                    let mut child = locals.clone();
+                    child.remove(name);
+                    walk(inner,program,&mut child,out)?;
+                }
+                if let Some(inner) = finally {
+                    walk(inner,program,&mut locals.clone(),out)?;
+                }
             }
-            Stmt::Defer {body,..} | Stmt::Recover {body,..} =>
-                walk(body,program,out)?,
+            Stmt::Defer {body,..} => walk(body,program,&mut locals.clone(),out)?,
+            Stmt::Recover {body,err,cursor,..} => {
+                let mut child = locals.clone();
+                child.remove(err);
+                child.remove(cursor);
+                walk(body,program,&mut child,out)?;
+            }
+            Stmt::Return(Some(value),_) if references_owned(value,locals) => {
+                // Return an owned object only after the language's move/borrow
+                // checker has determined caller/callee ownership transfer.
+                if matches!(&value.kind, ExprKind::Var(_)) {
+                    return Err(diag(value.pos,"E_OWNERSHIP",
+                        "returning an owned local requires explicit checked transfer"));
+                }
+                inferred(value,None,0,locals)?;
+            }
             _ => {}
         }
     }
     Ok(())
 }
 
-/// Analyze local collection initializers. A successful response means static
-/// literal typing only; the browser compiler still refuses guest codegen.
+/// Analyze checked local collection initializers and scalar dependencies.
+/// Success means type preflight only; browser guest allocation is still blocked.
 pub fn analyze(program: &Program) -> Result<Vec<TypedBinding>, Diagnostic> {
     let mut out = Vec::new();
     for func in &program.funcs {
-        walk(&func.body,program,&mut out)?;
+        let mut locals = BTreeMap::new();
+        for param in &func.params {
+            if let Some(ty) = annotation(param.ty,program,param.pos)? {
+                locals.insert(param.name.clone(),ty);
+            }
+        }
+        walk(&func.body,program,&mut locals,&mut out)?;
     }
     Ok(out)
 }
