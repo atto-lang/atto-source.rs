@@ -265,6 +265,10 @@ impl Lower {
             match stmt {
                 Stmt::Bind {kind,name,ty,init,pos} => {
                     if matches!(init.kind,ExprKind::Record(_) | ExprKind::With(_,_)) {
+                        if kind == BindKind::Const {
+                            return Err(err(pos,"E_CONST",
+                                "runtime heap-allocated Record cannot initialize compile-time const"));
+                        }
                         let (mut pre, expr,shape)=self.lower_record(init,&env,0)?;
                         if let Some(t)=ty {
                             let built_in=match t {
