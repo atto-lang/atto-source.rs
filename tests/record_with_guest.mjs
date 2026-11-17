@@ -15,7 +15,9 @@ const positive=[
   {name:"empty override",source:"fnc main(): int { val a={n:42}; val b=a with {}; return a.n+b.n; }",want:84n},
   {name:"chained updates",source:"fnc main(): int { val r={a:3,b:4}; val s=r with {a:5} with {b:7}; return r.a*100+s.a*10+s.b; }",want:357n},
   {name:"Record annotation",source:"fnc main(): int { val r: Record={a:20}; val s: record=r with {b:22}; return r.a+s.b; }",want:42n},
-  {name:"checked computed replacement",source:"fnc main(): int { val r={n:20}; val s=r with {n:r.n+22}; return r.n+s.n; }",want:62n}
+  {name:"checked computed replacement",source:"fnc main(): int { val r={n:20}; val s=r with {n:r.n+22}; return r.n+s.n; }",want:62n},
+  {name:"boolean and float preserved",source:"fnc main():int { val r={f:2.5,active:true}; val s=r with {active:false}; if r.active then return 1; else return 0; fi }",want:1n},
+  {name:"quoted identifier label",source:'fnc main():int { val r={"answer":40}; val s=r with {answer:42}; return s.answer; }',want:42n}
 ];
 const negative=[
   {name:"quoted nonidentifier",source:'fnc main(): int { val r={"content-type":"x"};return 0;}',want:"E_UNSUPPORTED"},
@@ -24,7 +26,9 @@ const negative=[
   {name:"open receiver",source:"fnc f(r:Record):int { val y=r with {a:1};return 0; } fnc main():int{return 0;}",want:"E_WITH_OPEN_RECORD"},
   {name:"incompatible result type",source:'fnc main():int { val x={a:1}; val y=x with {a:"str"}; val z:int=y.a;return 0;}',want:"E_TYPE"},
   {name:"duplicate override",source:"fnc main():int { val x={a:1}; val y=x with {a:2,a:3};return 0;}",want:"E_DUPLICATE"},
-  {name:"map patch",source:"fnc main():int { val x={a:1}; val y=x with {a=>2};return 0;}",want:"E_WITH_MAP"}
+  {name:"map patch",source:"fnc main():int { val x={a:1}; val y=x with {a=>2};return 0;}",want:"E_WITH_MAP"},
+  {name:"runtime constant object forbidden",source:"fnc main():int { const r={a:1};return 0;}",want:"E_CONST"},
+  {name:"forged hidden shape name forbidden",source:"fnc main():int { val r=__atto_shape_with_record_0;return 0;}",want:"E_RESERVED"}
 ];
 const work=await mkdtemp(join(tmpdir(),"atto-with-guest-"));
 try {
@@ -42,6 +46,20 @@ try {
     assert.equal(guest.exports.panic_code.value,0,c.name+": unexpected panic");
     console.log("PASS Wasm guest",c.name,String(c.want));
   }
+  // A failing update must trap before publishing the new root.
+  // This currently exercises the compiler's documented fixed bump-heap ABI.
+  const overflowSource="fnc main():int { val r={n:42}; val s=r with {n:r.n+9223372036854775807}; return r.n; }";
+  const overflowFile=join(work,"overflow.atto"),overflowWasm=join(work,"overflow.wasm");
+  await writeFile(overflowFile,overflowSource);
+  const overflowBuilt=spawnSync(attoc,[overflowFile,"-o",overflowWasm],{encoding:"utf8",timeout:30000});
+  assert.equal(overflowBuilt.status,0,"overflow negative must compile with runtime guard");
+  const overflowModule=new WebAssembly.Module(await readFile(overflowWasm));
+  const overflowGuest=new WebAssembly.Instance(overflowModule,{});
+  assert.throws(()=>overflowGuest.exports.main(),WebAssembly.RuntimeError,"overflow must trap");
+  assert.equal(overflowGuest.exports.panic_code.value,1,"overflow panic_code");
+  assert.equal(new DataView(overflowGuest.exports.memory.buffer).getBigInt64(0,true),42n,
+    "source Record must stay unchanged after failed update");
+  console.log("PASS runtime overflow leaves source root intact");
   for(const [index,c] of negative.entries()){
     const input=join(work,"fail_"+index+".atto"),out=join(work,"fail_"+index+".wasm");
     await writeFile(input,c.source);
