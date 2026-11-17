@@ -93,22 +93,22 @@ const cases = [
     stdout: 'callee defer\ncaller catch\ncaller finally\n', value: 21n,
   },
   {
-    name: 'legacy caller-side Option trap is rejected pending Result lowering',
+    name: 'a caller-side Result trap outranks a callee recover',
     src: `fnc callee(): int {
       recover (|int v| -> |err, c| -> { stdio.println("UNEXPECTED"); return v; })(-1);
       throw Error("x");
     }
     pub fnc main(): int {
-      val Option<int> r = trap callee();
+      val Result<int,Error> r = trap callee();
       match r over
-        on Some(v) -> { stdio.println(v); }
-        on None -> { stdio.println("trap won"); }
+        on Ok(v) -> { stdio.println(v); }
+        on Err(e) -> { stdio.println("trap won"); }
       end
       return 3;
     }`,
-    reject: 'E_UNSUPPORTED', // no guest: new Result trap must be implemented first
+    stdout: 'trap won\\n', value: 3n,
   },
-  {
+    {
     name: 'throw through nested calls: inner defers, outer defers, then recover',
     src: `fnc inner(): int { defer || -> { stdio.println("inner"); }; throw Error("x"); }
     fnc mid(): int { defer || -> { stdio.println("mid"); }; return inner(); }
