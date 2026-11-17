@@ -105,8 +105,8 @@ enum Kind {
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
-    #[regex(r"[ \t\n\r\f]+", logos::skip)]
-    #[regex(r"//[^\r\n]*", logos::skip, allow_greedy = true)]
+    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+", logos::skip)]
+    #[regex(r"//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -115,6 +115,23 @@ struct Token {
     text: String,
     start: usize,
 }
+// Keep source comments aligned with the Logos lexer, which recognizes
+// CR, LF, NEL (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR. Offsets stay
+// byte-based so a // comment cannot hide a later /* block or actor declaration.
+fn line_break_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b'\r' | b'\n') => 1,
+        Some(0xc2) if bytes.get(at + 1) == Some(&0x85) => 2,
+        Some(0xe2)
+            if bytes.get(at + 1) == Some(&0x80)
+                && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)) =>
+        {
+            3
+        }
+        _ => 0,
+    }
+}
+
 /// Strip nested block comments without moving token offsets. Unsupported Unicode
 /// inside a comment becomes ASCII whitespace; outside stays byte-identical.
 fn without_block_comments(source: &str) -> Result<String, ParseError> {
@@ -127,7 +144,7 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
         // A block opener inside a // line comment is not a block comment.
         // Leave the line untouched for Logos to skip; preserve source offsets.
         if depth == 0 && i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'/' {
-            while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
+            while i < src.len() && line_break_width(src, i) == 0 {
                 i += 1;
             }
         } else if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
@@ -225,6 +242,60 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
+/// Typed fail-closed admission shared with the .NET/JS source compiler gates.
+/// Source HTTP actors require request/mail ownership, state-loan, cancellation
+/// and physical shutdown lowering. An optional host HTTP server is not proof
+/// of an executable source actor. Only examine actual lexer tokens, not text
+/// inside comments; preserve normal user identifiers such as `http`.
+fn reject_http_actor_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Define {
+            continue;
+        }
+        let mut cursor = index + 1;
+        let mut http = false;
+        while let Some(next) = tokens.get(cursor) {
+            let modifier = match next.kind {
+                Kind::Pub => true,
+                Kind::Identifier => matches!(
+                    next.text.as_str(),
+                    "private"
+                        | "shared"
+                        | "untrusted"
+                        | "serial"
+                        | "http"
+                        | "tcp"
+                        | "websocket"
+                        | "ws"
+                        | "stream"
+                        | "unary"
+                        | "abstract"
+                ),
+                _ => false,
+            };
+            if !modifier {
+                break;
+            }
+            http |= next.text == "http";
+            cursor += 1;
+        }
+        if http {
+            if let Some(next) = tokens.get(cursor) {
+                if next.kind == Kind::Identifier
+                    && matches!(next.text.as_str(), "actor" | "isoactor")
+                {
+                    return Err(ParseError {
+                        offset: next.start,
+                        class: "http_actor_backend_unsupported",
+                        message: "HTTP_ACTOR_BACKEND_UNSUPPORTED: Rust scalar compiler cannot lower source HTTP actor request/mail lifetimes, guarded state, or physical shutdown".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn parse(source: &str) -> Result<Program, ParseError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
@@ -289,6 +360,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         });
     }
     reject_execution_domains(&tokens)?;
+    reject_http_actor_declarations(&tokens)?;
     let mut parser = Parser {
         tokens,
         cursor: 0,
