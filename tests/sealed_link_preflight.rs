@@ -6,7 +6,7 @@ use atto_compiler::{
 };
 
 fn id(package: &str, namespace: &str, name: &str) -> NominalId {
-    NominalId { package:package.into(), namespace:namespace.into(), name:name.into() }
+    NominalId { package:package.into(), namespace:namespace.into(), module:"unit".into(), name:name.into() }
 }
 fn class(identity: NominalId, kind: H, visibility: V, parents: Vec<NominalId>, permits: Vec<NominalId>) -> LinkClass {
     LinkClass { id:identity, hierarchy:kind, visibility,
@@ -117,4 +117,21 @@ fn local_compiler_manifests_are_scoped_to_distinct_packages_without_name_aliasin
     combined.extend(b);
     nominal_link::validate_prelink(&combined).unwrap();
     assert_ne!(combined[0].id,combined[2].id);
+}
+
+#[test]
+fn private_identity_does_not_leak_between_modules_in_same_namespace() {
+    let mut g=allowed();
+    g[0].id.package="alpha".into();
+    g[0].id.namespace="animals".into();
+    g[0].id.module="root_module".into();
+    g[0].visibility=V::Private;
+    g[1].id.package="alpha".into();
+    g[1].id.namespace="animals".into();
+    g[1].id.module="dog_module".into();
+    g[0].permitted_children=vec![g[1].id.clone()];
+    g[1].direct_parents=vec![g[0].id.clone()];
+    assert_code(&g,"E_VISIBILITY");
+    g[0].visibility=V::Package;
+    nominal_link::validate_prelink(&g).unwrap();
 }
