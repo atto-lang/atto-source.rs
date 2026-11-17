@@ -98,7 +98,7 @@ pub fn compile_pinned(units: &[PinnedSourceUnit<'_>], entry: usize) -> R<Vec<u8>
     section.push(0);
     leb(&mut section,keyed.len());
     for (unit,(version,digest)) in keyed {
-        for field in [&unit.package,&unit.namespace,&unit.module,version,digest] {
+        for field in [unit.package.as_str(),unit.namespace.as_str(),unit.module.as_str(),version,digest] {
             text_field(&mut section,field);
         }
     }
