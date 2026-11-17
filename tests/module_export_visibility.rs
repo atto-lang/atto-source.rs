@@ -4,7 +4,7 @@ use atto_compiler::compile;
 
 fn ok(src: &str) -> Vec<u8> {
     let out = compile(src).unwrap_or_else(|e| panic!("failed to compile: {e}"));
-    assert!(out.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(out.starts_with(b"\0asm\x01\0\0\0"));
     out
 }
 fn err(src: &str, expected: &str) {
@@ -112,6 +112,6 @@ fn export_function_overload_sets_remain_arity_based() {
 }
 #[test]
 fn namespace_headers_and_cross_file_imports_fail_closed_until_linked() {
-    assert!(compile("use namespace shop;\nexport pub module Math;\n".into()).is_err());
+    assert!(compile("use namespace shop;\nexport pub module Math;\n").is_err());
     assert!(compile("import module Math from \"./math.atto\";\nexport pub module Math;\npub fnc main(): int { return 0; }").is_err());
 }
