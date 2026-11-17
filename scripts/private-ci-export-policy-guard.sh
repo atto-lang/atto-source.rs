@@ -45,9 +45,9 @@ path_identity_after=$(stat -c '%d:%i' -- "$file") || reject 'policy disappeared 
 LC_ALL=C tr -cd '\011\012\015\040-\176' < "$snapshot" > "$clean" || reject 'byte validation failed'
 cmp -s -- "$snapshot" "$clean" || reject 'binary, control or non-ASCII policy input'
 
-# Permit CR only as part of CRLF. A bare CR may be interpreted as a line
-# boundary by a later parser, hiding an active entry after a # comment.
-# Track whether read saw LF: a trailing bare CR at EOF is forbidden too.
+# Permit CR only as part of CRLF. Bare CR may be interpreted as a line
+# boundary by another parser, hiding active entries after comments.
+# Track read's LF status so a trailing bare CR at EOF is rejected as well.
 while :; do
   if IFS= read -r line; then
     newline_terminated=1
@@ -56,108 +56,10 @@ while :; do
     [[ -n "$line" ]] || break
   fi
   case "$line" in
-    **)
-      [[ "$newline_terminated" -eq 1 && "$line" == *
-# grep 0: active entry; 1: comments/whitespace only; 2+: operational failure.
-set +e
-LC_ALL=C grep -aEvq '^[[:space:]]*(#.*)?$' -- "$snapshot"
-classification=$?
-set -e
-case "$classification" in
-  0) reject 'active destination requires independently reviewed authorization' ;;
-  1) ;;
-  *) reject 'policy classifier failed' ;;
-esac
-printf '%s\n' 'private CI source export: disabled by default'
-\\r' ]] || reject 'bare carriage return in policy'
-      without_cr=${line%
-# grep 0: active entry; 1: comments/whitespace only; 2+: operational failure.
-set +e
-LC_ALL=C grep -aEvq '^[[:space:]]*(#.*)?$' -- "$snapshot"
-classification=$?
-set -e
-case "$classification" in
-  0) reject 'active destination requires independently reviewed authorization' ;;
-  1) ;;
-  *) reject 'policy classifier failed' ;;
-esac
-printf '%s\n' 'private CI source export: disabled by default'
-\\r'}
-      [[ "$without_cr" != *
-# grep 0: active entry; 1: comments/whitespace only; 2+: operational failure.
-set +e
-LC_ALL=C grep -aEvq '^[[:space:]]*(#.*)?$' -- "$snapshot"
-classification=$?
-set -e
-case "$classification" in
-  0) reject 'active destination requires independently reviewed authorization' ;;
-  1) ;;
-  *) reject 'policy classifier failed' ;;
-esac
-printf '%s\n' 'private CI source export: disabled by default'
-\\r'* ]] || reject 'embedded carriage return in policy'
-      ;;
-  esac
-  [[ "$newline_terminated" -eq 1 ]] || break
-done < "$snapshot"
-\r'*)
-      [[ "$newline_terminated" -eq 1 && "$line" == * ]] || reject 'bare carriage return in policy'
-      without_cr=${line%
-# grep 0: active entry; 1: comments/whitespace only; 2+: operational failure.
-set +e
-LC_ALL=C grep -aEvq '^[[:space:]]*(#.*)?$' -- "$snapshot"
-classification=$?
-set -e
-case "$classification" in
-  0) reject 'active destination requires independently reviewed authorization' ;;
-  1) ;;
-  *) reject 'policy classifier failed' ;;
-esac
-printf '%s\n' 'private CI source export: disabled by default'
-\\r'}
-      [[ "$without_cr" != *
-# grep 0: active entry; 1: comments/whitespace only; 2+: operational failure.
-set +e
-LC_ALL=C grep -aEvq '^[[:space:]]*(#.*)?$' -- "$snapshot"
-classification=$?
-set -e
-case "$classification" in
-  0) reject 'active destination requires independently reviewed authorization' ;;
-  1) ;;
-  *) reject 'policy classifier failed' ;;
-esac
-printf '%s\n' 'private CI source export: disabled by default'
-\\r'* ]] || reject 'embedded carriage return in policy'
-      ;;
-  esac
-  [[ "$newline_terminated" -eq 1 ]] || break
-done < "$snapshot"
-\r' ]] || reject 'bare carriage return in policy'
-      without_cr=${line%}
-      [[ "$without_cr" != *
-# grep 0: active entry; 1: comments/whitespace only; 2+: operational failure.
-set +e
-LC_ALL=C grep -aEvq '^[[:space:]]*(#.*)?$' -- "$snapshot"
-classification=$?
-set -e
-case "$classification" in
-  0) reject 'active destination requires independently reviewed authorization' ;;
-  1) ;;
-  *) reject 'policy classifier failed' ;;
-esac
-printf '%s\n' 'private CI source export: disabled by default'
-\\r'* ]] || reject 'embedded carriage return in policy'
-      ;;
-  esac
-  [[ "$newline_terminated" -eq 1 ]] || break
-done < "$snapshot"
-\r'}
-      [[ "$without_cr" != ** ]] || reject 'embedded carriage return in policy'
-      ;;
-  esac
-  [[ "$newline_terminated" -eq 1 ]] || break
-done < "$snapshot"
-\r'* ]] || reject 'embedded carriage return in policy'
+    *$'\r'*)
+      [[ "$newline_terminated" -eq 1 && "$line" == *$'\r' ]] || reject 'bare carriage return in policy'
+      without_cr=${line%$'\r'}
+      [[ "$without_cr" != *$'\r'* ]] || reject 'embedded carriage return in policy'
       ;;
   esac
   [[ "$newline_terminated" -eq 1 ]] || break
