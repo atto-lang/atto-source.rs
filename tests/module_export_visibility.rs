@@ -121,6 +121,15 @@ fn export_function_overload_sets_remain_arity_based() {
     ok("export pub fnc choose;\nfnc choose(): int { return 1; }\nfnc choose(int x): int { return x; }\npub fnc main(): int { return choose() + choose(41); }");
 }
 #[test]
+fn effect_annotated_brace_body_does_not_spoil_trailing_export_scope() {
+    let src = "fnc answer() -> int throws(Error) { return 42; }\nexport pub fnc answer;\n";
+    let tokens = atto_compiler::lexer::lex(src).expect("tokenization");
+    let lowered = atto_compiler::visibility_lower::lower(tokens).expect("export should remain file level");
+    assert_eq!(lowered.exports.len(), 1);
+    assert_eq!(lowered.exports[0].name, "answer");
+}
+
+#[test]
 fn namespace_headers_and_cross_file_imports_fail_closed_until_linked() {
     assert!(compile("use namespace shop;\nexport pub module Math;\n").is_err());
     assert!(compile("import module Math from \"./math.atto\";\nexport pub module Math;\npub fnc main(): int { return 0; }").is_err());
