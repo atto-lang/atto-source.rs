@@ -11,6 +11,8 @@ pub mod collection_types;
 /// Host-only canonical Record and nominal Struct static-slot layout plans.
 /// No guest ABI, allocation or Struct parsing is enabled by this module.
 pub mod record_struct_layout;
+/// Executable narrow closed-scalar Record profile through checked fixed-slot guest class ABI.
+pub mod closed_record_guest;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -52,7 +54,18 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    let source_tokens = lexer::lex(source)?;
+    // Never allow users to refer to compiler-owned synthetic record types,
+    // parameters or temporaries, even when those names occur in dead code.
+    for token in &source_tokens {
+        if let lexer::Tok::Ident(name) = &token.tok {
+            if name.starts_with(closed_record_guest::PRIVATE_PREFIX) {
+                return Err(Diagnostic::new(token.pos, "E_RESERVED",
+                    "compiler-owned closed Record symbols are reserved"));
+            }
+        }
+    }
+    let mut visibility = visibility_lower::lower(source_tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
@@ -98,7 +111,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    let program = if target {
+    let mut program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
@@ -125,7 +138,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
     // Contextual literal typing is checked before executable scalar lowering.
     // It never grants a guest allocation; unsupported values remain rejected.
-    let _collection_ir = collection_types::analyze(&program)?;
+    let collection_ir = collection_types::analyze(&program)?;
+    closed_record_guest::lower(&mut program, &collection_ir)?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
