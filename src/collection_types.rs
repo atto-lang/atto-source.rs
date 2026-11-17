@@ -12,7 +12,7 @@ use crate::diag::{Diagnostic, Pos};
 pub const MAX_LITERAL_DEPTH: usize = 128;
 
 /// Distinct type constructors, not string aliases for guest heap pointers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LiteralType {
     Int,
     Bool,
@@ -39,6 +39,11 @@ pub struct TypedLiteral {
     pub ty: LiteralType,
     /// Evaluation order, including map keys before corresponding values.
     pub children: Vec<TypedLiteral>,
+    /// For a closed Record only: each source-evaluated child maps to its
+    /// canonical, name-sorted field slot. Never evaluate child expressions
+    /// in this canonical slot order; their order is always source order.
+    /// Empty for non-Record literals (and the zero-field Record).
+    pub source_to_record_slot: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +211,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         return Err(diag(e.pos, "E_NESTING", "literal expression nesting exceeds the limit"));
     }
     let mut children = Vec::new();
+    let mut source_to_record_slot = Vec::new();
     let ty = match &e.kind {
         ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 => Int,
         ExprKind::Int(_) => return Err(diag(e.pos, "E_INTEGER_RANGE",
@@ -250,6 +256,19 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
                 let child = inferred(value, None, depth + 1)?;
                 typed_fields.push((field.clone(), child.ty.clone()));
                 children.push(child);
+            }
+            // Canonical structural identity is independent of source field
+            // order. Evaluate values in the original source order, then place
+            // each result into the corresponding canonical slot. A shared
+            // shape descriptor must NEVER reorder the initializer effects.
+            typed_fields.sort_by(|a,b| a.0.cmp(&b.0));
+            if typed_fields.windows(2).any(|w| w[0].0 == w[1].0) {
+                return Err(diag(e.pos,"E_DUPLICATE","duplicate static record field"));
+            }
+            for (name, _) in fields {
+                let slot = typed_fields.binary_search_by(|(field,_)| field.cmp(name))
+                    .expect("record field was inserted above");
+                source_to_record_slot.push(slot);
             }
             Record(typed_fields)
         }
@@ -307,7 +326,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             "nonliteral collection elements require ownership-aware expression type checking")),
     };
     matches_expected(&ty,expected,e.pos)?;
-    Ok(TypedLiteral { pos: e.pos,ty,children })
+    Ok(TypedLiteral { pos: e.pos,ty,children,source_to_record_slot })
 }
 
 fn starts_literal(e: &Expr) -> bool {
