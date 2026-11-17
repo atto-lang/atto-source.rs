@@ -27,6 +27,8 @@ pub mod nominal_lower;
 pub mod nominal_link;
 /// Verified source-catalogue linker for a bounded executable class profile.
 pub mod source_link;
+/// Portable digest of exact source bytes, independent of ambient build I/O.
+pub mod source_digest;
 /// Explicitly unlinked foreign prototypes and source-only exports.
 pub mod visibility_lower;
 /// Direct routine-only and statically specialized named callbacks.
