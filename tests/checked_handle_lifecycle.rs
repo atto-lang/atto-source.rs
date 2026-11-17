@@ -292,3 +292,102 @@ fn runtime_handle_ops_require_val_not_const_or_let() {
         "#), "E_HANDLE");
     }
 }
+
+
+#[test]
+fn typed_readonly_function_parameter_proves_canonical_block_call() {
+    let source = format!(r#"{CLASS}
+        fnc make_payload(): Parcel {{ return new Parcel(); }}
+        fnc inspect_readonly(borrow! Parcel payload): int {{
+            return payload.get();
+        }}
+        fnc inspect_again(borrow! Parcel payload): int {{
+            return inspect_readonly(payload);
+        }}
+        pub fnc main(): int {{
+            val original = make_payload();
+            val handle = ref! original;
+            block {{
+                val view = deref! handle;
+                stdio.println(inspect_readonly(view) + inspect_again(view));
+            }}
+            val restored = unref! handle;
+            return restored.get();
+        }}"#);
+    let wasm = atto_compiler::compile(&source)
+        .unwrap_or_else(|d| panic!("borrowed fnc argument should compile: {d}"));
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+    assert_eq!(atto_compiler::compile(&source).unwrap(), wasm, "byte determinism");
+}
+
+#[test]
+fn borrowed_function_argument_does_not_transfer_loan_or_owner() {
+    let source = format!(r#"{CLASS}
+        fnc inspect_readonly(borrow! Parcel payload): int {{ return payload.value; }}
+        pub fnc main(): int {{
+            val original = new Parcel();
+            val handle = ref! original;
+            block {{
+                val view = deref! handle;
+                stdio.println(inspect_readonly(view));
+                stdio.println(inspect_readonly(view));
+            }}
+            val restored = unref! handle;
+            return restored.value;
+        }}"#);
+    assert!(atto_compiler::compile(&source).is_ok());
+}
+
+#[test]
+fn borrowed_function_parameter_rejects_escape_and_mutation() {
+    for body in [
+        "return payload;",
+        "val copied = payload; return copied;",
+        "val copied = take! payload; return copied;",
+    ] {
+        let source = format!(r#"{CLASS}
+            fnc illegal(borrow! Parcel payload): Parcel {{
+                {body}
+            }}
+            pub fnc main(): int {{ return 42; }}"#);
+        let d = atto_compiler::compile(&source).unwrap_err();
+        assert_eq!(d.code, "E_BORROW", "{body}: {d}");
+    }
+    let source = format!(r#"{CLASS}
+        fnc illegal(borrow! Parcel payload): int {{
+            payload.value = 10;
+            return payload.value;
+        }}
+        pub fnc main(): int {{ return 42; }}"#);
+    assert_eq!(atto_compiler::compile(&source).unwrap_err().code, "E_BORROW");
+}
+
+#[test]
+fn owned_parameter_cannot_receive_scoped_borrowed_view() {
+    let source = format!(r#"{CLASS}
+        fnc consume(Parcel payload): int {{ return payload.value; }}
+        pub fnc main(): int {{
+            val original = new Parcel();
+            val handle = ref! original;
+            block {{
+                val view = deref! handle;
+                stdio.println(consume(view));
+            }}
+            val restored = unref! handle;
+            return restored.value;
+        }}"#);
+    assert_eq!(atto_compiler::compile(&source).unwrap_err().code, "E_BORROW");
+}
+
+#[test]
+fn borrowed_parameter_requires_named_class_and_nonescaping_call() {
+    let source = format!(r#"{CLASS}
+        fnc inspect_readonly(borrow! Parcel payload): int {{ return payload.value; }}
+        pub fnc main(): int {{ return inspect_readonly(new Parcel()); }}"#);
+    assert_eq!(atto_compiler::compile(&source).unwrap_err().code, "E_BORROW");
+    let source = r#"
+        fnc inspect_readonly(borrow! int value): int { return value; }
+        pub fnc main(): int { return 42; }
+    "#;
+    assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_BORROW");
+}
