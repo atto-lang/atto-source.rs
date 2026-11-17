@@ -26,6 +26,10 @@ jobs:
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
           rustup default 1.85.1
           rustc --version
+      - name: Format and strictly lint compiler-owned typed-MIR census
+        run: |
+          rustfmt --edition 2021 --check src/check/typed_mir_census.rs tests/typed_mir_scalar_census.rs
+          cargo clippy --locked --lib --bin attoc -- -D warnings
       - name: Test native compiler core over the fixture corpus
         run: cargo test --locked --verbose
       - name: Build native attoc host
@@ -36,6 +40,10 @@ jobs:
           sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
       - name: Reject adversarial mailbox histories before compiled guest tests
         run: node --test tests/actor-trace-refinement.test.mjs
+      - name: Executed scalar NLL guest regression and native/Wasm byte parity
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/scalar_nll_selected.mjs
       - name: Conformance - wasm32 compiler, guest execution, native-vs-wasm byte parity
         env:
           ATTOC: target/release/attoc
