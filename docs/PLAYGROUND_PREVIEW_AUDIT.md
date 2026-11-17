@@ -7,7 +7,11 @@ The `boolean-operators.atto` source is pinned to the website correction
 [merged PR #147](https://github.com/atto-lang/atto-lang.github.io/pull/147),
 public source merge commit `ca3d55cd43470cd49cd6206b0e87f256112f84b9`,
 which removes the reserved executable `^^` operator in favor of `Xor(a,b)`.
-All 42 Git blobs now match website `main` at that source commit. The manifest verifies source bytes,
+Website [PR #153](https://github.com/atto-lang/atto-lang.github.io/pull/153) (head
+`584f78d3cdaec3dbb697dc79a763e638842da17b`) then rewrote **comment lines only** in the
+21 previews the public compiler executes, replacing stale "not browser-lowered" headers;
+no declaration, statement or expression changed. All 42 Git blobs match that head.
+The manifest verifies source bytes,
 not executable support; this integration has not yet passed CI.
 
 `cargo test --locked` runs the native source-to-Wasm compiler on every
@@ -30,7 +34,7 @@ samples does not establish complete ownership, actor, ADT or effect semantics.
 The site has **nine** ordinary examples and **42** previews (**51 total**).
 The nine ordinary sources have independent exact-blob and guest oracles in
 `tests/playground_site_examples/manifest.json`; this corpus pins all 42
-previews from current site commit 38a19bdc251d6f8db3ffea3b8df0e6c84ca8881c.
+previews from site PR #153 head 584f78d3cdaec3dbb697dc79a763e638842da17b.
 Fail-closed rejection is a safety property, **not successful implementation**.
 The opt-in `ATTO_REQUIRE_ALL_EXAMPLES=1` gate deliberately fails until every
 valid preview compiles and executes with a verified guest oracle. Do not
