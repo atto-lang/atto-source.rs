@@ -74,51 +74,28 @@ Named modules use a separate **`atto.exports.modules.v1`** local metadata sectio
 
 `internal fnc` is file-local and cannot be promoted via `export`. Unlinked `external fnc` prototypes cannot be called or exported. `protected` requires real subclass access analysis and currently rejects rather than silently translating to `private`. `final` is field-level single-assignment, not a visibility declaration. See the [visibility and linkage specification](https://github.com/atto-lang/atto-spec/pull/68) (draft PR #68 until merged).
 
-The standalone `compile(source)` API remains single-file and deliberately
-rejects namespace/import syntax. A **separate** `linker::compile_linked` API now
-accepts a bounded, explicitly supplied in-memory graph of source units and
-emits one statically linked browser guest for one-hop named-module imports.
-At link time it verifies the imported file actually declares the requested
-exported module, checks `pub[pkg]` package identity, rejects inaccessible
-members and imported re-exports, and enforces canonical relative paths and
-source-size limits. It does not simply expose package symbols as Wasm host
-exports.
+The standalone `compile(source)` API remains single-file. The
+`linker::compile_linked` API now supports **bounded, multi-hop dependency graphs**
+of explicitly supplied sources with `./` and package-root `+` imports,
+per-edge `pub[pkg]` validation, cycle diagnostics, no implicit re-exports,
+and checks that each file explicitly owns or imports qualified module names.
+A source file cannot acquire a module through a sibling's import.
 
-This is NOT an on-disk package manager or complete package resolver:
-`LinkUnit.package` MUST come from an already trusted resolver of the package
-manifest, and the in-memory API cannot prove symlinks, physical paths, or
-external package identity. Transitive imports, cycles, module aliases,
-project-root `+` imports, general FFI, protected inheritance and native
-backend parity remain unsupported or fail closed. Namespace headers establish
-file-level ownership, not open imports or a globally usable name table.
+The host-side `package_resolver::compile_package` API, and the native
+`attoc --package-root DIR --entry src/main.atto -o out.wasm` command, accept
+a strict `.atto.pkg.toml` subset (`[package]`, `name`, `version`),
+canonicalize local source paths and reject symlinks and out-of-root source
+paths. The resolver loads only reachable files and passes their verified
+single-root identity to the linker.
 
-Example:
-
-```atto
-// src/math.atto — package third.party
-use namespace library;
-export pub module Math;
-define module Math as
-  pub fnc double(int x): int { return x * 2; }
-  fnc secret(): int { return 99; }
-end
-
-// src/main.atto — package application
-use namespace frontend;
-import module Math from "./math.atto";
-pub fnc main(): int { return Math.double(21); }
-```
-
-The in-memory linker compiles these two separately supplied files into one
-guest. A `pub[pkg]` export is accepted only when the provided, verified
-canonical package identities are identical. `Math.secret()` is rejected.
-
-Exact-blob runner [44164708007](https://github.com/quaestor-ledger-test/atto-ci/actions/runs/44164708007)
-executed 40 Rust tests and two real Node WebAssembly guest runs on the
-source-only mirror of the compiler at commit
-`0c1ff72d9d8fc1f9b7097de7dd6c11606acc2eab`;
-later commits need refreshed receipts. This is a scoped source-only mirror,
-not the full repository test suite or cross-backend parity.
+See [checked package linking](package-linking.md) for concrete imports,
+exact syntax, import graph budgets, threat model and deliberate limitations.
+The filesystem resolver does **not** yet authenticate cross-package registry
+dependencies or protect against races in concurrently mutable hostile trees.
+For that, immutable input snapshots or race-safe descriptor-based resolution
+are required. The in-memory API still requires trusted package IDs supplied
+by its caller. Full external dependency linking, aliases, native backend parity,
+and AOT package-qualified identity metadata remain outside this subset.
 
 ## Required cross-backend parity
 
