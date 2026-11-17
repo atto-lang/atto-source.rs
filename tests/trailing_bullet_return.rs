@@ -182,3 +182,38 @@ fn warnings_do_not_leak_between_compilations() {
     assert_eq!(compile_with_warnings(&with).unwrap().1.len(), 1);
     assert!(compile_with_warnings(&without).unwrap().1.is_empty());
 }
+
+#[test]
+fn equivalent_scalar_aliases_warn_and_unsupported_aliases_fail_closed() {
+    for header in ["bool• f(): boolean", "float• f(): f64", "string• f(): String"] {
+        let source = format!("{header} {{ return 0; }}");
+        let mut parser = Parser::new(lex(&source).unwrap());
+        parser.parse_program().unwrap();
+        assert_eq!(parser.warnings().len(), 1, "{source}");
+    }
+    // The browser subset does not implement general nominal type aliases.
+    fails("int• f(): !string { return 1; }", "E_UNSUPPORTED");
+}
+
+#[test]
+fn generic_type_parameter_duplicate_is_warned_before_monomorphization_gate() {
+    let source = "T• identity<T>(value: T): T { return value; }";
+    let mut parser = Parser::new(lex(source).unwrap());
+    let err = parser.parse_program().unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED");
+    assert_eq!(parser.warnings().len(), 1);
+    assert_eq!(parser.warnings()[0].code, "W_DUPLICATE_RETURN_TYPE");
+}
+
+#[test]
+fn comments_and_unicode_positioning_preserve_the_exact_bullet_token() {
+    let source = "fnc int /* preceding */ • /* following */ foo() { return 42; }";
+    let mut parser = Parser::new(lex(source).unwrap());
+    let program = parser.parse_program().unwrap();
+    assert_eq!(program.funcs[0].ret, Type::Int);
+    let bullet = lex("int• foo() {}").unwrap().into_iter()
+        .find(|token| matches!(token.tok, atto_compiler::lexer::Tok::Bullet))
+        .unwrap();
+    assert_eq!(bullet.pos.line, 1);
+    assert_eq!(bullet.pos.col, 4);
+}
