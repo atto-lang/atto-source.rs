@@ -227,7 +227,6 @@ fn fixed_slot_plan_is_not_guest_codegen_authorization() {
     assert_eq!(err.code, "E_UNSUPPORTED");
 }
 
-
 #[test]
 fn existing_declared_scalar_record_guest_constructor_is_field_order_independent() {
     // Existing `define record Name` is a NOMINAL class lowering, unlike
@@ -249,7 +248,10 @@ fn existing_declared_scalar_record_guest_constructor_is_field_order_independent(
     let a = atto_compiler::compile(&first).expect("declared nominal record guest must compile");
     let b = atto_compiler::compile(&second).expect("permuted nominal record guest must compile");
     assert!(a.starts_with(b"\0asm\x01\0\0\0"));
-    assert_eq!(a, b, "equivalent named-record initializer orders should lower to the same guest module");
+    assert_eq!(
+        a, b,
+        "equivalent named-record initializer orders should lower to the same guest module"
+    );
 }
 
 #[test]
@@ -264,7 +266,8 @@ fn existing_declared_struct_guest_constructor_uses_checked_fixed_fields() {
             return p.x + p.y;
         }
     "#;
-    let bytes = atto_compiler::compile(source).expect("restricted declared Struct uses checked nominal class lowering");
+    let bytes = atto_compiler::compile(source)
+        .expect("restricted declared Struct uses checked nominal class lowering");
     assert!(bytes.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(bytes, atto_compiler::compile(source).unwrap());
 }
