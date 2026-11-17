@@ -20,13 +20,15 @@ enum Kind { Class, Trait, Interface }
 /// cross-module exhaustiveness proof is provided by the browser subset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Hierarchy { Open, Sealed, NonSealed, Final }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClassVisibility { Private, Public, Package }
 /// Compiler-validated class graph, preserved independently of token rewriting.
 /// Names are source-unit-local until a real namespace/package linker binds them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClassHierarchy {
     pub name: String,
     pub pos: Pos,
-    pub visibility_public: bool,
+    pub visibility: ClassVisibility,
     pub hierarchy: Hierarchy,
     pub direct_parents: Vec<String>,
     pub permitted_children: Vec<String>,
@@ -491,7 +493,7 @@ pub fn lower_with_hierarchy(t: Vec<Token>) -> R<Lowered> {
         .map(|d| ClassHierarchy {
             name: d.name.clone(),
             pos: d.pos,
-            visibility_public: d.export,
+            visibility: if d.export { ClassVisibility::Public } else { ClassVisibility::Private },
             hierarchy: d.hierarchy,
             direct_parents: d.parents.clone(),
             permitted_children: d.permitted.clone(),
@@ -590,7 +592,11 @@ pub fn metadata(bytes: &mut Vec<u8>, classes: &[ClassHierarchy]) {
             Hierarchy::NonSealed => 2,
             Hierarchy::Final => 3,
         });
-        body.push(u8::from(class.visibility_public));
+        body.push(match class.visibility {
+            ClassVisibility::Private => 0,
+            ClassVisibility::Public => 1,
+            ClassVisibility::Package => 2,
+        });
         leb(&mut body, class.direct_parents.len());
         for parent in &class.direct_parents { name(&mut body, parent); }
         leb(&mut body, class.permitted_children.len());
