@@ -5,7 +5,7 @@ use atto_compiler::compile;
 
 fn ok(body: &str) {
     let wasm = compile(body).unwrap_or_else(|e| panic!("expected success: {e}"));
-    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(wasm, compile(body).unwrap(), "Wasm must be deterministic");
 }
 fn err(body: &str, code: &str) {
