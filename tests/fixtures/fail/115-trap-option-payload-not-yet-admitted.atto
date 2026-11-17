@@ -1,4 +1,4 @@
-// expect-error: E_UNSUPPORTED_TYPE
+// expect-error: E_UNSUPPORTED
 fnc optional(): Option<int> { return Some(42); }
 pub fnc main(): int {
   val value = trap optional();
