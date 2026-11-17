@@ -62,17 +62,13 @@ fn expr_uses_alias(expr: &Expr, alias: &str, budget: &mut usize) -> Option<bool>
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::SelfRef => Some(false),
-        ExprKind::Unary(op, inner)
-            if matches!(
-                op,
-                crate::ast::UnOp::Neg
-                    | crate::ast::UnOp::Plus
-                    | crate::ast::UnOp::Not
-                    | crate::ast::UnOp::Copy
-            ) =>
-        {
-            expr_uses_alias(inner, alias, budget)
-        }
+        ExprKind::Unary(
+            crate::ast::UnOp::Neg
+            | crate::ast::UnOp::Plus
+            | crate::ast::UnOp::Not
+            | crate::ast::UnOp::Copy,
+            inner,
+        ) => expr_uses_alias(inner, alias, budget),
         ExprKind::Binary(_, a, b) => combine([
             expr_uses_alias(a, alias, budget),
             expr_uses_alias(b, alias, budget),
