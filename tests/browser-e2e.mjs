@@ -192,7 +192,7 @@ try{
   const unwindSource = await readFile(new URL('./playground_previews/defer-recover.atto', import.meta.url), 'utf8');
   const unwindBlob = createHash('sha1')
     .update('blob ' + Buffer.byteLength(unwindSource)).update(Buffer.from([0])).update(unwindSource).digest('hex');
-  assert.equal(unwindBlob, 'ba323a22c2a776e5c67caa719cf2b937898e5df1',
+  assert.equal(unwindBlob, '5395c8159b1f7d111ea80d22ea6590960f340c1e',
     'exact /play defer-recover preview Git blob must match the website');
   assert.equal(await run(unwindSource, 'main() -> 63'),
     'raise finally\nraise cleanup A\nraise cleanup B\nrecovering raise\nthrow cleanup\n' +
