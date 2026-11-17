@@ -109,6 +109,7 @@ const RESERVED: &[&str] = &[
     "neq",
     "is",
     "new",
+    "with",
     "true",
     "false",
     "null",
@@ -2588,6 +2589,23 @@ impl Parser {
 
     fn parse_ternary(&mut self) -> R<Expr> {
         let mut c = self.parse_logical_or()?;
+        // The right-hand side is a checked static Record update list, never
+        // an arbitrary block, dynamic Map or implicit aliasing operation.
+        // Bind before pipelines; chaining is left associative.
+        let mut with_links = 0;
+        while self.eat_word("with") {
+            let at = self.toks[self.i - 1].pos;
+            let fields = match self.parse_brace_literal()? {
+                ExprKind::Record(fields) => fields,
+                ExprKind::EmptyBraces => Vec::new(),
+                _ => return Err(Diagnostic::new(at, "E_WITH_MAP",
+                    "with requires named ':' fields, not Map '=>' entries")),
+            };
+            self.grow(1)?;
+            with_links += 1;
+            c = Expr { kind: ExprKind::With(Box::new(c), fields), pos: at };
+        }
+        self.height -= with_links;
         // Functional pipeline: value |> f |> g(extra) lowers to g(f(value), extra).
         // Only ordinary named functions are admitted: no computed callees,
         // receiver calls or actor piping. This preserves argument evaluation
