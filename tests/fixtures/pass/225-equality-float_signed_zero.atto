@@ -1,0 +1,2 @@
+// expect-exit: 16
+pub fnc main(): int { if 0.0 eq -0.0 then return 16; fi return 0; }

@@ -1,0 +1,2 @@
+// expect-exit: 12
+pub fnc main(): int { if 7 neq 8 then return 12; fi return 0; }

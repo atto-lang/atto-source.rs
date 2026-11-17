@@ -1,0 +1,2 @@
+// expect-exit: 13
+pub fnc main(): int { if true neq false then return 13; fi return 0; }

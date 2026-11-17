@@ -1,0 +1,2 @@
+// expect-exit: 11
+pub fnc main(): int { if 7 eq 7 then return 11; fi return 0; }
