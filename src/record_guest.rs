@@ -298,7 +298,9 @@ impl Lower {
                         Some(Value::Record(shape)) =>
                             (Vec::new(),expression(ExprKind::Var(name),base.pos),shape.clone()),
                         Some(Value::Scalar(_))=>return Err(err(pos,"E_WITH_TYPE","with receiver is not a Record")),
-                        None=>return Err(err(pos,"E_WITH_UNRESOLVED","with needs a known source Record")),
+                        Some(Value::Unknown) | None =>
+                            return Err(err(pos,"E_WITH_UNRESOLVED",
+                                "with receiver needs a verified local closed Record shape")),
                     },
                     other => self.lower_record(expression(other,base.pos),env,depth+1)?,
                 };
