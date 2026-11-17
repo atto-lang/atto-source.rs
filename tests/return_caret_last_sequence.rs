@@ -134,6 +134,7 @@ fn preceding_effects_and_ownership_are_not_skipped() {
     // Every prefix is checked through the same sequence typing path as seq.
     rejected("pure fnc f(): int { return ^ (stdio.println(1), 42); } pub fnc main(): int { return f(); }");
     rejected("pure fnc f(): int { return stdio.println(1), 42; } pub fnc main(): int { return f(); }");
+    rejected("pub fnc main(): int { val value = 42; return take! value, value; }");
     // Scoped bindings cannot escape the sequence.
     rejected("pub fnc main(): int { val n = (> val hidden = 42, hidden); return ^ (n, hidden); }");
 }
