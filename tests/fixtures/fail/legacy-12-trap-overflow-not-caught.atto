@@ -1,0 +1,12 @@
+// expect-error: E_UNSUPPORTED
+// Trap itself is unsupported until Result lowering; panic-bypass guest test must be restored once implemented.
+// Checked arithmetic panic MUST bypass a guest Error-only catch.
+pub fnc main(): int {
+  stdio.println("before");
+  val x: int = 9223372036854775807;
+  val Option<int> maybe_value = trap (x + 1);
+  match maybe_value over
+    on Some(v) -> { return v; }
+    on None -> { return 0; }
+  end
+}
