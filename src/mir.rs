@@ -32,6 +32,29 @@ fn failure(class: &'static str, message: impl Into<String>) -> SemanticError {
         message: message.into(),
     }
 }
+/// Preflight the shape of checked or externally supplied MIR without recursion.
+pub(crate) fn validate_shape(expr: &Expr) -> Result<usize, String> {
+    let mut pending = vec![(expr, 1usize)];
+    let mut visited = 0usize;
+    while let Some((node, depth)) = pending.pop() {
+        visited += 1;
+        if visited > 4096 || depth > 128 {
+            return Err("expression exceeds node/depth budget".into());
+        }
+        match node {
+            Expr::Integer(_) | Expr::Name(_) => {}
+            Expr::Negate(v) => pending.push((v, depth + 1)),
+            Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
+                pending.push((a, depth + 1));
+                pending.push((b, depth + 1));
+            }
+            Expr::Call { args, .. } => {
+                pending.extend(args.iter().map(|arg| (arg, depth + 1)));
+            }
+        }
+    }
+    Ok(visited)
+}
 fn validate_expr(
     expr: &Expr,
     variables: &HashSet<String>,
@@ -78,8 +101,41 @@ fn validate_expr(
     }
 }
 pub fn lower(program: Program) -> Result<Module, SemanticError> {
+    if program.functions.is_empty() || program.functions.len() > 1024 {
+        return Err(failure(
+            "resource_budget",
+            "function count outside supported bound",
+        ));
+    }
     let mut signatures = HashMap::new();
+    let mut total_nodes = 0usize;
     for function in &program.functions {
+        if function.params.len() > 256 || function.locals.len() > 1024 {
+            return Err(failure(
+                "resource_budget",
+                "function parameters/locals exceed budget",
+            ));
+        }
+        total_nodes = total_nodes.saturating_add(
+            validate_shape(&function.expression).map_err(|e| failure("resource_budget", e))?,
+        );
+        for local in &function.locals {
+            total_nodes = total_nodes.saturating_add(
+                validate_shape(&local.value).map_err(|e| failure("resource_budget", e))?,
+            );
+            if total_nodes > 65_536 {
+                return Err(failure(
+                    "resource_budget",
+                    "module-wide MIR node budget exceeded",
+                ));
+            }
+        }
+        if total_nodes > 65_536 {
+            return Err(failure(
+                "resource_budget",
+                "module-wide MIR node budget exceeded",
+            ));
+        }
         if signatures
             .insert(function.name.clone(), function.params.len())
             .is_some()
@@ -123,11 +179,84 @@ pub fn lower(program: Program) -> Result<Module, SemanticError> {
     }
     Ok(Module { functions })
 }
+/// Guard public MIR entry points; source validation alone does not protect
+/// callers that construct Module directly in tests, plugins or future compilers.
+pub fn validate_module(module: &Module) -> Result<(), String> {
+    if module.functions.is_empty() || module.functions.len() > 1024 {
+        return Err("MIR function budget exceeded".into());
+    }
+    let mut signatures = HashMap::new();
+    let mut total_nodes = 0usize;
+    for function in &module.functions {
+        let symbol = function.symbol.as_bytes();
+        if symbol.is_empty()
+            || symbol.len() > 256
+            || !(symbol[0].is_ascii_alphabetic() || symbol[0] == b'_')
+            || !symbol
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        {
+            return Err("invalid MIR function name".into());
+        }
+        if function.params.len() > 256
+            || function.locals.len() > 1024
+            || signatures
+                .insert(function.symbol.clone(), function.params.len())
+                .is_some()
+        {
+            return Err("duplicate function or oversized MIR declaration".into());
+        }
+    }
+    for function in &module.functions {
+        let mut known = HashSet::new();
+        for param in &function.params {
+            if !known.insert(param.clone()) {
+                return Err("duplicate MIR parameter".into());
+            }
+        }
+        for (name, expression) in &function.locals {
+            total_nodes = total_nodes.saturating_add(validate_shape(expression)?);
+            if total_nodes > 65_536 {
+                return Err("module-wide MIR node budget exceeded".into());
+            }
+            validate_expr(expression, &known, &signatures).map_err(|e| e.to_string())?;
+            if !known.insert(name.clone()) {
+                return Err("duplicate MIR local".into());
+            }
+        }
+        total_nodes = total_nodes.saturating_add(validate_shape(&function.return_value)?);
+        if total_nodes > 65_536 {
+            return Err("module-wide MIR node budget exceeded".into());
+        }
+        validate_expr(&function.return_value, &known, &signatures).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     fn check(source: &str) -> Result<Module, SemanticError> {
         lower(crate::frontend::parse(source).unwrap())
+    }
+    #[test]
+    fn rejects_left_deep_arithmetic_before_recursive_lowering() {
+        let src = format!("fnc f(): int {{ return 1{}; }}", "+1".repeat(200));
+        assert_eq!(check(&src).unwrap_err().class, "resource_budget");
+    }
+    #[test]
+    fn rejects_aggregate_mir_complexity_even_when_each_expression_is_tiny() {
+        let functions = (0..80)
+            .map(|i| Function {
+                symbol: format!("f{i}"),
+                exported: false,
+                params: vec![],
+                locals: (0..900)
+                    .map(|j| (format!("n{j}"), Expr::Integer(1)))
+                    .collect(),
+                return_value: Expr::Integer(1),
+            })
+            .collect();
+        assert!(validate_module(&Module { functions }).is_err());
     }
     #[test]
     fn duplicate_function_rejected() {

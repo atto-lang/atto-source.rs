@@ -16,3 +16,17 @@ IR **must** eventually record explicit moves/borrows, actor allocation domains, 
 The scalar exporter accurately covers only syntax admitted by today's Rust frontend; it is not a proof of runtime WCET. The separate Rust analyzer checks declared compute units and call graphs, not actual target CPU cycles. Generic integer operations currently follow emitted native i64 instruction behavior; do not claim overflow conformance beyond explicitly portable fixtures.
 
 See \`tests/CONFORMANCE.md\` and \`docs/SELF_HOSTING_ROADMAP.md\`.
+
+## Audited analysis boundary (v2)
+
+The current compiler parses parameters, local bindings and direct calls; its
+`--effects` mode emits schema-v1 `compute` and `call` operations from the
+same validated MIR used by Cranelift. The audit adds a 1 MiB source budget,
+4,096-token budget, 64-level nested syntax cap, 128-level/4,096-node MIR
+expression cap and limits on functions/locals/parameters.
+
+Both the publicly callable Cranelift emitter and effect-IR exporter now run
+`mir::validate_module` before recursion, rejecting unresolved calls and forged
+MIR. The resulting JSON is still **untrusted model data**, not cryptographic
+source provenance or a hard-real-time execution certificate. Java/LLVM
+cross-backend guest-conformance and timing/stack proofs remain separate gates.
