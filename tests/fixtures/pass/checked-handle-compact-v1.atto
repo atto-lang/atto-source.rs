@@ -1,4 +1,5 @@
 // expect-exit: 42
+// expect-stdout: 42
 // java: rejects
 // Adjacent ! marker, no whitespace after marker; same AST as spaced forms.
 define class Parcel as
