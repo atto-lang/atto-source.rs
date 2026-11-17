@@ -480,7 +480,13 @@ impl Parser {
                 } else {
                     format!("@builtin/{builtin}")
                 };
-                Type::Named(self.type_name(spelling, pos))
+                // The lowercase and uppercase spellings must share the same
+                // AST type identity even within a single translation unit.
+                let id = match self.type_names.iter().position(|(n, _)| *n == spelling) {
+                    Some(id) => id as u32,
+                    None => self.type_name(spelling, pos),
+                };
+                Type::Named(id)
             }
             "fnc" => {
                 // Canonical source type form: fnc(int, bool) -> float.
