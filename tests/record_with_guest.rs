@@ -77,6 +77,18 @@ fn duplicate_field_and_map_patch_are_not_reinterpreted() {
     fail("fnc main(): int { val r={a:1}; val s=r with {a=>2};return 0; }","E_WITH_MAP");
 }
 #[test]
+fn constant_record_allocation_is_not_misrepresented_as_const() {
+    fail("fnc main(): int { const r={a:1}; return 0; }","E_CONST");
+}
+#[test]
+fn forged_internal_record_class_is_rejected() {
+    fail("fnc main(): int { val x=__atto_shape_with_record_0; return 0; }","E_RESERVED");
+}
+#[test]
+fn boolean_and_float_fields_stay_copyable_without_aliases() {
+    pass("fnc main(): int { val r={f:2.5,active:true}; val s=r with {active:false}; if r.active then return 1; else return 0; fi }");
+}
+#[test]
 fn shape_and_field_limits_fail_closed() {
     fail("fnc main(): int { val r={a:1,b:2,c:3,d:4,e:5,f:6,g:7,h:8,i:9}; return 0; }","E_UNSUPPORTED");
 }
