@@ -29,7 +29,7 @@ jobs:
       - name: Format and strictly lint compiler-owned typed-MIR census
         run: |
           rustup component add rustfmt clippy --toolchain 1.85.1
-          rustfmt --edition 2021 --check src/check/typed_mir_census.rs tests/typed_mir_scalar_census.rs
+          rustfmt --edition 2021 --check src/check/typed_mir_census.rs src/check/scalar_loan_census.rs tests/typed_mir_scalar_census.rs tests/scalar_loan_lifecycle.rs
           cargo clippy --locked --lib --bin attoc -- -D warnings
       - name: Test native compiler core over the fixture corpus
         run: cargo test --locked --verbose
