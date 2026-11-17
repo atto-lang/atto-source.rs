@@ -1,10 +1,15 @@
-// expect-error: E_COPY_DEEP_UNSUPPORTED
+// expect-error: E_COPY_OVERRIDE
 // java: rejects
+// User-defined copy_deep methods are not yet certified whole-concrete-type
+// hook chains; a method name alone cannot supply a verified copy witness.
 define class Parcel as
-  pub let int value = 42;
+    pub let int value = 42;
+    copy_deep(): int {
+        return 1;
+    }
 end
 pub fnc main(): int {
-  val original = new Parcel();
-  val detached = copy!! original;
-  return detached.value;
+    val original = new Parcel();
+    val detached = copy!! original;
+    return detached.value;
 }
