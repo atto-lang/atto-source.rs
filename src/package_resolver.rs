@@ -168,3 +168,73 @@ pub fn compile_package(root: &Path, entry: &str) -> R<Vec<u8>> {
     }).collect();
     linker::compile_linked(entry, &units)
 }
+
+/// Discover the *nearest* package manifest above an entry file and return its
+/// canonical root plus canonical relative entry path. This is opt-in host-only
+/// behavior, not an implicit side effect of compile(source).
+pub fn discover_package_root(entry: &Path) -> R<(PathBuf, String)> {
+    use std::path::Component;
+    let absolute = if entry.is_absolute() {
+        entry.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| io_error("cannot inspect current directory", e))?
+            .join(entry)
+    };
+    // Do not traverse user-supplied path aliases or symlink components before
+    // determining the physical package root. Absolute and relative canonical
+    // spellings are supported; '../' input paths are deliberately rejected.
+    let mut prefix = PathBuf::new();
+    for item in absolute.components() {
+        match item {
+            Component::ParentDir => return Err(error("E_IMPORT_PATH",
+                "entry path may not contain parent-directory traversal")),
+            Component::CurDir => continue,
+            _ => prefix.push(item.as_os_str()),
+        }
+        if prefix.as_os_str().is_empty() { continue; }
+        match fs::symlink_metadata(&prefix) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(error("E_IMPORT_PATH", "entry path contains a symbolic link"));
+            }
+            Ok(_) => {},
+            Err(e) => return Err(io_error("cannot inspect entry path component", e)),
+        }
+    }
+    let physical = fs::canonicalize(&absolute)
+        .map_err(|e| io_error("cannot canonicalize package entry", e))?;
+    if !physical.is_file() {
+        return Err(error("E_IMPORT_PATH", "package entry is not a regular source file"));
+    }
+    let mut current = physical.parent().ok_or_else(|| error(
+        "E_IMPORT_PATH", "package entry has no parent directory"))?;
+    for _ in 0..64 {
+        let marker = current.join(".atto.pkg.toml");
+        match fs::symlink_metadata(&marker) {
+            Ok(_) => {
+                let relative = physical.strip_prefix(current)
+                    .map_err(|_| error("E_IMPORT_PATH", "entry escapes discovered package"))?
+                    .to_str().ok_or_else(|| error("E_IMPORT_PATH",
+                        "non-UTF8 package relative entry path"))?
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+                if !linker::path_ok(&relative) {
+                    return Err(error("E_IMPORT_PATH",
+                        "discovered entry path is not a canonical Atto source"));
+                }
+                return Ok((current.to_path_buf(), relative));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(io_error("cannot inspect ancestor package manifest", e)),
+        }
+        current = current.parent().ok_or_else(|| error(
+            "E_MANIFEST", "no .atto.pkg.toml above the entry source"))?;
+    }
+    Err(error("E_MANIFEST", "package root discovery exceeded ancestor budget"))
+}
+
+/// Find the nearest manifest and compile through the same checked local
+/// resolver used by explicit --package-root. No implicit dependency registry.
+pub fn compile_discovered(entry: &Path) -> R<Vec<u8>> {
+    let (root, relative) = discover_package_root(entry)?;
+    compile_package(&root, &relative)
+}
