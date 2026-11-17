@@ -324,19 +324,19 @@ impl Emit<'_> {
     /// runs once on fallthrough, on a pending return (via FinallyExit),
     /// and on any escaping exception (catch_all + rethrow, preserving the
     /// original tag and payload). Engine traps are never Wasm exceptions.
-    fn try_stmt(&mut self, saved: u32, body: &[TStmt], catch: Option<&[TStmt]>, finally: Option<&[TStmt]>) {
+    fn try_stmt(&mut self, saved: u32, body: &[TStmt], catch: Option<(u32, &[TStmt])>, finally: Option<&[TStmt]>) {
         self.depth_save(saved);
         if finally.is_some() {
             self.open(0x02, 0x40, Frame::FinallyExit);
             self.open(0x06, 0x40, Frame::Other);
         }
-        if let Some(handler) = catch {
+        if let Some((err_slot, handler)) = catch {
             self.depth_add(1); // an active catch outranks every callee recover
             self.open(0x06, 0x40, Frame::Other);
             self.stmts(body);
             self.op(0x07); // catch private ordinary-throw tag 0
             uleb(&mut self.code, 0);
-            self.op(0x1A); // drop the i64 Error message
+            self.set(err_slot); // retain exact i64 Error identity, no allocation
             self.depth_restore(saved);
             self.stmts(handler);
             self.close();
@@ -575,7 +575,7 @@ impl Emit<'_> {
                 self.set(*flag);
             }
             TStmt::RecoverNext => self.br_to(Frame::RecoverNext),
-            TStmt::Try { saved, body, catch, finally } => self.try_stmt(*saved, body, catch.as_deref(), finally.as_deref()),
+            TStmt::Try { saved, body, catch, finally } => self.try_stmt(*saved, body, catch.as_ref().map(|(slot, b)| (*slot, b.as_slice())), finally.as_deref()),
             TStmt::Return(v) => {
                 if let Some(v) = v {
                     self.expr(v);
