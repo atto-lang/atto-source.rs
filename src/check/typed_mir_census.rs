@@ -246,3 +246,50 @@ pub fn from_checked_program(program: &TProgram) -> Result<Census, Diagnostic> {
     }
     Ok(Census { contract: CONTRACT, functions })
 }
+
+
+/// One borrow issuance whose owner identity and exclusivity were validated by
+/// the *actual* AttoLang type/ownership pass. Does NOT include loan uses,
+/// kills, escaped references or emitted-code attestation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckedBorrowIssue {
+    pub function_index: u32,
+    pub instruction_ordinal: u32,
+    pub owner_slot: u32,
+    pub alias: String,
+    pub exclusive: bool,
+}
+
+/// Observe source-checked scalar borrow ISSUANCES on a restricted straight-line
+/// typed instruction stream. This partial census must never be mistaken for a
+/// complete loan-use/liveness certificate.
+pub fn checked_borrow_issues(program: &TProgram) -> Result<Vec<CheckedBorrowIssue>, Diagnostic> {
+    if program.funcs.len() > MAX_CENSUS_FUNCTIONS {
+        return Err(budget("too many functions in borrow issue census"));
+    }
+    let mut issues = Vec::new();
+    for (index, f) in program.funcs.iter().enumerate() {
+        if f.body.len() > MAX_CENSUS_POINTS {
+            return Err(budget("too many typed statements in borrow issue census"));
+        }
+        for (ordinal, statement) in f.body.iter().enumerate() {
+            if let TStmt::ScalarBorrowIssue { owner_slot, alias, exclusive } = statement {
+                if alias.is_empty() || *owner_slot as usize >= f.params.len() + f.locals.len() {
+                    return Err(incomplete("checked scalar borrow has malformed owner/alias provenance"));
+                }
+                issues.push(CheckedBorrowIssue {
+                    function_index: index as u32,
+                    instruction_ordinal: ordinal as u32 + 1,
+                    owner_slot: *owner_slot,
+                    alias: alias.clone(),
+                    exclusive: *exclusive,
+                });
+            } else if matches!(statement, TStmt::If(..) | TStmt::Loop { .. }
+                | TStmt::ForIn { .. } | TStmt::Block(..))
+            {
+                return Err(unsupported("nonlinear or nested borrow issue sites require CFG census"));
+            }
+        }
+    }
+    Ok(issues)
+}
