@@ -106,9 +106,9 @@ const cases = [
       end
       return 3;
     }`,
-    stdout: 'trap won\\n', value: 3n,
+    stdout: 'trap won\n', value: 3n,
   },
-    {
+  {
     name: 'throw through nested calls: inner defers, outer defers, then recover',
     src: `fnc inner(): int { defer || -> { stdio.println("inner"); }; throw Error("x"); }
     fnc mid(): int { defer || -> { stdio.println("mid"); }; return inner(); }
