@@ -143,7 +143,7 @@ fn qualified_id_namespace_distinguishes_same_leaf_without_source_disclosure() {
     assert_ne!(a.internal_name(),b.internal_name());
     assert!(a.internal_name().starts_with("__atto_q_"));
     // Guest callers cannot choose the internal name to bypass export checks.
-    let forged=MAIN.replace("Math.double(21)",
-        "__atto_q_untrusted.double(21)");
+    let forged=MAIN.replace("Orders.total(21)",
+        "__atto_q_untrusted.total(21)");
     reject(&fixture(&forged,ORDERS,MATH,"app","app","app"),"E_RESERVED");
 }
