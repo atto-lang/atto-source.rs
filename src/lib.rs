@@ -49,7 +49,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
-    let nominal = nominal_lower::lower_with_hierarchy(module_lower::lower(visibility.tokens)?)?;
+    let mut nominal = nominal_lower::lower_with_hierarchy(module_lower::lower(visibility.tokens)?)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal.tokens)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
@@ -120,6 +120,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
+    // A pub[pkg] export must not be elevated to public when class
+    // hierarchy metadata is serialized after lexical export lowering.
+    for class in &mut nominal.classes {
+        if let Some(export) = visibility.exports.iter().find(|e| e.kind == "class" && e.name == class.name) {
+            class.visibility_public = export.visibility == visibility_lower::Visibility::Public;
+        }
+    }
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
