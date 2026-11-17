@@ -167,3 +167,17 @@ fn v1_wasm_manifest_is_structurally_decodable_and_host_exports_unchanged() {
     assert!(!host_exports(&wasm).contains(&"answer".to_string()));
     assert!(host_exports(&wasm).contains(&"main".to_string()));
 }
+
+#[test]
+fn actor_and_enum_exports_bind_to_distinct_declaration_kinds() {
+    let source = "export pub actor Worker;\nexport pub[pkg] enum Status;\ndefine actor Worker as end\ndefine enum Status as Ready end\npub fnc main(): int { return 0; }";
+    let mut lowered = atto_compiler::visibility_lower::lower(
+        atto_compiler::lexer::lex(source).expect("lex")
+    ).expect("export syntax");
+    let module = atto_compiler::module_lower::lower_with_manifest(lowered.tokens).expect("module pass");
+    let parsed = atto_compiler::parser::Parser::new(module.tokens).parse_program().expect("declarations");
+    atto_compiler::visibility_lower::resolve_exports(&mut lowered.exports, &parsed, &module.modules)
+        .expect("bind all locally owned actor/enum exports");
+    assert!(lowered.exports.iter().any(|e| e.name == "Worker" && e.kind == "actor"));
+    assert!(lowered.exports.iter().any(|e| e.name == "Status" && e.kind == "enum"));
+}
