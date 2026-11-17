@@ -327,7 +327,13 @@ fn parse(unit: &SourceUnit<'_>, entry: bool) -> R<Parsed> {
         }
         if word(&tokens,i,"export") && braces==0 {
             let pos=tokens[i].pos;
+            let start_export=i;
             let (name,vis)=read_export(&tokens,&mut i)?;
+            // Export names bind checked class declarations, not value names.
+            // Mark only the parsed export header, never incidental token text.
+            for at in start_export..i {
+                class_header_positions.insert(at);
+            }
             if exports.insert(name,vis).is_some() {
                 return Err(err(pos,"E_DUPLICATE","duplicate linked class export"));
             }
