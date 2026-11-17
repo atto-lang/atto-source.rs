@@ -1,5 +1,5 @@
 //! Host-side package path and manifest security regression tests.
-use atto_compiler::package_resolver::{compile_package, parse_package_identity};
+use atto_compiler::package_resolver::{compile_package, compile_discovered, discover_package_root, parse_package_identity};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -140,4 +140,37 @@ fn symlink_package_root_and_manifest_are_not_trusted() {
     fs::rename(f.root.join(".atto.pkg.toml"),f.root.join("alternate.toml")).unwrap();
     symlink(f.root.join("alternate.toml"),f.root.join(".atto.pkg.toml")).unwrap();
     rejects(f.root(),"src/main.atto","E_MANIFEST");
+}
+
+#[test]
+fn nearest_manifest_discovery_returns_verified_root_and_source_relative_path() {
+    let f=Fixture::new();
+    f.with_graph();
+    let entry=f.root().join("src/main.atto");
+    let (root,relative)=discover_package_root(&entry).expect("find root");
+    assert_eq!(root, fs::canonicalize(f.root()).unwrap());
+    assert_eq!(relative,"src/main.atto");
+    let a=compile_discovered(&entry).expect("compiled discovered package");
+    let b=compile_package(f.root(),"src/main.atto").expect("explicit root");
+    assert_eq!(a,b,"discovery must not alter compiler semantics");
+}
+#[test]
+fn discovery_rejects_missing_manifest_and_parent_directory_input() {
+    let f=Fixture::new();
+    f.write("src/main.atto","pub fnc main(): int { return 42; }");
+    fs::remove_file(f.root().join(".atto.pkg.toml")).unwrap();
+    assert_eq!(discover_package_root(&f.root().join("src/main.atto"))
+       .unwrap_err().code,"E_MANIFEST");
+    assert_eq!(discover_package_root(&f.root().join("src/../src/main.atto"))
+       .unwrap_err().code,"E_IMPORT_PATH");
+}
+#[cfg(unix)]
+#[test]
+fn discovery_rejects_symlink_source_alias_before_package_scan() {
+    use std::os::unix::fs::symlink;
+    let f=Fixture::new();
+    f.with_graph();
+    let alias=f.root().join("src/alias.atto");
+    symlink(f.root().join("src/main.atto"),&alias).unwrap();
+    assert_eq!(discover_package_root(&alias).unwrap_err().code,"E_IMPORT_PATH");
 }
