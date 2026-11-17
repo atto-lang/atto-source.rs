@@ -6,7 +6,8 @@
 //! an invented runtime type. Once this is wired to checked guest allocation the
 //! same type and tree structure can be consumed by the lowering stage.
 
-use crate::ast::{Expr, ExprKind, Program, Stmt, Type, UnOp};
+use crate::ast::{BinOp, Expr, ExprKind, Pattern, Program, Stmt, Type, UnOp};
+use std::collections::BTreeMap;
 use crate::diag::{Diagnostic, Pos};
 
 pub const MAX_LITERAL_DEPTH: usize = 128;
@@ -198,7 +199,8 @@ fn matches_expected(actual: &LiteralType, expected: Option<&LiteralType>, at: Po
     Ok(())
 }
 
-fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
+fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
+    locals: &BTreeMap<String, LiteralType>)
     -> Result<TypedLiteral, Diagnostic>
 {
     use LiteralType::*;
@@ -213,6 +215,48 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
+        ExprKind::Var(name) => {
+            let ty = locals.get(name).ok_or_else(|| diag(e.pos, "E_UNBOUND",
+                format!("collection element '{name}' has no verified local type")))?;
+            // A bare variable here would alias an owned collection: require an
+            // explicit move/deep copy after the ownership checker is integrated.
+            if owns_storage(ty) {
+                return Err(diag(e.pos,"E_OWNERSHIP",
+                    format!("owned collection '{name}' needs an explicit checked transfer or copy")));
+            }
+            ty.clone()
+        }
+        ExprKind::Member(base, field) => {
+            let base_type = match &base.kind {
+                ExprKind::Var(name) => locals.get(name).cloned().ok_or_else(||
+                    diag(base.pos,"E_UNBOUND",
+                        format!("record receiver '{name}' has no verified local type")))?,
+                _ => {
+                    let item = inferred(base,None,depth+1,locals)?;
+                    children.push(item.clone());
+                    item.ty
+                }
+            };
+            let field_ty = static_record_field_type(&base_type,field,e.pos)?;
+            if owns_storage(&field_ty) {
+                return Err(diag(e.pos,"E_OWNERSHIP",
+                    "reading a nested owned field needs an explicit borrow, move or deep copy"));
+            }
+            field_ty
+        }
+        ExprKind::Binary(op, left, right) if matches!(op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) => {
+            let left_node = inferred(left,None,depth+1,locals)?;
+            let right_node = inferred(right,Some(&left_node.ty),depth+1,locals)?;
+            let result = left_node.ty.clone();
+            if !matches!(result, Int | Float) {
+                return Err(diag(e.pos,"E_TYPE",
+                    "static literal arithmetic currently admits only homogeneous int/float"));
+            }
+            children.push(left_node);
+            children.push(right_node);
+            result
+        }
         ExprKind::Unary(UnOp::Neg, v) if matches!(&v.kind, ExprKind::Int(_)) => {
             // The exact signed-minimum literal is represented as i64::MAX+1.
             if let ExprKind::Int(Some(n)) = &v.kind {
@@ -223,7 +267,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             Int
         }
         ExprKind::Unary(UnOp::Plus, v) if matches!(&v.kind, ExprKind::Int(_)) =>
-            inferred(v, Some(&Int), depth + 1)?.ty,
+            inferred(v, Some(&Int), depth + 1, locals)?.ty,
         ExprKind::Array(items) => {
             let (kind, element) = match expected {
                 Some(Array(element)) => (true, element.as_ref().clone()),
@@ -234,7 +278,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             let mut found = Bottom;
             for item in items {
                 let child = inferred(item,
-                    if element == Bottom { None } else { Some(&element) }, depth + 1)?;
+                    if element == Bottom { None } else { Some(&element) }, depth + 1, locals)?;
                 found = common(found, child.ty.clone(), item.pos)?;
                 children.push(child);
             }
@@ -247,7 +291,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             let mut typed_fields = Vec::new();
             for (field, value) in fields {
-                let child = inferred(value, None, depth + 1)?;
+                let child = inferred(value, None, depth + 1, locals)?;
                 typed_fields.push((field.clone(), child.ty.clone()));
                 children.push(child);
             }
@@ -266,8 +310,8 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             };
             let (mut keys, mut vals) = (Bottom, Bottom);
             for (key,value) in entries {
-                let key_node = inferred(key, if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1)?;
-                let value_node = inferred(value, if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1)?;
+                let key_node = inferred(key, if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1, locals)?;
+                let value_node = inferred(value, if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1, locals)?;
                 keys = common(keys,key_node.ty.clone(),key.pos)?;
                 vals = common(vals,value_node.ty.clone(),value.pos)?;
                 children.push(key_node);
@@ -302,7 +346,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             };
             let mut tys = Vec::new();
             for (i,item) in items.iter().enumerate() {
-                let child = inferred(item,slots.map(|s| &s[i]),depth + 1)?;
+                let child = inferred(item,slots.map(|s| &s[i]),depth + 1, locals)?;
                 tys.push(child.ty.clone());
                 children.push(child);
             }
@@ -313,6 +357,12 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
     };
     matches_expected(&ty,expected,e.pos)?;
     Ok(TypedLiteral { pos: e.pos,ty,children })
+}
+
+fn owns_storage(ty: &LiteralType) -> bool {
+    matches!(ty, LiteralType::OpenRecord | LiteralType::Record(_) |
+        LiteralType::Array(_) | LiteralType::List(_) | LiteralType::Map(_,_) |
+        LiteralType::Tuple(_) | LiteralType::AnyTuple)
 }
 
 /// Static typed-record field lookup, separate from eventual guest indexing.
