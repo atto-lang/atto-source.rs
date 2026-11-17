@@ -44,20 +44,27 @@ fn effect_clauses_try_finally_and_delegating_recovery_compile() {
 }
 
 #[test]
-fn programs_without_unwind_constructs_keep_their_guest_bytes() {
-    // The unwind lowering is opt-in: no extra tag, global or frame for
-    // existing throw/trap programs.
+fn ordinary_throw_without_recover_keeps_single_private_guest_tag() {
+    // Ordinary throw lowering remains supported independently of trap.
+    // A source-level throw with no trap/recover must not allocate an
+    // unnecessary second tag, global, or unwind frame.
     let plain = r#"
         fnc t(): int { throw Error("x"); }
-        pub fnc main(): int {
-          val Option<int> r = trap t();
-          return 0;
-        }
+        pub fnc main(): int { return 0; }
     "#;
     let bytes = compile(plain).unwrap();
-    // exactly one tag (section 13: id, size, count=1)
+    // Exactly one private ordinary-throw tag (section 13).
     let tag = bytes.windows(3).position(|w| w == [13, 3, 1]);
-    assert!(tag.is_some(), "single private ordinary-throw tag expected");
+    assert!(tag.is_some(), "single ordinary-throw tag expected");
+
+    // The old trap-to-Option codegen must be unreachable on this branch.
+    reject("E_UNSUPPORTED", r#"
+        fnc t(): int { throw Error("x"); }
+        pub fnc main(): int {
+            val r = trap t();
+            return 0;
+        }
+    "#);
 }
 
 #[test]
