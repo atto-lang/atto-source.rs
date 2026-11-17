@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Synthetic inputs only. No private repository content or credentials.
+# Self-contained synthetic regression cases; never reads or exports source code.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 guard=scripts/private-ci-export-policy-guard.sh
@@ -9,48 +9,58 @@ trap 'rm -rf -- "$workspace"' EXIT
 file="$workspace/policy.txt"
 pass=0
 
-allow() {
-  local case_name=$1 payload=$2
+expect_allow() {
+  local name=$1 payload=$2
+  rm -f -- "$file"
   printf '%b' "$payload" > "$file"
   if ! bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
-    echo "FAIL: ${case_name}: comment-only policy rejected" >&2
+    echo "FAIL: $name should be admitted as comment-only" >&2
     cat "$workspace/err" >&2
     exit 1
   fi
   pass=$((pass + 1))
 }
 
-deny() {
-  local case_name=$1 payload=$2
+expect_deny() {
+  local name=$1 payload=$2
+  rm -f -- "$file"
   printf '%b' "$payload" > "$file"
   if bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
-    echo "FAIL: ${case_name}: forbidden policy accepted" >&2
+    echo "FAIL: $name accepted forbidden input" >&2
     exit 1
   fi
   grep -q '^PRIVATE_CI_EXPORT_REJECTED:' "$workspace/err" || {
-    echo "FAIL: ${case_name}: no fail-closed diagnostic" >&2
-    exit 1
+    echo "FAIL: $name missing failure diagnostic" >&2; exit 1;
   }
   pass=$((pass + 1))
 }
 
-allow 'empty policy' ''
-allow 'comments and whitespace' '# approved destinations: none\n   \n\t# still denied\n'
-allow 'CRLF comments' '# Windows comment\r\n'
-deny 'active destination' 'foreign/repo 123\n'
-deny 'active destination after comment' '# allowed comment\nforeign/repo 123\n'
-deny 'NUL-prefix grep bypass' '\000# comment\n'
-deny 'NUL inside comment' '# comment\000foreign/repo 123\n'
-deny 'ESC inside comment' '# comment\033\n'
-deny 'DEL inside comment' '# comment\177\n'
-deny 'UTF8 nonbreaking-space comment' '\302\240# comment\n'
-deny 'active destination with CRLF' 'foreign/repo 123\r\n'
+expect_allow 'empty' ''
+expect_allow 'comments and whitespace' '# none\n   \n\t# still denied\n'
+expect_allow 'CRLF comments' '# Windows comment\r\n'
+expect_deny 'active destination' 'foreign/repo 123\n'
+expect_deny 'active after comment' '# comment\nforeign/repo 123\n'
+expect_deny 'NUL-prefix binary grep bypass' '\000# comment\n'
+expect_deny 'NUL after comment' '# comment\000foreign/repo 123\n'
+expect_deny 'ESC comment' '# comment\033\n'
+expect_deny 'DEL comment' '# comment\177\n'
+expect_deny 'UTF-8 nonbreaking space' '\302\240# comment\n'
+expect_deny 'active CRLF' 'foreign/repo 123\r\n'
+expect_deny 'vertical tab' '#comment\v\n'
+expect_deny 'backspace' '#comment\b\n'
+expect_deny 'invalid UTF8' '#comment\377\n'
 
-printf '# ' > "$file"
-head -c 65536 /dev/zero | tr '\000' a >> "$file"
+# The inclusive 64 KiB boundary must not be rejected spuriously.
+rm -f "$file"
+printf '#' > "$file"
+head -c 65535 /dev/zero | tr '\000' a >> "$file"
+bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err" || {
+  echo 'FAIL: exactly 65536 comment-only bytes denied' >&2; cat "$workspace/err" >&2; exit 1;
+}
+pass=$((pass + 1))
+printf 'a' >> "$file"
 if bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
-  echo 'FAIL: oversized comment-only policy accepted' >&2
-  exit 1
+  echo 'FAIL: 65537 bytes allowed' >&2; exit 1
 fi
 pass=$((pass + 1))
 
@@ -58,15 +68,43 @@ printf '# comment\n' > "$workspace/target"
 rm -f "$file"
 ln -s "$workspace/target" "$file"
 if bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
-  echo 'FAIL: symlink policy accepted' >&2
-  exit 1
+  echo 'FAIL: symlink leaf admitted' >&2; exit 1
+fi
+pass=$((pass + 1))
+
+mkdir "$workspace/actual"
+printf '# comment\n' > "$workspace/actual/policy"
+ln -s "$workspace/actual" "$workspace/aliased"
+if bash "$guard" "$workspace/aliased/policy" > "$workspace/out" 2> "$workspace/err"; then
+  echo 'FAIL: symlink parent admitted' >&2; exit 1
+fi
+pass=$((pass + 1))
+
+rm -f "$file"
+printf '# comment\n' > "$file"
+ln "$file" "$workspace/hardlink"
+if bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
+  echo 'FAIL: hardlinked policy admitted' >&2; exit 1
+fi
+pass=$((pass + 1))
+rm -f "$workspace/hardlink"
+
+rm -f "$file"
+mkdir "$file"
+if bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
+  echo 'FAIL: directory admitted' >&2; exit 1
+fi
+pass=$((pass + 1))
+rmdir "$file"
+mkfifo "$file"
+if timeout 3 bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
+  echo 'FAIL: FIFO admitted' >&2; exit 1
 fi
 pass=$((pass + 1))
 rm -f "$file"
 if bash "$guard" "$file" > "$workspace/out" 2> "$workspace/err"; then
-  echo 'FAIL: missing policy accepted' >&2
-  exit 1
+  echo 'FAIL: missing policy admitted' >&2; exit 1
 fi
 pass=$((pass + 1))
 
-printf 'PASS: %d deny-by-default private CI policy regressions\n' "$pass"
+printf 'PASS: %d deny-by-default private CI policy regression cases\n' "$pass"
