@@ -3412,6 +3412,13 @@ impl<'a> FnCx<'a> {
                 } else {
                     format!("class '{}' has no field '{name}'", class.name)
                 };
+                // A canonical closed Record uses the checked class slot
+                // ABI, but its external diagnostics remain structural:
+                // no user-visible synthetic class identity or fake field.
+                if class.name.starts_with(crate::closed_record_guest::PRIVATE_PREFIX) {
+                    return Err(Diagnostic::new(pos, "E_NO_FIELD",
+                        format!("closed Record has no field '{name}'")));
+                }
                 return Err(Diagnostic::new(pos, "E_UNBOUND", what));
             }
         };
