@@ -119,7 +119,24 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     };
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
+    // Inline 'define pub module' has the same exported interface as an
+    // explicit file export. One matching explicit directive is not a duplicate.
+    for module in &file_modules.modules {
+        if module.inline_public && !visibility.exports.iter().any(|e| e.name == module.name) {
+            if visibility.exports.len() >= 128 {
+                return Err(Diagnostic::new(module.pos, "E_SOURCE_LIMIT", "export budget exceeded"));
+            }
+            visibility.exports.push(visibility_lower::Export {
+                name: module.name.clone(),
+                kind: "module",
+                visibility: visibility_lower::Visibility::Public,
+                pos: module.pos,
+            });
+        }
+    }
     visibility_lower::resolve_exports(&mut visibility.exports, &program, &file_modules.modules)?;
+    // Export metadata is deterministic even if a directive was moved.
+    visibility.exports.sort_by(|a, b| a.name.cmp(&b.name));
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
