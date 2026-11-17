@@ -1962,7 +1962,7 @@ impl<'a> FnCx<'a> {
             }
         }
         if live_handle && matches!(s,
-            Stmt::Return(..) | Stmt::If { .. } | Stmt::While { .. } | Stmt::Loop { .. } |
+            Stmt::Return(..) | Stmt::While { .. } | Stmt::Loop { .. } |
             Stmt::For { .. } | Stmt::ForIn { .. } | Stmt::Break(..) | Stmt::Continue(..) |
             Stmt::Try { .. } | Stmt::Throw(..) | Stmt::Raise(..) | Stmt::Defer { .. } |
             Stmt::Recover { .. } | Stmt::Match { .. }) {
@@ -2215,14 +2215,36 @@ impl<'a> FnCx<'a> {
                 }
             },
             Stmt::If { arms, otherwise, .. } => {
+                // Only a loan-preserving conditional is admitted while a
+                // checked handle is outstanding. The ordinary checker still
+                // forbids ref!/unref! in nested scopes, returns and divergent
+                // exit paths; additionally require every arm to preserve
+                // the exact live handle and borrowed-view slots.
+                let protected: Vec<(u32, bool)> = if live_handle {
+                    self.scopes.iter().flat_map(|scope| scope.iter())
+                        .filter(|l| matches!(l.ty, Type::CheckedRef(_))
+                            || self.loans.contains_key(&l.slot))
+                        .map(|l| (l.slot, self.moved.contains(&l.slot)))
+                        .collect()
+                } else { Vec::new() };
                 // Ownership after the if is the union over arms that can
                 // fall through; arms that always return do not contribute.
                 let mut out = Vec::new();
                 let mut after: BTreeSet<u32> = BTreeSet::new();
                 for (c, b) in arms {
                     let c = self.cond(c, "if")?;
+                    if protected.iter().any(|(slot, was_moved)|
+                        self.moved.contains(slot) != *was_moved) {
+                        return Err(Diagnostic::new(crate::diag::Pos::default(), "E_HANDLE",
+                            "do if condition cannot transfer a live checked handle or view"));
+                    }
                     let at_cond = self.moved.clone();
                     let body = self.scoped(b)?;
+                    if protected.iter().any(|(slot, was_moved)|
+                        self.moved.contains(slot) != *was_moved) {
+                        return Err(Diagnostic::new(crate::diag::Pos::default(), "E_HANDLE",
+                            "do if branch must preserve every outstanding checked handle and view"));
+                    }
                     if !returns(&body) {
                         after.extend(self.moved.iter().copied());
                     }
@@ -2232,6 +2254,11 @@ impl<'a> FnCx<'a> {
                 let other = match otherwise {
                     Some(b) => {
                         let body = self.scoped(b)?;
+                        if protected.iter().any(|(slot, was_moved)|
+                            self.moved.contains(slot) != *was_moved) {
+                            return Err(Diagnostic::new(crate::diag::Pos::default(), "E_HANDLE",
+                                "else branch must preserve outstanding checked handles and views"));
+                        }
                         if !returns(&body) {
                             after.extend(self.moved.iter().copied());
                         }
