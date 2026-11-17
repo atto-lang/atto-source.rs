@@ -87,7 +87,10 @@ impl Verifier {
         if self.points.len() >= MAX_POINTS {
             return Err(budget("too many typed loan/event points"));
         }
-        self.points.push(Point { id: self.points.len() as u32 + 1, event });
+        self.points.push(Point {
+            id: self.points.len() as u32 + 1,
+            event,
+        });
         Ok(())
     }
     fn reads(&mut self, value: &TE, depth: usize) -> Result<(), Diagnostic> {
@@ -101,7 +104,9 @@ impl Verifier {
                 if *slot >= self.slots {
                     return Err(invalid("typed scalar load outside local inventory"));
                 }
-                let origin = *self.origins.get(slot)
+                let origin = *self
+                    .origins
+                    .get(slot)
                     .ok_or_else(|| invalid("typed local read before definition"))?;
                 // An exclusive alias may read its owner's actual scalar slot;
                 // the compiler emits a preceding source-checked LoanUse marker.
@@ -132,9 +137,17 @@ impl Verifier {
             return Err(invalid("typed events occur after terminal return"));
         }
         match stmt {
-            TStmt::ScalarBorrowIssue { loan_id, owner_slot, exclusive, alias } => {
-                if *loan_id == 0 || alias.is_empty() || *owner_slot >= self.slots
-                    || self.issued.len() >= MAX_LOANS || !self.issued.insert(*loan_id)
+            TStmt::ScalarBorrowIssue {
+                loan_id,
+                owner_slot,
+                exclusive,
+                alias,
+            } => {
+                if *loan_id == 0
+                    || alias.is_empty()
+                    || *owner_slot >= self.slots
+                    || self.issued.len() >= MAX_LOANS
+                    || !self.issued.insert(*loan_id)
                 {
                     return Err(invalid("invalid, reused, or excessive checked loan ID"));
                 }
@@ -144,11 +157,28 @@ impl Verifier {
                 if !self.origins.contains_key(owner_slot) {
                     return Err(invalid("loan owner has no initialized scalar origin"));
                 }
-                self.active.insert(*loan_id, Loan { slot: *owner_slot, exclusive: *exclusive, used: false });
-                self.push(Event::Issue { loan_id: *loan_id, owner_slot: *owner_slot, exclusive: *exclusive })
+                self.active.insert(
+                    *loan_id,
+                    Loan {
+                        slot: *owner_slot,
+                        exclusive: *exclusive,
+                        used: false,
+                    },
+                );
+                self.push(Event::Issue {
+                    loan_id: *loan_id,
+                    owner_slot: *owner_slot,
+                    exclusive: *exclusive,
+                })
             }
-            TStmt::ScalarBorrowUse { loan_id, owner_slot, write } => {
-                let loan = self.active.get_mut(loan_id)
+            TStmt::ScalarBorrowUse {
+                loan_id,
+                owner_slot,
+                write,
+            } => {
+                let loan = self
+                    .active
+                    .get_mut(loan_id)
                     .ok_or_else(|| invalid("use of unissued, expired or ended loan"))?;
                 if loan.slot != *owner_slot || (*write && !loan.exclusive) {
                     return Err(invalid("loan use owner or exclusive write capability mismatch"));
@@ -160,18 +190,32 @@ impl Verifier {
                 if *write {
                     self.pending_write = Some((*loan_id, *owner_slot));
                 }
-                self.push(Event::Use { loan_id: *loan_id, owner_slot: *owner_slot, write: *write })
+                self.push(Event::Use {
+                    loan_id: *loan_id,
+                    owner_slot: *owner_slot,
+                    write: *write,
+                })
             }
-            TStmt::ScalarBorrowEnd { loan_id, owner_slot, scope_exit } => {
+            TStmt::ScalarBorrowEnd {
+                loan_id,
+                owner_slot,
+                scope_exit,
+            } => {
                 if self.pending_write.is_some() {
                     return Err(invalid("write-through marker lacks its owner assignment"));
                 }
-                let loan = self.active.remove(loan_id)
+                let loan = self
+                    .active
+                    .remove(loan_id)
                     .ok_or_else(|| invalid("end of nonexistent or already ended loan"))?;
                 if loan.slot != *owner_slot || (!*scope_exit && !loan.used) {
                     return Err(invalid("loan end owner or NLL prior-use evidence mismatch"));
                 }
-                self.push(Event::End { loan_id: *loan_id, owner_slot: *owner_slot, scope_exit: *scope_exit })
+                self.push(Event::End {
+                    loan_id: *loan_id,
+                    owner_slot: *owner_slot,
+                    scope_exit: *scope_exit,
+                })
             }
             TStmt::Set(slot, value) => {
                 if *slot >= self.slots {
@@ -179,9 +223,7 @@ impl Verifier {
                 }
                 self.reads(value, depth + 1)?;
                 let matching_writer = if let Some((loan_id, writer_slot)) = self.pending_write.take() {
-                    if writer_slot != *slot || !self.active.get(&loan_id)
-                        .is_some_and(|l| l.slot == *slot && l.exclusive)
-                    {
+                    if writer_slot != *slot || !self.active.get(&loan_id).is_some_and(|l| l.slot == *slot && l.exclusive) {
                         return Err(invalid("write-through event not paired with its owner set"));
                     }
                     Some(loan_id)
@@ -199,7 +241,10 @@ impl Verifier {
                 let new_origin = self.next_origin;
                 self.next_origin += 1;
                 self.origins.insert(*slot, new_origin);
-                self.push(Event::Write { owner_slot: *slot, new_origin })
+                self.push(Event::Write {
+                    owner_slot: *slot,
+                    new_origin,
+                })
             }
             TStmt::Expr(expr) => {
                 if self.pending_write.is_some() {
@@ -238,7 +283,10 @@ fn verify(index: usize, func: &TFunc) -> Result<Function, Diagnostic> {
     if func.params.iter().chain(func.locals.iter()).any(|&ty| !scalar(ty)) {
         return Err(unsupported("borrow census requires scalar local storage"));
     }
-    let slots = func.params.len().checked_add(func.locals.len())
+    let slots = func
+        .params
+        .len()
+        .checked_add(func.locals.len())
         .ok_or_else(|| budget("local count overflow"))?;
     if slots > MAX_LOANS {
         return Err(budget("scalar local count exceeds budget"));
@@ -274,9 +322,12 @@ fn verify(index: usize, func: &TFunc) -> Result<Function, Diagnostic> {
 /// Model verdict on the exact checked typed program, never a codegen gate.
 /// Failure is diagnostic-only; normal `compile` retains existing admission.
 pub fn from_checked_program(program: &TProgram) -> Result<Census, Diagnostic> {
-    if program.funcs.is_empty() || program.funcs.len() > MAX_FUNCTIONS
-        || !program.generators.is_empty() || !program.actors.is_empty()
-        || program.heap || program.guest_eh
+    if program.funcs.is_empty()
+        || program.funcs.len() > MAX_FUNCTIONS
+        || !program.generators.is_empty()
+        || !program.actors.is_empty()
+        || program.heap
+        || program.guest_eh
     {
         return Err(unsupported("actor, generator, heap or exception profile not modeled"));
     }
@@ -284,5 +335,8 @@ pub fn from_checked_program(program: &TProgram) -> Result<Census, Diagnostic> {
     for (index, func) in program.funcs.iter().enumerate() {
         functions.push(verify(index, func)?);
     }
-    Ok(Census { contract: CONTRACT, functions })
+    Ok(Census {
+        contract: CONTRACT,
+        functions,
+    })
 }
