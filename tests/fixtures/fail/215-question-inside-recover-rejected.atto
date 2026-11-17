@@ -1,0 +1,12 @@
+// expect-error: E_UNSUPPORTED
+// A recover callback must not implicitly return through ? and replace outcome.
+fnc fail(): Result<int,Error> { return Err(Error("x")); }
+fnc checked(): Result<int,Error> {
+  recover (|int v| -> |err, c| -> {
+    val Result<int,Error> r = fail();
+    val int n = r?;
+    return Ok(n);
+  })(5);
+  return Ok(9);
+}
+pub fnc main(): int { return 0; }
