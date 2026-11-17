@@ -1,7 +1,7 @@
 //! Non-executable scoped Record field preflight.
 //! Never turns an indexed Record/Map expression into a guest allocation/read.
 use std::collections::BTreeMap;
-use crate::ast::{Expr, ExprKind, Program, Stmt, Param};
+use crate::ast::{BinOp, Expr, ExprKind, Program, Stmt, Param, UnOp};
 use crate::collection_types::{annotation, inferred, matches_expected, static_record_field_type,
     LiteralType as Ty, MAX_LITERAL_DEPTH};
 use crate::diag::{Diagnostic, Pos};
@@ -148,12 +148,39 @@ impl<'a> Scope<'a> {
                 }
                 Some(ty)
             }
-            ExprKind::Ownership(_,_,x) | ExprKind::Unary(_,x) | ExprKind::Trap(x) |
+            ExprKind::Unary(op,x) => {
+                let inner=self.expression(x,None,depth+1)?;
+                match (op,inner) {
+                    (UnOp::Neg | UnOp::Plus,Some(Ty::Int)) =>
+                        Some(inferred(e,None,depth).map(|t|t.ty).unwrap_or(Ty::Int)),
+                    (UnOp::Neg | UnOp::Plus,Some(Ty::Float)) => Some(Ty::Float),
+                    (UnOp::Not,Some(Ty::Bool)) => Some(Ty::Bool),
+                    _ => None,
+                }
+            }
+            ExprKind::Ownership(_,_,x) | ExprKind::Trap(x) |
             ExprKind::Propagate(x) => { self.expression(x,None,depth+1)?; None }
-            ExprKind::Binary(_,a,b) => {
-                self.expression(a,None,depth+1)?;
-                self.expression(b,None,depth+1)?;
-                None
+            ExprKind::Binary(op,a,b) => {
+                let left=self.expression(a,None,depth+1)?;
+                let right=self.expression(b,None,depth+1)?;
+                match (op,left,right) {
+                    (BinOp::Add | BinOp::Sub | BinOp::Mul,Some(Ty::Int),Some(Ty::Int)) =>
+                        Some(Ty::Int),
+                    (BinOp::Add | BinOp::Sub | BinOp::Mul,
+                        Some(Ty::Int | Ty::Float),Some(Ty::Float)) |
+                    (BinOp::Add | BinOp::Sub | BinOp::Mul,
+                        Some(Ty::Float),Some(Ty::Int | Ty::Float)) => Some(Ty::Float),
+                    (BinOp::Add,Some(Ty::String),Some(Ty::String)) => Some(Ty::String),
+                    (BinOp::Eq | BinOp::Ne,
+                        Some(Ty::Int),Some(Ty::Int)) |
+                    (BinOp::Eq | BinOp::Ne,
+                        Some(Ty::Bool),Some(Ty::Bool)) |
+                    (BinOp::Eq | BinOp::Ne,
+                        Some(Ty::String),Some(Ty::String)) => Some(Ty::Bool),
+                    (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
+                        Some(Ty::Int),Some(Ty::Int)) => Some(Ty::Bool),
+                    _ => None,
+                }
             }
             ExprKind::Ternary(c,a,b) => {
                 self.expression(c,None,depth+1)?;
