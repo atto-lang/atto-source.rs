@@ -1,9 +1,12 @@
 // expect-error: E_BORROW
+pub fnc passthrough(value: int): int {
+  return value;
+}
 pub fnc main(): int {
   let number = 40;
   let other = 42;
   val reader = borrow! number;
   val prior = copy! reader;
-  number = take! other;
+  number = passthrough(take! other);
   return number;
 }
