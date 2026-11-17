@@ -222,7 +222,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             Int
         }
-        ExprKind::Unary(UnOp::Plus, v) if matches!(v.kind, ExprKind::Int(_)) =>
+        ExprKind::Unary(UnOp::Plus, v) if matches!(&v.kind, ExprKind::Int(_)) =>
             inferred(v, Some(&Int), depth + 1)?.ty,
         ExprKind::Array(items) => {
             let (kind, element) = match expected {
