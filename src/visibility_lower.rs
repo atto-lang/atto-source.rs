@@ -120,6 +120,72 @@ pub fn resolve_exports(
     }
     Ok(())
 }
+/// Resolve direct-parser or pre-lowered directives into one checked AST
+/// export table. No metadata can originate from an unresolved source export.
+pub fn bind_program_exports(
+    program: &mut crate::ast::Program,
+    mut lexical: Vec<Export>,
+    modules: &[ModuleDecl],
+) -> R<()> {
+    if !program.exports.is_empty() {
+        return Err(error(Pos::default(), "E_DUPLICATE",
+            "program already has a resolved export table"));
+    }
+    lexical.extend(std::mem::take(&mut program.parsed_exports));
+    if lexical.len() > 128 {
+        return Err(error(Pos::default(), "E_SOURCE_LIMIT", "export budget exceeded"));
+    }
+    let mut seen = BTreeSet::new();
+    for e in &lexical {
+        if !seen.insert(e.name.as_str()) {
+            return Err(error(e.pos, "E_DUPLICATE",
+                format!("duplicate exported name '{}'", e.name)));
+        }
+    }
+    // Inline public modules synthesize one export, while a matching explicit
+    // directive is validated for kind and visibility conflicts.
+    for module in modules {
+        if module.inline_public && !seen.contains(module.name.as_str()) {
+            if lexical.len() >= 128 {
+                return Err(error(module.pos, "E_SOURCE_LIMIT", "export budget exceeded"));
+            }
+            lexical.push(Export {
+                name: module.name.clone(), kind: "module",
+                visibility: Visibility::Public, pos: module.pos,
+            });
+        }
+    }
+    resolve_exports(&mut lexical, program, modules)?;
+    lexical.sort_by(|a, b| a.name.cmp(&b.name));
+    for export in &lexical {
+        if export.kind == "class" && export.visibility == Visibility::Public {
+            if let Some(class) = program.classes.iter_mut()
+                .find(|class| class.name == export.name && !class.state_container) {
+                class.public = true;
+            }
+        }
+    }
+    program.exports = lexical.into_iter().map(|e| {
+        let kind = match e.kind {
+            "class" => crate::ast::ExportKind::Class,
+            "fnc" => crate::ast::ExportKind::Fnc,
+            "actor" => crate::ast::ExportKind::Actor,
+            "enum" => crate::ast::ExportKind::Enum,
+            "module" => crate::ast::ExportKind::Module,
+            _ => return Err(error(e.pos, "E_EXPORT_KIND",
+                "unresolved or unsupported export kind")),
+        };
+        Ok(crate::ast::ExportDecl {
+            name: e.name, pos: e.pos, kind,
+            visibility: match e.visibility {
+                Visibility::Public => crate::ast::ExportVisibility::Public,
+                Visibility::Package => crate::ast::ExportVisibility::Package,
+            },
+        })
+    }).collect::<R<Vec<_>>>()?;
+    Ok(())
+}
+
 fn external_prototype(t: &[Token], start: usize) -> R<(usize, String)> {
     let p = t[start].pos;
     if !word(t, start + 1, "fnc") {
