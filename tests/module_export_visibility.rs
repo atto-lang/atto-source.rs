@@ -101,7 +101,7 @@ fn inferred_package_export_and_inline_public_module() {
 }
 #[test]
 fn exports_cannot_cross_kind_or_publish_private_members() {
-    err(&format!("export pub fnc Math;\n{BODY}"), "E_TYPE");
+    err(&format!("export pub fnc Math;\n{BODY}"), "E_EXPORT_KIND");
     err("export pub module Absent;\npub fnc main(): int { return 0; }", "E_UNBOUND");
     err(&format!("export pub fnc secret;\n{BODY}"), "E_UNBOUND");
     err(&format!("export pub module Math;\nexport pub Math;\n{BODY}"), "E_DUPLICATE");
