@@ -10,7 +10,7 @@ export pub Foo;
 
 define class Foo as
   final int id: 7;
-  private let int balance: 0;
+  private let int balance = 0;
 
   pub get_balance(): int {
     return self.balance;
