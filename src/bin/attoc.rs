@@ -9,11 +9,12 @@ enum Input {
     Single(String),
     Discovered(String),
     Package { root: String, entry: String },
+    LockedPackage { root: String, entry: String, digest: String },
 }
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: attoc <input.atto> [-o out.wasm]\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root <dir> --entry <relative.atto> [-o out.wasm]"
+        "usage: attoc <input.atto> [-o out.wasm]\n       attoc --package <input.atto> [-o out.wasm]\n       attoc --package-root <dir> --entry <relative.atto> [-o out.wasm]\\n       attoc --package-root <dir> --entry <relative.atto> --trusted-lock-sha256 <digest> [-o out.wasm]"
     );
     ExitCode::from(2)
 }
@@ -33,6 +34,14 @@ fn main() -> ExitCode {
         [p, root, e, entry, o, out]
             if p == "--package-root" && e == "--entry" && o == "-o" =>
             (Input::Package { root: root.clone(), entry: entry.clone() }, Some(out.clone())),
+        [p, root, e, entry, flag, digest] if p == "--package-root" &&
+            e == "--entry" && flag == "--trusted-lock-sha256" =>
+            (Input::LockedPackage { root: root.clone(), entry: entry.clone(),
+                digest: digest.clone() }, None),
+        [p, root, e, entry, flag, digest, o, out] if p == "--package-root" &&
+            e == "--entry" && flag == "--trusted-lock-sha256" && o == "-o" =>
+            (Input::LockedPackage { root: root.clone(), entry: entry.clone(),
+                digest: digest.clone() }, Some(out.clone())),
         _ => return usage(),
     };
     let (label, compiled) = match input {
@@ -49,6 +58,11 @@ fn main() -> ExitCode {
         Input::Discovered(path) => {
             let label = path.clone();
             (label, atto_compiler::package_resolver::compile_discovered(Path::new(&path)))
+        }
+        Input::LockedPackage { root, entry, digest } => {
+            let label = format!("{root}/{entry}");
+            (label, atto_compiler::package_resolver::compile_package_locked(
+                Path::new(&root), &entry, &digest))
         }
         Input::Package { root, entry } => {
             let label = format!("{root}/{entry}");
