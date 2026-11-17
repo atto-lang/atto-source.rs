@@ -159,7 +159,7 @@ impl Build {
         if depth > 64 {
             return Err(budget("typed CFG nesting depth exceeded"));
         }
-        for stmt in body.iter().rev() {
+        for (stmt_index, stmt) in body.iter().enumerate().rev() {
             let successors = next.into_iter().collect::<Vec<_>>();
             let entry = match stmt {
                 TStmt::ScalarBorrowIssue { loan_id, owner_slot, exclusive, .. } =>
@@ -175,7 +175,17 @@ impl Build {
                         return Err(incomplete("typed scalar set targets unknown slot"));
                     }
                     let reads = collect(Some(value), &mut self.expr_work, self.slots)?;
-                    self.add(Kind::Set { owner_slot: *slot, via: None }, reads, successors)?
+                    // Checked exclusive alias writes end with a write-use
+                    // marker immediately before their actual local.set.
+                    // Reconciliation independently verifies the pair.
+                    let via = stmt_index.checked_sub(1)
+                        .and_then(|i| body.get(i))
+                        .and_then(|previous| match previous {
+                            TStmt::ScalarLoanUse { loan_id, owner_slot, write: true }
+                                if *owner_slot == *slot => Some(*loan_id),
+                            _ => None,
+                        });
+                    self.add(Kind::Set { owner_slot: *slot, via }, reads, successors)?
                 }
                 TStmt::Expr(value) => {
                     let reads = collect(Some(value), &mut self.expr_work, self.slots)?;
@@ -233,7 +243,7 @@ fn reconcile_sequence(body: &[TStmt], work: &mut usize, slots: usize, depth: usi
                     reads_expected.push((*loan_id, *owner_slot));
                 }
             }
-            TStmt::Set(slot, expr) | TStmt::Expr(expr) => {
+            TStmt::Set(_, expr) | TStmt::Expr(expr) => {
                 let observed = collect(Some(expr), work, slots)?;
                 if observed.loans != reads_expected {
                     return Err(incomplete("typed loan reads differ from preceding source-checker markers"));
@@ -409,8 +419,11 @@ fn audit_function(name: &str, body: &[TStmt], slots: usize) -> Result<Function, 
                     // The exact write-through marker is checked by the
                     // separate statement reconciliation, but this flat node
                     // needs the verified associated loan to authorize it.
-                    if via.is_none() {
-                        return Err(incomplete("owner write while a CFG loan remains live"));
+                    if via.is_none_or(|loan_id| !active.contains(&loan_id)
+                        || loan_owner.get(&loan_id).is_none_or(|(owner, exclusive)| *owner != owner_slot || !exclusive)
+                        || active.iter().any(|other| *other != loan_id && loan_owner.get(other).is_some_and(|(owner, _)| *owner == owner_slot)))
+                    {
+                        return Err(incomplete("owner write without sole live exclusive loan right"));
                     }
                 }
             }
