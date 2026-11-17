@@ -106,7 +106,9 @@ pub struct LayoutInterner {
 }
 
 impl Default for LayoutInterner {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LayoutInterner {
@@ -126,37 +128,48 @@ impl LayoutInterner {
         me
     }
 
-    pub fn len(&self) -> usize { self.shapes.len() }
-    pub fn is_empty(&self) -> bool { self.shapes.is_empty() }
-    pub fn shape(&self, id: usize) -> Option<&Shape> { self.shapes.get(id) }
+    pub fn len(&self) -> usize {
+        self.shapes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.shapes.is_empty()
+    }
+    pub fn shape(&self, id: usize) -> Option<&Shape> {
+        self.shapes.get(id)
+    }
 
     /// Intern a closed Record. Return a source-evaluation-order -> canonical
     /// layout-slot permutation; no initializer expression may be reordered.
-    pub fn closed_record(&mut self, source_fields: &[FieldType])
-        -> Result<InternedLayout, Error>
-    {
+    pub fn closed_record(&mut self, source_fields: &[FieldType]) -> Result<InternedLayout, Error> {
         validate_fields(source_fields, false)?;
         let mut canonical = source_fields.to_vec();
-        canonical.sort_by(|(a,_), (b,_)| a.cmp(b));
+        canonical.sort_by(|(a, _), (b, _)| a.cmp(b));
         if canonical.windows(2).any(|w| w[0].0 == w[1].0) {
             return Err(Error::DuplicateField);
         }
         let mut slots = BTreeMap::new();
-        for (index,(name,_)) in canonical.iter().enumerate() {
+        for (index, (name, _)) in canonical.iter().enumerate() {
             slots.insert(name.clone(), index);
         }
-        let source_to_slot = source_fields.iter().map(|(name,_)| slots[name.as_str()])
+        let source_to_slot = source_fields
+            .iter()
+            .map(|(name, _)| slots[name.as_str()])
             .collect();
         let shape_id = self.intern(ShapeKind::Record, canonical)?;
-        Ok(InternedLayout { shape_id, source_to_slot })
+        Ok(InternedLayout {
+            shape_id,
+            source_to_slot,
+        })
     }
 
     /// Abstract static Struct layout planning. This does NOT parse, construct
     /// or lower a user Struct. Field order is fixed at declaration order,
     /// and distinct qualified names are always nominally distinct.
-    pub fn nominal_struct(&mut self, qualified_name: &str, declared: &[FieldType])
-        -> Result<InternedLayout, Error>
-    {
+    pub fn nominal_struct(
+        &mut self,
+        qualified_name: &str,
+        declared: &[FieldType],
+    ) -> Result<InternedLayout, Error> {
         if qualified_name.is_empty() || qualified_name.len() > 1024 {
             return Err(Error::InvalidStructName);
         }
@@ -168,9 +181,12 @@ impl LayoutInterner {
         } else if self.shapes.len() >= self.shape_limit {
             return Err(Error::TooManyShapes);
         }
-        let kind = ShapeKind::Struct { qualified_name: qualified_name.to_owned() };
+        let kind = ShapeKind::Struct {
+            qualified_name: qualified_name.to_owned(),
+        };
         let shape_id = self.intern(kind, declared.to_vec())?;
-        self.nominal_structs.entry(qualified_name.to_owned())
+        self.nominal_structs
+            .entry(qualified_name.to_owned())
             .or_insert_with(|| declared.to_vec());
         Ok(InternedLayout {
             shape_id,
@@ -178,17 +194,28 @@ impl LayoutInterner {
         })
     }
 
-    fn intern(&mut self, kind: ShapeKind, fields: Vec<FieldType>)
-        -> Result<usize, Error>
-    {
-        let key = ShapeKey {kind: kind.clone(), fields: fields.clone()};
-        if let Some(&id) = self.keys.get(&key) { return Ok(id); }
-        if self.shapes.len() >= self.shape_limit { return Err(Error::TooManyShapes); }
+    fn intern(&mut self, kind: ShapeKind, fields: Vec<FieldType>) -> Result<usize, Error> {
+        let key = ShapeKey {
+            kind: kind.clone(),
+            fields: fields.clone(),
+        };
+        if let Some(&id) = self.keys.get(&key) {
+            return Ok(id);
+        }
+        if self.shapes.len() >= self.shape_limit {
+            return Err(Error::TooManyShapes);
+        }
         let id = self.shapes.len();
-        let field_to_slot = fields.iter().enumerate()
+        let field_to_slot = fields
+            .iter()
+            .enumerate()
             .map(|(i, (name, _))| (name.clone(), i))
             .collect();
-        self.shapes.push(Shape { kind, fields, field_to_slot });
+        self.shapes.push(Shape {
+            kind,
+            fields,
+            field_to_slot,
+        });
         self.keys.insert(key, id);
         Ok(id)
     }
@@ -201,16 +228,24 @@ fn valid_identifier(s: &str) -> bool {
 }
 
 fn validate_fields(fields: &[FieldType], is_struct: bool) -> Result<(), Error> {
-    if fields.len() > MAX_STATIC_FIELDS { return Err(Error::TooManyFields); }
+    if fields.len() > MAX_STATIC_FIELDS {
+        return Err(Error::TooManyFields);
+    }
     let mut name_bytes = 0usize;
     let mut seen = std::collections::BTreeSet::new();
     for (name, ty) in fields {
         if is_struct && !valid_identifier(name) {
             return Err(Error::InvalidStructField);
         }
-        name_bytes = name_bytes.checked_add(name.len()).ok_or(Error::TooManyNameBytes)?;
-        if name_bytes > MAX_LAYOUT_NAME_BYTES { return Err(Error::TooManyNameBytes); }
-        if !seen.insert(name) { return Err(Error::DuplicateField); }
+        name_bytes = name_bytes
+            .checked_add(name.len())
+            .ok_or(Error::TooManyNameBytes)?;
+        if name_bytes > MAX_LAYOUT_NAME_BYTES {
+            return Err(Error::TooManyNameBytes);
+        }
+        if !seen.insert(name) {
+            return Err(Error::DuplicateField);
+        }
         validate_resolved_type(ty)?;
     }
     Ok(())
@@ -222,20 +257,29 @@ fn validate_resolved_type(root: &LiteralType) -> Result<(), Error> {
     let mut pending = vec![root];
     let mut remaining = MAX_TYPE_NODES;
     while let Some(next) = pending.pop() {
-        if remaining == 0 { return Err(Error::TypeBudget); }
+        if remaining == 0 {
+            return Err(Error::TypeBudget);
+        }
         remaining -= 1;
         match next {
-            LiteralType::Bottom | LiteralType::OpenRecord | LiteralType::AnyTuple =>
-                return Err(Error::UnresolvedType),
+            LiteralType::Bottom | LiteralType::OpenRecord | LiteralType::AnyTuple => {
+                return Err(Error::UnresolvedType)
+            }
             LiteralType::Record(fields) => {
-                if fields.len() > MAX_STATIC_FIELDS { return Err(Error::TooManyFields); }
-                for (_, child) in fields { pending.push(child); }
+                if fields.len() > MAX_STATIC_FIELDS {
+                    return Err(Error::TooManyFields);
+                }
+                for (_, child) in fields {
+                    pending.push(child);
+                }
             }
             LiteralType::Array(t) | LiteralType::List(t) => pending.push(t),
-            LiteralType::Map(k,v) => { pending.push(k); pending.push(v); }
+            LiteralType::Map(k, v) => {
+                pending.push(k);
+                pending.push(v);
+            }
             LiteralType::Tuple(items) => pending.extend(items),
-            LiteralType::Int | LiteralType::Bool | LiteralType::Float
-            | LiteralType::String => {},
+            LiteralType::Int | LiteralType::Bool | LiteralType::Float | LiteralType::String => {}
         }
     }
     Ok(())
