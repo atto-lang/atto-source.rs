@@ -508,5 +508,5 @@ fn spaced_optional_equals_does_not_accept_shift_assignment_or_repeated_equals() 
         );
     }
     assert!(parse("scalar > > = val x;").is_empty());
-    assert!(parse("scalar >> 1;").is_empty());
+    assert!(parse("pub fnc main(): int { return 3 >> 1; }").is_empty());
 }
