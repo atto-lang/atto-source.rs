@@ -23,7 +23,7 @@
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
-use crate::ast::{BinOp, Type};
+use crate::ast::{BinOp, ExportKind, ExportVisibility, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
@@ -1532,6 +1532,48 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         uleb(&mut d, p.data.len() as u64);
         d.extend_from_slice(&p.data);
         section(&mut out, 11, d);
+    }
+
+    // Single typed IR export table. Language-level visibility is NOT a host
+    // WebAssembly export, and 'pub[pkg]' requires a future verified linker.
+    // Keep v1 exact for its four established kinds. Modules are separate
+    // until a namespace/package-qualified ABI is standardized.
+    let ordinary: Vec<_> = p.exports.iter()
+        .filter(|e| e.kind != ExportKind::Module).collect();
+    if !ordinary.is_empty() {
+        let mut manifest = Vec::new();
+        name(&mut manifest, "atto.exports.v1");
+        uleb(&mut manifest, ordinary.len() as u64);
+        for e in ordinary {
+            name(&mut manifest, &e.name);
+            manifest.push(match e.kind {
+                ExportKind::Class => 1,
+                ExportKind::Fnc => 2,
+                ExportKind::Actor => 3,
+                ExportKind::Enum => 4,
+                ExportKind::Module => unreachable!("v1 excludes modules"),
+            });
+            manifest.push(match e.visibility {
+                ExportVisibility::Public => 1,
+                ExportVisibility::Package => 2,
+            });
+        }
+        section(&mut out, 0, manifest);
+    }
+    let modules: Vec<_> = p.exports.iter()
+        .filter(|e| e.kind == ExportKind::Module).collect();
+    if !modules.is_empty() {
+        let mut manifest = Vec::new();
+        name(&mut manifest, "atto.exports.modules.v1");
+        uleb(&mut manifest, modules.len() as u64);
+        for e in modules {
+            name(&mut manifest, &e.name);
+            manifest.push(match e.visibility {
+                ExportVisibility::Public => 1,
+                ExportVisibility::Package => 2,
+            });
+        }
+        section(&mut out, 0, manifest);
     }
 
     // custom "name" section: function names for readable traps and stack traces
