@@ -97,7 +97,7 @@ fn collect(expr: Option<&TE>, work: &mut usize, slots: usize) -> Result<Reads, D
     Ok(facts)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Kind {
     Issue { loan_id: u32, owner_slot: u32, exclusive: bool },
     /// A marker, not a codegen load. Must be reconciled independently.
