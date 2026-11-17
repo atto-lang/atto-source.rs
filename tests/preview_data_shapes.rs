@@ -12,6 +12,10 @@ fn reject(s: &str) {
     assert!(d.code.starts_with("E_"),"{d}");
     assert!(d.pos.line>0 && d.pos.col>0,"{d}");
 }
+fn reject_code(s: &str, code: &str) {
+    let d=compile(s).expect_err("invalid product must fail without guest artifact");
+    assert_eq!(d.code, code, "unexpected diagnostic: {d}");
+}
 
 #[test]
 fn exact_published_product_shapes_compile_to_actual_guest_wasm() {
@@ -222,6 +226,48 @@ fn unsupported_runtime_computed_struct_fields_stay_fail_closed() {
             val x = 40;
             val p = infer struct { x: x, y: 2 };
             return p.y;
+        }
+    "#);
+}
+
+#[test]
+fn inferred_struct_errors_are_specific_and_deterministic() {
+    reject_code(r#"
+        define struct Point as int x; int y; end
+        pub fnc main(): int {
+            const Point p = infer struct { x: 2 };
+            return 0;
+        }
+    "#, "E_STRUCT_MISSING_FIELD");
+    reject_code(r#"
+        define struct Point as int x; end
+        pub fnc main(): int {
+            const Point p = infer struct { x: 2, unknown: 3 };
+            return 0;
+        }
+    "#, "E_NO_FIELD");
+    reject_code(r#"
+        pub fnc main(): int {
+            const anon = infer struct { missing: None };
+            return 0;
+        }
+    "#, "E_TYPE_INFER_AMBIGUOUS");
+    reject_code(r#"
+        pub fnc main(): int {
+            const anon = infer struct { "unusual name": 3 };
+            return 0;
+        }
+    "#, "E_STRUCT_FIELD_NAME");
+}
+
+#[test]
+fn same_shape_anonymous_values_remain_distinct_nominal_types() {
+    reject(r#"
+        pub fnc main(): int {
+            let first = infer struct { x: 1 };
+            val second = infer struct { x: 2 };
+            first = second;
+            return 0;
         }
     "#);
 }
