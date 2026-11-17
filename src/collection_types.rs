@@ -247,12 +247,20 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
         ExprKind::Binary(op, left, right) if matches!(op,
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) => {
             let left_node = inferred(left,None,depth+1,locals)?;
-            let right_node = inferred(right,Some(&left_node.ty),depth+1,locals)?;
-            let result = left_node.ty.clone();
-            if !matches!(&result, Int | Float) {
-                return Err(diag(e.pos,"E_TYPE",
-                    "static literal arithmetic currently admits only homogeneous int/float"));
-            }
+            let right_node = inferred(right,None,depth+1,locals)?;
+            // Match the existing executable checker: mixed numeric operands
+            // widen to float, and String + String concatenates. Do not assume
+            // int / int produces a value (the guest checker rejects it).
+            let result = match (&left_node.ty, &right_node.ty) {
+                (String, String) if *op == BinOp::Add => String,
+                (Int, Int) if *op == BinOp::Div => {
+                    return Err(diag(e.pos,"E_TYPE", "int / int has no admitted result type"));
+                }
+                (Int, Int) => Int,
+                (Int | Float, Int | Float) => Float,
+                _ => return Err(diag(e.pos,"E_TYPE",
+                    "arithmetic requires compatible numeric operands or two strings with '+'")),
+            };
             children.push(left_node);
             children.push(right_node);
             result
@@ -266,7 +274,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
             }
             Int
         }
-        ExprKind::Unary(op @ (UnOp::Neg | UnOp::Plus), v) => {
+        ExprKind::Unary(UnOp::Neg | UnOp::Plus, v) => {
             let child = inferred(v,None,depth+1,locals)?;
             if !matches!(&child.ty, Int | Float) {
                 return Err(diag(e.pos,"E_TYPE",
@@ -276,7 +284,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
             // unary numeric operations retain the checked scalar type.
             let ty = child.ty.clone();
             children.push(child);
-            if *op == UnOp::Neg || *op == UnOp::Plus { ty } else { unreachable!() }
+            ty
         }
         ExprKind::Unary(UnOp::Not, v) => {
             let child = inferred(v,Some(&Bool),depth+1,locals)?;
