@@ -113,6 +113,8 @@ fn nested_exports_cannot_escape_block_or_nominal_scope() {
     err("fnc helper(): int { return 42; }\npub fnc main(): int { export pub fnc helper; return 0; }", "E_SYNTAX");
     err("define module M as\n export pub fnc helper;\n pub fnc helper(): int { return 42; }\nend\npub fnc main(): int { return 0; }", "E_SYNTAX");
     err("define class C as\n pub get(): int { return 2; }\n export pub class C;\nend\npub fnc main(): int { return 0; }", "E_SYNTAX");
+    err("fnc helper(): int { return 42; }\nfnc main() -> int\n export pub fnc helper;\n return 0;\nend", "E_SYNTAX");
+    err("define class C as\n pub get() -> int\n   return 2;\n end\n export pub class C;\nend\npub fnc main(): int { return 0; }", "E_SYNTAX");
 }
 #[test]
 fn export_function_overload_sets_remain_arity_based() {
