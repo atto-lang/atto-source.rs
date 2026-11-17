@@ -69,3 +69,39 @@ byte comparison, `node tests/ownership_wasm.mjs` for zero-artifact
 rejections, and browser worker E2E. If source CI cannot execute, use
 the same SHA-verified exact-source-tree private GitHub Actions carrier
 as PR #141. Keep this work draft until executed evidence exists.
+
+## Hardening audit (2026-11-17)
+
+Audited the AST-based retirement algorithm for two under-specified proof
+boundaries and corrected both without broadening the admitted ownership
+profile:
+
+1. **Unproved effectful tail:** calls, method calls, object creation,
+   spawns, member/heap references, user-defined callbacks, trap, early
+   propagation, container expressions, borrow/reborrow and take operations
+   were previously inspected as though ordinary pure expressions could
+   prove a suffix harmless. The scanner now returns "unproved" for these
+   expression categories, so their presence keeps the loan live until
+   lexical scope exit. Only fully checked scalar literals, named scalar
+   references, admitted pure unary operations, arithmetic/boolean and
+   ternary expressions can justify retirement. This deliberately causes
+   some conservative E_BORROW rejections for safe but not yet proved
+   effectful programs; it does not authorize guest code with unverified
+   runtime/cleanup effects.
+2. **Aggregate analysis budget:** the earlier 4096-node limit was
+   applied to each loan/suffix scan, allowing repeated scans to consume
+   excessive compiler time. In addition to the 256-statement/single-scan
+   bounds, the compiler now tracks an **entire-function shared 32768
+   scan-work-unit budget**; exhaustion retains remaining loans (fail
+   closed). Writer aliases also have a direct retired-state check at
+   assignment as defense in depth, independent of the scanner's census.
+
+Additional Rust unit tests exercise all rejected effectful expression
+families, pure nested expressions, scanner work exhaustion and statement
+limits. Additional real AttoLang guest fixtures test a pure suffix as a
+positive case and an unproved call or ownership-transfer suffix as
+conservative negative cases.
+
+These restrictions are not a substitute for future independent typed-MIR
+effect inventories. They specifically avoid guessing purity or control
+flow from the surface AST until those compiler proofs exist.
