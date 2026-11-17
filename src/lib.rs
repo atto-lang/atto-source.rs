@@ -8,6 +8,8 @@
 
 pub mod ast;
 pub mod collection_types;
+pub mod collection_scopes;
+pub mod layout_plan;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -123,6 +125,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Contextual literal typing is checked before executable scalar lowering.
     // It never grants a guest allocation; unsupported values remain rejected.
     let _collection_ir = collection_types::analyze(&program)?;
+    // Scoped Record field/presence checking is an independent static gate.
+    // Guest compilation of collections remains E_UNSUPPORTED.
+    collection_scopes::analyze(&program)?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
