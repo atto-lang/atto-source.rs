@@ -19,8 +19,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match atto_compiler::compile(&source) {
-        Ok(bytes) => {
+    match atto_compiler::compile_with_warnings(&source) {
+        Ok((bytes, warnings)) => {
+            for warning in warnings {
+                eprintln!("{input}:{warning}");
+            }
             if let Some(o) = output {
                 if std::fs::write(&o, &bytes).is_err() {
                     eprintln!("{o}: cannot write");
