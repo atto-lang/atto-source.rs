@@ -26,6 +26,8 @@ Use either:
 
 ```bash
 attoc --package-root project --entry src/main.atto -o app.wasm
+# Or discover the nearest .atto.pkg.toml from the source path:
+attoc --package project/src/main.atto -o app.wasm
 ```
 
 Or host Rust code:
@@ -35,6 +37,10 @@ let wasm = atto_compiler::package_resolver::compile_package(
     std::path::Path::new("project"), "src/main.atto",
 )?;
 ```
+
+Manifest discovery is explicit: `--package` ascends from the source file and
+chooses the nearest matching package root. It rejects traversal and symlink
+components and calls the same manifest/root resolver as `--package-root`.
 
 The legacy single-file `attoc input.atto [-o app.wasm]` and
 `compile(source)` remain unchanged and do not implicitly access the filesystem.
