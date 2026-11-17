@@ -244,7 +244,8 @@ pub enum TStmt {
     Try {
         saved: u32,
         body: Vec<TStmt>,
-        catch: Option<Vec<TStmt>>,
+        /// Bound original Error handle and handler body (no message-only copy).
+        catch: Option<(u32, Vec<TStmt>)>,
         finally: Option<Vec<TStmt>>,
     },
     /// Registration point of a top-level `defer`: sets `flag`. The body
@@ -1440,7 +1441,7 @@ fn returns(body: &[TStmt]) -> bool {
         TStmt::Raise(_) | TStmt::RecoverNext => true,
         TStmt::Try { body, catch, finally, .. } =>
             finally.as_ref().is_some_and(|f| returns(f))
-                || (returns(body) && catch.as_ref().is_none_or(|c| returns(c))),
+                || (returns(body) && catch.as_ref().is_none_or(|(_, c)| returns(c))),
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
@@ -1551,7 +1552,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
         TStmt::Raise(e) => any_in(e, f),
         TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
-            || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
+            || catch.as_ref().is_some_and(|(_, b)| any_in_stmts(b, f))
             || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
         TStmt::Defer { body, .. } => any_in_stmts(body, f),
         TStmt::Recover { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
@@ -1943,7 +1944,15 @@ impl<'a> FnCx<'a> {
                     // Conservative ownership: the handler and finally see
                     // every move the body might have made before failing.
                     let catch = match catch {
-                        Some((_binder, handler)) => Some(self.scoped(handler)?),
+                        Some((binder, handler)) => {
+                            self.scopes.push(Vec::new());
+                            let checked = (|| -> R<(u32, Vec<TStmt>)> {
+                                let slot = self.declare(binder, Type::Error, false, *pos)?;
+                                Ok((slot, self.stmts(handler)?))
+                            })();
+                            self.pop_scope();
+                            Some(checked?)
+                        },
                         None => None,
                     };
                     let finally = match finally {
@@ -4053,7 +4062,7 @@ fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
         TStmt::ForIn { body, .. } => stmt_exists(body, f),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => stmt_exists(b, f),
         TStmt::Try { body, catch, finally, .. } => stmt_exists(body, f)
-            || catch.as_ref().is_some_and(|b| stmt_exists(b, f))
+            || catch.as_ref().is_some_and(|(_, b)| stmt_exists(b, f))
             || finally.as_ref().is_some_and(|b| stmt_exists(b, f)),
         TStmt::Defer { body, .. } | TStmt::Recover { body, .. } => stmt_exists(body, f),
         _ => false,
