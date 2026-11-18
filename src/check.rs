@@ -23,6 +23,8 @@ mod direct_lambda;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
+/// Upper bound on all syntactic last-use AST visits per checked function.
+const NLL_WORK_BUDGET: usize = 32_768;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
@@ -445,6 +447,8 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Monotone NLL visit budget; exhaustion conservatively retains live loans.
+    nll_fuel: usize,
     /// Compiler-issued lexical protected state permissions.
     state_write_scope: bool,
     state_read_scope: bool,
@@ -1620,6 +1624,7 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            nll_fuel: NLL_WORK_BUDGET,
             state_write_scope: false,
             state_read_scope: false,
             imports,
@@ -1815,10 +1820,12 @@ impl<'a> FnCx<'a> {
             // an outer statement may still refer to it after this block.
             // The exhaustive AST visitor intentionally over-approximates uses
             // in branching, loops, lambdas and cleanup scopes.
+            let active_loans = &self.loans;
+            let fuel = &mut self.nll_fuel;
             let expired: Vec<u32> = self.scopes.last().unwrap().iter()
-                .filter(|local| self.loans.contains_key(&local.slot) &&
+                .filter(|local| active_loans.contains_key(&local.slot) &&
                     !body[i + 1..].iter().any(|next|
-                        loan_liveness::stmt_mentions(next, &local.name)))
+                        loan_liveness::stmt_mentions(next, &local.name, fuel)))
                 .map(|local| local.slot)
                 .collect();
             for slot in expired {
