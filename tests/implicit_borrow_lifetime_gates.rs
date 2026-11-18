@@ -100,3 +100,108 @@ fn candidate_returned_borrow_still_requires_proven_lifetime_abi() {
         assert_eq!(compile(&source).unwrap_err().code, "E_UNSUPPORTED_TYPE");
     }
 }
+
+
+#[test]
+fn mutable_class_loan_cannot_bypass_sealed_state_write() {
+    // This previously reached the ordinary FieldSet path for a mutable alias
+    // inside its own class, bypassing the critical-write lease.
+    let source = r#"
+        define state Counter as
+            state { let int count: 0; }
+            pub modify_another(Counter other): int {
+                val alias = borrow! mut other;
+                alias.count = 7;
+                return 1;
+            }
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    assert_eq!(compile(source).unwrap_err().code, "E_STATE_BORROW");
+}
+
+#[test]
+fn borrowed_state_container_cannot_invoke_unproven_write_effects() {
+    // A shared Borrow<Counter> is read-only even when an instance method
+    // returns just void or int: it can transitively enter critical-write.
+    let source = r#"
+        define state Counter as
+            state { let int count: 0; }
+            pub increment(int amount): void {
+                handle_state(critical-write |s| -> { s.count = s.count + amount; });
+            }
+        end
+        fnc inspect(p: Borrow<Counter>): int {
+            p.increment(1);
+            return 1;
+        }
+        pub fnc main(): int {
+            let counter = new Counter();
+            return inspect(counter);
+        }
+    "#;
+    assert_eq!(compile(source).unwrap_err().code, "E_STATE_BORROW");
+}
+
+#[test]
+fn outstanding_shared_call_loan_blocks_state_method_on_original_owner() {
+    // The first argument holds a read loan through all later argument
+    // evaluation. A state method in the second argument may write that owner.
+    let source = r#"
+        define state Counter as
+            state { let int count: 0; }
+            pub bump(): int {
+                handle_state(critical-write |s| -> { s.count = s.count + 1; });
+                return 1;
+            }
+        end
+        fnc inspect(p: Borrow<Counter>, n: int): int { return n; }
+        pub fnc main(): int {
+            let counter = new Counter();
+            return inspect(counter, counter.bump());
+        }
+    "#;
+    assert_eq!(compile(source).unwrap_err().code, "E_STATE_BORROW");
+}
+
+#[test]
+fn ordinary_owned_state_critical_writes_still_compile() {
+    // Do not disable state writes; require the compiler-issued lease on the
+    // exact owned receiver and preserve normal method dispatch.
+    let source = r#"
+        define state Counter as
+            state { let int count: 0; }
+            pub bump(): int {
+                handle_state(critical-write |s| -> { s.count = s.count + 1; });
+                return handle_state(critical-read |s| -> s.count);
+            }
+        end
+        pub fnc main(): int {
+            let counter = new Counter();
+            return counter.bump();
+        }
+    "#;
+    let wasm = compile(source).expect("owned state + critical-write remains legal");
+    assert!(wasm.starts_with(b"\0asm"));
+}
+
+#[test]
+fn non_state_readonly_class_method_remains_callable_via_borrow() {
+    // Normal class methods have immutable self in the current guest profile;
+    // the new conservative state-container gate must not block them.
+    let source = r#"
+        define class Person as
+            pub let int age = 42;
+            pub get_age(): int { return self.age; }
+        end
+        fnc inspect(p: Borrow<Person>): int {
+            return p.get_age();
+        }
+        pub fnc main(): int {
+            let p = new Person();
+            return inspect(p);
+        }
+    "#;
+    let wasm = compile(source).expect("readonly class receiver should compile");
+    assert!(wasm.starts_with(b"\0asm"));
+}
