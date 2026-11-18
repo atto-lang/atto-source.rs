@@ -435,6 +435,10 @@ pub enum ExprKind {
     New(String, Vec<Expr>),
     /// `spawn Actor()`
     Spawn(String),
+    /// Host-checked keyed activation. The compiler resolves the generic actor
+    /// type and accepts exactly two string-typed key components.
+    /// `ActorRegistry.get_or_create<Actor>("namespace", "application_key")`
+    RegistryGet(String, Box<Expr>, Box<Expr>),
     /// `base.name`: field read, `Enum.Variant`, or `mail.value`.
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
