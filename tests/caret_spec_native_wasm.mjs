@@ -11,7 +11,7 @@ import {join, resolve} from 'node:path';
 const path = new URL('./contracts/caret-return-sequences-v1.json', import.meta.url);
 const bytes = await readFile(path);
 const sha = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
-assert.equal(sha, '0fad4e5a6047e748f657c93cb79d0e4860416b71',
+assert.equal(sha, 'a5cbe9e45b71a66aaf0dc39ed839f45293e414a5',
   'Spec snapshot changed without updating upstream Git-blob receipt');
 const contract = JSON.parse(bytes.toString('utf8'));
 assert.equal(contract.cases.length, 49);
