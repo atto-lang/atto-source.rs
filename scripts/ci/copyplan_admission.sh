@@ -22,6 +22,14 @@ echo "COPYPLAN_REQUIRED_COMPILERS_AND_GUESTS=PASS"
 # Allow only the exact known set of pre-existing warnings; fail on new ones.
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
+clippy_status=0
 cargo +"$TOOLCHAIN" clippy --locked --all-targets \
-  --message-format=json -- -D warnings > "$tmp" 2>/dev/null || :
-python3 scripts/ci/guard_copyplan_clippy.py < "$tmp"
+  --message-format=json -- -D warnings > "$tmp" 2>/dev/null || clippy_status=$?
+if [ "$clippy_status" -eq 0 ]; then
+  # A warning-free Cargo run legitimately emits no compiler-message records.
+  # Accept only the actual zero exit status, not an empty diagnostic stream
+  # from a failed invocation. The separate strict Clippy step also gates CI.
+  echo "COPYPLAN_LINT_GATE=PASS new_errors=0 legacy_errors=0 strict_clippy_pass=1"
+else
+  python3 scripts/ci/guard_copyplan_clippy.py < "$tmp"
+fi
