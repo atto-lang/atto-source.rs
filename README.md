@@ -2,6 +2,14 @@
 
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
+## Canonical AttoLang naming and specification
+
+This is the canonical [atto-source.rs](https://github.com/atto-lang/atto-source.rs) home. Use `.atto` source, `atto-*` names, and `https://github.com/atto-lang/atto-source.rs.git` for Git remotes. Historical naming is not part of current usage documentation.
+
+- **Normative contract:** [atto-spec](https://github.com/atto-lang/atto-spec), including the versioned ownership, borrowing, equality, lifetime, effects and module-constant contracts. New implementation work must use these specs, not old backend examples.
+- **Guest parity:** [atto-platform-conformance](https://github.com/atto-lang/atto-platform-conformance) and [atto-compilers-parity-testing](https://github.com/atto-lang/atto-compilers-parity-testing). Pin the exact source/tree and toolchain; distinguish passed, failed, unsupported and not-executed outcomes.
+- **Shared and target requirements:** [atto-common-source](https://github.com/atto-lang/atto-common-source) and [atto-target-profiles](https://github.com/atto-lang/atto-target-profiles). Parser-only acceptance and host-only tests do not prove guest execution.
+
 ## Identity-free value class admission (NOT EXECUTABLE)
 
 The proposed `define value class` and visibility variants are recognized before product/nominal lowering and fail with `E_VALUE_UNSUPPORTED`, without guest Wasm output. The current compiler's class-backed struct/record profile is **not** an identity-free value representation. This is a safety gate only, not value construction, recursive equality, copying, inline layout or AOT performance support. See [atto-spec #60](https://github.com/atto-lang/atto-spec/pull/60) and [conformance #57](https://github.com/atto-lang/atto-platform-conformance/pull/57).
@@ -224,7 +232,7 @@ pinned separately and has not been replaced or relabeled by this change.
 
 The compiler does not define any syntax of its own:
 
-- **Syntax** follows `docs/grammar.ebnf` and `Parser.java` in `oreslang-source.java`. That includes binding forms, the `const mut` / `let mut` referent qualifier, statement terminators with implicit newline termination, condition `,` / `|`, and arity overloading.
+- **Syntax** follows the current AttoLang language specification and checked-in parser grammar. That includes binding forms, the `const mut` / `let mut` referent qualifier, statement terminators with implicit newline termination, condition `,` / `|`, and arity overloading.
 - **`int`** is a signed 64-bit integer with checked arithmetic. Overflow is a panic, never a silent wrap. This matches the LLVM backend's trap and spec chapter 17 (TARGET, decided).
 - **Spec** decisions come from the AttoLang spec chapters 01, 16 and 17.
 
@@ -245,7 +253,7 @@ The compiler does not define any syntax of its own:
 | Output | `stdio.print(x)` / `stdio.println(x)` for `int`, `bool`, `float` (Java `Double.toString`: `3.5`, `1.0E7`, `1.0E-4`, `NaN`, `Infinity`, `-0.0`), strings and objects (`P{a=1, b=true}`) |
 | Classes | `[pub] define class Name as … end`. Fields of type int, bool, float, string or an enum: `T name: e`, `mut T name = e`, `let T name = e` (assignable in the constructor) and `name: T = e`, `final …`, `val`/`const` (fixed). One `constructor(…)`; instance methods `[pub] [fnc] name(…)`; `[pub] static fnc name(…)`, always called qualified as `Name.f(…)`. Construction is `new Name(…)` |
 | Actors | `define actor Name as … end` or `actor Name … end`. State `let T name = e` (mutable) and `val`/`const`/`final` (fixed), one `receive(ActorMail<int\|bool> mail): void` reading `mail.value` and `mail.sequence`, and helper methods called as `self.f(…)`. `val r = spawn Name();` gives a copyable `ActorRef<Name>`, and `r.send(v)` enqueues mail |
-| Enums | `define enum Name as A B C end` and `Name.A` values compared with `eq`/`neq`. This spelling comes from the oreslang-source.llvm v1 design contract (`contracts/v1/design/enum_pattern_cases.json`). The Java parser does not admit it yet, and the fixtures record that |
+| Enums | `define enum Name as A B C end` and `Name.A` values compared with `eq`/`neq`. This spelling comes from an earlier LLVM design contract (`contracts/v1/design/enum_pattern_cases.json`). The Java parser does not admit it yet, and the fixtures record that |
 
 ### Confirmed callable body syntax (accepted by atto-spec #19)
 
@@ -296,8 +304,8 @@ The following are rejected, with the code shown:
 
 - Removed `%`, `^` and `^^` give `E_UNSUPPORTED` with no artifact emitted.
 - Condition `,` / `|` evaluate **both** boolean operands left-to-right (eager), including observable side effects.
-- `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
-- `|>` is functional composition only: receiver stages, actor pipelines and computed callees remain `E_UNSUPPORTED`; stage call arity and types are checked normally. `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
+- `int / int` gives `E_UNSUPPORTED` here. Consult atto-spec for the current language contract, without assuming other compiler behavior.
+- `|>` is functional composition only: receiver stages, actor pipelines and computed callees remain `E_UNSUPPORTED`; stage call arity and types are checked normally. `|` outside a condition gives `E_UNSUPPORTED`. Other backends must follow the current bitwise and stream operator specification.
 - `int / int` stays `E_UNSUPPORTED` (S-25, below); write a float operand.
 - `f32`, sized integers, unsupported generic ADT instantiations, arrays and collections give `E_UNSUPPORTED_TYPE`. Admitted profiles are `Option<int>`, `Result<int,string>`, and `Option<Result<int,string>>`.
 - `string + int` is `E_TYPE`, as in Java (no implicit conversion). `string.replace_literal`, `split_literal`, `is_identifier` and `is_route_segment` give `E_UNSUPPORTED`; unknown string members are `E_UNBOUND`.
@@ -313,7 +321,7 @@ These are recorded in fixtures and checked by the differential run:
 - Conditions. `,` and `|` are eager here (PR #4); Java short-circuits. Fixtures pin Java's output with `// java: diverges` and `// java-stdout:` lines.
 - An `int` where a `float` is required (`val f: float = 3;`, a float parameter). Java keeps the int and prints `3`; here it is `E_TYPE`.
 - `let s = "";` then `s = s + "x"`. Java infers the singleton literal type `""` and rejects the assignment; here the binding has type `string`.
-- Integer overflow. Java wraps silently. Here it panics, following spec 17 and the LLVM backend.
+- Integer overflow. This subset panics on overflow; verify other backend behavior through executed parity tests.
 - Object references. Java compares them by identity, but here comparison is not admitted yet.
 - Object heap. Java has a garbage collector. Here objects come from a fixed 1 MiB bump heap that is never freed, and exhausting it panics with code 3.
 - Cross-actor output order. Different actors run concurrently in both runtimes, so lines from different actors may interleave in any order. Within one actor, mail is processed in FIFO order.
@@ -370,7 +378,7 @@ cargo build --locked --release --bin attoc
 cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
 ATTOC=target/release/attoc node tests/conformance.mjs
 # Optional Java reference differential (local only; the reference is private):
-ATTO_JAVA=/path/to/oreslang-java-launcher ATTOC=target/release/attoc node tests/conformance.mjs
+ATTO_JAVA=/path/to/atto-java-launcher ATTOC=target/release/attoc node tests/conformance.mjs
 ```
 
 The fixture corpus is in `tests/fixtures/`:
@@ -400,7 +408,7 @@ The fixture corpus is in `tests/fixtures/`:
 
 **Safety and verification boundary:** A compiler compiled to browser Wasm is not proof that its emitted guests use Wasmtime in a browser. Browser guests use WebAssembly APIs/Workers; native Wasmtime claims require separate native execution receipts.
 
-Keep canonical AttoLang (.atto) semantics consistent with the language specification, while treating Oreslang-named tooling and .ores as compatibility surfaces.
+Keep canonical AttoLang (`.atto`) semantics consistent with the language specification; migration-era behavior is not a feature-readiness claim.
 
 Changes asserting compiler/runtime support must identify the exact source head, target, toolchain, executed positive and negative guest tests, and failure/unsupported status; an empty CI step list is **not executed**. Documentation records responsibility, **not** a claim of feature completion.
 
