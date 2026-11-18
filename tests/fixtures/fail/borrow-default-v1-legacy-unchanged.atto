@@ -1,0 +1,10 @@
+// expect-error: E_MOVED
+// java: rejects
+// In the unversioned legacy source a bare Foo formal still consumes ownership.
+define class Parcel as pub let int value = 42; end
+fnc consume(Parcel p): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val n = consume(parcel);
+  return n + parcel.value;
+}
