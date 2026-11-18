@@ -70,6 +70,7 @@ const RESERVED: &[&str] = &[
     "fi",
     "do",
     "done",
+    "begin",
     "end",
     "while",
     "for",
@@ -818,7 +819,7 @@ impl Parser {
                     let r = self.parse_receive(owner, annotations)?;
                     m.receive = Some(r);
                 }
-                Some(_) if *self.peek_at(1) == Tok::LParen => {
+                Some(_) if matches!(self.peek_at(1), Tok::LParen | Tok::Bullet) => {
                     let method = self.parse_method(public, false, annotations)?;
                     m.methods.push(method);
                 }
@@ -890,6 +891,13 @@ impl Parser {
 
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
     fn parse_method(&mut self, public: bool, is_static: bool, annotations: FailureEffects) -> R<Method> {
+        let prefixed_return = if *self.peek_at(1) == Tok::Bullet {
+            let ty = self.parse_type()?;
+            self.expect(Tok::Bullet, "'•' after the prefixed return type")?;
+            Some(ty)
+        } else {
+            None
+        };
         let (name, pos) = self.ident("a method name")?;
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic methods"));
@@ -902,11 +910,9 @@ impl Parser {
         if *self.peek() == Tok::LParen {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
-        let arrow_type = *self.peek() == Tok::Arrow;
-        let colon_type = *self.peek() == Tok::Colon;
-        let ret = self.parse_return_spec()?;
-        let failure_effects = self.parse_failure_effects(annotations)?;
-        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
+        let (ret, arrow_type, colon_type, trailing_return, inline_effects, failure_effects) =
+            self.parse_effectful_signature(annotations, prefixed_return)?;
+        let body = self.parse_callable_body(arrow_type, colon_type, ret, inline_effects, trailing_return)?;
         Ok(Method {
             name,
             pos,
@@ -985,7 +991,9 @@ impl Parser {
         while *self.peek() == Tok::At {
             let at = self.pos();
             self.advance();
-            if !matches!(self.word_at(0), Some("throws" | "raises" | "panics")) {
+            if !matches!(self.word_at(0), Some(
+                "Throws" | "Raises" | "Panics" | "throws" | "raises" | "panics"
+            )) {
                 return Err(unsupported(at, "non-failure annotations"));
             }
             effects = self.parse_failure_effects(effects)?;
@@ -993,38 +1001,69 @@ impl Parser {
         Ok(effects)
     }
 
+    /// Both `throws(Error)` and Java-style `throws Error, OtherError`
+    /// share an effect representation. The browser subset currently resolves
+    /// only the built-in Error; unknown nominal exception types fail closed.
+    /// Capitalized @Throws/@Raises/@Panics always require parentheses.
     fn parse_failure_effects(&mut self, mut effects: FailureEffects) -> R<FailureEffects> {
         loop {
-            let (kind, at) = match self.word_at(0) {
-                Some("throws") => (0, self.pos()),
-                Some("raises") => (1, self.pos()),
-                Some("panics") => (2, self.pos()),
+            let (kind, annotation, at) = match self.word_at(0) {
+                Some("throws") => (0, false, self.pos()),
+                Some("raises") => (1, false, self.pos()),
+                Some("panics") => (2, false, self.pos()),
+                Some("Throws") => (0, true, self.pos()),
+                Some("Raises") => (1, true, self.pos()),
+                Some("Panics") => (2, true, self.pos()),
                 _ => break,
             };
             self.advance();
-            self.expect(Tok::LParen, "'(' after failure effect")?;
-            let type_at = self.pos();
-            let name = match self.peek().clone() {
-                Tok::Ident(s) => s,
-                _ => return Err(Diagnostic::new(type_at, "E_EFFECT_TYPE",
-                    "a failure effect requires an Error subtype")),
-            };
-            self.advance();
-            if name != "Error" {
-                let code = if matches!(name.as_str(),
-                    "int" | "bool" | "string" | "String" | "float" | "void") {
-                    "E_EFFECT_TYPE"
-                } else {
-                    "E_UNSUPPORTED_TYPE"
+            let parens = self.eat(&Tok::LParen);
+            if annotation && !parens {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "failure annotations require a parenthesized Error type list"));
+            }
+            let mut types = 0usize;
+            loop {
+                if parens && *self.peek() == Tok::RParen {
+                    if types == 0 {
+                        return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
+                            "empty failure type lists are not admitted by this browser compiler"));
+                    }
+                    break;
+                }
+                let type_at = self.pos();
+                let name = match self.peek().clone() {
+                    Tok::Ident(s) => s,
+                    _ => return Err(Diagnostic::new(type_at, "E_EFFECT_TYPE",
+                        "a failure effect requires an Error subtype")),
                 };
-                return Err(Diagnostic::new(type_at, code,
-                    format!("failure effect '{name}' requires Error ancestry and a matching nominal interface; only built-in Error is browser-admitted")));
+                self.advance();
+                if name != "Error" {
+                    let code = if matches!(name.as_str(),
+                        "int" | "bool" | "string" | "String" | "float" | "void") {
+                        "E_EFFECT_TYPE"
+                    } else {
+                        "E_UNSUPPORTED_TYPE"
+                    };
+                    return Err(Diagnostic::new(type_at, code,
+                        format!("failure effect '{name}' requires Error ancestry and a matching nominal interface; only built-in Error is browser-admitted")));
+                }
+                types += 1;
+                if types > 1 {
+                    return Err(Diagnostic::new(type_at, "E_DUPLICATE",
+                        "duplicate Error type in a failure effect list"));
+                }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                if !parens && matches!(self.word_at(0), Some("throws" | "raises" | "panics")) {
+                    return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
+                        "expected an Error type after ',' in the failure type list"));
+                }
             }
-            if *self.peek() != Tok::RParen {
-                return Err(Diagnostic::new(self.pos(), "E_EFFECT_TYPE",
-                    "failure effect currently requires exactly one Error type"));
+            if parens {
+                self.expect(Tok::RParen, "')' after failure effects")?;
             }
-            self.advance();
             let flag = match kind {
                 0 => &mut effects.throws,
                 1 => &mut effects.raises,
@@ -1038,6 +1077,42 @@ impl Parser {
             effects.explicit = true;
         }
         Ok(effects)
+    }
+
+    /// Callable signatures may put the return type before effects, or end
+    /// an effect sequence with `-> ReturnType` to allow newline/end bodies.
+    /// An explicit return type may appear in exactly one position.
+    fn parse_effectful_signature(
+        &mut self,
+        annotations: FailureEffects,
+        prefixed_return: Option<Type>,
+    ) -> R<(Type, bool, bool, bool, bool, FailureEffects)> {
+        let arrow_type = *self.peek() == Tok::Arrow;
+        let colon_type = *self.peek() == Tok::Colon;
+        if prefixed_return.is_some() && (arrow_type || colon_type) {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "duplicate return type; a 'T•' prefix cannot be combined with ':' or '->'"));
+        }
+        let mut ret = if let Some(ty) = prefixed_return {
+            ty
+        } else {
+            self.parse_return_spec()?
+        };
+        let inline_effects = matches!(self.word_at(0), Some("throws" | "raises" | "panics"));
+        let failure_effects = self.parse_failure_effects(annotations)?;
+        let trailing_return = inline_effects && !arrow_type && !colon_type && self.eat(&Tok::Arrow);
+        if trailing_return {
+            if prefixed_return.is_some() {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "return type cannot appear after effects when a 'T•' prefix exists"));
+            }
+            ret = self.parse_type()?;
+        }
+        if matches!(self.word_at(0), Some("throws" | "raises" | "panics")) {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "failure effects must precede the trailing return type"));
+        }
+        Ok((ret, arrow_type, colon_type, trailing_return, inline_effects, failure_effects))
     }
 
     /// Parameters after `(` up to and including `)`.
@@ -1091,7 +1166,14 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        if !(self.eat_word("fnc") || self.eat_word("routine")) {
+        let prefixed_return = if *self.peek_at(1) == Tok::Bullet {
+            let ty = self.parse_type()?;
+            self.expect(Tok::Bullet, "'•' after the prefixed return type")?;
+            Some(ty)
+        } else {
+            None
+        };
+        if prefixed_return.is_none() && !(self.eat_word("fnc") || self.eat_word("routine")) {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
                     return Err(unsupported(self.pos(), &format!("top-level '{w}'")));
@@ -1116,10 +1198,8 @@ impl Parser {
         }
         self.expect(Tok::LParen, "'('")?;
         let params = self.parse_params()?;
-        let arrow_type = *self.peek() == Tok::Arrow;
-        let colon_type = *self.peek() == Tok::Colon;
-        let ret = self.parse_return_spec()?;
-        let failure_effects = self.parse_failure_effects(annotations)?;
+        let (ret, arrow_type, colon_type, trailing_return, inline_effects, failure_effects) =
+            self.parse_effectful_signature(annotations, prefixed_return)?;
         if is_pure && failure_effects.explicit {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure functions cannot declare throw, raise or panic effects"));
@@ -1133,7 +1213,7 @@ impl Parser {
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
         }
         self.in_generator = is_generator;
-        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
+        let body = self.parse_callable_body(arrow_type, colon_type, ret, inline_effects, trailing_return)?;
         self.in_generator = false;
         let _ = start;
         Ok(Func {
@@ -1179,9 +1259,36 @@ impl Parser {
 
     // ----------------------------------------------------------- statements
 
-    /// C-style braces remain the default. The extra -> after : Type is an
-    /// explicit body marker; a -> Type header also admits comma/end bodies.
-    fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type) -> R<Vec<Stmt>> {
+    /// Braces always delimit the body. 'begin ... end' also explicitly delimits
+    /// a body. A trailing return type after inline effects admits a statement/end
+    /// body only across a real newline, while effect clauses after the return
+    /// type require an explicit brace or 'begin'.
+    fn parse_callable_body(
+        &mut self, arrow_type: bool, colon_type: bool, ret: Type,
+        inline_effects: bool, trailing_return: bool,
+    ) -> R<Vec<Stmt>> {
+        if *self.peek() == Tok::LBrace {
+            return self.parse_block();
+        }
+        if self.eat_word("begin") {
+            let body = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            return Ok(body);
+        }
+        if inline_effects && !trailing_return {
+            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                "an inline throws/raises/panics clause after the return type requires '{' or 'begin'"));
+        }
+        if trailing_return {
+            let newline = self.i > 0 && self.toks[self.i - 1].pos.line < self.pos().line;
+            if !newline {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "a trailing '-> ReturnType' requires a newline, '{' or 'begin' before statements"));
+            }
+            let body = self.parse_stmts_until(&["end"])?;
+            self.expect_word("end")?;
+            return Ok(body);
+        }
         if arrow_type {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
@@ -2613,6 +2720,7 @@ fn describe(t: &Tok) -> String {
                 Tok::PipeGt => "|>",
                 Tok::Amp => "&",
                 Tok::At => "@",
+                Tok::Bullet => "•",
                 _ => "?",
             };
             format!("'{s}'")
