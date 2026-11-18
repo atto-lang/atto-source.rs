@@ -180,7 +180,13 @@ fn shadowed_struct_name(t: &[Token], name: &str) -> bool {
         // 'struct Name' is the expected original declaration, not a shadow.
         if matches!(owner, "val" | "let" | "const" | "fnc" | "routine"
             | "class" | "actor" | "record" | "module" | "type" | "alias"
-            | "import" | "as" | "int" | "float" | "bool" | "string" | "String") {
+            | "import" | "as" | "for" | "of" | "over"
+            | "int" | "float" | "bool" | "string" | "String") {
+            return true;
+        }
+        // The admitted scalar lambda parameter syntax uses |name| -> ...
+        if preceding.is_some_and(|v| v.tok == Tok::Pipe)
+            || t.get(i+1).is_some_and(|v| v.tok == Tok::Pipe) {
             return true;
         }
         // Name-first formals and local bindings: 'Particle: int'.
