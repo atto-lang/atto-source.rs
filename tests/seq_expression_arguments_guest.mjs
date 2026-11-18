@@ -66,6 +66,11 @@ const fixtures = [
   ['mutable_delimited_argument', 'fnc foo(int v): int { return v * 2; } pub fnc main(): int { let int z = 10; const int x = 5; return foo(seq(z += x, z)); }', 30],
   ['ordered_assignment', 'pub fnc main(): int { let int z = 0; const int a = seq(z += 1, z); const int b = seq(z += 1, z); return z * 10 + a + b; }', 23],
   ['shorthand_mutation', 'pub fnc main(): int { let int z = 3; return (> z += 4, z * 6); }', 42],
+  ['nested_seq_scope', 'pub fnc main(): int { const int n = seq(let int x = 10, seq(let int y = 2, x * y)); return n + 22; }', 42],
+  ['multiple_mutations', 'pub fnc main(): int { let int z = 0; return seq(z += 1, z += 2, z * 14); }', 42],
+  ['argument_order', 'fnc sub(int a,int b): int { return b-a; } pub fnc main(): int { let int z = 1; return sub(seq(z += 1, z), z * 10); }', 18],
+  ['nested_bare_call', 'fnc add(int a,int b): int { return a+b; } fnc id(int v): int { return v; } pub fnc main(): int { return id(seq 1, add(2, 40)); }', 42],
+  ['mutation_stdout_order', 'pub fnc main(): int { let int z = 0; return seq(stdio.println(11), z += 20, stdio.println(z), z + 22); }', 42, ['11', 'newline', '20', 'newline']],
   ['once_only_print', 'pub fnc main(): int { return seq(stdio.println(10), stdio.println(20), 42); }', 42, ['10', 'newline', '20', 'newline']],
 ];
 const work = await mkdtemp(join(tmpdir(), 'atto-seq-guest-'));
