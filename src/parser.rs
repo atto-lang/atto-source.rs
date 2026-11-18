@@ -511,6 +511,30 @@ impl Parser {
         Ok((decl, p.i))
     }
 
+    fn looks_prefixed_return_type(&self) -> bool {
+        // Bounded, side-effect-free lookahead: nested generic returns like
+        // Option<Result<int,string>> must not be mistaken for method names.
+        // The full parse_type() retains validation and error reporting.
+        if !matches!(self.peek(), Tok::Ident(_)) { return false; }
+        let mut angles = 0usize;
+        let mut parens = 0usize;
+        let callable = self.word_at(0) == Some("fnc");
+        for tok in self.toks.iter().skip(self.i + 1).take(256).map(|x| &x.tok) {
+            match tok {
+                Tok::Bullet if angles == 0 && parens == 0 => return true,
+                Tok::Lt if parens == 0 => { angles += 1; if angles > 64 { return false; } }
+                Tok::Gt if angles > 0 => angles -= 1,
+                Tok::LParen if callable && angles == 0 => { parens += 1; if parens > 64 { return false; } }
+                Tok::RParen if parens > 0 => parens -= 1,
+                Tok::Arrow if callable && angles == 0 && parens == 0 => {}
+                Tok::Comma if angles > 0 || parens > 0 => {}
+                Tok::Ident(_) if angles > 0 || parens > 0 => {}
+                _ => return false,
+            }
+        }
+        false
+    }
+
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
@@ -819,7 +843,7 @@ impl Parser {
                     let r = self.parse_receive(owner, annotations)?;
                     m.receive = Some(r);
                 }
-                Some(_) if matches!(self.peek_at(1), Tok::LParen | Tok::Bullet) => {
+                Some(_) if *self.peek_at(1) == Tok::LParen || self.looks_prefixed_return_type() => {
                     let method = self.parse_method(public, false, annotations)?;
                     m.methods.push(method);
                 }
@@ -891,7 +915,7 @@ impl Parser {
 
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
     fn parse_method(&mut self, public: bool, is_static: bool, annotations: FailureEffects) -> R<Method> {
-        let prefixed_return = if *self.peek_at(1) == Tok::Bullet {
+        let prefixed_return = if self.looks_prefixed_return_type() {
             let ty = self.parse_type()?;
             self.expect(Tok::Bullet, "'•' after the prefixed return type")?;
             Some(ty)
@@ -964,7 +988,7 @@ impl Parser {
                 format!("actor mailbox handler '{owner}.receive' must return void"),
             ));
         }
-        let failure_effects = self.parse_failure_effects(annotations)?;
+        let failure_effects = self.parse_failure_effects(annotations, false)?;
         let body = self.parse_block()?;
         Ok(Receive { pos, mail, payload, failure_effects, body })
     }
@@ -996,7 +1020,7 @@ impl Parser {
             )) {
                 return Err(unsupported(at, "non-failure annotations"));
             }
-            effects = self.parse_failure_effects(effects)?;
+            effects = self.parse_failure_effects(effects, true)?;
         }
         Ok(effects)
     }
@@ -1005,15 +1029,19 @@ impl Parser {
     /// share an effect representation. The browser subset currently resolves
     /// only the built-in Error; unknown nominal exception types fail closed.
     /// Capitalized @Throws/@Raises/@Panics always require parentheses.
-    fn parse_failure_effects(&mut self, mut effects: FailureEffects) -> R<FailureEffects> {
+    fn parse_failure_effects(&mut self, mut effects: FailureEffects, allow_annotation_names: bool) -> R<FailureEffects> {
         loop {
             let (kind, annotation, at) = match self.word_at(0) {
                 Some("throws") => (0, false, self.pos()),
                 Some("raises") => (1, false, self.pos()),
                 Some("panics") => (2, false, self.pos()),
-                Some("Throws") => (0, true, self.pos()),
-                Some("Raises") => (1, true, self.pos()),
-                Some("Panics") => (2, true, self.pos()),
+                Some("Throws") if allow_annotation_names => (0, true, self.pos()),
+                Some("Raises") if allow_annotation_names => (1, true, self.pos()),
+                Some("Panics") if allow_annotation_names => (2, true, self.pos()),
+                Some("Throws" | "Raises" | "Panics") => {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "capitalized failure annotations require '@'"));
+                }
                 _ => break,
             };
             self.advance();
@@ -1099,7 +1127,7 @@ impl Parser {
             self.parse_return_spec()?
         };
         let inline_effects = matches!(self.word_at(0), Some("throws" | "raises" | "panics"));
-        let failure_effects = self.parse_failure_effects(annotations)?;
+        let failure_effects = self.parse_failure_effects(annotations, false)?;
         let trailing_return = inline_effects && !arrow_type && !colon_type && self.eat(&Tok::Arrow);
         if trailing_return {
             if prefixed_return.is_some() {
@@ -1166,7 +1194,7 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        let prefixed_return = if *self.peek_at(1) == Tok::Bullet {
+        let prefixed_return = if self.looks_prefixed_return_type() {
             let ty = self.parse_type()?;
             self.expect(Tok::Bullet, "'•' after the prefixed return type")?;
             Some(ty)
