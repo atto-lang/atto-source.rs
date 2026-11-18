@@ -2974,12 +2974,12 @@ impl<'a> FnCx<'a> {
                 Ok(value)
             }
             OwnershipOp::Freeze => {
-                // Immutable scalar values have no mutable reachable object graph:
+                // Immutable primitive values have no mutable reachable object graph:
                 // freeze! is observationally the identity for this *proven*
                 // subset. Never extend this rule to class/actor/generator handles
                 // without a transitive freeze witness and alias invalidation.
                 let value = self.value(inner)?;
-                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
                     return Err(Diagnostic::new(pos, "E_FREEZE_PROOF",
                         "freeze! requires verified deep immutability; this Wasm subset only admits immutable scalars"));
                 }
