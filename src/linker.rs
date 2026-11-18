@@ -489,6 +489,15 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
                 "source path or package identity is not canonical",
             ));
         }
+        // Reject untrusted oversized inputs before any lexing or graph
+        // traversal. The combined browser guest cannot exceed this cap.
+        if unit.source.len() > crate::SOURCE_CAP {
+            return Err(err(
+                Pos::default(),
+                "E_SOURCE_LIMIT",
+                "source unit exceeds browser source limit",
+            ));
+        }
         if files.insert(unit.path, unit).is_some() {
             return Err(err(Pos::default(), "E_DUPLICATE", "duplicate canonical source file path"));
         }
@@ -506,6 +515,18 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
     let mut names = BTreeMap::new();
     let mut edges = 0;
     visit(entry_path, &files, &mut states, &mut names, &mut ordered, &mut edges, entry_path)?;
+    // The caller must supply precisely the reachable source graph. Never
+    // silently ignore a source unit that was included in a verified snapshot:
+    // it may hide stale, malicious, or unauthorized package content.
+    for path in files.keys() {
+        if states.get(*path).copied() != Some(2) {
+            return Err(err(
+                Pos::default(),
+                "E_UNBOUND",
+                format!("unreachable source unit '{path}' in linked package graph"),
+            ));
+        }
+    }
     // Imported module names cannot be locally defined *or* exported in the
     // entry file. Otherwise the combined frontend could incorrectly grant
     // the entry's own export visibility to another package's symbol.

@@ -177,3 +177,33 @@ fn qualified_id_namespace_distinguishes_same_leaf_without_source_disclosure() {
     let forged = MAIN.replace("Orders.total(21)", "__atto_q_untrusted.total(21)");
     reject(&fixture(&forged, ORDERS, MATH, "app", "app", "app"), "E_RESERVED");
 }
+
+#[test]
+fn unreferenced_sources_are_rejected_even_if_the_main_graph_is_valid() {
+    let mut units = fixture(MAIN, ORDERS, MATH, "app", "vendor", "other").to_vec();
+    units.push(LinkUnit {
+        path: "lib/unreferenced.atto",
+        package: "untrusted@1",
+        source: "this source is never imported and must not be silently ignored",
+    });
+    reject(&units, "E_UNBOUND");
+    // The same failure must not depend on the caller's unit ordering.
+    units.reverse();
+    reject(&units, "E_UNBOUND");
+}
+
+#[test]
+fn oversized_source_units_fail_before_lexing_or_linkage() {
+    let huge = " ".repeat(atto_compiler::SOURCE_CAP + 1);
+    let entry = [LinkUnit {
+        path: "src/main.atto",
+        package: "app",
+        source: &huge,
+    }];
+    reject(&entry, "E_SOURCE_LIMIT");
+
+    // A dependency is untrusted input too; do not wait until flattening.
+    let dependency = format!("{ORDERS}{huge}");
+    let units = fixture(MAIN, &dependency, MATH, "app", "vendor", "other");
+    reject(&units, "E_SOURCE_LIMIT");
+}
