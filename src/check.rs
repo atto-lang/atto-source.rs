@@ -496,6 +496,8 @@ impl Globals<'_> {
             Type::Class(i) => self.classes[i as usize].name.clone(),
             Type::Enum(i) => self.enums[i as usize].name.clone(),
             Type::ActorRef(i) => format!("ActorRef<{}>", self.actors[i as usize].name),
+            Type::BorrowClass(i) => format!("Borrow<{}>", self.classes[i as usize].name),
+            Type::BorrowNamed(i) => format!("Borrow<{}>", self.type_names[i as usize].0),
             Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
             t => t.name().to_string(),
         }
@@ -525,6 +527,14 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
                 return Err(type_err(*pos, format!("'{n}' is an actor; its references have type ActorRef<{n}>")));
             } else {
                 return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'")));
+            }
+        }
+        Type::BorrowNamed(i) => {
+            let (name, pos) = &type_names[i as usize];
+            match classes.iter().position(|c| c == name) {
+                Some(c) => Type::BorrowClass(c as u32),
+                None => return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE",
+                    format!("Borrow<{name}> requires a declared class"))),
             }
         }
         Type::Callable(_) => {
@@ -743,11 +753,41 @@ pub fn check(p: &Program) -> R<TProgram> {
     // otherwise an unreachable branch, nested callback or declaration
     // initializer might be rewritten away without proving handle safety.
     checked_handle_gate::validate(p)?;
+    // Lambda lifting does not yet preserve borrowed-parameter provenance.
+    // Fail closed rather than producing lifted owned class captures.
+    if p.funcs.iter().any(|f| f.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_)))) {
+        return check_lowered(p);
+    }
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
 
 fn check_lowered(p: &Program) -> R<TProgram> {
+    // For this bounded ABI, only top-level non-generator function formals
+    // can borrow classes. Lifetime-bearing returns/receivers/actors must not
+    // silently lower as ordinary owned handles.
+    for f in &p.funcs {
+        if matches!(f.ret, Type::BorrowNamed(_))
+            || f.is_generator && f.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_))) {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
+                "Borrow<T> returns/generator parameters need lifetime-aware lowering"));
+        }
+    }
+    for c in &p.classes {
+        if c.ctor.as_ref().is_some_and(|ctor| ctor.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_))))
+            || c.methods.iter().any(|m| matches!(m.ret, Type::BorrowNamed(_))
+                || m.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_)))) {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
+                "Borrow<T> class method and constructor parameters require receiver lifetime proof"));
+        }
+    }
+    for a in &p.actors {
+        if a.methods.iter().any(|m| matches!(m.ret, Type::BorrowNamed(_))
+            || m.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_)))) {
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
+                "Borrow<T> actor methods require actor isolation/lifetime proof"));
+        }
+    }
     // Validate the bounded CFG and integer-only suspension/lifetime profile
     // before registering signatures. Reject unsupported generator effects
     // before emission; never substitute eager iterator materialization.
@@ -1114,7 +1154,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         )?;
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
-            params,
+            params: params.into_iter().map(|ty| match ty {
+                Type::BorrowClass(c) => Type::Class(c),
+                other => other,
+            }).collect(),
             ret,
             locals: body.1,
             body: body.0,
@@ -1349,6 +1392,8 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
         Type::Class(i) => classes[i as usize].clone(),
         Type::Enum(i) => enums[i as usize].name.clone(),
         Type::ActorRef(i) => format!("ActorRef<{}>", actors[i as usize]),
+        Type::BorrowClass(i) => format!("Borrow<{}>", classes[i as usize]),
+        Type::BorrowNamed(i) => format!("Borrow<{}>", tn[i as usize].0),
         Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => tn[i as usize].0.clone(),
         t => t.name().to_string(),
     }
@@ -1417,11 +1462,18 @@ fn body_check(
         });
     } else {
         for (i, (n, t, m)) in named.iter().enumerate() {
+            let local_type = match *t {
+                Type::BorrowClass(c) => {
+                    cx.borrowed_slots.insert(i as u32);
+                    Type::Class(c)
+                }
+                other => other,
+            };
             cx.scopes[0].push(Local {
                 name: n.to_string(),
                 slot: i as u32,
-                ty: *t,
-                mutable: *m,
+                ty: local_type,
+                mutable: *m && !matches!(*t, Type::BorrowClass(_)),
                 mail: None,
             });
         }
@@ -3342,6 +3394,33 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
+            if let Type::BorrowClass(c) = *want {
+                // An inferred read-only call loan is presently a named owner
+                // in final argument position. Later expressions could move
+                // the owner, so complex argument sequences fail closed.
+                if i + 1 != args.len() {
+                    return Err(Diagnostic::new(a.pos, "E_BORROW",
+                        "Borrow<T> must be the final argument until transient call loans are tracked"));
+                }
+                let ExprKind::Var(name) = &a.kind else {
+                    return Err(Diagnostic::new(a.pos, "E_BORROW",
+                        "inferred Borrow<T> needs a named live class owner"));
+                };
+                let Some(local) = self.lookup(name) else {
+                    return Err(Diagnostic::new(a.pos, "E_UNBOUND", format!("unknown owner '{name}'")));
+                };
+                if self.borrowed_slots.contains(&local.slot) {
+                    return Err(Diagnostic::new(a.pos, "E_BORROW",
+                        "reborrowing a borrowed parameter requires lifetime provenance"));
+                }
+                let v = self.value(a)?;
+                if v.ty != Type::Class(c) {
+                    return Err(type_err(a.pos, format!("argument {} of '{callee}' expects Borrow<{}>",
+                        i + 1, self.g.classes[c as usize].name)));
+                }
+                out.push(v);
+                continue;
+            }
             let v = self.consume_expected(a, *want)?;
             if v.ty != *want {
                 return Err(type_err(
@@ -3504,7 +3583,7 @@ impl<'a> FnCx<'a> {
         // A borrowed aggregate cannot yield an independently owned handle.
         // Without a nested-loan provenance IR, such a field could escape
         // the original owner's lifetime by ordinary binding or return.
-        if matches!(&obj.e, TExpr::Local(slot) if self.loans.contains_key(slot))
+        if matches!(&obj.e, TExpr::Local(slot) if self.loans.contains_key(slot) || self.borrowed_slots.contains(slot))
             && matches!(f.ty, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt)
         {
             return Err(Diagnostic::new(pos, "E_BORROW",
@@ -3627,7 +3706,7 @@ impl<'a> FnCx<'a> {
             Type::Class(c) => {
                 // Calls on a loan may only return copyable, lifetime-independent
                 // values. Owned object returns need result-lifetime provenance.
-                if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot)) {
+                if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot) || self.borrowed_slots.contains(slot)) {
                     if let Some(m) = self.g.classes[c as usize].methods.iter().find(|m| m.name == name) {
                         if matches!(m.ret, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt) {
                             return Err(Diagnostic::new(pos, "E_BORROW",
