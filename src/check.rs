@@ -447,6 +447,9 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Stable provenance: ending an NLL loan never grants ownership of its
+    /// alias. Cleared only when the alias's declaring scope exits.
+    borrowed_slots: BTreeSet<u32>,
     /// Monotone NLL visit budget; exhaustion conservatively retains live loans.
     nll_fuel: usize,
     /// Compiler-issued lexical protected state permissions.
@@ -1624,6 +1627,7 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            borrowed_slots: BTreeSet::new(),
             nll_fuel: NLL_WORK_BUDGET,
             state_write_scope: false,
             state_read_scope: false,
@@ -1674,12 +1678,14 @@ impl<'a> FnCx<'a> {
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
         let loans = std::mem::take(&mut self.loans);
+        let borrowed_slots = std::mem::take(&mut self.borrowed_slots);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         self.cleanup_depth += 1;
         let r = self.stmts(body);
         self.cleanup_depth -= 1;
         self.recover_cursor = prev_cursor;
         self.loans = loans;
+        self.borrowed_slots = borrowed_slots;
         self.moved = moved;
         self.loops = loops;
         self.scopes = scopes;
@@ -1778,6 +1784,7 @@ impl<'a> FnCx<'a> {
         if let Some(ended) = self.scopes.pop() {
             for l in ended {
                 self.loans.remove(&l.slot);
+                self.borrowed_slots.remove(&l.slot);
                 self.moved.remove(&l.slot);
             }
         }
@@ -1892,8 +1899,8 @@ impl<'a> FnCx<'a> {
                         format!("cannot reassign val binding '{name}'"),
                     ));
                 }
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed local or owner while the loan is live"));
+                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed alias or owner while a loan is live"));
                 }
                 let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
@@ -2481,6 +2488,9 @@ impl<'a> FnCx<'a> {
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
+                if self.borrowed_slots.contains(&local.slot) && !self.loans.contains_key(&local.slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "cannot mutate an expired borrowed class alias"));
+                }
                 if let Some(loan) = self.loans.get(&local.slot).copied() {
                     if !loan.mutable {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
@@ -2669,7 +2679,7 @@ impl<'a> FnCx<'a> {
             Some(l) => (l.slot, l.ty),
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
         };
-        if self.loans.contains_key(&owner) {
+        if self.borrowed_slots.contains(&owner) {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
         }
         if let Some(loan) = self.loans.values().find(|loan| loan.owner == owner) {
@@ -2696,6 +2706,7 @@ impl<'a> FnCx<'a> {
         }
         let slot = self.declare(name, value.ty, false, pos)?;
         self.loans.insert(slot, ScopedLoan { owner, mutable });
+        self.borrowed_slots.insert(slot);
         Ok(TStmt::Set(slot, value))
     }
 
@@ -2732,8 +2743,8 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
                 };
                 let slot = *slot_ref;
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "take! is forbidden while an owner is borrowed"));
+                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "take! cannot move a borrowed alias or an owner with live loans"));
                 }
                 if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                     return Err(Diagnostic::new(pos, "E_MOVED", format!("cannot take '{name}' from outside a loop")));
@@ -2750,8 +2761,8 @@ impl<'a> FnCx<'a> {
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
-            if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
+            if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class alias or owner while a loan is live"));
             }
             if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                 return Err(Diagnostic::new(
@@ -3115,6 +3126,10 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 Some(l) => {
+                    if self.borrowed_slots.contains(&l.slot) && !self.loans.contains_key(&l.slot) {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            format!("loan for borrowed alias '{name}' has ended; it is not an owned value")));
+                    }
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
