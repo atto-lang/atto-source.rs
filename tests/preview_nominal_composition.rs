@@ -340,3 +340,27 @@ fn stateful_parent_layouts_without_proof_remain_fail_closed() {
         pub fnc main(): int { return 0; }
     "#, "E_UNSUPPORTED");
 }
+
+#[test]
+fn alias_declaration_reordering_does_not_reorder_parent_abi_slots() {
+    use atto_compiler::lexer::{lex, Tok};
+    let source = r#"
+        define class Dog as pub int age: 5; end
+        define class Cat as pub int age: 10; end
+        define class Hybrid extends Dog, Cat as
+            use Cat.age as cat_age;
+            use Dog.age as dog_age;
+        end
+        pub fnc main(): int {
+            val h = new Hybrid();
+            return h.dog_age * 10 + h.cat_age;
+        }
+    "#;
+    let lowered = atto_compiler::nominal_lower::lower(lex(source).unwrap()).unwrap();
+    let child = lowered.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "Hybrid")).unwrap();
+    let body = &lowered[child..];
+    let dog = body.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "dog_age")).unwrap();
+    let cat = body.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "cat_age")).unwrap();
+    assert!(dog < cat, "physical ABI slots must follow Dog,Cat parent order");
+    compiled(source);
+}
