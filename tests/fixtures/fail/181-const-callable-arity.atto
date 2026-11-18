@@ -1,0 +1,6 @@
+// expect-error: E_ARITY
+type Binary = (int, int) => int;
+const Binary add = |a: int| :int -> a;
+pub fnc main(): int {
+    return 42;
+}
