@@ -41,6 +41,67 @@ pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Migration gate for the language decision that bare *class* formals
+/// borrow by default. Existing packages keep the historical consuming ABI
+/// until they opt in; this avoids changing the meaning of source silently.
+/// The source marker is intentionally versioned and constrained to the first
+/// line. Package/CLI profile discovery can replace this migration mechanism
+/// once it is ratified without changing the checked BorrowClass ABI.
+fn prepare_borrow_default_v1(program: &mut ast::Program) -> Result<(), Diagnostic> {
+    use ast::Type;
+    use std::collections::BTreeSet;
+    let classes: BTreeSet<String> = program.classes.iter().map(|c| c.name.clone()).collect();
+    let type_names = &program.type_names;
+
+    // Constructor, class-method and actor-method class loans require method
+    // receiver effects and inter-domain provenance not yet implemented in
+    // this compiler. Do not let v1 silently retain their legacy owned ABI.
+    for class in &program.classes {
+        for params in class.methods.iter().map(|m| m.params.as_slice())
+            .chain(class.ctor.iter().map(|c| c.params.as_slice()))
+        {
+            for p in params {
+                if let Type::Named(i) = p.ty {
+                    if classes.contains(&type_names[i as usize].0) && !p.explicit_take {
+                        return Err(Diagnostic::new(p.pos, "E_UNSUPPORTED_TYPE",
+                            "borrow-default-v1 method/constructor class formals need verified receiver and lifetime lowering; use top-level fnc for now"));
+                    }
+                }
+            }
+        }
+    }
+    for actor in &program.actors {
+        for method in &actor.methods {
+            for p in &method.params {
+                if let Type::Named(i) = p.ty {
+                    if classes.contains(&type_names[i as usize].0) && !p.explicit_take {
+                        return Err(Diagnostic::new(p.pos, "E_SHARE_DOMAIN",
+                            "borrow-default-v1 actor method class loans require explicit domain admission"));
+                    }
+                }
+            }
+        }
+    }
+    for function in &mut program.funcs {
+        for p in &mut function.params {
+            if let Type::Named(i) = p.ty {
+                if classes.contains(&type_names[i as usize].0) && !p.explicit_take {
+                    if p.mutable {
+                        return Err(Diagnostic::new(p.pos, "E_UNSUPPORTED_TYPE",
+                            "mut Foo borrowed formals require the future verified BorrowMut<T> loan ABI; use a readonly Foo or explicit take! Foo"));
+                    }
+                    // Ordinary Foo is checked exactly like Borrow<Foo>.
+                    // Both signatures lower to the same nonowning guest class
+                    // handle, with the same alias, move and escape rules.
+                    p.ty = Type::BorrowNamed(i);
+                }
+            }
+        }
+    }
+    program.borrow_default_v1 = true;
+    Ok(())
+}
+
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
@@ -96,7 +157,18 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    let program = if target {
+    // Versioned opt-in until the package-level compatibility migration is
+    // approved. Unversioned source keeps legacy ownership so existing code
+    // cannot silently stop consuming class parameters.
+    let marker = source.lines().next().unwrap_or("").trim_end_matches('\r');
+    let borrow_default_v1 = match marker {
+        "// atto-ownership: borrow-default-v1" => true,
+        other if other.starts_with("// atto-ownership:") =>
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_PROFILE",
+                "unknown AttoLang ownership profile; use borrow-default-v1")),
+        _ => false,
+    };
+    let mut program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
@@ -118,6 +190,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     } else {
         parser::Parser::new(toks).parse_program()?
     };
+    if borrow_default_v1 {
+        prepare_borrow_default_v1(&mut program)?;
+    }
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
