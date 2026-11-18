@@ -79,7 +79,8 @@ impl ActorTaskLedger {
     ) -> Result<TaskId, TaskError> {
         self.check_owner(owner)?;
         if self.stopped { return Err(TaskError::Stopped); }
-        if self.tasks.len() >= self.capacity { return Err(TaskError::Capacity); }
+        // Check parent identity and lifecycle before revealing actor task
+        // occupancy. A fabricated parent must never become a capacity oracle.
         if let Some(p) = parent {
             let entry = self.tasks.get(&p).ok_or(TaskError::ParentUnavailable)?;
             if entry.cancel_requested || entry.stage != TaskStage::Running {
@@ -89,6 +90,7 @@ impl ActorTaskLedger {
                 return Err(TaskError::ParentUnavailable);
             }
         }
+        if self.tasks.len() >= self.capacity { return Err(TaskError::Capacity); }
         self.next_id = self.next_id.checked_add(1).ok_or(TaskError::ExhaustedIds)?;
         let id = TaskId(self.next_id);
         self.tasks.insert(id, Entry {
@@ -438,5 +440,29 @@ mod tests {
         l.complete_turn(OWNER, a).unwrap();
         l.retire(OWNER, a).unwrap();
         assert!(l.is_physically_quiescent());
+    }
+
+    #[test]
+    fn invalid_parent_cannot_probe_capacity_or_consume_a_task_id() {
+        let mut l = ledger(1);
+        let parent = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        l.start_or_resume(OWNER, parent).unwrap();
+
+        // Even at full capacity, a guessed parent must fail on identity first.
+        assert_eq!(
+            l.admit_in_authenticated_turn(OWNER, Some(TaskId(u64::MAX))),
+            Err(TaskError::ParentUnavailable)
+        );
+        // A real active parent may observe the capacity bound.
+        assert_eq!(
+            l.admit_in_authenticated_turn(OWNER, Some(parent)),
+            Err(TaskError::Capacity)
+        );
+        assert_eq!(l.outstanding(), 1);
+
+        l.complete_turn(OWNER, parent).unwrap();
+        l.retire(OWNER, parent).unwrap();
+        let next = l.admit_in_authenticated_turn(OWNER, None).unwrap();
+        assert_eq!(next, TaskId(parent.0 + 1));
     }
 }
