@@ -319,6 +319,9 @@ pub struct TGenerator {
 pub struct TActor {
     pub name: String,
     pub kind: ActorKind,
+    /// Verified inbound type. The Wasm guest must validate i64 wire values
+    /// (not just trust a host-supplied ActorMail<bool> representation).
+    pub payload: Type,
     /// `(state global, initializer)` in declaration order.
     pub inits: Vec<(u32, TE)>,
     /// Function index of `receive(value: i64, sequence: i64)`.
@@ -969,7 +972,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             return Err(Diagnostic::new(
                 m.pos,
                 "E_TYPE",
-                format!("actor mailbox handler '{}.receive' parameter must be ActorMail<T>", a.name),
+                format!("actor mailbox handler '{}.receive' must use the single sealed typed receive entrypoint", a.name),
             ));
         }
         let receive_idx = a.receive.as_ref().map(|_| take());
@@ -1292,6 +1295,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         tactors.push(TActor {
             name: a.name.clone(),
             kind: a.kind,
+            payload: info.payload,
             inits,
             receive: info.receive_idx,
         });
@@ -3581,7 +3585,7 @@ impl<'a> FnCx<'a> {
                     return Err(type_err(
                         pos,
                         format!(
-                            "actor '{}' has no receive(ActorMail<T>) handler, so it cannot accept send",
+                            "actor '{}' has no typed receive handler, so it cannot accept send",
                             actor.name
                         ),
                     ));
@@ -3593,7 +3597,7 @@ impl<'a> FnCx<'a> {
                     return Err(type_err(
                         args[0].pos,
                         format!(
-                            "ActorRef.send mailbox value has type {} but '{actor_name}' receives ActorMail<{}>",
+                            "ActorRef.send mailbox value has type {} but '{actor_name}' receives {}",
                             self.tn(v.ty),
                             self.tn(payload)
                         ),

@@ -1081,7 +1081,7 @@ impl Parser {
             return Err(Diagnostic::new(
                 self.pos(),
                 "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' takes exactly one ActorMail<T> parameter"),
+                format!("actor mailbox handler '{owner}.receive' takes exactly one typed message parameter"),
             ));
         }
         self.expect(Tok::RParen, "')'")?;

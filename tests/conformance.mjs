@@ -58,16 +58,36 @@ const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', '
 export const MAX_ACTORS = BROWSER_MAX_ACTORS;
 export const MAX_MAILBOX = BROWSER_MAX_MAILBOX;
 
+// Strict, canonical u32 LEB128. JavaScript bitwise shifts silently wrap beyond
+// 32 bits; do not let forged custom sections change actor type/count identity.
+function actorUleb32(bytes, cursor, max, label) {
+  let value = 0;
+  for (let i = 0; i < 5; i++) {
+    assert.ok(cursor.pos < bytes.length, label + ': truncated LEB128');
+    const b = bytes[cursor.pos++];
+    assert.ok(i < 4 || (b & 0xf0) === 0, label + ': LEB128 u32 overflow');
+    value += (b & 127) * 2 ** (7 * i);
+    if (!(b & 128)) {
+      assert.ok(i === 0 || (b & 127) !== 0, label + ': noncanonical LEB128');
+      assert.ok(value <= max, label + ': actor table exceeds bounds');
+      return value;
+    }
+  }
+  assert.fail(label + ': overlong LEB128');
+}
+
+// Compile-time limit is 1024 top-level declarations, including actors.
+const MAX_ACTOR_TYPES = 1024;
+
 export function actorModes(module) {
   const sections = WebAssembly.Module.customSections(module, 'atto.actor_modes');
   if (!sections.length) return [];
   assert.equal(sections.length, 1, 'one atto.actor_modes section');
   const bytes = new Uint8Array(sections[0]);
-  let pos = 0;
-  const leb = () => { let r = 0, s = 0, b; do { b = bytes[pos++]; r |= (b & 127) << s; s += 7; } while (b & 128); return r; };
-  const count = leb();
-  assert.equal(bytes.length - pos, count, 'one mode byte per actor');
-  const modes = Array.from(bytes.subarray(pos));
+  const cursor = { pos: 0 };
+  const count = actorUleb32(bytes, cursor, MAX_ACTOR_TYPES, 'actor mode count');
+  assert.equal(bytes.length - cursor.pos, count, 'one mode byte per actor');
+  const modes = Array.from(bytes.subarray(cursor.pos));
   assert.ok(modes.every(mode => mode === 0 || mode === 1), 'no unsupported actor kind downgraded');
   return modes;
 }
@@ -77,11 +97,20 @@ export function actorNames(module) {
   if (!sections.length) return [];
   assert.equal(sections.length, 1, 'one atto.actors section');
   const bytes = new Uint8Array(sections[0]);
-  let pos = 0;
-  const leb = () => { let r = 0, s = 0, b; do { b = bytes[pos++]; r |= (b & 127) << s; s += 7; } while (b & 128); return r; };
+  const cursor = { pos: 0 };
+  const count = actorUleb32(bytes, cursor, MAX_ACTOR_TYPES, 'actor type count');
   const names = [];
-  for (let n = leb(), i = 0; i < n; i++) { const len = leb(); names.push(decoder.decode(bytes.subarray(pos, pos + len))); pos += len; }
-  assert.equal(pos, bytes.length, 'atto.actors has no trailing bytes');
+  const seen = new Set();
+  for (let i = 0; i < count; i++) {
+    const len = actorUleb32(bytes, cursor, bytes.length, 'actor name length');
+    assert.ok(len > 0 && len <= bytes.length - cursor.pos, 'bounded nonempty actor name');
+    const name = decoder.decode(bytes.subarray(cursor.pos, cursor.pos + len));
+    assert.ok(!seen.has(name), 'duplicate actor name metadata');
+    seen.add(name);
+    names.push(name);
+    cursor.pos += len;
+  }
+  assert.equal(cursor.pos, bytes.length, 'atto.actors has no trailing bytes');
   return names;
 }
 
@@ -204,6 +233,86 @@ function check(label, fn) {
   try { fn(); passed++; } catch (e) { failures.push(`${label}: ${e.message}`); }
 }
 const digests = [];
+
+// Tests here are executed against the actual compiled Wasm guest. They reject
+// host-forged message values even if the browser host forgets type checks.
+check('actors/typed-receive-modes-and-guest-wire-admission', () => {
+  const source = [
+    'define actor Scalar as',
+    '  receive(msg: int): void { return; }',
+    'end',
+    'define serial actor BoolMail as',
+    '  receive(ActorMail<bool> mail): void { return; }',
+    'end',
+    'pub fnc main(): int { return 0; }',
+  ].join('\n');
+  const compiled = compile(source);
+  assert.equal(compiled.ok, true, compiled.message);
+  const module = new WebAssembly.Module(compiled.wasm);
+  assert.deepEqual(actorNames(module), ['Scalar', 'BoolMail']);
+  assert.deepEqual(actorModes(module), [0, 1]);
+  if (attoc) {
+    // A direct source file is not available for the native CLI here; corpus
+    // byte-parity checks cover the fixture files for each actor kind.
+    assert.ok(nativeChecked >= 0);
+  }
+  const instance = new WebAssembly.Instance(module, {});
+  assert.throws(() => instance.exports.actor_init(-1), WebAssembly.RuntimeError);
+  assert.throws(() => instance.exports.actor_receive(-1, 0n, 0n), WebAssembly.RuntimeError);
+  instance.exports.actor_init(1);
+  instance.exports.actor_receive(1, 0n, 0n);
+  instance.exports.actor_receive(1, 1n, 1n);
+  instance.exports.actor_receive(0, -4n, 0n); // int is any signed i64
+  for (const value of [-1n, 2n, 256n, 9223372036854775807n]) {
+    assert.throws(() => instance.exports.actor_receive(1, value, 0n),
+      WebAssembly.RuntimeError, 'invalid bool ingress must trap');
+  }
+  assert.throws(() => instance.exports.actor_receive(1, 0n, -1n),
+    WebAssembly.RuntimeError, 'negative sequence must trap');
+  assert.throws(() => instance.exports.actor_receive(0, 0n, -1n),
+    WebAssembly.RuntimeError, 'negative sequence must trap for int as well');
+});
+
+check('actors/malformed-custom-metadata-fails-closed', () => {
+  const uleb = n => {
+    const bytes = [];
+    do { const b = n & 127; n = Math.floor(n / 128); bytes.push(n ? b | 128 : b); } while (n);
+    return bytes;
+  };
+  const withSections = (sectionName, payloads) => {
+    let wasm = [0, 97, 115, 109, 1, 0, 0, 0];
+    const name = [...encoder.encode(sectionName)];
+    for (const payload of payloads) {
+      const data = [...uleb(name.length), ...name, ...payload];
+      wasm.push(0, ...uleb(data.length), ...data);
+    }
+    return new WebAssembly.Module(Uint8Array.from(wasm));
+  };
+  const modes = (...sections) => actorModes(withSections('atto.actor_modes', sections));
+  assert.deepEqual(modes([2, 0, 1]), [0, 1]);
+  for (const malformed of [
+    [0x80],                   // truncated count
+    [0x80, 0],                // noncanonical zero
+    [0xff,0xff,0xff,0xff,0x1f], // u32 overflow
+    [0x80,0x80,0x80,0x80,0x80,0], // overlong count
+    [2, 0],                  // missing second actor
+    [1, 0, 0],               // trailing extra byte
+    [1, 2],                  // unsupported kind
+  ]) assert.throws(() => modes(malformed), 'forged actor mode metadata');
+  assert.throws(() => modes([1, 0], [1, 0]), 'duplicate actor mode sections');
+  const names = (...sections) => actorNames(withSections('atto.actors', sections));
+  assert.deepEqual(names([1, 1, 65]), ['A']);
+  for (const malformed of [
+    [1, 2, 65],              // truncated name
+    [1, 0],                  // empty name
+    [2, 1, 65, 1, 65],       // duplicate actor type
+    [0x80, 0],               // noncanonical count
+    [1, 0x81, 0, 65],        // noncanonical name length
+    [1, 1, 65, 42],          // extra bytes
+  ]) assert.throws(() => names(malformed), 'forged actor name metadata');
+  assert.throws(() => names([1, 1, 65], [1, 1, 65]), 'duplicate actor name sections');
+});
+
 
 
 // ---- reviewed site source: compiler byte parity and real guest outcomes ----

@@ -40,6 +40,11 @@ executable. `receive(msg: bool)`, tagged enum/ADT/object payloads,
 receipts, suspend/await retention, and parallel default actor dispatch require
 subsequent compiler and host ABI work, and are **not claimed as implemented**.
 An unrecognized or unsupported kind or payload must fail without a Wasm artifact.
+On the compiled guest ABI, `ActorMail<bool>` accepts **only canonical i64 0/1**;
+all actors reject negative mailbox sequence numbers. Invalid wire values trap
+inside the guest before entering `receive`, even if the host is faulty.
+Actor name/mode metadata is parsed with bounded canonical u32 LEB128 and must
+not contain duplicate type names or extra bytes.
 
 Do not treat browser single-worker execution as proof of native concurrency,
 hard-real-time scheduling, isolation, or zero-copy actor messaging.

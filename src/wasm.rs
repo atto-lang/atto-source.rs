@@ -1411,12 +1411,31 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             if let Some(r) = a.receive {
                 c.extend_from_slice(&[0x20, 0, 0x41]);
                 sleb(&mut c, ai as i64);
-                c.extend_from_slice(&[0x46, 0x04, 0x40, 0x20, 1, 0x20, 2, 0x10]);
+                c.extend_from_slice(&[0x46, 0x04, 0x40]); // actor type match
+
+                // ActorMail.sequence is a nonnegative FIFO admission index.
+                // Even a foreign host must not forge a negative sequence.
+                // local.get 2; i64.const 0; i64.lt_s; if; unreachable; end.
+                c.extend_from_slice(&[0x20, 2, 0x42, 0, 0x53, 0x04, 0x40, 0x00, 0x0B]);
+
+                // The i64 mail transport is untagged. Only canonical 0/1
+                // encodes bool; treating any nonzero number as true would
+                // admit forged, ill-typed host messages.
+                if a.payload == Type::Bool {
+                    // (value == 0 || value == 1) else unreachable.
+                    c.extend_from_slice(&[
+                        0x20, 1, 0x42, 0, 0x51,
+                        0x20, 1, 0x42, 1, 0x51,
+                        0x72, 0x45, 0x04, 0x40, 0x00, 0x0B,
+                    ]);
+                }
+
+                c.extend_from_slice(&[0x20, 1, 0x20, 2, 0x10]);
                 uleb(&mut c, layout.func(r) as u64);
                 c.extend_from_slice(&[0x0F, 0x0B]);
             }
         }
-        c.extend_from_slice(&[0x00, 0x0B]); // no receive handler for this type
+        c.extend_from_slice(&[0x00, 0x0B]); // unknown actor type
         bodies.push(c);
     }
 
