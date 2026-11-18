@@ -492,6 +492,18 @@ impl Emit<'_> {
                 self.expr(value);
                 field_op(&mut self.code, *ty, *offset, true);
             }
+            TStmt::FlatPodCopy { dest, source, bytes } => {
+                // WebAssembly bulk-memory memory.copy (0xFC 0x0A 0x00 0x00).
+                // Admission is exclusively in check.rs after verifying a flat
+                // POD layout; source/destination are both i32 class handles.
+                self.expr(dest);
+                self.expr(source);
+                self.i32c(*bytes as i32);
+                self.op(0xFC);
+                uleb(&mut self.code, 10); // memory.copy
+                uleb(&mut self.code, 0);  // destination memory index
+                uleb(&mut self.code, 0);  // source memory index
+            }
             TStmt::StateFieldWrite { obj, offset, ty, value } => {
                 assert!(self.state_write_depth > 0,
                     "state field write missing typed exclusive scope");
