@@ -29,6 +29,8 @@ pub struct ReceiverHeader {
 #[derive(Clone, Debug)]
 pub struct ReceiverSite {
     pub declaration_start: usize,
+    /// Offset immediately after attached annotations, before optional pub.
+    pub modifier_start: usize,
     pub method_start: usize,
     pub end: usize,
 }
@@ -188,6 +190,37 @@ impl Cursor<'_> {
     /// Parse the target-only declaration header without swallowing effects.
     /// These tokens are subsequently rechecked by the production parser after
     /// out-of-line class receiver lowering. No fake runtime effect is emitted.
+    /// Recognize and preserve attached failure annotations so that mtd
+    /// lowering carries them into the real parser and checker.
+    fn failure_annotations(&mut self) -> R<()> {
+        let mut seen = 0u8;
+        while self.take(&Tok::At) {
+            let bit = match self.word() {
+                Some("Throws" | "throws") => 1,
+                Some("Raises" | "raises") => 2,
+                Some("Panics" | "panics") => 4,
+                _ => return Err(self.err("E_UNSUPPORTED", "unsupported target declaration annotation")),
+            };
+            if seen & bit != 0 {
+                return Err(self.err("E_EFFECT_TYPE", "duplicate failure-effect annotation"));
+            }
+            seen |= bit;
+            self.next();
+            self.expect(&Tok::LParen, "expected '(' after failure annotation")?;
+            let mut count = 0usize;
+            loop {
+                self.type_name()?;
+                count += 1;
+                if count > 64 {
+                    return Err(self.err("E_SOURCE_LIMIT", "too many annotated Error types"));
+                }
+                if !self.take(&Tok::Comma) { break; }
+            }
+            self.expect(&Tok::RParen, "expected ')' after failure annotation")?;
+        }
+        Ok(())
+    }
+
     fn header_after_params(
         &mut self, prefix_return: Option<String>,
     ) -> R<(String, bool, bool, bool, bool)> {
@@ -517,6 +550,8 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             c.expect(&Tok::Semi, "expected ';' after actor")?;
         } else {
             let declaration_start = c.i;
+            c.failure_annotations()?;
+            let modifier_start = c.i;
             let public = c.take_word("pub");
             if c.take_word("mtd") {
                 let (method, start, end, method_start) = c.receiver(pos, public)?;
@@ -527,7 +562,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 }
                 spans.push((out.receivers.len(), start, end));
                 out.receiver_sites.push(ReceiverSite {
-                    declaration_start, method_start, end,
+                    declaration_start, modifier_start, method_start, end,
                 });
                 out.receivers.push(method);
             } else if c.take_word("fnc") || c.take_word("routine") {
@@ -601,7 +636,8 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
     // scan. A forged overlapping ledger must be E_SYNTAX, never be interpreted
     // as a receiver body that can accidentally read another declaration.
     for site in &headers.receiver_sites {
-        if site.declaration_start >= site.method_start ||
+        if site.declaration_start > site.modifier_start ||
+            site.modifier_start >= site.method_start ||
             site.method_start >= site.end || site.end > toks.len() {
             return Err(Diagnostic::new(pos, "E_SYNTAX",
                 "invalid out-of-line receiver source span"));
@@ -622,7 +658,8 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
         let owner = headers.class_definitions.iter().position(|c| c.name == receiver.owner)
             .ok_or_else(|| Diagnostic::new(receiver.pos, "E_UNBOUND",
                 "class receiver owner has no local definition"))?;
-        if site.declaration_start >= site.method_start ||
+        if site.declaration_start > site.modifier_start ||
+            site.modifier_start >= site.method_start ||
             site.method_start >= site.end || site.end > toks.len() ||
             headers.class_ends[owner] >= toks.len() {
             return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
@@ -666,13 +703,16 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
                 _ => {}
             }
         }
+        // The original annotation tokens must be moved along with their
+        // receiver. Do not silently drop throws/raises/panics in lowering.
+        insertions[owner].extend_from_slice(&toks[site.declaration_start..site.modifier_start]);
         if receiver.public {
             // pub mtd (self: Type) method(...) becomes a public inline method.
-            if !matches!(&toks[site.declaration_start].tok, Tok::Ident(s) if s == "pub") {
+            if !matches!(&toks[site.modifier_start].tok, Tok::Ident(s) if s == "pub") {
                 return Err(Diagnostic::new(receiver.pos, "E_SYNTAX",
                     "missing public receiver visibility token"));
             }
-            insertions[owner].push(toks[site.declaration_start].clone());
+            insertions[owner].push(toks[site.modifier_start].clone());
         }
         insertions[owner].extend_from_slice(&toks[site.method_start..site.end]);
 
