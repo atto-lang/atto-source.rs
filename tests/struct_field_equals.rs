@@ -131,3 +131,18 @@ fn omitted_source_disambiguation_never_rewrites_unknown_names() {
     reject("define record Particle as int x; int y; end\n\
             pub fnc main(): int { val x=Particle(x=1,y=2); return x.x; }", "E_SYNTAX");
 }
+
+#[test]
+fn compiler_manifest_marks_only_equals_struct_source_sites() {
+    let src = source("val a=Particle{x:1,y:2}; val b=Particle(x=3,y=4); return b.x;");
+    let (lowered, sites) =
+        atto_compiler::shape_lower::lower_with_sites(atto_compiler::lexer::lex(&src).unwrap())
+            .expect("source-local product lower must preserve provenance");
+    assert_eq!(sites.len(), 1, "only the equals-parentheses shorthand is marked");
+    assert_eq!(sites[0].name, "Particle");
+    assert!(sites[0].pos.line > 0 && sites[0].pos.col > 0);
+    // The standalone source-lowering interface is kept for existing users.
+    let legacy=atto_compiler::shape_lower::lower(atto_compiler::lexer::lex(&src).unwrap())
+        .expect("legacy shape lowering");
+    assert_eq!(lowered.len(),legacy.len());
+}
