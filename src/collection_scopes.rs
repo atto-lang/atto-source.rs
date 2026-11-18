@@ -221,6 +221,21 @@ impl<'a> Scope<'a> {
                     Some(Ty::OpenRecord)
                 } else { None }
             }
+            // Browser's existing And/Or/Xor bool-pack ABI accepts an array
+            // spelling as a *call argument* only. It never allocates a general
+            // Array value. Visit item expressions without asking the collection
+            // literal inference pass to invent a runtime array ABI. The normal
+            // typed call checker still validates booleans and rejects effects.
+            ExprKind::Call(name,args) if matches!(name.as_str(),"And"|"Or"|"Xor") => {
+                for arg in args {
+                    if let ExprKind::Array(items)=&arg.kind {
+                        for item in items {
+                            self.expression(item,Some(&Ty::Bool),depth+1)?;
+                        }
+                    } else { self.expression(arg,None,depth+1)?; }
+                }
+                None
+            }
             ExprKind::Call(_,args) | ExprKind::New(_,args) => {
                 for arg in args {self.expression(arg,None,depth+1)?;}
                 None
