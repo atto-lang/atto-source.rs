@@ -35,6 +35,9 @@ pub mod target_syntax;
 pub mod target_typed;
 pub mod wasm;
 
+#[cfg(test)]
+mod borrow_mut_tests;
+
 pub use diag::{Diagnostic, Pos};
 
 pub const SOURCE_CAP: usize = 64 * 1024;
