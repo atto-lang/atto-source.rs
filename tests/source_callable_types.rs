@@ -1,5 +1,5 @@
 //! Source-level scalar callable type grammar and canonical signature identity.
-//! Runtime callable values and Wasm indirect dispatch must continue to reject.
+//! Static direct targets execute; escaping values and indirect dispatch fail closed.
 use atto_compiler::{
     ast::Type,
     check::{self, callable_ir::CallableSignature},
@@ -69,7 +69,7 @@ fn callable_value_source_signatures_fail_closed_before_guest_emission() {
     assert!(d.pos.line >= 1 && d.pos.col >= 1);
     let source = format!("pub fnc factory(): fnc(int)->int {{ return 0; }} {MAIN}");
     assert_eq!(err(&source).code, "E_UNSUPPORTED");
-    let source = "pub fnc main(): int { val callback: fnc(int)->int = |n| -> n * 2; return 0; }";
+    let source = "pub fnc main(): int { val callback: fnc(int)->int = |n| -> n * 2; val escaped = callback; return 0; }";
     assert_eq!(err(source).code, "E_UNSUPPORTED");
 }
 
@@ -149,9 +149,13 @@ fn annotated_lambda_binding_checks_arity_before_wasm_gate() {
     assert_eq!(err(src).code, "E_ARITY");
 }
 #[test]
-fn valid_annotated_lambda_binding_is_type_checked_but_not_yet_executable() {
-    let src = "pub fnc main(): int { val callback: fnc(int)->bool = |n| -> n < 4; return 0; }";
-    let d = err(src);
-    assert_eq!(d.code, "E_UNSUPPORTED");
-    assert!(d.message.contains("indirect dispatch"), "{d}");
+fn valid_annotated_lambda_binding_direct_calls_are_executable() {
+    let src = "pub fnc main(): int { val callback: fnc(int)->bool = |n| -> n < 4; if callback(2) then return 42; fi return 0; }";
+    let wasm = atto_compiler::compile(src).expect("closed typed callable uses direct Wasm call");
+    assert!(wasm.starts_with(b"\0asm"));
+}
+#[test]
+fn typed_callable_cannot_escape_to_runtime_alias() {
+    let src = "pub fnc main(): int { val callback: fnc(int)->int = |n| -> n * 2; val escape = callback; return 0; }";
+    assert_eq!(err(src).code, "E_UNSUPPORTED");
 }
