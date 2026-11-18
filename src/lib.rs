@@ -7,6 +7,8 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Recognize and reject unlowered named collection layouts before Wasm emission.
+pub mod collection_layout;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -49,6 +51,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    collection_layout::reject_unlowered(&visibility.tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
