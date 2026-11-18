@@ -70,7 +70,7 @@ const cases = [
     name: 'defer accepts a transitive call whose throw is wrapped in trap',
     src: `fnc fail(): int { throw Error("inner"); }
       fnc safe(): int {
-        val Option<int> caught = trap fail();
+        val Result<int,Error> caught = trap fail();
         stdio.println("trapped");
         return 8;
       }
