@@ -1,3 +1,4 @@
+// expect-exit: 15
 define struct Particle {
     x: int;
     y: int;
