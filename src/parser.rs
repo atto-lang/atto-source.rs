@@ -964,7 +964,7 @@ impl Parser {
                 format!("actor mailbox handler '{owner}.receive' must return void"),
             ));
         }
-        let failure_effects = self.parse_failure_effects(annotations)?;
+        let failure_effects = self.parse_failure_effects(annotations, false)?;
         let body = self.parse_block()?;
         Ok(Receive { pos, mail, payload, failure_effects, body })
     }
@@ -996,7 +996,7 @@ impl Parser {
             )) {
                 return Err(unsupported(at, "non-failure annotations"));
             }
-            effects = self.parse_failure_effects(effects)?;
+            effects = self.parse_failure_effects(effects, true)?;
         }
         Ok(effects)
     }
@@ -1005,7 +1005,7 @@ impl Parser {
     /// share an effect representation. The browser subset currently resolves
     /// only the built-in Error; unknown nominal exception types fail closed.
     /// Capitalized @Throws/@Raises/@Panics always require parentheses.
-    fn parse_failure_effects(&mut self, mut effects: FailureEffects) -> R<FailureEffects> {
+    fn parse_failure_effects(&mut self, mut effects: FailureEffects, annotation_context: bool) -> R<FailureEffects> {
         loop {
             let (kind, annotation, at) = match self.word_at(0) {
                 Some("throws") => (0, false, self.pos()),
@@ -1016,9 +1016,16 @@ impl Parser {
                 Some("Panics") => (2, true, self.pos()),
                 _ => break,
             };
+            // A PascalCase failure name is an annotation, never an inline
+            // effect clause. Both PascalCase and lowercase annotations require
+            // parentheses; only signature keywords may use Java-style lists.
+            if annotation && !annotation_context {
+                return Err(Diagnostic::new(at, "E_EFFECT_POSITION",
+                    "PascalCase @Throws/@Raises/@Panics requires '@' before a callable"));
+            }
             self.advance();
             let parens = self.eat(&Tok::LParen);
-            if annotation && !parens {
+            if annotation_context && !parens {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     "failure annotations require a parenthesized Error type list"));
             }
@@ -1099,7 +1106,7 @@ impl Parser {
             self.parse_return_spec()?
         };
         let inline_effects = matches!(self.word_at(0), Some("throws" | "raises" | "panics"));
-        let failure_effects = self.parse_failure_effects(annotations)?;
+        let failure_effects = self.parse_failure_effects(annotations, false)?;
         let trailing_return = inline_effects && !arrow_type && !colon_type && self.eat(&Tok::Arrow);
         if trailing_return {
             if prefixed_return.is_some() {
