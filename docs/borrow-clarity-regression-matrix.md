@@ -21,4 +21,4 @@ The following **language targets are not executable in this compiler slice** and
 
 The direct expression `borrow! x` is **not** a universal ownership operator in any untyped context: outside a supported `Borrow<T>` call and named scoped binding, it must reject when the borrow would escape or be treated as an owned value.
 
-To execute only the added fixtures after building native `attoc`, run `node tests/conformance.mjs` (the suite collects the full fixture directory). Do not mark a source-only registry as proof of compiled execution.
+To execute **only these 17 cases**, build the native and wasm32 compiler artifacts and run `ATTOC=target/release/attoc node tests/borrow_clarity_guest.mjs`. This focused runner verifies guest exits/stdout, exact native-vs-wasm compiler output bytes, and zero guest bytes with expected diagnostics for invalid sources. The full `node tests/conformance.mjs` suite also collects these fixtures, but its unrelated long-expression stress failures must be tracked separately and never hidden. Do not mark a source-only registry as proof of compiled execution.
