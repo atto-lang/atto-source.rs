@@ -160,14 +160,26 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Versioned opt-in until the package-level compatibility migration is
     // approved. Unversioned source keeps legacy ownership so existing code
     // cannot silently stop consuming class parameters.
-    let marker = source.lines().next().unwrap_or("").trim_end_matches('\r');
-    let borrow_default_v1 = match marker {
+    // Misplaced version headers must reject rather than silently using the
+    // *legacy consuming* ABI. An innocuous comment above the marker, or a
+    // copy/pasted header in the wrong position, cannot change ownership
+    // meaning without an explicit diagnostic. Support an ordinary UTF-8
+    // BOM on the very first line only.
+    let first_line = source.lines().next().unwrap_or("")
+        .trim_start_matches('\u{feff}').trim_end_matches('\r');
+    let borrow_default_v1 = match first_line {
         "// atto-ownership: borrow-default-v1" => true,
         other if other.starts_with("// atto-ownership:") =>
             return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_PROFILE",
                 "unknown AttoLang ownership profile; use borrow-default-v1")),
         _ => false,
     };
+    for (i, line) in source.lines().enumerate().skip(1) {
+        if line.trim_start().starts_with("// atto-ownership:") {
+            return Err(Diagnostic::new(Pos { line: i as u32 + 1, col: 1 },
+                "E_PROFILE", "ownership migration marker must be on the first source line"));
+        }
+    }
     let mut program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
