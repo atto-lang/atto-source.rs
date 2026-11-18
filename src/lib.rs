@@ -25,8 +25,20 @@ pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Compile one `.atto` source file to a guest WebAssembly module.
+/// Compile an existing `.atto` source file using legacy language version 1.
+/// Switching to the strict `::` body selector must be explicit, never an
+/// unversioned compiler upgrade. The ABI entrypoint `compile` follows v1.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_with_version(source, parser::LanguageVersion::Legacy)
+}
+
+/// Explicit versioned compilation: version 2 tightens only callable body
+/// selection; the common checker, effects, borrow and guest emitter remain
+/// shared. Invalid versions are handled at API/CLI boundaries.
+pub fn compile_with_version(
+    source: &str,
+    version: parser::LanguageVersion,
+) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -66,7 +78,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             // Namespace, imports, actor receivers and mutable-self are gated
             // inside the lowering helper, never silently compiled as classes.
             let lowered = target_syntax::lower_class_receivers(&toks, &headers)?;
-            parser::Parser::new(lowered).parse_program()?
+            parser::Parser::with_version(lowered, version).parse_program()?
         } else {
             // Actor mtd stays strictly syntax/type preflight only. An ActorRef
             // must never acquire unverified synchronous method dispatch.
@@ -77,7 +89,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
                 "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
         }
     } else {
-        parser::Parser::new(toks).parse_program()?
+        parser::Parser::with_version(toks, version).parse_program()?
     };
     let typed = check::check(&program)?;
     let bytes = wasm::emit(&typed);
@@ -148,6 +160,17 @@ mod abi {
     /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_selected(length, parser::LanguageVersion::Legacy)
+    }
+
+    /// Opt-in strict-v2 entrypoint, without breaking existing ABI v2 hosts.
+    /// The exported `compile` function and `abi_version()` are unchanged.
+    #[no_mangle]
+    pub extern "C" fn compile_v2(length: i32) -> i32 {
+        compile_selected(length, parser::LanguageVersion::Explicit)
+    }
+
+    fn compile_selected(length: i32, version: parser::LanguageVersion) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -193,7 +216,7 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            match super::compile_with_version(source, version) {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0
