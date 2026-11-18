@@ -50,7 +50,7 @@ fn issue_and_end_are_preserved_in_real_checked_ir() {
         assert!(matching.0 < end_point, "cannot end loan before issuance");
     }
     let guest = atto_compiler::compile(src).expect("Wasm guest");
-    assert!(guest.starts_with(b"\\0asm"));
+    assert!(guest.starts_with(b"\0asm"));
 }
 
 #[test]
