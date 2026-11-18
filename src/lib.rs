@@ -7,6 +7,7 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+pub mod collection_types;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -124,6 +125,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
+    // Contextual literal typing is checked before executable scalar lowering.
+    // It never grants a guest allocation; unsupported values remain rejected.
+    let _collection_ir = collection_types::analyze(&program)?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);

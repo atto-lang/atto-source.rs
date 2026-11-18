@@ -511,6 +511,9 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
                 Type::Class(c as u32)
             } else if let Some(e) = enums.iter().position(|e| e.name == *n) {
                 Type::Enum(e as u32)
+            } else if n.starts_with("@builtin/") {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    format!("built-in collection type {} is syntax-only in the browser compiler", &n["@builtin/".len()..])));
             } else if actors.iter().any(|a| a == n) {
                 return Err(type_err(*pos, format!("'{n}' is an actor; its references have type ActorRef<{n}>")));
             } else {
@@ -3533,7 +3536,12 @@ impl<'a> FnCx<'a> {
             ExprKind::Member(base, name) => self.member(base, name, pos)?,
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
             ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "array literals are parsed but not yet lowered to browser Wasm")),
+                "array/list literals are parsed but not yet lowered to browser Wasm")),
+            ExprKind::Record(_) | ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_) =>
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "record, map and tuple literals are parsed but require checked collection types and guest allocation")),
+            ExprKind::Index(_, _) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "bracket selection is parsed but requires checked field/key presence, ownership and guest lowering")),
             ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
                 "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented")),
         })

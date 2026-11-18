@@ -189,6 +189,41 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "byte",
 ];
 
+/// Builtin aliases are contextual type names, not globally lowercased identifiers.
+fn collection_type_name(name: &str) -> Option<&'static str> {
+    match name {
+        "Record" | "record" => Some("Record"),
+        "Map" | "map" => Some("Map"),
+        "List" | "list" => Some("List"),
+        "Array" | "array" => Some("Array"),
+        "Tuple" | "tuple" => Some("Tuple"),
+        _ => None,
+    }
+}
+
+/// Only statically known, stable scalar keys are fingerprinted here. Other
+/// keys are admitted to the AST for later checked Hash/Eq typing, never
+/// silently evaluated or presumed unique. Signed zero has one key identity.
+fn constant_map_key(value: &Expr) -> Option<String> {
+    match &value.kind {
+        ExprKind::Str(s) => Some(format!("str:{s}")),
+        ExprKind::Bool(b) => Some(format!("bool:{b}")),
+        ExprKind::Int(Some(v)) => Some(format!("int:{v}")),
+        ExprKind::Int(None) => Some("int:9223372036854775808".into()),
+        ExprKind::Unary(UnOp::Plus, operand) => match &operand.kind {
+            ExprKind::Int(Some(v)) => Some(format!("int:{v}")),
+            _ => None,
+        },
+        ExprKind::Unary(UnOp::Neg, operand) => match &operand.kind {
+            ExprKind::Int(Some(0)) => Some("int:0".into()),
+            ExprKind::Int(Some(v)) => Some(format!("int:-{v}")),
+            ExprKind::Int(None) => Some("int:-9223372036854775808".into()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
 }
@@ -384,10 +419,13 @@ impl Parser {
         matches!(
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
-        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || collection_type_name(w).is_some())
     }
 
     fn parse_type(&mut self) -> R<Type> {
+        // Generic collections can nest recursively. Reuse the existing
+        // parser depth/AST budget rather than allowing unbounded recursion.
+        self.enter()?;
         let pos = self.pos();
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
@@ -396,6 +434,60 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            n if collection_type_name(n).is_some() => {
+                let builtin = collection_type_name(n).expect("guarded builtin");
+                // Parse complete nested type arguments even in the syntax-only
+                // browser profile; never misread '<' as an expression comparison.
+                let generic = self.eat(&Tok::Lt);
+                let mut args = Vec::new();
+                if generic {
+                    if *self.peek() == Tok::Gt {
+                        return Err(Diagnostic::new(self.pos(), "E_TYPE_ARITY",
+                            format!("{builtin} does not accept an empty generic argument list")));
+                    }
+                    loop {
+                        if args.len() >= MAX_PARAMS {
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                                "collection type exceeds the maximum generic argument count"));
+                        }
+                        let ty = self.parse_type()?;
+                        let spelling = match ty {
+                            Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) =>
+                                self.type_names[i as usize].0.clone(),
+                            other => other.name().to_string(),
+                        };
+                        args.push(spelling);
+                        if !self.eat(&Tok::Comma) { break; }
+                    }
+                    self.expect(Tok::Gt, "'>' to close collection type arguments")?;
+                }
+                let correct_arity = match builtin {
+                    "Record" => !generic,
+                    "Array" | "List" => !generic || args.len() == 1,
+                    "Map" => !generic || args.len() == 2,
+                    "Tuple" => !generic || !args.is_empty(),
+                    _ => unreachable!(),
+                };
+                if !correct_arity {
+                    return Err(Diagnostic::new(pos, "E_TYPE_ARITY",
+                        format!("incorrect number of generic type arguments for {builtin}")));
+                }
+                // Inaccessible sentinel spelling: parser recognizes syntax but
+                // guest collection allocation/layout is deliberately not lowered.
+                // Its resolution in check.rs always fails closed.
+                let spelling = if generic {
+                    format!("@builtin/{builtin}<{}>", args.join(","))
+                } else {
+                    format!("@builtin/{builtin}")
+                };
+                // The lowercase and uppercase spellings must share the same
+                // AST type identity even within a single translation unit.
+                let id = match self.type_names.iter().position(|(n, _)| *n == spelling) {
+                    Some(id) => id as u32,
+                    None => self.type_name(spelling, pos),
+                };
+                Type::Named(id)
+            }
             "fnc" => {
                 // Canonical source type form: fnc(int, bool) -> float.
                 // The first profile admits scalar callback contracts only,
@@ -502,6 +594,7 @@ impl Parser {
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
             return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
         }
+        self.leave();
         Ok(ty)
     }
 
@@ -2044,7 +2137,8 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                || ((matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                    || self.word_at(0).is_some_and(|w| collection_type_name(w).is_some()))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -2960,7 +3054,21 @@ impl Parser {
                         };
                     }
                 }
-                Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
+                Tok::LBracket => {
+                    // Retain the key expression and exact receiver in the AST.
+                    // Record quoted fields are not lowered as object dot members,
+                    // and Map indexing is not implicitly considered safe.
+                    let bracket = self.pos();
+                    self.advance();
+                    let key = self.parse_expr()?;
+                    self.expect(Tok::RBracket, "']' after indexed expression")?;
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = Expr {
+                        kind: ExprKind::Index(Box::new(e), Box::new(key)),
+                        pos: bracket,
+                    };
+                },
                 Tok::Question if !self.question_opens_ternary() => {
                     let question = self.pos();
                     self.advance();
@@ -3117,6 +3225,86 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
+    /// A brace literal is either a record (colon fields) or a map (fat arrows).
+    /// Empty braces remain unresolved until contextual typing. Never treat
+    /// expression braces as statement blocks or silently coerce mixed entries.
+    fn parse_brace_literal(&mut self) -> R<ExprKind> {
+        self.expect(Tok::LBrace, "'{'")?;
+        if self.eat(&Tok::RBrace) {
+            return Ok(ExprKind::EmptyBraces);
+        }
+        let mut record = Vec::new();
+        let mut map = Vec::new();
+        let mut record_mode = None::<bool>;
+        loop {
+            if record.len() + map.len() >= 1024 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "brace literal exceeds 1024 entries"));
+            }
+            let named_field = matches!(self.peek(), Tok::Ident(_) | Tok::Str(_))
+                && *self.peek_at(1) == Tok::Colon;
+            if named_field {
+                if record_mode == Some(false) {
+                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                        "cannot mix record ':' entries and map '=>' entries"));
+                }
+                record_mode = Some(true);
+                let (name, at) = match self.advance() {
+                    Token { tok: Tok::Ident(name), pos } |
+                    Token { tok: Tok::Str(name), pos } => (name, pos),
+                    _ => unreachable!(),
+                };
+                self.expect(Tok::Colon, "':' after record field")?;
+                if record.iter().any(|(existing, _): &(String, Expr)| existing == &name) {
+                    return Err(Diagnostic::new(at, "E_DUPLICATE",
+                        format!("duplicate record field '{name}'")));
+                }
+                let value = self.parse_expr()?;
+                record.push((name, value));
+            } else {
+                if record_mode == Some(true) {
+                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                        "cannot mix record ':' entries and map '=>' entries"));
+                }
+                record_mode = Some(false);
+                let key = self.parse_expr()?;
+                if !self.eat(&Tok::FatArrow) {
+                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                        "expected ':' for a record field or '=>' for a map entry"));
+                }
+                let value = self.parse_expr()?;
+                // Constant duplicate keys are definite mistakes. Dynamically
+                // computed keys need checked equality/hash rules at runtime.
+                if let Some(fingerprint) = constant_map_key(&key) {
+                    if map.iter().any(|(prior, _)| constant_map_key(prior).as_deref() ==
+                        Some(fingerprint.as_str())) {
+                        return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
+                            "duplicate constant map key"));
+                    }
+                }
+                map.push((key, value));
+            }
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RBrace) { break; }
+                continue;
+            }
+            if self.eat(&Tok::RBrace) { break; }
+            // The lexer tracks newlines via positions rather than tokens.
+            // A subsequent entry can start on the following line; same-line
+            // entries need commas. At most one entry is parsed per iteration.
+            let previous_line = self.toks[self.i.saturating_sub(1)].pos.line;
+            if *self.peek() != Tok::Eof && self.pos().line > previous_line {
+                continue;
+            }
+            return Err(self.expected("',' or a newline between brace entries, or '}'"));
+        }
+        if record_mode == Some(true) {
+            Ok(ExprKind::Record(record))
+        } else {
+            Ok(ExprKind::Map(map))
+        }
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -3135,12 +3323,25 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
-                let inner = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
-                if *self.peek() == Tok::Comma {
-                    return Err(unsupported(self.pos(), "tuples"));
+                if self.eat(&Tok::RParen) {
+                    return Ok(Expr { kind: ExprKind::Tuple(Vec::new()), pos });
+                }
+                let first = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
+                if self.eat(&Tok::Comma) {
+                    let mut items = vec![first];
+                    while *self.peek() != Tok::RParen {
+                        if items.len() >= 1024 {
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                                "tuple literal exceeds 1024 elements"));
+                        }
+                        items.push(self.parse_expr()?);
+                        if !self.eat(&Tok::Comma) { break; }
+                    }
+                    self.expect(Tok::RParen, "')' after tuple elements")?;
+                    return Ok(Expr { kind: ExprKind::Tuple(items), pos });
                 }
                 self.expect(Tok::RParen, "')'")?;
-                return Ok(Expr { kind: inner.kind, pos });
+                return Ok(Expr { kind: first.kind, pos });
             }
             Tok::Ident(s) => match s.as_str() {
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
@@ -3220,7 +3421,7 @@ impl Parser {
             },
             Tok::Pipe => self.parse_lambda()?,
             Tok::LBracket => self.parse_array_literal()?,
-            Tok::LBrace => return Err(unsupported(pos, "record literals")),
+            Tok::LBrace => self.parse_brace_literal()?,
             _ => return Err(self.expected("an expression")),
         };
         Ok(Expr { kind, pos })
