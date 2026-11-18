@@ -2711,15 +2711,34 @@ impl Parser {
         let body = if *self.peek() == Tok::LBrace {
             LambdaBody::Block(self.parse_block()?)
         } else if self.is_word("return") || *self.peek() == Tok::Caret {
-            // Unlike ordinary statements, a braceless lambda's return must
-            // have a literal semicolon. A newline before the closing ')' does
-            // not terminate this lambda body.
+            // Braceless lambda returns use the SAME contextual comma semantics
+            // as normal callable returns. A literal semicolon is required to
+            // end an explicit return, even when a ')' follows.
             let pos = self.pos();
+            let keyword_return = self.is_word("return");
             self.advance();
-            let value = if *self.peek() == Tok::Semi {
+            let value = if keyword_return && self.eat(&Tok::Caret) {
+                // `return ^ (a, b)` is a contextual last-value sequence.
+                self.expect(Tok::LParen, "'(' after 'return ^'")?;
+                if *self.peek() == Tok::RParen {
+                    return Err(Diagnostic::new(self.pos(), "E_EMPTY_SEQUENCE",
+                        "return ^ (...) requires at least one expression"));
+                }
+                let inner = self.parse_comma_sequence(Tok::RParen, pos)?;
+                self.expect(Tok::RParen, "')' after return sequence")?;
+                Some(inner)
+            } else if self.is_word("seq") && *self.peek_at(1) != Tok::LParen {
+                self.advance();
+                Some(self.parse_comma_sequence(Tok::Semi, pos)?)
+            } else if *self.peek() == Tok::Semi {
                 None
             } else {
-                Some(self.parse_expr()?)
+                let first = self.parse_expr()?;
+                Some(if *self.peek() == Tok::Comma {
+                    self.parse_return_comma_sequence(first.clone(), first.pos)?
+                } else {
+                    first
+                })
             };
             if !self.eat(&Tok::Semi) {
                 return Err(Diagnostic::new(self.pos(), "E_SEMICOLON",
