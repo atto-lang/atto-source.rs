@@ -3395,51 +3395,67 @@ impl<'a> FnCx<'a> {
     }
 
     /// Check arguments against parameter types; object arguments move.
+    /// Arguments evaluate left-to-right. Inferred Borrow<Class> formals
+    /// issue compile-time shared call loans spanning all subsequent argument
+    /// evaluation. These end only once all arguments are checked; the guest
+    /// call itself is synchronous and returns no borrowed class handle.
+    ///
+    /// Each ephemeral loan gets a distinct scratch slot (never an owned
+    /// object); it cannot be promoted, reborrowed or given drop authority.
+    #[inline(never)]
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
-        let mut out = Vec::new();
-        for (i, (a, want)) in args.iter().zip(params).enumerate() {
-            if let Type::BorrowClass(c) = *want {
-                // An inferred read-only call loan is presently a named owner
-                // in final argument position. Later expressions could move
-                // the owner, so complex argument sequences fail closed.
-                if i + 1 != args.len() {
-                    return Err(Diagnostic::new(a.pos, "E_BORROW",
-                        "Borrow<T> must be the final argument until transient call loans are tracked"));
+        let mut temporary_call_loans: Vec<u32> = Vec::new();
+        let checked = (|| -> R<Vec<TE>> {
+            let mut out = Vec::new();
+            for (i, (arg, want)) in args.iter().zip(params).enumerate() {
+                if let Type::BorrowClass(class) = *want {
+                    let ExprKind::Var(name) = &arg.kind else {
+                        return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                            "inferred Borrow<T> needs a named, live class owner"));
+                    };
+                    let Some(local) = self.lookup(name) else {
+                        return Err(Diagnostic::new(arg.pos, "E_UNBOUND",
+                            format!("unknown class owner '{name}'")));
+                    };
+                    let owner_slot = local.slot;
+                    if self.borrowed_slots.contains(&owner_slot) {
+                        return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                            "reborrowing a borrowed alias/formal needs verified lifetime provenance"));
+                    }
+                    let value = self.value(arg)?;
+                    if value.ty != Type::Class(class) {
+                        return Err(type_err(arg.pos,
+                            format!("argument {} of '{callee}' expects Borrow<{}>",
+                                i + 1, self.g.classes[class as usize].name)));
+                    }
+                    // The checker also detects exclusive loans already live
+                    // on this owner. Concurrent read loans on the same owner
+                    // are allowed, but a later take!/owned argument must fail.
+                    let alias = self.temp(Type::Class(class), arg.pos)?;
+                    self.loans.insert(alias, ScopedLoan {
+                        owner: owner_slot, mutable: false,
+                    });
+                    temporary_call_loans.push(alias);
+                    out.push(value);
+                    continue;
                 }
-                let ExprKind::Var(name) = &a.kind else {
-                    return Err(Diagnostic::new(a.pos, "E_BORROW",
-                        "inferred Borrow<T> needs a named live class owner"));
-                };
-                let Some(local) = self.lookup(name) else {
-                    return Err(Diagnostic::new(a.pos, "E_UNBOUND", format!("unknown owner '{name}'")));
-                };
-                if self.borrowed_slots.contains(&local.slot) {
-                    return Err(Diagnostic::new(a.pos, "E_BORROW",
-                        "reborrowing a borrowed parameter requires lifetime provenance"));
+                let value = self.consume_expected(arg, *want)?;
+                if value.ty != *want {
+                    return Err(type_err(arg.pos,
+                        format!("argument {} of '{callee}' has type {} but expected {}",
+                            i + 1, self.tn(value.ty), self.tn(*want))));
                 }
-                let v = self.value(a)?;
-                if v.ty != Type::Class(c) {
-                    return Err(type_err(a.pos, format!("argument {} of '{callee}' expects Borrow<{}>",
-                        i + 1, self.g.classes[c as usize].name)));
-                }
-                out.push(v);
-                continue;
+                out.push(value);
             }
-            let v = self.consume_expected(a, *want)?;
-            if v.ty != *want {
-                return Err(type_err(
-                    a.pos,
-                    format!(
-                        "argument {} of '{callee}' has type {} but expected {}",
-                        i + 1,
-                        self.tn(v.ty),
-                        self.tn(*want)
-                    ),
-                ));
-            }
-            out.push(v);
+            Ok(out)
+        })();
+        // This call loan has no guest drop/owner-transfer instruction. Its
+        // checker-only provenance must not persist past a completed call and
+        // affect unrelated subsequent statements or calls.
+        for alias in temporary_call_loans {
+            self.loans.remove(&alias);
         }
-        Ok(out)
+        checked
     }
 
     fn arity(&self, callee: &str, want: usize, got: usize, pos: Pos) -> R<()> {
