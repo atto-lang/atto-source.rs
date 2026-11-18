@@ -271,7 +271,6 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
     Ok(out)
 }
 
-#[derive(Clone)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScalarKind { Int, Bool }
 
