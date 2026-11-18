@@ -905,6 +905,14 @@ impl Emit<'_> {
                 self.i32c(*a as i32);
                 self.call(self.l.import(Import::ActorSpawn));
             }
+            TExpr::RegistryGet { actor, namespace, key } => {
+                self.i32c(*actor as i32);
+                // String descriptor: high 32 bits = guest memory offset,
+                // low 32 bits = UTF-8 byte length.
+                self.expr(namespace);
+                self.expr(key);
+                self.call(self.l.import(Import::ActorGetOrCreate));
+            }
             TExpr::Send { target, value } => {
                 self.expr(target);
                 self.expr(value);
@@ -1292,6 +1300,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintF64 => Sig(vec![F64], vec![]),
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![]),
+            Import::ActorGetOrCreate => Sig(vec![I32, I64, I64], vec![I32]),
             Import::StateRegister => Sig(vec![I32], vec![]),
             Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
             Import::StateLeave => Sig(vec![I64], vec![]),
