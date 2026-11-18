@@ -17,8 +17,8 @@ fn class_receivers_accept_all_five_bodies_and_canonical_aliases() {
         mtd (Calculator self) b(): int -> { return 5; }
         mtd (Calculator) c() -> int { return 5; }
         mtd (Calculator _) d() -> int
-            let int x = 3,
-            x + 2
+            const x: int = 3;
+            ^ x + 2;
         end
         mtd (mut self: Calculator) e() -> int :: let int x = 3, x + 2 end
         pub fnc main(): int { return 0; }

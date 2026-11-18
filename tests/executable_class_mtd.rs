@@ -12,8 +12,8 @@ const SOURCE: &str = r#"
     pub mtd (Calculator self) two(): int -> { return self.seed + 2; }
     pub mtd (Calculator) three() -> int { return self.seed + 2; }
     pub mtd (Calculator _) four() -> int
-      let int x = self.seed,
-      x + 2
+      const x: int = self.seed;
+      ^ x + 2;
     end
     pub mtd (self: Calculator) five() -> int :: let int x = self.seed, x + 2 end
     pub fnc main(): int {

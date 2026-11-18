@@ -27,7 +27,7 @@ jobs:
           rustup default 1.85.1
           rustc --version
       - name: Test native compiler core over the fixture corpus
-        run: cargo test --locked --verbose
+        run: cargo test --locked --verbose --no-fail-fast
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
       - name: Execute real native-compiled output I/O shorthand guest in Wasm
@@ -44,6 +44,12 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
+
+      - name: Audit 49 pinned caret and sequence spec vectors against native and Wasm compilers
+        env:
+          ATTOC: target/release/attoc
+          ATTO_COMPILER_WASM: target/wasm32-unknown-unknown/release/atto_compiler.wasm
+        run: node tests/caret_spec_native_wasm.mjs
 
       - name: Execute five callable forms and class mtd guest with negative no-artifact proofs
         env:

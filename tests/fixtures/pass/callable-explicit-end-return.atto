@@ -1,0 +1,5 @@
+// expect-exit: 8
+pub fnc main() -> int
+    const z: int = 5;
+    ^ z + 3;
+end

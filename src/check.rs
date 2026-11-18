@@ -127,6 +127,7 @@ pub enum TExpr {
     /// operand type is the type of `l`
     Bin(BinOp, Box<TE>, Box<TE>),
     Ternary(Box<TE>, Box<TE>, Box<TE>),
+    Sequence(Vec<TStmt>, Box<TE>),
     Call(u32, Vec<TE>),
     Builtin(Builtin, Box<TE>, Box<TE>),
     /// `stdio.print` / `stdio.println` of an int or bool value
@@ -1653,9 +1654,11 @@ fn body_check(
     Ok((tbody, cx.locals))
 }
 
-/// Definite-return analysis matching the Java reference: an `if` returns
-/// only with an `else` whose every arm returns; an unconditional `loop`
-/// without a `break` never falls through; `while true` is not special.
+/// Conservative definite-return/non-fallthrough analysis: an `if`
+/// needs an exhaustive else; a loop is non-fallthrough only when its typed
+/// condition is literally `true` (or absent) and no break targets it.
+/// For a conditional while, additionally require a proven return in its body\n/// rather than treating a bare infinite while as a function result.\n/// Do NOT treat a variable or computed condition as constant true: this
+/// would accept a function that can fall through without returning.
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
@@ -1664,7 +1667,9 @@ fn returns(body: &[TStmt]) -> bool {
             finally.as_ref().is_some_and(|f| returns(f))
                 || (returns(body) && catch.as_ref().is_none_or(|c| returns(c))),
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
-        TStmt::Loop { cond: None, body, .. } => !breaks(body),
+        TStmt::Loop { cond, body, .. } =>
+            (cond.is_none() || cond.as_ref().is_some_and(|c|
+                matches!(&c.e, TExpr::Bool(true)) && returns(body))) && !breaks(body),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
         _ => false,
     })
@@ -1705,6 +1710,11 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Ternary(c, a, b) =>
             pure_expr(c, pure_indices) &&
             pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
+        // A scoped sequence is pure only when every earlier action and
+        // its final value are independently pure. A new value-producing
+        // wrapper must not conceal observable side effects.
+        TExpr::Sequence(steps, tail) =>
+            pure_stmts(steps, pure_indices) && pure_expr(tail, pure_indices),
         TExpr::Call(target, args) =>
             pure_indices.contains(target) &&
             args.iter().all(|arg| pure_expr(arg, pure_indices)),
@@ -3044,6 +3054,31 @@ impl<'a> FnCx<'a> {
         Ok(TStmt::Throw(self.guest_error_message(error, "throw", pos)?))
     }
 
+
+    /// Check a comma sequence as a proper lexical scope. Discarded expression
+    /// steps still run all effect, generator and ownership admission checks.
+    /// The tail is consumed before the temporary bindings leave scope.
+    #[inline(never)]
+    fn sequence(&mut self, steps: &[Stmt], tail: &Expr, pos: Pos) -> R<TE> {
+        self.scopes.push(Vec::new());
+        let result = (|| -> R<TE> {
+            let mut checked = Vec::with_capacity(steps.len());
+            for step in steps {
+                checked.push(self.stmt(step)?);
+            }
+            let value = self.consume(tail)?;
+            // Initial browser admission is scalar and immutable-string only.
+            // Object/actor/resource tails need owned cleanup and escape proofs.
+            if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    "sequence result needs owned, escape-safe lowering for this type"));
+            }
+            Ok(TE { ty: value.ty, e: TExpr::Sequence(checked, Box::new(value)) })
+        })();
+        self.pop_scope();
+        result
+    }
+
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
@@ -3055,6 +3090,7 @@ impl<'a> FnCx<'a> {
             ExprKind::Ownership(action, mutable, inner) => self.explicit_ownership(*action, *mutable, inner, e.pos),
             ExprKind::Binary(op, l, r) => self.binary(*op, l, r, e.pos),
             ExprKind::Ternary(c, a, b) => self.ternary(c, a, b, e.pos),
+            ExprKind::Sequence(steps, tail) => self.sequence(steps, tail, e.pos),
             ExprKind::Propagate(inner) => {
                 let value = self.consume(inner)?;
                 let success_tag = match value.ty {
@@ -3392,7 +3428,7 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..) | ExprKind::Sequence(..)
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),

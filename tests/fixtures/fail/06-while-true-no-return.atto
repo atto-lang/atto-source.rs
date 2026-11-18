@@ -1,9 +1,11 @@
-// `while true` is not treated as divergent (Java reference)
+// A literal-true while with no return still fails definite-return checking.
+// The specialized caret-return exception requires a proven return in the
+// body and no loop-targeting break; it must not accept this function.
 // expect-error: E_RETURN
 // java: rejects
 fnc f(): int {
   while true do
-    return 3;
+    let int value = 3;
   done
 }
 pub fnc main(): int { return f(); }

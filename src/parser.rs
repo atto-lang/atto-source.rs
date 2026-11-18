@@ -10,6 +10,30 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+
+/// Callable-body grammar compatibility mode. Legacy is the default for
+/// existing source; the strict :: selector is *opt-in* via compiler APIs/CLI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LanguageVersion {
+    Legacy = 1,
+    Explicit = 2,
+}
+
+impl LanguageVersion {
+    pub fn from_number(number: u32) -> Option<Self> {
+        match number {
+            1 => Some(Self::Legacy),
+            2 => Some(Self::Explicit),
+            _ => None,
+        }
+    }
+}
+
+/// Recursive lambda/type spelling paths use substantially more host stack
+/// per source level than ordinary syntax. Fail before a Rust test thread's
+/// 2 MiB stack can be exhausted by adversarial nested lambdas/generics.
+/// This is independent of the general AST-depth/height ceilings.
+const MAX_LAMBDA_RECURSION_DEPTH: u32 = 48;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -52,6 +76,8 @@ const RESERVED: &[&str] = &[
     "yield",
     "nlex",
     "return",
+    "seq",
+    "begin",
     "self",
     "super",
     "static",
@@ -210,6 +236,7 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    language_version: LanguageVersion,
     state_method: bool,
     state_binder: Option<String>,
 }
@@ -254,6 +281,10 @@ fn guard_failure_exits(stmts: &[Stmt]) -> bool {
 
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
+        Self::with_version(toks, LanguageVersion::Legacy)
+    }
+
+    pub fn with_version(toks: Vec<Token>, language_version: LanguageVersion) -> Self {
         Parser {
             toks,
             i: 0,
@@ -263,6 +294,7 @@ impl Parser {
             type_names: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            language_version,
             state_method: false,
             state_binder: None,
         }
@@ -389,6 +421,14 @@ impl Parser {
 
     fn parse_type(&mut self) -> R<Type> {
         let pos = self.pos();
+        // A parenthesized tuple type is valid target language syntax, but
+        // the browser scalar guest profile cannot represent it yet. Report
+        // explicit unsupported capability, not a generic syntax error that
+        // implies a malformed source program. Never misparse as grouping.
+        if *self.peek() == Tok::LParen {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "tuple type '(T, ...)' is not supported by the browser Wasm compiler yet"));
+        }
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
             _ => return Err(self.expected("a type")),
@@ -514,7 +554,13 @@ impl Parser {
     // production nesting rules rather than scanning to the first stray 'end';
     // essential for Erlang-style methods inside a class or actor definition.
     pub(crate) fn parse_target_class_at(toks: &[Token], offset: usize) -> R<(ClassDecl, usize)> {
-        let mut p = Self::new(toks.to_vec());
+        Self::parse_target_class_at_versioned(toks, offset, LanguageVersion::Legacy)
+    }
+
+    pub(crate) fn parse_target_class_at_versioned(
+        toks: &[Token], offset: usize, version: LanguageVersion,
+    ) -> R<(ClassDecl, usize)> {
+        let mut p = Self::with_version(toks.to_vec(), version);
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("class")?;
@@ -523,7 +569,13 @@ impl Parser {
     }
 
     pub(crate) fn parse_target_actor_at(toks: &[Token], offset: usize) -> R<(ActorDecl, usize)> {
-        let mut p = Self::new(toks.to_vec());
+        Self::parse_target_actor_at_versioned(toks, offset, LanguageVersion::Legacy)
+    }
+
+    pub(crate) fn parse_target_actor_at_versioned(
+        toks: &[Token], offset: usize, version: LanguageVersion,
+    ) -> R<(ActorDecl, usize)> {
+        let mut p = Self::with_version(toks.to_vec(), version);
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("actor")?;
@@ -1383,40 +1435,132 @@ impl Parser {
 
     // ----------------------------------------------------------- statements
 
-    /// C-style braces remain the default. The extra -> after : Type is an
-    /// explicit body marker; a -> Type header also admits comma/end bodies.
+    /// Inspect only top-level callable-body separators, not commas inside
+    /// calls, tuple-like parentheses, generic types or `(> ...)` sequences.
+    /// Nested blocks have their own delimiters. First delimiter wins: this
+    /// preserves the legacy grammar without a speculative parser fallback.
+    fn first_callable_body_separator(&self) -> Option<(Tok, Pos)> {
+        // This is only a *legacy v1* classifier, never an acceptance parser.
+        // Ignore nested conditional/match commas and explicit-return comma
+        // sequences. The production statement parser is still authoritative.
+        let (mut parens, mut brackets, mut braces) = (0u32, 0u32, 0u32);
+        let mut nested_end: Vec<&'static str> = Vec::new();
+        let mut return_sequence = false;
+        for token in self.toks.iter().skip(self.i) {
+            match &token.tok {
+                Tok::LParen | Tok::SequenceOpen => parens += 1,
+                Tok::RParen => parens = parens.saturating_sub(1),
+                Tok::LBracket => brackets += 1,
+                Tok::RBracket => brackets = brackets.saturating_sub(1),
+                Tok::LBrace => braces += 1,
+                Tok::RBrace => braces = braces.saturating_sub(1),
+                Tok::Eof => break,
+                _ if parens != 0 || brackets != 0 || braces != 0 => {}
+                Tok::Ident(word) if matches!(word.as_str(), "if") => {
+                    nested_end.push("fi");
+                }
+                Tok::Ident(word) if matches!(word.as_str(), "match" | "select" | "switch" | "begin") => {
+                    nested_end.push("end");
+                }
+                Tok::Ident(word) if matches!(word.as_str(), "do") => {
+                    nested_end.push("done");
+                }
+                Tok::Ident(word) if matches!(word.as_str(), "fi" | "end" | "done") => {
+                    if nested_end.last().copied() == Some(word.as_str()) {
+                        nested_end.pop();
+                    } else if word == "end" && nested_end.is_empty() {
+                        break;
+                    }
+                }
+                Tok::Ident(word) if (word == "return" || word == "seq")
+                    && nested_end.is_empty() =>
+                {
+                    // Prefix seq/return expressions own their commas until
+                    // a statement terminator; classify from the semicolon.
+                    // A genuine unmarked comma body still uses its outer
+                    // separator when the first expression is not a seq.
+                    return_sequence = true;
+                }
+                Tok::Caret if nested_end.is_empty() => {
+                    return_sequence = true;
+                }
+                Tok::Semi if nested_end.is_empty() =>
+                    return Some((Tok::Semi, token.pos)),
+                Tok::Comma if nested_end.is_empty() && !return_sequence =>
+                    return Some((Tok::Comma, token.pos)),
+                _ => {}
+            }
+            // Each opener has a bounded token source; fail closed later in
+            // the parser, rather than allocating for adversarial depth.
+            if nested_end.len() > MAX_DEPTH as usize { break; }
+        }
+        None
+    }
+
+    /// Explicit :: opts into comma/implicit-tail grammar in both versions.
+    /// Version 1 (default) also admits UNMARKED comma/tail bodies for old
+    /// sources. Version 2 requires :: for those bodies; unmarked -> Type
+    /// uses statement/explicit-return grammar only.
     fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type) -> R<Vec<Stmt>> {
         if arrow_type {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
             }
-            // Keep existing implicit-return comma/end bodies compatible.
-            // A semicolon/end body is an explicit-return sequence. Try it in
-            // an isolated parser snapshot: failed trials must not leak token
-            // positions, symbol interning or nesting-budget state.
-            let explicit_comma = self.eat(&Tok::ColonColon);
-            if explicit_comma && *self.peek() == Tok::LBrace {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "'::' requires a comma/end body, not a brace block"));
+            if self.eat(&Tok::ColonColon) {
+                if *self.peek() == Tok::LBrace {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "'::' requires a comma/end body, not a brace block"));
+                }
+                // Preserve the main branch's preexisting v1 behaviour:
+                // a :: marker could introduce explicit-return/end bodies.
+                // Strict v2 instead makes :: select the comma-tail grammar.
+                if self.language_version == LanguageVersion::Legacy {
+                    let mut trial = self.clone();
+                    if let Ok(body) = trial.parse_explicit_end_body() {
+                        if body.iter().any(|stmt| matches!(stmt, Stmt::Return(..) | Stmt::Throw(..))) {
+                            *self = trial;
+                            return Ok(body);
+                        }
+                    }
+                }
+                return self.parse_erlang_body(ret);
             }
-            // The pinned website also uses '::' as an optional header
-            // separator before explicit semicolon/return statements. Until
-            // the versioned header migration (#185), preserve both spellings
-            // without relaxing the checked return contract.
-            let mut trial = self.clone();
-            if let Ok(body) = trial.parse_explicit_end_body() {
-                // A lone final expression still means a comma/end *implicit*
-                // tail return. Never reinterpret it as a statement/end body:
-                // doing so changes the type of existing class mtd methods.
-                // The current compatibility profile admits explicit-return
-                // bodies only when a top-level terminal is present. Fully
-                // branch-terminal explicit bodies await the versioned grammar.
-                if body.iter().any(|stmt| matches!(stmt, Stmt::Return(..) | Stmt::Throw(..))) {
-                    *self = trial;
-                    return Ok(body);
+            // An empty unmarked -> void end remains valid in both versions.
+            if self.is_word("end") {
+                self.advance();
+                return Ok(Vec::new());
+            }
+            let first = self.first_callable_body_separator();
+            if self.language_version == LanguageVersion::Legacy {
+                // Preserve an explicit semicolon/end return from current
+                // main; fallback to comma-tail when there is no terminal.
+                let mut trial = self.clone();
+                if let Ok(body) = trial.parse_explicit_end_body() {
+                    if body.iter().any(|stmt| matches!(stmt, Stmt::Return(..) | Stmt::Throw(..))) {
+                        *self = trial;
+                        return Ok(body);
+                    }
+                }
+                if !matches!(first, Some((Tok::Semi, _))) {
+                    return self.parse_erlang_body(ret);
                 }
             }
-            return self.parse_erlang_body(ret);
+            // v2: genuine statement bodies are parsed first, so commas
+            // inside return and seq expressions aren't mistaken for body
+            // separators. Only an outer comma gets the edition diagnostic.
+            let statements = match self.parse_stmts_until(&["end"]) {
+                Ok(parsed) => parsed,
+                Err(_error) if self.language_version == LanguageVersion::Explicit
+                    && *self.peek() == Tok::Comma
+                    && matches!(first, Some((Tok::Comma, _))) =>
+                {
+                    return Err(Diagnostic::new(self.pos(), "E_BODY_VERSION",
+                        "language version 2 requires '::' before a comma/implicit-tail callable body; insert '::' after '-> Type' to preserve comma evaluation, or use ';' statements with explicit return/^; version 1 preserves unmarked comma bodies"));
+                }
+                Err(error) => return Err(error),
+            };
+            self.expect_word("end")?;
+            return Ok(statements);
         }
         if colon_type && self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
             return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
@@ -1637,7 +1781,14 @@ impl Parser {
             self.terminator()?;
             return Ok(Stmt::YieldFrom(source, pos));
         }
-        let word = self.word_at(0).map(str::to_owned);
+        // `^` is a statement-position alias for `return`, never a unary
+        // or binary expression operator. Reuse the existing return-match,
+        // generator, terminator and type-checking paths.
+        let word = if *self.peek() == Tok::Caret {
+            Some("return".to_owned())
+        } else {
+            self.word_at(0).map(str::to_owned)
+        };
         match word.as_deref() {
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
@@ -1680,7 +1831,28 @@ impl Parser {
                 Ok(Stmt::Yield(value, pos))
             }
             Some("return") => {
+                // A literal `return ^ (...)` is a contextual last-value
+                // sequence, *not* two returns. A leading statement `^ (...)`
+                // keeps its existing tuple/grouped-expression meaning.
+                let keyword_return = self.is_word("return");
                 self.advance();
+                if keyword_return && self.eat(&Tok::Caret) {
+                    self.expect(Tok::LParen, "'(' after 'return ^'")?;
+                    if *self.peek() == Tok::RParen {
+                        return Err(Diagnostic::new(self.pos(), "E_EMPTY_SEQUENCE",
+                            "return ^ (...) requires at least one expression"));
+                    }
+                    // Reuse the exact lexical sequence AST/checker/lowering
+                    // employed by `seq` and `(> ... )`. No tuple fallback.
+                    let value = self.parse_comma_sequence(Tok::RParen, pos)?;
+                    self.expect(Tok::RParen, "')' after return sequence")?;
+                    if self.in_generator {
+                        return Err(Diagnostic::new(pos, "E_RETURN",
+                            "generator cannot return a sequence value"));
+                    }
+                    self.terminator()?;
+                    return Ok(Stmt::Return(Some(value), pos));
+                }
                 if self.is_word("match") {
                     // Return-position match is a value. Generators cannot
                     // return values, including an exhaustive match.
@@ -1690,15 +1862,53 @@ impl Parser {
                     }
                     return self.parse_return_match(pos);
                 }
+                if self.is_word("seq") {
+                    // Parenthesized seq is an expression; reuse ordinary expression
+                    // admission, then the normal return statement terminator.
+                    if *self.peek_at(1) == Tok::LParen {
+                        let value = self.parse_expr()?;
+                        self.terminator()?;
+                        return Ok(Stmt::Return(Some(value), pos));
+                    }
+                    self.advance();
+                    // A single value-match is also a degenerate one-step
+                    // sequence. Preserve return-match's exhaustiveness and
+                    // once-only subject evaluation until value-match AST
+                    // lowering is implemented for general sequence tails.
+                    if self.is_word("match") {
+                        return self.parse_return_match(pos);
+                    }
+                    let value = self.parse_comma_sequence(Tok::Semi, pos)?;
+                    self.terminator()?;
+                    return Ok(Stmt::Return(Some(value), pos));
+                }
                 let at_end = matches!(self.peek(), Tok::Semi | Tok::RBrace | Tok::Comma)
                     || matches!(self.word_at(0), Some("fi" | "end" | "done" | "elif" | "elseif" | "else"));
-                let value = if at_end { None } else { Some(self.parse_expr()?) };
+                let value = if at_end {
+                    None
+                } else {
+                    let first = self.parse_expr()?;
+                    // Top-level return commas are a checked sequence, not an
+                    // expression-level comma operator or a tuple constructor.
+                    // Preserve `::` body commas as *body* separators.
+                    if !self.erlang_body && *self.peek() == Tok::Comma {
+                        Some(self.parse_return_comma_sequence(first, pos)?)
+                    } else {
+                        Some(first)
+                    }
+                };
                 if self.in_generator && value.is_some() {
                     return Err(Diagnostic::new(pos, "E_RETURN",
                         "generators may terminate with 'return;' but cannot return a value"));
                 }
                 self.terminator()?;
                 Ok(Stmt::Return(value, pos))
+            }
+            Some("seq") if *self.peek_at(1) != Tok::LParen => {
+                self.advance();
+                let value = self.parse_comma_sequence(Tok::Semi, pos)?;
+                self.terminator()?;
+                Ok(Stmt::Expr(value))
             }
             Some("throw") => {
                 self.advance();
@@ -2833,6 +3043,19 @@ impl Parser {
                 if *self.peek() == Tok::Dot {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
+                // An unparenthesized `seq` consumes commas through this
+                // call's closing ')'. This is deliberately the final argument:
+                // use seq(...) or (> ... ) to delimit a sequence before more
+                // call arguments. This avoids guessing at comma ownership.
+                if self.is_word("seq") && *self.peek_at(1) != Tok::LParen {
+                    let pos = self.pos();
+                    self.advance();
+                    args.push(self.parse_comma_sequence(Tok::RParen, pos)?);
+                    if args.len() > MAX_PARAMS {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
+                    }
+                    break;
+                }
                 args.push(self.parse_expr()?);
                 if args.len() > MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
@@ -2962,6 +3185,10 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        if self.depth >= MAX_LAMBDA_RECURSION_DEPTH {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "lambda type nesting exceeds safe recursive parser budget"));
+        }
         self.enter()?;
         let result = (|| {
             let mut name = match self.peek().clone() {
@@ -2999,6 +3226,13 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        // Each lambda recursion includes expression precedence, lookahead,
+        // and body parsing frames. A generic MAX_DEPTH=128 is not by itself
+        // sufficient to prevent a real stack overflow on small-stack threads.
+        if self.depth >= MAX_LAMBDA_RECURSION_DEPTH {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "lambda nesting exceeds safe recursive parser budget"));
+        }
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
@@ -3055,16 +3289,35 @@ impl Parser {
         }
         let body = if *self.peek() == Tok::LBrace {
             LambdaBody::Block(self.parse_block()?)
-        } else if self.is_word("return") {
-            // Unlike ordinary statements, a braceless lambda's return must
-            // have a literal semicolon. A newline before the closing ')' does
-            // not terminate this lambda body.
+        } else if self.is_word("return") || *self.peek() == Tok::Caret {
+            // Braceless lambda returns use the SAME contextual comma semantics
+            // as normal callable returns. A literal semicolon is required to
+            // end an explicit return, even when a ')' follows.
             let pos = self.pos();
+            let keyword_return = self.is_word("return");
             self.advance();
-            let value = if *self.peek() == Tok::Semi {
+            let value = if keyword_return && self.eat(&Tok::Caret) {
+                // `return ^ (a, b)` is a contextual last-value sequence.
+                self.expect(Tok::LParen, "'(' after 'return ^'")?;
+                if *self.peek() == Tok::RParen {
+                    return Err(Diagnostic::new(self.pos(), "E_EMPTY_SEQUENCE",
+                        "return ^ (...) requires at least one expression"));
+                }
+                let inner = self.parse_comma_sequence(Tok::RParen, pos)?;
+                self.expect(Tok::RParen, "')' after return sequence")?;
+                Some(inner)
+            } else if self.is_word("seq") && *self.peek_at(1) != Tok::LParen {
+                self.advance();
+                Some(self.parse_comma_sequence(Tok::Semi, pos)?)
+            } else if *self.peek() == Tok::Semi {
                 None
             } else {
-                Some(self.parse_expr()?)
+                let first = self.parse_expr()?;
+                Some(if *self.peek() == Tok::Comma {
+                    self.parse_return_comma_sequence(first.clone(), first.pos)?
+                } else {
+                    first
+                })
             };
             if !self.eat(&Tok::Semi) {
                 return Err(Diagnostic::new(self.pos(), "E_SEMICOLON",
@@ -3072,7 +3325,15 @@ impl Parser {
             }
             LambdaBody::Statement(Box::new(Stmt::Return(value, pos)))
         } else {
-            LambdaBody::Expression(Box::new(self.parse_expr()?))
+            // A braceless lambda's top-level commas are contextual
+            // last-value sequencing, not a tuple or a general comma operator.
+            let first = self.parse_expr()?;
+            let value = if *self.peek() == Tok::Comma {
+                self.parse_return_comma_sequence(first.clone(), first.pos)?
+            } else {
+                first
+            };
+            LambdaBody::Expression(Box::new(value))
         };
         Ok(ExprKind::Lambda { params, return_type, body })
     }
@@ -3094,6 +3355,116 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
+
+    /// Parse the extra top-level operands of `return a, b, ...;` and
+    /// `^ a, b, ...;` after the first complete expression. Reuses the
+    /// existing Sequence AST so checker, ownership and Wasm lowering are
+    /// identical to explicit `return seq a, b, ...;`.
+    ///
+    /// No tuple fallback, no silent comma operator and no speculative
+    /// backtracking into a different statement-body grammar.
+    fn parse_return_comma_sequence(&mut self, first: Expr, pos: Pos) -> R<Expr> {
+        self.enter()?;
+        let result = (|| -> R<Expr> {
+            let mut steps = vec![Stmt::Expr(first)];
+            loop {
+                if steps.len() >= MAX_MEMBERS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                        "too many return-sequence steps"));
+                }
+                self.expect(Tok::Comma, "',' between return-sequence values")?;
+                if matches!(self.peek(), Tok::Comma | Tok::Semi | Tok::RBrace | Tok::Eof)
+                    || matches!(self.word_at(0),
+                        Some("end" | "fi" | "done" | "else" | "elif" | "elseif"))
+                {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "missing expression after comma in return sequence"));
+                }
+                let value = self.parse_expr()?;
+                if *self.peek() != Tok::Comma {
+                    return Ok(Expr {
+                        kind: ExprKind::Sequence(steps, Box::new(value)),
+                        pos,
+                    });
+                }
+                steps.push(Stmt::Expr(value));
+            }
+        })();
+        self.leave();
+        result
+    }
+
+    /// A bounded, lexical comma sequence: `(> a, b)`, `begin a, b end`,
+    /// or statement-position `seq a, b;`. No tuple or comma operator.
+    /// Caller consumes the final delimiter (it is intentionally not swallowed).
+    fn parse_comma_sequence(&mut self, close: Tok, pos: Pos) -> R<Expr> {
+        self.enter()?;
+        let parsed = (|| -> R<Expr> {
+            if *self.peek() == close {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "empty comma sequence"));
+            }
+            let mut steps = Vec::new();
+            loop {
+                if steps.len() >= MAX_MEMBERS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many sequence steps"));
+                }
+                if matches!(self.word_at(0), Some("let" | "const" | "val")) {
+                    let local = self.parse_binding()?;
+                    steps.push(local);
+                    if !self.eat(&Tok::Comma) {
+                        return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                            "sequence requires a final value expression after bindings"));
+                    }
+                } else {
+                    let expression = self.parse_expr()?;
+                    // Assignment is a statement, not a value: it can occur in
+                    // a sequence prefix, but never as the terminal value.
+                    // Reuse the checked Stmt::Assign path (including for +=).
+                    if matches!(self.peek(), Tok::Assign | Tok::PlusAssign) {
+                        let assignment_pos = expression.pos;
+                        let additive = *self.peek() == Tok::PlusAssign;
+                        self.advance();
+                        let rhs = self.parse_expr()?;
+                        let name = match expression.kind {
+                            ExprKind::Var(name) => name,
+                            _ => return Err(Diagnostic::new(assignment_pos,
+                                "E_ASSIGN_TARGET", "sequence assignment requires a mutable local")),
+                        };
+                        let value = if additive {
+                            Expr {
+                                kind: ExprKind::Binary(BinOp::Add,
+                                    Box::new(Expr { kind: ExprKind::Var(name.clone()), pos: assignment_pos }),
+                                    Box::new(rhs)),
+                                pos: assignment_pos,
+                            }
+                        } else {
+                            rhs
+                        };
+                        self.expect(Tok::Comma, "',' after sequence assignment")?;
+                        steps.push(Stmt::Assign { name, value, pos: assignment_pos });
+                    } else {
+                        if *self.peek() == close {
+                            return Ok(Expr {
+                                kind: ExprKind::Sequence(steps, Box::new(expression)),
+                                pos,
+                            });
+                        }
+                        self.expect(Tok::Comma, "',' between sequence steps")?;
+                        steps.push(Stmt::Expr(expression));
+                    }
+                }
+                if *self.peek() == close {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "trailing comma in sequence"));
+                }
+                if *self.peek() == Tok::Eof {
+                    return Err(Diagnostic::new(self.pos(), "E_EOF", "unclosed sequence"));
+                }
+            }
+        })();
+        self.leave();
+        parsed
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -3110,6 +3481,12 @@ impl Parser {
                 self.advance();
                 ExprKind::Float(bits)
             }
+            Tok::SequenceOpen => {
+                self.advance();
+                let result = self.parse_comma_sequence(Tok::RParen, pos)?;
+                self.expect(Tok::RParen, "')' to close sequence")?;
+                return Ok(result);
+            }
             Tok::LParen => {
                 self.advance();
                 let inner = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
@@ -3119,7 +3496,20 @@ impl Parser {
                 self.expect(Tok::RParen, "')'")?;
                 return Ok(Expr { kind: inner.kind, pos });
             }
+            Tok::Ident(s) if s == "begin" => {
+                self.advance();
+                let result = self.parse_comma_sequence(Tok::Ident("end".to_owned()), pos)?;
+                self.expect_word("end")?;
+                return Ok(result);
+            }
             Tok::Ident(s) => match s.as_str() {
+                "seq" => {
+                    self.advance();
+                    self.expect(Tok::LParen, "'(' after expression-position 'seq'")?;
+                    let result = self.parse_comma_sequence(Tok::RParen, pos)?;
+                    self.expect(Tok::RParen, "')' to close seq")?;
+                    return Ok(result);
+                }
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }

@@ -9,7 +9,8 @@ routine r_arrow() -> int {
     return 5;
 }
 routine r_end() -> int
-    let int x = 3, x + 2
+    const x: int = 3;
+    ^ x + 2;
 end
 routine r_delimited() -> int ::
     let int x = 3,
