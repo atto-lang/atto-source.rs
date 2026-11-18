@@ -749,7 +749,10 @@ impl Emit<'_> {
                         BinOp::Gt => 0x64,
                         BinOp::Le => 0x65,
                         BinOp::Ge => 0x66,
-                        BinOp::And | BinOp::Or => unreachable!("conditions are bool"),
+                        BinOp::And | BinOp::Or |
+                        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                        BinOp::Shl | BinOp::LShr | BinOp::AShr =>
+                            unreachable!("bitwise operations require int"),
                     });
                     return;
                 }
@@ -757,6 +760,12 @@ impl Emit<'_> {
                     BinOp::Add => self.call(self.l.helper(H_ADD)),
                     BinOp::Sub => self.call(self.l.helper(H_SUB)),
                     BinOp::Mul => self.call(self.l.helper(H_MUL)),
+                    BinOp::BitAnd => self.op(0x83), // i64.and
+                    BinOp::BitOr => self.op(0x84),  // i64.or
+                    BinOp::BitXor => self.op(0x85), // i64.xor
+                    BinOp::Shl => self.op(0x86),    // i64.shl (count mod 64)
+                    BinOp::AShr => self.op(0x87),   // i64.shr_s
+                    BinOp::LShr => self.op(0x88),   // i64.shr_u
                     BinOp::And => self.op(0x71), // i32.and
                     BinOp::Or => self.op(0x72),  // i32.or
                     BinOp::Lt => self.op(0x53),
