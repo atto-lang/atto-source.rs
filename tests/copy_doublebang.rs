@@ -72,3 +72,23 @@ fn separate_bangs_and_spelling_have_distinct_parsed_behavior() {
     let deep = format!("{prefix}val q = copy!! p; return q.value; }}");
     wasm(&deep);
 }
+
+#[test]
+fn verified_pointer_free_class_uses_a_single_bulk_memory_copy() {
+    // The compiler emits the core Wasm memory.copy instruction for the
+    // already-admitted POD class rather than generating per-field loads.
+    // The existing guest-execution harness also verifies copied-object
+    // independence after source/copy mutation.
+    let bytes = wasm(include_str!("fixtures/pass/993-copy-doublebang-flat-class.atto"));
+    assert!(bytes.windows(4).any(|b| b == [0xFC, 0x0A, 0, 0]),
+        "flat POD copier should contain a Wasm memory.copy instruction");
+}
+
+#[test]
+fn immutable_string_backing_does_not_take_the_pod_bulk_copy_path() {
+    // String fields are explicitly excluded from the raw-byte fast path;
+    // even if their present ABI is packed i64, they are reference-bearing.
+    let bytes = wasm(include_str!("fixtures/pass/995-copy-doublebang-flat-class-mixed-fields.atto"));
+    assert!(!bytes.windows(4).any(|b| b == [0xFC, 0x0A, 0, 0]),
+        "string-bearing class must retain typed field-by-field cloning");
+}
