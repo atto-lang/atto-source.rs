@@ -19,6 +19,8 @@ struct Direct {
     lambda: Expr,
     params: Vec<String>,
     inferred: Option<Vec<Type>>,
+    /// Present only for source-typed bindings validated at their declaration.
+    declared: Option<CallableSignature>,
     captures: Vec<Capture>,
     calls: usize,
     expression_depth: usize,
@@ -66,22 +68,32 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "at most one direct lambda per function is supported"));
                     }
-                    if let Some(t @ Type::Callable(_)) = ty {
-                        // Even though callable storage is not executable,
-                        // a typed lambda binding provides a complete
-                        // contextual signature: check its body and captures
-                        // before the explicit runtime capability gate.
-                        let want = CallableSignature::from_source_type(
-                            *t, &input.type_names, *pos)?;
-                        let _typed = CallableSignature::from_noncapturing(
-                            init, Some(&want.params), Some(want.result))?;
-                        return Err(error(*pos, "E_UNSUPPORTED",
-                            "typed callable values require verified Wasm indirect dispatch"));
-                    }
-                    if *kind != BindKind::Val || ty.is_some() {
-                        return Err(error(*pos, "E_UNSUPPORTED",
-                            "direct lambdas need an unannotated immutable val binding"));
-                    }
+                    // Typed immutable bindings are statically specialized into
+                    // ordinary private Wasm functions. They do NOT allocate a
+                    // callable value or grant indirect dispatch. Reject every
+                    // capture, bad return and wrong annotation *before* the
+                    // binding is erased from the checked AST.
+                    let declared = match ty {
+                        Some(t @ Type::Callable(_))
+                            if matches!(kind, BindKind::Val | BindKind::Const) => {
+                            let want = CallableSignature::from_source_type(
+                                *t, &input.type_names, *pos)?;
+                            let checked = CallableSignature::from_noncapturing(
+                                init, Some(&want.params), Some(want.result))?;
+                            if checked != want {
+                                return Err(error(*pos, "E_TYPE",
+                                    "typed lambda differs from its callable declaration"));
+                            }
+                            Some(want)
+                        }
+                        Some(Type::Callable(_)) => return Err(error(*pos, "E_UNSUPPORTED",
+                            "mutable callable values require verified indirect dispatch")),
+                        Some(_) => return Err(error(*pos, "E_TYPE",
+                            "lambda initializer does not match its scalar binding type")),
+                        None if *kind == BindKind::Val => None,
+                        None => return Err(error(*pos, "E_UNSUPPORTED",
+                            "unannotated direct lambdas require an immutable val binding")),
+                    };
                     if bindings_before_lambda.contains(name) {
                         return Err(error(*pos, "E_DUPLICATE",
                             "direct lambda duplicates an existing local binding"));
@@ -124,6 +136,12 @@ pub fn lower(input: &Program) -> R<Program> {
                             });
                         }
                     }
+                    // Const and explicitly typed val callables are closed,
+                    // immutable compile-time targets, never captured closures.
+                    if declared.is_some() && !captures.is_empty() {
+                        return Err(error(*pos, "E_CAPTURE",
+                            "typed callable value cannot capture enclosing state"));
+                    }
                     // Snapshot at the lexical definition point, not at a call
                     // inside a shadowing block. Values are immutable scalars.
                     for c in &captures {
@@ -138,7 +156,9 @@ pub fn lower(input: &Program) -> R<Program> {
                         source: name.clone(),
                         hidden,
                         lambda: init.clone(),
-                        params: params.clone(), inferred: None, captures, calls: 0,
+                        params: params.clone(),
+                        inferred: declared.as_ref().map(|sig| sig.params.clone()),
+                        declared, captures, calls: 0,
                         expression_depth: 0, statement_depth: 0,
                     });
                     continue;
@@ -164,9 +184,9 @@ pub fn lower(input: &Program) -> R<Program> {
             body.push(stmt);
         }
         if let Some(d) = direct {
-            if d.calls == 0 {
+            if d.calls == 0 && d.declared.is_none() {
                 return Err(error(d.lambda.pos, "E_UNSUPPORTED",
-                    "unused lambdas are not executable; first-class callables remain unsupported"));
+                    "unused untyped lambdas are not executable; first-class callables remain unsupported"));
             }
             let types = d.inferred.ok_or_else(|| error(d.lambda.pos, "E_INFER",
                 "lambda parameter types need a direct invocation"))?;
@@ -179,7 +199,14 @@ pub fn lower(input: &Program) -> R<Program> {
                     all_types.push(c.ty);
                 }
             }
-            let signature = CallableSignature::from_noncapturing(&lifted, Some(&all_types), None)?;
+            let signature = CallableSignature::from_noncapturing(
+                &lifted, Some(&all_types), d.declared.as_ref().map(|sig| sig.result))?;
+            if let Some(ref declared) = d.declared {
+                if signature != *declared {
+                    return Err(error(d.lambda.pos, "E_TYPE",
+                        "lowered direct-call signature differs from annotated callable type"));
+                }
+            }
             let callable = TypedCallable::checked(
                 signature,
                 CallableTarget::Direct {
