@@ -134,6 +134,44 @@ negatives.push([
  'E_TYPE'
 ]);
 
+
+// Exhaustive guest execution: four independent scalar fields, 24 source orders.
+// Both compilers must produce byte-identical Wasm; every module must return 42.
+function visit_record_orders(items, start, visit) {
+ if (start === items.length) { visit(items); return; }
+ for (let i=start; i<items.length; ++i) {
+  [items[start],items[i]]=[items[i],items[start]];
+  visit_record_orders(items,start+1,visit);
+  [items[start],items[i]]=[items[i],items[start]];
+ }
+}
+const orderedFields=[['a',10],['b',11],['c',12],['d',9]];
+visit_record_orders([0,1,2,3],0,order=>{
+ const parts=order.map(i=>orderedFields[i][0]+': '+orderedFields[i][1]);
+ const source='pub fnc main(): int { let Record r={'+parts.join(',')+'}; return r.a+r["b"]+r.c+r["d"]; }';
+ positives.push([source,42n,'']);
+});
+// Preserve safety boundaries without interpreting compile errors as guest tests.
+negatives.push([
+ 'pub fnc main(): int {let Record r={x:42}; val clone=copy! r; return clone.x;}',
+ 'E_COPY'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={x:42}; val alias=share! r; return alias.x;}',
+ 'E_SHARE'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={x:42}; val moved=take! r; return r.x+moved.x;}',
+ 'E_MOVED'
+]);
+negatives.push([
+ 'define actor W as receive(ActorMail<int> mail): void {return;} end pub fnc main(): int {let Record r={x:42}; val w=spawn W(); w.send(r); return 0;}',
+ 'E_TYPE'
+]);
+negatives.push([
+ 'define actor W as receive(ActorMail<Record> mail): void {return;} end pub fnc main(): int {return 0;}',
+ 'E_UNSUPPORTED_TYPE'
+]);
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
  let n=0;
