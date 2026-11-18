@@ -78,3 +78,33 @@ fn generic_errors_from_production_parser_match_guest_parser() {
         assert_eq!(err.code, expected, "{generic}");
     }
 }
+
+#[test]
+fn ordinary_compile_uses_production_nominal_resolver_not_token_preflight() {
+    let missing = atto_compiler::compile(
+        "fnc main() -> int { let xs: Array<NeverDefined,layout=soa> = []; return 0; }"
+    ).expect_err("unknown nominal element must fail");
+    assert_eq!(missing.code, "E_UNKNOWN_TYPE");
+
+    let known = atto_compiler::compile(r#"
+        define class Particle as end
+        fnc main() -> int {
+            let xs: Array<layout=soa, T=Particle> = [];
+            return 0;
+        }
+    "#).expect_err("unproven general Array runtime must fail");
+    assert_eq!(known.code, "E_UNSUPPORTED");
+    assert!(known.message.contains("general-purpose Array storage"));
+
+    let invalid = atto_compiler::compile(
+        "fnc main() -> int { let xs: Array<Particle,layout=aosoa(n)> = []; return 0; }"
+    ).expect_err("dynamic lane count must be rejected");
+    assert_eq!(invalid.code, "E_LAYOUT_SIZE");
+}
+
+#[test]
+fn array_like_text_does_not_trigger_generic_source_admission() {
+    let ordinary = "fnc main() -> int { return 7; } // Array<Particle,layout=soa>";
+    let wasm = atto_compiler::compile(ordinary).expect("comment must not authorize array lowering");
+    assert_eq!(&wasm[..4], b"\0asm");
+}
