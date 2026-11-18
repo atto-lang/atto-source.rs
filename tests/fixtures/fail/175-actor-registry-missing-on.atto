@@ -1,0 +1,16 @@
+// expect-error: E_SYNTAX
+// java: rejects
+define serial actor Queue as
+    receive(msg: int): void {
+        match msg over
+            40 -> { stdio.println(40); }
+            on _ -> { stdio.println(0); }
+        end
+        return;
+    }
+end
+pub fnc main(): int {
+    val q = ActorRegistry.get_or_create<Queue>("ns", "orders");
+    q.send(40);
+    return 0;
+}
