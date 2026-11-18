@@ -71,7 +71,7 @@ fn invalid_failure_lists_fail_closed() {
         ("@Throws(IOError)\npub fnc main(): int {return 42;}", "E_UNSUPPORTED_TYPE"),
         ("@Throws Error\npub fnc main(): int {return 42;}", "E_SYNTAX"),
         ("pub fnc main(): int Throws() {return 42;}", "E_SYNTAX"),
-        ("@Raises() Panics(Error) pub fnc main(): int {return 42;}", "E_SYNTAX"),
+        ("@Raises() Panics(Error) pub fnc main(): int {return 42;}", "E_TOPLEVEL"),
     ] {
         denied(src,code);
     }
