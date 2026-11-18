@@ -590,6 +590,10 @@ impl Parser {
                     };
                     return Err(unsupported(self.pos(), &what));
                 }
+                (Some("const"), Some("fnc")) => {
+                    self.i += at;
+                    prog.funcs.push(self.parse_const_lambda_func()?);
+                }
                 _ => prog.funcs.push(self.parse_func()?),
             }
         }
@@ -1306,6 +1310,54 @@ impl Parser {
         Ok(Param { name, ty, mutable, pos })
     }
 
+    /// A module-level constant callable has a statically known identity and
+    /// no captured environment. Desugar it to a normal typed function.
+    fn parse_const_lambda_func(&mut self) -> R<Func> {
+        self.expect_word("const")?;
+        self.expect_word("fnc")?;
+        let (name, pos) = self.ident("a constant function name")?;
+        self.expect(Tok::Assign, "'=' after a constant function name")?;
+        let expr = self.parse_expr()?;
+        self.terminator()?;
+        let ExprKind::Lambda { params, param_types, return_type, body } = expr.kind else {
+            return Err(Diagnostic::new(expr.pos, "E_TYPE",
+                "const fnc requires a lambda initializer"));
+        };
+        let ret_name = return_type.ok_or_else(|| Diagnostic::new(pos, "E_INFER",
+            "module-level const fnc requires an explicit lambda return type"))?;
+        let ret = Self::lambda_scalar_type(&ret_name, pos)?;
+        let mut signature = Vec::new();
+        for (param, annotation) in params.into_iter().zip(param_types) {
+            let name = annotation.ok_or_else(|| Diagnostic::new(pos, "E_INFER",
+                "module-level const fnc requires explicit parameter types"))?;
+            let ty = Self::lambda_scalar_type(&name, pos)?;
+            if ty == Type::Void {
+                return Err(Diagnostic::new(pos, "E_TYPE",
+                    "a lambda parameter cannot be void"));
+            }
+            signature.push(Param { name: param, ty, mutable: false, pos });
+        }
+        let body = match body {
+            LambdaBody::Expression(value) => vec![Stmt::Return(Some(*value), pos)],
+            LambdaBody::Statement(statement) => vec![*statement],
+            LambdaBody::Block(statements) => statements,
+        };
+        Ok(Func { name, pos, is_generator: false, is_pure: true,
+            params: signature, ret, body })
+    }
+
+    fn lambda_scalar_type(name: &str, pos: Pos) -> R<Type> {
+        match name {
+            "int" => Ok(Type::Int),
+            "bool" | "boolean" => Ok(Type::Bool),
+            "float" | "f64" => Ok(Type::Float),
+            "string" | "String" => Ok(Type::Str),
+            "void" => Ok(Type::Void),
+            _ => Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                format!("constant lambda type '{name}' needs an implemented scalar ABI"))),
+        }
+    }
+
     // ----------------------------------------------------------- statements
 
     /// C-style braces remain the default. The extra -> after : Type is an
@@ -1974,6 +2026,11 @@ impl Parser {
             }
             self.advance();
         }
+        // A static function identity is distinct from a general callable value.
+        let constant_callable = kind == BindKind::Const && self.is_word("fnc")
+            && matches!(self.peek_at(1), Tok::Ident(_))
+            && *self.peek_at(2) == Tok::Assign;
+        if constant_callable { self.advance(); }
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
@@ -2761,15 +2818,30 @@ impl Parser {
     fn parse_args(&mut self) -> R<Vec<Expr>> {
         self.expect(Tok::LParen, "'('")?;
         let mut args = Vec::new();
+        let mut seen_named = false;
+        let mut names = std::collections::BTreeSet::new();
         if *self.peek() != Tok::RParen {
             loop {
-                if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                    return Err(unsupported(self.pos(), "named arguments"));
-                }
                 if *self.peek() == Tok::Dot {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
-                args.push(self.parse_expr()?);
+                if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+                    let (name, pos) = self.ident("a named argument")?;
+                    self.advance(); // ':'
+                    if !names.insert(name.clone()) {
+                        return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                            format!("duplicate named argument '{name}'")));
+                    }
+                    seen_named = true;
+                    let value = self.parse_expr()?;
+                    args.push(Expr { kind: ExprKind::NamedArg(name, Box::new(value)), pos });
+                } else {
+                    if seen_named {
+                        return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                            "positional arguments must precede named arguments"));
+                    }
+                    args.push(self.parse_expr()?);
+                }
                 if args.len() > MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
                 }
@@ -2937,16 +3009,31 @@ impl Parser {
     fn parse_lambda(&mut self) -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
+        let mut param_types = Vec::new();
         if !self.eat(&Tok::Pipe) {
             loop {
                 if params.len() >= MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
                 }
-                let (name, pos) = self.ident("a lambda parameter")?;
+                let (name, annotation, pos) = if matches!(self.peek(), Tok::Ident(_))
+                    && *self.peek_at(1) == Tok::Colon {
+                    let (name, pos) = self.ident("a lambda parameter")?;
+                    self.advance(); // ':'
+                    (name, Some(self.parse_lambda_type()?), pos)
+                } else if matches!(self.peek(), Tok::Ident(_))
+                    && matches!(self.peek_at(1), Tok::Ident(_) | Tok::Lt | Tok::Dot) {
+                    let annotation = self.parse_lambda_type()?;
+                    let (name, pos) = self.ident("a lambda parameter")?;
+                    (name, Some(annotation), pos)
+                } else {
+                    let (name, pos) = self.ident("a lambda parameter")?;
+                    (name, None, pos)
+                };
                 if params.contains(&name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
                 }
                 params.push(name);
+                param_types.push(annotation);
                 if self.eat(&Tok::Pipe) { break; }
                 self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
             }
@@ -3010,7 +3097,7 @@ impl Parser {
         } else {
             LambdaBody::Expression(Box::new(self.parse_expr()?))
         };
-        Ok(ExprKind::Lambda { params, return_type, body })
+        Ok(ExprKind::Lambda { params, param_types, return_type, body })
     }
 
     fn parse_array_literal(&mut self) -> R<ExprKind> {
