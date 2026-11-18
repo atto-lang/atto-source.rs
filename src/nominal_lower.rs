@@ -2,8 +2,9 @@
 //!
 //! Interface obligations and concrete trait/class methods are resolved before
 //! the production parser, checker and Wasm emitter. This profile has NO runtime
-//! base-class pointer, implicit dynamic dispatch, inherited fields, or unsafe
-//! actor state. All collisions, cycles and missing methods fail closed.
+//! base-class pointer, implicit dynamic dispatch, or unsafe actor state.
+//! Direct initialized scalar parent slots have a bounded typed layout plan;
+//! constructors, parent casts, owned fields and actor state fail closed.
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diag::{Diagnostic, Pos};
@@ -270,13 +271,43 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
     Ok(out)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScalarKind { Int, Bool }
+
+/// A literal class field is one 8-byte physical storage slot in the current
+/// checked browser-Wasm class ABI. Not an implicit parent pointer or cast.
 #[derive(Clone)]
 struct ScalarBaseField {
     name: String,
     tokens: Vec<Token>,
     name_index: usize,
     public: bool,
+    kind: ScalarKind,
 }
+
+/// Identity is the *declaring* parent plus its original member, not an alias.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct FieldOrigin { parent: String, member: String }
+
+/// Typed, bounded direct-parent storage descriptor. This plan is consumed
+/// before token lowering, retaining provenance while determining offsets.
+#[derive(Clone)]
+struct PlannedScalarSlot {
+    origin: FieldOrigin,
+    scalar_type: ScalarKind,
+    absolute_offset: u32,
+    field: ScalarBaseField,
+}
+#[derive(Clone)]
+struct DirectParentSubobject {
+    parent: String,
+    byte_offset: u32,
+    byte_size: u32,
+    slots: Vec<PlannedScalarSlot>,
+}
+
+const MAX_DIRECT_SCALAR_SLOTS: usize = 256;
+const SCALAR_SLOT_BYTES: u32 = crate::check::FIELD_BYTES;
 #[derive(Clone)]
 struct InheritedAlias {
     parent: String,
@@ -306,7 +337,7 @@ fn scalar_base_fields(base: &Decl) -> R<Vec<ScalarBaseField>> {
         let begin = i;
         let public = is(t, i, "pub");
         if public || is(t, i, "private") { i += 1; }
-        let kind = if is(t, i, "int") { "int" } else if is(t, i, "bool") { "bool" } else {
+        let kind = if is(t, i, "int") { ScalarKind::Int } else if is(t, i, "bool") { ScalarKind::Bool } else {
             return Err(diag(t[begin].pos, "E_UNSUPPORTED",
                 "inherited state admits only initialized int/bool fields, without constructors"));
         };
@@ -319,10 +350,10 @@ fn scalar_base_fields(base: &Decl) -> R<Vec<ScalarBaseField>> {
                 "inherited scalar fields require a literal ':' initializer"));
         }
         i += 1;
-        if kind == "int" && t.get(i).map(|v| &v.tok) == Some(&Tok::Minus) { i += 1; }
+        if kind == ScalarKind::Int && t.get(i).map(|v| &v.tok) == Some(&Tok::Minus) { i += 1; }
         let valid_literal = match t.get(i).map(|v| &v.tok) {
-            Some(Tok::Int(_)) if kind == "int" => true,
-            Some(Tok::Ident(v)) if kind == "bool" && (v == "true" || v == "false") => true,
+            Some(Tok::Int(_)) if kind == ScalarKind::Int => true,
+            Some(Tok::Ident(v)) if kind == ScalarKind::Bool && (v == "true" || v == "false") => true,
             _ => false,
         };
         if !valid_literal {
@@ -340,7 +371,7 @@ fn scalar_base_fields(base: &Decl) -> R<Vec<ScalarBaseField>> {
         }
         fields.push(ScalarBaseField {
             name: field_name, tokens: t[begin..i].to_vec(),
-            name_index: at_name, public,
+            name_index: at_name, public, kind,
         });
     }
     if fields.is_empty() {
@@ -380,37 +411,77 @@ fn alias_declarations(d: &Decl) -> R<Vec<InheritedAlias>> {
     Ok(aliases)
 }
 
-fn checked_scalar_aliases(
-    d: &Decl, all: &BTreeMap<String, Decl>, aliases: &[InheritedAlias],
-) -> R<Vec<Token>> {
-    let mut parent_fields = BTreeMap::<(String, String), ScalarBaseField>::new();
-    let mut physical_order = Vec::new();
-    let mut exposed_names = BTreeSet::new();
-    let mut any_state = false;
+/// Compute stable physical slots for direct parents. No class constructors,
+/// inherited stateful methods, transitive parents, polymorphism or alias-created
+/// fields are admitted by this bounded v1 ABI.
+fn direct_parent_subobject_plan(
+    d: &Decl, all: &BTreeMap<String, Decl>,
+) -> R<Vec<DirectParentSubobject>> {
+    let mut plan = Vec::new();
+    let mut next_offset = 0u32;
+    let mut total_fields = 0usize;
     for parent in &d.parents {
         let base = all.get(parent).ok_or_else(||
             diag(d.pos, "E_UNBOUND", format!("unknown parent class '{parent}'")))?;
         if base.kind != Kind::Class {
             return Err(diag(d.pos, "E_TYPE", "extends requires a concrete class"));
         }
-        if base.has_fields_or_ctor {
-            any_state = true;
-            let fields = scalar_base_fields(base)?;
-            for f in fields {
-                exposed_names.insert(f.name.clone());
-                let key = (parent.clone(), f.name.clone());
-                physical_order.push(key.clone());
-                parent_fields.insert(key, f);
+        if !base.has_fields_or_ctor { continue; }
+        let fields = scalar_base_fields(base)?;
+        let start = next_offset;
+        let mut slots = Vec::with_capacity(fields.len());
+        for field in fields {
+            total_fields = total_fields.checked_add(1).ok_or_else(||
+                diag(d.pos, "E_SOURCE_LIMIT", "inherited scalar field count overflow"))?;
+            if total_fields > MAX_DIRECT_SCALAR_SLOTS {
+                return Err(diag(d.pos, "E_SOURCE_LIMIT", "too many inherited physical scalar slots"));
+            }
+            let offset = next_offset;
+            next_offset = next_offset.checked_add(SCALAR_SLOT_BYTES).ok_or_else(||
+                diag(d.pos, "E_SOURCE_LIMIT", "inherited scalar layout byte offset overflow"))?;
+            slots.push(PlannedScalarSlot {
+                origin: FieldOrigin { parent: parent.clone(), member: field.name.clone() },
+                scalar_type: field.kind,
+                absolute_offset: offset,
+                field,
+            });
+        }
+        let size = next_offset.checked_sub(start).ok_or_else(||
+            diag(d.pos, "E_SOURCE_LIMIT", "invalid direct-parent subobject size"))?;
+        plan.push(DirectParentSubobject {
+            parent: parent.clone(), byte_offset: start, byte_size: size, slots,
+        });
+    }
+    Ok(plan)
+}
+
+/// Only direct scalar fields may currently be emitted into the flattened class
+/// representation. The typed plan retains original parent, member and offset;
+/// no extra field is generated for a second alias or an inherited constructor.
+/// It will become the bridge to the fully typed class IR in a later stage.
+fn checked_scalar_aliases(
+    d: &Decl, all: &BTreeMap<String, Decl>, aliases: &[InheritedAlias],
+) -> R<Vec<Token>> {
+    let plan = direct_parent_subobject_plan(d, all)?;
+    let mut fields = BTreeMap::<FieldOrigin, &PlannedScalarSlot>::new();
+    let mut exposed_names = BTreeSet::new();
+    for subobject in &plan {
+        for slot in &subobject.slots {
+            exposed_names.insert(slot.origin.member.clone());
+            if fields.insert(slot.origin.clone(), slot).is_some() {
+                return Err(diag(d.pos, "E_ALIAS_DUPLICATE", "duplicate inherited physical field origin"));
             }
         }
-        // Field-alias names may not shadow inherited method namespaces.
+    }
+    for parent in &d.parents {
+        let base = &all[parent];
         for key in base.methods.keys() { exposed_names.insert(key.clone()); }
     }
-    if !any_state && !aliases.is_empty() {
+    if fields.is_empty() && !aliases.is_empty() {
         return Err(diag(aliases[0].pos, "E_ALIAS_TARGET",
             "field alias target must be an inherited instance field"));
     }
-    if !any_state { return Ok(Vec::new()); }
+    if fields.is_empty() { return Ok(Vec::new()); }
     if d.has_fields_or_ctor || !d.contracts.is_empty() {
         return Err(diag(d.pos, "E_UNSUPPORTED",
             "state-bearing inheritance with local fields/constructors or traits is not implemented"));
@@ -423,11 +494,11 @@ fn checked_scalar_aliases(
             return Err(diag(alias.pos, "E_ALIAS_TARGET",
                 "field alias must select a direct ancestor in the bounded scalar layout"));
         }
-        let key = (alias.parent.clone(), alias.field.clone());
-        let original = parent_fields.get(&key).ok_or_else(||
+        let key = FieldOrigin { parent: alias.parent.clone(), member: alias.field.clone() };
+        let original = fields.get(&key).ok_or_else(||
             diag(alias.pos, "E_ALIAS_TARGET", format!(
                 "no inherited instance field '{}.{}'", alias.parent, alias.field)))?;
-        if !original.public {
+        if !original.field.public {
             return Err(diag(alias.pos, "E_ALIAS_VISIBILITY",
                 "private parent fields cannot be re-exported through use"));
         }
@@ -438,21 +509,35 @@ fn checked_scalar_aliases(
         }
         aliases_by_origin.insert(key, alias);
     }
-    if used_origins.len() != parent_fields.len() {
+    if used_origins.len() != fields.len() {
         return Err(diag(d.pos, "E_UNSUPPORTED",
             "every inherited physical scalar slot requires exactly one explicit use alias"));
     }
-    // Parent declaration order and field declaration order, never alias
-    // textual order, determine physical AOT slot layout.
     let mut output = Vec::new();
-    for key in physical_order {
-        let original = &parent_fields[&key];
-        let alias = aliases_by_origin[&key];
-        let mut field_tokens = original.tokens.clone();
-        field_tokens[original.name_index] = Token {
-            tok: Tok::Ident(alias.alias.clone()), pos: alias.pos,
-        };
-        output.extend(field_tokens);
+    let mut cursor = 0u32;
+    for subobject in &plan {
+        if subobject.byte_offset != cursor {
+            return Err(diag(d.pos, "E_UNSUPPORTED", "non-contiguous parent subobject layout"));
+        }
+        for slot in &subobject.slots {
+            if slot.absolute_offset != cursor
+                || slot.origin.parent != subobject.parent
+                || slot.scalar_type != slot.field.kind {
+                return Err(diag(d.pos, "E_UNSUPPORTED", "parent field origin/layout mismatch"));
+            }
+            let alias = aliases_by_origin.get(&slot.origin).ok_or_else(||
+                diag(d.pos, "E_UNSUPPORTED", "unresolved inherited scalar alias"))?;
+            let mut tokens = slot.field.tokens.clone();
+            tokens[slot.field.name_index] = Token {
+                tok: Tok::Ident(alias.alias.clone()), pos: alias.pos,
+            };
+            output.extend(tokens);
+            cursor = cursor.checked_add(SCALAR_SLOT_BYTES).ok_or_else(||
+                diag(d.pos, "E_SOURCE_LIMIT", "parent slot offset overflow"))?;
+        }
+        if cursor - subobject.byte_offset != subobject.byte_size {
+            return Err(diag(d.pos, "E_UNSUPPORTED", "incorrect parent subobject size"));
+        }
     }
     Ok(output)
 }
@@ -627,4 +712,87 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             "expanded nominal methods exceed compiler token budget"));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod typed_parent_layout_tests {
+    use super::*;
+    use crate::lexer::lex;
+
+    #[test]
+    fn direct_parents_keep_independent_origins_types_and_offsets() {
+        let source = r#"
+            define class Dog as
+                pub int age: 5;
+                pub bool hungry: true;
+            end
+            define class Cat as pub int age: 10; end
+            define class Hybrid extends Dog, Cat as
+                use Cat.age as cat_age;
+                use Dog.hungry as dog_hungry;
+                use Dog.age as dog_age;
+            end
+            pub fnc main(): int { return 0; }
+        "#;
+        let toks = lex(source).unwrap();
+        let all = decls(&toks).unwrap();
+        let hybrid = &all["Hybrid"];
+        let plan = direct_parent_subobject_plan(hybrid, &all).unwrap();
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].parent, "Dog");
+        assert_eq!(plan[0].byte_offset, 0);
+        assert_eq!(plan[0].byte_size, 16);
+        assert_eq!(plan[1].parent, "Cat");
+        assert_eq!(plan[1].byte_offset, 16);
+        assert_eq!(plan[1].byte_size, 8);
+        let dog = &plan[0].slots;
+        let cat = &plan[1].slots;
+        assert_eq!(dog[0].origin, FieldOrigin { parent: "Dog".into(), member: "age".into() });
+        assert_eq!(dog[0].scalar_type, ScalarKind::Int);
+        assert_eq!(dog[0].absolute_offset, 0);
+        assert_eq!(dog[1].origin, FieldOrigin { parent: "Dog".into(), member: "hungry".into() });
+        assert_eq!(dog[1].scalar_type, ScalarKind::Bool);
+        assert_eq!(dog[1].absolute_offset, 8);
+        assert_eq!(cat[0].origin, FieldOrigin { parent: "Cat".into(), member: "age".into() });
+        assert_eq!(cat[0].absolute_offset, 16);
+        let aliases = alias_declarations(hybrid).unwrap();
+        assert_eq!(aliases.len(), 3);
+        let tokens = checked_scalar_aliases(hybrid, &all, &aliases).unwrap();
+        let names: Vec<_> = tokens.iter().filter_map(|t| match &t.tok {
+            Tok::Ident(s) if s.starts_with("dog_") || s.starts_with("cat_") => Some(s.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(names, vec!["dog_age", "dog_hungry", "cat_age"]);
+    }
+
+    #[test]
+    fn parent_constructor_never_gets_flattened_into_scalar_subobject() {
+        let all = decls(&lex(r#"
+            define class Dog as pub int age: 5; constructor() {} end
+            define class Hybrid extends Dog as use Dog.age as dog_age; end
+            pub fnc main(): int { return 0; }
+        "#).unwrap()).unwrap();
+        let d = direct_parent_subobject_plan(&all["Hybrid"], &all).err().unwrap();
+        assert_eq!(d.code, "E_UNSUPPORTED");
+    }
+
+    #[test]
+    fn bounded_parent_subobject_planning_rejects_slot_budget_exhaustion() {
+        let mut src = String::new();
+        let mut parents = Vec::new();
+        for p in 0..5 {
+            let name = format!("Parent{p}");
+            parents.push(name.clone());
+            src.push_str(&format!("define class {name} as "));
+            for f in 0..60 {
+                src.push_str(&format!("pub int f{f}: 1; "));
+            }
+            src.push_str("end\n");
+        }
+        src.push_str(&format!("define class Hybrid extends {} as end\n",
+            parents.join(", ")));
+        let all = decls(&lex(&src).unwrap()).unwrap();
+        let d = direct_parent_subobject_plan(&all["Hybrid"], &all).err().unwrap();
+        assert_eq!(d.code, "E_SOURCE_LIMIT");
+    }
 }
