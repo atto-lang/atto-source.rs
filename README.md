@@ -56,3 +56,16 @@ as a hard-real-time proof.
 - **First-stage migration proposal:** approved GitHub ownership transfer of this existing repo, preserving its name, numeric ID and history, to `atto-lang/oreslang-source.rs`. No direct legacy-org → `atto-co` transfer is authorized; subsequent product carve-outs require new approval.
 
 **Migration instructions (maintainer preflight):** coordinate exact source head and ownership in [issue #26](https://github.com/ores-truffle-oreslang/.github/issues/26), then follow private [runbook draft #25](https://github.com/ores-truffle-oreslang/.github/pull/25). Confirm source/target admins and independent security reviewer, target access and branch/ruleset protection, exact SHA/tree, PRs/releases, Actions, secrets, GitHub Apps, deployments, dependencies and compatibility links before transfer. Do not clone/mirror private source as a shortcut. Verify unchanged numeric ID and code tree after real transfer, restore controls, rerun exact-head CI and capture **nonzero executed steps**. `steps=[]` / `steps=null` is `NOT_EXECUTED`, not test success; host/static checks cannot certify real AttoLang guest execution, AOT or zero-GC. Defer repository/CLI/extension renames to separately reviewed changes.
+
+## AOT-first optimization planning (experimental)
+
+`src/tiering.rs` provides target-specific *policy*, not a JIT compiler:
+AOT is always the baseline; runtime JIT requests are rejected for browser
+Wasm, WASI, embedded, strict-AOT, hard-RT, untrusted native hosts and native
+hosts without executable-memory permission. Fixed-capacity trace counters
+provide allocation-free hotness signals; a deterministic layout planner
+recommends AoS, SoA or AoSoA for the next compiled representation, including
+inverted-class layout hints. These primitives do not emit WebAssembly,
+rewrite live object layouts or implement actor heap ownership. See
+[docs/RS_AOT_TIERING.md](docs/RS_AOT_TIERING.md) and
+`tests/tiering_policy.rs` for capabilities and negative-test boundaries.
