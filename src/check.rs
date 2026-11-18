@@ -2745,6 +2745,21 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "mut is only valid after borrow!"));
         }
         match action {
+            OwnershipOp::Ref | OwnershipOp::Deref | OwnershipOp::Unref => {
+                // Parsed canonical ref!/deref!/unref! and legacy rt aliases
+                // share this checked-handle AST. Never treat these as ordinary
+                // borrows, generic calls, owner moves or raw pointer access:
+                // this guest backend lacks handle issuance, generation,
+                // access-rights and exactly-once retirement in typed MIR.
+                let spelling = match action {
+                    OwnershipOp::Ref => "ref!",
+                    OwnershipOp::Deref => "deref!",
+                    OwnershipOp::Unref => "unref!",
+                    _ => unreachable!(),
+                };
+                Err(Diagnostic::new(pos, "E_UNSUPPORTED_HANDLE",
+                    format!("{spelling} needs a verified checked-handle typed IR and runtime; no guest code emitted")))
+            }
             OwnershipOp::Borrow => {
                 if mutable {
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
