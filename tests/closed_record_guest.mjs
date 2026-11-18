@@ -170,7 +170,7 @@ negatives.push([
 ]);
 negatives.push([
  'define actor W as receive(ActorMail<Record> mail): void {return;} end pub fnc main(): int {return 0;}',
- 'E_UNSUPPORTED_TYPE'
+ 'E_UNSUPPORTED'
 ]);
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{

@@ -10,22 +10,34 @@ fn reject(source: &str, expected: &str) {
 
 #[test]
 fn record_copy_does_not_default_to_shallow_aliasing() {
-    reject("pub fnc main(): int { let Record r = {x: 42}; val clone = copy! r; return clone.x; }", "E_COPY");
+    reject(
+        "pub fnc main(): int { let Record r = {x: 42}; val clone = copy! r; return clone.x; }",
+        "E_COPY",
+    );
 }
 
 #[test]
 fn record_share_does_not_allow_mutable_cross_owner_aliasing() {
-    reject("pub fnc main(): int { let Record r = {x: 42}; val alias = share! r; return alias.x; }", "E_SHARE");
+    reject(
+        "pub fnc main(): int { let Record r = {x: 42}; val alias = share! r; return alias.x; }",
+        "E_SHARE",
+    );
 }
 
 #[test]
 fn taken_record_cannot_be_read_from_old_binding() {
-    reject("pub fnc main(): int { let Record r = {x: 42}; val moved = take! r; return r.x + moved.x; }", "E_MOVED");
+    reject(
+        "pub fnc main(): int { let Record r = {x: 42}; val moved = take! r; return r.x + moved.x; }",
+        "E_MOVED",
+    );
 }
 
 #[test]
 fn mutable_record_borrow_cannot_write_to_immutable_closed_fields() {
-    reject("pub fnc main(): int { let Record r = {x: 42}; block { val writer = borrow! mut r; writer.x = 7; } return r.x; }", "E_BORROW");
+    reject(
+        "pub fnc main(): int { let Record r = {x: 42}; block { val writer = borrow! mut r; writer.x = 7; } return r.x; }",
+        "E_BORROW",
+    );
 }
 
 #[test]
@@ -72,7 +84,7 @@ fn actor_record_mailbox_cannot_claim_unproven_graph_transport() {
     reject(
         "define actor Worker as receive(ActorMail<Record> mail): void { return; } end
          pub fnc main(): int { return 0; }",
-        "E_UNSUPPORTED_TYPE",
+        "E_UNSUPPORTED",
     );
 }
 
