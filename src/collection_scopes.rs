@@ -10,7 +10,8 @@ type R<T> = Result<T, Diagnostic>;
 // Ordinary scalar expression chains have a larger bounded AST budget than
 // recursively nested collection literals. collection_types::inferred still
 // enforces MAX_LITERAL_DEPTH for actual collection nesting.
-const MAX_SCOPE_EXPR_DEPTH: usize = 512;
+const MAX_SCOPE_EXPR_DEPTH: usize = MAX_LITERAL_DEPTH;
+const MAX_SCOPE_OP_LINKS: usize = 1024;
 fn err(at: Pos, code: &'static str, msg: impl Into<String>) -> Diagnostic {
     Diagnostic::new(at, code, msg)
 }
@@ -172,27 +173,41 @@ impl<'a> Scope<'a> {
             }
             ExprKind::Ownership(_,_,x) | ExprKind::Trap(x) |
             ExprKind::Propagate(x) => { self.expression(x,None,depth+1)?; None }
-            ExprKind::Binary(op,a,b) => {
-                let left=self.expression(a,None,depth+1)?;
-                let right=self.expression(b,None,depth+1)?;
-                match (op,left,right) {
-                    (BinOp::Add | BinOp::Sub | BinOp::Mul,Some(Ty::Int),Some(Ty::Int)) =>
-                        Some(Ty::Int),
-                    (BinOp::Add | BinOp::Sub | BinOp::Mul,
-                        Some(Ty::Int | Ty::Float),Some(Ty::Float)) |
-                    (BinOp::Add | BinOp::Sub | BinOp::Mul,
-                        Some(Ty::Float),Some(Ty::Int)) => Some(Ty::Float),
-                    (BinOp::Add,Some(Ty::String),Some(Ty::String)) => Some(Ty::String),
-                    (BinOp::Eq | BinOp::Ne,
-                        Some(Ty::Int),Some(Ty::Int)) |
-                    (BinOp::Eq | BinOp::Ne,
-                        Some(Ty::Bool),Some(Ty::Bool)) |
-                    (BinOp::Eq | BinOp::Ne,
-                        Some(Ty::String),Some(Ty::String)) => Some(Ty::Bool),
-                    (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
-                        Some(Ty::Int),Some(Ty::Int)) => Some(Ty::Bool),
-                    _ => None,
+            ExprKind::Binary(_,_,_) => {
+                // Operator chains are left-associated and may be much longer
+                // than a nested collection literal. An explicit worklist
+                // preserves the parser's 250+ scalar-chain acceptance without
+                // growing the Rust checker stack or relaxing literal bounds.
+                let mut links=Vec::new();
+                let mut current=e;
+                while let ExprKind::Binary(op,left,right)=&current.kind {
+                    if links.len()>=MAX_SCOPE_OP_LINKS {
+                        return Err(err(current.pos,"E_NESTING",
+                            "scoped operator chain exceeds the checked link budget"));
+                    }
+                    links.push((*op,right.as_ref()));
+                    current=left.as_ref();
                 }
+                let mut result=self.expression(current,None,depth+1)?;
+                for (op,rhs) in links.into_iter().rev() {
+                    let right=self.expression(rhs,None,depth+1)?;
+                    result=match (op,result,right) {
+                        (BinOp::Add | BinOp::Sub | BinOp::Mul,Some(Ty::Int),Some(Ty::Int)) =>
+                            Some(Ty::Int),
+                        (BinOp::Add | BinOp::Sub | BinOp::Mul,
+                            Some(Ty::Int | Ty::Float),Some(Ty::Float)) |
+                        (BinOp::Add | BinOp::Sub | BinOp::Mul,
+                            Some(Ty::Float),Some(Ty::Int)) => Some(Ty::Float),
+                        (BinOp::Add,Some(Ty::String),Some(Ty::String)) => Some(Ty::String),
+                        (BinOp::Eq | BinOp::Ne,Some(Ty::Int),Some(Ty::Int)) |
+                        (BinOp::Eq | BinOp::Ne,Some(Ty::Bool),Some(Ty::Bool)) |
+                        (BinOp::Eq | BinOp::Ne,Some(Ty::String),Some(Ty::String)) => Some(Ty::Bool),
+                        (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
+                            Some(Ty::Int),Some(Ty::Int)) => Some(Ty::Bool),
+                        _ => None,
+                    };
+                }
+                result
             }
             ExprKind::Ternary(c,a,b) => {
                 self.expression(c,None,depth+1)?;
