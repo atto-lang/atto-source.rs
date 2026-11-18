@@ -104,6 +104,84 @@ fn canonical_cleanup_rejects_bad_factories_and_escaping_handles() {
 }
 
 #[test]
+fn cleanup_call_graph_must_prove_no_transitive_exception() {
+    // No user-defined call may replace a pending failure from cleanup,
+    // including hidden calls in expression arguments, try/finally and
+    // recovery handlers. The fixed point checks chains of arbitrary length.
+    for source in [
+        r#"fnc bad(): int { throw Error("throw"); }
+            pub fnc main(): int {
+                defer { stdio.println(bad()); };
+                return 2;
+            }"#,
+        r#"fnc bad(): int { raise Error("raise"); }
+            fnc middle(): int { return bad(); }
+            fnc outer(): int { return middle(); }
+            pub fnc main(): int {
+                defer (|int v| -> _ -> { stdio.println(outer()); })(5);
+                return 2;
+            }"#,
+        r#"fnc bad(): int { raise Error("raise"); }
+            pub fnc main(): int {
+                recover |err, cursor| -> {
+                    stdio.println(bad());
+                    return 10;
+                };
+                raise Error("original");
+            }"#,
+        r#"fnc bad(): int { throw Error("throw"); }
+            pub fnc main(): int {
+                try { return 3; }
+                finally { stdio.println(bad()); }
+            }"#,
+    ] {
+        reject("E_UNWIND_EFFECT", source);
+    }
+    // A pure/safe callable is not barred merely because it is user-defined.
+    // Side-effecting nonthrowing helpers may still run as deferred cleanup.
+    pass(r#"
+        fnc safe(int n): int { return n + 1; }
+        fnc print_safely(int n): void { stdio.println(safe(n)); }
+        pub fnc main(): int {
+            defer (|int value| -> _ -> { print_safely(value); })(5);
+            recover |err, cursor| -> { return safe(10); };
+            return 4;
+        }
+    "#);
+}
+
+#[test]
+fn recovery_capability_binders_cannot_be_shadowed_in_any_scope() {
+    for source in [
+        r#"pub fnc main(): int {
+            recover |err, cursor| -> {
+                let int err = 7;
+                return 9;
+            };
+            raise Error("x");
+        }"#,
+        r#"pub fnc main(): int {
+            recover |err, cursor| -> {
+                let int cursor = 1;
+                return 9;
+            };
+            raise Error("x");
+        }"#,
+        r#"pub fnc main(): int {
+            recover |err, cursor| -> {
+                if true then
+                    val int err = 3;
+                fi
+                return 9;
+            };
+            raise Error("x");
+        }"#,
+    ] {
+        reject("E_RESERVED", source);
+    }
+}
+
+#[test]
 fn programs_without_unwind_constructs_keep_their_guest_bytes() {
     // The unwind lowering is opt-in: no extra tag, global or frame for
     // existing throw/trap programs.
