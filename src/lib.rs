@@ -48,7 +48,7 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// line. Package/CLI profile discovery can replace this migration mechanism
 /// once it is ratified without changing the checked BorrowClass ABI.
 fn prepare_borrow_default_v1(program: &mut ast::Program) -> Result<(), Diagnostic> {
-    use ast::Type;
+    use ast::{Type, ParamOwnership};
     use std::collections::BTreeSet;
     let classes: BTreeSet<String> = program.classes.iter().map(|c| c.name.clone()).collect();
     let type_names = &program.type_names;
@@ -85,15 +85,19 @@ fn prepare_borrow_default_v1(program: &mut ast::Program) -> Result<(), Diagnosti
     for function in &mut program.funcs {
         for p in &mut function.params {
             if let Type::Named(i) = p.ty {
-                if classes.contains(&type_names[i as usize].0) && !p.explicit_take {
-                    if p.mutable {
-                        return Err(Diagnostic::new(p.pos, "E_UNSUPPORTED_TYPE",
-                            "mut Foo borrowed formals require the future verified BorrowMut<T> loan ABI; use a readonly Foo or explicit take! Foo"));
+                if classes.contains(&type_names[i as usize].0) {
+                    if p.explicit_take {
+                        p.ownership = ParamOwnership::Take;
+                    } else if p.mutable {
+                        // Unlike a mutable owned argument, this is a
+                        // caller-proven exclusive loan over the same class
+                        // allocation. No ownership is moved or cloned.
+                        p.ty = Type::BorrowMutNamed(i);
+                        p.ownership = ParamOwnership::BorrowWrite;
+                    } else {
+                        p.ty = Type::BorrowNamed(i);
+                        p.ownership = ParamOwnership::BorrowRead;
                     }
-                    // Ordinary Foo is checked exactly like Borrow<Foo>.
-                    // Both signatures lower to the same nonowning guest class
-                    // handle, with the same alias, move and escape rules.
-                    p.ty = Type::BorrowNamed(i);
                 }
             }
         }
@@ -204,6 +208,16 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     };
     if borrow_default_v1 {
         prepare_borrow_default_v1(&mut program)?;
+    } else {
+        // The new canonical 'mut Foo p' spelling is deliberately unavailable
+        // in legacy modules. Do not silently interpret it as an owned mutable
+        // parameter when migration metadata was omitted.
+        for param in program.funcs.iter().flat_map(|f| f.params.iter()) {
+            if param.ownership == ast::ParamOwnership::BorrowWrite {
+                return Err(Diagnostic::new(param.pos, "E_PROFILE",
+                    "mut Foo borrowed formals require borrow-default-v1"));
+            }
+        }
     }
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
