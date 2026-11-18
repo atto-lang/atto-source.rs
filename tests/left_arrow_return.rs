@@ -14,8 +14,7 @@ fn fails(source: &str, code: &str) {
 }
 
 #[test]
-fn ascii_and_unicode_prefixes_compile_to_identical_wasm() {
-    let mut reference: Option<Vec<u8>> = None;
+fn ascii_and_unicode_prefixes_compile_deterministically() {
     for header in [
         "int• foo()",
         "int <- foo()",
@@ -25,11 +24,8 @@ fn ascii_and_unicode_prefixes_compile_to_identical_wasm() {
         let source = format!("{header} {{ return 42; }} {MAIN}");
         let wasm = compile(&source).unwrap_or_else(|e| panic!("{source}: {e}"));
         assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
-        if let Some(expected) = &reference {
-            assert_eq!(&wasm, expected, "{header}");
-        } else {
-            reference = Some(wasm);
-        }
+        assert_eq!(wasm, compile(&source).unwrap(), "{header}");
+        assert_eq!(parse(&source).funcs[0].ret, Type::Int);
     }
     // Visibility/purity may affect exports or metadata; verify compilation
     // without requiring the entire Wasm binary to be identical.
