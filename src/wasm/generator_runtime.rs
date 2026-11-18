@@ -29,6 +29,9 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         state_write_depth: 0,
         uw: None,
         in_recover: false,
+        // Generator frame lifecycle is not an ordinary class copy.
+        // Never grant the private FlatPodCopy Wasm permission.
+        flat_pod_copy_authorized: false,
     };
 
     // new(type_id: i32, arg: i64) -> i64 generation-fenced handle.
