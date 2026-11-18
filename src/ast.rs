@@ -185,17 +185,37 @@ pub struct ActorDecl {
 /// In the current browser subset only core Error is a resolvable failure type;
 /// marker-interface and Error-subclass resolution need a later nominal pass.
 /// These are upper bounds, not permission to turn raise/panic into a throw.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FailureEffects {
+    /// True when any effect kind is explicitly declared, even as an empty set.
     pub explicit: bool,
-    pub throws: bool,
-    pub raises: bool,
-    pub panics: bool,
+    /// Tracks declarations independently from their allowed error sets.
+    /// In particular @Throws() is not interchangeable with no declaration.
+    /// Order: ordinary throw, escalated raise, fatal panic.
+    pub declared: [bool; 3],
+    /// Nominal type names are retained in the AST, not collapsed to bits.
+    /// Only built-in Error is executable in the current browser profile.
+    pub throws: Vec<String>,
+    pub raises: Vec<String>,
+    pub panics: Vec<String>,
 }
 
 impl FailureEffects {
+    /// Conservative backend presence summary; not a replacement for nominal
+    /// subtype checking when the browser admits more Error subclasses.
     pub fn mask(&self) -> u8 {
-        (self.throws as u8) | ((self.raises as u8) << 1) | ((self.panics as u8) << 2)
+        (u8::from(!self.throws.is_empty()))
+            | (u8::from(!self.raises.is_empty()) << 1)
+            | (u8::from(!self.panics.is_empty()) << 2)
+    }
+
+    pub fn allowed_types(&self, kind: usize) -> &[String] {
+        match kind {
+            0 => &self.throws,
+            1 => &self.raises,
+            2 => &self.panics,
+            _ => &[],
+        }
     }
 }
 

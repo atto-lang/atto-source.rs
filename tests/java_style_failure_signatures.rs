@@ -110,3 +110,36 @@ pub fnc main() throws Error raises Error -> int {
     assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
     assert_eq!(wasm, compile(src).unwrap());
 }
+
+#[test]
+fn lower_and_pascal_case_annotations_match_signature_effects() {
+    let forms = [
+        "@Throws(Error)\npub fnc main() -> int {return 42;}",
+        "@throws(Error)\npub fnc main() -> int {return 42;}",
+        "pub fnc main() -> int throws(Error) {return 42;}",
+        "pub fnc main() -> int throws Error {return 42;}",
+    ];
+    for form in forms {
+        let parsed = parse(form);
+        assert_eq!(parsed.funcs[0].failure_effects.mask(), 1, "{form}");
+    }
+    let baseline = compile(forms[0]).expect("canonical annotation compiles");
+    for form in &forms[1..] {
+        assert_eq!(compile(form).unwrap(), baseline, "{form}: equivalent Wasm");
+    }
+}
+
+#[test]
+fn annotation_only_forms_reject_missing_at_and_parentheses() {
+    for (source, expected) in [
+        ("pub fnc main() -> int Throws(Error) {return 42;}", "E_SYNTAX"),
+        ("pub fnc main() -> int Raises(Error) {return 42;}", "E_SYNTAX"),
+        ("pub fnc main() -> int Panics(Error) {return 42;}", "E_SYNTAX"),
+        ("@throws Error\npub fnc main() -> int {return 42;}", "E_SYNTAX"),
+        ("@Raises Error\npub fnc main() -> int {return 42;}", "E_SYNTAX"),
+        ("@throws(Error) @Throws(Error) pub fnc main() -> int {return 42;}", "E_EFFECT_TYPE"),
+    ] {
+        let err = compile(source).expect_err("invalid annotation must not emit guest Wasm");
+        assert_eq!(err.code, expected, "{source}: {err}");
+    }
+}
