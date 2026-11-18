@@ -59,6 +59,15 @@ impl Type {
     }
 }
 
+/// Provenance for the restricted source-local field-equals shorthand.
+/// The parser/checker sees a normal generated `new` expression but must
+/// validate its original nominal struct binding using the typed symbol table.
+#[derive(Clone, Debug)]
+pub struct StructInitSite {
+    pub name: String,
+    pub pos: Pos,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Program {
     pub funcs: Vec<Func>,
@@ -71,6 +80,9 @@ pub struct Program {
     /// Spellings referenced by `Type::Named` / `Type::NamedRef`, plus
     /// canonical compiler-interned source callable signatures.
     pub type_names: Vec<(String, Pos)>,
+    /// Only implicit nominal struct field-equals shorthand sites;
+    /// explicit class constructors are absent from this manifest.
+    pub struct_init_sites: Vec<StructInitSite>,
 }
 
 
