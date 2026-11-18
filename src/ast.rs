@@ -66,6 +66,9 @@ impl Type {
 
 #[derive(Clone, Debug, Default)]
 pub struct Program {
+    /// Versioned, opt-in class argument borrowing. Without this flag the
+    /// historical owned Foo parameter ABI remains unchanged.
+    pub borrow_default_v1: bool,
     pub funcs: Vec<Func>,
     pub classes: Vec<ClassDecl>,
     pub enums: Vec<EnumDecl>,
@@ -203,6 +206,10 @@ pub struct Param {
     pub name: String,
     pub ty: Type,
     pub mutable: bool,
+    /// Existing 'take!' keyword, used as a formal-mode prefix in the opt-in
+    /// borrowing profile. Its presence distinguishes *owned* Foo from an
+    /// otherwise borrow-by-default Foo without changing Wasm class ABI.
+    pub explicit_take: bool,
     pub pos: Pos,
 }
 
