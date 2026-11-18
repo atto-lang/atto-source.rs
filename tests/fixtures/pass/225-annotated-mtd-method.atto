@@ -1,0 +1,9 @@
+// expect-exit: 42
+define class C as
+    @throws(Error)
+    pub mtd add(int n): int { return n + 2; }
+end
+pub fnc main(): int throws(Error) {
+    val c = new C();
+    return c.add(40);
+}
