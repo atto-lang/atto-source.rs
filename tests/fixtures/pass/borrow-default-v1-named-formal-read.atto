@@ -1,0 +1,9 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+// Compatibility name:type form is lowered using the same ownership profile.
+define class Parcel as pub let int value = 21; end
+fnc inspect(p: Parcel): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return inspect(parcel) + inspect(borrow! parcel);
+}

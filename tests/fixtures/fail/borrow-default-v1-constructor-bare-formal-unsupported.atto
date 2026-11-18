@@ -1,0 +1,9 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_UNSUPPORTED_TYPE
+// The v1 migration is top-level-only; constructor/class method loans are gated.
+define class Parcel as pub let int value = 42; end
+define class Holder as
+  pub let int value = 0;
+  constructor(Parcel p) { }
+end
+pub fnc main(): int { return 0; }

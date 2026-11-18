@@ -1,0 +1,9 @@
+// atto-ownership: borrow-default-v1
+// expect-exit: 42
+// The original take! keyword declares and calls an owning parameter.
+define class Parcel as pub let int value = 42; end
+fnc consume(take! Parcel p): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return consume(take! parcel);
+}

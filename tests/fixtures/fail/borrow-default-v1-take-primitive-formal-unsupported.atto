@@ -1,0 +1,5 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_UNSUPPORTED_TYPE
+// An explicit ownership transfer on int is not a class-owned formal.
+fnc consume(take! int n): int { return n; }
+pub fnc main(): int { return 42; }

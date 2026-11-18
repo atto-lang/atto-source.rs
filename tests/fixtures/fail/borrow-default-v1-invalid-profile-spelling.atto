@@ -1,0 +1,4 @@
+// atto-ownership: borrow-default-v9
+// expect-error: E_PROFILE
+// Unknown ownership profile must not silently compile as legacy.
+pub fnc main(): int { return 42; }

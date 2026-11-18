@@ -1,0 +1,9 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_OWNERSHIP
+// Under v1 a bare argument may never silently transfer a class owner.
+define class Parcel as pub let int value = 42; end
+fnc consume(take! Parcel p): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return consume(parcel);
+}
