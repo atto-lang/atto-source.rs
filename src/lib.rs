@@ -11,6 +11,7 @@ pub mod safety;
 pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;
+pub mod layout_plan;
 pub mod owner_arena;
 
 /// This independent scalar object emitter has no TenantVM runtime or actor
