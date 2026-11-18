@@ -124,3 +124,51 @@ fn string_class_never_admits_raw_byte_copy_ir() {
     assert_eq!(copier.body.iter().filter(|s|
         matches!(s, TStmt::FieldSet { .. })).count(), 3);
 }
+
+#[test]
+fn wasm_backend_rejects_forged_or_corrupt_flat_copy_ir() {
+    use atto_compiler::{check::{self, TStmt}, lexer, parser::Parser, wasm as codegen};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let source = include_str!("fixtures/pass/998-copy-doublebang-pod-mixed-fields.atto");
+    let ast = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    let trusted = check::check(&ast).unwrap();
+    let copier_index = trusted.funcs.iter()
+        .position(|f| f.name == "Snapshot.copy_deep$generated")
+        .expect("generated private class copier");
+    assert!(!codegen::emit(&trusted).is_empty(), "canonical copy IR must emit");
+    // A public TStmt representation must not let a future lowerer bypass
+    // AOT copy-plan admission by writing a plausible-looking instruction.
+    for corruption in 0..7 {
+        let mut forged = trusted.clone();
+        let copier = &mut forged.funcs[copier_index];
+        match corruption {
+            0 => {
+                if let TStmt::FlatPodCopy { source_slot, .. } = &mut copier.body[1] {
+                    *source_slot = 2;
+                }
+            }
+            1 => {
+                if let TStmt::FlatPodCopy { dest_slot, .. } = &mut copier.body[1] {
+                    *dest_slot = 0;
+                }
+            }
+            2 => {
+                if let TStmt::FlatPodCopy { bytes, .. } = &mut copier.body[1] {
+                    *bytes = 16; // size mismatch: actual allocation is 24
+                }
+            }
+            3 => { copier.name = "forged_copy".to_owned(); }
+            4 => { copier.locals.clear(); } // invalid destination type/slot
+            5 => { copier.body.push(TStmt::Unreachable); } // noncanonical copier
+            6 => {
+                // A private raw-memory opcode inserted into an arbitrary
+                // function must fail regardless of surrounding control flow.
+                forged.funcs[forged.main as usize].body.push(
+                    TStmt::FlatPodCopy { dest_slot: 1, source_slot: 0, bytes: 24 });
+            }
+            _ => unreachable!(),
+        }
+        let did_panic = catch_unwind(AssertUnwindSafe(|| codegen::emit(&forged))).is_err();
+        assert!(did_panic, "unverified FlatPodCopy mutation {corruption} emitted Wasm");
+    }
+}
