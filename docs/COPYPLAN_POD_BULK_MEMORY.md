@@ -1,6 +1,6 @@
 # CopyPlan optimization: flat POD bulk-memory copy (Rust/Wasm trial)
 
-**Status: compiler change proposed on a stacked draft PR; no new-run execution receipt.**
+**Status: stacked draft PR #337; current hardening needs new exact-head CI evidence.**
 Dependency: atto-source.rs #265; canonical closed-world type copy witness from
 atto-borrow-checker.rs #32. This is an optimization of already-admitted
 `copy!!` semantics, not a new source operator.
@@ -59,3 +59,20 @@ Do not assert speedups based solely on Wasm instruction count.
 No nested graph cloning, actor mailbox fan-out, zero-copy arena transfer,
 persistent collections, uniqueness-based in-place update, or backend parity is
 claimed here. Those are separate follow-ups with their own proof obligations.
+
+## Hardening audit (2026-11-18)
+
+The generated bulk-copy instruction carries only two compiler-verified local
+indices and a checked byte count. It does not carry source expression trees,
+so a future emitter cannot accidentally re-evaluate a side-effecting address.
+Both the class constructor and clone size use checked multiplication and
+conversion bounded by the fixed 16-page Wasm heap; codegen independently
+asserts a nonzero whole-slot in-bounds size even in optimized builds.
+
+The Rust tests inspect the generated typed IR to verify the exact 24-byte
+source/destination local-slot plan and to require typed field-store fallback
+for a class containing a string. The Node guest fixture also checks raw
+WebAssembly memory after mutation: the original object retains int=42,
+float=1.5, bool=true while the independent clone has int=7, float=1.5,
+bool=false. This is in addition to the existing guest return and negative
+diagnostic checks. No performance claim or generalized graph admission.
