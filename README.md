@@ -6,6 +6,8 @@
 
 # Oreslang Rust compiler
 
+**Role:** Independent Rust + Cranelift compiler that currently outputs **native object files**, not browser Wasm32. This crate does **not** depend on Wasmtime and does not run source actors. The Rust-to-Wasm browser compiler actually shipped at `/play/` is **`atto-lang/atto-source.rs`**, a different project. See [compiler/host target boundary](docs/BROWSER_WASM_TARGET_BOUNDARY.md).
+
 Independent Oreslang frontend, MIR and native code generation with Cranelift; neither LLVM nor GraalVM is a dependency.
 
 This implementation deliberately begins with a **narrow executable subset**, not a claim of language completeness. A zero-argument static function returning an int64 arithmetic expression is tokenized with Logos, parsed into an AST, validated/lowered to MIR, and compiled by Cranelift to a native object file.
