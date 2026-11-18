@@ -1317,6 +1317,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     ty: mi.ret,
                     mutable: false,
                     explicit_take: false,
+                    ownership: ParamOwnership::Legacy,
                     pos: m.pos,
                 },
                 mi.ret,
