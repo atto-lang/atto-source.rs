@@ -149,12 +149,14 @@ fn recovery_handlers_are_typed_and_terminal() {
 fn only_built_in_error_is_thrown_raised_or_caught() {
     for (code, s) in [
         ("E_TYPE", r#"pub fnc main(): int { raise "not an Error"; }"#),
-        ("E_TYPE", r#"fnc f(): int raises(Failure) { return 1; }
+        // The nominal-row parser now distinguishes unresolved Error subclasses.
+        ("E_UNSUPPORTED_TYPE", r#"fnc f(): int raises(Failure) { return 1; }
             pub fnc main(): int { return f(); }"#),
         ("E_TYPE", r#"pub fnc main(): int {
             try { return 1; } catch (Failure e) { return 2; } }"#),
         ("E_SYNTAX", r#"pub fnc main(): int { try { return 1; } }"#),
-        ("E_DUPLICATE", r#"fnc f(): int throws(Error) throws(Error) { return 1; }
+        // Duplicate effect kinds are signature-contract errors.
+        ("E_EFFECT_TYPE", r#"fnc f(): int throws(Error) throws(Error) { return 1; }
             pub fnc main(): int { return f(); }"#),
     ] {
         reject(code, s);
