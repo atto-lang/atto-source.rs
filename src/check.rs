@@ -2353,6 +2353,10 @@ impl<'a> FnCx<'a> {
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
+        // Guards run in the If condition, before their arm body. Stage each
+        // guarded binding beforehand, but read tagged payloads ONLY after
+        // confirming the corresponding variant discriminant.
+        let mut match_setup = vec![TStmt::Set(tmp, subj)];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             if covered {
@@ -2401,7 +2405,22 @@ impl<'a> FnCx<'a> {
                     } else {
                         TE { e: TExpr::AdtPayload(Box::new(get())), ty }
                     };
-                    body.push(TStmt::Set(slot, value));
+                    let assignment = TStmt::Set(slot, value);
+                    if arm.guard.is_some() {
+                        if let Some(tag_test) = test.as_ref() {
+                            // Reading Some/Ok/Err payload before checking its
+                            // tag would be unsound (and can read uninitialized
+                            // storage for the opposite variant).
+                            match_setup.push(TStmt::If(
+                                vec![(tag_test.clone(), vec![assignment])], None,
+                            ));
+                        } else {
+                            // A whole-value binding is always safe to copy.
+                            match_setup.push(assignment);
+                        }
+                    } else {
+                        body.push(assignment);
+                    }
                 }
                 let guard = match &arm.guard {
                     Some(g) => Some(self.cond(g, "match guard")?),
@@ -2446,10 +2465,8 @@ impl<'a> FnCx<'a> {
                 format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
-        Ok(TStmt::Block(vec![
-            TStmt::Set(tmp, subj),
-            TStmt::If(out, Some(vec![TStmt::Unreachable])),
-        ]))
+        match_setup.push(TStmt::If(out, Some(vec![TStmt::Unreachable])));
+        Ok(TStmt::Block(match_setup))
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
