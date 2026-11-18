@@ -10,7 +10,7 @@ fn ast(source: &str) -> atto_compiler::ast::Program {
 fn ok(source: &str) {
     let wasm = atto_compiler::compile(source)
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    assert!(wasm.starts_with(b"\\0asm"), "{source}");
+    assert!(wasm.starts_with(b"\0asm"), "{source}");
     assert_eq!(wasm, atto_compiler::compile(source).unwrap(),
         "compilation must be deterministic");
 }
