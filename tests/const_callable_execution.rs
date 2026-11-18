@@ -85,6 +85,8 @@ fn global_const_identity_conflicts_fail_closed_regardless_of_arity_and_order() {
     rejects("type F=(int)=>int; const F f=|x:int| :int -> x; fnc f():int{return 0;} pub fnc main():int{return 0;}", "E_DUPLICATE");
     rejects("fnc f():int{return 0;} type F=(int)=>int; const F f=|x:int| :int -> x; pub fnc main():int{return 0;}", "E_DUPLICATE");
     rejects("type F=(int)=>int; const F F=|x:int| :int -> x; pub fnc main():int{return 0;}", "E_DUPLICATE");
+    rejects("const ((int)=>int) f=|x:int| :int -> x; type f=(int)=>int; pub fnc main():int{return 0;}", "E_DUPLICATE");
+    rejects("type f=(int)=>int; fnc f():int{return 0;} pub fnc main():int{return 0;}", "E_DUPLICATE");
 }
 
 #[test]
@@ -98,7 +100,7 @@ fn cannot_rebind_escape_or_create_mutable_callable_storage() {
 #[test]
 fn unsupported_file_const_forms_fail_without_runtime_storage() {
     rejects("const int n = 42; pub fnc main():int {return 0;}", "E_UNSUPPORTED_TYPE");
-    rejects("type F=(int)=>int; const F f = 42; pub fnc main():int {return 0;}", "E_UNSUPPORTED_TYPE");
+    rejects("type F=(int)=>int; const F f = 42; pub fnc main():int {return 0;}", "E_TYPE");
     rejects("type F=(int)=>int; pub fnc main():int { const F f=|x:int| :int -> x; return f(1,2); }", "E_ARITY");
     rejects("type F=(int)=>int; pub fnc main():int { const F f=|x:int| :int -> x; return f(true); }", "E_TYPE");
 }
