@@ -13,6 +13,8 @@ pub mod collection_layout;
 pub mod collection_layout_plan;
 /// Executable Rust storage kernel only; source-compiled guest admission remains gated.
 pub mod collection_layout_storage;
+/// Narrow genuine source-compiled scalar collection guest profile; all else fails closed.
+pub mod collection_layout_guest;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -54,7 +56,19 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    let input_tokens = lexer::lex(source)?;
+    // A bounded, nominally checked collection guest profile is admitted
+    // before general syntax preflight. Only its COMPLETE source grammar is
+    // executable: no speculative token-level acceptance of unsupported code.
+    if let Some(program) = collection_layout_guest::try_lower(&input_tokens)? {
+        let bytes = wasm::emit(&program);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
+    }
+    let mut visibility = visibility_lower::lower(input_tokens)?;
     collection_layout::reject_unlowered(&visibility.tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
