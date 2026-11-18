@@ -45,6 +45,7 @@ const RESERVED: &[&str] = &[
     "as",
     "fnc",
     "routine",
+    "mtd",
     "pure",
     "async",
     "suspends",
@@ -705,7 +706,7 @@ impl Parser {
             let word = self.word_at(0).map(str::to_owned);
             if annotations.explicit {
                 let callable = match word.as_deref() {
-                    Some("static" | "fnc" | "method") => true,
+                    Some("static" | "fnc" | "method" | "mtd") => true,
                     Some("receive") if actor && *self.peek_at(1) == Tok::LParen => true,
                     Some("constructor" | "final" | "mut" | "let" | "val" | "const") => false,
                     Some(_) if *self.peek_at(1) == Tok::LParen => true,
@@ -791,7 +792,7 @@ impl Parser {
                     }
                     m.fields.push(f.field);
                 }
-                Some("fnc" | "method") => {
+                Some("fnc" | "method" | "mtd") => {
                     self.advance();
                     let method = self.parse_method(public, false, annotations)?;
                     m.methods.push(method);
