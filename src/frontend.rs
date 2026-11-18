@@ -105,8 +105,7 @@ enum Kind {
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
-    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+", logos::skip)]
-    #[regex(r"//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
+    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -650,13 +649,14 @@ impl Parser {
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
-                let integer = normalized_integer_digits(&t)?
-                    .parse::<i64>()
-                    .map_err(|_| ParseError {
-                        offset: t.start,
-                        class: "integer_overflow",
-                        message: "i64 integer literal overflow".into(),
-                    })?;
+                let integer =
+                    normalized_integer_digits(&t)?
+                        .parse::<i64>()
+                        .map_err(|_| ParseError {
+                            offset: t.start,
+                            class: "integer_overflow",
+                            message: "i64 integer literal overflow".into(),
+                        })?;
                 Ok(Expr::Integer(integer))
             }
             Some(Kind::Identifier) => {

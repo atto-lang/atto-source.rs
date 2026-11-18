@@ -55,7 +55,9 @@ fn duplicate_bindings_across_spellings_are_denied() {
         let src = format!("pub fnc main(): int {{ {declarations} return x; }}");
         let ast = frontend::parse(&src).unwrap();
         assert_eq!(mir::lower(ast).unwrap_err().class, "duplicate_declaration");
-        assert!(compile(&src).unwrap_err().starts_with("duplicate_declaration"));
+        assert!(compile(&src)
+            .unwrap_err()
+            .starts_with("duplicate_declaration"));
     }
 }
 
@@ -82,7 +84,10 @@ fn invalid_or_mutable_declarations_fail_closed() {
         "const val x = 42; return x;",
         "const x: bool = true; return 1;",
     ] {
-        assert!(compile(&format!("pub fnc main(): int {{ {bindings} }}")).is_err(), "{bindings}");
+        assert!(
+            compile(&format!("pub fnc main(): int {{ {bindings} }}")).is_err(),
+            "{bindings}"
+        );
     }
 }
 
@@ -113,7 +118,8 @@ fn slash_star_inside_line_comment_does_not_open_block_comment() {
 
 #[test]
 fn genuine_nested_block_comments_still_work() {
-    let source = "/* // not a line comment /* nested */ outer */ pub fnc main(): int { return 42; }";
+    let source =
+        "/* // not a line comment /* nested */ outer */ pub fnc main(): int { return 42; }";
     assert!(!compile(source).unwrap().is_empty());
 }
 
