@@ -24,7 +24,7 @@ fn bare_formals_borrow_in_versioned_mode_only() {
     assert_eq!(compile(&src).unwrap_err().code, "E_MOVED",
         "historical default must not silently change");
     let guest = borrow_v1(&src).expect("versioned bare Person formal is a loan");
-    assert!(guest.starts_with(b"\\0asm"));
+    assert!(guest.starts_with(b"\0asm"));
 }
 
 #[test]
