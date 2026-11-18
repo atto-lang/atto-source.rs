@@ -277,8 +277,276 @@ fn parsed_bracket_index_keeps_provenance_before_private_lowering() {
     closed_record_guest::lower(&mut copy, &typed).unwrap();
     match &copy.funcs[0].body.last().unwrap() {
         Stmt::Return(Some(v), _) => {
-            assert!(matches!(&v.kind, ExprKind::Member(_, field) if field=="x-y"))
+            assert!(
+                matches!(&v.kind, ExprKind::Index(_, _)),
+                "compiler lowering must preserve the source Index until typed checking"
+            )
         }
-        _ => panic!("a proved closed field becomes an ordinary checked member projection"),
+        _ => panic!("record bracket syntax must survive lowering unchanged"),
     }
+    wasm(source);
+}
+
+#[test]
+fn record_dot_and_bracket_static_fields_both_compile_as_executable_expressions() {
+    wasm(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {
+                status_code: 42,
+                "content-type": "application/json"
+            };
+            headers.status_code;
+            headers["content-type"];
+            return headers.status_code;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn bracket_access_stays_typed_in_nested_lexical_blocks() {
+    wasm(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {
+                "content-type": "application/json",
+                status_code: 42
+            };
+            block {
+                stdio.println(headers["content-type"]);
+                headers.status_code;
+            }
+            return headers["status_code"];
+        }
+    "#,
+    );
+}
+
+#[test]
+fn local_alias_of_a_closed_immutable_record_keeps_static_field_access() {
+    wasm(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"content-type": 42, status_code: 42};
+            val alias = headers;
+            return alias["content-type"];
+        }
+    "#,
+    );
+}
+
+#[test]
+fn equivalent_dot_and_quoted_identifier_field_names_have_same_semantics() {
+    wasm(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"status_code": 42, "content-type": "ok"};
+            return headers.status_code + headers["status_code"] - 42;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn shadowed_record_name_cannot_grant_bracket_access_to_a_scalar() {
+    invalid(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"content-type": 42};
+            block {
+                let headers = 7;
+                stdio.println(headers["content-type"]);
+            }
+            return 0;
+        }
+    "#,
+        "E_UNSUPPORTED",
+    );
+}
+
+#[test]
+fn nominal_struct_and_normal_class_are_not_reinterpreted_as_record_indexing() {
+    invalid(
+        r#"
+        define struct Header as int status_code; end
+        pub fnc main(): int {
+            val header = Header{status_code: 42};
+            return header["status_code"];
+        }
+    "#,
+        "E_UNSUPPORTED",
+    );
+}
+
+#[test]
+fn string_expression_keys_remain_dynamic_and_unsupported() {
+    invalid(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"content-type": 42};
+            return headers["content" + "-type"];
+        }
+    "#,
+        "E_UNSUPPORTED",
+    );
+}
+
+#[test]
+fn quoted_key_unicode_and_empty_fields_are_not_normalized_or_conflated() {
+    wasm(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {
+                "": 1,
+                "café": 41,
+                "café": 7
+            };
+            return headers[""] + headers["café"];
+        }
+    "#,
+    );
+    invalid(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"café": 42};
+            return headers["café"];
+        }
+    "#,
+        "E_NO_FIELD",
+    );
+}
+
+#[test]
+fn dot_and_static_bracket_share_exact_typed_field_offset_and_type() {
+    use atto_compiler::ast::Type;
+    use atto_compiler::check::{self, TExpr, TStmt};
+
+    let source = r#"
+        pub fnc main(): int {
+            let Record headers = {
+                "content-type": "application/json",
+                status_code: 200
+            };
+            headers.status_code;
+            headers["status_code"];
+            headers["content-type"];
+            return 0;
+        }
+    "#;
+    let parsed = Parser::new(lexer::lex(source).unwrap())
+        .parse_program()
+        .unwrap();
+    let collected = collection_types::analyze(&parsed).unwrap();
+    let mut lowered = parsed;
+    closed_record_guest::lower(&mut lowered, &collected).unwrap();
+    let typed = check::check(&lowered).unwrap();
+    let main = typed.funcs.iter().find(|f| f.name == "main").unwrap();
+    let reads: Vec<(u32, Type)> = main
+        .body
+        .iter()
+        .filter_map(|stmt| match stmt {
+            TStmt::Expr(v) => match &v.e {
+                TExpr::FieldGet { offset, .. } => Some((*offset, v.ty)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        reads.len(),
+        3,
+        "both notations should use typed direct-offset reads"
+    );
+    assert_eq!(
+        reads[0], reads[1],
+        "dot and quoted field name have one type and offset"
+    );
+    assert_eq!(reads[0].1, Type::Int);
+    assert_eq!(reads[2].1, Type::Str);
+    assert_ne!(
+        reads[0].0, reads[2].0,
+        "distinct fields cannot alias a slot"
+    );
+}
+
+#[test]
+fn decoded_escaped_field_names_are_exactly_equivalent() {
+    wasm(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {
+                "x-y": 41,
+                "has\"quote": 1,
+                "line\nbreak": 2
+            };
+            return headers["x\u{2d}y"] + headers["has\"quote"];
+        }
+    "#,
+    );
+    invalid(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"x-y": 1, "x\u{2d}y": 2};
+            return 0;
+        }
+    "#,
+        "E_DUPLICATE",
+    );
+    invalid(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"x-y": 42};
+            return headers["x\u{zz}y"];
+        }
+    "#,
+        "E_STRING",
+    );
+}
+
+#[test]
+fn static_bracket_read_infers_field_type_in_return_checker() {
+    invalid(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {
+                "content-type": "application/json",
+                status_code: 200
+            };
+            return headers["content-type"];
+        }
+    "#,
+        "E_TYPE",
+    );
+    wasm(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"content-type": "application/json", status_code: 42};
+            return headers["status_code"];
+        }
+    "#,
+    );
+}
+
+#[test]
+fn nested_field_index_and_computed_map_key_stay_fail_closed() {
+    invalid(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"content-type": 42};
+            return headers["content-type"][0];
+        }
+    "#,
+        "E_UNSUPPORTED",
+    );
+    invalid(
+        r#"
+        pub fnc main(): int {
+            let Record headers = {"content-type": 42};
+            let string field = "content-type";
+            return headers[field];
+        }
+    "#,
+        "E_UNSUPPORTED",
+    );
 }

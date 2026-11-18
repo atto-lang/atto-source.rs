@@ -52,15 +52,126 @@ const positives=[
  ['pub fnc main(): int {let Record p={y:2,x:40}; return p.x+p.y;}',42n,''],
  ['pub fnc main(): int {let Record h={"content-type":"application/json","über field":40,status_code:2}; stdio.println(h["content-type"]); return h["über field"]+h.status_code;}',42n,'application/json\n'],
  ['pub fnc main(): int {let Record x={z:true,a:40}; let record y={a:41,z:false}; return x.a+y.a-39;}',42n,''],
- ['define struct Point as int x; int y; end pub fnc main(): int {val p=Point{y:2,x:40}; let Record c={x:40,y:2}; return p.x+c.y;}',42n,'']
+ ['define struct Point as int x; int y; end pub fnc main(): int {val p=Point{y:2,x:40}; let Record c={x:40,y:2}; return p.x+c.y;}',42n,''],
+ ['pub fnc main(): int {let Record headers={status_code:42,"content-type":"ok"}; headers.status_code; headers["content-type"]; return headers.status_code;}',42n,''],
+ ['pub fnc main(): int {let Record headers={"content-type":"application/json",status_code:42}; block { stdio.println(headers["content-type"]); headers.status_code; } return headers["status_code"];}',42n,'application/json\n'],
+ ['pub fnc main(): int {let Record headers={"content-type":42,status_code:42}; val alias=headers; return alias["content-type"];}',42n,''],
+ ['pub fnc main(): int {let Record headers={"status_code":42,"content-type":"ok"}; return headers.status_code+headers["status_code"]-42;}',42n,''],
+ ['pub fnc main(): int {let Record headers={"":1,"café":41,"café":7}; return headers[""]+headers["café"];}',42n,''],
 ];
 const negatives=[
  ['pub fnc main(): int {let Record r={x:42}; let string key="x"; return r[key];}','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:42}; return r["missing"]; }','E_NO_FIELD'],
  ['pub fnc main(): int {let Map<string,int> m={"x"=>42}; return m["x"]; }','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:1,"x":2}; return 0; }','E_DUPLICATE'],
- ['pub fnc main(): int {const Record r={x:42}; return r.x;}','E_UNSUPPORTED']
+ ['pub fnc main(): int {const Record r={x:42}; return r.x;}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {let Record headers={"content-type":42}; block {let headers=7; stdio.println(headers["content-type"]);} return 0;}','E_UNSUPPORTED'],
+ ['define struct Header as int status_code; end pub fnc main(): int {val h=Header{status_code:42}; return h["status_code"]; }','E_UNSUPPORTED'],
+ ['pub fnc main(): int {let Record headers={"content-type":42}; return headers["content"+"-type"]; }','E_UNSUPPORTED'],
+ ['pub fnc main(): int {let Record headers={"café":42}; return headers["café"]; }','E_NO_FIELD'],
+ ['pub fnc main(): int {let Record headers={"content-type":42}; return headers[0]; }','E_UNSUPPORTED'],
 ];
+// Additional full-contract dot/bracket tests including decoded string escapes.
+positives.push(["fnc double(value: int): int { return value + value; } pub fnc main(): int { let Record headers = {\"content-type\":\"application/json\",status_code:21}; let int a=headers.status_code; let int b=headers[\"status_code\"]; stdio.println(headers[\"content-type\"]); return double(a)+b-21; }", 42n, "application/json\n"]);
+positives.push(["pub fnc main(): int { let Record h={\"content\\\"type\":3,\"a\\\\b\":4,\"tab\\tfield\":5,\"uni\\u{63}ode\":30}; return h[\"content\\\"type\"]+h[\"a\\\\b\"]+h[\"tab\\tfield\"]+h[\"unicode\"]; }", 42n, ""]);
+positives.push(["pub fnc main(): int { let Record h={\"status_code\":21,\"\\u{63}ontent-type\":21}; return h.status_code+h[\"content-type\"]; }", 42n, ""]);
+negatives.push(["pub fnc main(): int {let Record h={\"content-type\":\"json\",status_code:42}; let int bad=h[\"content-type\"];return bad;}", "E_TYPE"]);
+negatives.push(["pub fnc main(): int {let Record h={\"content-type\":\"json\",status_code:42}; let string bad=h.status_code;return 0;}", "E_TYPE"]);
+negatives.push(["pub fnc main(): int {let Record h={\"content-type\":21,\"\\u{63}ontent-type\":21}; return 0;}", "E_DUPLICATE"]);
+negatives.push(["pub fnc main(): int {let Record h={\"content-type\":\"json\",status_code:42};return h.missing;}", "E_NO_FIELD"]);
+negatives.push(["pub fnc main(): int {let Record h={nested:{status_code:42}};return h.nested[\"status_code\"];}", "E_UNSUPPORTED"]);
+negatives.push(["pub fnc main(): int {let Record h={\"\\u{D800}\":42};return 0;}", "E_STRING"]);
+// Additional round-trip escapes, newline names and exact field-return typing.
+positives.push([String.raw`pub fnc main(): int {let Record h={"x-y":41,"has\"quote":1,"line\nbreak":2}; return h["x\u{2d}y"]+h["has\"quote"];} `, 42n, ""]);
+positives.push([String.raw`pub fnc main(): int {let Record h={"line\nbreak":42}; return h["line\nbreak"];} `, 42n, ""]);
+negatives.push([String.raw`pub fnc main(): int {let Record h={"x-y":1,"x\u{2d}y":2}; return 0;} `, "E_DUPLICATE"]);
+negatives.push([String.raw`pub fnc main(): int {let Record h={"x-y":42}; return h["x\u{zz}y"];} `, "E_STRING"]);
+negatives.push([String.raw`pub fnc main(): int {let Record h={"content-type":"json",status_code:42}; return h["content-type"];} `, "E_TYPE"]);
+// Boundary/identity cases: each positive guest is executed, and every negative
+// must be rejected by both actual compiler implementations with zero artifacts.
+positives.push([
+ 'pub fnc main(): int {let Record r={h:35,g:2,f:3,e:4,d:5,c:6,b:8,a:7}; return r["a"]+r.h;}',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record one={value:42}; let Record two={value:true}; two.value; return one["value"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record r={f:1.5,b:true,s:"ok",i:42}; r["f"]; r["b"]; r["s"]; return r["i"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record r={"🚀 launch":40,"x.y:z":2}; return r["🚀 launch"]+r["x.y:z"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record r={"":41,"x-y":1}; val copy=r; return copy[""]+copy["x-y"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record one={n:41,label:"first"}; let Record two={label:"second",n:1}; return one.n+two["n"]; }',
+ 42n, ''
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={a:1,b:2,c:3,d:4,e:5,f:6,g:7,h:8,i:9}; return r["a"]; }',
+ 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={}; return 0; }',
+ 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={"🚀 launch":42}; return r["🚀 Launch"]; }',
+ 'E_NO_FIELD'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={x:42}; let int other=7; return other["x"]; }',
+ 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={i:42,s:"ok"}; let int wrong=r["s"]; return wrong; }',
+ 'E_TYPE'
+]);
+
+
+// Exhaustive guest execution: four independent scalar fields, 24 source orders.
+// Both compilers must produce byte-identical Wasm; every module must return 42.
+function visit_record_orders(items, start, visit) {
+ if (start === items.length) { visit(items); return; }
+ for (let i=start; i<items.length; ++i) {
+  [items[start],items[i]]=[items[i],items[start]];
+  visit_record_orders(items,start+1,visit);
+  [items[start],items[i]]=[items[i],items[start]];
+ }
+}
+const orderedFields=[['a',10],['b',11],['c',12],['d',9]];
+visit_record_orders([0,1,2,3],0,order=>{
+ const parts=order.map(i=>orderedFields[i][0]+': '+orderedFields[i][1]);
+ const source='pub fnc main(): int { let Record r={'+parts.join(',')+'}; return r.a+r["b"]+r.c+r["d"]; }';
+ positives.push([source,42n,'']);
+});
+// Preserve safety boundaries without interpreting compile errors as guest tests.
+negatives.push([
+ 'pub fnc main(): int {let Record r={x:42}; val clone=copy! r; return clone.x;}',
+ 'E_COPY'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={x:42}; val alias=share! r; return alias.x;}',
+ 'E_SHARE'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={x:42}; val moved=take! r; return r.x+moved.x;}',
+ 'E_MOVED'
+]);
+negatives.push([
+ 'define actor W as receive(ActorMail<int> mail): void {return;} end pub fnc main(): int {let Record r={x:42}; val w=spawn W(); w.send(r); return 0;}',
+ 'E_TYPE'
+]);
+negatives.push([
+ 'define actor W as receive(ActorMail<Record> mail): void {return;} end pub fnc main(): int {return 0;}',
+ 'E_UNSUPPORTED'
+]);
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
  let n=0;
@@ -88,5 +199,5 @@ try{
   assert.equal(compiled.ok,false,'unsupported guest admitted');
   assert.equal(compiled.error.split(':')[0],code);
  }
- console.log('PASS fixed-slot closed Record guests: 4 executed, 5 rejected with zero artifact, 9 native/Wasm decisions and byte parity');
+ console.log(`PASS typed closed Record dot/bracket guests: ${positives.length} executed, ${negatives.length} rejected with zero artifact, ${positives.length+negatives.length} native/Wasm decisions and byte parity`);
 } finally {await rm(dir,{recursive:true,force:true})}
