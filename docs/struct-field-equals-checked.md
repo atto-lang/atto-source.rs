@@ -21,7 +21,11 @@ pub fnc main(): int {
 
 The `StructFieldInit` structure in `src/shape_lower.rs` is a **source-order-preserving pre-lowering candidate**, not yet a production typed AST node. Its concrete declaration is resolved from the bounded file-local struct declaration table. Only after all field/shape/position checks does the compiler synthesize `new Particle(10,20)` tokens. The ordinary `parser::parse_args` remains unchanged: `func(x=1)`, `obj.method(x=1)`, `new Class(x=1)` and `spawn Actor(x=1)` are NOT generalized named calls. Ordinary named call labels continue to be `x: value` where supported.
 
-The pre-lowering currently conservatively **rejects a candidate when any recognized same-named callable, class, record, imported alias, local or formal binding appears anywhere in the source unit**. This may reject otherwise unambiguous code in different scopes. That is intentional until the typed resolver can prove lexical/nominal identity; it never falls back from a failed call into a struct initializer.
+The pre-lowering now maintains an explicit **brace-scope and callable-header ledger** tied to the original source token indexes, so a local/formal named `Particle` inside a separate brace-bodied function does not shadow a `Particle(...)` initializer in `main`. Global callable/class/record/import/name conflicts remain source-wide. A same-scope or enclosing-scope local/formal still blocks the shorthand. The ledger is deliberately conservative for unrecognized/end-delimited callable syntax, imported symbol binding, complex nested scopes and ownership-sensitive expressions; those are not yet a full production typed resolver. Synthesized constructor tokens have no original source index and cannot impersonate an initializer candidate. No fallback is permitted from a failed ordinary call into a struct initializer.
+
+## Typed-IR admission follow-up
+
+`StructFieldInit` still exists in the dedicated source-local lowering pass rather than the general parser AST. The next compiler integration must bind a verified nominal declaration symbol to ordered field expressions in typed IR, evaluate expressions to temporaries in source order, then permute only the temporaries into declaration-order constructor slots. It must preserve partial-initialization cleanup, borrow/move semantics and error effects. This PR intentionally does not add a generic `NamedArg` with equals labels.
 
 ## Limitations and safety boundary
 
