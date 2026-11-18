@@ -9,6 +9,8 @@
 pub mod ast;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
 pub mod collection_layout;
+/// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
+pub mod collection_layout_plan;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
