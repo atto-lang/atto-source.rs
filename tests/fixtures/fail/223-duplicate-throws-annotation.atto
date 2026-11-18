@@ -1,0 +1,4 @@
+// expect-error: E_EFFECT_TYPE
+@throws(Error)
+@throws(Error)
+pub fnc main(): int { return 42; }
