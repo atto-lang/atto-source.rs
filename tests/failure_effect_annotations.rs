@@ -40,6 +40,16 @@ pub fnc main(): int {val c = new C(); return c.second(C.first());}
     assert_eq!(ast.funcs[0].failure_effects.mask(), 7);
     assert!(compile(scalar).unwrap().starts_with(b"\0asm\x01\0\0\0"));
 
+    let mtd = r#"
+define class C as
+    @throws(Error)
+    mtd add(int n): int {return n + 2;}
+end
+pub fnc main(): int throws(Error) {val c = new C(); return c.add(40);}
+"#;
+    assert_eq!(parse(mtd).classes[0].methods[0].failure_effects.mask(), 1);
+    assert!(compile(mtd).is_ok());
+
     let actor = r#"
 define actor Worker as
     @throws(Error)
