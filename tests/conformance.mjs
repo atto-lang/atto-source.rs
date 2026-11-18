@@ -52,7 +52,7 @@ export function compile(source) {
 // does in a dedicated Web Worker), runs actor_init, and queues mail. After
 // main returns, mailboxes drain FIFO, actor by actor in spawn order: one
 // valid schedule of the concurrent browser runtime.
-const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send',
+const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send', 'actor_get_or_create',
   'state_register', 'state_enter', 'state_leave']);
 const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', 'actor_receive']);
 export const MAX_ACTORS = BROWSER_MAX_ACTORS;
@@ -131,10 +131,23 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
   assert.equal(exportNames.includes('actor_receive'), names.length > 0, 'actor exports iff actor table');
   let out = '';
   const actors = [];
+  const keyedActors = new Map();
   const runtimes = new WeakMap();
   const instantiate = inActor => {
     let instance;
     const state = createStateRuntime();
+    const registryText = descriptor => {
+      if (typeof descriptor !== 'bigint') throw new Error('invalid packed registry string');
+      const packed = BigInt.asUintN(64, descriptor);
+      const ptr = Number(packed >> 32n);
+      const len = Number(packed & 0xffffffffn);
+      const buffer = instance?.exports.memory?.buffer;
+      if (!buffer || len === 0 || len > 4096 || ptr > buffer.byteLength ||
+          len > buffer.byteLength - ptr) {
+        throw new Error('invalid registry string bounds');
+      }
+      return decoder.decode(new Uint8Array(buffer, ptr, len));
+    };
     const atto = {
       print_i64: v => { out += String(v); },
       print_bool: v => { out += v ? 'true' : 'false'; },
@@ -151,6 +164,24 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
         actors.push(a);
         emit({ kind: 'actor_spawn', actor_id: a.id, generation: a.generation });
         return actors.length - 1;
+      },
+      actor_get_or_create: (type, namespaceDesc, keyDesc) => {
+        if (inActor) throw new Error('keyed activation inside an actor');
+        if (!Number.isInteger(type) || type < 0 || type >= names.length) {
+          throw new Error('invalid keyed actor type');
+        }
+        const namespace = registryText(namespaceDesc);
+        const applicationKey = registryText(keyDesc);
+        if (new TextEncoder().encode(namespace).length +
+            new TextEncoder().encode(names[type]).length +
+            new TextEncoder().encode(applicationKey).length > 4096) {
+          throw new Error('actor registry key exceeds budget');
+        }
+        const identity = JSON.stringify([namespace, type, applicationKey]);
+        if (keyedActors.has(identity)) return keyedActors.get(identity);
+        const actor = atto.actor_spawn(type);
+        keyedActors.set(identity, actor);
+        return actor;
       },
       actor_send: (ref, value) => {
         if (inActor) throw new Error('send inside an actor');
