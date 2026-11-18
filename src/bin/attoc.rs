@@ -4,7 +4,18 @@
 use std::process::ExitCode;
 use atto_compiler::parser::LanguageVersion;
 
-fn run() -> Result<(), String> {
+enum CliError {
+    Usage(String),
+    Compile(String),
+}
+impl From<&str> for CliError {
+    fn from(message: &str) -> Self { Self::Usage(message.to_string()) }
+}
+impl From<String> for CliError {
+    fn from(message: String) -> Self { Self::Usage(message) }
+}
+
+fn run() -> Result<(), CliError> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut input: Option<String> = None;
     let mut output: Option<String> = None;
@@ -42,7 +53,7 @@ fn run() -> Result<(), String> {
     let source = std::fs::read(&input).map_err(|_| format!("{input}: cannot read UTF-8 source"))?;
     let source = String::from_utf8(source).map_err(|_| format!("{input}: cannot read UTF-8 source"))?;
     let bytes = atto_compiler::compile_with_version(&source, version)
-        .map_err(|d| format!("{input}:{d}"))?;
+        .map_err(|d| CliError::Compile(format!("{input}:{d}")))?;
     if let Some(path) = output {
         std::fs::write(&path, &bytes).map_err(|_| format!("{path}: cannot write"))?;
     } else {
@@ -55,7 +66,8 @@ fn run() -> Result<(), String> {
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
+        Err(CliError::Compile(err)) => { eprintln!("{err}"); ExitCode::from(1) }
+        Err(CliError::Usage(err)) => {
             eprintln!("{err}");
             eprintln!("usage: attoc [--language-version 1|2] <input.atto> [-o out.wasm]");
             ExitCode::from(2)
