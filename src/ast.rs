@@ -429,6 +429,9 @@ pub enum ExprKind {
     /// callable values until closure capture and runtime types are implemented.
     Lambda {
         params: Vec<String>,
+        /// Explicit type on each parameter, preserved for contextual checking.
+        /// Entries align exactly with params; None needs contextual inference.
+        param_types: Vec<Option<Type>>,
         return_type: Option<String>,
         body: LambdaBody,
     },
