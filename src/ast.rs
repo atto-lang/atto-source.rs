@@ -406,7 +406,7 @@ pub enum LambdaBody {
 
 /// Explicit Atto ownership operators, not pointer address syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnershipOp { Borrow, Copy, Take, Share }
+pub enum OwnershipOp { Borrow, Copy, Take, Share, Freeze, Weak, Pin }
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
@@ -422,7 +422,9 @@ pub enum ExprKind {
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
     /// Prefix ownership: borrow! x, borrow! mut x, copy! x, take! x,
-    /// share! x. Parentheses are optional grouping, not call arguments.
+    /// share! x, freeze! x, weak! x, pin! x. Parentheses group expressions.
+    /// A parsed operation is NOT proof of backend support: unsupported ownership
+    /// rights must be rejected by the checker rather than treated as a no-op.
     Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
