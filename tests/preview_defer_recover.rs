@@ -306,7 +306,7 @@ fn handled_exception_effects_are_accepted_in_cleanup() {
            }"#,
         r#"fnc fail(): int { throw Error("caught"); }
            fnc safe(): int {
-             val Option<int> caught = trap fail();
+             val Result<int,Error> caught = trap fail();
              return 17;
            }
            pub fnc main(): int {
@@ -387,7 +387,7 @@ fn escaping_effects_remain_forbidden_in_cleanup() {
            }"#,
         r#"fnc fail(): int { raise Error("uncaught raise"); }
            fnc unsafe_trap(): int {
-             val Option<int> caught = trap fail();
+             val Result<int,Error> caught = trap fail();
              return 11;
            }
            pub fnc main(): int {
@@ -454,7 +454,7 @@ fn effect_solver_exhaustive_cleanup_matrix() {
     for n in 0..10 {
         for uses_trap in [false, true] {
             let safe = if uses_trap {
-                r#"val Option<int> captured = trap fail(); return 8;"#
+                r#"val Result<int,Error> captured = trap fail(); return 8;"#
             } else {
                 r#"try { return fail(); } catch (Error e) { return 8; }"#
             };
@@ -496,7 +496,7 @@ fn declared_throw_raise_effect_upper_bounds_are_checked() {
            }"#,
         r#"fnc fail(): int throws(Error) { throw Error("caught"); }
            fnc safe(): int raises(Error) {
-             val Option<int> result = trap fail();
+             val Result<int,Error> result = trap fail();
              return 9;
            }
            pub fnc main(): int {
