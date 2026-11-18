@@ -3,7 +3,7 @@
 Source repository: `ores-truffle-oreslang/oreslang-source.rs` (numeric repository ID `1426284360`, private).
 Proposed destination: `benefactor-cc/atto-ci` (numeric repository ID `1458316385`, private).
 Alternative destination, not automatically authorized: `anticaptrad/atto-ci` (numeric repository ID `1458325025`, private).
-Initial candidate: PR #44 at `f1ff4e166a09ab517783f64710f684e12825f3d6`. Revalidate head at execution time.
+Historical candidate: PR #44 at `f1ff4e166a09ab517783f64710f684e12825f3d6` was merged as `55704c67b98d2773aa624716de3a9254c67459bd` on 2026-11-18 and is no longer a pending test head. A future authorization must name a different exact current source SHA and receive independent review before any export.
 
 ## Current admission status
 
