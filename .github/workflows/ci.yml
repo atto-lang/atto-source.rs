@@ -55,6 +55,11 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/defer_recover_guest.mjs
 
+      - name: Execute recursive guests against the logical call-depth quota (spec 25)
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/call_depth_guest.mjs
+
       - name: Target-only actor receiver Wasm ABI rejects unsupported code
         run: node tests/target_syntax_wasm.mjs
 
