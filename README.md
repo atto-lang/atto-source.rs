@@ -234,7 +234,7 @@ The compiler does not define any syntax of its own:
 
 - **Syntax** follows the current AttoLang language specification and checked-in parser grammar. That includes binding forms, the `const mut` / `let mut` referent qualifier, statement terminators with implicit newline termination, condition `,` / `|`, and arity overloading.
 - **`int`** is a signed 64-bit integer with checked arithmetic. Overflow is a panic, never a silent wrap. This matches the LLVM backend's trap and spec chapter 17 (TARGET, decided).
-- **Spec** decisions come from the AttoLang spec chapters 01, 16 and 17.
+- **Spec:** normative language decisions are maintained in the current [atto-spec](https://github.com/atto-lang/atto-spec), including versioned feature contracts. The table here reports only this compiler profile, not a frozen cross-backend specification.
 
 ## Admitted subset
 
@@ -378,7 +378,7 @@ cargo build --locked --release --bin attoc
 cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
 ATTOC=target/release/attoc node tests/conformance.mjs
 # Optional Java reference differential (local only; the reference is private):
-ATTO_JAVA=/path/to/atto-java-launcher ATTOC=target/release/attoc node tests/conformance.mjs
+ATTO_JAVA=/absolute/path/to/verified/java-compiler-launcher ATTOC=target/release/attoc node tests/conformance.mjs
 ```
 
 The fixture corpus is in `tests/fixtures/`:
