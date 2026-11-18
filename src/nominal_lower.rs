@@ -75,7 +75,7 @@ fn closing(t: &[Token], open: usize, left: Tok, right: Tok) -> R<usize> {
 
 /// Parse only brace-bodied methods and interface signatures. Refuse exotic
 /// member syntax rather than accidentally treating a declaration as a field.
-fn members(t: &[Token], kind: Kind, owner: &str) -> R<(BTreeMap<String, Method>, bool)> {
+fn members(t: &[Token], kind: Kind, owner: &str, has_parent: bool) -> R<(BTreeMap<String, Method>, bool)> {
     let (mut i, mut out, mut fields) = (0usize, BTreeMap::new(), false);
     while i < t.len() {
         if out.len() >= MAX_METHODS { return Err(diag(t[i].pos, "E_SOURCE_LIMIT", "too many nominal members")); }
@@ -88,6 +88,37 @@ fn members(t: &[Token], kind: Kind, owner: &str) -> R<(BTreeMap<String, Method>,
         if override_at.is_some() && kind != Kind::Class {
             return Err(diag(t[start].pos, "E_OVERRIDE",
                 "trait/interface methods cannot declare a class override"));
+        }
+        // Parsed only in a class member declaration. Until inherited physical
+        // slots have a verified layout ABI, recognize the exact target spelling
+        // and fail closed rather than treating `use` as a field declaration.
+        // A normal method named `use(...)` is NOT a field-alias declaration.
+        if is(t, i, "use") && t.get(i + 1).map(|x| &x.tok) != Some(&Tok::LParen) {
+            let at = t[i].pos;
+            if kind != Kind::Class || override_at.is_some() || public {
+                return Err(diag(at, "E_SYNTAX", "inherited field aliases require a plain class member 'use' declaration"));
+            }
+            let ancestor = name(t, i + 1)?;
+            if t.get(i + 2).map(|x| &x.tok) != Some(&Tok::Dot) {
+                return Err(diag(t.get(i + 2).map_or(at, |x| x.pos), "E_SYNTAX",
+                    "inherited member qualification uses '.' (never '::')"));
+            }
+            let field = name(t, i + 3)?;
+            if !is(t, i + 4, "as") {
+                return Err(diag(t.get(i + 4).map_or(at, |x| x.pos), "E_SYNTAX",
+                    "inherited field alias requires 'as alias_name'"));
+            }
+            let alias = name(t, i + 5)?;
+            if t.get(i + 6).map(|x| &x.tok) != Some(&Tok::Semi) {
+                return Err(diag(t.get(i + 6).map_or(at, |x| x.pos), "E_SYNTAX",
+                    "inherited field alias must end with ';'"));
+            }
+            if !has_parent {
+                return Err(diag(at, "E_ALIAS_TARGET", format!(
+                    "cannot alias {ancestor}.{field} as {alias}: class has no ancestors")));
+            }
+            return Err(diag(at, "E_UNSUPPORTED", format!(
+                "cannot yet alias {ancestor}.{field} as {alias}: inherited field slots require a checked layout and ownership ABI")));
         }
         if is(t, i, "fnc") || is(t, i, "method") { i += 1; }
         let is_ctor = is(t, i, "constructor");
@@ -222,7 +253,7 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
             return Err(diag(t[start].pos, "E_EOF", "unterminated nominal declaration"));
         }
         let body = t[body_start..j].to_vec();
-        let (methods, has_fields_or_ctor) = members(&body, kind, &owner)?;
+        let (methods, has_fields_or_ctor) = members(&body, kind, &owner, !parents.is_empty())?;
         let d = Decl {
             name: owner.clone(), pos: t[start].pos, kind, start, end: j + 1,
             body, parents: parents.clone(), contracts: contracts.clone(),
@@ -332,7 +363,7 @@ fn resolve(
 /// Desugar supported nominal composition into ordinary class methods while
 /// preserving each source token's original file position.
 pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
-    if !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s) if s == "trait" || s == "interface" || s == "extends" || s == "implements")) {
+    if !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s) if s == "trait" || s == "interface" || s == "extends" || s == "implements" || s == "use")) {
         return Ok(t);
     }
     let all = decls(&t)?;
