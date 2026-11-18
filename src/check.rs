@@ -2233,6 +2233,42 @@ impl<'a> FnCx<'a> {
                 TStmt::Recover { flag, args: sets, body, pos: *pos }
             }
             Stmt::Expr(e) => {
+                if let ExprKind::Ownership(OwnershipOp::Drop, _, inner) = &e.kind {
+                    // drop! is a consuming, standalone statement. No stored
+                    // owner/borrow may remain usable afterward. The browser
+                    // backend does not yet implement deterministic heap object
+                    // destructors, so only resource-free primitives are legal.
+                    let ExprKind::Var(name) = &inner.kind else {
+                        return Err(Diagnostic::new(e.pos, "E_DROP_CONTEXT",
+                            "drop! requires a named owned local, not a computed value"));
+                    };
+                    let (slot, ty) = match self.lookup(name) {
+                        Some(l) => (l.slot, l.ty),
+                        None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND",
+                            format!("unknown name '{name}'"))),
+                    };
+                    if self.moved.contains(&slot) {
+                        return Err(Diagnostic::new(e.pos, "E_MOVED",
+                            "cannot drop an already moved or dropped owner"));
+                    }
+                    if self.loans.contains_key(&slot)
+                        || self.loans.values().any(|loan| loan.owner == slot) {
+                        return Err(Diagnostic::new(e.pos, "E_BORROW",
+                            "cannot drop an owner while an active loan exists"));
+                    }
+                    if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
+                        return Err(Diagnostic::new(e.pos, "E_MOVED",
+                            "cannot drop a local declared outside a repeated loop"));
+                    }
+                    if !matches!(ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                        return Err(Diagnostic::new(e.pos, "E_DROP_UNSUPPORTED",
+                            "dropping resource-owning values requires verified destructor and reclamation lowering"));
+                    }
+                    let last_value = self.value(inner)?;
+                    self.moved.insert(slot);
+                    // Evaluate the final primitive read once (no destructor).
+                    return Ok(TStmt::Expr(last_value));
+                }
                 let v = self.expr(e)?;
                 if v.ty == Type::GeneratorInt {
                     return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
@@ -2972,6 +3008,46 @@ impl<'a> FnCx<'a> {
                         format!("{name} requires a verified immutable copyable scalar; class, actor and generator handles are not shareable")));
                 }
                 Ok(value)
+            }
+            OwnershipOp::DeepCopy => {
+                // Primitive immutable values already have independent value
+                // semantics. Heap graphs, nested ADTs and actor handles MUST
+                // receive a graph clone with fresh identities, preserved
+                // internal cycles/aliasing and no external mutable aliases.
+                // Never fake copy!! by returning the same guest object pointer.
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    return Err(Diagnostic::new(pos, "E_DEEP_COPY_PROOF",
+                        "copy!! requires a verified independent object-graph clone; this Wasm subset only admits immutable primitives"));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Drop => Err(Diagnostic::new(pos, "E_DROP_CONTEXT",
+                "drop! must be a standalone statement with a named owned local")),
+            OwnershipOp::Freeze => {
+                // Immutable primitive values have no mutable reachable object graph:
+                // freeze! is observationally the identity for this *proven*
+                // subset. Never extend this rule to class/actor/generator handles
+                // without a transitive freeze witness and alias invalidation.
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    return Err(Diagnostic::new(pos, "E_FREEZE_PROOF",
+                        "freeze! requires verified deep immutability; this Wasm subset only admits immutable scalars"));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Weak => {
+                // A weak handle requires generation-fenced allocation identity,
+                // a nullable upgrade result, and ownership-neutral cleanup.
+                // Returning the source value would silently create a strong alias.
+                Err(Diagnostic::new(pos, "E_WEAK_UNSUPPORTED",
+                    "weak! requires a generation-checked weak handle and Option<Shared<T>> upgrade; not lowered by this Wasm backend"))
+            }
+            OwnershipOp::Pin => {
+                // Pinning is stable *pointee storage*, not an OS-thread affinity
+                // hint. Ordinary guest locals/handles cannot promise it yet.
+                Err(Diagnostic::new(pos, "E_PIN_UNSUPPORTED",
+                    "pin! requires stable-address storage and verified cleanup; not lowered by this Wasm backend"))
             }
             OwnershipOp::Take => {
                 let ExprKind::Var(name) = &inner.kind else {
