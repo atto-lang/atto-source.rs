@@ -766,7 +766,9 @@ pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
     let is_class_formal = |ty: Type| match ty {
         Type::Named(i) => p.type_names.get(i as usize)
             .is_some_and(|(name, _)| class_names.contains(name.as_str())),
-        Type::BorrowNamed(_) => true,
+        // Some compiler frontends synthesize already-resolved program ASTs.
+        // They must not bypass the versioned non-owning mode through Class.
+        Type::Class(_) | Type::BorrowClass(_) | Type::BorrowNamed(_) => true,
         _ => false,
     };
 
@@ -796,18 +798,34 @@ pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
     let mut rewrites = 0usize;
     for func in &mut migrated.funcs {
         for formal in &mut func.params {
-            if let Type::Named(i) = formal.ty {
-                if p.type_names.get(i as usize)
-                    .is_some_and(|(name, _)| class_names.contains(name.as_str()))
+            if is_class_formal(formal.ty) && formal.mutable {
+                // A mutable formal is an explicit effect request. This mode
+                // cannot verify an exclusive caller loan or exported write
+                // contract yet. It must not quietly erase the mut permission.
+                return Err(Diagnostic::new(formal.pos, "E_UNSUPPORTED_TYPE",
+                    "borrow-v1: mutable class formals require verified exclusive argument loans"));
+            }
+            match formal.ty {
+                Type::Named(i) if p.type_names.get(i as usize)
+                    .is_some_and(|(name, _)| class_names.contains(name.as_str())) =>
                 {
-                    // Preserve the exact source class name index and source
-                    // span. The existing BorrowNamed -> BorrowClass path
-                    // supplies permanent non-owning provenance, call loans,
-                    // and non-escapable typed parameters. In particular, an
-                    // ordinary Foo caller is never moved by this rewrite.
+                    // Reuse exact source type index and position for
+                    // BorrowNamed resolution and checked call-loan emission.
                     formal.ty = Type::BorrowNamed(i);
                     rewrites += 1;
                 }
+                Type::Class(i) => {
+                    // An already-resolved compiler-generated class formal
+                    // must not evade the checked non-owning default. Verify
+                    // its type index before letting typed MIR see a reference.
+                    if p.classes.get(i as usize).is_none() {
+                        return Err(Diagnostic::new(formal.pos, "E_UNKNOWN_TYPE",
+                            "borrow-v1: invalid resolved class formal index"));
+                    }
+                    formal.ty = Type::BorrowClass(i);
+                    rewrites += 1;
+                }
+                _ => {}
             }
         }
     }
