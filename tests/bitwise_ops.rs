@@ -47,7 +47,7 @@ fn triple_shift_tokens_cannot_be_mistaken_for_stream_io() {
         assert!(io_shorthand::inspect(&toks).unwrap().is_empty(), "{input}");
     }
     assert_eq!(io_shorthand::inspect(&lexer::lex("stdio.out << 1;").unwrap()).unwrap().len(), 1);
-    assert_eq!(io_shorthand::inspect(&lexer::lex("source >> val x: A<B<C>>;").unwrap()).unwrap().len(), 1);
+    assert_eq!(io_shorthand::inspect(&lexer::lex("source >> val x: A<B<C<D>>>;").unwrap()).unwrap().len(), 1);
 }
 
 #[test]
