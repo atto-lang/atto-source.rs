@@ -46,7 +46,10 @@ fn object_emission_accepts_exact_i64_limits_and_integer_only_syntax() {
 #[test]
 fn parser_preserves_i64_minimum_without_float_rounding() {
     let program = frontend::parse("fnc edge(): int { return -9223372036854775808; }").unwrap();
-    assert_eq!(program.functions[0].expression, frontend::Expr::Integer(i64::MIN));
+    assert_eq!(
+        program.functions[0].expression,
+        frontend::Expr::Integer(i64::MIN)
+    );
 }
 
 #[test]
@@ -60,7 +63,8 @@ fn parser_preserves_i64_above_double_mantissa() {
 
 #[test]
 fn nested_comments_cannot_inject_tokens_or_braces() {
-    let source = "/* fnc evil(): int { return 1; } /* nested */ } */ pub fnc main(): int { return 42; }";
+    let source =
+        "/* fnc evil(): int { return 1; } /* nested */ } */ pub fnc main(): int { return 42; }";
     let program = frontend::parse(source).unwrap();
     assert_eq!(program.functions.len(), 1);
     assert_eq!(program.functions[0].name, "main");
@@ -155,14 +159,21 @@ fn resource_limits_reject_before_object_emission() {
 
 #[test]
 fn accepted_source_does_not_skip_mir_or_effect_admission() {
-    let source = "pub fnc main(): int { return add(40,2); } fnc add(int a,int b): int { return a+b; }";
+    let source =
+        "pub fnc main(): int { return add(40,2); } fnc add(int a,int b): int { return a+b; }";
     let mir = checked(source).unwrap();
     let independently_exported = effects::export_effect_ir_checked(&mir).unwrap();
     let (object, paired_effects) = compile_with_effect_ir(source).unwrap();
     assert!(!object.is_empty());
     assert_eq!(paired_effects, independently_exported);
-    assert_eq!(paired_effects["functions"][0]["operations"][2]["kind"], "call");
-    assert_eq!(paired_effects["functions"][0]["operations"][2]["target"], "add");
+    assert_eq!(
+        paired_effects["functions"][0]["operations"][2]["kind"],
+        "call"
+    );
+    assert_eq!(
+        paired_effects["functions"][0]["operations"][2]["target"],
+        "add"
+    );
 }
 
 #[test]
@@ -182,6 +193,7 @@ fn effect_budget_rejects_adversarial_mir_without_recursive_export() {
         expr = frontend::Expr::Negate(Box::new(expr));
     }
     let module = mir::Module {
+        exports: vec![],
         functions: vec![mir::Function {
             symbol: "edge".to_string(),
             exported: true,
@@ -192,7 +204,10 @@ fn effect_budget_rejects_adversarial_mir_without_recursive_export() {
         managed_refs: Default::default(),
     };
     let error = effects::export_effect_ir_checked(&module).unwrap_err();
-    assert!(error.contains("depth") || error.contains("budget"), "{error}");
+    assert!(
+        error.contains("depth") || error.contains("budget"),
+        "{error}"
+    );
 }
 
 #[test]

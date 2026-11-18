@@ -1,15 +1,22 @@
 //! Independent Rust Oreslang frontend, validated MIR and Cranelift backend.
+pub mod actor_arena;
 pub mod cfg;
 pub mod codegen;
 pub mod effects;
 pub mod flow;
 pub mod frontend;
+pub mod actor_task_lifecycle;
 pub mod mir;
 pub mod profile;
 pub mod safety;
 pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;
+pub mod layout_trace;
+pub mod trace_sites;
+pub mod tiering;
+pub mod actor_isolation_access_v1;
+pub mod layout_plan;
 pub mod owner_arena;
 
 /// This independent scalar object emitter has no TenantVM runtime or actor

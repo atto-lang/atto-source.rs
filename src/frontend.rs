@@ -6,6 +6,17 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     pub functions: Vec<Function>,
+    /// Explicit file-level export metadata, including package-only names.
+    pub exports: Vec<ExportDecl>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportScope { Public, Package }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportDecl {
+    pub name: String,
+    pub scope: ExportScope,
+    pub kind: Option<String>,
+    pub offset: usize,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Function {
@@ -51,6 +62,10 @@ impl std::error::Error for ParseError {}
 enum Kind {
     #[token("pub")]
     Pub,
+    #[token("export")]
+    Export,
+    #[token("class")]
+    Class,
     #[token("define")]
     Define,
     #[token("static")]
@@ -77,6 +92,10 @@ enum Kind {
     RParen,
     #[token("{")]
     LBrace,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
     #[token("}")]
     RBrace,
     #[token(";")]
@@ -105,8 +124,7 @@ enum Kind {
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
-    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+", logos::skip)]
-    #[regex(r"//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
+    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -151,8 +169,7 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
             if depth == 0 {
                 open = i;
             }
-            // Bound nested-comment scanning explicitly. This is checked before
-            // increment, so the limit cannot wrap or admit a 65th level.
+            // Reject 65th nested comment before the counter increments.
             if depth >= 64 {
                 return Err(ParseError {
                     offset: i,
@@ -231,12 +248,29 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
             continue;
         }
         let opens_block = tokens.get(index + 1).map(|next| next.kind) == Some(Kind::LBrace);
+        let opens_task_scope = token.text == "task"
+            && tokens.get(index + 1).map(|next| next.text.as_str()) == Some("scope")
+            && tokens.get(index + 2).map(|next| next.kind) == Some(Kind::LBrace);
+        // Await is valid in the language only inside a suspends fnc/mtd.
+        // This scalar-only compiler cannot typecheck or lower those functions,
+        // so reject them *semantically*, before IR can be emitted.
+        if token.text == "await" || token.text == "suspends" {
+            return Err(ParseError {
+                offset: token.start,
+                class: "suspension_unsupported",
+                message: format!(
+                    "'{}' requires checked suspends/await continuation lowering; this backend cannot execute it",
+                    token.text
+                ),
+            });
+        }
         let message = if EXECUTION_DOMAIN_WORDS.contains(&token.text.as_str()) {
             format!(
                 "execution domain '{}' is reserved and not lowered by this backend; no implicit CPU fallback",
                 token.text
             )
-        } else if opens_block && (token.text == "task" || token.text == "nb") {
+        } else if (opens_block && (token.text == "task" || token.text == "nb"))
+            || opens_task_scope {
             "execution task requires scheduler-aware Future lowering; no implicit inline execution"
                 .into()
         } else {
@@ -299,6 +333,34 @@ fn reject_http_actor_declarations(tokens: &[Token]) -> Result<(), ParseError> {
                         message: "HTTP_ACTOR_BACKEND_UNSUPPORTED: Rust scalar compiler cannot lower source HTTP actor request/mail lifetimes, guarded state, or physical shutdown".into(),
                     });
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// This scalar backend has no singleton identity or guarded shared-memory lowering.
+/// The word stays contextual for ordinary scalar identifiers.
+fn reject_singleton_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (i, token) in tokens.iter().enumerate() {
+        let after = match token.kind {
+            Kind::Define => {
+                if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Pub) {
+                    i + 2
+                } else {
+                    i + 1
+                }
+            }
+            Kind::Pub if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Define) => i + 2,
+            _ => continue,
+        };
+        if let Some(next) = tokens.get(after) {
+            if next.kind == Kind::Identifier && next.text == "singleton" {
+                return Err(ParseError {
+                    offset: next.start,
+                    class: "singleton_unsupported",
+                    message: "ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and owned shared-region RW lowering".into(),
+                });
             }
         }
     }
@@ -422,6 +484,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             start: range.start,
         });
     }
+    reject_singleton_declarations(&tokens)?;
     reject_execution_domains(&tokens)?;
     reject_http_actor_declarations(&tokens)?;
     let mut parser = Parser {
@@ -431,8 +494,37 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         primary_depth: 0,
     };
     let mut functions = Vec::new();
+    let mut exports = Vec::new();
     while parser.peek().is_some() {
-        functions.push(parser.function()?);
+        if parser.peek() == Some(Kind::Export) {
+            exports.push(parser.export_decl()?);
+        } else {
+            functions.push(parser.function()?);
+        }
+    }
+    // Collect all symbols before resolving exports. A forward export and an
+    // identical bottom-of-file export have the same meaning.
+    let mut seen = std::collections::HashSet::new();
+    for e in &exports {
+        if !seen.insert(e.name.clone()) {
+            return Err(ParseError { offset: e.offset, class: "duplicate_export",
+                message: format!("duplicate export '{}'", e.name) });
+        }
+        if let Some(kind) = &e.kind {
+            if kind != "fnc" {
+                return Err(ParseError { offset: e.offset, class: "export_kind_mismatch",
+                    message: format!("'{}' is not an admitted scalar fnc", e.name) });
+            }
+        }
+        let Some(target) = functions.iter_mut().find(|f| f.name == e.name) else {
+            return Err(ParseError { offset: e.offset, class: "export_unresolved",
+                message: format!("unknown export '{}'", e.name) });
+        };
+        if e.scope == ExportScope::Package && target.exported {
+            return Err(ParseError { offset: e.offset, class: "export_visibility_conflict",
+                message: format!("'{}' is already public and cannot be package-only", e.name) });
+        }
+        if e.scope == ExportScope::Public { target.exported = true; }
     }
     if functions.is_empty() {
         return Err(ParseError {
@@ -441,7 +533,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "expected a function declaration".into(),
         });
     }
-    Ok(Program { functions })
+    Ok(Program { functions, exports })
 }
 struct Parser {
     tokens: Vec<Token>,
@@ -469,6 +561,26 @@ impl Parser {
         let token = self.tokens[self.cursor].clone();
         self.cursor += 1;
         Ok(token)
+    }
+    fn export_decl(&mut self) -> Result<ExportDecl, ParseError> {
+        let offset = self.expect(Kind::Export)?.start;
+        self.expect(Kind::Pub)?;
+        let scope = if self.peek() == Some(Kind::LBracket) {
+            self.expect(Kind::LBracket)?;
+            let marker = self.expect(Kind::Identifier)?;
+            if marker.text != "pkg" {
+                return Err(ParseError { offset: marker.start, class: "export_visibility",
+                    message: "only pub[pkg] is supported".into() });
+            }
+            self.expect(Kind::RBracket)?;
+            ExportScope::Package
+        } else { ExportScope::Public };
+        let kind = if self.peek() == Some(Kind::Fnc) { self.expect(Kind::Fnc)?; Some("fnc".into()) }
+            else if self.peek() == Some(Kind::Class) { self.expect(Kind::Class)?; Some("class".into()) }
+            else { None };
+        let name = self.expect(Kind::Identifier)?.text;
+        self.expect(Kind::Semicolon)?;
+        Ok(ExportDecl { name, scope, kind, offset })
     }
     fn function(&mut self) -> Result<Function, ParseError> {
         // Canonical AttoLang permits both "define pub fnc" and
@@ -667,13 +779,14 @@ impl Parser {
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
-                let integer = normalized_integer_digits(&t)?
-                    .parse::<i64>()
-                    .map_err(|_| ParseError {
-                        offset: t.start,
-                        class: "integer_overflow",
-                        message: "i64 integer literal overflow".into(),
-                    })?;
+                let integer =
+                    normalized_integer_digits(&t)?
+                        .parse::<i64>()
+                        .map_err(|_| ParseError {
+                            offset: t.start,
+                            class: "integer_overflow",
+                            message: "i64 integer literal overflow".into(),
+                        })?;
                 Ok(Expr::Integer(integer))
             }
             Some(Kind::Identifier) => {
