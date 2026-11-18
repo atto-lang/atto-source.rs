@@ -101,3 +101,30 @@ fn version_values_are_closed_and_do_not_guess_unsupported_editions() {
         assert_eq!(LanguageVersion::from_number(value), None);
     }
 }
+
+#[test]
+fn out_of_line_class_mtd_respects_same_compatibility_version_as_inline_methods() {
+    // The target-only mtd preflight MUST NOT reject v1 commas before the
+    // shared executable parser sees the receiver's language version.
+    let prefix = "define class Calculator as final int seed: 3; end ";
+    let suffix = " pub fnc main(): int { val c = new Calculator(); return c.four(); }";
+    let legacy = format!("{prefix}pub mtd (Calculator self) four() -> int let int x = self.seed, x + 2 end{suffix}");
+    let marked = format!("{prefix}pub mtd (Calculator self) four() -> int :: let int x = self.seed, x + 2 end{suffix}");
+    good(&legacy, LanguageVersion::Legacy);
+    bad(&legacy, LanguageVersion::Explicit, "E_BODY_VERSION");
+    assert_eq!(good(&marked, LanguageVersion::Legacy),
+               good(&marked, LanguageVersion::Explicit),
+               "explicit comma-body mtd must be byte identical across versions");
+}
+
+#[test]
+fn mtd_target_preflight_does_not_silently_apply_the_other_version() {
+    use atto_compiler::target_syntax::{
+        parse_target_declarations_versioned,
+    };
+    let src = "define class Calculator as final int seed: 3; end pub mtd (Calculator self) four() -> int let int x = self.seed, x + 2 end pub fnc main(): int { return 0; }";
+    let tokens = lex(src).unwrap();
+    assert!(parse_target_declarations_versioned(&tokens, LanguageVersion::Legacy).is_ok());
+    let d = parse_target_declarations_versioned(&tokens, LanguageVersion::Explicit).unwrap_err();
+    assert_eq!(d.code, "E_BODY_VERSION");
+}
