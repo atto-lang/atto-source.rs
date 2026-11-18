@@ -61,7 +61,7 @@ fn direct_ast_cannot_rebind_self() {
     let p = Pos::default();
     let e = Expr {
         kind: ExprKind::Lambda {
-            params: vec!["self".into()], return_type: None,
+            params: vec!["self".into()], param_types: vec![None], return_type: None,
             body: LambdaBody::Expression(Box::new(Expr { kind: ExprKind::Int(Some(1)), pos: p })),
         },
         pos: p,
@@ -79,7 +79,7 @@ fn direct_ast_nested_statement_budget_fails_closed() {
     }
     let e = Expr {
         kind: ExprKind::Lambda {
-            params: vec![], return_type: Some("int".into()),
+            params: vec![], param_types: vec![], return_type: Some("int".into()),
             body: LambdaBody::Block(vec![stmt]),
         },
         pos: p,
@@ -96,7 +96,7 @@ fn direct_ast_deep_expressions_keep_limit() {
         value = Expr { kind: ExprKind::Unary(atto_compiler::ast::UnOp::Plus, Box::new(value)), pos: p };
     }
     let e = Expr {
-        kind: ExprKind::Lambda { params: vec![], return_type: None,
+        kind: ExprKind::Lambda { params: vec![], param_types: vec![], return_type: None,
             body: LambdaBody::Expression(Box::new(value)) }, pos: p,
     };
     let d = check_noncapturing(&e, None, None).unwrap_err();
