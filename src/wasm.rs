@@ -205,6 +205,46 @@ struct Emit<'a> {
     uw: Option<(Option<u32>, u32, u32, u32, u32)>,
     /// Emitting a recovery callback body: `return` exits after defers ran.
     in_recover: bool,
+    /// Only a complete compiler-generated concrete-class copy function
+    /// may lower the private raw-memory opcode.
+    flat_pod_copy_authorized: bool,
+}
+
+/// Recheck the copy-plan structure at the Wasm backend boundary instead of
+/// trusting a public typed-IR variant in arbitrary functions. This rejects
+/// extra statements, wrong local types, mismatched sizes and forged function
+/// placement before emitting any bulk-memory instruction.
+fn verify_flat_pod_copy_function(f: &crate::check::TFunc) -> bool {
+    use crate::check::TStmt;
+    use crate::check::TExpr;
+    let has_copy = f.body.iter().any(|st| matches!(st, TStmt::FlatPodCopy { .. }));
+    if !has_copy {
+        return false;
+    }
+    let canonical = match f.body.as_slice() {
+        [
+            TStmt::Set(1, crate::check::TE {
+                e: TExpr::Alloc(allocated),
+                ty: Type::Class(dest_type),
+            }),
+            TStmt::FlatPodCopy { dest_slot: 1, source_slot: 0, bytes },
+            TStmt::Return(Some(crate::check::TE {
+                e: TExpr::Local(1),
+                ty: Type::Class(ret_type),
+            })),
+        ] => {
+            *bytes == *allocated && dest_type == ret_type
+                && f.params.as_slice() == [Type::Class(*dest_type)]
+                && f.locals.as_slice() == [Type::Class(*dest_type)]
+                && f.ret == Type::Class(*dest_type)
+                && *bytes > 0 && *bytes % crate::check::FIELD_BYTES == 0
+                && *bytes <= HEAP_PAGES * 65536
+        }
+        _ => false,
+    };
+    assert!(canonical && f.name.ends_with(".copy_deep$generated"),
+        "unauthorized or malformed generated FlatPodCopy typed IR");
+    true
 }
 
 impl Emit<'_> {
@@ -493,6 +533,9 @@ impl Emit<'_> {
                 field_op(&mut self.code, *ty, *offset, true);
             }
             TStmt::FlatPodCopy { dest_slot, source_slot, bytes } => {
+                assert!(self.flat_pod_copy_authorized
+                    && *dest_slot == 1 && *source_slot == 0,
+                    "FlatPodCopy outside verified generated class copier");
                 // Compiler-internal copy body: both object pointers already
                 // reside in verified locals, never effectful guest expressions.
                 // Fail even in release builds if a future IR change violates
@@ -1336,6 +1379,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     let main_void = p.funcs[p.main as usize].ret == Type::Void;
     for (i, f) in p.funcs.iter().enumerate() {
+        let flat_pod_copy_authorized = verify_flat_pod_copy_function(f);
         let params: Vec<u8> = f.params.iter().map(|t| vt(*t).unwrap()).collect();
         let is_void_main = i as u32 == p.main && main_void;
         let results: Vec<u8> = if is_void_main { vec![I64] } else { vt(f.ret).into_iter().collect() };
@@ -1355,6 +1399,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             state_write_depth: 0,
             uw: None,
             in_recover: false,
+            flat_pod_copy_authorized,
         };
         if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
             // Creator is lazy: allocate a 56-byte checked continuation frame
@@ -1405,6 +1450,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             state_write_depth: 0,
             uw: None,
             in_recover: false,
+            flat_pod_copy_authorized: false,
         };
         for (ai, a) in p.actors.iter().enumerate() {
             e.code.extend_from_slice(&[0x20, 0]);
