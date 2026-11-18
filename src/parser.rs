@@ -915,6 +915,12 @@ impl Parser {
                     m.fields.push(f);
                 }
                 Some(_) if matches!(self.peek_at(1), Tok::Ident(_)) && !actor => {
+                    // Ordinary type-first CLASS fields default to 'let' for every T:
+                    // pub int n = 1  ==  pub let int n = 1
+                    // pub Foo x = e  ==  pub let Foo x = e
+                    // Do not apply this to locals: bare type-first locals are const.
+                    // FieldMode::Constructor is the currently implemented subset;
+                    // verified post-construction mutable self support is pending.
                     let f = self.parse_type_first_field(public, FieldMode::Constructor)?;
                     m.fields.push(f.field);
                 }
