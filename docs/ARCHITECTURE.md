@@ -1,5 +1,7 @@
 # Oreslang Rust Compiler Architecture
 
+**Canonical naming (2026-11-11): TenantVM** is the per-tenant runtime unit that future Rust HIR/MIR and actor lowering must preserve. This scalar compiler does not itself implement TenantVM hosting. See [TenantVM naming](TENANT_VM_NAMING_V1.md).
+
 * Tokenizer: Logos (implemented).
 * CST: Rowan 0.17 lossless, immutable green trees (selected, not yet integrated).
 * AST/HIR: own Oreslang semantic types, overloads, pattern matching, names, symbols and actor ownership (small expression AST implemented).
