@@ -1,0 +1,13 @@
+// expect-exit: 42
+// Explicit borrow! is the *same* shared loan as an implicit named argument.
+// java: rejects
+define class Person as
+  pub let int age = 21;
+end
+fnc inspect(p: Borrow<Person>): int { return p.age; }
+pub fnc main(): int {
+  let person = new Person();
+  let a = inspect(borrow! person);
+  let b = inspect(person);
+  return a + b;
+}

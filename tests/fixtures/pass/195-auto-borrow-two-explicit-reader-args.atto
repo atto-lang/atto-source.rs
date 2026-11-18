@@ -1,0 +1,13 @@
+// expect-exit: 42
+// Two explicit readers of one owner are checked left-to-right, no moves.
+// java: rejects
+define class Person as
+  pub let int age = 21;
+end
+fnc total(a: Borrow<Person>, b: Borrow<Person>): int {
+  return a.age + b.age;
+}
+pub fnc main(): int {
+  let person = new Person();
+  return total(borrow! person, borrow! person);
+}
