@@ -204,6 +204,13 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    /// Class-loan issuance in checked typed IR. The guest representation is
+    /// still a borrowed, non-owning handle; this marker MUST NOT grant drop,
+    /// move, transfer, or actor-share rights to `alias`.
+    ClassBorrow { alias: u32, owner: u32, mutable: bool, value: TE },
+    /// Checked loan interval end, NOT a deallocation or ownership promotion.
+    /// A later use of alias remains rejected by permanent borrow provenance.
+    ClassLoanEnd { alias: u32, owner: u32, mutable: bool },
     /// ordinary class field initialization / assignment
     FieldSet {
         obj: TE,
@@ -1511,6 +1518,9 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
     body.iter().all(|stmt| match stmt {
         TStmt::Set(_, value) | TStmt::Expr(value) =>
             pure_expr(value, pure_indices),
+        // No pure admission for class borrow markers before complete typed
+        // MIR effect and reference-provenance proof.
+        TStmt::ClassBorrow { .. } | TStmt::ClassLoanEnd { .. } => false,
         TStmt::Return(value) =>
             value.as_ref().is_none_or(|value| pure_expr(value, pure_indices)),
         TStmt::If(arms, otherwise) =>
@@ -1536,6 +1546,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::ClassBorrow { value, .. } => any_in(value, f),
+        TStmt::ClassLoanEnd { .. } => false,
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
         TStmt::If(arms, other) => {
@@ -1792,7 +1804,21 @@ impl<'a> FnCx<'a> {
 
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.scopes.push(Vec::new());
-        let r = self.stmts(body);
+        let mut r = self.stmts(body);
+        // The scanner can keep a loan live conservatively through a nested
+        // scope. Preserve its final *typed* end marker at lexical exit.
+        if let Ok(ref mut typed) = r {
+            let remaining = self.scopes.last().into_iter()
+                .flat_map(|locals| locals.iter())
+                .filter_map(|local| self.loans.get(&local.slot)
+                    .map(|loan| (local.slot, *loan)))
+                .collect::<Vec<_>>();
+            for (alias, loan) in remaining {
+                typed.push(TStmt::ClassLoanEnd {
+                    alias, owner: loan.owner, mutable: loan.mutable
+                });
+            }
+        }
         self.pop_scope();
         r
     }
@@ -1836,7 +1862,11 @@ impl<'a> FnCx<'a> {
                 .map(|local| local.slot)
                 .collect();
             for slot in expired {
-                self.loans.remove(&slot);
+                if let Some(loan) = self.loans.remove(&slot) {
+                    checked.push(TStmt::ClassLoanEnd {
+                        alias: slot, owner: loan.owner, mutable: loan.mutable
+                    });
+                }
             }
         }
         Ok(checked)
@@ -2707,7 +2737,7 @@ impl<'a> FnCx<'a> {
         let slot = self.declare(name, value.ty, false, pos)?;
         self.loans.insert(slot, ScopedLoan { owner, mutable });
         self.borrowed_slots.insert(slot);
-        Ok(TStmt::Set(slot, value))
+        Ok(TStmt::ClassBorrow { alias: slot, owner, mutable, value })
     }
 
     fn explicit_ownership(&mut self, action: OwnershipOp, mutable: bool, inner: &Expr, pos: Pos) -> R<TE> {
