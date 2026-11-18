@@ -177,3 +177,59 @@ fn duplicate_bases_and_contracts_are_rejected_before_composition() {
         pub fnc main(): int { return 0; }
     "#, "E_DUPLICATE");
 }
+
+#[test]
+fn inherited_field_alias_v1_reports_precise_fail_closed_boundaries() {
+    // A valid alias is recognized but MUST NOT be silently flattened into an
+    // unrelated new field before the inherited physical layout ABI exists.
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Cat as pub int age: 10; end
+        define class Hybrid extends Dog, Cat as
+            use Dog.age as dog_age;
+            use Cat.age as cat_age;
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as use Dog::age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_SYNTAX");
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid as use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_ALIAS_TARGET");
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as use Dog.age dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_SYNTAX");
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as use Dog.age as dog_age end
+        pub fnc main(): int { return 0; }
+    "#, "E_SYNTAX");
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as pub use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_SYNTAX");
+}
+
+#[test]
+fn ordinary_class_method_named_use_is_not_a_field_alias() {
+    compiled(r#"
+        define class Base as pub speak(): int { return 2; } end
+        define class Child extends Base as
+            pub use(): int { return 5; }
+        end
+        pub fnc main(): int { return new Child().use(); }
+    "#);
+}
