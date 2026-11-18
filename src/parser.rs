@@ -2727,7 +2727,15 @@ impl Parser {
             }
             LambdaBody::Statement(Box::new(Stmt::Return(value, pos)))
         } else {
-            LambdaBody::Expression(Box::new(self.parse_expr()?))
+            // A braceless lambda's top-level commas are contextual
+            // last-value sequencing, not a tuple or a general comma operator.
+            let first = self.parse_expr()?;
+            let value = if *self.peek() == Tok::Comma {
+                self.parse_return_comma_sequence(first.clone(), first.pos)?
+            } else {
+                first
+            };
+            LambdaBody::Expression(Box::new(value))
         };
         Ok(ExprKind::Lambda { params, return_type, body })
     }
