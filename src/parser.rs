@@ -380,6 +380,57 @@ impl Parser {
 
     // ---------------------------------------------------------------- types
 
+    // Validate lifetime binders in an otherwise unsupported generic head.
+    // Parsing must never erase lifetime parameters and lower an ordinary type.
+    // Full Borrow<T, lt=a> provenance and execution remain gated.
+    fn reject_generic_head(&mut self, kind: &str) -> R<()> {
+        let start = self.pos();
+        self.expect(Tok::Lt, "'<' before generic parameters")?;
+        let mut lifetimes: Vec<String> = Vec::new();
+        let mut count = 0usize;
+        loop {
+            if count >= MAX_PARAMS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "too many generic parameters"));
+            }
+            count += 1;
+            if matches!(self.word_at(0), Some("lt" | "lifetime")) {
+                let marker = self.word_at(0).unwrap().to_owned();
+                let marker_pos = self.pos();
+                self.advance();
+                // The ! marker must touch lt or lifetime in source text.
+                if *self.peek() != Tok::Bang
+                    || self.pos().line != marker_pos.line
+                    || self.pos().col != marker_pos.col + marker.len() as u32
+                {
+                    return Err(Diagnostic::new(marker_pos, "E_SYNTAX",
+                        "lifetime parameters require attached 'lt!' or 'lifetime!'"));
+                }
+                self.advance();
+                let (name, pos) = self.ident("a lifetime parameter name")?;
+                if lifetimes.contains(&name) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                        format!("duplicate lifetime parameter '{name}'")));
+                }
+                lifetimes.push(name);
+            } else {
+                self.ident("a generic type parameter or 'lt!' binder")?;
+            }
+            if !self.eat(&Tok::Comma) { break; }
+            if *self.peek() == Tok::Gt {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "trailing comma in a generic parameter list"));
+            }
+        }
+        self.expect(Tok::Gt, "'>' after generic parameters")?;
+        if lifetimes.is_empty() {
+            Err(unsupported(start, &format!("generic {kind}")))
+        } else {
+            Err(Diagnostic::new(start, "E_UNSUPPORTED_TYPE",
+                format!("{kind} with lt! lifetimes need verified Borrow<T, lt=a> provenance and backend lowering")))
+        }
+    }
+
     fn is_type_word(&self, n: usize) -> bool {
         matches!(
             self.word_at(n),
@@ -735,7 +786,7 @@ impl Parser {
     /// Generic parameters and inheritance clauses are outside the subset.
     fn decl_head(&mut self, kind: &str) -> R<()> {
         if *self.peek() == Tok::Lt {
-            return Err(unsupported(self.pos(), &format!("generic {kind}es")));
+            return self.reject_generic_head(kind);
         }
         if let Some(w @ ("extends" | "implements" | "impl" | "conforms")) = self.word_at(0) {
             return Err(unsupported(self.pos(), &format!("'{w}' on a {kind}")));
@@ -998,6 +1049,7 @@ impl Parser {
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
         let (name, pos) = self.ident("a method name")?;
         if *self.peek() == Tok::Lt {
+            self.reject_generic_head("methods")?;
             return Err(unsupported(self.pos(), "generic methods"));
         }
         self.expect(Tok::LParen, "'('")?;
@@ -1150,6 +1202,7 @@ impl Parser {
         };
         let (name, pos) = self.ident("a function name")?;
         if *self.peek() == Tok::Lt {
+            self.reject_generic_head("functions")?;
             return Err(unsupported(self.pos(), "generic functions"));
         }
         self.expect(Tok::LParen, "'('")?;
