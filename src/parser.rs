@@ -411,6 +411,10 @@ impl Parser {
                 // fail-closed in the typed checker.
                 self.expect(Tok::Lt, "'<' after Borrow")?;
                 let (class, class_pos) = self.ident("a borrowed class name")?;
+                if self.peek() == &Tok::Comma {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "Borrow<T, lifetime> needs checked lifetime parameters and cannot lower as an owned handle"));
+                }
                 self.expect(Tok::Gt, "'>' after borrowed class")?;
                 Type::BorrowNamed(self.type_name(class, class_pos))
             },

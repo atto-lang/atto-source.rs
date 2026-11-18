@@ -3229,7 +3229,11 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 Some(l) => {
-                    if self.borrowed_slots.contains(&l.slot) && !self.loans.contains_key(&l.slot) {
+                    // Borrowed formals live for the entire call frame.
+                    // Lexical aliases begin after the formal slots and can
+                    // expire through nonlexical last-use analysis.
+                    if l.slot >= self.nparams && self.borrowed_slots.contains(&l.slot)
+                        && !self.loans.contains_key(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_BORROW",
                             format!("loan for borrowed alias '{name}' has ended; it is not an owned value")));
                     }
