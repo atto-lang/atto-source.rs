@@ -41,7 +41,8 @@ const MAX_FIELDS: usize = 256;
 const MAX_BYTES: u64 = u32::MAX as u64;
 
 fn aligned(x: u64, align: u64) -> Option<u64> {
-    x.checked_add(align.checked_sub(1)?) .map(|v| v & !(align - 1))
+    let addend = align.checked_sub(1)?;
+    x.checked_add(addend).map(|v| v & !(align - 1))
 }
 
 impl Plan {
@@ -161,6 +162,41 @@ mod tests {
         assert_eq!(Plan::new(Storage::Soa, fields(), u64::MAX), Err(PlanError::SizeOverflow));
         assert_eq!(Plan::new(Storage::Aosoa(16), fields(), u64::MAX), Err(PlanError::SizeOverflow));
         assert_eq!(Plan::new(Storage::Aos, fields(), 0).unwrap().offset(0, 0), None);
+    }
+
+    #[test]
+    fn all_active_scalar_cells_are_aligned_disjoint_and_in_bounds() {
+        let sizes = [
+            ScalarField { size: 8, align: 8 },
+            ScalarField { size: 9, align: 8 },
+            ScalarField { size: 1, align: 1 },
+        ];
+        for layout in [
+            Storage::Aos, Storage::Soa, Storage::Aosoa(1),
+            Storage::Aosoa(2), Storage::Aosoa(4), Storage::Aosoa(7),
+            Storage::Aosoa(16),
+        ] {
+            for len in 0..=33_u64 {
+                let plan = Plan::new(layout, sizes.to_vec(), len).unwrap();
+                let mut ranges = Vec::new();
+                for i in 0..len {
+                    for (field_index, field) in sizes.iter().enumerate() {
+                        let begin = plan.offset(i, field_index).unwrap();
+                        assert_eq!(begin % field.align, 0, "{layout:?} len={len}");
+                        let end = begin + field.size;
+                        assert!(end <= plan.total_bytes);
+                        ranges.push((begin, end));
+                    }
+                }
+                ranges.sort_unstable();
+                for adjacent in ranges.windows(2) {
+                    assert!(adjacent[0].1 <= adjacent[1].0,
+                            "overlapping active cells: {layout:?} len={len} {adjacent:?}");
+                }
+                assert_eq!(plan.offset(len, 0), None);
+                assert_eq!(plan.offset(0, sizes.len()), None);
+            }
+        }
     }
 
     #[test]
