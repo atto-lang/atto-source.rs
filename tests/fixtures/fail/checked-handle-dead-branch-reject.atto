@@ -5,5 +5,6 @@ pub fnc main(): int {
   if false {
     val hidden = ref! 42;
   }
+  fi
   return 42;
 }
