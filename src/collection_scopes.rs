@@ -7,6 +7,10 @@ use crate::collection_types::{annotation, inferred, matches_expected, static_rec
 use crate::diag::{Diagnostic, Pos};
 
 type R<T> = Result<T, Diagnostic>;
+// Ordinary scalar expression chains have a larger bounded AST budget than
+// recursively nested collection literals. collection_types::inferred still
+// enforces MAX_LITERAL_DEPTH for actual collection nesting.
+const MAX_SCOPE_EXPR_DEPTH: usize = 512;
 fn err(at: Pos, code: &'static str, msg: impl Into<String>) -> Diagnostic {
     Diagnostic::new(at, code, msg)
 }
@@ -73,8 +77,8 @@ impl<'a> Scope<'a> {
         }
     }
     fn expression(&self, e: &Expr, expected: Option<&Ty>, depth: usize) -> R<Option<Ty>> {
-        if depth >= MAX_LITERAL_DEPTH {
-            return Err(err(e.pos,"E_NESTING","scoped type expression nesting exceeded"));
+        if depth >= MAX_SCOPE_EXPR_DEPTH {
+            return Err(err(e.pos,"E_NESTING","scoped expression nesting exceeded"));
         }
         let ty = match &e.kind {
             ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) |
