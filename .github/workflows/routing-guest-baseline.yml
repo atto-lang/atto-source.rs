@@ -31,3 +31,16 @@ jobs:
         run: cargo test --locked --test routing_guest_baseline -- --nocapture
       - name: Verify shared compiler positive/negative fixture corpus
         run: cargo test --locked --test fixtures -- --nocapture
+      - name: Install pinned wasm32 target for independent browser compiler host
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.85.1
+          rustc --version
+      - name: Build native compiler and wasm32 compiler from the same pinned tree
+        run: |
+          cargo build --locked --release --bin attoc
+          cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
+      - name: Execute browser compiler guest corpus and compare bytes with native compiler
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/conformance.mjs
