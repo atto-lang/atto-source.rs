@@ -774,7 +774,8 @@ pub fn check(p: &Program) -> R<TProgram> {
     checked_handle_gate::validate(p)?;
     // Lambda lifting does not yet preserve borrowed-parameter provenance.
     // Fail closed rather than producing lifted owned class captures.
-    if p.funcs.iter().any(|f| f.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_)))) {
+    if p.funcs.iter().any(|f| f.params.iter().any(|p|
+        matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowMutNamed(_)))) {
         return check_lowered(p);
     }
     let lowered = direct_lambda::lower(p)?;
@@ -1226,7 +1227,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             params.extend(info.ctor_params.iter().copied());
             funcs[kidx as usize] = Some(TFunc {
                 name: format!("{}.constructor", c.name),
-                param_ownership: vec![ParamOwnership::Legacy; params.len()],
+                param_ownership: std::iter::once(ParamOwnership::Legacy)
+                    .chain(k.params.iter().map(|p| p.ownership)).collect(),
                 params,
                 ret: Type::Void,
                 locals: body.1,
@@ -1272,7 +1274,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         funcs[info.new_idx as usize] = Some(TFunc {
             name: format!("{}.new", c.name),
             params: info.ctor_params.clone(),
-            param_ownership: vec![ParamOwnership::Legacy; info.ctor_params.len()],
+            param_ownership: c.ctor.as_ref()
+                .map(|k| k.params.iter().map(|p| p.ownership).collect())
+                .unwrap_or_default(),
             ret: me,
             locals: vec![me],
             body,
@@ -1293,7 +1297,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: named.iter().map(|x| x.1).collect(),
-                param_ownership: vec![ParamOwnership::Legacy; named.len()],
+                param_ownership: std::iter::once(ParamOwnership::Legacy)
+                    .take(usize::from(!m.is_static))
+                    .chain(m.params.iter().map(|p| p.ownership)).collect(),
                 ret: mi.ret,
                 locals: body.1,
                 body: body.0,
@@ -1359,7 +1365,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: mi.params.clone(),
-                param_ownership: vec![ParamOwnership::Legacy; mi.params.len()],
+                param_ownership: m.params.iter().map(|p| p.ownership).collect(),
                 ret: mi.ret,
                 locals: body.1,
                 body: body.0,
