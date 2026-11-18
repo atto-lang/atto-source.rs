@@ -88,8 +88,10 @@ enum Kind {
     End,
     #[token("->")]
     Arrow,
-    #[token("<-")]
-    ReturnFirstArrow,
+    // Return-first arrow is contextual: lex less-than and minus separately,
+    // preserving expression tokens for comparison with unary negatives.
+    #[token("<")]
+    LessThan,
     #[token("•")]
     ReturnFirstBullet,
     #[token(".")]
@@ -556,7 +558,17 @@ impl Parser {
         let return_first = if self.peek() == Some(Kind::Int) {
             self.expect(Kind::Int)?;
             match self.peek() {
-                Some(Kind::ReturnFirstArrow) => { self.expect(Kind::ReturnFirstArrow)?; }
+                Some(Kind::LessThan) => {
+                    let less = self.expect(Kind::LessThan)?;
+                    let minus = self.expect(Kind::Minus)?;
+                    if minus.start != less.start + less.text.len() {
+                        return Err(ParseError {
+                            offset: minus.start,
+                            class: "syntax_error",
+                            message: "return-first marker '<-' must be contiguous".into(),
+                        });
+                    }
+                }
                 Some(Kind::ReturnFirstBullet) => { self.expect(Kind::ReturnFirstBullet)?; }
                 _ => return Err(ParseError {
                     offset: self.pos(),
