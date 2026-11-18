@@ -13,6 +13,46 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 
 const cases = [
   {
+    name: 'annotated caught throw is safe in defer and preserves normal result',
+    src: `fnc fail(): int throws(Error) { throw Error("inner"); }
+      fnc safe(): int raises(Error) {
+        try { return fail(); }
+        catch (Error e) { stdio.println("handled"); return 9; }
+      }
+      fnc f(): int {
+        defer { stdio.println(safe()); };
+        return 35;
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: 'handled\n9\n', value: 35n,
+  },
+  {
+    name: 'dead throw after terminal return cannot poison cleanup effect',
+    src: `fnc safe(): int raises(Error) {
+        return 8;
+        throw Error("unreachable");
+      }
+      fnc f(): int {
+        defer { stdio.println(safe()); };
+        return 36;
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: '8\n', value: 36n,
+  },
+  {
+    name: 'catch body with no possible ordinary throw is unreachable',
+    src: `fnc safe(): int raises(Error) {
+        try { return 12; }
+        catch (Error e) { throw Error("never"); }
+      }
+      fnc f(): int {
+        defer { stdio.println(safe()); };
+        return 37;
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: '12\n', value: 37n,
+  },
+  {
     name: 'defer accepts a callee whose ordinary throw is caught locally',
     src: `fnc fail(): int { throw Error("inner"); }
       fnc safe(): int {
