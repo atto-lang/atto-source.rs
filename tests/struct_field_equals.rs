@@ -43,11 +43,20 @@ fn calls_ctors_shadowing_and_effectful_values_never_reinterpret_equals() {
     reject(&source("val Particle=7; val p=Particle(x=10,y=20); return p.x;"), "E_STRUCT_RESOLVE");
     reject(&format!("{HEADER}fnc Particle(int x) -> int {{ return x; }}\n\
         pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"), "E_STRUCT_RESOLVE");
+    reject(&format!("{HEADER}fnc helper(int Particle) -> int {{ return Particle; }}\n\
+        pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"), "E_STRUCT_RESOLVE");
     reject(&source("val p=new Particle(x=10,y=20); return p.x;"), "E_STRUCT_TARGET");
     reject(&source("val p=Particle(x=increment(10),y=20); return p.x;"), "E_UNSUPPORTED");
     // An ordinary function named 'foo' is NEVER a struct initializer.
     reject("fnc foo(int x) -> int { return x; }\n\
         pub fnc main(): int { return foo(x=41); }", "E_SYNTAX");
+}
+
+#[test]
+fn does_not_promote_mismatched_field_types_or_record_literals() {
+    assert!(compile(&source("val p=Particle(x=\"wrong\",y=20); return p.y;")).is_err());
+    assert!(compile("define record Receipt as int id; end\n\
+        pub fnc main(): int { val r = Receipt(id=42); return r.id; }").is_err());
 }
 
 #[test]
