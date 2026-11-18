@@ -388,7 +388,7 @@ impl Emit<'_> {
     fn unwind_body(&mut self, body: &[TStmt], is_void_main: bool, ret: Type) {
         let (ret_slot, saved, msg, kind, _) = self.uw.expect("unwind slots");
         let defers: Vec<(u32, &[TStmt])> = body.iter().filter_map(|s| match s {
-            TStmt::Defer { flag, body } => Some((*flag, body.as_slice())),
+            TStmt::Defer { flag, body, .. } => Some((*flag, body.as_slice())),
             _ => None,
         }).collect();
         let recovers: Vec<(u32, &[TStmt])> = body.iter().filter_map(|s| match s {
@@ -558,7 +558,13 @@ impl Emit<'_> {
                 uleb(&mut self.code, 1);
             }
             TStmt::UnwindFrame { .. } => {}
-            TStmt::Defer { flag, .. } => {
+            TStmt::Defer { flag, args, .. } => {
+                // All factory captures are computed before registering the
+                // cleanup; a failed argument cannot register half a defer.
+                for (slot, value) in args {
+                    self.expr(value);
+                    self.set(*slot);
+                }
                 self.i32c(1);
                 self.set(*flag);
             }
