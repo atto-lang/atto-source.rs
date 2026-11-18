@@ -488,20 +488,34 @@ fn recovery_capability_binders_cannot_be_shadowed_in_any_scope() {
 }
 
 #[test]
-fn programs_without_unwind_constructs_keep_their_guest_bytes() {
-    // The unwind lowering is opt-in: no extra tag, global or frame for
-    // existing throw/trap programs.
+fn ordinary_throw_without_recover_keeps_single_private_guest_tag() {
+    // Ordinary throw lowering remains supported independently of trap.
+    // A source-level throw with no trap/recover must not allocate an
+    // unnecessary second tag, global, or unwind frame.
     let plain = r#"
         fnc t(): int { throw Error("x"); }
-        pub fnc main(): int {
-          val Option<int> r = trap t();
-          return 0;
-        }
+        pub fnc main(): int { return 0; }
     "#;
     let bytes = compile(plain).unwrap();
-    // exactly one tag (section 13: id, size, count=1)
+    // Exactly one private ordinary-throw tag (section 13).
     let tag = bytes.windows(3).position(|w| w == [13, 3, 1]);
-    assert!(tag.is_some(), "single private ordinary-throw tag expected");
+    assert!(tag.is_some(), "single ordinary-throw tag expected");
+
+    // Result-valued trap keeps the same private ordinary-throw tag and
+    // must compile without an Option wrapper or a separate EH tag.
+    let trapped = r#"
+        fnc t(): int { throw Error("x"); }
+        pub fnc main(): int {
+            val Result<int,Error> r = trap t();
+            match r over
+              on Ok(v) -> { return v; }
+              on Err(e) -> { return 1; }
+            end
+        }
+    "#;
+    let compiled = compile(trapped).expect("trap must compile to Result guest");
+    assert!(compiled.windows(3).any(|w| w == [13, 3, 1]));
+
 }
 
 #[test]
