@@ -1559,9 +1559,12 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
             | TStmt::Expr(value) | TStmt::StateRegister(value)
             | TStmt::Return(Some(value)) =>
                 expr_escape_effects(value, effects),
-            TStmt::Return(None) | TStmt::UnwindFrame { .. }
-            | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
-            | TStmt::Unreachable => EscapeEffects::default(),
+            // An authenticated raw POD copy cannot produce a catchable Error
+            // or a raise; a WebAssembly memory trap is fatal instead.
+            TStmt::FlatPodCopy { .. } | TStmt::Return(None)
+            | TStmt::UnwindFrame { .. } | TStmt::RecoverNext
+            | TStmt::Break | TStmt::Continue | TStmt::Unreachable =>
+                EscapeEffects::default(),
             TStmt::Throw(value) => expr_escape_effects(value, effects)
                 .union(EscapeEffects { throws: true, raises: false }),
             TStmt::Raise(value) => expr_escape_effects(value, effects)
@@ -1623,6 +1626,21 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
         if returns(std::slice::from_ref(stmt)) { break; }
     }
     all
+}
+
+#[cfg(test)]
+mod flat_copy_effects_integration_tests {
+    use super::*;
+
+    #[test]
+    fn checked_pod_copy_does_not_claim_throw_or_raise() {
+        let stmt = TStmt::FlatPodCopy {
+            dest_slot: 1,
+            source_slot: 0,
+            bytes: 24,
+        };
+        assert_eq!(stmts_escape_effects(&[stmt], &[]), EscapeEffects::default());
+    }
 }
 
 /// Infer escaping effects by monotone fixed point, so recursion and
