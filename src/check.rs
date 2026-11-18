@@ -366,6 +366,7 @@ struct MethodInfo {
     is_static: bool,
     idx: u32,
     params: Vec<Type>,
+    param_names: Vec<String>,
     ret: Type,
 }
 
@@ -378,6 +379,7 @@ struct ClassInfo {
     new_idx: u32,
     ctor_idx: Option<u32>,
     ctor_params: Vec<Type>,
+    ctor_names: Vec<String>,
 }
 
 struct ActorInfo {
@@ -925,6 +927,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 is_static: m.is_static,
                 idx: 0,
                 params: m.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
+                param_names: m.params.iter().map(|q| q.name.clone()).collect(),
                 ret: res(m.ret)?,
             });
         }
@@ -983,6 +986,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
             None => Vec::new(),
         };
+        let ctor_names = c.ctor.as_ref().map(|k| k.params.iter().map(|q| q.name.clone()).collect()).unwrap_or_default();
         classes.push(ClassInfo {
             name: c.name.clone(),
             state_container: c.state_container,
@@ -991,6 +995,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             new_idx,
             ctor_idx,
             ctor_params,
+            ctor_names,
         });
     }
     let mut actors = Vec::new();
@@ -3290,12 +3295,23 @@ impl<'a> FnCx<'a> {
                 ),
             ));
         }
-        let (idx, params) = (info.new_idx, info.ctor_params.clone());
-        let targs = self.args(&format!("{class} constructor"), args, &params)?;
+        let (idx, params, names) = (info.new_idx, info.ctor_params.clone(), info.ctor_names.clone());
+        let targs = self.args_named(&format!("{class} constructor"), args, &params, &names, pos)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
             ty: Type::Class(ci),
         })
+    }
+
+    /// Named parameters are bound to static formal names before typing.
+    fn args_named(&mut self, callee: &str, args: &[Expr], params: &[Type],
+                  names: &[String], pos: Pos) -> R<Vec<TE>> {
+        if args.iter().any(|a| matches!(a.kind, ExprKind::NamedArg(..))) {
+            let ordered = bind_named_arguments(args, names, pos)?;
+            self.args(callee, &ordered, params)
+        } else {
+            self.args(callee, args, params)
+        }
     }
 
     /// Check arguments against parameter types; object arguments move.
@@ -3523,7 +3539,7 @@ impl<'a> FnCx<'a> {
                     }
                     let label = format!("{n}.{name}");
                     self.arity(&label, m.params.len(), args.len(), pos)?;
-                    let targs = self.args(&label, args, &m.params)?;
+                    let targs = self.args_named(&label, args, &m.params, &m.param_names, pos)?;
                     return Ok(TE {
                         e: TExpr::Call(m.idx, targs),
                         ty: m.ret,
@@ -3565,7 +3581,7 @@ impl<'a> FnCx<'a> {
                     };
                     let label = format!("{}.{name}", actor.name);
                     self.arity(&label, m.params.len(), args.len(), pos)?;
-                    let targs = self.args(&label, args, &m.params)?;
+                    let targs = self.args_named(&label, args, &m.params, &m.param_names, pos)?;
                     return Ok(TE {
                         e: TExpr::Call(m.idx, targs),
                         ty: m.ret,
@@ -3673,7 +3689,7 @@ impl<'a> FnCx<'a> {
         let label = format!("{cname}.{name}");
         self.arity(&label, m.params.len(), args.len(), pos)?;
         let mut targs = vec![recv];
-        targs.extend(self.args(&label, args, &m.params)?);
+        targs.extend(self.args_named(&label, args, &m.params, &m.param_names, pos)?);
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,
