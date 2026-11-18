@@ -16,6 +16,7 @@ const positives = [
   '995-copy-doublebang-flat-class-mixed-fields.atto',
   '996-copy-doublebang-constructor-state.atto',
   '997-copy-doublebang-private-state.atto',
+  '998-copy-doublebang-pod-mixed-fields.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
