@@ -2761,8 +2761,8 @@ impl Parser {
                 // A separated "ref !x" does NOT mean "ref! x".
                 // The attached marker is required for checked handles.
                 if matches!(action, OwnershipOp::Ref | OwnershipOp::Deref | OwnershipOp::Unref)
-                    && (self.peek_at(1).pos.line != pos.line
-                        || self.peek_at(1).pos.col != pos.col + s.len() as u32)
+                    && (self.toks[self.i + 1].pos.line != pos.line
+                        || self.toks[self.i + 1].pos.col != pos.col + s.len() as u32)
                 {
                     return Err(Diagnostic::new(pos, "E_SYNTAX",
                         "ref!, deref! and unref! require an attached '!' marker"));
