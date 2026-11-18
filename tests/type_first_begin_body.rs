@@ -21,7 +21,7 @@ fn type_first_begin_end_accepts_four_headers_and_three_closers() {
             assert_eq!(program.funcs.len(), 2, "{src}");
             assert_eq!(program.funcs[0].ret, Type::Int, "{src}");
             let wasm = compile(&src).unwrap_or_else(|e| panic!("{src}: {e}"));
-            assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"), "{src}");
+            assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "{src}");
             assert_eq!(wasm, compile(&src).unwrap(), "{src}");
         }
     }
