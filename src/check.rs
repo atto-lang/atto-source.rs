@@ -3400,8 +3400,8 @@ impl<'a> FnCx<'a> {
     /// evaluation. These end only once all arguments are checked; the guest
     /// call itself is synchronous and returns no borrowed class handle.
     ///
-    /// Each ephemeral loan gets a distinct scratch slot (never an owned
-    /// object); it cannot be promoted, reborrowed or given drop authority.
+    /// Each ephemeral loan gets an out-of-range, checker-only ID (never
+    /// a runtime local or owned handle); no drop authority is created.
     #[inline(never)]
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut temporary_call_loans: Vec<u32> = Vec::new();
@@ -3431,7 +3431,17 @@ impl<'a> FnCx<'a> {
                     // The checker also detects exclusive loans already live
                     // on this owner. Concurrent read loans on the same owner
                     // are allowed, but a later take!/owned argument must fail.
-                    let alias = self.temp(Type::Class(class), arg.pos)?;
+                    // Call loans are *not* class locals: emitting an
+                    // uninitialized class-typed scratch would invent a
+                    // phantom owned handle for future cleanup backends.
+                    // Reserve an out-of-range checker-only token instead.
+                    let mut alias = u32::MAX;
+                    while self.loans.contains_key(&alias) {
+                        alias = alias.checked_sub(1).ok_or_else(||
+                            Diagnostic::new(arg.pos, "E_SOURCE_LIMIT",
+                                "too many simultaneously active compiler loans"))?;
+                    }
+                    debug_assert!(alias > self.nparams + self.locals.len() as u32);
                     self.loans.insert(alias, ScopedLoan {
                         owner: owner_slot, mutable: false,
                     });
