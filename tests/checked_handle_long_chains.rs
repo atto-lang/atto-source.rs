@@ -18,7 +18,7 @@ fn ordinary_250_operator_chain_compiles_without_security_gate_nesting_error() {
     // Keep this as real emitted Wasm, not only an AST walker test.
     let src = format!("pub fnc main(): int {{ return {}; }}", addition_chain(250));
     let wasm = atto_compiler::compile(&src).expect("250-term chain must compile");
-    assert!(wasm.starts_with(b"\\0asm"));
+    assert!(wasm.starts_with(&[0, 97, 115, 109]));
     assert_eq!(wasm, atto_compiler::compile(&src).expect("deterministic compile"));
 }
 
