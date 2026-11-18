@@ -253,8 +253,15 @@ pub enum Stmt {
         finally: Option<Vec<Stmt>>,
         pos: Pos,
     },
-    /// `defer || -> { ... };` registers a LIFO cleanup without running it.
-    Defer { body: Vec<Stmt>, pos: Pos },
+    /// `defer { ... };`, `defer _ -> { ... };`, `defer || -> { ... };`,
+    /// or `defer (|T a| -> _ -> { ... })(value);`.
+    /// Factory arguments are evaluated exactly once at registration.
+    Defer {
+        params: Vec<(String, Type, Pos)>,
+        body: Vec<Stmt>,
+        args: Vec<Expr>,
+        pos: Pos,
+    },
     /// `recover (|T a, ..| -> |err, c| -> { ... })(args);` registers a
     /// recovery callback whose factory arguments are evaluated once, now.
     Recover {
