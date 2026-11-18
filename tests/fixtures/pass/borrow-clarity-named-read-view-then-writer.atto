@@ -1,4 +1,5 @@
 // expect-exit: 42
+// expect-stdout: 40
 // java: rejects
 // A lexical readonly alias ends before an exclusive mutable loan.
 define class Counter as
