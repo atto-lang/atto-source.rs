@@ -41,6 +41,8 @@ fn local_assignment_steps_are_checked_and_yield_new_value() {
         "fnc foo(int v): int { return v * 2; } pub fnc main(): int { let int z = 10; const int x = 5; return foo(seq(z += x, z)); }",
         "fnc foo(int v): int { return v * 2; } pub fnc main(): int { let int z = 10; const int x = 5; return foo(seq z += x, z); }",
         "pub fnc main(): int { let int z = 10; return seq(z = 42, z); }",
+        // Mutating a function-local variable does not by itself violate purity.
+        "pure fnc p(): int { let int z = 41; return seq(z += 1, z); } pub fnc main(): int { return p(); }",
         "pub fnc main(): int { let int z = 10; return (> z += 32, z); }",
     ] { admitted(src); }
 }
@@ -103,13 +105,13 @@ fn explicit_lambda_returns_use_same_checked_comma_sequence_ast() {
     // The browser compiler deliberately does not yet lower arbitrary lambdas.
     // Test parser AST only; NEVER count these as executed guest tests.
     for src in [
-        "pub fnc main(): int { val f = || -> return 10, 20, 42; return 0; }",
-        "pub fnc main(): int { val f = || -> ^ 10, 20, 42; return 0; }",
-        "pub fnc main(): int { val f = || -> return seq 10, 20, 42; return 0; }",
-        "pub fnc main(): int { val f = || -> ^ seq 10, 20, 42; return 0; }",
-        "pub fnc main(): int { val f = || -> return seq(10, 20, 42); return 0; }",
-        "pub fnc main(): int { val f = || -> ^ seq(10, 20, 42); return 0; }",
-        "pub fnc main(): int { val f = || -> return ^ (10, 20, 42); return 0; }",
+        "pub fnc main(): int { val f = (|| -> return 10, 20, 42;); return 0; }",
+        "pub fnc main(): int { val f = (|| -> ^ 10, 20, 42;); return 0; }",
+        "pub fnc main(): int { val f = (|| -> return seq 10, 20, 42;); return 0; }",
+        "pub fnc main(): int { val f = (|| -> ^ seq 10, 20, 42;); return 0; }",
+        "pub fnc main(): int { val f = (|| -> return seq(10, 20, 42);); return 0; }",
+        "pub fnc main(): int { val f = (|| -> ^ seq(10, 20, 42);); return 0; }",
+        "pub fnc main(): int { val f = (|| -> return ^ (10, 20, 42);); return 0; }",
     ] {
         let ast = Parser::new(lex(src).unwrap()).parse_program().unwrap();
         let Stmt::Bind { init, .. } = &ast.funcs[0].body[0] else { panic!("expected lambda binding: {src}") };
@@ -159,7 +161,7 @@ fn delimiters_scope_and_effects_hold_under_nesting() {
         "fnc b(bool v): int { return 42; } pub fnc main(): int { return b(seq(1, 42)); }",
         "pub fnc main(): int { let int n = 1; return seq(n = 2, n += 3); }",
         "pub fnc main(): int { let int n = 1; return seq(n += 1, n += 2,); }",
-        "pure fnc p(): int { let int z = 1; return seq(z += 1, z); } pub fnc main(): int { return p(); }",
+        "pure fnc p(): int { let int z = 1; return seq(stdio.println(z), z); } pub fnc main(): int { return p(); }",
         "pub fnc main(): int { val int value = 42; return seq(take! value, value); }",
     ] { rejected(src); }
 }
