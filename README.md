@@ -140,26 +140,26 @@ zeroization/generation checks, and unsupported construct rejection.
 
 ## Browser tagged ADT milestone (concrete generic profiles)
 
-The browser Rust-to-Wasm frontend executes **three concrete ADT profiles**:
-`Option<int>` (`Some(int)` / `None`), `Result<int,string>`
-(`Ok(int)` / `Err(string)`), and `Option<Result<int,string>>`
-(`Some(Result<int,string>)` / `None`). The nested profile preserves
-the inner Result discriminant, including `Some(Err(...))`, without flattening.
-General-purpose `Option<T>` and `Result<T,E>`, other nested ADTs,
-mutable ADT payloads, generic classes, and cross-actor ADT transfer
-remain unsupported and must not be advertised as implemented.
+The browser Rust-to-Wasm frontend executes **six concrete ADT profiles**:
+`Option<int>`, `Result<int,string>`, `Option<Result<int,string>>`,
+`Result<int,Error>`, `Result<Option<int>,Error>`, and `Result<void,Error>`.
+Nested Option/Result preserve discriminants without implicit flattening.
+General-purpose `Option<T>` and `Result<T,E>`, arbitrary error unions,
+generic classes, and cross-actor ADT transfer remain unsupported.
 
-Postfix `?` now propagates the first executable tagged ADT profiles:
-`Result<int,string>` (extract `Ok(int)`, return the original `Err`)
-and `Option<int>` (extract `Some(int)`, return the original `None`).
-The enclosing function must return the exact same ADT profile; a function
-returning `int` or a different ADT cannot use it. The source is evaluated
-once, the failure path reuses its original tagged allocation, and the
-compiler does not convert `Err` or `None` into a panic. Ternary `? :`
-remains a distinct expression operator. This does not yet support
-generic ADTs, conversions, or `trap` exception capture: no throwable
-function effects are executable in this browser subset, so caller-side
-`trap checked_id(5)` still rejects instead of being simulated.
+Postfix `?` extracts the success payload and returns the **original**
+`Err`/`None` handle on failure. It admits `Option<int>`,
+`Result<int,string>`, `Result<int,Error>`, `Result<Option<int>,Error>`,
+and `Result<void,Error>`, with exact matching enclosing return type.
+When try/finally/defer is registered, `?` exits through the same function
+unwind path as an explicit return: nested finally runs inner-to-outer,
+followed by registered defers in LIFO order, exactly once. Early `?`
+before a defer was registered does not run it. Returned `Err` never
+invokes a catch or recover handler. `?` **inside** defer/recover/finally
+bodies is still rejected with `E_UNSUPPORTED` because it could replace
+an already-pending failure or return. Owned generator iterators are closed
+on early exit; nested `trap` depths are restored before escaping the
+function. Ternary `? :` remains separate.
 
 Constructors are contextual: a typed function return, local binding,
 assignment, or argument supplies the exact declared ADT type. For example,
@@ -187,38 +187,20 @@ and executed by both native and wasm32 compiler paths in CI. This work
 does not update the pinned public playground compiler or lift the
 syntax-preview labels.
 
-### First executable caller-side `trap expr` and ordinary guest throws
+### Executable caller-side `trap` with Result and preserved Error identity
 
-The Rust/Wasm browser subset admits synchronous `trap expr` for the two
-**concrete** operand profiles `int` and `Result<int,string>`. The result
-is `Option<int>` or `Option<Result<int,string>>` respectively, without
-flattening `Some(Err(...))`. The operand is evaluated once, before the
-Some allocation. The only ordinary throwable currently admitted is a
-source-level `throw Error(message)` statement in a **top-level free
-function**, where `message: string` can be computed dynamically.
-A raw `throw "text"`, forged `Error` constructor, or non-string Error
-payload fails static checking.
+The compiler's admitted guest subset now supports `trap` with `Result<int,Error>`, `Result<Option<int>,Error>`, and `Result<void,Error>`, alongside ordinary `int`, `Option<int>` and `void` operands. The normative contract is [atto-spec trap-result-v1](https://github.com/atto-lang/atto-spec/blob/main/language/trap-result-v1.md).
 
-The compiler emits one **private WebAssembly exception tag** whose sole
-payload is the guest Error's i64 string view. It neither imports nor
-exports that tag. The `trap` catch handles only that tag and materializes
-`None`; throws automatically unwind through ordinary Wasm function calls.
-Host exceptions, unknown tags, checked-arithmetic panic, heap exhaustion,
-forced cancellation, and fatal engine traps **bypass** this catch.
+- Ordinary completion of `T` becomes `Ok(T)`; `Option<int>` stays inside `Ok(Some(...))` or `Ok(None)`; `void` becomes `Ok()`.
+- When `T` is already one of the admitted `Result<...,Error>` profiles, the **original tagged Result handle** is reused on ordinary completion—there is no redundant wrapper or recursive flattening.
+- Built-in `Error(message)` allocates an immutable guest Error with identity represented by its heap address and preserved across the module-private ordinary-throw EH tag and `Result.Err`. `Err(error)` returned normally is not thrown, and `Error.message` reads the original message. `catch (Error caught)` binds that **same Error handle** in its lexical handler scope (no message-only clone). The bounded Error builtin `a.is_same_instance(b)` compares opaque object identity, not text; a separately allocated Error with an equal message is not identical.
+- `raise` uses a separate private EH tag; panic, cancellation, OOM and host faults are not caught by `trap`. Nested trap handler-depth is restored on direct `?` exit and on any rethrown non-ordinary Wasm exception. Existing caller-side catch priority over a callee's recover remains intact.
+- Contextual `Ok(...)`/`Err(Error(...))` constructors, exhaustive tagged `match`, `?` early-Err propagation, and the no-payload `Result<void,Error>` success case are compiled and tested for this bounded subset.
 
-This is deliberately **not full language exception parity**: arbitrary
-Error subclasses, first-class Error values, `try/catch`, `recover`,
-`defer` cleanup, async/resumable traps, actor/supervisor exception routing,
-`Option<void>`, `Option<Option<T>>`, and general `Option<T>` remain gated
-by explicit unsupported diagnostics. No existing guest imports/exports or
-`panic_code` meanings change; modules without throws/traps emit no EH
-section. The generated guest needs an engine with WebAssembly exception
-handling enabled.
+**Fail closed for unproved joins.** `trap` on `Result<int,string>` raises `E_TRAP_ERROR_JOIN` and emits no guest because this backend cannot yet represent both returned string errors and thrown Error values losslessly. Other generic shapes and actor/method traps remain unsupported. The compiler does **not** claim arbitrary `Result<T,E>`, Error subclasses, reflection, async or cross-backend parity.
 
-The checked-in `tests/fixtures/pass/107-playground-trap-expression.atto`
-compiles the actual public playground preview body under the candidate
-compiler and executes it in Wasm CI. The **public playground binary** is
-pinned separately and has not been replaced or relabeled by this change.
+The prior Option-valued `trap` was removed. Legacy `Some(Ok(...))`, `Some(Err(...))`, and caught `None` fixtures are now negative migration cases. The checked-in public playground binary is pinned separately and has **not** been replaced or relabeled by this candidate; any release requires independent approval and verified exact compiler/tree receipts.
+
 
 ## Where the syntax comes from
 
@@ -299,10 +281,10 @@ The following are rejected, with the code shown:
 - `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
 - `|>` is functional composition only: receiver stages, actor pipelines and computed callees remain `E_UNSUPPORTED`; stage call arity and types are checked normally. `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
 - `int / int` stays `E_UNSUPPORTED` (S-25, below); write a float operand.
-- `f32`, sized integers, unsupported generic ADT instantiations, arrays and collections give `E_UNSUPPORTED_TYPE`. Admitted profiles are `Option<int>`, `Result<int,string>`, and `Option<Result<int,string>>`.
+- `f32`, sized integers, unsupported generic ADT instantiations, arrays and collections give `E_UNSUPPORTED_TYPE`. The admitted profile list also includes `Result<int,Error>`, `Result<Option<int>,Error>`, and `Result<void,Error>`; other generic instantiations still fail closed.
 - `string + int` is `E_TYPE`, as in Java (no implicit conversion). `string.replace_literal`, `split_literal`, `is_identifier` and `is_route_segment` give `E_UNSUPPORTED`; unknown string members are `E_UNBOUND`.
 - Match patterns other than the admitted scalar/enum patterns and v1 ADT constructor variants (`Some(x)`, `None`, `Ok(x)`, `Err(x)`) give `E_UNSUPPORTED`. Tuple and type patterns remain unsupported; wrong-family or non-exhaustive ADT patterns fail with typed diagnostics. Negative literal patterns, `1 | 4` alternatives and `name when …` remain `E_SYNTAX`.
-- `switch`, value `match<T>`, imports, lambdas, non-v1 generic ADT instantiations, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
+- `switch`, value `match<T>`, imports, lambdas, non-v1 generic ADT instantiations, `for … of`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
 - Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
 
 ### Known divergences from the Java reference
@@ -429,3 +411,16 @@ commit, source/private-carrier Actions have not reported executed test steps;
 treat guest conformance as **NOT_EXECUTED** until a real run succeeds.
 See [language spec](https://github.com/atto-lang/atto-spec/pull/32) and
 [remaining implementation tracker](https://github.com/atto-lang/atto-source.rs/issues/180).
+
+
+### Checked failure effects (browser profile)
+
+Top-level functions may use `@Throws(Error)`, `@Raises(Error)` or lowercase
+`throws(Error)` / `raises(Error)` clauses. Explicit `@Throws()` and
+`@Raises()` declare empty upper bounds; a reachable escaping effect fails
+compilation. Unannotated functions retain inferred compatibility mode.
+Only the built-in nominal `Error` has verified executable transport.
+`@Panics()` / `panics()` are rejected (`E_UNSUPPORTED_EFFECT`) rather than
+certifying absence of unchecked traps. Effect checking for arbitrary Error
+subclasses, callbacks, actor supervisor CONTROL and async cancellation
+remains fail closed. See [typed escaping effects](docs/TYPED_ESCAPING_EFFECTS.md).
