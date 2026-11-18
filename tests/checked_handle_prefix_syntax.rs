@@ -100,7 +100,7 @@ fn mixed_rt_and_bang_notation_is_not_silently_accepted() {
 #[test]
 fn checked_handles_nested_in_unreachable_paths_and_lambdas_are_rejected_pre_lowering() {
     for source in [
-        "pub fnc main(): int { if false { val x = ref! 42; } return 42; }",
+        "pub fnc main(): int { if false { val x = ref! 42; } fi return 42; }",
         "pub fnc main(): int { val cb = |x| -> deref! x; return 42; }",
         "pub fnc main(): int { val h = true ? 42 : unref! 42; return 42; }",
         "pub fnc main(): int { val a = [1, 2, ref! 3]; return 42; }",
