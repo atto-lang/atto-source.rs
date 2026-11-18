@@ -1,0 +1,16 @@
+define struct Particle {
+    x: int;
+    y: int;
+    velocity: int;
+}
+
+fnc main() -> int {
+    let particles: Array<Particle, layout=aosoa(4)> = [
+        Particle(x=1, y=10, velocity=100),
+        Particle(x=2, y=20, velocity=200),
+        Particle(x=3, y=30, velocity=300),
+        Particle(x=4, y=40, velocity=400),
+        Particle(x=5, y=50, velocity=500)
+    ];
+    return particles.columns.x[4];
+}
