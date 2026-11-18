@@ -16,6 +16,10 @@ use super::R;
 /// Bounded traversal, including manually built ASTs using check::check().
 const MAX_VISITS: usize = 65_536;
 const MAX_DEPTH: usize = 128;
+/// A long left-associative expression is not 128 nested lexical scopes.
+/// Keep its admission walk iterative but bounded independently of true
+/// structural nesting. Existing >3,000-term stress cases still fail closed.
+const MAX_BINARY_SPINE: usize = 1_024;
 
 struct Scan {
     visits: usize,
@@ -46,6 +50,43 @@ impl Scan {
     }
 
     fn expr(&mut self, e: &Expr, depth: usize) -> R<()> {
+        // A left-associative binary AST is a linked spine. Recursively
+        // visiting its left child used to count each harmless operator as
+        // one *structural* nesting level. At just 250 terms this tripped
+        // MAX_DEPTH and made the checked-handle security gate reject valid
+        // code even when no checked handles appeared anywhere.
+        //
+        // Walk that spine iteratively, retaining RHS references in reverse
+        // order so the actual admission scan remains left-to-right. This is
+        // particularly important for deterministic first-error reporting
+        // when both sides contain checked-handle syntax. Each binary node
+        // still consumes one MAX_VISITS unit. Neither linear chain length
+        // nor the temporary Vec is unbounded (MAX_BINARY_SPINE).
+        let mut current = e;
+        let mut right_operands = Vec::new();
+        while let ExprKind::Binary(_, left, right) = &current.kind {
+            if right_operands.len() >= MAX_BINARY_SPINE {
+                return Err(Diagnostic::new(current.pos, "E_NESTING",
+                    "binary expression chain exceeds checked-handle admission limit"));
+            }
+            self.enter(current.pos, depth)?;
+            right_operands.push(right.as_ref());
+            current = left.as_ref();
+        }
+        // Ordinary nested expressions (for example a RHS unary, a nested
+        // call or a lambda body) still increase *structural* depth.
+        let result = self.expr_nonbinary(current, depth);
+        result?;
+        for right in right_operands.into_iter().rev() {
+            self.expr(right, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    /// A single nonbinary expression. Keep the original fail-closed
+    /// handling for ref!/deref!/unref! before any lowering can remove a
+    /// dead branch. The binary case is handled by expr() above.
+    fn expr_nonbinary(&mut self, e: &Expr, depth: usize) -> R<()> {
         self.enter(e.pos, depth)?;
         let next = depth + 1;
         match &e.kind {
@@ -63,10 +104,7 @@ impl Scan {
             ExprKind::Ownership(_, _, value) |
             ExprKind::Propagate(value) | ExprKind::Member(value, _) =>
                 self.expr(value, next),
-            ExprKind::Binary(_, left, right) => {
-                self.expr(left, next)?;
-                self.expr(right, next)
-            }
+            ExprKind::Binary(..) => unreachable!("expr() peels binary spines"),
             ExprKind::Ternary(cond, yes, no) => {
                 self.expr(cond, next)?;
                 self.expr(yes, next)?;
