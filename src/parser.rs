@@ -1082,6 +1082,11 @@ impl Parser {
             }
             *flag = true;
             effects.explicit = true;
+            // Each '@' attaches exactly one annotation. A second failure
+            // type/kind cannot be smuggled into the header without '@'.
+            if annotation_context {
+                break;
+            }
         }
         Ok(effects)
     }
