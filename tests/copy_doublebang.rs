@@ -93,3 +93,34 @@ fn immutable_string_backing_does_not_take_the_pod_bulk_copy_path() {
     assert!(!bytes.windows(4).any(|b| b == [0xFC, 0x0A, 0, 0]),
         "string-bearing class must retain typed field-by-field cloning");
 }
+
+#[test]
+fn generated_pod_copy_uses_only_checked_local_slots() {
+    use atto_compiler::{check::{self, TStmt}, lexer, parser::Parser};
+    let source = include_str!("fixtures/pass/998-copy-doublebang-pod-mixed-fields.atto");
+    let ast = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    let typed = check::check(&ast).unwrap();
+    let copier = typed.funcs.iter()
+        .find(|f| f.name == "Snapshot.copy_deep$generated")
+        .expect("concrete generated copier");
+    assert!(matches!(copier.body.get(1),
+        Some(TStmt::FlatPodCopy { dest_slot: 1, source_slot: 0, bytes: 24 })),
+        "verified POD plan must copy exact byte size from source parameter to fresh destination");
+    assert_eq!(copier.body.iter().filter(|s|
+        matches!(s, TStmt::FlatPodCopy { .. })).count(), 1);
+}
+
+#[test]
+fn string_class_never_admits_raw_byte_copy_ir() {
+    use atto_compiler::{check::{self, TStmt}, lexer, parser::Parser};
+    let source = include_str!("fixtures/pass/995-copy-doublebang-flat-class-mixed-fields.atto");
+    let ast = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    let typed = check::check(&ast).unwrap();
+    let copier = typed.funcs.iter()
+        .find(|f| f.name == "Parcel.copy_deep$generated")
+        .expect("concrete generated copier");
+    assert!(!copier.body.iter().any(|s| matches!(s, TStmt::FlatPodCopy { .. })),
+        "string-bearing class must never lower to raw memory copying");
+    assert_eq!(copier.body.iter().filter(|s|
+        matches!(s, TStmt::FieldSet { .. })).count(), 3);
+}
