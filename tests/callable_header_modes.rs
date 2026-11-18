@@ -1,6 +1,6 @@
 //! `-> Type ... end` is explicit-return statement mode;
  //! `-> Type :: ..., tail end` is implicit-return comma mode.
-use atto_compiler::{compile, lexer::lex, parser::Parser, ast::Stmt};
+use atto_compiler::{compile, compile_with_version, lexer::lex, parser::{LanguageVersion, Parser}, ast::Stmt};
 
 fn compiles(source: &str) {
     let bytes = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
@@ -50,7 +50,8 @@ fn malformed_body_modes_rejected_without_guessing() {
         "pub fnc main(): int :: 5 end",
         "pub fnc main() -> int :: { ^ 5; }",
     ] {
-        assert!(compile(src).is_err(), "invalid body admitted: {src}");
+        assert!(compile_with_version(src, LanguageVersion::Explicit).is_err(),
+            "invalid v2 body admitted: {src}");
     }
 }
 
