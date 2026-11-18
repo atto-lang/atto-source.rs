@@ -599,6 +599,9 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> R<Program> {
         let mut prog = Program::default();
+        // Callable global constants are desugared into ordinary functions.
+        // Track their *value* names to reject collisions at any arity.
+        let mut callable_globals = std::collections::BTreeMap::<String, Pos>::new();
         let mut decls = 0usize;
         while *self.peek() != Tok::Eof {
             if decls >= MAX_FUNCS {
@@ -629,6 +632,56 @@ impl Parser {
                     }
                     self.expect(Tok::Semi, "';' after type alias")?;
                     self.type_aliases.insert(name, ty);
+                }
+                (Some("const"), _) if !public => {
+                    // Closed, typed file-scope callable constants have a fixed
+                    // direct target: no table index, closure environment,
+                    // host pointer, mutable cell or runtime global allocation.
+                    let binding = self.parse_binding()?;
+                    self.expect(Tok::Semi, "';' after file-scope callable constant")?;
+                    let Stmt::Bind {
+                        kind: BindKind::Const, name, ty: Some(Type::Callable(i)),
+                        init, pos,
+                    } = binding else {
+                        return Err(Diagnostic::new(start, "E_UNSUPPORTED_TYPE",
+                            "file-scope const currently requires a typed callable lambda"));
+                    };
+                    if self.type_aliases.contains_key(&name) || self.is_type_word_name(&name) {
+                        return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                            format!("file-scope callable '{name}' conflicts with a type name")));
+                    }
+                    if callable_globals.insert(name.clone(), pos).is_some() {
+                        return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                            format!("duplicate file-scope callable '{name}'")));
+                    }
+                    let expected = crate::check::callable_ir::CallableSignature::from_source_type(
+                        Type::Callable(i), &self.type_names, pos)?;
+                    let checked = crate::check::callable_ir::CallableSignature::from_noncapturing(
+                        &init, Some(&expected.params), Some(expected.result))?;
+                    if checked != expected {
+                        return Err(Diagnostic::new(pos, "E_TYPE",
+                            "file-scope callable's lambda does not match its declared type"));
+                    }
+                    let ExprKind::Lambda { body, .. } = init.kind else {
+                        return Err(Diagnostic::new(pos, "E_TYPE",
+                            "file-scope callable initializer must be a lambda"));
+                    };
+                    let body = match body {
+                        LambdaBody::Expression(expression) => {
+                            let at = expression.pos;
+                            vec![Stmt::Return(Some(*expression), at)]
+                        }
+                        LambdaBody::Statement(stmt) => vec![*stmt],
+                        LambdaBody::Block(stmts) => stmts,
+                    };
+                    prog.funcs.push(Func {
+                        name, pos, is_generator: false, is_pure: true,
+                        params: checked.params.into_iter().map(|(name, ty)| Param {
+                            name, ty, mutable: false, pos,
+                        }).collect(),
+                        ret: checked.result,
+                        body,
+                    });
                 }
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
@@ -672,6 +725,17 @@ impl Parser {
                     return Err(unsupported(self.pos(), &what));
                 }
                 _ => prog.funcs.push(self.parse_func()?),
+            }
+        }
+        // Generated callable globals participate in a single value namespace.
+        // Overloads are fine for ordinary fnc declarations, never for consts.
+        for (name, pos) in &callable_globals {
+            if prog.funcs.iter().filter(|f| &f.name == name).count() != 1
+                || prog.classes.iter().any(|d| &d.name == name)
+                || prog.enums.iter().any(|d| &d.name == name)
+                || prog.actors.iter().any(|d| &d.name == name) {
+                return Err(Diagnostic::new(*pos, "E_DUPLICATE",
+                    format!("file-scope callable '{name}' collides with another declaration")));
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
