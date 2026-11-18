@@ -318,6 +318,7 @@ pub struct TGenerator {
 #[derive(Clone, Debug)]
 pub struct TActor {
     pub name: String,
+    pub kind: ActorKind,
     /// `(state global, initializer)` in declaration order.
     pub inits: Vec<(u32, TE)>,
     /// Function index of `receive(value: i64, sequence: i64)`.
@@ -951,6 +952,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut actors = Vec::new();
     let mut globals = Vec::new();
     for a in &p.actors {
+        match a.kind {
+            ActorKind::Default | ActorKind::Serial => {}
+            ActorKind::Isolated | ActorKind::Shared | ActorKind::Untrusted =>
+                return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED",
+                    "isolated/shared/untrusted actor scheduling and security profiles are not implemented by this browser runtime")),
+        }
+        if a.receive.is_none() {
+            return Err(Diagnostic::new(a.pos, "E_TYPE",
+                format!("actor '{}' requires exactly one typed receive(msg: T) or receive(ActorMail<T> mail) entrypoint", a.name)));
+        }
         let fields = fields_of(&a.name, &a.fields, true, globals.len() as u32)?;
         globals.extend(fields.iter().map(|f| f.ty));
         let mut methods = methods_of(&a.name, &a.methods, &a.fields)?;
@@ -977,6 +988,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                             tn_plain(t, tn, &class_names, &p.enums, &actor_names)
                         ),
                     ));
+                }
+                if !r.envelope && t != Type::Int {
+                    return Err(Diagnostic::new(r.pos, "E_UNSUPPORTED_TYPE",
+                        "direct receive(msg: T) currently lowers int only; use ActorMail<bool> for bool, and wait for tagged message ABI for enums/objects"));
                 }
                 t
             }
@@ -1221,12 +1236,16 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         if let (Some(r), Some(ridx)) = (&a.receive, info.receive_idx) {
             let label = format!("{}.receive", a.name);
-            let named = [("$value", Type::Int, false), ("$sequence", Type::Int, false)];
+            let named = if r.envelope {
+                [("$value", Type::Int, false), ("$sequence", Type::Int, false)]
+            } else {
+                [(r.mail.as_str(), Type::Int, false), ("$sequence", Type::Int, false)]
+            };
             let body = body_check(
                 &g,
                 owner,
                 &named,
-                Some((r.mail.as_str(), info.payload)),
+                if r.envelope { Some((r.mail.as_str(), info.payload)) } else { None },
                 Type::Void,
                 &r.body,
                 &label,
@@ -1272,6 +1291,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
         tactors.push(TActor {
             name: a.name.clone(),
+            kind: a.kind,
             inits,
             receive: info.receive_idx,
         });

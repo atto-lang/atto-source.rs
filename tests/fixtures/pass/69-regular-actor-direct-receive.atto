@@ -1,0 +1,14 @@
+// All actors use a sealed single receive entrypoint, even without serial.
+// expect-exit: 0
+// expect-stdout: 42
+define actor Worker as
+    receive(msg: int): void {
+        stdio.println(msg + 2);
+        return;
+    }
+end
+pub fnc main(): int {
+    val worker = spawn Worker();
+    worker.send(40);
+    return 0;
+}

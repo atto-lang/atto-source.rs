@@ -94,6 +94,7 @@ const RESERVED: &[&str] = &[
     "defer",
     "actor",
     "isoactor",
+    "serial",
     "shared",
     "untrusted",
     "spawn",
@@ -136,6 +137,9 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "await",
     "actor",
     "isoactor",
+    "serial",
+    "shared",
+    "untrusted",
     "define",
     "import",
     "async",
@@ -527,7 +531,7 @@ impl Parser {
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("actor")?;
-        let decl = p.parse_actor(true)?;
+        let decl = p.parse_actor(true, ActorKind::Default)?;
         Ok((decl, p.i))
     }
 
@@ -562,16 +566,53 @@ impl Parser {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 2;
-                    let decl = self.parse_actor(true)?;
-                    prog.actors.push(decl);
+                    prog.actors.push(self.parse_actor(true, ActorKind::Default)?);
+                }
+                (Some("define"), Some("serial" | "shared" | "untrusted")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    let kind = match self.word_at(at + 1) {
+                        Some("serial") => ActorKind::Serial,
+                        Some("shared") => ActorKind::Shared,
+                        _ => ActorKind::Untrusted,
+                    };
+                    self.i += at + 2;
+                    self.expect_word("actor")?;
+                    prog.actors.push(self.parse_actor(true, kind)?);
+                }
+                (Some("define"), Some("isoactor")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += at + 2;
+                    prog.actors.push(self.parse_actor(true, ActorKind::Isolated)?);
                 }
                 (Some("actor"), Some(w)) if w != "fnc" => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 1;
-                    let decl = self.parse_actor(false)?;
-                    prog.actors.push(decl);
+                    prog.actors.push(self.parse_actor(false, ActorKind::Default)?);
+                }
+                (Some("serial" | "shared" | "untrusted"), Some("actor")) => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    let kind = match self.word_at(at) {
+                        Some("serial") => ActorKind::Serial,
+                        Some("shared") => ActorKind::Shared,
+                        _ => ActorKind::Untrusted,
+                    };
+                    self.i += at + 2;
+                    prog.actors.push(self.parse_actor(false, kind)?);
+                }
+                (Some("isoactor"), Some(w)) if w != "fnc" => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += at + 1;
+                    prog.actors.push(self.parse_actor(false, ActorKind::Isolated)?);
                 }
                 (Some("define"), Some("enum")) => {
                     if public {
@@ -693,7 +734,7 @@ impl Parser {
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
-    fn parse_actor(&mut self, defined: bool) -> R<ActorDecl> {
+    fn parse_actor(&mut self, defined: bool, kind: ActorKind) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
         self.decl_head("actor")?;
         let close = if defined {
@@ -708,6 +749,7 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
+            kind,
             fields: m.fields,
             receive: m.receive,
             methods: m.methods,
@@ -1005,30 +1047,36 @@ impl Parser {
         })
     }
 
-    /// `receive ( ActorMail < T > name ) [ : void ] block`.
+    /// `receive(msg: T)` or legacy `receive(ActorMail<T> mail)`.
+    /// Both are single sealed entrypoints, never public actor methods.
     fn parse_receive(&mut self, owner: &str) -> R<Receive> {
         let pos = self.pos();
         self.advance();
         self.expect(Tok::LParen, "'('")?;
-        if !self.is_word("ActorMail") {
+        let (mail, payload, envelope) = if self.is_word("ActorMail") {
+            self.advance();
+            if *self.peek() != Tok::Lt {
+                return Err(Diagnostic::new(
+                    self.pos(), "E_TYPE",
+                    "ActorMail requires an explicit payload type, for example ActorMail<int>",
+                ));
+            }
+            self.advance();
+            let payload = self.parse_type()?;
+            self.expect(Tok::Gt, "'>'")?;
+            let (mail, _) = self.ident("a mail parameter name")?;
+            (mail, payload, true)
+        } else if matches!(self.peek_at(1), Tok::Colon) {
+            let (mail, _) = self.ident("a message parameter name")?;
+            self.expect(Tok::Colon, "':' after message parameter")?;
+            let payload = self.parse_type()?;
+            (mail, payload, false)
+        } else {
             return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' parameter must be ActorMail<T>"),
+                self.pos(), "E_TYPE",
+                format!("actor '{owner}.receive' takes exactly one typed message (msg: T) or ActorMail<T> mail"),
             ));
-        }
-        self.advance();
-        if *self.peek() != Tok::Lt {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                "ActorMail requires an explicit payload type, for example ActorMail<int>",
-            ));
-        }
-        self.advance();
-        let payload = self.parse_type()?;
-        self.expect(Tok::Gt, "'>'")?;
-        let (mail, _) = self.ident("a mail parameter name")?;
+        };
         if *self.peek() == Tok::Comma {
             return Err(Diagnostic::new(
                 self.pos(),
@@ -1045,7 +1093,7 @@ impl Parser {
             ));
         }
         let body = self.parse_block()?;
-        Ok(Receive { pos, mail, payload, body })
+        Ok(Receive { pos, mail, payload, envelope, body })
     }
 
     /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.

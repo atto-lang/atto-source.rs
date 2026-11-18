@@ -1,0 +1,18 @@
+// Serial actor with the canonical one-parameter typed receive entrypoint.
+// expect-exit: 0
+// expect-stdout: 7
+// expect-stdout: 10
+define serial actor Counter as
+    let int count = 0;
+    receive(msg: int): void {
+        self.count = self.count + msg;
+        stdio.println(self.count);
+        return;
+    }
+end
+pub fnc main(): int {
+    val counter = spawn Counter();
+    counter.send(7);
+    counter.send(3);
+    return 0;
+}

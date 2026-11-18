@@ -58,6 +58,20 @@ const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', '
 export const MAX_ACTORS = BROWSER_MAX_ACTORS;
 export const MAX_MAILBOX = BROWSER_MAX_MAILBOX;
 
+export function actorModes(module) {
+  const sections = WebAssembly.Module.customSections(module, 'atto.actor_modes');
+  if (!sections.length) return [];
+  assert.equal(sections.length, 1, 'one atto.actor_modes section');
+  const bytes = new Uint8Array(sections[0]);
+  let pos = 0;
+  const leb = () => { let r = 0, s = 0, b; do { b = bytes[pos++]; r |= (b & 127) << s; s += 7; } while (b & 128); return r; };
+  const count = leb();
+  assert.equal(bytes.length - pos, count, 'one mode byte per actor');
+  const modes = Array.from(bytes.subarray(pos));
+  assert.ok(modes.every(mode => mode === 0 || mode === 1), 'no unsupported actor kind downgraded');
+  return modes;
+}
+
 export function actorNames(module) {
   const sections = WebAssembly.Module.customSections(module, 'atto.actors');
   if (!sections.length) return [];
@@ -83,6 +97,8 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
   assert.ok(['main', 'panic_code'].every(n => exportNames.includes(n)), 'guest exports main and panic_code');
   assert.ok(exportNames.every(n => ALLOWED_EXPORTS.has(n)), 'no extra exports');
   const names = actorNames(module);
+  const modes = actorModes(module);
+  assert.equal(modes.length, names.length, 'every actor declares a runtime scheduling mode');
   assert.equal(exportNames.includes('actor_receive'), names.length > 0, 'actor exports iff actor table');
   let out = '';
   const actors = [];

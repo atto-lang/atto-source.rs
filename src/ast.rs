@@ -161,20 +161,36 @@ pub struct EnumDecl {
     pub variants: Vec<(String, Pos)>,
 }
 
-/// `receive(ActorMail<T> mail): void { ... }`.
+/// One sealed actor ingress. A plain typed parameter is lowered directly,
+/// while ActorMail<T> retains access to envelope fields such as sequence.
 #[derive(Clone, Debug)]
 pub struct Receive {
     pub pos: Pos,
     pub mail: String,
     pub payload: Type,
+    /// true for `receive(ActorMail<T> mail)`, false for `receive(mail: T)`.
+    pub envelope: bool,
     pub body: Vec<Stmt>,
 }
 
-/// `define actor Name as ... end` or `actor Name ... end` (Java Parser).
+/// Preserve the declared scheduling/isolation request through all compiler
+/// stages. The current browser runtime admits only Default and Serial and
+/// executes one receive at a time for both; the other kinds fail closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActorKind {
+    Default,
+    Serial,
+    Isolated,
+    Shared,
+    Untrusted,
+}
+
+/// `define actor Name as ... end` or `define serial actor Name as ... end`.
 #[derive(Clone, Debug)]
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    pub kind: ActorKind,
     pub fields: Vec<Field>,
     pub receive: Option<Receive>,
     pub methods: Vec<Method>,

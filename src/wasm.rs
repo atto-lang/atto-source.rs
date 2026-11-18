@@ -23,7 +23,7 @@
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
-use crate::ast::{BinOp, Type};
+use crate::ast::{ActorKind, BinOp, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
@@ -1590,6 +1590,21 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             name(&mut a, &actor.name);
         }
         section(&mut out, 0, a);
+
+        // Runtime-visible actor kind table, one byte per actor in atto.actors
+        // order. 0 = default, 1 = serial. Unimplemented isolation modes were
+        // rejected by the checker rather than silently downgraded.
+        let mut modes = Vec::new();
+        name(&mut modes, "atto.actor_modes");
+        uleb(&mut modes, p.actors.len() as u64);
+        for actor in &p.actors {
+            modes.push(match actor.kind {
+                ActorKind::Default => 0,
+                ActorKind::Serial => 1,
+                _ => unreachable!("unsupported actor kind rejected by checker"),
+            });
+        }
+        section(&mut out, 0, modes);
     }
     out
 }
