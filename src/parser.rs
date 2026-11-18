@@ -1220,7 +1220,12 @@ impl Parser {
     /// Nested blocks have their own delimiters. First delimiter wins: this
     /// preserves the legacy grammar without a speculative parser fallback.
     fn first_callable_body_separator(&self) -> Option<(Tok, Pos)> {
+        // This is only a *legacy v1* classifier, never an acceptance parser.
+        // Ignore nested conditional/match commas and explicit-return comma
+        // sequences. The production statement parser is still authoritative.
         let (mut parens, mut brackets, mut braces) = (0u32, 0u32, 0u32);
+        let mut nested_end: Vec<&'static str> = Vec::new();
+        let mut return_sequence = false;
         for token in self.toks.iter().skip(self.i) {
             match &token.tok {
                 Tok::LParen | Tok::SequenceOpen => parens += 1,
@@ -1229,14 +1234,39 @@ impl Parser {
                 Tok::RBracket => brackets = brackets.saturating_sub(1),
                 Tok::LBrace => braces += 1,
                 Tok::RBrace => braces = braces.saturating_sub(1),
-                Tok::Ident(s) if s == "end"
-                    && parens == 0 && brackets == 0 && braces == 0 => break,
-                Tok::Comma | Tok::Semi
-                    if parens == 0 && brackets == 0 && braces == 0 =>
-                        return Some((token.tok.clone(), token.pos)),
                 Tok::Eof => break,
+                _ if parens != 0 || brackets != 0 || braces != 0 => {}
+                Tok::Ident(word) if matches!(word.as_str(), "if") => {
+                    nested_end.push("fi");
+                }
+                Tok::Ident(word) if matches!(word.as_str(), "match" | "select" | "switch" | "begin") => {
+                    nested_end.push("end");
+                }
+                Tok::Ident(word) if matches!(word.as_str(), "do") => {
+                    nested_end.push("done");
+                }
+                Tok::Ident(word) if matches!(word.as_str(), "fi" | "end" | "done") => {
+                    if nested_end.last().copied() == Some(word.as_str()) {
+                        nested_end.pop();
+                    } else if word == "end" && nested_end.is_empty() {
+                        break;
+                    }
+                }
+                Tok::Ident(word) if word == "return" && nested_end.is_empty() => {
+                    return_sequence = true;
+                }
+                Tok::Caret if nested_end.is_empty() => {
+                    return_sequence = true;
+                }
+                Tok::Semi if nested_end.is_empty() =>
+                    return Some((Tok::Semi, token.pos)),
+                Tok::Comma if nested_end.is_empty() && !return_sequence =>
+                    return Some((Tok::Comma, token.pos)),
                 _ => {}
             }
+            // Each opener has a bounded token source; fail closed later in
+            // the parser, rather than allocating for adversarial depth.
+            if nested_end.len() > MAX_DEPTH as usize { break; }
         }
         None
     }
@@ -1272,11 +1302,22 @@ impl Parser {
                 if !matches!(first, Some((Tok::Semi, _))) {
                     return self.parse_erlang_body(ret);
                 }
-            } else if let Some((Tok::Comma, pos)) = first {
-                return Err(Diagnostic::new(pos, "E_BODY_VERSION",
-                    "language version 2 requires '::' before a comma/implicit-tail callable body; insert '::' after '-> Type' to preserve comma evaluation, or use ';' statements with explicit return/^; version 1 preserves unmarked comma bodies"));
             }
-            let statements = self.parse_stmts_until(&["end"])?;
+            // In strict v2, parse the actual statement grammar FIRST. Lexical
+            // commas inside `return a, b`, `return seq a, b`, match arms
+            // and nested callbacks are not outer comma-body separators.
+            // Only a statement parse that genuinely stops at an unexpected
+            // outer comma receives the edition migration diagnostic.
+            let statements = match self.parse_stmts_until(&["end"]) {
+                Ok(parsed) => parsed,
+                Err(_error) if self.language_version == LanguageVersion::Explicit
+                    && *self.peek() == Tok::Comma =>
+                {
+                    return Err(Diagnostic::new(self.pos(), "E_BODY_VERSION",
+                        "language version 2 requires '::' before a comma/implicit-tail callable body; insert '::' after '-> Type' to preserve comma evaluation, or use ';' statements with explicit return/^; version 1 preserves unmarked comma bodies"));
+                }
+                Err(error) => return Err(error),
+            };
             self.expect_word("end")?;
             return Ok(statements);
         }
