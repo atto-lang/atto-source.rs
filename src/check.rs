@@ -161,6 +161,11 @@ pub enum TExpr {
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
+    /// Checked physical-array cell load at a compiler-planned in-bounds
+    /// byte offset. Never represented as a class field or untrusted pointer.
+    CollectionLoad { array: Box<TE>, offset: u32 },
+    /// Bounded source-compiled Array allocation in guest linear memory.
+    CollectionAlloc(u32),
     /// ordinary class field read
     FieldGet {
         obj: Box<TE>,
@@ -201,6 +206,9 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    /// Compiler-planned scalar i64 cell store inside an owned Array allocation.
+    /// Its offset is checked against the resolved nominal layout/length.
+    CollectionStore { array: TE, offset: u32, value: TE },
     /// ordinary class field initialization / assignment
     FieldSet {
         obj: TE,
@@ -730,6 +738,19 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // Validate the bounded CFG and integer-only suspension/lifetime profile
     // before registering signatures. Reject unsupported generator effects
     // before emission; never substitute eager iterator materialization.
+    for spec in &p.array_types {
+        // Nominal resolution is performed by the same production type checker
+        // that validates functions/classes, not by token-level generic guesses.
+        if !p.classes.iter().any(|c| c.name == spec.element) {
+            return Err(Diagnostic::new(spec.pos, "E_UNKNOWN_TYPE",
+                format!("Array element '{}' requires a declared nominal class type", spec.element)));
+        }
+    }
+    if let Some(spec) = p.array_types.first() {
+        return Err(Diagnostic::new(spec.pos, "E_UNSUPPORTED",
+            format!("Array<{}, layout={:?}> is a checked nominal generic specialization, but general-purpose Array storage and borrow lowering are not yet enabled outside the bounded compiled guest profile",
+                spec.element, spec.layout)));
+    }
     for f in &p.funcs {
         if f.is_generator {
             precheck_generator_body(&f.body, &p.funcs)?;
@@ -1493,6 +1514,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
+        TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } => false,
@@ -1514,7 +1536,7 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
             pure_stmts(body, pure_indices) && pure_stmts(update, pure_indices),
         TStmt::Block(body) => pure_stmts(body, pure_indices),
         TStmt::Break | TStmt::Continue | TStmt::Unreachable => true,
-        TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
+        TStmt::CollectionStore { .. } | TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
@@ -1530,6 +1552,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
+        TStmt::CollectionStore { array, value, .. } =>
+            any_in(array, f) || any_in(value, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
         }
@@ -1566,6 +1590,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
+        TExpr::CollectionLoad { array, .. } => any_in(array, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
     }
