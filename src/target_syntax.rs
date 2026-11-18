@@ -101,6 +101,68 @@ impl Cursor<'_> {
         }
         Ok(name)
     }
+    /// Only used for return-type headers. Preserve balanced generic types
+    /// without changing the older, restricted receiver-parameter type grammar.
+    /// Production parsing after lowering validates every generic instantiation.
+    fn return_type_name(&mut self) -> R<String> {
+        let mut text = match self.tok().clone() {
+            Tok::Ident(s) => { self.next(); s },
+            _ => return Err(self.err("E_SYNTAX", "expected a return type")),
+        };
+        if !self.take(&Tok::Lt) { return Ok(text); }
+        text.push('<');
+        let mut depth = 1usize;
+        let mut expect_argument = true;
+        let mut budget = 0usize;
+        while depth > 0 {
+            budget += 1;
+            if budget > 256 {
+                return Err(self.err("E_SOURCE_LIMIT", "generic return type exceeds token budget"));
+            }
+            match self.tok().clone() {
+                Tok::Ident(name) if expect_argument => {
+                    text.push_str(&name);
+                    expect_argument = false;
+                }
+                Tok::Lt if !expect_argument => {
+                    depth += 1;
+                    if depth > 64 {
+                        return Err(self.err("E_NESTING", "generic return type nesting exceeds 64"));
+                    }
+                    text.push('<');
+                    expect_argument = true;
+                }
+                Tok::Comma if !expect_argument => {
+                    text.push(',');
+                    expect_argument = true;
+                }
+                Tok::Gt if !expect_argument => {
+                    depth -= 1;
+                    text.push('>');
+                    expect_argument = false;
+                }
+                Tok::Eof => return Err(self.err("E_EOF", "unclosed generic return type")),
+                _ => return Err(self.err("E_SYNTAX", "malformed generic return type")),
+            }
+            self.next();
+        }
+        Ok(text)
+    }
+
+    fn looks_prefixed_return_type(&self) -> bool {
+        if !matches!(self.tok(), Tok::Ident(_)) { return false; }
+        let mut depth = 0usize;
+        for tok in self.toks.iter().skip(self.i + 1).take(256).map(|x| &x.tok) {
+            match tok {
+                Tok::Bullet if depth == 0 => return true,
+                Tok::Lt => { depth += 1; if depth > 64 { return false; } }
+                Tok::Gt if depth > 0 => depth -= 1,
+                Tok::Comma | Tok::Ident(_) if depth > 0 => {}
+                _ => return false,
+            }
+        }
+        false
+    }
     fn params(&mut self) -> R<Vec<ReceiverParam>> {
         self.expect(&Tok::LParen, "expected '(' before parameters")?;
         let mut params = Vec::new();
@@ -135,7 +197,7 @@ impl Cursor<'_> {
             return Err(self.err("E_SYNTAX", "duplicate return type after prefix '•'"));
         }
         let mut return_type = if self.take(&Tok::Colon) || self.take(&Tok::Arrow) {
-            self.type_name()?
+            self.return_type_name()?
         } else {
             prefix_return.clone().unwrap_or_else(|| "void".to_owned())
         };
@@ -146,7 +208,7 @@ impl Cursor<'_> {
             if prefix_return.is_some() {
                 return Err(self.err("E_SYNTAX", "duplicate return type after prefix '•'"));
             }
-            return_type = self.type_name()?;
+            return_type = self.return_type_name()?;
         }
         if matches!(self.word(), Some("throws" | "raises" | "panics")) {
             return Err(self.err("E_SYNTAX", "effect clauses cannot follow the trailing return type"));
@@ -191,7 +253,7 @@ impl Cursor<'_> {
     /// Erlang comma-tail scan, these bodies allow semicolons and require no
     /// implicit tail return. The actual statement grammar runs after lowering.
     fn statements_to_end(&mut self) -> R<()> {
-        let (mut nested, mut conditionals, mut braces, mut items) = (0u32, 0u32, 0u32, 0usize);
+        let (mut nested, mut conditionals, mut braces) = (0u32, 0u32, 0u32);
         loop {
             match self.tok() {
                 Tok::Eof => return Err(self.err("E_EOF", "unclosed statement/end method body")),
@@ -200,9 +262,8 @@ impl Cursor<'_> {
                     if conditionals != 0 {
                         return Err(self.err("E_SYNTAX", "unclosed conditional in statement/end body"));
                     }
-                    if items == 0 {
-                        return Err(self.err("E_SYNTAX", "empty statement/end method body"));
-                    }
+                    // An empty void begin/end is legal. The production
+                    // checker rejects non-void fallthrough after lowering.
                     self.next();
                     return Ok(());
                 }
@@ -222,7 +283,6 @@ impl Cursor<'_> {
                 }
                 _ => {}
             }
-            items += 1;
             self.next();
         }
     }
@@ -333,9 +393,8 @@ impl Cursor<'_> {
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
         let method_start = self.i;
-        let prefix_return = if matches!(self.tok(), Tok::Ident(_))
-            && matches!(self.toks.get(self.i + 1).map(|t| &t.tok), Some(Tok::Bullet)) {
-            let ty = self.type_name()?;
+        let prefix_return = if self.looks_prefixed_return_type() {
+            let ty = self.return_type_name()?;
             self.expect(&Tok::Bullet, "expected '•' after return type")?;
             Some(ty)
         } else {
@@ -375,7 +434,7 @@ impl Cursor<'_> {
     }
 
     fn typefirst_function(&mut self) -> R<(usize, usize)> {
-        let prefix_return = self.type_name()?;
+        let prefix_return = self.return_type_name()?;
         self.expect(&Tok::Bullet, "expected '•' after return type")?;
         self.ident()?;
         self.params()?;
@@ -473,8 +532,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 out.receivers.push(method);
             } else if c.take_word("fnc") || c.take_word("routine") {
                 function_spans.push(c.function()?);
-            } else if matches!(c.tok(), Tok::Ident(_))
-                && matches!(c.toks.get(c.i + 1).map(|t| &t.tok), Some(Tok::Bullet)) {
+            } else if c.looks_prefixed_return_type() {
                 function_spans.push(c.typefirst_function()?);
             } else {
                 return Err(c.err("E_SYNTAX",
