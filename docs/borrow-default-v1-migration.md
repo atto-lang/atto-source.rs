@@ -11,6 +11,19 @@ The **first source line** must be exactly:
 
 This is a temporary compiler migration header until project-level configuration and the formatter's versioned ownership contract are ratified. It does not create a new language keyword. An unknown header at the first line rejects with `E_PROFILE`; no run-time detection or silent fallback. Files without this header compile using the existing legacy consuming-`Foo` ABI. A misplaced header on a later line rejects with `E_PROFILE` rather than silently reverting to legacy ownership.
 
+## External profile selection (native build drivers)
+
+The first-line source marker is retained as a backward-compatible temporary migration bridge. The native `attoc` compiler now also supports explicit profile selection **without** editing source:
+
+```bash
+attoc input.atto --ownership-profile borrow-default-v1 -o app.wasm
+attoc input.atto --ownership-profile legacy -o legacy.wasm
+```
+
+An embedding compiler may instead call `compile_with_profile(source, OwnershipProfile::BorrowDefaultV1)`. If an explicit profile conflicts with the source header, compilation fails with `E_PROFILE` and emits no guest module. Unknown and duplicate CLI flags reject, and a missing option retains the historical source-marker/default behavior.
+
+**No automatic manifest discovery is implemented yet.** The build driver must select its package's ownership version explicitly. The eventual package TOML field, cross-module export/import ownership metadata and formatter integration require separate spec review: a caller must never silently treat an imported owned formal as a borrow, or vice versa.
+
 ## Ownership contract in this narrow compiler slice
 
 ```atto
