@@ -76,3 +76,24 @@ WebAssembly memory after mutation: the original object retains int=42,
 float=1.5, bool=true while the independent clone has int=7, float=1.5,
 bool=false. This is in addition to the existing guest return and negative
 diagnostic checks. No performance claim or generalized graph admission.
+
+## Backend boundary revalidation
+
+The Wasm emitter independently verifies the exact shape of the generated
+`<Class>.copy_deep$generated` body before emitting `memory.copy`:
+one checked allocation in local 1, one 0-to-1 bulk copy whose byte count
+matches the allocation, and one return of that same local. Input, result,
+allocation and local types must all match the concrete class type, and the
+copy size must be a nonzero aligned number of bytes within the fixed heap.
+
+Raw-memory instructions in arbitrary user functions, actors, nested control
+flow, or malformed typed-IR functions cause a compiler-side assertion rather
+than emitting an unproved Wasm memory access. This is defense in depth: no
+user-supplied source annotation can create an AOT witness.
+
+A Rust adversarial test mutates a valid compiler-generated typed program in
+seven ways (wrong source/destination slots, wrong byte count, spoofed function
+name, missing destination local, extra instruction, and an unauthorized copy
+in main) and requires every invalid variant to fail before producing Wasm.
+These are compiler rejection checks, not an authorization mechanism for
+untrusted external typed IR. All cross-backend portability remains separate.
