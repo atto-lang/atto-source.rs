@@ -27,7 +27,7 @@ fn unreachable_method_calls_do_not_create_false_effect_violations() {
     wasm(r#"
 define class Service as
     risky(): int throws(Error) { return 41; }
-    safe(): int raises(Error) { return 42; return self.risky(); }
+    pub safe(): int raises(Error) { return 42; return self.risky(); }
 end
 pub fnc main(): int { val s = new Service(); return s.safe(); }
 "#);
