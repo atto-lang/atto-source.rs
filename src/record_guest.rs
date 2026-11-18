@@ -63,6 +63,55 @@ fn expression(kind: ExprKind, pos: Pos) -> Expr { Expr { kind, pos } }
 
 const MAX_KEY_BYTES: usize = 128;
 
+// Scan using an explicit worklist. This is a cheap proof that ordinary
+// arithmetic/calls are untouched by Record-specific reconstruction, even
+// when a Record happens to be in scope.
+fn has_record_projection(e: &Expr, env: &BTreeMap<String, Value>) -> bool {
+    let mut stack=vec![e];
+    while let Some(expr)=stack.pop() {
+        match &expr.kind {
+            ExprKind::Member(base,_) => {
+                if matches!(&base.kind,ExprKind::Var(name)
+                    if matches!(env.get(name),Some(Value::Record(_)))) {
+                    return true;
+                }
+                stack.push(base);
+            }
+            ExprKind::Index(base,key) => {
+                if matches!(&base.kind,ExprKind::Var(name)
+                    if matches!(env.get(name),Some(Value::Record(_)))) {
+                    return true;
+                }
+                stack.push(base);
+                stack.push(key);
+            }
+            ExprKind::Unary(_,value) | ExprKind::Trap(value) |
+            ExprKind::Propagate(value) | ExprKind::Ownership(_,_,value) =>
+                stack.push(value),
+            ExprKind::Binary(_,left,right) => {stack.push(left);stack.push(right);}
+            ExprKind::Ternary(c,a,b) => {stack.push(c);stack.push(a);stack.push(b);}
+            ExprKind::Call(_,args) | ExprKind::New(_,args) |
+            ExprKind::Array(args) | ExprKind::Tuple(args) =>
+                stack.extend(args.iter()),
+            ExprKind::MethodCall(base,_,args) => {
+                stack.push(base);stack.extend(args.iter());
+            }
+            ExprKind::With(base,items) => {
+                stack.push(base);
+                for (_,v) in items {stack.push(v);}
+            }
+            ExprKind::Record(items) => {
+                for (_,v) in items {stack.push(v);}
+            }
+            ExprKind::Map(items) => {
+                for (k,v) in items {stack.push(k);stack.push(v);}
+            }
+            _=>{}
+        }
+    }
+    false
+}
+
 fn initializer(ty: Type, pos: Pos) -> Expr {
     let kind = match ty {
         Type::Int => ExprKind::Int(Some(0)),
@@ -205,7 +254,8 @@ impl Lower {
     fn rewrite_expr(&self, e: Expr, env: &BTreeMap<String,Value>, depth: usize) -> R<Expr> {
         // Non-Record programs must never be reinterpreted by this optional
         // lowering pass: preserve their original AST and diagnostics exactly.
-        if !env.values().any(|v|matches!(v,Value::Record(_))) {
+        if !env.values().any(|v|matches!(v,Value::Record(_))) ||
+            !has_record_projection(&e,env) {
             return Ok(e);
         }
         if depth > MAX_PROJECTION_DEPTH {
