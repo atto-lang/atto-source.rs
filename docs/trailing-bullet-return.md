@@ -35,7 +35,7 @@ The Rust frontend tests cover postfix, bullet and ASCII `<-` spellings, top-leve
 The brace-free type-first form has a **mandatory physical newline** after the
 complete declaration signature (including any postfix annotation/effect
 clauses). Indentation and column position do not determine the block. The
-callable's own \`end\` may be followed by exactly one optional \`.\` or \`;\`.
+callable's own `end` may be followed by exactly one optional `.` or `;`.
 
 ~~~atto
 int <- foo()
@@ -58,14 +58,14 @@ end.
 Braced equivalents remain accepted, including same-line bodies. These
 semicolon/newline-separated statement bodies reuse the checked explicit/end
 parser; a trailing expression is **not** an inferred return. Nesting is based
-on the actual grammar (\`if ... fi\`, \`match ... end\`, and class/actor
-\`end\` delimiters each consume their own closing token). Missing closing
-\`end\`, a same-line unbraced statement, an empty body, a second end
+on the actual grammar (`if ... fi`, `match ... end`, and class/actor
+`end` delimiters each consume their own closing token). Missing closing
+`end`, a same-line unbraced statement, an empty body, a second end
 punctuation mark, a conflicting return annotation, and an unsupported
 Unicode BLACK CIRCLE U+25CF delimiter must fail closed.
 
-The spellings \`<-\` and U+2022 \`•\` are the only two admitted prefix
-return delimiters; U+25CF \`●\` is deliberately excluded. This change
+The spellings `<-` and U+2022 `•` are the only two admitted prefix
+return delimiters; U+25CF `●` is deliberately excluded. This change
 does not add general newline-delimited bodies to legacy headers or alter
-\`x<-1\` expression lexing. Real compiler execution and other backend
+`x<-1` expression lexing. Real compiler execution and other backend
 conformance remain rollout gates.
