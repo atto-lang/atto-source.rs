@@ -1330,83 +1330,199 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     })
 }
 
-/// Find functions that can emit an application-level exceptional unwind.
-/// Since the browser slice does not yet have fully checked declared effects,
-/// this conservative fixed point includes any direct throw/raise and *all*
-/// transitive calls to those functions (even if some branches may catch them).
-/// Cycles are bounded by the finite number of typed functions.
-///
-/// Defer, recover and finally must never replace an in-flight return/failure
-/// with an exception from a called function. Previously only direct
-/// throw/raise statements were rejected, leaving this indirect bypass open.
+/// The source guest exception channels. Panic/trap is deliberately absent:
+/// it is a fatal runtime outcome, not a catchable or locally recoverable
+/// \`Error\`. These two bits are propagated through the typed call graph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EscapeEffects { throws: bool, raises: bool }
+
+impl EscapeEffects {
+    fn union(self, other: Self) -> Self {
+        Self { throws: self.throws || other.throws, raises: self.raises || other.raises }
+    }
+    fn without_throw(self) -> Self {
+        Self { throws: false, raises: self.raises }
+    }
+    fn any(self) -> bool { self.throws || self.raises }
+}
+
+/// Infer *escaping* effects of a typed expression. A trap discharges only
+/// ordinary throw; it cannot intercept raise or a fatal runtime panic.
+/// Evaluation of arguments occurs outside the called function's handler,
+/// so argument effects must also be included in the result.
+fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
+    fn combine<'a>(values: impl IntoIterator<Item=&'a TE>, effects: &[EscapeEffects]) -> EscapeEffects {
+        values.into_iter().fold(EscapeEffects::default(),
+            |acc, v| acc.union(expr_escape_effects(v, effects)))
+    }
+    match &value.e {
+        TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_)
+        | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
+        | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
+        | TExpr::Spawn(_) => EscapeEffects::default(),
+        TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
+        | TExpr::Not(v) | TExpr::Print { value: v, .. }
+        | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
+        | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
+        | TExpr::FieldGet { obj: v, .. }
+        | TExpr::StateFieldRead { obj: v, .. }
+        | TExpr::PrintObj { obj: v, .. } =>
+            expr_escape_effects(v, effects),
+        TExpr::Trap { value: v, .. } =>
+            expr_escape_effects(v, effects).without_throw(),
+        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b)
+        | TExpr::Send { target: a, value: b } =>
+            combine([a.as_ref(), b.as_ref()], effects),
+        TExpr::Ternary(cond, yes, no) =>
+            combine([cond.as_ref(), yes.as_ref(), no.as_ref()], effects),
+        TExpr::Str(_, receiver, arg) =>
+            expr_escape_effects(receiver, effects)
+                .union(arg.as_ref().map_or(EscapeEffects::default(),
+                    |v| expr_escape_effects(v, effects))),
+        TExpr::AdtNew { payload, .. } =>
+            payload.as_ref().map_or(EscapeEffects::default(),
+                |v| expr_escape_effects(v, effects)),
+        TExpr::Call(target, args) => {
+            let callee = effects.get(*target as usize).copied().unwrap_or(
+                // Unknown typed call targets must fail closed, not be assumed pure.
+                EscapeEffects { throws: true, raises: true });
+            combine(args.iter(), effects).union(callee)
+        }
+    }
+}
+
+/// Compute escaping effects through typed blocks. An ordinary catch handles
+/// the entire ordinary-throw effect of its protected body, including calls,
+/// nested handlers and error-producing arguments; a raise always bypasses it.
+/// The catch body is analyzed independently because it may itself escape.
+fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffects {
+    body.iter().fold(EscapeEffects::default(), |all, stmt| {
+        let next = match stmt {
+            TStmt::Set(_, value) | TStmt::GlobalSet(_, value)
+            | TStmt::Expr(value) | TStmt::StateRegister(value)
+            | TStmt::Return(Some(value)) =>
+                expr_escape_effects(value, effects),
+            TStmt::Return(None) | TStmt::UnwindFrame { .. }
+            | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
+            | TStmt::Unreachable => EscapeEffects::default(),
+            TStmt::Throw(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: true, raises: false }),
+            TStmt::Raise(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: false, raises: true }),
+            TStmt::FieldSet { obj, value, .. } |
+            TStmt::StateFieldWrite { obj, value, .. } =>
+                expr_escape_effects(obj, effects)
+                    .union(expr_escape_effects(value, effects)),
+            TStmt::StateCriticalWrite(inner) | TStmt::Block(inner) =>
+                stmts_escape_effects(inner, effects),
+            TStmt::If(arms, other) => {
+                let mut result = other.as_ref().map_or(EscapeEffects::default(),
+                    |b| stmts_escape_effects(b, effects));
+                for (cond, arm) in arms {
+                    result = result.union(expr_escape_effects(cond, effects))
+                        .union(stmts_escape_effects(arm, effects));
+                }
+                result
+            }
+            TStmt::Loop { cond, body, update } =>
+                cond.as_ref().map_or(EscapeEffects::default(),
+                    |v| expr_escape_effects(v, effects))
+                    .union(stmts_escape_effects(body, effects))
+                    .union(stmts_escape_effects(update, effects)),
+            TStmt::ForIn { source, body, .. } =>
+                expr_escape_effects(source, effects)
+                    .union(stmts_escape_effects(body, effects)),
+            TStmt::Try { body, catch, finally, .. } => {
+                let protected = stmts_escape_effects(body, effects);
+                let handled = if catch.is_some() {
+                    protected.without_throw()
+                } else { protected };
+                let caught = catch.as_ref().map_or(EscapeEffects::default(),
+                    |b| stmts_escape_effects(b, effects));
+                let cleanup = finally.as_ref().map_or(EscapeEffects::default(),
+                    |b| stmts_escape_effects(b, effects));
+                handled.union(caught).union(cleanup)
+            }
+            // Registration expressions run immediately; callbacks run
+            // only on exit/failure. Including them remains conservative.
+            // In particular, we NEVER assume recover handles the current
+            // function's own errors: caller catches outrank callee recover.
+            TStmt::Defer { args, body, .. } |
+            TStmt::Recover { args, body, .. } => {
+                let captures = args.iter().fold(EscapeEffects::default(),
+                    |acc, (_, arg)| acc.union(expr_escape_effects(arg, effects)));
+                captures.union(stmts_escape_effects(body, effects))
+            }
+        };
+        all.union(next)
+    })
+}
+
+/// Infer escaping effects by monotone fixed point, so recursion and
+/// mutually recursive call groups converge without unsound assumptions.
+/// Validate each cleanup body with those exact effects. A callee that
+/// catches its own throw, or a call wrapped in \`trap\`, can now be used
+/// safely within cleanup; an escaping raise can never be suppressed by
+/// an ordinary catch/trap. Unreachable-code precision remains deliberately
+/// conservative until the CFG effect solver is complete.
 fn audit_cleanup_call_effects(funcs: &[TFunc]) -> R<()> {
-    let mut may_unwind: BTreeSet<u32> = funcs.iter().enumerate()
-        .filter(|(_, f)| stmt_exists(&f.body,
-            &|s| matches!(s, TStmt::Throw(_) | TStmt::Raise(_))))
-        .map(|(index, _)| index as u32)
-        .collect();
+    let mut effects = vec![EscapeEffects::default(); funcs.len()];
     loop {
-        let prior = may_unwind.len();
+        let mut changed = false;
         for (index, f) in funcs.iter().enumerate() {
-            if any_in_stmts(&f.body, &|e| match &e.e {
-                TExpr::Call(target, _) =>
-                    (*target as usize >= funcs.len()) || may_unwind.contains(target),
-                _ => false,
-            }) {
-                may_unwind.insert(index as u32);
+            let next = stmts_escape_effects(&f.body, &effects);
+            if next != effects[index] {
+                effects[index] = effects[index].union(next);
+                changed = true;
             }
         }
-        if may_unwind.len() == prior { break; }
+        if !changed { break; }
     }
-    // Registration is top-level in this profile; try/finally may be nested.
-    // Source positions are carried into typed IR for precise, deterministic
-    // fail-closed diagnostics instead of emitting an unsound Wasm artifact.
-    fn verify_scopes(body: &[TStmt], may_unwind: &BTreeSet<u32>, count: usize) -> R<()> {
-        let unsafe_call = |statements: &[TStmt]| any_in_stmts(statements, &|e|
-            matches!(&e.e, TExpr::Call(target, _)
-                if (*target as usize >= count) || may_unwind.contains(target)));
+
+    // Only registration is limited to the top-level browser profile:
+    // try/finally and branch nesting can already be arbitrary.
+    fn verify_scopes(body: &[TStmt], effects: &[EscapeEffects]) -> R<()> {
         for stmt in body {
             match stmt {
-                TStmt::Defer { body: cleanup, pos, .. }
-                | TStmt::Recover { body: cleanup, pos, .. } => {
-                    if unsafe_call(cleanup) {
+                TStmt::Defer { body: cleanup, pos, .. } |
+                TStmt::Recover { body: cleanup, pos, .. } => {
+                    if stmts_escape_effects(cleanup, effects).any() {
                         return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
-                            "cleanup/recovery callback transitively calls code that may throw or raise"));
+                            "cleanup/recovery callback has a provably escaping throw or raise"));
                     }
                 }
                 TStmt::Try { body: inner, catch, finally, pos, .. } => {
-                    if let Some(cleanup) = finally {
-                        if unsafe_call(cleanup) {
-                            return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
-                                "finally transitively calls code that may throw or raise"));
-                        }
+                    if finally.as_ref().is_some_and(|b|
+                        stmts_escape_effects(b, effects).any())
+                    {
+                        return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
+                            "finally has an escaping throw or raise"));
                     }
-                    verify_scopes(inner, may_unwind, count)?;
+                    verify_scopes(inner, effects)?;
                     if let Some(handler) = catch {
-                        verify_scopes(handler, may_unwind, count)?;
+                        verify_scopes(handler, effects)?;
                     }
                     if let Some(cleanup) = finally {
-                        verify_scopes(cleanup, may_unwind, count)?;
+                        verify_scopes(cleanup, effects)?;
                     }
                 }
                 TStmt::If(arms, other) => {
-                    for (_, inner) in arms { verify_scopes(inner, may_unwind, count)?; }
-                    if let Some(inner) = other { verify_scopes(inner, may_unwind, count)?; }
+                    for (_, inner) in arms { verify_scopes(inner, effects)?; }
+                    if let Some(inner) = other { verify_scopes(inner, effects)?; }
                 }
                 TStmt::Loop { body: inner, update, .. } => {
-                    verify_scopes(inner, may_unwind, count)?;
-                    verify_scopes(update, may_unwind, count)?;
+                    verify_scopes(inner, effects)?;
+                    verify_scopes(update, effects)?;
                 }
-                TStmt::ForIn { body: inner, .. } | TStmt::Block(inner)
-                | TStmt::StateCriticalWrite(inner) => {
-                    verify_scopes(inner, may_unwind, count)?;
-                }
+                TStmt::ForIn { body: inner, .. } |
+                TStmt::Block(inner) | TStmt::StateCriticalWrite(inner) =>
+                    verify_scopes(inner, effects)?,
                 _ => {}
             }
         }
         Ok(())
     }
-    for f in funcs { verify_scopes(&f.body, &may_unwind, funcs.len())?; }
+    for f in funcs { verify_scopes(&f.body, &effects)?; }
     Ok(())
 }
 
