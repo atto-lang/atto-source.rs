@@ -205,6 +205,8 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    /// Source-only callable aliases resolve to canonical, interned Type values.
+    type_aliases: std::collections::BTreeMap<String, Type>,
     /// Scope of an explicit generator function body.
     in_generator: bool,
     /// Only the outer Erlang-style callable sequence accepts commas as
@@ -261,6 +263,7 @@ impl Parser {
             height: 0,
             cond: 0,
             type_names: Vec::new(),
+            type_aliases: std::collections::BTreeMap::new(),
             in_generator: false,
             erlang_body: false,
             state_method: false,
@@ -384,11 +387,90 @@ impl Parser {
         matches!(
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
-        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || self.type_aliases.contains_key(w))
+    }
+
+    /// Reuse one interned identity for every spelling of the same signature.
+    fn intern_callable(&mut self, params: Vec<Type>, result: Type, pos: Pos) -> R<Type> {
+        if params.len() > MAX_PARAMS {
+            return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                "callable signature exceeds maximum parameter count"));
+        }
+        if params.iter().any(|t| !matches!(t, Type::Int | Type::Bool | Type::Float | Type::Str))
+            || !matches!(result, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "callable signatures currently admit scalar parameters and scalar/void results"));
+        }
+        let spelling = format!("fnc({})->{}",
+            params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
+            result.name());
+        let id = match self.type_names.iter().position(|(name, _)| name == &spelling) {
+            Some(i) => i as u32,
+            None => self.type_name(spelling, pos),
+        };
+        Ok(Type::Callable(id))
+    }
+
+    fn parse_callable_delimited(&mut self, end: Tok, pos: Pos, allow_slim_arrow: bool) -> R<Type> {
+        let mut params = Vec::new();
+        if *self.peek() != end {
+            loop {
+                if params.len() >= MAX_PARAMS {
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                        "callable signature exceeds maximum parameter count"));
+                }
+                let at = self.pos();
+                let arg = self.parse_type()?;
+                if !matches!(arg, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    return Err(Diagnostic::new(at, "E_UNSUPPORTED_TYPE",
+                        "callable parameter must be a non-void scalar type"));
+                }
+                params.push(arg);
+                if !self.eat(&Tok::Comma) { break; }
+            }
+        }
+        self.expect(end, "closing delimiter after callable parameters")?;
+        if !self.eat(&Tok::FatArrow) && !(allow_slim_arrow && self.eat(&Tok::Arrow)) {
+            return Err(self.expected("'=>' before callable result type"));
+        }
+        let result = self.parse_type()?;
+        self.intern_callable(params, result, pos)
+    }
+
+    fn is_type_word_name(&self, name: &str) -> bool {
+        matches!(name, "int" | "bool" | "boolean" | "void" | "float" | "f64"
+            | "string" | "String" | "fnc" | "Option" | "Result"
+            | "ActorRef" | "ActorMail" | "Generator")
+            || is_reserved(name) || UNSUPPORTED_TYPES.contains(&name)
     }
 
     fn parse_type(&mut self) -> R<Type> {
         let pos = self.pos();
+        if self.eat(&Tok::Pipe) {
+            return self.parse_callable_delimited(Tok::Pipe, pos, false);
+        }
+        if self.eat(&Tok::LParen) {
+            // Either grouped type: ((int,int)=>int), or an arrow signature.
+            let mut params = Vec::new();
+            if *self.peek() != Tok::RParen {
+                loop {
+                    if params.len() >= MAX_PARAMS {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                            "callable signature exceeds maximum parameter count"));
+                    }
+                    params.push(self.parse_type()?);
+                    if !self.eat(&Tok::Comma) { break; }
+                }
+            }
+            self.expect(Tok::RParen, "')' after parenthesized type")?;
+            if self.eat(&Tok::FatArrow) {
+                let result = self.parse_type()?;
+                return self.intern_callable(params, result, pos);
+            }
+            return if params.len() == 1 { Ok(params[0]) } else {
+                Err(self.expected("'=>' after callable parameters"))
+            };
+        }
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
             _ => return Err(self.expected("a type")),
@@ -397,46 +479,13 @@ impl Parser {
         let ty = match name.as_str() {
             "int" => Type::Int,
             "fnc" => {
-                // Canonical source type form: fnc(int, bool) -> float.
-                // The first profile admits scalar callback contracts only,
-                // without silently treating callable types as runtime values.
-                self.expect(Tok::LParen, "'(' after fnc callable type")?;
-                let mut params = Vec::<Type>::new();
-                if *self.peek() != Tok::RParen {
-                    loop {
-                        if params.len() >= MAX_PARAMS {
-                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
-                                "callable signature exceeds maximum parameter count"));
-                        }
-                        let arg_pos = self.pos();
-                        let arg = self.parse_type()?;
-                        if !matches!(arg, Type::Int | Type::Bool | Type::Float | Type::Str) {
-                            return Err(Diagnostic::new(arg_pos, "E_UNSUPPORTED_TYPE",
-                                "callable parameter must be a non-void scalar type"));
-                        }
-                        params.push(arg);
-                        if !self.eat(&Tok::Comma) { break; }
-                    }
+                if self.eat(&Tok::LParen) {
+                    self.parse_callable_delimited(Tok::RParen, pos, true)?
+                } else if self.eat(&Tok::Pipe) {
+                    self.parse_callable_delimited(Tok::Pipe, pos, false)?
+                } else {
+                    return Err(self.expected("'(' or '|' after fnc callable type"));
                 }
-                self.expect(Tok::RParen, "')' after callable parameters")?;
-                self.expect(Tok::Arrow, "'->' before callable result type")?;
-                let result_pos = self.pos();
-                let result = self.parse_type()?;
-                if !matches!(result,
-                    Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
-                    return Err(Diagnostic::new(result_pos, "E_UNSUPPORTED_TYPE",
-                        "callable return type must be scalar or void"));
-                }
-                let spelling = format!("fnc({})->{}",
-                    params.iter().map(|t| t.name()).collect::<Vec<_>>().join(","),
-                    result.name());
-                // Identical contracts have identical Type identity across
-                // declarations, regardless of whitespace and type aliases.
-                let id = match self.type_names.iter().position(|(n, _)| *n == spelling) {
-                    Some(existing) => existing as u32,
-                    None => self.type_name(spelling, pos),
-                };
-                Type::Callable(id)
             }
             "Option" => {
                 self.expect(Tok::Lt, "'<' after Option")?;
@@ -495,6 +544,7 @@ impl Parser {
                     "ActorMail<T> is only the parameter type of an actor receive handler",
                 ))
             }
+            n if self.type_aliases.contains_key(n) => self.type_aliases[n],
             n if is_reserved(n) => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'"))),
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
@@ -549,6 +599,23 @@ impl Parser {
             let at = usize::from(public);
             let start = self.pos();
             match (self.word_at(at), self.word_at(at + 1)) {
+                (Some("type"), _) if !public => {
+                    self.advance();
+                    let (name, alias_pos) = self.ident("a callable type alias")?;
+                    if self.type_aliases.contains_key(&name)
+                        || self.is_type_word_name(&name) {
+                        return Err(Diagnostic::new(alias_pos, "E_DUPLICATE",
+                            format!("duplicate or reserved type alias '{name}'")));
+                    }
+                    self.expect(Tok::Assign, "'=' after type alias")?;
+                    let ty = self.parse_type()?;
+                    if !matches!(ty, Type::Callable(_)) {
+                        return Err(Diagnostic::new(alias_pos, "E_UNSUPPORTED_TYPE",
+                            "this compiler currently admits callable type aliases only"));
+                    }
+                    self.expect(Tok::Semi, "';' after type alias")?;
+                    self.type_aliases.insert(name, ty);
+                }
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
                     prog.classes.push(self.parse_class(public)?);
@@ -1978,7 +2045,10 @@ impl Parser {
             let (name, _) = self.ident("a variable name")?;
             self.advance();
             (name, Some(self.parse_type()?))
-        } else if matches!(self.peek(), Tok::Ident(_))
+        } else if matches!(self.peek(), Tok::LParen | Tok::Pipe)
+            || self.is_word("fnc")
+            || self.word_at(0).is_some_and(|w| self.type_aliases.contains_key(w))
+            || matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
                 || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
                     && *self.peek_at(1) == Tok::Lt))
@@ -2937,16 +3007,35 @@ impl Parser {
     fn parse_lambda(&mut self) -> R<ExprKind> {
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
+        let mut param_types = Vec::new();
         if !self.eat(&Tok::Pipe) {
             loop {
                 if params.len() >= MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many lambda parameters"));
                 }
-                let (name, pos) = self.ident("a lambda parameter")?;
+                // Both |int a| and |a: int| are type annotations, never ignored.
+                let typed_first = self.is_type_word(0)
+                    && matches!(self.peek_at(1), Tok::Ident(_));
+                let (name, explicit_type, pos) = if typed_first {
+                    let ty = self.parse_type()?;
+                    let (name, pos) = self.ident("a lambda parameter")?;
+                    (name, Some(ty), pos)
+                } else {
+                    let (name, pos) = self.ident("a lambda parameter")?;
+                    let ty = if self.eat(&Tok::Colon) {
+                        Some(self.parse_type()?)
+                    } else { None };
+                    (name, ty, pos)
+                };
                 if params.contains(&name) {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
                 }
+                if explicit_type == Some(Type::Void) {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "lambda parameters cannot have void type"));
+                }
                 params.push(name);
+                param_types.push(explicit_type);
                 if self.eat(&Tok::Pipe) { break; }
                 self.expect(Tok::Comma, "',' or '|' after lambda parameter")?;
             }
@@ -3010,7 +3099,7 @@ impl Parser {
         } else {
             LambdaBody::Expression(Box::new(self.parse_expr()?))
         };
-        Ok(ExprKind::Lambda { params, return_type, body })
+        Ok(ExprKind::Lambda { params, param_types, return_type, body })
     }
 
     fn parse_array_literal(&mut self) -> R<ExprKind> {
