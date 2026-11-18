@@ -1139,7 +1139,7 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
-        self.parse_effect_clauses()?;
+        let declared_effects = self.parse_effect_clauses()?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1157,43 +1157,60 @@ impl Parser {
             pos,
             is_generator,
             is_pure,
+            declared_effects,
             params,
             ret,
             body,
         })
     }
 
-    /// Proposed exceptional effect clauses after the result type:
-    /// `throws(Error)`, `raises(Error)`, `panics(Error)`. This browser slice
-    /// validates the syntax and admits only the built-in `Error`. The clause
-    /// is a declared upper bound; it is not yet transitively effect-checked
-    /// and never grants or suppresses any failure path.
-    fn parse_effect_clauses(&mut self) -> R<()> {
-        let mut seen: Vec<&'static str> = Vec::new();
+    /// Explicit exceptional-effect clauses are a *checked upper bound*
+    /// for ordinary throw and raise. A completely unannotated function
+    /// keeps inferred legacy behavior. The panic channel is parsed and
+    /// retained, but fatal-trap analysis is not yet certified.
+    fn parse_effect_clauses(&mut self) -> R<Option<DeclaredEffects>> {
+        let mut declared = DeclaredEffects::default();
+        let mut any = false;
         loop {
             let kind = match self.word_at(0) {
                 Some("throws") => "throws",
                 Some("raises") => "raises",
                 Some("panics") => "panics",
-                _ => return Ok(()),
+                _ => return Ok(any.then_some(declared)),
             };
             if *self.peek_at(1) != Tok::LParen {
-                return Ok(());
+                // Keep unsupported free-form Java-style headers in the
+                // existing parser error path rather than consuming body text.
+                return Ok(any.then_some(declared));
             }
             let pos = self.pos();
-            if seen.contains(&kind) {
-                return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate '{kind}' effect clause")));
+            let seen = match kind {
+                "throws" => declared.throws,
+                "raises" => declared.raises,
+                "panics" => declared.panics,
+                _ => unreachable!(),
+            };
+            if seen {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                    format!("duplicate '{kind}' effect clause")));
             }
-            seen.push(kind);
+            match kind {
+                "throws" => declared.throws = true,
+                "raises" => declared.raises = true,
+                "panics" => declared.panics = true,
+                _ => unreachable!(),
+            }
+            any = true;
             self.advance();
             self.advance();
-            loop {
-                let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
-                if ty != "Error" {
-                    return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                        format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
-                }
-                if !self.eat(&Tok::Comma) { break; }
+            let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
+            if ty != "Error" {
+                return Err(Diagnostic::new(ty_pos, "E_TYPE",
+                    format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
+            }
+            if self.eat(&Tok::Comma) {
+                return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
+                    format!("duplicate Error type in '{kind}' effect clause")));
             }
             self.expect(Tok::RParen, "')' to close the effect clause")?;
             // `throws(Error), raises(Error)`: a comma may separate clauses.
