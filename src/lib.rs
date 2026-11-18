@@ -8,6 +8,8 @@
 
 pub mod ast;
 pub mod check;
+/// Host/runtime checked-handle foundation; NOT yet a guest `ref!` ABI.
+pub mod checked_handle_runtime;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
