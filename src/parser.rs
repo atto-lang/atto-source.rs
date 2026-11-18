@@ -389,6 +389,14 @@ impl Parser {
 
     fn parse_type(&mut self) -> R<Type> {
         let pos = self.pos();
+        // In typed positions, &T and &mut T are the proposed shorthands
+        // of Borrow<T>/BorrowMut<T>. This guest compiler has no proven
+        // reference-lifetime ABI yet: recognize and reject explicitly rather
+        // than accidentally parse as a by-value owned class handle.
+        if *self.peek() == Tok::Amp {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "borrow type shorthand '&T' / '&mut T' needs typed region and lifetime lowering"));
+        }
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
             _ => return Err(self.expected("a type")),
@@ -396,6 +404,10 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "Borrow" | "BorrowMut" => {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    format!("{name}<T> and named lifetime arguments require verified borrowed-reference lowering")));
+            },
             "fnc" => {
                 // Canonical source type form: fnc(int, bool) -> float.
                 // The first profile admits scalar callback contracts only,
