@@ -407,6 +407,8 @@ pub enum ExprKind {
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     /// Postfix `?`: unwrap Ok/Some or propagate Err/None from the caller.
     Propagate(Box<Expr>),
+    /// Named argument wrapper used only in call arguments.
+    NamedArg(String, Box<Expr>),
     /// `name(args)` or the qualified builtins `stdio.print` / `stdio.println`.
     Call(String, Vec<Expr>),
     /// `self`
@@ -429,6 +431,8 @@ pub enum ExprKind {
     /// callable values until closure capture and runtime types are implemented.
     Lambda {
         params: Vec<String>,
+        /// Parallel to `params`: identical canonical types for `int a` and `a: int`.
+        param_types: Vec<Option<String>>,
         return_type: Option<String>,
         body: LambdaBody,
     },
