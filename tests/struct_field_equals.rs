@@ -42,6 +42,15 @@ fn unrelated_callable_binders_do_not_shadow_the_nominal_struct() {
 }
 
 #[test]
+fn later_same_scope_bindings_do_not_retroactively_shadow() {
+    // The initializer is resolved before a later local declaration.
+    pass(&source("val p = Particle(x=10,y=20); val Particle = 7; return p.x+p.y;"));
+    // A nested callable binder still cannot affect a different use site.
+    pass(&format!("{HEADER}fnc helper(int Particle) -> int {{ return Particle; }}\n\
+        pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"));
+}
+
+#[test]
 fn same_callable_scope_remains_shielded() {
     reject(&source("val Particle=7; val p=Particle(x=10,y=20); return p.x;"),
         "E_STRUCT_RESOLVE");
