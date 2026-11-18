@@ -767,6 +767,15 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // can borrow classes. Lifetime-bearing returns/receivers/actors must not
     // silently lower as ordinary owned handles.
     for f in &p.funcs {
+        // Mutable Borrow<T> syntax currently has no exclusive reference ABI.
+        // Silently clearing the parsed mutability bit in body_check would
+        // misrepresent the public signature and mask a future lifetime bug.
+        // Reject both source parameter spellings before signature erasure.
+        if let Some(param) = f.params.iter().find(|param|
+            param.mutable && matches!(param.ty, Type::BorrowNamed(_) | Type::BorrowClass(_))) {
+            return Err(Diagnostic::new(param.pos, "E_UNSUPPORTED_TYPE",
+                "mutable Borrow<T> parameters require verified exclusive loan and lifetime lowering; use a read-only Borrow<T> formal for now"));
+        }
         if matches!(f.ret, Type::BorrowNamed(_))
             || f.is_generator && f.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_))) {
             return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
