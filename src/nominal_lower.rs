@@ -714,3 +714,86 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod typed_parent_layout_tests {
+    use super::*;
+    use crate::lexer::lex;
+
+    #[test]
+    fn direct_parents_keep_independent_origins_types_and_offsets() {
+        let source = r#"
+            define class Dog as
+                pub int age: 5;
+                pub bool hungry: true;
+            end
+            define class Cat as pub int age: 10; end
+            define class Hybrid extends Dog, Cat as
+                use Cat.age as cat_age;
+                use Dog.hungry as dog_hungry;
+                use Dog.age as dog_age;
+            end
+            pub fnc main(): int { return 0; }
+        "#;
+        let toks = lex(source).unwrap();
+        let all = decls(&toks).unwrap();
+        let hybrid = &all["Hybrid"];
+        let plan = direct_parent_subobject_plan(hybrid, &all).unwrap();
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].parent, "Dog");
+        assert_eq!(plan[0].byte_offset, 0);
+        assert_eq!(plan[0].byte_size, 16);
+        assert_eq!(plan[1].parent, "Cat");
+        assert_eq!(plan[1].byte_offset, 16);
+        assert_eq!(plan[1].byte_size, 8);
+        let dog = &plan[0].slots;
+        let cat = &plan[1].slots;
+        assert_eq!(dog[0].origin, FieldOrigin { parent: "Dog".into(), member: "age".into() });
+        assert_eq!(dog[0].scalar_type, ScalarKind::Int);
+        assert_eq!(dog[0].absolute_offset, 0);
+        assert_eq!(dog[1].origin, FieldOrigin { parent: "Dog".into(), member: "hungry".into() });
+        assert_eq!(dog[1].scalar_type, ScalarKind::Bool);
+        assert_eq!(dog[1].absolute_offset, 8);
+        assert_eq!(cat[0].origin, FieldOrigin { parent: "Cat".into(), member: "age".into() });
+        assert_eq!(cat[0].absolute_offset, 16);
+        let aliases = alias_declarations(hybrid).unwrap();
+        assert_eq!(aliases.len(), 3);
+        let tokens = checked_scalar_aliases(hybrid, &all, &aliases).unwrap();
+        let names: Vec<_> = tokens.iter().filter_map(|t| match &t.tok {
+            Tok::Ident(s) if s.starts_with("dog_") || s.starts_with("cat_") => Some(s.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(names, vec!["dog_age", "dog_hungry", "cat_age"]);
+    }
+
+    #[test]
+    fn parent_constructor_never_gets_flattened_into_scalar_subobject() {
+        let all = decls(&lex(r#"
+            define class Dog as pub int age: 5; constructor() {} end
+            define class Hybrid extends Dog as use Dog.age as dog_age; end
+            pub fnc main(): int { return 0; }
+        "#).unwrap()).unwrap();
+        let d = direct_parent_subobject_plan(&all["Hybrid"], &all).err().unwrap();
+        assert_eq!(d.code, "E_UNSUPPORTED");
+    }
+
+    #[test]
+    fn bounded_parent_subobject_planning_rejects_slot_budget_exhaustion() {
+        let mut src = String::new();
+        let mut parents = Vec::new();
+        for p in 0..5 {
+            let name = format!("Parent{p}");
+            parents.push(name.clone());
+            src.push_str(&format!("define class {name} as "));
+            for f in 0..60 {
+                src.push_str(&format!("pub int f{f}: 1; "));
+            }
+            src.push_str("end\n");
+        }
+        src.push_str(&format!("define class Hybrid extends {} as end\n",
+            parents.join(", ")));
+        let all = decls(&lex(&src).unwrap()).unwrap();
+        let d = direct_parent_subobject_plan(&all["Hybrid"], &all).err().unwrap();
+        assert_eq!(d.code, "E_SOURCE_LIMIT");
+    }
+}
