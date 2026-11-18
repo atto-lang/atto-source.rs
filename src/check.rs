@@ -2973,6 +2973,21 @@ impl<'a> FnCx<'a> {
                 }
                 Ok(value)
             }
+            OwnershipOp::DeepCopy => {
+                // Primitive immutable values already have independent value
+                // semantics. Heap graphs, nested ADTs and actor handles MUST
+                // receive a graph clone with fresh identities, preserved
+                // internal cycles/aliasing and no external mutable aliases.
+                // Never fake copy!! by returning the same guest object pointer.
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    return Err(Diagnostic::new(pos, "E_DEEP_COPY_PROOF",
+                        "copy!! requires a verified independent object-graph clone; this Wasm subset only admits immutable primitives"));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Drop => Err(Diagnostic::new(pos, "E_DROP_CONTEXT",
+                "drop! must be a standalone statement with a named owned local")),
             OwnershipOp::Freeze => {
                 // Immutable primitive values have no mutable reachable object graph:
                 // freeze! is observationally the identity for this *proven*
