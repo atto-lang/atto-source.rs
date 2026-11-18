@@ -180,4 +180,15 @@ fn checked_handle_preflight_has_finite_depth_for_untrusted_ast_builders() {
         body: vec![Stmt::Return(Some(value), pos)],
     });
     assert_eq!(check::check(&program).unwrap_err().code, "E_NESTING");
+
+    // A chain of standalone blocks must hit the same limit without
+    // recursing first through diagnostic-position discovery.
+    let mut block = Stmt::Return(Some(Expr {
+        kind: ExprKind::Int(Some(42)), pos,
+    }), pos);
+    for _ in 0..140 {
+        block = Stmt::Block(vec![block]);
+    }
+    program.funcs[0].body = vec![block];
+    assert_eq!(check::check(&program).unwrap_err().code, "E_NESTING");
 }
