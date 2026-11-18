@@ -1505,6 +1505,14 @@ fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
     // Fully unannotated legacy functions remain inference-only.
     for (index, f) in declared.iter().enumerate() {
         let Some(contract) = f.declared_effects.as_ref() else { continue; };
+        // This target does not yet prove total absence of fatal traps:
+        // allocation, checked arithmetic, stack quotas, and supervisor
+        // aborts are independent from Error throw/raise. An empty Panics
+        // declaration is a *claim*, not documentation; refuse to emit Wasm.
+        if contract.declared[2] && !contract.panics {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_EFFECT",
+                "panics() cannot be certified by the current synchronous browser failure solver; no guest emitted"));
+        }
         let actual = effects[index];
         if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
             let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {

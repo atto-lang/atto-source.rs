@@ -17,9 +17,10 @@ Existing unannotated functions retain inferred compatibility semantics.
 The nominal representation retains names in three type sets; the browser
 compiler currently admits **only the built-in Error** and rejects any
 subclass name without type resolution and a matching runtime representation.
-Explicit `@Panics()` cannot yet certify total absence of fatal traps,
-allocation failure, call-depth quota or actor supervisor failures; accepting
-the syntax is not proof of panic-freedom.
+Explicit `@Panics()` and `panics()` are parsed but **rejected before guest
+emission** with `E_UNSUPPORTED_EFFECT` because the current compiler cannot
+prove total absence of fatal traps, allocation failure, call-depth quota or
+actor supervisor failures. It must not falsely certify panic-freedom.
 
 `trap` discharges only ordinary throw; it preserves Result.Ok/Err payloads
 and Error identity, leaving raise and fatal panic untouched. `?` propagates

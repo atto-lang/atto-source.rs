@@ -27,6 +27,7 @@ fn explicit_empty_and_nominal_names_survive_ast() {
     good("@throws()\npub fnc main(): int { return 42; }");
     good("pub fnc main(): int throws() { return 42; }");
     good("@Throws()\n@Raises()\npub fnc main(): int { return 42; }");
+    good("@Throws()\npub fnc main(): int { try { throw Error(\"handled\"); } catch (Error e) { return 42; } }");
 }
 #[test]
 fn empty_bound_rejects_reachable_throw_and_preserves_trap_discharging() {
@@ -43,6 +44,10 @@ fn trap_cannot_discharged_raise_and_unknown_types_fail_closed() {
     bad("@Throws(Error,)\npub fnc main(): int { return 42; }", "E_TYPE");
     bad("@Throws()\n@Throws(Error)\npub fnc main(): int { return 42; }", "E_DUPLICATE");
     bad("@Throws()\npub fnc main(): int throws(Error) { return 42; }", "E_DUPLICATE");
+    // Fatal panic-free annotations are not sound until runtime/actor/heap
+    // paths are modeled. Fail closed rather than silently assert zero panic.
+    bad("@Panics()\npub fnc main(): int { return 42; }", "E_UNSUPPORTED_EFFECT");
+    bad("pub fnc main(): int panics() { return 42; }", "E_UNSUPPORTED_EFFECT");
 }
 #[test]
 fn negative_unsupported_annotations_do_not_emit_guest() {
