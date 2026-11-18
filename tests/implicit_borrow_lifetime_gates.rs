@@ -49,7 +49,7 @@ fn nested_shared_call_loans_keep_one_owner_and_retire_after_call() {
     "#);
     let a = compile(&implicit).expect("nested inferred shared call loans");
     let b = compile(&explicit).expect("nested explicit shared call loans");
-    assert!(a.starts_with(b"\\0asm"));
+    assert!(a.starts_with(b"\0asm"));
     assert_eq!(a, b, "explicit borrowing must preserve the same guest ABI");
 }
 
