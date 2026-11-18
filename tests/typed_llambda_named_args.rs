@@ -43,7 +43,7 @@ fn all_parameter_spelling_mixes_canonicalize() {
     let p = ast(source);
     let Stmt::Bind { init, .. } = &p.funcs[0].body[0] else { panic!("missing lambda") };
     let ExprKind::Lambda { params, param_types, .. } = &init.kind else { panic!("not a lambda") };
-    assert_eq!(params, &["a", "b"]);
+    assert_eq!(params, &vec!["a".to_owned(), "b".to_owned()]);
     assert_eq!(param_types, &[Some("int".to_string()), Some("int".to_string())]);
     ok(source);
 }
