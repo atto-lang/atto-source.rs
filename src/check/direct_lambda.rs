@@ -18,6 +18,7 @@ struct Direct {
     hidden: String,
     lambda: Expr,
     params: Vec<String>,
+    declared: Vec<Option<String>>,
     inferred: Option<Vec<Type>>,
     captures: Vec<Capture>,
     calls: usize,
@@ -27,6 +28,17 @@ struct Direct {
 const MAX_REWRITE_DEPTH: usize = 128;
 fn error(p: Pos, code: &'static str, m: impl Into<String>) -> Diagnostic {
     Diagnostic::new(p, code, m)
+}
+fn declared_scalar(name: &str, pos: Pos) -> R<Type> {
+    match name {
+        "int" => Ok(Type::Int),
+        "bool" | "boolean" => Ok(Type::Bool),
+        "float" | "f64" => Ok(Type::Float),
+        "string" | "String" => Ok(Type::Str),
+        "void" => Err(error(pos, "E_TYPE", "lambda parameter cannot be void")),
+        _ => Err(error(pos, "E_UNSUPPORTED_TYPE", format!(
+            "lambda parameter type '{name}' has no verified direct-call ABI"))),
+    }
 }
 fn literal_type(e: &Expr) -> Option<Type> {
     match &e.kind {
@@ -61,7 +73,7 @@ pub fn lower(input: &Program) -> R<Program> {
         let mut body = Vec::new();
         for mut stmt in std::mem::take(&mut f.body) {
             if let Stmt::Bind { kind, name, ty, init, pos } = &stmt {
-                if let ExprKind::Lambda { params, .. } = &init.kind {
+                if let ExprKind::Lambda { params, param_types, .. } = &init.kind {
                     if direct.is_some() {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "at most one direct lambda per function is supported"));
@@ -78,9 +90,13 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "typed callable values require verified Wasm indirect dispatch"));
                     }
-                    if *kind != BindKind::Val || ty.is_some() {
+                    if !matches!(kind, BindKind::Val | BindKind::Const) || ty.is_some() {
                         return Err(error(*pos, "E_UNSUPPORTED",
-                            "direct lambdas need an unannotated immutable val binding"));
+                            "direct lambdas need an unannotated immutable val or const fnc binding"));
+                    }
+                    if *kind == BindKind::Const && param_types.iter().any(Option::is_none) {
+                        return Err(error(*pos, "E_INFER",
+                            "const fnc parameters require explicit types"));
                     }
                     if bindings_before_lambda.contains(name) {
                         return Err(error(*pos, "E_DUPLICATE",
@@ -110,6 +126,10 @@ pub fn lower(input: &Program) -> R<Program> {
                         free_names(expression, &mut free, 0)?;
                     }
                     for p in params { free.remove(p); }
+                    if *kind == BindKind::Const && !free.is_empty() {
+                        return Err(error(*pos, "E_CONST",
+                            "const fnc cannot capture runtime locals or actor state"));
+                    }
                     let mut captures = Vec::new();
                     for candidate in free {
                         if let Some(&ty) = scalar_immutables.get(&candidate) {
@@ -138,7 +158,8 @@ pub fn lower(input: &Program) -> R<Program> {
                         source: name.clone(),
                         hidden,
                         lambda: init.clone(),
-                        params: params.clone(), inferred: None, captures, calls: 0,
+                        params: params.clone(), declared: param_types.clone(),
+                        inferred: None, captures, calls: 0,
                         expression_depth: 0, statement_depth: 0,
                     });
                     continue;
@@ -172,9 +193,10 @@ pub fn lower(input: &Program) -> R<Program> {
                 "lambda parameter types need a direct invocation"))?;
             let mut lifted = d.lambda.clone();
             let mut all_types = types.clone();
-            if let ExprKind::Lambda { params, .. } = &mut lifted.kind {
+            if let ExprKind::Lambda { params, param_types, .. } = &mut lifted.kind {
                 for c in &d.captures {
                     params.push(c.source.clone());
+                    param_types.push(Some(c.ty.name().to_owned()));
                     all_types.push(c.ty);
                 }
             }
@@ -338,15 +360,31 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
         ExprKind::Call(name, args) => {
             for a in args.iter_mut() { rewrite_expr(a, d)?; }
             if *name == d.source {
+                if args.iter().any(|a| matches!(a.kind, ExprKind::NamedArg(..))) {
+                    *args = super::bind_named_arguments(args, &d.params, e.pos)?;
+                }
                 if args.len() != d.params.len() {
                     return Err(error(e.pos, "E_ARITY", format!(
                         "lambda expects {} arguments, got {}",
                         d.params.len(), args.len())));
                 }
                 if d.inferred.is_none() {
-                    let types = args.iter().map(literal_type).collect::<Option<Vec<_>>>()
-                        .ok_or_else(|| error(e.pos, "E_INFER",
-                            "first direct call must have scalar literal arguments"))?;
+                    let mut types = Vec::with_capacity(args.len());
+                    for (a, declared) in args.iter().zip(&d.declared) {
+                        let actual = literal_type(a);
+                        let ty = if let Some(name) = declared {
+                            let expected = declared_scalar(name, a.pos)?;
+                            if actual.is_some_and(|found| found != expected) {
+                                return Err(error(a.pos, "E_TYPE",
+                                    "lambda argument conflicts with declared parameter type"));
+                            }
+                            expected
+                        } else {
+                            actual.ok_or_else(|| error(a.pos, "E_INFER",
+                                "untyped first direct call needs scalar literal arguments"))?
+                        };
+                        types.push(ty);
+                    }
                     d.inferred = Some(types);
                 }
                 *name = d.hidden.clone();
@@ -373,7 +411,7 @@ fn rewrite_expr_inner(e: &mut Expr, d: &mut Direct) -> R<()> {
             rewrite_expr(x, d)?;
             rewrite_expr(y, d)
         }
-        ExprKind::Member(x, _) => rewrite_expr(x, d),
+        ExprKind::Member(x, _) | ExprKind::NamedArg(_, x) => rewrite_expr(x, d),
         ExprKind::MethodCall(x, _, args) => {
             rewrite_expr(x, d)?;
             for a in args { rewrite_expr(a, d)?; }
@@ -422,7 +460,7 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
         // otherwise a missed free-variable use could escape capture analysis.
         ExprKind::Int(_) | ExprKind::Float(_) |
         ExprKind::Bool(_) | ExprKind::Str(_) => {},
-        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) =>
+        ExprKind::Trap(a) | ExprKind::Propagate(a) | ExprKind::Member(a, _) | ExprKind::NamedArg(_, a) =>
             free_names(a, names, depth + 1)?,
         ExprKind::Call(_, args) | ExprKind::New(_, args) |
         ExprKind::Array(args) => {
