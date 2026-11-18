@@ -1,0 +1,13 @@
+// expect-error: E_BORROW
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+
+pub fnc main(): int {
+  val original = new Parcel();
+  val handle = ref! original;
+  val view = deref! handle;
+  val restored = unref! handle;
+  return view.value + restored.value;
+}

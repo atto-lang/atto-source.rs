@@ -1,0 +1,15 @@
+// expect-error: E_HANDLE
+// java: rejects
+define class Payload as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val original = new Payload();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    val restored = unref! handle;
+    stdio.println(view.value);
+  }
+  return 42;
+}

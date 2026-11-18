@@ -62,14 +62,14 @@ fn diag(pos: Pos, code: &'static str, what: impl Into<String>) -> Diagnostic {
 }
 fn closing(t: &[Token], open: usize, left: Tok, right: Tok) -> R<usize> {
     let mut depth = 0usize;
-    for i in open..t.len() {
-        if t[i].tok == left { depth += 1; }
-        if t[i].tok == right {
-            if depth == 0 { return Err(diag(t[i].pos, "E_SYNTAX", "unbalanced delimiter")); }
+    for (i, token) in t.iter().enumerate().skip(open) {
+        if token.tok == left { depth += 1; }
+        if token.tok == right {
+            if depth == 0 { return Err(diag(token.pos, "E_SYNTAX", "unbalanced delimiter")); }
             depth -= 1;
             if depth == 0 { return Ok(i); }
         }
-        if depth > 128 { return Err(diag(t[i].pos, "E_NESTING", "nominal member nesting limit")); }
+        if depth > 128 { return Err(diag(token.pos, "E_NESTING", "nominal member nesting limit")); }
     }
     Err(diag(t[open].pos, "E_EOF", "unclosed nominal method body"))
 }

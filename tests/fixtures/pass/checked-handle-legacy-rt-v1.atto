@@ -1,0 +1,16 @@
+// expect-exit: 42
+// expect-stdout: 42
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val original = new Parcel();
+  val handle = rt ref original;
+  block {
+    val view = rt deref handle;
+    stdio.println(view.value);
+  }
+  val recovered = rt unref handle;
+  return recovered.value;
+}

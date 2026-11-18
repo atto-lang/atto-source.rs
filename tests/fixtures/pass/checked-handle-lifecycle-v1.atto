@@ -1,0 +1,18 @@
+// expect-exit: 42
+// expect-stdout: 42
+// java: rejects
+// Affine local checked handle and scoped immutable dereference.
+define class Parcel as
+  pub let int value = 42;
+  pub get(): int { return self.value; }
+end
+pub fnc main(): int {
+  val original = new Parcel();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    stdio.println(view.get());
+  }
+  val recovered = unref! handle;
+  return recovered.get();
+}

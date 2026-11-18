@@ -1,0 +1,31 @@
+// expect-exit: 84
+// expect-stdout: 42
+// expect-stdout: 42
+// java: rejects
+// Both branches keep the immutable view and checked handle live; the view
+// ends with block, and the owned Parcel is restored and returned.
+define class Parcel as
+  pub let int value = 42;
+end
+fnc inspect_readonly(borrow! Parcel item): int { return item.value; }
+fnc inspect_other(borrow! Parcel item): int { return item.value; }
+fnc make_payload(): Parcel { return new Parcel(); }
+fnc branch_payload(bool condition): Parcel {
+  val original = make_payload();
+  val handle = ref! original;
+  block {
+    val view = deref! handle;
+    do if condition then
+      stdio.println(inspect_readonly(view));
+    else
+      stdio.println(inspect_other(view));
+    fi
+  }
+  val restored = unref! handle;
+  return restored;
+}
+pub fnc main(): int {
+  val first = branch_payload(true);
+  val second = branch_payload(false);
+  return first.value + second.value;
+}

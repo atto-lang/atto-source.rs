@@ -8,6 +8,8 @@
 
 pub mod ast;
 pub mod check;
+/// Generational checked-handle arena foundation, not yet the guest-handle ABI.
+pub mod checked_handle_runtime;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;

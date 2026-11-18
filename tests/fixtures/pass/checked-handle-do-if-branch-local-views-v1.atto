@@ -1,0 +1,31 @@
+// expect-exit: 84
+// expect-stdout: 42
+// expect-stdout: 42
+// java: rejects
+// Each alternative creates its own readonly lease, and both leases end
+// before their common join and the required final unref!.
+define class Parcel as
+  pub let int value = 42;
+end
+fnc inspect_readonly(borrow! Parcel item): int { return item.value; }
+fnc inspect_other(borrow! Parcel item): int { return item.value; }
+fnc read_branch(bool condition): Parcel {
+  val original = new Parcel();
+  val handle = ref! original;
+  block {
+    do if condition then
+      val left = deref! handle;
+      stdio.println(inspect_readonly(left));
+    else
+      val right = deref! handle;
+      stdio.println(inspect_other(right));
+    fi
+  }
+  val restored = unref! handle;
+  return restored;
+}
+pub fnc main(): int {
+  val left = read_branch(true);
+  val right = read_branch(false);
+  return left.value + right.value;
+}

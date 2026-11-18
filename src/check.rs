@@ -20,6 +20,15 @@ mod generator_lower;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
+// Exact upstream path-sensitive checked-handle oracle + typed-admitted adapter.
+// The pinned standalone solver exposes CallUnknown/Suspend variants for
+// the eventual MIR effect/pinning adapter. The current straight-line bridge
+// rejects those cases before constructing events; keep the upstream solver
+// byte-identical rather than pruning its API to satisfy dead-code lint.
+#[allow(dead_code)]
+mod checked_handle_cfg;
+mod checked_handle_adapter;
+mod typed_handle_cfg;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
@@ -445,6 +454,9 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Only a direct binding initializer may unwrap a checked handle.
+    /// Prevents unref! hidden in a conditional expression or function call.
+    allow_direct_unref: bool,
     /// Compiler-issued lexical protected state permissions.
     state_write_scope: bool,
     state_read_scope: bool,
@@ -484,6 +496,8 @@ impl Globals<'_> {
     fn tn(&self, t: Type) -> String {
         match t {
             Type::Class(i) => self.classes[i as usize].name.clone(),
+            Type::CheckedRef(i) => format!("CheckedRef<{}>", self.classes[i as usize].name),
+            Type::BorrowedClass(i) => format!("borrow! {}", self.classes[i as usize].name),
             Type::Enum(i) => self.enums[i as usize].name.clone(),
             Type::ActorRef(i) => format!("ActorRef<{}>", self.actors[i as usize].name),
             Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
@@ -505,6 +519,14 @@ impl Globals<'_> {
 /// Resolve parser type names against the declaration tables.
 fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> R<Type> {
     Ok(match t {
+        Type::BorrowedNamed(i) => {
+            let (name, pos) = &type_names[i as usize];
+            match classes.iter().position(|c| c == name) {
+                Some(c) => Type::BorrowedClass(c as u32),
+                None => return Err(Diagnostic::new(*pos, "E_BORROW",
+                    format!("borrow! parameter type '{name}' must name a class"))),
+            }
+        }
         Type::Named(i) => {
             let (n, pos) = &type_names[i as usize];
             if let Some(c) = classes.iter().position(|c| c == n) {
@@ -738,6 +760,13 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // before emission; never substitute eager iterator materialization.
     for f in &p.funcs {
         if f.is_generator {
+            // Generators bypass ordinary body_check during specialized
+            // continuation lowering. Never admit a non-owning class param
+            // until its suspend/resume lifetime is proven in that IR.
+            if f.params.iter().any(|p| matches!(p.ty, Type::BorrowedNamed(_))) {
+                return Err(Diagnostic::new(f.pos, "E_BORROW",
+                    "borrow! class parameters are forbidden on generator continuations"));
+            }
             precheck_generator_body(&f.body, &p.funcs)?;
             // Build the exact bounded resume graph before the ABI-v2 gate.
             // It is a compiler IR only; no generator guest artifact is emitted.
@@ -1042,6 +1071,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     for (i, f) in p.funcs.iter().enumerate() {
         let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
         if f.is_generator {
+            if checked_handle_adapter::has_checked_operation(&f.body) {
+                return Err(Diagnostic::new(f.pos, "E_HANDLE",
+                    "checked-handle syntax is not admitted in generator continuations"));
+            }
             if let Some(mut plan) = generator_lower::lower(f)? {
                 plan.function = i as u32;
                 generators.push(plan);
@@ -1097,6 +1130,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             &mut imports,
             &mut data,
         )?;
+        // Separate all-path proof on a type-checked/loan-admitted source body.
+        // This rejects divergent cleanups before generating guest Wasm.
+        checked_handle_adapter::verify_type_admitted_body(&f.body, f.pos)?;
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
             params,
@@ -1301,6 +1337,41 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             return Err(Diagnostic::new(f.pos, "E_PURE",
                 format!("pure fnc '{}' cannot perform I/O, use shared state, or call an impure function", f.name)));
         }
+    }
+    // A live checked handle is not safely reclaimed if a nested call
+    // throws/raises or returns early through a propagation operator. The
+    // lexical stmt checker already rejects direct exits and branches; this
+    // transitive typed-call gate closes the missed indirect-exit path.
+    //
+    // Conservative by design: we require a separate handler/cleanup CFG
+    // before permitting such calls under an outstanding handle.
+    let mut may_early_exit: Vec<bool> = funcs.iter().map(|f|
+        guest_eh_in_stmts(&f.body) ||
+        any_in_stmts(&f.body, &|e| matches!(e.e,
+            TExpr::Trap { .. } | TExpr::AdtPropagate { .. } |
+            TExpr::Spawn(_) | TExpr::Send { .. }))
+    ).collect();
+    for _ in 0..funcs.len() {
+        let prior = may_early_exit.clone();
+        for (i, f) in funcs.iter().enumerate() {
+            if !may_early_exit[i] && any_in_stmts(&f.body, &|e|
+                matches!(&e.e, TExpr::Call(target, _)
+                    if prior.get(*target as usize).copied().unwrap_or(true))
+            ) {
+                may_early_exit[i] = true;
+            }
+        }
+        if prior == may_early_exit { break; }
+    }
+    // Only top-level callables can mint the prototype checked handles.
+    // Nested block scopes are walked in source execution order.
+    for (i, f) in funcs.iter().take(p.funcs.len()).enumerate() {
+        check_unsafe_calls_during_handle_lifetime(
+            &f.body, &may_early_exit, p.funcs[i].pos)?;
+        // Independent post-typecheck proof: resolve *actual slot identity*
+        // and branch/scope lifetimes from TStmt rather than source spelling.
+        // The source parser/borrow provenance proof remains a first gate.
+        typed_handle_cfg::verify(f, &may_early_exit, p.funcs[i].pos)?;
     }
     let strings = funcs
         .iter()
@@ -1558,6 +1629,7 @@ fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
 fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> String {
     match t {
         Type::Class(i) => classes[i as usize].clone(),
+        Type::BorrowedClass(i) => format!("borrow! {}", classes[i as usize]),
         Type::Enum(i) => enums[i as usize].name.clone(),
         Type::ActorRef(i) => format!("ActorRef<{}>", actors[i as usize]),
         Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => tn[i as usize].0.clone(),
@@ -1568,7 +1640,7 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
 /// Actors are isolated from sibling classes, enums and other actors.
 fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
     match t {
-        Type::Class(i) => Err(isolation(pos, actor, "sibling class", &g.classes[i as usize].name)),
+        Type::Class(i) | Type::BorrowedClass(i) => Err(isolation(pos, actor, "sibling class", &g.classes[i as usize].name)),
         Type::Enum(i) => Err(isolation(pos, actor, "sibling enum", &g.enums[i as usize].name)),
         Type::ActorRef(i) => Err(isolation(pos, actor, "actor", &g.actors[i as usize].name)),
         _ => Ok(()),
@@ -1628,10 +1700,25 @@ fn body_check(
         });
     } else {
         for (i, (n, t, m)) in named.iter().enumerate() {
+            // A borrowed parameter is a read-only lexical loan over a caller-
+            // owned class; its provenance cannot be promoted to ownership.
+            let local_ty = match t {
+                Type::BorrowedClass(c) => Type::Class(*c),
+                t => *t,
+            };
+            if matches!(t, Type::BorrowedClass(_)) {
+                if *m || owner != Owner::TopLevel {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "borrowed parameters require immutable top-level synchronous functions"));
+                }
+                cx.loans.insert(i as u32, ScopedLoan {
+                    owner: i as u32, mutable: false,
+                });
+            }
             cx.scopes[0].push(Local {
                 name: n.to_string(),
                 slot: i as u32,
-                ty: *t,
+                ty: local_ty,
                 mutable: *m,
                 mail: None,
             });
@@ -1639,6 +1726,7 @@ fn body_check(
     }
     cx.scopes.push(Vec::new());
     let mut tbody = cx.stmts(body)?;
+    cx.check_live_handles()?;
     if let Some((ret, saved, msg, kind, pending)) = cx.unwind {
         tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
     }
@@ -1755,6 +1843,49 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
     })
 }
 
+/// Check transitive guest-unwind effects while a checked handle is live.
+///
+/// The first compiler profile admits only straight-line handle mint/release
+/// and nested explicit block scopes. Typed Set(_, CheckedRef) is the mint;
+/// Set(_, Class(Local(handle_slot))) is the direct unref! restoration, whose
+/// source shape has already been admitted by the lexical ownership checker.
+/// Do not infer this proof for arbitrary CFG joins or actor/task boundaries.
+fn check_unsafe_calls_during_handle_lifetime(
+    body: &[TStmt], may_early_exit: &[bool], pos: Pos
+) -> R<()> {
+    let mut live_handles = BTreeSet::<u32>::new();
+    let mut work = vec![(body, 0usize)];
+    while let Some((statements, index)) = work.pop() {
+        if index >= statements.len() { continue; }
+        work.push((statements, index + 1));
+        let stmt = &statements[index];
+        if !live_handles.is_empty() && any_in_stmts(std::slice::from_ref(stmt), &|e|
+            matches!(&e.e,
+                TExpr::Call(target, _)
+                    if may_early_exit.get(*target as usize).copied().unwrap_or(true))
+                || matches!(&e.e,
+                    TExpr::Trap { .. } | TExpr::AdtPropagate { .. } |
+                    TExpr::Spawn(_) | TExpr::Send { .. })
+        ) {
+            return Err(Diagnostic::new(pos, "E_HANDLE",
+                "a call may throw, raise or propagate an early exit while a checked handle is live"));
+        }
+        if let TStmt::Set(slot, value) = stmt {
+            if matches!(value.ty, Type::CheckedRef(_)) {
+                live_handles.insert(*slot);
+            } else if matches!(value.ty, Type::Class(_)) {
+                if let TExpr::Local(source) = &value.e {
+                    live_handles.remove(source);
+                }
+            }
+        }
+        if let TStmt::Block(inner) = stmt {
+            work.push((inner, 0));
+        }
+    }
+    Ok(())
+}
+
 /// Whether any expression node in `body` satisfies `f`.
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
@@ -1851,6 +1982,7 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            allow_direct_unref: false,
             state_write_scope: false,
             state_read_scope: false,
             imports,
@@ -2055,9 +2187,23 @@ impl<'a> FnCx<'a> {
         }
     }
 
+    /// A checked handle is affine even on an early return or nested block exit.
+    /// A target with actual deallocation must add runtime retirement here.
+    fn check_live_handles(&self) -> R<()> {
+        if let Some(l) = self.scopes.last().unwrap().iter().find(|l|
+            matches!(l.ty, Type::CheckedRef(_)) && !self.moved.contains(&l.slot)) {
+            return Err(Diagnostic::new(crate::diag::Pos::default(), "E_HANDLE",
+                format!("checked handle '{}' must be consumed exactly once with unref!", l.name)));
+        }
+        Ok(())
+    }
+
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.scopes.push(Vec::new());
-        let r = self.stmts(body);
+        let r = self.stmts(body).and_then(|body| {
+            self.check_live_handles()?;
+            Ok(body)
+        });
         self.pop_scope();
         r
     }
@@ -2099,19 +2245,53 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
+        // Until all-path affine destruction is represented in typed CFG/MIR,
+        // forbid branching, exceptions, loops and returns while an unreleased
+        // handle is live. Otherwise a return before unref! could leak ownership
+        // even when a later syntactic unref! exists on another path.
+        let live_handle = self.scopes.iter().flat_map(|scope| scope.iter()).any(|l|
+            matches!(l.ty, Type::CheckedRef(_)) && !self.moved.contains(&l.slot));
+        if live_handle {
+            if let Stmt::Return(Some(Expr { kind: ExprKind::Var(name), .. }), _) = s {
+                if self.lookup(name).is_some_and(|l| self.loans.contains_key(&l.slot)) {
+                    return Err(Diagnostic::new(crate::diag::Pos::default(), "E_BORROW",
+                        "a deref! view cannot escape its checked-handle lifetime"));
+                }
+            }
+        }
+        if live_handle && matches!(s,
+            Stmt::Return(..) | Stmt::While { .. } | Stmt::Loop { .. } |
+            Stmt::For { .. } | Stmt::ForIn { .. } | Stmt::Break(..) | Stmt::Continue(..) |
+            Stmt::Try { .. } | Stmt::Throw(..) | Stmt::Raise(..) | Stmt::Defer { .. } |
+            Stmt::Recover { .. } | Stmt::Match { .. }) {
+            return Err(Diagnostic::new(crate::diag::Pos::default(), "E_HANDLE",
+                "control flow cannot bypass unref! while a checked handle is live"));
+        }
         Ok(match s {
             Stmt::Bind { kind, name, ty, init, pos } => {
                 if let ExprKind::Ownership(OwnershipOp::Borrow, mutable, inner) = &init.kind {
                     return self.borrow_binding(*kind, name, *ty, inner, *mutable, *pos);
                 }
+                if let ExprKind::Ownership(OwnershipOp::Deref, false, inner) = &init.kind {
+                    return self.checked_deref_binding(*kind, name, *ty, inner, *pos);
+                }
                 let want = match ty {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
                 };
-                let v = match want {
-                    Some(t) => self.consume_expected(init, t)?,
-                    None => self.consume(init)?,
+                let direct_unref = matches!(&init.kind, ExprKind::Ownership(OwnershipOp::Unref, false, _));
+                if direct_unref && *kind != BindKind::Val {
+                    return Err(Diagnostic::new(*pos, "E_HANDLE",
+                        "unref! must directly initialize a val binding"));
+                }
+                self.allow_direct_unref = direct_unref;
+                let checked = match want {
+                    Some(t) => self.consume_expected(init, t),
+                    None if matches!(&init.kind, ExprKind::Ownership(OwnershipOp::Ref, false, _)) => self.value(init),
+                    None => self.consume(init),
                 };
+                self.allow_direct_unref = false;
+                let v = checked?;
                 if let Some(t) = want {
                     if t != v.ty {
                         return Err(type_err(
@@ -2122,6 +2302,16 @@ impl<'a> FnCx<'a> {
                                 self.tn(v.ty)
                             ),
                         ));
+                    }
+                }
+                if matches!(v.ty, Type::CheckedRef(_)) {
+                    if !matches!(&init.kind, ExprKind::Ownership(OwnershipOp::Ref, false, _)) {
+                        return Err(Diagnostic::new(*pos, "E_HANDLE",
+                            "checked handles cannot be aliased; initialize directly with ref!"));
+                    }
+                    if *kind != BindKind::Val || self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
+                        return Err(Diagnostic::new(*pos, "E_HANDLE",
+                            "ref! requires an immutable straight-line function-body binding"));
                     }
                 }
                 // Unowned generator-valued locals could escape a close path.
@@ -2233,7 +2423,14 @@ impl<'a> FnCx<'a> {
                 TStmt::Recover { flag, args: sets, body, pos: *pos }
             }
             Stmt::Expr(e) => {
+                if matches!(&e.kind, ExprKind::Ownership(OwnershipOp::Unref, _, _)) {
+                    return Err(Diagnostic::new(e.pos, "E_HANDLE",
+                        "unref! returns ownership; bind or return its result explicitly"));
+                }
                 let v = self.expr(e)?;
+                if matches!(v.ty, Type::CheckedRef(_)) {
+                    return Err(Diagnostic::new(e.pos, "E_HANDLE", "a checked handle cannot be discarded"));
+                }
                 if v.ty == Type::GeneratorInt {
                     return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
                         "discarding an unclosed generator handle is prohibited"));
@@ -2297,14 +2494,36 @@ impl<'a> FnCx<'a> {
                 }
             },
             Stmt::If { arms, otherwise, .. } => {
+                // Only a loan-preserving conditional is admitted while a
+                // checked handle is outstanding. The ordinary checker still
+                // forbids ref!/unref! in nested scopes, returns and divergent
+                // exit paths; additionally require every arm to preserve
+                // the exact live handle and borrowed-view slots.
+                let protected: Vec<(u32, bool)> = if live_handle {
+                    self.scopes.iter().flat_map(|scope| scope.iter())
+                        .filter(|l| matches!(l.ty, Type::CheckedRef(_))
+                            || self.loans.contains_key(&l.slot))
+                        .map(|l| (l.slot, self.moved.contains(&l.slot)))
+                        .collect()
+                } else { Vec::new() };
                 // Ownership after the if is the union over arms that can
                 // fall through; arms that always return do not contribute.
                 let mut out = Vec::new();
                 let mut after: BTreeSet<u32> = BTreeSet::new();
                 for (c, b) in arms {
                     let c = self.cond(c, "if")?;
+                    if protected.iter().any(|(slot, was_moved)|
+                        self.moved.contains(slot) != *was_moved) {
+                        return Err(Diagnostic::new(crate::diag::Pos::default(), "E_HANDLE",
+                            "do if condition cannot transfer a live checked handle or view"));
+                    }
                     let at_cond = self.moved.clone();
                     let body = self.scoped(b)?;
+                    if protected.iter().any(|(slot, was_moved)|
+                        self.moved.contains(slot) != *was_moved) {
+                        return Err(Diagnostic::new(crate::diag::Pos::default(), "E_HANDLE",
+                            "do if branch must preserve every outstanding checked handle and view"));
+                    }
                     if !returns(&body) {
                         after.extend(self.moved.iter().copied());
                     }
@@ -2314,6 +2533,11 @@ impl<'a> FnCx<'a> {
                 let other = match otherwise {
                     Some(b) => {
                         let body = self.scoped(b)?;
+                        if protected.iter().any(|(slot, was_moved)|
+                            self.moved.contains(slot) != *was_moved) {
+                            return Err(Diagnostic::new(crate::diag::Pos::default(), "E_HANDLE",
+                                "else branch must preserve outstanding checked handles and views"));
+                        }
                         if !returns(&body) {
                             after.extend(self.moved.iter().copied());
                         }
@@ -2949,11 +3173,91 @@ impl<'a> FnCx<'a> {
         Ok(TStmt::Set(slot, value))
     }
 
+    /// Dereferencing only admits a scoped, readonly binding. The source operand
+    /// must be the unique compiler-minted local handle, not an arbitrary integer.
+    fn checked_deref_binding(&mut self, kind: BindKind, name: &str, annotation: Option<Type>,
+                             inner: &Expr, pos: Pos) -> R<TStmt> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_HANDLE",
+                "checked handles require local, single-worker top-level ownership"));
+        }
+        if kind != BindKind::Val {
+            return Err(Diagnostic::new(pos, "E_HANDLE",
+                "deref! must initialize a scoped val view; const requires compile-time initialization"));
+        }
+        let ExprKind::Var(handle_name) = &inner.kind else {
+            return Err(Diagnostic::new(inner.pos, "E_HANDLE", "deref! requires a named checked handle"));
+        };
+        let (owner, class) = match self.lookup(handle_name) {
+            Some(l) => match l.ty {
+                Type::CheckedRef(c) => (l.slot, c),
+                _ => return Err(Diagnostic::new(inner.pos, "E_HANDLE", "deref! requires a checked handle from ref!")),
+            },
+            None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown handle '{handle_name}'"))),
+        };
+        if self.moved.contains(&owner) {
+            return Err(Diagnostic::new(inner.pos, "E_MOVED", "deref! after unref! is forbidden"));
+        }
+        if self.loans.contains_key(&owner) {
+            return Err(Diagnostic::new(pos, "E_BORROW", "cannot deref! through an existing borrowed view"));
+        }
+        if let Some(t) = annotation {
+            if self.resolve(t, pos)? != Type::Class(class) {
+                return Err(type_err(pos, "deref! view type does not match its checked handle"));
+            }
+        }
+        let slot = self.declare(name, Type::Class(class), false, pos)?;
+        self.loans.insert(slot, ScopedLoan { owner, mutable: false });
+        Ok(TStmt::Set(slot, TE { e: TExpr::Local(owner), ty: Type::Class(class) }))
+    }
+
     fn explicit_ownership(&mut self, action: OwnershipOp, mutable: bool, inner: &Expr, pos: Pos) -> R<TE> {
         if mutable && action != OwnershipOp::Borrow {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "mut is only valid after borrow!"));
         }
         match action {
+            OwnershipOp::Ref => {
+                if self.owner != Owner::TopLevel || self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
+                    return Err(Diagnostic::new(pos, "E_HANDLE", "ref! requires a straight-line function-body binding"));
+                }
+                if !matches!(&inner.kind, ExprKind::Var(_)) {
+                    return Err(Diagnostic::new(inner.pos, "E_HANDLE", "ref! requires a named owned class local"));
+                }
+                let value = self.consume(inner)?;
+                let Type::Class(class) = value.ty else {
+                    return Err(Diagnostic::new(pos, "E_HANDLE", "ref! requires an owned class, not a scalar or actor reference"));
+                };
+                Ok(TE { e: value.e, ty: Type::CheckedRef(class) })
+            }
+            OwnershipOp::Deref => Err(Diagnostic::new(pos, "E_HANDLE",
+                "deref! must initialize a scoped immutable val binding")),
+            OwnershipOp::Unref => {
+                if !self.allow_direct_unref {
+                    return Err(Diagnostic::new(pos, "E_HANDLE",
+                        "unref! must be the direct initializer of an owned val binding"));
+                }
+                if self.owner != Owner::TopLevel || self.scopes.len() != 2 || self.loops != 0 || self.cleanup_depth != 0 {
+                    return Err(Diagnostic::new(pos, "E_HANDLE", "unref! requires straight-line function-body consumption"));
+                }
+                let ExprKind::Var(handle_name) = &inner.kind else {
+                    return Err(Diagnostic::new(inner.pos, "E_HANDLE", "unref! requires a named checked handle"));
+                };
+                let (slot, class) = match self.lookup(handle_name) {
+                    Some(l) => match l.ty {
+                        Type::CheckedRef(c) => (l.slot, c),
+                        _ => return Err(Diagnostic::new(inner.pos, "E_HANDLE", "unref! requires a checked handle from ref!")),
+                    },
+                    None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown handle '{handle_name}'"))),
+                };
+                if self.moved.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_MOVED", "checked handle already consumed"));
+                }
+                if self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "cannot unref! while a deref! view is live"));
+                }
+                self.moved.insert(slot);
+                Ok(TE { e: TExpr::Local(slot), ty: Type::Class(class) })
+            }
             OwnershipOp::Borrow => {
                 if mutable {
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
@@ -2998,6 +3302,9 @@ impl<'a> FnCx<'a> {
     /// assignment, argument, return): naming an object local moves it.
     fn consume(&mut self, e: &Expr) -> R<TE> {
         let v = self.value(e)?;
+        if matches!(v.ty, Type::CheckedRef(_)) {
+            return Err(Diagnostic::new(e.pos, "E_HANDLE", "checked handles cannot escape or be copied; use deref!/unref!"));
+        }
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
             if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
@@ -3365,6 +3672,9 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 Some(l) => {
+                    if matches!(l.ty, Type::CheckedRef(_)) {
+                        return Err(Diagnostic::new(pos, "E_HANDLE", "a checked handle must be accessed using deref! or unref!"));
+                    }
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
@@ -3526,15 +3836,29 @@ impl<'a> FnCx<'a> {
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
         let mut out = Vec::new();
         for (i, (a, want)) in args.iter().zip(params).enumerate() {
-            let v = self.consume_expected(a, *want)?;
-            if v.ty != *want {
+            let expected = match want {
+                Type::BorrowedClass(c) => Type::Class(*c),
+                t => *t,
+            };
+            let v = if matches!(want, Type::BorrowedClass(_)) {
+                // The guest only passes a verified borrowed class local; do
+                // not call consume(), which transfers ownership by design.
+                if !matches!(&a.kind, ExprKind::Var(_)) {
+                    return Err(Diagnostic::new(a.pos, "E_BORROW",
+                        "borrowed parameters require a named class local or readonly view"));
+                }
+                self.value(a)?
+            } else {
+                self.consume_expected(a, *want)?
+            };
+            if v.ty != expected {
                 return Err(type_err(
                     a.pos,
                     format!(
                         "argument {} of '{callee}' has type {} but expected {}",
                         i + 1,
                         self.tn(v.ty),
-                        self.tn(*want)
+                        self.tn(expected)
                     ),
                 ));
             }

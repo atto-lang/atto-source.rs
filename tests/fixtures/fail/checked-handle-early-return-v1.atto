@@ -1,0 +1,13 @@
+// expect-error: E_HANDLE
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+
+pub fnc main(): int {
+  val original = new Parcel();
+  val handle = ref! original;
+  if true then return 1; fi
+  val restored = unref! handle;
+  return restored.value;
+}

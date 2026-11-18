@@ -1,0 +1,10 @@
+// expect-error: E_HANDLE
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+
+pub fnc main(): int {
+  val view = deref! 42;
+  return 42;
+}

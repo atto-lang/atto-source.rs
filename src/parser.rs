@@ -1354,6 +1354,29 @@ impl Parser {
 
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
+        // A borrowed class parameter is declared explicitly. This syntax
+        // cannot occur in ordinary expressions or type positions.
+        // The callee gets a readonly loan, not an owned class value.
+        if self.is_word("borrow") && *self.peek_at(1) == Tok::Bang {
+            let marker = self.toks[self.i + 1].pos;
+            if marker.line != pos.line || marker.col != pos.col + 6 {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "borrowed parameters use contiguous borrow!"));
+            }
+            self.advance();
+            self.advance();
+            let ty = self.parse_type()?;
+            let Type::Named(index) = ty else {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "borrow! parameters require a named class type"));
+            };
+            if self.is_word("mut") {
+                return Err(Diagnostic::new(self.pos(), "E_BORROW",
+                    "borrow! parameter views are readonly; mutable loans need a separate ABI"));
+            }
+            let (name, p) = self.ident("a borrowed parameter name")?;
+            return self.finish_param(name, Type::BorrowedNamed(index), false, p);
+        }
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
@@ -1718,6 +1741,12 @@ impl Parser {
             Some("defer") => self.parse_defer(pos),
             Some("recover") => self.parse_recover(pos),
             Some("if") => self.parse_if(),
+            // Canonical procedural conditional: do if condition then ... fi.
+            // Preserve the same typed If node as the legacy if form.
+            Some("do") if self.word_at(1) == Some("if") => {
+                self.advance();
+                self.parse_if()
+            },
             Some("guard") => self.parse_guard(),
             Some("while") => {
                 self.advance();
@@ -2787,14 +2816,19 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
-                && *self.peek_at(1) == Tok::Bang =>
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "ref" | "deref" | "unref")
+                && *self.peek_at(1) == Tok::Bang
+                && self.toks[self.i + 1].pos.line == pos.line
+                && self.toks[self.i + 1].pos.col == pos.col + s.chars().count() as u32 =>
             {
                 let action = match s.as_str() {
                     "borrow" => OwnershipOp::Borrow,
                     "copy" => OwnershipOp::Copy,
                     "take" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
+                    "ref" => OwnershipOp::Ref,
+                    "deref" => OwnershipOp::Deref,
+                    "unref" => OwnershipOp::Unref,
                     _ => unreachable!(),
                 };
                 self.advance(); // name
@@ -2806,6 +2840,24 @@ impl Parser {
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
             },
+            // Legacy compatibility. Canonical source formatter uses ref!/deref!/unref!.
+            // Keep the same AST variant and checker path; do not desugar to a call.
+            Tok::Ident(s) if s == "rt" => {
+                self.advance();
+                let action = match self.peek() {
+                    Tok::Ident(s) if s == "ref" => OwnershipOp::Ref,
+                    Tok::Ident(s) if s == "deref" => OwnershipOp::Deref,
+                    Tok::Ident(s) if s == "unref" => OwnershipOp::Unref,
+                    _ => return Err(Diagnostic::new(self.pos(), "E_UNSUPPORTED",
+                        "this browser profile admits rt ref/deref/unref only through checked handles")),
+                };
+                self.advance();
+                if self.is_word("mut") {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "checked handles do not permit mut qualifiers"));
+                }
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Ownership(action, false, Box::new(inner)), pos });
+            }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;

@@ -1,0 +1,4 @@
+// expect-error: E_BORROW
+// java: rejects
+fnc inspect_readonly(borrow! int item): int { return item; }
+pub fnc main(): int { return 42; }
