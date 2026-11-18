@@ -1,0 +1,9 @@
+// expect-exit: 42
+type F1 = (int, int) => int;
+type F2 = fnc(int, int) => int;
+type F3 = fnc|int, int| => int;
+type F4 = |int, int| => int;
+const F2 calculate = |a: int, b: int| :int -> a + b;
+pub fnc main(): int {
+    return calculate(20, 22);
+}
