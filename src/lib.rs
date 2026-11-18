@@ -11,6 +11,7 @@ pub mod safety;
 pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;
+pub mod actor_isolation_access_v1;
 pub mod layout_plan;
 pub mod owner_arena;
 
