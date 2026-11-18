@@ -195,11 +195,22 @@ pub struct ActorDecl {
 /// inferred-effect mode; a partial list forbids omitted throw/raise effects.
 /// Fatal panics remain a distinct runtime channel and are NOT statically
 /// certified by this browser compiler's exception-effect inference.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeclaredEffects {
+    /// An explicit kind may declare an empty set, unlike an absent kind.
+    pub declared: [bool; 3],
+    /// Complete nominal error type names per channel: throw, raise, panic.
+    /// The browser execution profile currently admits only core Error.
+    pub error_types: [Vec<String>; 3],
+    /// Conservative backend projection of the typed sets.
     pub throws: bool,
     pub raises: bool,
     pub panics: bool,
+}
+
+impl DeclaredEffects {
+    pub fn can_throw(&self) -> bool { !self.error_types[0].is_empty() }
+    pub fn can_raise(&self) -> bool { !self.error_types[1].is_empty() }
 }
 
 #[derive(Clone, Debug)]

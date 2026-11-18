@@ -1504,7 +1504,7 @@ fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
     // clause inside an explicit list means that effect cannot escape.
     // Fully unannotated legacy functions remain inference-only.
     for (index, f) in declared.iter().enumerate() {
-        let Some(contract) = f.declared_effects else { continue; };
+        let Some(contract) = f.declared_effects.as_ref() else { continue; };
         let actual = effects[index];
         if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
             let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {
