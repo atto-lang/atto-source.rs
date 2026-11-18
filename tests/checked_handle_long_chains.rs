@@ -36,6 +36,44 @@ fn checked_handles_in_large_chains_reject_before_any_guest_bytes() {
 }
 
 #[test]
+fn postfix_chains_do_not_look_like_nested_scopes() {
+    // These exact sizes mirror the real guest conformance oracle:
+    // 240 receiver links must type check (or report E_TYPE for an
+    // invalid member), whereas 300 links exceed the hardened budget.
+    let class_source = "define class P as\n  pub int v: 1\n  pub n(): P { return new P(); }\nend\n";
+    let method_source = format!(
+        "{class_source}pub fnc main(): int {{ return new P(){}.v; }}",
+        ".n()".repeat(239)
+    );
+    let wasm = atto_compiler::compile(&method_source)
+        .expect("240-link method chain is not structural nesting");
+    assert!(wasm.starts_with(&[0, 97, 115, 109]));
+
+    let member = format!(
+        "pub fnc main(): int {{ val a = 1; return a{}; }}",
+        ".b".repeat(240)
+    );
+    assert_eq!(atto_compiler::compile(&member).unwrap_err().code, "E_TYPE");
+
+    for large in [
+        format!("{class_source}pub fnc main(): int {{ return new P(){}.v; }}", ".n()".repeat(299)),
+        format!("pub fnc main(): int {{ val a = 1; return a{}; }}", ".b".repeat(300)),
+    ] {
+        assert_eq!(atto_compiler::compile(&large).unwrap_err().code, "E_NESTING");
+    }
+}
+
+#[test]
+fn checked_handle_in_long_postfix_receiver_is_never_skipped() {
+    let src = format!(
+        "pub fnc main(): int {{ val h = 1; return (deref! h){}; }}",
+        ".b".repeat(240)
+    );
+    let err = atto_compiler::compile(&src).unwrap_err();
+    assert_eq!(err.code, "E_UNSUPPORTED_HANDLE");
+}
+
+#[test]
 fn binary_chain_budget_still_rejects_untrusted_manual_ast() {
     // Parsed source normally has its own bounded parser budget; hostile
     // embedding APIs can call check::check on an AST directly. Admission
