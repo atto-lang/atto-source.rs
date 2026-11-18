@@ -245,3 +245,30 @@ fn call_loans_deny_moves_exclusive_access_and_unproven_reborrows() {
         assert_eq!(atto_compiler::compile(source).unwrap_err().code, code);
     }
 }
+
+#[test]
+fn inferred_call_loans_never_create_phantom_owned_object_locals() {
+    let before = checked(r#"
+        define class Person as pub let int age = 42; end
+        fnc inspect(p: Borrow<Person>): int { return p.age; }
+        pub fnc main(): int {
+            let person = new Person();
+            return person.age;
+        }
+    "#);
+    let after = checked(r#"
+        define class Person as pub let int age = 42; end
+        fnc inspect(p: Borrow<Person>): int { return p.age; }
+        pub fnc main(): int {
+            let person = new Person();
+            inspect(person);
+            inspect(person);
+            inspect(person);
+            return person.age;
+        }
+    "#);
+    let baseline = &before.funcs[before.main as usize].locals;
+    let borrowed = &after.funcs[after.main as usize].locals;
+    assert_eq!(borrowed, baseline,
+        "non-owning call loans must not manufacture uninitialized owned class locals");
+}
