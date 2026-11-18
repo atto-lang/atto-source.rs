@@ -58,8 +58,14 @@ fn copy_double_bang_must_be_contiguous_not_copy_bang_then_not() {
 
 #[test]
 fn immutable_primitives_support_shallow_deep_shared_and_frozen_values() {
-    for operation in ["borrow!", "copy!", "copy!!", "share!", "freeze!"] {
-        for expression in ["42", "true", r#""immutable""#] {
+    for expression in ["42", "true", r#""immutable""#] {
+        // Explicit borrows must bind a named owner; a temporary has no
+        // auditable lexical lifetime. Do not relax E_BORROW for literals.
+        wasm_ok(&format!(
+            "pub fnc main(): int {{ val owner = {expression}; val result = borrow! owner; return 0; }}"
+        ));
+        error(&binding(&format!("borrow! {expression}")), "E_BORROW");
+        for operation in ["copy!", "copy!!", "share!", "freeze!"] {
             wasm_ok(&binding(&format!("{operation} {expression}")));
         }
     }
