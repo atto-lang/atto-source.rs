@@ -1362,31 +1362,45 @@ impl Parser {
 
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
+        // Canonical 'take!' is the *existing ownership keyword*, not a new
+        // storage modifier. In borrow-default-v1 it marks an owning formal;
+        // the call site must also spell take! and the checker validates the
+        // move. Bare Foo formals become readonly loans in that profile.
+        let explicit_take = self.is_word("take") && *self.peek_at(1) == Tok::Bang;
+        if explicit_take {
+            self.advance(); // take
+            self.advance(); // !
+        }
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
         // compatibility form `name: type [mut]`
         if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-            let (name, pos) = self.ident("a parameter name")?;
+            let (name, _) = self.ident("a parameter name")?;
             self.advance();
             let ty = self.parse_type()?;
             let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable, pos);
+            return self.finish_param(name, ty, mutable, explicit_take, pos);
         }
         let ty = self.parse_type()?;
         let mutable = self.eat_word("mut");
-        let (name, pos) = self.ident("a parameter name")?;
-        self.finish_param(name, ty, mutable, pos)
+        let (name, _) = self.ident("a parameter name")?;
+        self.finish_param(name, ty, mutable, explicit_take, pos)
     }
 
-    fn finish_param(&self, name: String, ty: Type, mutable: bool, pos: Pos) -> R<Param> {
+    fn finish_param(&self, name: String, ty: Type, mutable: bool,
+        explicit_take: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
             return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
+        }
+        if explicit_take && !matches!(ty, Type::Named(_)) {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "take! parameter mode currently requires a named class type"));
         }
         if *self.peek() == Tok::Assign {
             return Err(unsupported(self.pos(), "default parameter values"));
         }
-        Ok(Param { name, ty, mutable, pos })
+        Ok(Param { name, ty, mutable, explicit_take, pos })
     }
 
     // ----------------------------------------------------------- statements
