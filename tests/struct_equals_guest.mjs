@@ -71,6 +71,27 @@ try {
     val p = Particle(y=20, x=10);
     return p.x + p.y;
   }`, 'reordered-literals', 30);
+  pass(header + `fnc helper(int Particle) -> int {
+    return Particle;
+  }
+  pub fnc main(): int {
+    val p = Particle(y=20, x=10);
+    return p.x + p.y;
+  }`, 'separate-function-formal-scope', 30);
+  pass(header + `fnc helper() -> int {
+    val Particle = 99;
+    return Particle;
+  }
+  pub fnc main(): int {
+    val p = Particle(x=10, y=20);
+    return p.x + p.y;
+  }`, 'separate-function-local-scope', 30);
+  reject(header + `fnc builder(int Particle) -> int {
+    val p = Particle(x=10, y=20);
+    return p.x;
+  }
+  pub fnc main(): int { return builder(1); }`,
+  'same-function-formal-scope', 'E_STRUCT_RESOLVE');
   reject(header + `pub fnc main(): int {
     val p = Particle(x=10, x=11, y=20);
     return p.x;
@@ -99,7 +120,7 @@ try {
   reject(`fnc add(int value) -> int { return value+1; }
     pub fnc main(): int { return add(value=41); }`,
   'ordinary-equals-call');
-  console.log('STRUCT_EQUALS_COMPILED_GUEST_PASS scalar=2 negatives=7');
+  console.log('STRUCT_EQUALS_COMPILED_GUEST_PASS scalar=4 negatives=8');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
