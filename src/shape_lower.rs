@@ -64,7 +64,7 @@ fn fragment(src: &str, pos: Pos) -> R<Vec<Token>> {
     let mut out = lexer::lex(src)?;
     if out.last().is_some_and(|x| x.tok == Tok::Eof) { out.pop(); }
     for t in &mut out { t.pos = pos; }
-    Ok((out,struct_init_sites))
+    Ok(out)
 }
 fn synthesized(klass: &str, fields: &[Field]) -> String {
     let mut src = format!("define class {klass} as\n");
@@ -486,5 +486,5 @@ pub fn lower_with_sites(t: Vec<Token>) -> R<(Vec<Token>, Vec<crate::ast::StructI
     if out.len()>lexer::MAX_TOKENS {
         return Err(error(t[0].pos,"E_SOURCE_LIMIT","checked product specialization exceeds token budget"));
     }
-    Ok(out)
+    Ok((out,struct_init_sites))
 }
