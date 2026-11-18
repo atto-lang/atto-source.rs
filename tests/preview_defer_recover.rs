@@ -341,6 +341,122 @@ fn effect_solver_exhaustive_cleanup_matrix() {
 }
 
 #[test]
+fn declared_throw_raise_effect_upper_bounds_are_checked() {
+    // Explicit declarations describe escaping effects, not all syntactic
+    // calls; a locally caught throw is not an escaping throw.
+    for source in [
+        r#"fnc fail(): int throws(Error) { throw Error("caught"); }
+           fnc safe(): int raises(Error) {
+             try { return fail(); }
+             catch (Error e) { return 9; }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 4;
+           }"#,
+        r#"fnc fail(): int throws(Error) { throw Error("caught"); }
+           fnc safe(): int raises(Error) {
+             val Option<int> result = trap fail();
+             return 9;
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 4;
+           }"#,
+        r#"fnc thrower(): int throws(Error) { throw Error("t"); }
+           fnc escalator(): int throws(Error), raises(Error) {
+             try { return thrower(); }
+             catch (Error e) { raise Error("r"); }
+           }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc thrower(): int throws(Error) { throw Error("t"); }
+           fnc safe(): int panics(Error), raises(Error) {
+             try { return thrower(); }
+             catch (Error e) { return 2; }
+           }
+           pub fnc main(): int { return safe(); }"#,
+        r#"fnc safe(): int raises(Error) {
+             return 5;
+             throw Error("dead");
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 4;
+           }"#,
+        r#"fnc safe(): int raises(Error) {
+             try { return 8; }
+             catch (Error e) { throw Error("unreachable catch"); }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 4;
+           }"#,
+    ] {
+        pass(source);
+    }
+
+    // Source annotations must not be trusted if code, callees, and effectful
+    // arguments contradict them.  A panics clause cannot license throw/raise.
+    for source in [
+        r#"fnc bad(): int throws(Error) { raise Error("unexpected"); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int raises(Error) { throw Error("unexpected"); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int panics(Error) { throw Error("unexpected"); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int panics(Error) { raise Error("unexpected"); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc deep(): int raises(Error) { raise Error("escaped"); }
+           fnc middle(): int { return deep(); }
+           fnc bad(): int throws(Error) { return middle(); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc fail(): int throws(Error) { throw Error("caught"); }
+           fnc bad(): int raises(Error) {
+             try { return fail(); }
+             catch (Error e) { throw Error("catch rethrows"); }
+           }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int raises(Error) {
+             val int ignored = 3;
+             raise Error("escaped");
+           }
+           fnc wrong(): int throws(Error) { return bad(); }
+           pub fnc main(): int { return 0; }"#,
+    ] {
+        reject("E_EFFECT", source);
+    }
+    reject("E_DUPLICATE", r#"
+      fnc bad(): int throws(Error, Error) { return 2; }
+      pub fnc main(): int { return 0; }
+    "#);
+}
+
+#[test]
+fn effect_reachability_does_not_hide_reachable_errors() {
+    // Prove the new terminal-path pruning does not erase errors in an
+    // alternative branch, including the path after an if without else.
+    for source in [
+        r#"fnc bad(bool b): int raises(Error) {
+             if b then return 2; fi
+             throw Error("reachable on false");
+           }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(bool b): int raises(Error) {
+             if b then return 2; else throw Error("reachable"); fi
+           }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int raises(Error) {
+             try { return 2; } finally { throw Error("cannot replace"); }
+           }
+           pub fnc main(): int { return 0; }"#,
+    ] {
+        // The final case is rejected by the existing no-exit finally gate.
+        let expected = if source.contains("finally") { "E_UNSUPPORTED" } else { "E_EFFECT" };
+        reject(expected, source);
+    }
+}
+
+#[test]
 fn recovery_capability_binders_cannot_be_shadowed_in_any_scope() {
     for source in [
         r#"pub fnc main(): int {
