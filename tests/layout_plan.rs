@@ -152,3 +152,56 @@ fn java_compatible_1024_lane_tile_tail_has_exact_offsets() {
         Err(RefError::InvalidLayout)
     );
 }
+
+#[test]
+fn checked_field_spans_agree_with_offsets_and_enforce_backing_bounds() {
+    for kind in [
+        LayoutKind::Aos,
+        LayoutKind::Soa,
+        LayoutKind::Aosoa { lanes: 1 },
+        LayoutKind::Aosoa { lanes: 4 },
+        LayoutKind::Aosoa { lanes: 1024 },
+    ] {
+        let plan = LayoutPlan::new(kind, &FIELDS, 1025).unwrap();
+        for row in [0, 1, 3, 4, 1023, 1024] {
+            for (field_index, field) in FIELDS.iter().enumerate() {
+                let start = plan.field_offset(row, field_index).unwrap();
+                let expected_end = start.checked_add(field.bytes).unwrap();
+                let span = plan
+                    .checked_field_span(row, field_index, plan.total_bytes())
+                    .unwrap();
+                assert_eq!(span, start..expected_end, "{kind:?}, row={row}");
+                assert_eq!(
+                    plan.checked_field_span(row, field_index, plan.total_bytes() - 1),
+                    Err(RefError::OutOfRange),
+                    "{kind:?}, row={row} must reject an incomplete owned store"
+                );
+                assert_eq!(
+                    plan.checked_field_span(row, field_index, plan.total_bytes()),
+                    Ok(start..expected_end),
+                    "{kind:?}, row={row} complete backing must be admitted"
+                );
+            }
+        }
+        assert_eq!(
+            plan.checked_field_span(plan.row_count(), 0, plan.total_bytes()),
+            Err(RefError::OutOfRange)
+        );
+        assert_eq!(
+            plan.checked_field_span(0, FIELDS.len(), plan.total_bytes()),
+            Err(RefError::OutOfRange)
+        );
+    }
+}
+
+#[test]
+fn empty_layout_never_admits_a_field_span() {
+    for kind in [LayoutKind::Aos, LayoutKind::Soa, LayoutKind::Aosoa { lanes: 8 }] {
+        let plan = LayoutPlan::new(kind, &FIELDS, 0).unwrap();
+        assert_eq!(plan.total_bytes(), 0);
+        assert_eq!(
+            plan.checked_field_span(0, 0, usize::MAX),
+            Err(RefError::OutOfRange)
+        );
+    }
+}

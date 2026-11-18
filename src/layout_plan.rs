@@ -198,4 +198,33 @@ impl LayoutPlan {
         }
         Ok(offset)
     }
+
+    /// Return a checked field byte span within a caller-verified backing
+    /// allocation. Offsets are arithmetic metadata, never native pointers.
+    /// The backing allocation must cover the entire owned store, including
+    /// reserved AoSoA tail blocks; an early field fitting by itself is not
+    /// sufficient to admit a truncated allocation.
+    ///
+    /// A valid plan does not prove that the caller owns the backing region:
+    /// its actual allocation length, provenance, generation, and borrow
+    /// permissions must be authenticated separately.
+    pub fn checked_field_span(
+        &self,
+        row: usize,
+        field_index: usize,
+        backing_byte_len: usize,
+    ) -> Result<std::ops::Range<usize>, RefError> {
+        let start = self.field_offset(row, field_index)?;
+        // A LayoutPlan describes one complete authoritative store. Do not
+        // authorize any field through an allocation smaller than the plan.
+        if backing_byte_len < self.total_bytes {
+            return Err(RefError::OutOfRange);
+        }
+        let width = *self.widths.get(field_index).ok_or(RefError::OutOfRange)?;
+        let end = start.checked_add(width).ok_or(RefError::Overflow)?;
+        if end > backing_byte_len {
+            return Err(RefError::OutOfRange);
+        }
+        Ok(start..end)
+    }
 }
