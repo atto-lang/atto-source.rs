@@ -60,39 +60,51 @@ fn type_error(pos: Pos, why: impl Into<String>) -> Diagnostic {
 
 impl TypedActorModule {
     pub fn actor_index(&self, actor: &str, pos: Pos) -> Result<usize, Diagnostic> {
-        self.actors.iter().position(|a| a.name == actor)
-            .ok_or_else(|| Diagnostic::new(pos, "E_UNBOUND",
-                format!("undeclared actor type '{actor}'")))
+        self.actors
+            .iter()
+            .position(|a| a.name == actor)
+            .ok_or_else(|| Diagnostic::new(pos, "E_UNBOUND", format!("undeclared actor type '{actor}'")))
     }
 
     /// Unambiguous in-module lookup, not actor runtime dispatch.
-    pub fn resolve<'a>(&'a self, namespace: Option<&str>, actor: &str,
-        method: &str, arity: usize, external: bool,
-        pos: Pos) -> Result<&'a TypedReceiver, Diagnostic> {
+    pub fn resolve<'a>(
+        &'a self,
+        namespace: Option<&str>,
+        actor: &str,
+        method: &str,
+        arity: usize,
+        external: bool,
+        pos: Pos,
+    ) -> Result<&'a TypedReceiver, Diagnostic> {
         if namespace != self.namespace.as_deref() {
-            return Err(Diagnostic::new(pos, "E_NAMESPACE",
-                "receiver not in its defining namespace"));
+            return Err(Diagnostic::new(pos, "E_NAMESPACE", "receiver not in its defining namespace"));
         }
         let owner = self.actor_index(actor, pos)?;
-        let method = self.receivers.iter().find(|m|
-            m.actor == owner && m.method == method && m.arity == arity)
-            .ok_or_else(|| Diagnostic::new(pos, "E_UNBOUND",
-                format!("no receiver method {actor}.{method}/{arity}")))?;
+        let method = self
+            .receivers
+            .iter()
+            .find(|m| m.actor == owner && m.method == method && m.arity == arity)
+            .ok_or_else(|| Diagnostic::new(pos, "E_UNBOUND", format!("no receiver method {actor}.{method}/{arity}")))?;
         if external && !method.public {
-            return Err(Diagnostic::new(pos, "E_VISIBILITY",
-                format!("receiver method {actor}.{} is not public", method.method)));
+            return Err(Diagnostic::new(
+                pos,
+                "E_VISIBILITY",
+                format!("receiver method {actor}.{} is not public", method.method),
+            ));
         }
         Ok(method)
     }
 
     /// All source-level actors in this IR are forward declarations. Runtime
     /// linking must establish a real implementation before spawn can work.
-    pub fn require_spawnable(&self, actor: &str, pos: Pos)
-        -> Result<usize, Diagnostic> {
+    pub fn require_spawnable(&self, actor: &str, pos: Pos) -> Result<usize, Diagnostic> {
         let index = self.actor_index(actor, pos)?;
         if !self.actors[index].defined {
-            return Err(Diagnostic::new(pos, "E_UNLINKED",
-                format!("actor '{actor}' is forward-declared but not defined")));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNLINKED",
+                format!("actor '{actor}' is forward-declared but not defined"),
+            ));
         }
         Ok(index)
     }
@@ -105,14 +117,19 @@ impl TypedActorModule {
             "string" | "String" => TargetType::Str,
             "void" => TargetType::Void,
             _ if name.starts_with("ActorRef<") && name.ends_with('>') => {
-                let actor = &name["ActorRef<".len()..name.len()-1];
+                let actor = &name["ActorRef<".len()..name.len() - 1];
                 TargetType::ActorRef(self.actor_index(actor, pos)?)
-            },
-            _ if self.actors.iter().any(|a| a.name == name) =>
-                return Err(type_error(pos,
-                    "actor values cannot be passed by value; use ActorRef<Actor>")),
-            _ => return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE",
-                format!("unknown receiver signature type '{name}'"))),
+            }
+            _ if self.actors.iter().any(|a| a.name == name) => {
+                return Err(type_error(pos, "actor values cannot be passed by value; use ActorRef<Actor>"))
+            }
+            _ => {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNKNOWN_TYPE",
+                    format!("unknown receiver signature type '{name}'"),
+                ))
+            }
         })
     }
 
@@ -124,15 +141,25 @@ impl TypedActorModule {
             if ty == TargetType::Void {
                 return Err(type_error(p.pos, "a method parameter cannot have type void"));
             }
-            params.push(TypedParam { name: p.name.clone(), ty, pos: p.pos });
+            params.push(TypedParam {
+                name: p.name.clone(),
+                ty,
+                pos: p.pos,
+            });
         }
         let returns = self.type_of(&h.return_type, h.pos)?;
         if h.arity != params.len() {
             return Err(type_error(h.pos, "internal receiver arity mismatch"));
         }
         Ok(TypedReceiver {
-            actor, method: h.name.clone(), arity: params.len(), params, returns,
-            mutable: h.mutable, public: h.public, pos: h.pos,
+            actor,
+            method: h.name.clone(),
+            arity: params.len(),
+            params,
+            returns,
+            mutable: h.mutable,
+            public: h.public,
+            pos: h.pos,
             body_lowered: false,
         })
     }
@@ -140,21 +167,27 @@ impl TypedActorModule {
 
 /// Resolve the entire declaration set before typing receiver parameters and
 /// result annotations, so forward references within one file are permitted.
-pub fn lower_target_signatures(headers: &TargetHeaders)
-    -> Result<TypedActorModule, Diagnostic> {
+pub fn lower_target_signatures(headers: &TargetHeaders) -> Result<TypedActorModule, Diagnostic> {
     let mut module = TypedActorModule {
         namespace: headers.namespace.clone(),
-        actors: headers.actors.iter().map(|name| TypedActor {
-            name: name.clone(),
-            has_definition: headers.definitions.iter().any(|a| a.name == *name),
-            defined: false,
-        }).collect(),
+        actors: headers
+            .actors
+            .iter()
+            .map(|name| TypedActor {
+                name: name.clone(),
+                has_definition: headers.definitions.iter().any(|a| a.name == *name),
+                defined: false,
+            })
+            .collect(),
         receivers: Vec::with_capacity(headers.receivers.len()),
     };
     for definition in &headers.definitions {
         if !headers.actors.contains(&definition.name) {
-            return Err(Diagnostic::new(definition.pos, "E_UNBOUND",
-                format!("concrete actor '{}' has no matching declare actor", definition.name)));
+            return Err(Diagnostic::new(
+                definition.pos,
+                "E_UNBOUND",
+                format!("concrete actor '{}' has no matching declare actor", definition.name),
+            ));
         }
     }
     for header in &headers.receivers {
@@ -162,7 +195,6 @@ pub fn lower_target_signatures(headers: &TargetHeaders)
     }
     Ok(module)
 }
-
 
 impl TargetType {
     /// ActorRef indices are into actor_interface.forwards, not runtime actors.
@@ -184,16 +216,28 @@ pub fn build_actor_program(headers: &TargetHeaders, module: &TypedActorModule) -
     let interface = ActorInterface {
         namespace: module.namespace.clone(),
         forwards: module.actors.iter().map(|a| a.name.clone()).collect(),
-        methods: module.receivers.iter().map(|m| ActorInterfaceMethod {
-            owner: m.actor as u32,
-            name: m.method.clone(),
-            params: m.params.iter().map(|p| Param {
-                name: p.name.clone(), ty: p.ty.as_ast_type(),
-                mutable: false, pos: p.pos,
-            }).collect(),
-            ret: m.returns.as_ast_type(),
-            mutable: m.mutable, public: m.public, pos: m.pos,
-        }).collect(),
+        methods: module
+            .receivers
+            .iter()
+            .map(|m| ActorInterfaceMethod {
+                owner: m.actor as u32,
+                name: m.method.clone(),
+                params: m
+                    .params
+                    .iter()
+                    .map(|p| Param {
+                        name: p.name.clone(),
+                        ty: p.ty.as_ast_type(),
+                        mutable: false,
+                        pos: p.pos,
+                    })
+                    .collect(),
+                ret: m.returns.as_ast_type(),
+                mutable: m.mutable,
+                public: m.public,
+                pos: m.pos,
+            })
+            .collect(),
     };
     Program {
         actors: headers.definitions.clone(),

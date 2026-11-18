@@ -16,10 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
+pub mod callable_ir;
+mod direct_lambda;
 mod generator_lower;
 pub mod lambda_types;
-mod direct_lambda;
-pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
@@ -144,7 +144,11 @@ pub enum TExpr {
     EnumVal(u32),
     /// Immutable tagged ADT value: 16-byte allocation, i32 tag at 0,
     /// i64 payload at 8; no payload for None. tmp is a fresh i32 local.
-    AdtNew { tag: u32, payload: Option<Box<TE>>, tmp: u32 },
+    AdtNew {
+        tag: u32,
+        payload: Option<Box<TE>>,
+        tmp: u32,
+    },
     /// Typed prefix trap: the operand is evaluated exactly once before
     /// allocating Some; only the private guest ordinary-throw tag yields None.
     /// All temporaries are function-local to avoid shared error state.
@@ -155,12 +159,19 @@ pub enum TExpr {
         none_tmp: u32,
     },
     /// Compare the discriminant with a known variant tag.
-    AdtIs { obj: Box<TE>, tag: u32 },
+    AdtIs {
+        obj: Box<TE>,
+        tag: u32,
+    },
     /// Payload read, admissible only inside the tag-matched arm.
     AdtPayload(Box<TE>),
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
-    AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
+    AdtPropagate {
+        source: Box<TE>,
+        tmp: u32,
+        success_tag: u32,
+    },
     /// ordinary class field read
     FieldGet {
         obj: Box<TE>,
@@ -232,7 +243,13 @@ pub enum TStmt {
     /// First statement of a top-level body that uses try/defer/recover:
     /// compiler-owned unwind slots (defer-recover-unwind-v1). `ret` holds
     /// the snapshotted return value, `msg`/`kind` the pending failure.
-    UnwindFrame { ret: Option<u32>, saved: u32, msg: u32, kind: u32, pending: u32 },
+    UnwindFrame {
+        ret: Option<u32>,
+        saved: u32,
+        msg: u32,
+        kind: u32,
+        pending: u32,
+    },
     /// `try`/`catch (Error)`/`finally`; `saved` snapshots the catch depth.
     Try {
         saved: u32,
@@ -242,10 +259,17 @@ pub enum TStmt {
     },
     /// Registration point of a top-level `defer`: sets `flag`. The body
     /// runs LIFO at every function exit after registration.
-    Defer { flag: u32, body: Vec<TStmt> },
+    Defer {
+        flag: u32,
+        body: Vec<TStmt>,
+    },
     /// Registration of a recovery callback: evaluates factory arguments into
     /// `args` slots once, sets `flag`. The body runs only while unwinding.
-    Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt> },
+    Recover {
+        flag: u32,
+        args: Vec<(u32, TE)>,
+        body: Vec<TStmt>,
+    },
     /// Terminal `c.next()`: delegate the unchanged failure to the next
     /// older recovery callback or the outer boundary.
     RecoverNext,
@@ -329,6 +353,8 @@ pub struct TProgram {
     pub funcs: Vec<TFunc>,
     pub generators: Vec<TGenerator>,
     pub main: u32,
+    /// Checked language exports, distinct from host Wasm exports.
+    pub exports: Vec<crate::ast::ExportDecl>,
     pub imports: Vec<Import>,
     pub data: Vec<u8>,
     /// Classes exist: the module owns a bounded bump heap.
@@ -428,7 +454,10 @@ struct Local {
 }
 
 #[derive(Clone, Copy)]
-struct ScopedLoan { owner: u32, mutable: bool }
+struct ScopedLoan {
+    owner: u32,
+    mutable: bool,
+}
 
 struct FnCx<'a> {
     g: &'a Globals<'a>,
@@ -515,13 +544,18 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
             // Type recognition and structural signature validation are
             // available now, but the browser backend has no callable value
             // storage or verified indirect-call ABI. Stop before emitting.
-            let signature = callable_ir::CallableSignature::from_source_type(
-                t, type_names, Pos { line: 1, col: 1 })?;
+            let signature = callable_ir::CallableSignature::from_source_type(t, type_names, Pos { line: 1, col: 1 })?;
             return Err(Diagnostic::new(
-                type_names[match t { Type::Callable(i) => i as usize, _ => unreachable!() }].1,
+                type_names[match t {
+                    Type::Callable(i) => i as usize,
+                    _ => unreachable!(),
+                }]
+                .1,
                 "E_UNSUPPORTED",
-                format!("callable value type {} is parsed and checked but requires validated Wasm indirect dispatch",
-                    signature.source_spelling()),
+                format!(
+                    "callable value type {} is parsed and checked but requires validated Wasm indirect dispatch",
+                    signature.source_spelling()
+                ),
             ));
         }
         Type::NamedRef(i) => {
@@ -567,29 +601,30 @@ fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
         match stmt {
             Stmt::Yield(expr, _) => {
                 if matches!(&expr.kind, ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_)) {
-                    return Err(Diagnostic::new(expr.pos, "E_TYPE",
-                        "Generator<int> can only yield int items"));
+                    return Err(Diagnostic::new(expr.pos, "E_TYPE", "Generator<int> can only yield int items"));
                 }
             }
-            Stmt::YieldFrom(expr, _) => {
-                match &expr.kind {
-                    ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_) => {
-                        return Err(Diagnostic::new(expr.pos, "E_TYPE",
-                            "yield* requires a generator/iterator, not a scalar"));
-                    }
-                    ExprKind::Call(name, args) => {
-                        if let Some(target) = funcs.iter().find(|f|
-                            f.name == *name && f.params.len() == args.len())
-                        {
-                            if !target.is_generator || target.ret != Type::GeneratorInt {
-                                return Err(Diagnostic::new(expr.pos, "E_TYPE",
-                                    format!("yield* target '{name}' is not a Generator<int>")));
-                            }
+            Stmt::YieldFrom(expr, _) => match &expr.kind {
+                ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Float(_) => {
+                    return Err(Diagnostic::new(
+                        expr.pos,
+                        "E_TYPE",
+                        "yield* requires a generator/iterator, not a scalar",
+                    ));
+                }
+                ExprKind::Call(name, args) => {
+                    if let Some(target) = funcs.iter().find(|f| f.name == *name && f.params.len() == args.len()) {
+                        if !target.is_generator || target.ret != Type::GeneratorInt {
+                            return Err(Diagnostic::new(
+                                expr.pos,
+                                "E_TYPE",
+                                format!("yield* target '{name}' is not a Generator<int>"),
+                            ));
                         }
                     }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
             Stmt::If { arms, otherwise, .. } => {
                 for (_, branch) in arms {
                     precheck_generator_body(branch, funcs)?;
@@ -598,8 +633,7 @@ fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
                     precheck_generator_body(branch, funcs)?;
                 }
             }
-            Stmt::While { body, .. } | Stmt::Loop { body, .. }
-            | Stmt::ForIn { body, .. } | Stmt::Block(body) => {
+            Stmt::While { body, .. } | Stmt::Loop { body, .. } | Stmt::ForIn { body, .. } | Stmt::Block(body) => {
                 precheck_generator_body(body, funcs)?;
             }
             Stmt::For { body, .. } => precheck_generator_body(body, funcs)?,
@@ -621,25 +655,22 @@ fn precheck_generator_body(body: &[Stmt], funcs: &[Func]) -> R<()> {
 /// instance, and no guest iterator is allowed to escape that instance.
 fn generator_forin_scalar_expr(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
-        ExprKind::Str(_) | ExprKind::Var(_) => true,
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) => true,
         ExprKind::Unary(_, a) => generator_forin_scalar_expr(a),
-        ExprKind::Binary(_, a, b) => generator_forin_scalar_expr(a)
-            && generator_forin_scalar_expr(b),
-        ExprKind::Ternary(a, b, c) => generator_forin_scalar_expr(a)
-            && generator_forin_scalar_expr(b) && generator_forin_scalar_expr(c),
+        ExprKind::Binary(_, a, b) => generator_forin_scalar_expr(a) && generator_forin_scalar_expr(b),
+        ExprKind::Ternary(a, b, c) => generator_forin_scalar_expr(a) && generator_forin_scalar_expr(b) && generator_forin_scalar_expr(c),
         _ => false,
     }
 }
 
 fn generator_forin_safe_body(body: &[Stmt]) -> bool {
     body.iter().all(|s| match s {
-        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } =>
-            generator_forin_scalar_expr(init),
-        Stmt::If { arms, otherwise, .. } =>
-            arms.iter().all(|(cond, branch)|
-                generator_forin_scalar_expr(cond) && generator_forin_safe_body(branch))
-                && otherwise.as_ref().is_none_or(|b| generator_forin_safe_body(b)),
+        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } => generator_forin_scalar_expr(init),
+        Stmt::If { arms, otherwise, .. } => {
+            arms.iter()
+                .all(|(cond, branch)| generator_forin_scalar_expr(cond) && generator_forin_safe_body(branch))
+                && otherwise.as_ref().is_none_or(|b| generator_forin_safe_body(b))
+        }
         Stmt::Block(b) => generator_forin_safe_body(b),
         Stmt::Return(Some(e), _) => generator_forin_scalar_expr(e),
         Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => true,
@@ -652,16 +683,23 @@ fn generator_forin_safe_body(body: &[Stmt]) -> bool {
 /// The admitted graph is statically resolved and each frame has at most
 /// one live delegated child; depth is bounded independently of wasm stacks.
 fn validate_generator_graph(gens: &[TGenerator], p: &Program) -> R<()> {
-    fn visit(node: usize, depth: u32, colors: &mut [u8],
-             gens: &[TGenerator], p: &Program) -> R<()> {
+    fn visit(node: usize, depth: u32, colors: &mut [u8], gens: &[TGenerator], p: &Program) -> R<()> {
         if colors[node] == 1 {
-            return Err(Diagnostic::new(p.funcs[node].pos, "E_GENERATOR_CYCLE",
-                "generator yield* delegation must be acyclic"));
+            return Err(Diagnostic::new(
+                p.funcs[node].pos,
+                "E_GENERATOR_CYCLE",
+                "generator yield* delegation must be acyclic",
+            ));
         }
-        if colors[node] == 2 { return Ok(()); }
+        if colors[node] == 2 {
+            return Ok(());
+        }
         if depth > 64 {
-            return Err(Diagnostic::new(p.funcs[node].pos, "E_NESTING",
-                "generator delegation chain exceeds 64 frames"));
+            return Err(Diagnostic::new(
+                p.funcs[node].pos,
+                "E_NESTING",
+                "generator delegation chain exceeds 64 frames",
+            ));
         }
         colors[node] = 1;
         if let Some(gen) = gens.iter().find(|g| g.function as usize == node) {
@@ -684,24 +722,65 @@ fn validate_generator_graph(gens: &[TGenerator], p: &Program) -> R<()> {
 /// Only one immutable int parameter and one mutable counter are admitted.
 /// A C-style for must use i <= limit, i++, and yield i without side effects.
 fn generator_count_loop(f: &Func, stmt: &Stmt) -> Option<i64> {
-    if f.params.len() != 1 || f.params[0].ty != Type::Int { return None; }
-    let Stmt::For { init: Some(init), cond: Some(cond),
-                    update: Some(update), body, .. } = stmt else { return None; };
-    let Stmt::Bind { kind: BindKind::Let, name, ty, init: initial, .. } =
-        init.as_ref() else { return None; };
-    if ty.is_some_and(|t| t != Type::Int) { return None; }
-    let ExprKind::Int(Some(start)) = &initial.kind else { return None; };
-    if *start > i64::MAX as u64 { return None; }
-    let ExprKind::Binary(BinOp::Le, left, right) = &cond.kind else { return None; };
-    if !matches!(&left.kind, ExprKind::Var(s) if s == name)
-        || !matches!(&right.kind, ExprKind::Var(s) if s == &f.params[0].name) { return None; }
-    let Stmt::Assign { name: update_name, value, .. } = update.as_ref() else { return None; };
-    if update_name != name { return None; }
-    let ExprKind::Binary(BinOp::Add, left, right) = &value.kind else { return None; };
-    if !matches!(&left.kind, ExprKind::Var(s) if s == name)
-        || !matches!(&right.kind, ExprKind::Int(Some(1))) { return None; }
-    if body.len() != 1 || !matches!(&body[0],
-        Stmt::Yield(Expr { kind: ExprKind::Var(s), .. }, _) if s == name) { return None; }
+    if f.params.len() != 1 || f.params[0].ty != Type::Int {
+        return None;
+    }
+    let Stmt::For {
+        init: Some(init),
+        cond: Some(cond),
+        update: Some(update),
+        body,
+        ..
+    } = stmt
+    else {
+        return None;
+    };
+    let Stmt::Bind {
+        kind: BindKind::Let,
+        name,
+        ty,
+        init: initial,
+        ..
+    } = init.as_ref()
+    else {
+        return None;
+    };
+    if ty.is_some_and(|t| t != Type::Int) {
+        return None;
+    }
+    let ExprKind::Int(Some(start)) = &initial.kind else {
+        return None;
+    };
+    if *start > i64::MAX as u64 {
+        return None;
+    }
+    let ExprKind::Binary(BinOp::Le, left, right) = &cond.kind else {
+        return None;
+    };
+    if !matches!(&left.kind, ExprKind::Var(s) if s == name) || !matches!(&right.kind, ExprKind::Var(s) if s == &f.params[0].name) {
+        return None;
+    }
+    let Stmt::Assign {
+        name: update_name, value, ..
+    } = update.as_ref()
+    else {
+        return None;
+    };
+    if update_name != name {
+        return None;
+    }
+    let ExprKind::Binary(BinOp::Add, left, right) = &value.kind else {
+        return None;
+    };
+    if !matches!(&left.kind, ExprKind::Var(s) if s == name) || !matches!(&right.kind, ExprKind::Int(Some(1))) {
+        return None;
+    }
+    if body.len() != 1
+        || !matches!(&body[0],
+        Stmt::Yield(Expr { kind: ExprKind::Var(s), .. }, _) if s == name)
+    {
+        return None;
+    }
     Some(*start as i64)
 }
 
@@ -710,11 +789,10 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
     match (target.params.as_slice(), args) {
         ([], []) => Some(TGenArg::None),
         ([p], [arg]) if p.ty == Type::Int => match &arg.kind {
-            ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 =>
-                Some(TGenArg::Literal(*n as i64)),
-            ExprKind::Var(name) if f.params.len() == 1
-                && f.params[0].ty == Type::Int && *name == f.params[0].name =>
-                Some(TGenArg::Parameter),
+            ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 => Some(TGenArg::Literal(*n as i64)),
+            ExprKind::Var(name) if f.params.len() == 1 && f.params[0].ty == Type::Int && *name == f.params[0].name => {
+                Some(TGenArg::Parameter)
+            }
             _ => None,
         },
         _ => None,
@@ -722,6 +800,13 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    if let Some(e) = p.parsed_exports.first() {
+        return Err(Diagnostic::new(
+            e.pos,
+            "E_UNBOUND",
+            "source exports must be resolved by the canonical export binder before typing",
+        ));
+    }
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
@@ -738,55 +823,82 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             let plan = crate::generator_cfg::lower(&f.body)?;
             // Preflight the AST-visible slots. The final codegen must repeat
             // this check using all typed locals and hidden scratch slots.
-            let declared_locals = plan.instructions.iter().filter(|op|
-                matches!(op, crate::generator_cfg::Instruction::Evaluate(Stmt::Bind { .. }))
-            ).count() as u32;
-            let _frame = crate::generator_frame::GeneratorFrameLayout::new(
-                f.params.len() as u32, declared_locals, plan.delegate_slots, f.pos
-            )?;
+            let declared_locals = plan
+                .instructions
+                .iter()
+                .filter(|op| matches!(op, crate::generator_cfg::Instruction::Evaluate(Stmt::Bind { .. })))
+                .count() as u32;
+            let _frame =
+                crate::generator_frame::GeneratorFrameLayout::new(f.params.len() as u32, declared_locals, plan.delegate_slots, f.pos)?;
             // Bounded single-int-parameter and live counter profile.
             let count_loops = f.body.iter().filter(|s| matches!(s, Stmt::For { .. })).count();
             let admitted = f.params.len() <= 1
                 && f.params.iter().all(|p| p.ty == Type::Int)
-                && count_loops <= 1 && plan.delegate_slots <= 1
-                && f.body.iter().enumerate().all(|(i, stmt)| {
-                    match stmt {
-                        Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) =>
-                            *n <= i64::MAX as u64,
-                        Stmt::YieldFrom(Expr { kind: ExprKind::Call(name, args), .. }, _) =>
-                            p.funcs.iter().any(|target| target.is_generator
-                                && target.name == *name
-                                && generator_arg(f, target, args).is_some()),
-                        Stmt::For { .. } => generator_count_loop(f, stmt).is_some(),
-                        Stmt::Return(None, _) => i + 1 == f.body.len(),
-                        _ => false,
-                    }
+                && count_loops <= 1
+                && plan.delegate_slots <= 1
+                && f.body.iter().enumerate().all(|(i, stmt)| match stmt {
+                    Stmt::Yield(
+                        Expr {
+                            kind: ExprKind::Int(Some(n)),
+                            ..
+                        },
+                        _,
+                    ) => *n <= i64::MAX as u64,
+                    Stmt::YieldFrom(
+                        Expr {
+                            kind: ExprKind::Call(name, args),
+                            ..
+                        },
+                        _,
+                    ) => p
+                        .funcs
+                        .iter()
+                        .any(|target| target.is_generator && target.name == *name && generator_arg(f, target, args).is_some()),
+                    Stmt::For { .. } => generator_count_loop(f, stmt).is_some(),
+                    Stmt::Return(None, _) => i + 1 == f.body.len(),
+                    _ => false,
                 });
             if !admitted && generator_lower::lower(f)?.is_none() {
-                return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED",
-                    "generator source requires typed, owned continuation lowering not yet implemented"));
+                return Err(Diagnostic::new(
+                    f.pos,
+                    "E_UNSUPPORTED",
+                    "generator source requires typed, owned continuation lowering not yet implemented",
+                ));
             }
         }
-        if (!f.is_generator && f.ret == Type::GeneratorInt)
-            || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
-            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
-                "Generator<int> requires a compiled generator continuation"));
+        if (!f.is_generator && f.ret == Type::GeneratorInt) || f.params.iter().any(|p| p.ty == Type::GeneratorInt) {
+            return Err(Diagnostic::new(
+                f.pos,
+                "E_UNSUPPORTED_TYPE",
+                "Generator<int> requires a compiled generator continuation",
+            ));
         }
     }
     for c in &p.classes {
-        if c.methods.iter().any(|m| m.ret == Type::GeneratorInt
-            || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
-            || c.ctor.as_ref().is_some_and(|ctor|
-                ctor.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
-            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
-                "generator methods and parameters require a compiled iterator continuation"));
+        if c.methods
+            .iter()
+            .any(|m| m.ret == Type::GeneratorInt || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
+            || c.ctor
+                .as_ref()
+                .is_some_and(|ctor| ctor.params.iter().any(|p| p.ty == Type::GeneratorInt))
+        {
+            return Err(Diagnostic::new(
+                c.pos,
+                "E_UNSUPPORTED_TYPE",
+                "generator methods and parameters require a compiled iterator continuation",
+            ));
         }
     }
     for a in &p.actors {
-        if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
-            || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
-            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
-                "actor generator methods require a compiled iterator continuation"));
+        if a.methods
+            .iter()
+            .any(|m| m.ret == Type::GeneratorInt || m.params.iter().any(|p| p.ty == Type::GeneratorInt))
+        {
+            return Err(Diagnostic::new(
+                a.pos,
+                "E_UNSUPPORTED_TYPE",
+                "actor generator methods require a compiled iterator continuation",
+            ));
         }
     }
     let tn = &p.type_names;
@@ -1040,36 +1152,63 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 plan.function = i as u32;
                 generators.push(plan);
                 funcs[i] = Some(TFunc {
-                    name: f.name.clone(), params, ret,
-                    locals: Vec::new(), body: Vec::new(),
+                    name: f.name.clone(),
+                    params,
+                    ret,
+                    locals: Vec::new(),
+                    body: Vec::new(),
                 });
                 continue;
             }
             // Original bounded CountTo/direct yield* fallback.
-            let steps = f.body.iter().filter_map(|stmt| match stmt {
-                Stmt::Yield(Expr { kind: ExprKind::Int(Some(n)), .. }, _) =>
-                    Some(TGenStep::Yield(TE {
-                        e: TExpr::I64(*n as i64), ty: Type::Int
+            let steps = f
+                .body
+                .iter()
+                .filter_map(|stmt| match stmt {
+                    Stmt::Yield(
+                        Expr {
+                            kind: ExprKind::Int(Some(n)),
+                            ..
+                        },
+                        _,
+                    ) => Some(TGenStep::Yield(TE {
+                        e: TExpr::I64(*n as i64),
+                        ty: Type::Int,
                     })),
-                Stmt::YieldFrom(Expr { kind: ExprKind::Call(name, args), .. }, _) => {
-                    let target = p.funcs.iter().find(|target| target.is_generator
-                        && target.name == *name && target.params.len() == args.len())
-                        .expect("source validated before declaration lowering");
-                    let arg = generator_arg(f, target, args)
-                        .expect("argument validated before declaration lowering");
-                    let idx = g.sigs.get(&(name.clone(), args.len()))
-                        .expect("declared generator target").0;
-                    Some(TGenStep::Delegate { function: idx, arg })
-                }
-                Stmt::For { .. } => Some(TGenStep::CountTo {
-                    start: generator_count_loop(f, stmt).expect("verified counter loop")
-                }),
-                _ => None,
-            }).collect();
-            generators.push(TGenerator { function: i as u32, steps, locals: 0, live_after: Vec::new() });
+                    Stmt::YieldFrom(
+                        Expr {
+                            kind: ExprKind::Call(name, args),
+                            ..
+                        },
+                        _,
+                    ) => {
+                        let target = p
+                            .funcs
+                            .iter()
+                            .find(|target| target.is_generator && target.name == *name && target.params.len() == args.len())
+                            .expect("source validated before declaration lowering");
+                        let arg = generator_arg(f, target, args).expect("argument validated before declaration lowering");
+                        let idx = g.sigs.get(&(name.clone(), args.len())).expect("declared generator target").0;
+                        Some(TGenStep::Delegate { function: idx, arg })
+                    }
+                    Stmt::For { .. } => Some(TGenStep::CountTo {
+                        start: generator_count_loop(f, stmt).expect("verified counter loop"),
+                    }),
+                    _ => None,
+                })
+                .collect();
+            generators.push(TGenerator {
+                function: i as u32,
+                steps,
+                locals: 0,
+                live_after: Vec::new(),
+            });
             funcs[i] = Some(TFunc {
-                name: f.name.clone(), params, ret,
-                locals: Vec::new(), body: Vec::new(),
+                name: f.name.clone(),
+                params,
+                ret,
+                locals: Vec::new(),
+                body: Vec::new(),
             });
             continue;
         }
@@ -1287,13 +1426,25 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // A pure declaration is a checked transitive effect contract, not a hint.
     // Inspect fully resolved typed calls, including branches that are never
     // executed at runtime. Other functions are impure unless declared pure.
-    let pure_indices: BTreeSet<u32> = p.funcs.iter().enumerate()
-        .filter_map(|(idx, f)| f.is_pure.then_some(idx as u32)).collect();
+    let pure_indices: BTreeSet<u32> = p
+        .funcs
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, f)| f.is_pure.then_some(idx as u32))
+        .collect();
     for (idx, f) in p.funcs.iter().enumerate() {
-        if !f.is_pure { continue; }
+        if !f.is_pure {
+            continue;
+        }
         if f.is_generator || !pure_stmts(&funcs[idx].body, &pure_indices) {
-            return Err(Diagnostic::new(f.pos, "E_PURE",
-                format!("pure fnc '{}' cannot perform I/O, use shared state, or call an impure function", f.name)));
+            return Err(Diagnostic::new(
+                f.pos,
+                "E_PURE",
+                format!(
+                    "pure fnc '{}' cannot perform I/O, use shared state, or call an impure function",
+                    f.name
+                ),
+            ));
         }
     }
     let strings = funcs
@@ -1301,15 +1452,18 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
-    let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
-    let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
-        || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
+    let adt_alloc = funcs
+        .iter()
+        .any(|f| any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
+    let guest_eh = funcs
+        .iter()
+        .any(|f| guest_eh_in_stmts(&f.body) || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
     let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
     Ok(TProgram {
         funcs,
         main,
+        exports: p.exports.clone(),
         imports,
         data,
         heap: !p.classes.is_empty() || concat || adt_alloc || !generators.is_empty(),
@@ -1408,7 +1562,16 @@ fn body_check(
     cx.scopes.push(Vec::new());
     let mut tbody = cx.stmts(body)?;
     if let Some((ret, saved, msg, kind, pending)) = cx.unwind {
-        tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
+        tbody.insert(
+            0,
+            TStmt::UnwindFrame {
+                ret,
+                saved,
+                msg,
+                kind,
+                pending,
+            },
+        );
     }
     if ret != Type::Void && !returns(&tbody) {
         let what = if matches!(owner, Owner::TopLevel) { "fnc" } else { "method" };
@@ -1428,9 +1591,9 @@ fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
         TStmt::Raise(_) | TStmt::RecoverNext => true,
-        TStmt::Try { body, catch, finally, .. } =>
-            finally.as_ref().is_some_and(|f| returns(f))
-                || (returns(body) && catch.as_ref().is_none_or(|c| returns(c))),
+        TStmt::Try { body, catch, finally, .. } => {
+            finally.as_ref().is_some_and(|f| returns(f)) || (returns(body) && catch.as_ref().is_none_or(|c| returns(c)))
+        }
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
@@ -1446,20 +1609,27 @@ fn returns(body: &[TStmt]) -> bool {
 /// wrapper must not hide an impure child expression or branch.
 fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
     match &value.e {
-        TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
-        TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
-        TExpr::IntToFloat(a) | TExpr::FNeg(a) |
-        TExpr::Neg(a) | TExpr::Not(a) |
-        TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
-            pure_expr(a, pure_indices),
+        TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
+        TExpr::IntToFloat(a) | TExpr::FNeg(a) | TExpr::Neg(a) | TExpr::Not(a) | TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) => {
+            pure_expr(a, pure_indices)
+        }
         TExpr::Bin(op, a, b) => {
             // Arithmetic, comparisons and eager boolean logic have no
             // observable external effects; newly added operators must be
             // reviewed explicitly, even if they reuse TExpr::Bin.
             let read_only = match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
-                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
-                BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or => true,
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or => true,
             };
             read_only && pure_expr(a, pure_indices) && pure_expr(b, pure_indices)
         }
@@ -1470,66 +1640,75 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
             };
             read_only && pure_expr(a, pure_indices) && pure_expr(b, pure_indices)
         }
-        TExpr::Ternary(c, a, b) =>
-            pure_expr(c, pure_indices) &&
-            pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
-        TExpr::Call(target, args) =>
-            pure_indices.contains(target) &&
-            args.iter().all(|arg| pure_expr(arg, pure_indices)),
+        TExpr::Ternary(c, a, b) => pure_expr(c, pure_indices) && pure_expr(a, pure_indices) && pure_expr(b, pure_indices),
+        TExpr::Call(target, args) => pure_indices.contains(target) && args.iter().all(|arg| pure_expr(arg, pure_indices)),
         TExpr::Str(op, a, b) => {
             // Exhaustive over string helpers too: a new helper may allocate
             // or mutate memory, so it cannot silently inherit purity.
             let read_only = match op {
-                StrOp::Eq | StrOp::StartsWith | StrOp::EndsWith |
-                StrOp::Contains | StrOp::Trim | StrOp::Cmp => true,
+                StrOp::Eq | StrOp::StartsWith | StrOp::EndsWith | StrOp::Contains | StrOp::Trim | StrOp::Cmp => true,
                 StrOp::Concat => false,
             };
-            read_only && pure_expr(a, pure_indices) &&
-                b.as_ref().is_none_or(|b| pure_expr(b, pure_indices))
-        },
+            read_only && pure_expr(a, pure_indices) && b.as_ref().is_none_or(|b| pure_expr(b, pure_indices))
+        }
         // Disallowed effects include heap mutation/allocations, object/actor
         // state reads, I/O, actor operations, guest exception handling and
         // propagation. Keep these explicit when evolving the language.
-        TExpr::Print { .. } | TExpr::PrintStr { .. } |
-        TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
-        TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
-        TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
-        TExpr::AdtNew { .. } | TExpr::Trap { .. } |
-        TExpr::AdtPropagate { .. } => false,
+        TExpr::Print { .. }
+        | TExpr::PrintStr { .. }
+        | TExpr::PrintStrVal { .. }
+        | TExpr::PrintObj { .. }
+        | TExpr::FieldGet { .. }
+        | TExpr::StateFieldRead { .. }
+        | TExpr::GlobalGet(_)
+        | TExpr::Alloc(_)
+        | TExpr::Spawn(_)
+        | TExpr::Send { .. }
+        | TExpr::AdtNew { .. }
+        | TExpr::Trap { .. }
+        | TExpr::AdtPropagate { .. } => false,
     }
 }
 
 fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
     body.iter().all(|stmt| match stmt {
-        TStmt::Set(_, value) | TStmt::Expr(value) =>
-            pure_expr(value, pure_indices),
-        TStmt::Return(value) =>
-            value.as_ref().is_none_or(|value| pure_expr(value, pure_indices)),
-        TStmt::If(arms, otherwise) =>
-            arms.iter().all(|(cond, block)|
-                pure_expr(cond, pure_indices) && pure_stmts(block, pure_indices)) &&
-            otherwise.as_ref().is_none_or(|block| pure_stmts(block, pure_indices)),
-        TStmt::Loop { cond, body, update } =>
-            cond.as_ref().is_none_or(|cond| pure_expr(cond, pure_indices)) &&
-            pure_stmts(body, pure_indices) && pure_stmts(update, pure_indices),
+        TStmt::Set(_, value) | TStmt::Expr(value) => pure_expr(value, pure_indices),
+        TStmt::Return(value) => value.as_ref().is_none_or(|value| pure_expr(value, pure_indices)),
+        TStmt::If(arms, otherwise) => {
+            arms.iter()
+                .all(|(cond, block)| pure_expr(cond, pure_indices) && pure_stmts(block, pure_indices))
+                && otherwise.as_ref().is_none_or(|block| pure_stmts(block, pure_indices))
+        }
+        TStmt::Loop { cond, body, update } => {
+            cond.as_ref().is_none_or(|cond| pure_expr(cond, pure_indices))
+                && pure_stmts(body, pure_indices)
+                && pure_stmts(update, pure_indices)
+        }
         TStmt::Block(body) => pure_stmts(body, pure_indices),
         TStmt::Break | TStmt::Continue | TStmt::Unreachable => true,
-        TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
-        TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
-        TStmt::GlobalSet(_, _) |
-        TStmt::Throw(_) | TStmt::ForIn { .. } => false,
-        TStmt::Raise(_) | TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
-        TStmt::Defer { .. } | TStmt::Recover { .. } | TStmt::RecoverNext => false,
+        TStmt::FieldSet { .. }
+        | TStmt::StateFieldWrite { .. }
+        | TStmt::StateCriticalWrite(_)
+        | TStmt::StateRegister(_)
+        | TStmt::GlobalSet(_, _)
+        | TStmt::Throw(_)
+        | TStmt::ForIn { .. } => false,
+        TStmt::Raise(_)
+        | TStmt::UnwindFrame { .. }
+        | TStmt::Try { .. }
+        | TStmt::Defer { .. }
+        | TStmt::Recover { .. }
+        | TStmt::RecoverNext => false,
     })
 }
 
 /// Whether any expression node in `body` satisfies `f`.
 fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
-        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
-        TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
-        TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
-            any_in(obj, f) || any_in(value, f),
+        TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) | TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => {
+            any_in(e, f)
+        }
+        TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } => any_in(obj, f) || any_in(value, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
         }
@@ -1538,9 +1717,11 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
         TStmt::Raise(e) => any_in(e, f),
-        TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
-            || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
-            || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
+        TStmt::Try { body, catch, finally, .. } => {
+            any_in_stmts(body, f)
+                || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
+                || finally.as_ref().is_some_and(|b| any_in_stmts(b, f))
+        }
         TStmt::Defer { body, .. } => any_in_stmts(body, f),
         TStmt::Recover { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
         TStmt::UnwindFrame { .. } | TStmt::RecoverNext => false,
@@ -1564,8 +1745,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
-        TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
-        TExpr::PrintObj { obj, .. } => any_in(obj, f),
+        TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } | TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
     }
@@ -1576,10 +1756,8 @@ fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Throw(_) => true,
         TStmt::Raise(_) | TStmt::Try { .. } | TStmt::UnwindFrame { .. } => true,
-        TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b))
-            || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
-        TStmt::Loop { body, update, .. } =>
-            guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
+        TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b)) || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
+        TStmt::Loop { body, update, .. } => guest_eh_in_stmts(body) || guest_eh_in_stmts(update),
         TStmt::ForIn { body, .. } => guest_eh_in_stmts(body),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => guest_eh_in_stmts(b),
         _ => false,
@@ -1632,15 +1810,25 @@ impl<'a> FnCx<'a> {
     /// Allocate the function's unwind slots once (top-level `fnc` only).
     fn unwind_frame(&mut self, pos: Pos, what: &str) -> R<()> {
         if self.owner != Owner::TopLevel {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                format!("'{what}' in class and actor methods needs supervisor/cleanup integration")));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                format!("'{what}' in class and actor methods needs supervisor/cleanup integration"),
+            ));
         }
         if self.cleanup_depth > 0 {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                format!("'{what}' inside a defer/recover body is not admitted: cleanup must not unwind")));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                format!("'{what}' inside a defer/recover body is not admitted: cleanup must not unwind"),
+            ));
         }
         if self.unwind.is_none() {
-            let ret = if self.ret == Type::Void { None } else { Some(self.temp(self.ret, pos)?) };
+            let ret = if self.ret == Type::Void {
+                None
+            } else {
+                Some(self.temp(self.ret, pos)?)
+            };
             let saved = self.temp(Type::Bool, pos)?;
             let msg = self.temp(Type::Int, pos)?;
             let kind = self.temp(Type::Bool, pos)?;
@@ -1654,8 +1842,11 @@ impl<'a> FnCx<'a> {
     /// the static LIFO order equals the dynamic registration order.
     fn top_registration(&self, pos: Pos, what: &str) -> R<()> {
         if self.scopes.len() != 2 || self.loops != 0 {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                format!("'{what}' is admitted only at the top level of a fnc body, not in a nested block or loop")));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                format!("'{what}' is admitted only at the top level of a fnc body, not in a nested block or loop"),
+            ));
         }
         Ok(())
     }
@@ -1684,25 +1875,41 @@ impl<'a> FnCx<'a> {
     /// `Error(message)` or `new Error(message)`.
     fn guest_error_message(&mut self, error: &Expr, what: &str, pos: Pos) -> R<TE> {
         if self.owner != Owner::TopLevel {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                format!("ordinary {what} in class and actor methods needs supervisor/cleanup integration")));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                format!("ordinary {what} in class and actor methods needs supervisor/cleanup integration"),
+            ));
         }
         if self.cleanup_depth > 0 {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                format!("'{what}' inside a defer/recover body would replace the pending failure")));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                format!("'{what}' inside a defer/recover body would replace the pending failure"),
+            ));
         }
         let args = match &error.kind {
             ExprKind::Call(name, args) | ExprKind::New(name, args) if name == "Error" => args,
-            _ => return Err(type_err(error.pos,
-                format!("{what} requires an Error subclass; this browser slice admits only {what} Error(message)"))),
+            _ => {
+                return Err(type_err(
+                    error.pos,
+                    format!("{what} requires an Error subclass; this browser slice admits only {what} Error(message)"),
+                ))
+            }
         };
         if args.len() != 1 {
-            return Err(Diagnostic::new(error.pos, "E_ARITY",
-                "Error(message) requires exactly one string argument"));
+            return Err(Diagnostic::new(
+                error.pos,
+                "E_ARITY",
+                "Error(message) requires exactly one string argument",
+            ));
         }
         if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
-            return Err(Diagnostic::new(error.pos, "E_RESERVED",
-                "the guest Error constructor cannot be shadowed"));
+            return Err(Diagnostic::new(
+                error.pos,
+                "E_RESERVED",
+                "the guest Error constructor cannot be shadowed",
+            ));
         }
         let msg = self.value(&args[0])?;
         if msg.ty != Type::Str {
@@ -1848,8 +2055,11 @@ impl<'a> FnCx<'a> {
                 }
                 // Unowned generator-valued locals could escape a close path.
                 if v.ty == Type::GeneratorInt {
-                    return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
-                        "generator handles must be consumed by for-in until owned bindings support close"));
+                    return Err(Diagnostic::new(
+                        *pos,
+                        "E_GENERATOR_OWNERSHIP",
+                        "generator handles must be consumed by for-in until owned bindings support close",
+                    ));
                 }
                 let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
                 TStmt::Set(slot, v)
@@ -1867,7 +2077,11 @@ impl<'a> FnCx<'a> {
                     ));
                 }
                 if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed local or owner while the loan is live"));
+                    return Err(Diagnostic::new(
+                        *pos,
+                        "E_BORROW",
+                        "cannot reassign a borrowed local or owner while the loan is live",
+                    ));
                 }
                 let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
@@ -1885,8 +2099,11 @@ impl<'a> FnCx<'a> {
                     Owner::Class { c, ctor: false, is_static: false }
                     if self.g.classes[c as usize].state_container);
                 if !allowed || self.state_write_scope {
-                    return Err(Diagnostic::new(*pos, "E_STATE_BORROW",
-                        "critical-write requires a non-nested protected state container method"));
+                    return Err(Diagnostic::new(
+                        *pos,
+                        "E_STATE_BORROW",
+                        "critical-write requires a non-nested protected state container method",
+                    ));
                 }
                 self.state_write_scope = true;
                 let checked = self.scoped(body);
@@ -1894,9 +2111,12 @@ impl<'a> FnCx<'a> {
                 TStmt::StateCriticalWrite(checked?)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
-            Stmt::Expr(Expr { kind: ExprKind::MethodCall(base, method, args), pos })
-                if method == "next" && args.is_empty()
-                    && matches!(&base.kind, ExprKind::Var(n) if self.recover_cursor.as_deref() == Some(n.as_str())) =>
+            Stmt::Expr(Expr {
+                kind: ExprKind::MethodCall(base, method, args),
+                pos,
+            }) if method == "next"
+                && args.is_empty()
+                && matches!(&base.kind, ExprKind::Var(n) if self.recover_cursor.as_deref() == Some(n.as_str())) =>
             {
                 let _ = pos;
                 TStmt::RecoverNext
@@ -1922,14 +2142,22 @@ impl<'a> FnCx<'a> {
                         Some(cleanup) => {
                             let cleanup = self.scoped(cleanup)?;
                             if exits_anywhere(&cleanup) {
-                                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                                    "a finally block must not return, throw or raise: it would replace the pending outcome"));
+                                return Err(Diagnostic::new(
+                                    *pos,
+                                    "E_UNSUPPORTED",
+                                    "a finally block must not return, throw or raise: it would replace the pending outcome",
+                                ));
                             }
                             Some(cleanup)
                         }
                         None => None,
                     };
-                    Ok(TStmt::Try { saved, body, catch, finally })
+                    Ok(TStmt::Try {
+                        saved,
+                        body,
+                        catch,
+                        finally,
+                    })
                 })();
                 self.loops = loops;
                 checked?
@@ -1941,80 +2169,126 @@ impl<'a> FnCx<'a> {
                 let body = self.isolated(Vec::new(), None, body)?;
                 TStmt::Defer { flag, body }
             }
-            Stmt::Recover { params, err: _, cursor, body, args, pos } => {
+            Stmt::Recover {
+                params,
+                err: _,
+                cursor,
+                body,
+                args,
+                pos,
+            } => {
                 self.top_registration(*pos, "recover")?;
                 self.unwind_frame(*pos, "recover")?;
                 if params.len() != args.len() {
-                    return Err(Diagnostic::new(*pos, "E_ARITY", format!(
-                        "recovery factory expects {} argument(s), found {}", params.len(), args.len())));
+                    return Err(Diagnostic::new(
+                        *pos,
+                        "E_ARITY",
+                        format!("recovery factory expects {} argument(s), found {}", params.len(), args.len()),
+                    ));
                 }
                 let mut sets = Vec::new();
                 let mut bound = Vec::new();
                 for ((name, ty, ppos), arg) in params.iter().zip(args) {
                     let ty = self.resolve(*ty, *ppos)?;
                     if !matches!(ty, Type::Int | Type::Bool | Type::Str | Type::Float) {
-                        return Err(Diagnostic::new(*ppos, "E_UNSUPPORTED_TYPE",
-                            "recovery factory parameters are restricted to scalar and string values"));
+                        return Err(Diagnostic::new(
+                            *ppos,
+                            "E_UNSUPPORTED_TYPE",
+                            "recovery factory parameters are restricted to scalar and string values",
+                        ));
                     }
                     let v = self.consume_expected(arg, ty)?;
                     if v.ty != ty {
-                        return Err(type_err(arg.pos, format!(
-                            "recovery factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty))));
+                        return Err(type_err(
+                            arg.pos,
+                            format!("recovery factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty)),
+                        ));
                     }
                     let slot = self.temp(ty, *ppos)?;
                     sets.push((slot, v));
-                    bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
+                    bound.push(Local {
+                        name: name.clone(),
+                        slot,
+                        ty,
+                        mutable: false,
+                        mail: None,
+                    });
                 }
                 let flag = self.temp(Type::Bool, *pos)?;
                 let body = self.isolated(bound, Some(cursor.clone()), body)?;
                 if !returns(&body) {
-                    return Err(Diagnostic::new(*pos, "E_RETURN",
-                        "a recovery handler must return a value or call the cursor's next() on every path"));
+                    return Err(Diagnostic::new(
+                        *pos,
+                        "E_RETURN",
+                        "a recovery handler must return a value or call the cursor's next() on every path",
+                    ));
                 }
                 TStmt::Recover { flag, args: sets, body }
             }
             Stmt::Expr(e) => {
                 let v = self.expr(e)?;
                 if v.ty == Type::GeneratorInt {
-                    return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
-                        "discarding an unclosed generator handle is prohibited"));
+                    return Err(Diagnostic::new(
+                        e.pos,
+                        "E_GENERATOR_OWNERSHIP",
+                        "discarding an unclosed generator handle is prohibited",
+                    ));
                 }
                 TStmt::Expr(v)
             }
             Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
             Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) => {
-                return Err(Diagnostic::new(*pos, "E_YIELD",
-                    "yield and yield* require a compiled generator continuation"));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_YIELD",
+                    "yield and yield* require a compiled generator continuation",
+                ));
             }
             Stmt::ForIn { name, source, body, pos } => {
                 let gen = self.consume(source)?;
                 if gen.ty != Type::GeneratorInt {
-                    return Err(type_err(source.pos,
-                        format!("for-in expects Generator<int>, found {}", self.tn(gen.ty))));
+                    return Err(type_err(
+                        source.pos,
+                        format!("for-in expects Generator<int>, found {}", self.tn(gen.ty)),
+                    ));
                 }
                 if !generator_forin_safe_body(body) {
-                    return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                        "generator for-in body has effects requiring exception/cancellation-safe unwinding"));
+                    return Err(Diagnostic::new(
+                        *pos,
+                        "E_UNSUPPORTED",
+                        "generator for-in body has effects requiring exception/cancellation-safe unwinding",
+                    ));
                 }
                 // This first slice owns a fresh handle produced by a direct
                 // generator call. No aliasing or escaping local handles.
                 if !matches!(gen.e, TExpr::Call(_, _)) {
-                    return Err(Diagnostic::new(source.pos, "E_GENERATOR_OWNERSHIP",
-                        "for-in currently requires a fresh generator call"));
+                    return Err(Diagnostic::new(
+                        source.pos,
+                        "E_GENERATOR_OWNERSHIP",
+                        "for-in currently requires a fresh generator call",
+                    ));
                 }
                 let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
                 self.scopes.push(Vec::new());
                 let checked = (|| {
                     let value_slot = self.declare(name, Type::Int, false, *pos)?;
                     let body = self.looped(body)?;
-                    Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
+                    Ok(TStmt::ForIn {
+                        source: gen,
+                        handle_slot,
+                        value_slot,
+                        body,
+                    })
                 })();
                 self.pop_scope();
                 checked?
             }
             Stmt::Return(_, pos) if self.cleanup_depth > 0 && self.recover_cursor.is_none() => {
-                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
-                    "a defer body cannot return: cleanup must not replace the pending outcome"));
+                return Err(Diagnostic::new(
+                    *pos,
+                    "E_UNSUPPORTED",
+                    "a defer body cannot return: cleanup must not replace the pending outcome",
+                ));
             }
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
@@ -2225,8 +2499,7 @@ impl<'a> FnCx<'a> {
                         None,
                     )
                 }
-                Pattern::Adt(name, _) => return Err(type_err(arm.pos,
-                    format!("ADT pattern '{name}' cannot match a {}", self.tn(sty)))),
+                Pattern::Adt(name, _) => return Err(type_err(arm.pos, format!("ADT pattern '{name}' cannot match a {}", self.tn(sty)))),
                 Pattern::Variant(en, var) => {
                     let ev = self.enum_value(en, var, arm.pos, arm.pos)?;
                     if ev.ty != sty {
@@ -2342,22 +2615,27 @@ impl<'a> FnCx<'a> {
         Ok(TStmt::Block(match_setup))
     }
 
-
     /// Check a concrete tagged ADT match. Only v1 profiles are admitted:
     /// Option<int> and Result<int,string>. Each variant has a unique tag;
     /// the payload read occurs only inside its matching guarded arm.
     fn match_adt(&mut self, subj: TE, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let sty = subj.ty;
         let tmp = self.temp(sty, pos)?;
-        let get = || TE { e: TExpr::Local(tmp), ty: sty };
+        let get = || TE {
+            e: TExpr::Local(tmp),
+            ty: sty,
+        };
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             if covered {
-                return Err(Diagnostic::new(arm.pos, "E_MATCH",
-                    format!("unreachable match arm {}: prior arms cover every variant", i + 1)));
+                return Err(Diagnostic::new(
+                    arm.pos,
+                    "E_MATCH",
+                    format!("unreachable match arm {}: prior arms cover every variant", i + 1),
+                ));
             }
             let (key, payload_name, payload_ty) = match &arm.pattern {
                 Pattern::Wild => (None, None, None),
@@ -2370,24 +2648,31 @@ impl<'a> FnCx<'a> {
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
                         (Type::OptionResultIntStr, "None") => (0, None),
                         (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
-                        _ => return Err(type_err(arm.pos,
-                            format!("variant '{name}' is not part of {}", self.tn(sty)))),
+                        _ => return Err(type_err(arm.pos, format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
                     if bind.is_some() != needed.is_some() {
-                        return Err(Diagnostic::new(arm.pos, "E_ARITY",
-                            format!("pattern '{name}' has incorrect payload arity")));
+                        return Err(Diagnostic::new(
+                            arm.pos,
+                            "E_ARITY",
+                            format!("pattern '{name}' has incorrect payload arity"),
+                        ));
                     }
                     (Some(tag), bind.as_deref(), needed)
                 }
-                _ => return Err(type_err(arm.pos,
-                    format!("pattern is not a variant of {}", self.tn(sty)))),
+                _ => return Err(type_err(arm.pos, format!("pattern is not a variant of {}", self.tn(sty)))),
             };
             if key.is_some_and(|tag| seen.contains(&tag)) {
-                return Err(Diagnostic::new(arm.pos, "E_MATCH",
-                    format!("unreachable match arm {}: variant already covered", i + 1)));
+                return Err(Diagnostic::new(
+                    arm.pos,
+                    "E_MATCH",
+                    format!("unreachable match arm {}: variant already covered", i + 1),
+                ));
             }
             let test = key.map(|tag| TE {
-                e: TExpr::AdtIs { obj: Box::new(get()), tag: tag as u32 },
+                e: TExpr::AdtIs {
+                    obj: Box::new(get()),
+                    tag: tag as u32,
+                },
                 ty: Type::Bool,
             });
             self.scopes.push(Vec::new());
@@ -2399,7 +2684,10 @@ impl<'a> FnCx<'a> {
                     let value = if key.is_none() {
                         get()
                     } else {
-                        TE { e: TExpr::AdtPayload(Box::new(get())), ty }
+                        TE {
+                            e: TExpr::AdtPayload(Box::new(get())),
+                            ty,
+                        }
                     };
                     body.push(TStmt::Set(slot, value));
                 }
@@ -2413,15 +2701,22 @@ impl<'a> FnCx<'a> {
                     after.extend(self.moved.iter().copied());
                 }
                 self.moved = at_arm;
-                let truth = TE { e: TExpr::Bool(true), ty: Type::Bool };
+                let truth = TE {
+                    e: TExpr::Bool(true),
+                    ty: Type::Bool,
+                };
                 let cond = match (test, guard) {
                     (None, None) => truth,
                     (Some(t), None) => t,
                     (None, Some(g)) => g,
                     (Some(t), Some(g)) => TE {
                         e: TExpr::Ternary(
-                            Box::new(t), Box::new(g),
-                            Box::new(TE { e: TExpr::Bool(false), ty: Type::Bool }),
+                            Box::new(t),
+                            Box::new(g),
+                            Box::new(TE {
+                                e: TExpr::Bool(false),
+                                ty: Type::Bool,
+                            }),
                         ),
                         ty: Type::Bool,
                     },
@@ -2434,7 +2729,9 @@ impl<'a> FnCx<'a> {
                 match key {
                     Some(k) => {
                         seen.insert(k);
-                        if seen.len() == 2 { covered = true; }
+                        if seen.len() == 2 {
+                            covered = true;
+                        }
                     }
                     None => covered = true,
                 }
@@ -2442,8 +2739,11 @@ impl<'a> FnCx<'a> {
             out.push((cond, body));
         }
         if !covered {
-            return Err(Diagnostic::new(pos, "E_MATCH",
-                format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
+            return Err(Diagnostic::new(
+                pos,
+                "E_MATCH",
+                format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty)),
+            ));
         }
         self.moved = after;
         Ok(TStmt::Block(vec![
@@ -2459,10 +2759,15 @@ impl<'a> FnCx<'a> {
                     if !loan.mutable {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
                     }
-                    let Type::Class(c) = local.ty else { unreachable!("tracked loans must be class typed") };
+                    let Type::Class(c) = local.ty else {
+                        unreachable!("tracked loans must be class typed")
+                    };
                     let class = &self.g.classes[c as usize];
-                    let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
-                        Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
+                    let f = class
+                        .fields
+                        .iter()
+                        .find(|f| f.name == field)
+                        .ok_or_else(|| Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
                     if !f.public && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
                     }
@@ -2473,13 +2778,25 @@ impl<'a> FnCx<'a> {
                     // A class-valued field write would install an untracked owned
                     // handle through an alias. Lower only copyable field storage.
                     if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
-                        return Err(Diagnostic::new(pos, "E_BORROW",
-                            "borrow! mut does not yet admit fields requiring owned-handle transfer"));
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_BORROW",
+                            "borrow! mut does not yet admit fields requiring owned-handle transfer",
+                        ));
                     }
                     let checked = self.consume_expected(value, fty)?;
-                    if checked.ty != fty { return Err(type_err(value.pos, "borrowed field assignment type mismatch")); }
-                    return Ok(TStmt::FieldSet { obj: TE { e: TExpr::Local(slot), ty: Type::Class(c) },
-                        offset, ty: fty, value: checked });
+                    if checked.ty != fty {
+                        return Err(type_err(value.pos, "borrowed field assignment type mismatch"));
+                    }
+                    return Ok(TStmt::FieldSet {
+                        obj: TE {
+                            e: TExpr::Local(slot),
+                            ty: Type::Class(c),
+                        },
+                        offset,
+                        ty: fty,
+                        value: checked,
+                    });
                 }
             }
         }
@@ -2522,12 +2839,18 @@ impl<'a> FnCx<'a> {
                 // typed checker must be inside the lexical critical-write AST.
                 if mode == FieldMode::ActorState {
                     if !class.state_container || !self.state_write_scope {
-                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                            "mutable state requires a checked critical-write scope"));
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_STATE_BORROW",
+                            "mutable state requires a checked critical-write scope",
+                        ));
                     }
                 } else if !ctor {
-                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
-                        format!("cannot mutate field '{field}' through read-only binding 'self'")));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_OWNERSHIP",
+                        format!("cannot mutate field '{field}' through read-only binding 'self'"),
+                    ));
                 }
                 let v = self.value(value)?;
                 if v.ty != fty {
@@ -2541,9 +2864,19 @@ impl<'a> FnCx<'a> {
                     ty: Type::Class(c),
                 };
                 if mode == FieldMode::ActorState && class.state_container {
-                    Ok(TStmt::StateFieldWrite { obj, offset, ty: fty, value: v })
+                    Ok(TStmt::StateFieldWrite {
+                        obj,
+                        offset,
+                        ty: fty,
+                        value: v,
+                    })
                 } else {
-                    Ok(TStmt::FieldSet { obj, offset, ty: fty, value: v })
+                    Ok(TStmt::FieldSet {
+                        obj,
+                        offset,
+                        ty: fty,
+                        value: v,
+                    })
                 }
             }
             Owner::Actor { a } => {
@@ -2588,8 +2921,11 @@ impl<'a> FnCx<'a> {
         let (variant, argument): (&str, Option<&Expr>) = match &e.kind {
             ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err" | "Some") => {
                 if args.len() != 1 {
-                    return Err(Diagnostic::new(e.pos, "E_ARITY",
-                        format!("{name} requires one payload argument, got {}", args.len())));
+                    return Err(Diagnostic::new(
+                        e.pos,
+                        "E_ARITY",
+                        format!("{name} requires one payload argument, got {}", args.len()),
+                    ));
                 }
                 (name.as_str(), Some(&args[0]))
             }
@@ -2603,8 +2939,7 @@ impl<'a> FnCx<'a> {
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
             (Type::OptionResultIntStr, "None") => (0, None),
             (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
-            _ => return Err(type_err(e.pos,
-                format!("variant '{variant}' is not valid for {}", self.tn(want)))),
+            _ => return Err(type_err(e.pos, format!("variant '{variant}' is not valid for {}", self.tn(want)))),
         };
         let payload = match (argument, payload_type) {
             (Some(arg), Some(ty)) => {
@@ -2612,8 +2947,10 @@ impl<'a> FnCx<'a> {
                 // expected inner Result type; constructors are contextual.
                 let value = self.consume_expected(arg, ty)?;
                 if value.ty != ty {
-                    return Err(type_err(arg.pos,
-                        format!("'{variant}' payload must be {}, found {}", self.tn(ty), self.tn(value.ty))));
+                    return Err(type_err(
+                        arg.pos,
+                        format!("'{variant}' payload must be {}, found {}", self.tn(ty), self.tn(value.ty)),
+                    ));
                 }
                 Some(Box::new(value))
             }
@@ -2621,7 +2958,10 @@ impl<'a> FnCx<'a> {
             _ => unreachable!("variant arity checked above"),
         };
         let tmp = self.temp(want, e.pos)?;
-        Ok(TE { e: TExpr::AdtNew { tag, payload, tmp }, ty: want })
+        Ok(TE {
+            e: TExpr::AdtNew { tag, payload, tmp },
+            ty: want,
+        })
     }
 
     /// An expression used as a value (not void).
@@ -2634,8 +2974,7 @@ impl<'a> FnCx<'a> {
     }
 
     /// Class loans are bound to lexical locals; no owner transfer or escape.
-    fn borrow_binding(&mut self, kind: BindKind, name: &str, annotation: Option<Type>,
-                      inner: &Expr, mutable: bool, pos: Pos) -> R<TStmt> {
+    fn borrow_binding(&mut self, kind: BindKind, name: &str, annotation: Option<Type>, inner: &Expr, mutable: bool, pos: Pos) -> R<TStmt> {
         let ExprKind::Var(owner_name) = &inner.kind else {
             return Err(Diagnostic::new(inner.pos, "E_BORROW", "borrow! requires a named owner"));
         };
@@ -2644,26 +2983,49 @@ impl<'a> FnCx<'a> {
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
         };
         if self.loans.contains_key(&owner) {
-            return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_BORROW",
+                "reborrowing a borrowed handle requires a verified lifetime contract",
+            ));
         }
         if let Some(loan) = self.loans.values().find(|loan| loan.owner == owner) {
             if mutable || loan.mutable {
-                return Err(Diagnostic::new(pos, "E_BORROW", "conflicting loans: mutable borrowing must be exclusive"));
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_BORROW",
+                    "conflicting loans: mutable borrowing must be exclusive",
+                ));
             }
         }
         let value = self.value(inner)?;
         if let Some(annotation) = annotation {
             let expected = self.resolve(annotation, pos)?;
             if expected != value.ty {
-                return Err(type_err(pos, format!("borrowed binding '{name}' expects {}, found {}", self.tn(expected), self.tn(value.ty))));
+                return Err(type_err(
+                    pos,
+                    format!(
+                        "borrowed binding '{name}' expects {}, found {}",
+                        self.tn(expected),
+                        self.tn(value.ty)
+                    ),
+                ));
             }
         }
         if !matches!(owner_ty, Type::Class(_)) {
             if mutable {
-                return Err(Diagnostic::new(pos, "E_BORROW", "mutable scalar loans require reference storage lowering; not yet supported"));
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_BORROW",
+                    "mutable scalar loans require reference storage lowering; not yet supported",
+                ));
             }
             if !matches!(owner_ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
-                return Err(Diagnostic::new(pos, "E_BORROW", "borrowing this type is not supported by the guest Wasm backend"));
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_BORROW",
+                    "borrowing this type is not supported by the guest Wasm backend",
+                ));
             }
             let slot = self.declare(name, value.ty, kind == BindKind::Let, pos)?;
             return Ok(TStmt::Set(slot, value));
@@ -2684,7 +3046,11 @@ impl<'a> FnCx<'a> {
                 }
                 let value = self.value(inner)?;
                 if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "borrow! on objects must initialize a lexical binding"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_BORROW",
+                        "borrow! on objects must initialize a lexical binding",
+                    ));
                 }
                 Ok(value)
             }
@@ -2692,8 +3058,13 @@ impl<'a> FnCx<'a> {
                 let value = self.value(inner)?;
                 if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
                     let name = if action == OwnershipOp::Copy { "copy!" } else { "share!" };
-                    return Err(Diagnostic::new(pos, if action == OwnershipOp::Copy { "E_COPY" } else { "E_SHARE" },
-                        format!("{name} requires a verified immutable copyable scalar; class, actor and generator handles are not shareable")));
+                    return Err(Diagnostic::new(
+                        pos,
+                        if action == OwnershipOp::Copy { "E_COPY" } else { "E_SHARE" },
+                        format!(
+                            "{name} requires a verified immutable copyable scalar; class, actor and generator handles are not shareable"
+                        ),
+                    ));
                 }
                 Ok(value)
             }
@@ -2725,7 +3096,11 @@ impl<'a> FnCx<'a> {
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
             if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
+                return Err(Diagnostic::new(
+                    e.pos,
+                    "E_BORROW",
+                    "cannot transfer a borrowed class or owner while a loan is live",
+                ));
             }
             if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                 return Err(Diagnostic::new(
@@ -2744,21 +3119,37 @@ impl<'a> FnCx<'a> {
     #[inline(never)]
     fn trap_value(&mut self, inner: &Expr, pos: Pos) -> R<TE> {
         if self.owner != Owner::TopLevel {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "caller-side trap inside class/actor requires lifecycle integration"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_UNSUPPORTED",
+                "caller-side trap inside class/actor requires lifecycle integration",
+            ));
         }
         let value = self.consume(inner)?;
         let option_ty = match value.ty {
             Type::Int => Type::OptionInt,
             Type::ResultIntStr => Type::OptionResultIntStr,
-            _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                format!("browser trap supports only int and Result<int,string> operands, found {}", self.tn(value.ty)))),
+            _ => {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNSUPPORTED_TYPE",
+                    format!(
+                        "browser trap supports only int and Result<int,string> operands, found {}",
+                        self.tn(value.ty)
+                    ),
+                ))
+            }
         };
         let value_tmp = self.temp(value.ty, pos)?;
         let some_tmp = self.temp(option_ty, pos)?;
         let none_tmp = self.temp(option_ty, pos)?;
         Ok(TE {
-            e: TExpr::Trap { value: Box::new(value), value_tmp, some_tmp, none_tmp },
+            e: TExpr::Trap {
+                value: Box::new(value),
+                value_tmp,
+                some_tmp,
+                none_tmp,
+            },
             ty: option_ty,
         })
     }
@@ -2784,17 +3175,35 @@ impl<'a> FnCx<'a> {
                 let success_tag = match value.ty {
                     Type::ResultIntStr => 0,
                     Type::OptionInt => 1,
-                    _ => return Err(type_err(e.pos,
-                        format!("postfix '?' requires Option<int> or Result<int,string>, found {}", self.tn(value.ty)))),
+                    _ => {
+                        return Err(type_err(
+                            e.pos,
+                            format!(
+                                "postfix '?' requires Option<int> or Result<int,string>, found {}",
+                                self.tn(value.ty)
+                            ),
+                        ))
+                    }
                 };
                 if self.ret != value.ty {
-                    return Err(type_err(e.pos,
-                        format!("postfix '?' can propagate {} only from a function returning the same type; found {}", self.tn(value.ty), self.tn(self.ret))));
+                    return Err(type_err(
+                        e.pos,
+                        format!(
+                            "postfix '?' can propagate {} only from a function returning the same type; found {}",
+                            self.tn(value.ty),
+                            self.tn(self.ret)
+                        ),
+                    ));
                 }
                 let tmp = self.temp(value.ty, e.pos)?;
-                Ok(TE { e: TExpr::AdtPropagate {
-                    source: Box::new(value), tmp, success_tag
-                }, ty: Type::Int })
+                Ok(TE {
+                    e: TExpr::AdtPropagate {
+                        source: Box::new(value),
+                        tmp,
+                        success_tag,
+                    },
+                    ty: Type::Int,
+                })
             }
             // receivers that are not names recurse; keep that path thin
             ExprKind::Member(base, name) if !matches!(base.kind, ExprKind::Var(_) | ExprKind::SelfRef) => {
@@ -2961,7 +3370,10 @@ impl<'a> FnCx<'a> {
                             ),
                         ));
                     }
-                    if matches!(a.ty, Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr) {
+                    if matches!(
+                        a.ty,
+                        Type::Class(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr
+                    ) {
                         return Err(Diagnostic::new(
                             pos,
                             "E_UNSUPPORTED",
@@ -3077,9 +3489,7 @@ impl<'a> FnCx<'a> {
                     ty: Type::Str,
                 }
             }
-            ExprKind::Var(name) if name == "None" => {
-                return Err(type_err(pos, "None requires a contextual Option<int> type"))
-            }
+            ExprKind::Var(name) if name == "None" => return Err(type_err(pos, "None requires a contextual Option<int> type")),
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(l) if l.mail.is_some() => {
                     return Err(Diagnostic::new(
@@ -3093,7 +3503,11 @@ impl<'a> FnCx<'a> {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
                     if self.loans.values().any(|loan| loan.owner == l.slot && loan.mutable) {
-                        return Err(Diagnostic::new(pos, "E_BORROW", format!("owner '{name}' is exclusively mutably borrowed")));
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_BORROW",
+                            format!("owner '{name}' is exclusively mutably borrowed"),
+                        ));
                     }
                     TE {
                         e: TExpr::Local(l.slot),
@@ -3116,27 +3530,47 @@ impl<'a> FnCx<'a> {
                 }
                 None => return Err(Diagnostic::new(pos, "E_UNBOUND", format!("unknown name '{name}'"))),
             },
-            ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
+            ExprKind::Unary(..)
+            | ExprKind::Trap(..)
+            | ExprKind::Ownership(..)
+            | ExprKind::Binary(..)
+            | ExprKind::Ternary(..)
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
-            ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
-                return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
+            ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") => {
+                return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type")))
+            }
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
             ExprKind::StateRead(field) => {
                 let c = match self.owner {
-                    Owner::Class { c, ctor: false, is_static: false }
-                        if self.g.classes[c as usize].state_container => c,
-                    _ => return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                        "critical-read requires a protected instance state container")),
+                    Owner::Class {
+                        c,
+                        ctor: false,
+                        is_static: false,
+                    } if self.g.classes[c as usize].state_container => c,
+                    _ => {
+                        return Err(Diagnostic::new(
+                            pos,
+                            "E_STATE_BORROW",
+                            "critical-read requires a protected instance state container",
+                        ))
+                    }
                 };
                 if self.state_read_scope || self.state_write_scope {
-                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                        "protected state read cannot nest with another active lease"));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_STATE_BORROW",
+                        "protected state read cannot nest with another active lease",
+                    ));
                 }
                 self.state_read_scope = true;
-                let checked = self.field_get(TE {
-                    e: TExpr::Local(0),
-                    ty: Type::Class(c),
-                }, field, pos);
+                let checked = self.field_get(
+                    TE {
+                        e: TExpr::Local(0),
+                        ty: Type::Class(c),
+                    },
+                    field,
+                    pos,
+                );
                 self.state_read_scope = false;
                 checked?
             }
@@ -3180,10 +3614,20 @@ impl<'a> FnCx<'a> {
             }
             ExprKind::Member(base, name) => self.member(base, name, pos)?,
             ExprKind::MethodCall(base, name, args) => self.method_call(base, name, args, pos)?,
-            ExprKind::Array(_) => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "array literals are parsed but not yet lowered to browser Wasm")),
-            ExprKind::Lambda { .. } => return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented")),
+            ExprKind::Array(_) => {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNSUPPORTED",
+                    "array literals are parsed but not yet lowered to browser Wasm",
+                ))
+            }
+            ExprKind::Lambda { .. } => {
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNSUPPORTED",
+                    "lambdas are parsed but closure typing, captures, and browser Wasm lowering are not implemented",
+                ))
+            }
         })
     }
 
@@ -3415,8 +3859,11 @@ impl<'a> FnCx<'a> {
         if matches!(&obj.e, TExpr::Local(slot) if self.loans.contains_key(slot))
             && matches!(f.ty, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt)
         {
-            return Err(Diagnostic::new(pos, "E_BORROW",
-                "borrowed object field cannot yield an owned handle without nested-loan provenance"));
+            return Err(Diagnostic::new(
+                pos,
+                "E_BORROW",
+                "borrowed object field cannot yield an owned handle without nested-loan provenance",
+            ));
         }
         // Class privacy does not grant sealed state access: require a
         // compiler-recognized lease on the exact receiver instance.
@@ -3426,15 +3873,24 @@ impl<'a> FnCx<'a> {
                 && matches!(self.owner,
                     Owner::Class { c: owner, ctor: false, is_static: false } if owner == c);
             if !same_receiver || !(self.state_read_scope || self.state_write_scope) {
-                return Err(Diagnostic::new(pos, "E_STATE_BORROW",
-                    "protected state read requires critical-read or critical-write on this receiver"));
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_STATE_BORROW",
+                    "protected state read requires critical-read or critical-write on this receiver",
+                ));
             }
         }
         Ok(TE {
             e: if protected {
-                TExpr::StateFieldRead { obj: Box::new(obj), offset: f.slot }
+                TExpr::StateFieldRead {
+                    obj: Box::new(obj),
+                    offset: f.slot,
+                }
             } else {
-                TExpr::FieldGet { obj: Box::new(obj), offset: f.slot }
+                TExpr::FieldGet {
+                    obj: Box::new(obj),
+                    offset: f.slot,
+                }
             },
             ty: f.ty,
         })
@@ -3538,8 +3994,11 @@ impl<'a> FnCx<'a> {
                 if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot)) {
                     if let Some(m) = self.g.classes[c as usize].methods.iter().find(|m| m.name == name) {
                         if matches!(m.ret, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt) {
-                            return Err(Diagnostic::new(pos, "E_BORROW",
-                                "borrowed receiver cannot return an owned handle without result provenance"));
+                            return Err(Diagnostic::new(
+                                pos,
+                                "E_BORROW",
+                                "borrowed receiver cannot return an owned handle without result provenance",
+                            ));
                         }
                     }
                 }
@@ -3645,24 +4104,35 @@ impl<'a> FnCx<'a> {
                 let values: &[Expr] = if args.len() == 1 {
                     match &args[0].kind {
                         ExprKind::Array(items) => {
-                            if items.iter().any(|e| !matches!(&e.kind,
-                                ExprKind::Bool(_) | ExprKind::Var(_))) {
-                                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                                    "boolean array gate pack admits only immutable bool literals or bindings"));
+                            if items.iter().any(|e| !matches!(&e.kind, ExprKind::Bool(_) | ExprKind::Var(_))) {
+                                return Err(Diagnostic::new(
+                                    pos,
+                                    "E_UNSUPPORTED",
+                                    "boolean array gate pack admits only immutable bool literals or bindings",
+                                ));
                             }
                             items
                         }
-                        _ => return Err(Diagnostic::new(pos, "E_ARITY",
-                            format!("{name} expects at least 2 bool arguments or a scalar array literal"))),
+                        _ => {
+                            return Err(Diagnostic::new(
+                                pos,
+                                "E_ARITY",
+                                format!("{name} expects at least 2 bool arguments or a scalar array literal"),
+                            ))
+                        }
                     }
-                } else { args };
+                } else {
+                    args
+                };
                 if values.len() < 2 {
-                    return Err(Diagnostic::new(pos, "E_ARITY",
-                        format!("{name} expects at least 2 bool arguments")));
+                    return Err(Diagnostic::new(pos, "E_ARITY", format!("{name} expects at least 2 bool arguments")));
                 }
                 if values.len() > crate::parser::MAX_PARAMS {
-                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
-                        format!("{name} has too many boolean operands")));
+                    return Err(Diagnostic::new(
+                        pos,
+                        "E_SOURCE_LIMIT",
+                        format!("{name} has too many boolean operands"),
+                    ));
                 }
                 // Normal functions eagerly evaluate all arguments; nested
                 // typed binary builtins retain exact left-to-right behavior.
@@ -3693,8 +4163,11 @@ impl<'a> FnCx<'a> {
             // Full stream capability dispatch can resolve shadowed names
             // when it is implemented.
             if self.lookup("stdio").is_some() {
-                return Err(Diagnostic::new(pos, "E_IO_SHADOW",
-                    "the builtin stdio capability is shadowed by a local binding; use an unshadowed handle"));
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_IO_SHADOW",
+                    "the builtin stdio capability is shadowed by a local binding; use an unshadowed handle",
+                ));
             }
             let newline = name == "stdio.println";
             if args.len() != 1 {
@@ -3844,11 +4317,18 @@ impl<'a> FnCx<'a> {
         // private synthesized class name. User code cannot spell the reserved
         // product name prefix; shape_lower rejects attempted forgery.
         let product_style = if class.name.starts_with(crate::shape_lower::PREFIX) {
-            if class.name.starts_with("__atto_shape_tuple_") { 1u8 }
-            else if class.name.starts_with("__atto_shape_pair_") { 2u8 }
-            else if class.name.starts_with("__atto_shape_entry_") { 3u8 }
-            else { 0u8 }
-        } else { 0u8 };
+            if class.name.starts_with("__atto_shape_tuple_") {
+                1u8
+            } else if class.name.starts_with("__atto_shape_pair_") {
+                2u8
+            } else if class.name.starts_with("__atto_shape_entry_") {
+                3u8
+            } else {
+                0u8
+            }
+        } else {
+            0u8
+        };
         let mut text = match product_style {
             1 => "(".to_owned(),
             2 => "Pair(".to_owned(),
@@ -3903,47 +4383,67 @@ impl<'a> FnCx<'a> {
     }
 }
 
-
 /// Check proposed nominal actor interfaces *inside the production AST*.
 /// This does not typecheck the concrete method bodies or enable codegen.
 /// It prevents duplicate or incompatible in-actor/out-of-line declarations.
 pub fn check_target_actor_interface(program: &Program) -> R<()> {
-    let Some(interface) = &program.actor_interface else { return Ok(()); };
+    let Some(interface) = &program.actor_interface else {
+        return Ok(());
+    };
     for (i, name) in interface.forwards.iter().enumerate() {
         if interface.forwards[..i].contains(name) {
-            return Err(Diagnostic::new(Pos::default(), "E_DUPLICATE",
-                format!("duplicate forward actor '{name}'")));
+            return Err(Diagnostic::new(
+                Pos::default(),
+                "E_DUPLICATE",
+                format!("duplicate forward actor '{name}'"),
+            ));
         }
     }
     for (i, actor) in program.actors.iter().enumerate() {
         if !interface.forwards.contains(&actor.name) {
-            return Err(Diagnostic::new(actor.pos, "E_UNBOUND",
-                format!("actor definition '{}' has no matching declaration", actor.name)));
+            return Err(Diagnostic::new(
+                actor.pos,
+                "E_UNBOUND",
+                format!("actor definition '{}' has no matching declaration", actor.name),
+            ));
         }
         if program.actors[..i].iter().any(|a| a.name == actor.name) {
-            return Err(Diagnostic::new(actor.pos, "E_DUPLICATE",
-                format!("duplicate concrete actor '{}'", actor.name)));
+            return Err(Diagnostic::new(
+                actor.pos,
+                "E_DUPLICATE",
+                format!("duplicate concrete actor '{}'", actor.name),
+            ));
         }
-        let owner = interface.forwards.iter().position(|n| n == &actor.name)
+        let owner = interface
+            .forwards
+            .iter()
+            .position(|n| n == &actor.name)
             .expect("validated actor declaration");
         for method in interface.methods.iter().filter(|m| m.owner as usize == owner) {
             if method.name == "receive" {
-                return Err(Diagnostic::new(method.pos, "E_SIGNATURE",
-                    "receive is a sealed actor lifecycle handler"));
+                return Err(Diagnostic::new(
+                    method.pos,
+                    "E_SIGNATURE",
+                    "receive is a sealed actor lifecycle handler",
+                ));
             }
             if actor.fields.iter().any(|f| f.name == method.name) {
-                return Err(Diagnostic::new(method.pos, "E_DUPLICATE",
-                    format!("receiver '{}.{}' collides with actor state", actor.name, method.name)));
+                return Err(Diagnostic::new(
+                    method.pos,
+                    "E_DUPLICATE",
+                    format!("receiver '{}.{}' collides with actor state", actor.name, method.name),
+                ));
             }
             for inside in &actor.methods {
                 if inside.name == method.name && inside.params.len() == method.params.len() {
-                    let equal = inside.ret == method.ret &&
-                        inside.public == method.public &&
-                        inside.params.iter().zip(&method.params).all(|(a,b)| a.ty == b.ty);
-                    return Err(Diagnostic::new(method.pos,
+                    let equal = inside.ret == method.ret
+                        && inside.public == method.public
+                        && inside.params.iter().zip(&method.params).all(|(a, b)| a.ty == b.ty);
+                    return Err(Diagnostic::new(
+                        method.pos,
                         if equal { "E_DUPLICATE" } else { "E_SIGNATURE" },
-                        format!("receiver '{}.{}' collides with in-actor method",
-                            actor.name, method.name)));
+                        format!("receiver '{}.{}' collides with in-actor method", actor.name, method.name),
+                    ));
                 }
             }
         }
@@ -3954,22 +4454,26 @@ pub fn check_target_actor_interface(program: &Program) -> R<()> {
 /// Any return/throw/raise/cursor delegation anywhere in `body`, including
 /// nested blocks: a finally block must never replace the pending outcome.
 fn exits_anywhere(body: &[TStmt]) -> bool {
-    stmt_exists(body, &|s| matches!(s,
-        TStmt::Return(_) | TStmt::Throw(_) | TStmt::Raise(_) | TStmt::RecoverNext))
+    stmt_exists(body, &|s| {
+        matches!(s, TStmt::Return(_) | TStmt::Throw(_) | TStmt::Raise(_) | TStmt::RecoverNext)
+    })
 }
 
 /// Whether any statement in `body` (recursively) satisfies `f`.
 fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
-    body.iter().any(|s| f(s) || match s {
-        TStmt::If(arms, other) => arms.iter().any(|(_, b)| stmt_exists(b, f))
-            || other.as_ref().is_some_and(|b| stmt_exists(b, f)),
-        TStmt::Loop { body, update, .. } => stmt_exists(body, f) || stmt_exists(update, f),
-        TStmt::ForIn { body, .. } => stmt_exists(body, f),
-        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => stmt_exists(b, f),
-        TStmt::Try { body, catch, finally, .. } => stmt_exists(body, f)
-            || catch.as_ref().is_some_and(|b| stmt_exists(b, f))
-            || finally.as_ref().is_some_and(|b| stmt_exists(b, f)),
-        TStmt::Defer { body, .. } | TStmt::Recover { body, .. } => stmt_exists(body, f),
-        _ => false,
+    body.iter().any(|s| {
+        f(s) || match s {
+            TStmt::If(arms, other) => arms.iter().any(|(_, b)| stmt_exists(b, f)) || other.as_ref().is_some_and(|b| stmt_exists(b, f)),
+            TStmt::Loop { body, update, .. } => stmt_exists(body, f) || stmt_exists(update, f),
+            TStmt::ForIn { body, .. } => stmt_exists(body, f),
+            TStmt::Block(b) | TStmt::StateCriticalWrite(b) => stmt_exists(b, f),
+            TStmt::Try { body, catch, finally, .. } => {
+                stmt_exists(body, f)
+                    || catch.as_ref().is_some_and(|b| stmt_exists(b, f))
+                    || finally.as_ref().is_some_and(|b| stmt_exists(b, f))
+            }
+            TStmt::Defer { body, .. } | TStmt::Recover { body, .. } => stmt_exists(body, f),
+            _ => false,
+        }
     })
 }

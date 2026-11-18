@@ -23,7 +23,7 @@
 //! Output is a pure function of the source: no hash-map iteration, clocks or
 //! randomness, so identical input yields byte-identical modules on every host.
 
-use crate::ast::{BinOp, Type};
+use crate::ast::{BinOp, ExportKind, ExportVisibility, Type};
 use crate::check::{Builtin, Import, PrintPiece, StrOp, TExpr, TGenArg, TGenStep, TProgram, TStmt, TE};
 
 mod generator_runtime;
@@ -387,14 +387,20 @@ impl Emit<'_> {
     /// ```
     fn unwind_body(&mut self, body: &[TStmt], is_void_main: bool, ret: Type) {
         let (ret_slot, saved, msg, kind, _) = self.uw.expect("unwind slots");
-        let defers: Vec<(u32, &[TStmt])> = body.iter().filter_map(|s| match s {
-            TStmt::Defer { flag, body } => Some((*flag, body.as_slice())),
-            _ => None,
-        }).collect();
-        let recovers: Vec<(u32, &[TStmt])> = body.iter().filter_map(|s| match s {
-            TStmt::Recover { flag, body, .. } => Some((*flag, body.as_slice())),
-            _ => None,
-        }).collect();
+        let defers: Vec<(u32, &[TStmt])> = body
+            .iter()
+            .filter_map(|s| match s {
+                TStmt::Defer { flag, body } => Some((*flag, body.as_slice())),
+                _ => None,
+            })
+            .collect();
+        let recovers: Vec<(u32, &[TStmt])> = body
+            .iter()
+            .filter_map(|s| match s {
+                TStmt::Recover { flag, body, .. } => Some((*flag, body.as_slice())),
+                _ => None,
+            })
+            .collect();
         let boundary = !defers.is_empty() || !recovers.is_empty();
         self.depth_save(saved);
         self.open(0x02, 0x40, Frame::Done);
@@ -493,8 +499,7 @@ impl Emit<'_> {
                 field_op(&mut self.code, *ty, *offset, true);
             }
             TStmt::StateFieldWrite { obj, offset, ty, value } => {
-                assert!(self.state_write_depth > 0,
-                    "state field write missing typed exclusive scope");
+                assert!(self.state_write_depth > 0, "state field write missing typed exclusive scope");
                 self.expr(obj);
                 self.expr(value);
                 field_op(&mut self.code, *ty, *offset, true);
@@ -519,7 +524,7 @@ impl Emit<'_> {
             TStmt::StateRegister(obj) => {
                 self.expr(obj);
                 self.call(self.l.import(Import::StateRegister));
-            },
+            }
             TStmt::GlobalSet(g, v) => {
                 self.expr(v);
                 self.op(0x24);
@@ -571,7 +576,12 @@ impl Emit<'_> {
                 self.set(*flag);
             }
             TStmt::RecoverNext => self.br_to(Frame::RecoverNext),
-            TStmt::Try { saved, body, catch, finally } => self.try_stmt(*saved, body, catch.as_deref(), finally.as_deref()),
+            TStmt::Try {
+                saved,
+                body,
+                catch,
+                finally,
+            } => self.try_stmt(*saved, body, catch.as_deref(), finally.as_deref()),
             TStmt::Return(v) => {
                 if let Some(v) = v {
                     self.expr(v);
@@ -585,7 +595,12 @@ impl Emit<'_> {
                 }
                 self.op(0x0F);
             }
-            TStmt::ForIn { source, handle_slot, value_slot, body } => {
+            TStmt::ForIn {
+                source,
+                handle_slot,
+                value_slot,
+                body,
+            } => {
                 self.expr(source);
                 self.set(*handle_slot);
                 self.open(0x02, 0x40, Frame::Break);
@@ -785,7 +800,12 @@ impl Emit<'_> {
                 }
             }
             TExpr::EnumVal(i) => self.i32c(*i as i32),
-            TExpr::Trap { value, value_tmp, some_tmp, none_tmp } => {
+            TExpr::Trap {
+                value,
+                value_tmp,
+                some_tmp,
+                none_tmp,
+            } => {
                 // The only caught signal is our private ordinary-throw tag.
                 // WebAssembly engine traps, arithmetic panic, cancellation,
                 // host exceptions, and any other tag bypass this catch.
@@ -801,13 +821,17 @@ impl Emit<'_> {
                 self.call(self.l.helper(H_ALLOC));
                 self.op(0x21);
                 uleb(&mut self.code, *some_tmp as u64);
-                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
+                self.op(0x20);
+                uleb(&mut self.code, *some_tmp as u64);
                 self.i32c(1); // Some
                 field_op(&mut self.code, Type::Bool, 0, true);
-                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
-                self.op(0x20); uleb(&mut self.code, *value_tmp as u64);
+                self.op(0x20);
+                uleb(&mut self.code, *some_tmp as u64);
+                self.op(0x20);
+                uleb(&mut self.code, *value_tmp as u64);
                 field_op(&mut self.code, value.ty, 8, true);
-                self.op(0x20); uleb(&mut self.code, *some_tmp as u64);
+                self.op(0x20);
+                uleb(&mut self.code, *some_tmp as u64);
 
                 self.op(0x07); // catch private tag 0
                 uleb(&mut self.code, 0);
@@ -815,11 +839,14 @@ impl Emit<'_> {
                 self.depth_add(-1);
                 self.i32c(16);
                 self.call(self.l.helper(H_ALLOC));
-                self.op(0x21); uleb(&mut self.code, *none_tmp as u64);
-                self.op(0x20); uleb(&mut self.code, *none_tmp as u64);
+                self.op(0x21);
+                uleb(&mut self.code, *none_tmp as u64);
+                self.op(0x20);
+                uleb(&mut self.code, *none_tmp as u64);
                 self.i32c(0); // None
                 field_op(&mut self.code, Type::Bool, 0, true);
-                self.op(0x20); uleb(&mut self.code, *none_tmp as u64);
+                self.op(0x20);
+                uleb(&mut self.code, *none_tmp as u64);
                 self.close(); // end try: one i32 Option record on stack
             }
             TExpr::AdtNew { tag, payload, tmp } => {
@@ -849,7 +876,7 @@ impl Emit<'_> {
             TExpr::AdtPayload(obj) => {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, 8, false);
-            },
+            }
             TExpr::AdtPropagate { source, tmp, success_tag } => {
                 // Source (and all of its effects) is evaluated exactly once.
                 self.expr(source);
@@ -868,7 +895,7 @@ impl Emit<'_> {
                 self.op(0x20);
                 uleb(&mut self.code, *tmp as u64);
                 field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
-            },
+            }
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
@@ -1270,13 +1297,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         helpers: str_base + if p.strings { STRING_HELPERS } else { 0 },
         str_base,
         state_base: 1 + u32::from(p.heap),
-        gen_free_global: (!p.generators.is_empty()).then_some(
-            1 + u32::from(p.heap) + p.globals.len() as u32
-        ),
+        gen_free_global: (!p.generators.is_empty()).then_some(1 + u32::from(p.heap) + p.globals.len() as u32),
         gen_first_func: p.funcs.len() as u32,
-        catch_depth: p.catch_depth.then_some(
-            1 + u32::from(p.heap) + p.globals.len() as u32 + u32::from(!p.generators.is_empty())
-        ),
+        catch_depth: p
+            .catch_depth
+            .then_some(1 + u32::from(p.heap) + p.globals.len() as u32 + u32::from(!p.generators.is_empty())),
         raise_tag: p.raise_tag,
     };
     let mut types = Types(Vec::new());
@@ -1328,14 +1353,16 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         // The ticket never reaches user source or escapes into other methods.
         let state_hooks = p.imports.contains(&Import::StateEnter);
         let mut locals = f.locals.clone();
-        if state_hooks { locals.push(Type::Int); }
+        if state_hooks {
+            locals.push(Type::Int);
+        }
         let mut e = Emit {
             l: &layout,
             code: locals_decl(&locals),
             frames: Vec::new(),
             void_main: is_void_main,
             active_iterators: Vec::new(),
-            state_ticket_slot: state_hooks.then_some((f.params.len()+f.locals.len()) as u32),
+            state_ticket_slot: state_hooks.then_some((f.params.len() + f.locals.len()) as u32),
             state_write_depth: 0,
             uw: None,
             in_recover: false,
@@ -1344,11 +1371,21 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             // Creator is lazy: allocate a 56-byte checked continuation frame
             // and return its generation-fenced handle. No body runs here.
             e.i32c(gen_id as i32);
-            if f.params.len() == 1 { e.get(0); }
-            else { e.i64c(0); }
+            if f.params.len() == 1 {
+                e.get(0);
+            } else {
+                e.i64c(0);
+            }
             e.call(layout.func(layout.gen_first_func));
             e.op(0x0F); // return the generation-fenced handle; never hit unreachable
-        } else if let Some(TStmt::UnwindFrame { ret, saved, msg, kind, pending }) = f.body.first() {
+        } else if let Some(TStmt::UnwindFrame {
+            ret,
+            saved,
+            msg,
+            kind,
+            pending,
+        }) = f.body.first()
+        {
             e.uw = Some((*ret, *saved, *msg, *kind, *pending));
             e.unwind_body(&f.body, is_void_main, f.ret);
         } else {
@@ -1375,8 +1412,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
 
     // actor_init(type) / actor_receive(type, value, sequence) dispatchers
     let has_actors = !p.actors.is_empty();
-    let actor_init_idx = layout.func(p.funcs.len() as u32
-        + if p.generators.is_empty() { 0 } else { 4 });
+    let actor_init_idx = layout.func(p.funcs.len() as u32 + if p.generators.is_empty() { 0 } else { 4 });
     if has_actors {
         func_types.push(types.idx(Sig(vec![I32], vec![])));
         let mut e = Emit {
@@ -1473,13 +1509,13 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
 
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
     let mut gsec = Vec::new();
-    uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
-        + u64::from(!p.generators.is_empty())
-        + u64::from(p.catch_depth));
+    uleb(
+        &mut gsec,
+        1 + u64::from(p.heap) + p.globals.len() as u64 + u64::from(!p.generators.is_empty()) + u64::from(p.catch_depth),
+    );
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
-        let heap_start = ((p.data.len() as i64 + 7) & !7)
-            .max(if p.generators.is_empty() { 0 } else { 8 });
+        let heap_start = ((p.data.len() as i64 + 7) & !7).max(if p.generators.is_empty() { 0 } else { 8 });
         gsec.extend_from_slice(&[I32, 0x01, 0x41]);
         sleb(&mut gsec, heap_start);
         gsec.push(0x0B);
@@ -1534,6 +1570,46 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         section(&mut out, 11, d);
     }
 
+    // Single typed IR export table. Language-level visibility is NOT a host
+    // WebAssembly export, and 'pub[pkg]' requires a future verified linker.
+    // Keep v1 exact for its four established kinds. Modules are separate
+    // until a namespace/package-qualified ABI is standardized.
+    let ordinary: Vec<_> = p.exports.iter().filter(|e| e.kind != ExportKind::Module).collect();
+    if !ordinary.is_empty() {
+        let mut manifest = Vec::new();
+        name(&mut manifest, "atto.exports.v1");
+        uleb(&mut manifest, ordinary.len() as u64);
+        for e in ordinary {
+            name(&mut manifest, &e.name);
+            manifest.push(match e.kind {
+                ExportKind::Class => 1,
+                ExportKind::Fnc => 2,
+                ExportKind::Actor => 3,
+                ExportKind::Enum => 4,
+                ExportKind::Module => unreachable!("v1 excludes modules"),
+            });
+            manifest.push(match e.visibility {
+                ExportVisibility::Public => 1,
+                ExportVisibility::Package => 2,
+            });
+        }
+        section(&mut out, 0, manifest);
+    }
+    let modules: Vec<_> = p.exports.iter().filter(|e| e.kind == ExportKind::Module).collect();
+    if !modules.is_empty() {
+        let mut manifest = Vec::new();
+        name(&mut manifest, "atto.exports.modules.v1");
+        uleb(&mut manifest, modules.len() as u64);
+        for e in modules {
+            name(&mut manifest, &e.name);
+            manifest.push(match e.visibility {
+                ExportVisibility::Public => 1,
+                ExportVisibility::Package => 2,
+            });
+        }
+        section(&mut out, 0, manifest);
+    }
+
     // custom "name" section: function names for readable traps and stack traces
     let mut names = Vec::new();
     let mut helper_names = vec!["atto.checked_add", "atto.checked_sub", "atto.checked_mul", "atto.checked_neg"];
@@ -1560,10 +1636,16 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         .chain(p.funcs.iter().map(|f| f.name.clone()))
         .collect();
     if !p.generators.is_empty() {
-        all.extend([
-            "atto.generator_new", "atto.generator_check_ptr",
-            "atto.generator_next", "atto.generator_close",
-        ].into_iter().map(String::from));
+        all.extend(
+            [
+                "atto.generator_new",
+                "atto.generator_check_ptr",
+                "atto.generator_next",
+                "atto.generator_close",
+            ]
+            .into_iter()
+            .map(String::from),
+        );
     }
     if has_actors {
         all.push("atto.actor_init".into());

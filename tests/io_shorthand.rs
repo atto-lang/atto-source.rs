@@ -130,11 +130,15 @@ fn unsupported_channel_stream_and_select_io_fail_closed() {
 #[test]
 fn stdout_shorthand_has_typechecker_and_lexical_guards() {
     let invalid_type = r#"pub fnc main(): void { stdio.out << Option.Some(42); }"#;
-    assert!(atto_compiler::compile(invalid_type).is_err(),
-        "unsupported payloads never bypass typed stdio.print");
+    assert!(
+        atto_compiler::compile(invalid_type).is_err(),
+        "unsupported payloads never bypass typed stdio.print"
+    );
     let spaced = "pub fnc main(): void { stdio.out < < 42; }";
-    assert!(atto_compiler::compile(spaced).is_err(),
-        "whitespace-separated comparisons must not become I/O");
+    assert!(
+        atto_compiler::compile(spaced).is_err(),
+        "whitespace-separated comparisons must not become I/O"
+    );
 }
 
 #[test]
@@ -281,7 +285,6 @@ fn standalone_direction_does_not_reinterpret_expression_context() {
     assert!(parse("do select { when inbox >> val x: Result<Option<int>> -> {} }").len() == 1);
 }
 
-
 #[test]
 fn select_guards_require_immediately_enclosing_select_block() {
     for src in [
@@ -378,7 +381,6 @@ fn lexically_shadowed_stdio_cannot_bypass_typed_receiver_resolution() {
         assert_eq!(err.code, "E_IO_SHADOW", "{src}: {err}");
     }
 }
-
 
 #[test]
 fn nb_and_try_preserve_mode_and_future_binding_without_conflating_plain_io() {

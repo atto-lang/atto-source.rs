@@ -1,0 +1,57 @@
+name: Atto browser compiler full-suite and package-linker gates
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/package-linker.yml"
+  push:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/package-linker.yml"
+permissions:
+  contents: read
+jobs:
+  browser-compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust compiler and quality components
+        shell: bash
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup component add rustfmt clippy --toolchain 1.85.1
+      - name: Enforce Rustfmt
+        shell: bash
+        run: cargo +1.85.1 fmt --all -- --check
+      - name: Enforce strict Clippy on all targets
+        shell: bash
+        run: cargo +1.85.1 clippy --locked --all-targets -- -D warnings
+      - name: Full browser compiler Rust suite
+        shell: bash
+        run: cargo +1.85.1 test --locked --all-targets
+      - name: Optimized browser compiler build
+        shell: bash
+        run: cargo +1.85.1 build --locked --release --all-targets
+      - name: Emit four actual linked WebAssembly guests
+        shell: bash
+        run: |
+          cargo +1.85.1 run --locked --quiet --example linked_guest -- \
+            /tmp/atto-public.wasm /tmp/atto-package.wasm \
+            /tmp/atto-deep.wasm /tmp/atto-filesystem.wasm
+      - name: Execute four linked Wasm guests in Node
+        shell: bash
+        run: |
+          node tests/linked_guest_wasm.test.mjs \
+            /tmp/atto-public.wasm /tmp/atto-package.wasm \
+            /tmp/atto-deep.wasm /tmp/atto-filesystem.wasm

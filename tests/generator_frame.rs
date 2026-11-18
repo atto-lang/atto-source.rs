@@ -4,11 +4,12 @@
 
 use atto_compiler::diag::Pos;
 use atto_compiler::generator_frame::{
-    GeneratorFrameLayout, GeneratorHandle, GeneratorState,
-    FRAME_HEADER_BYTES, MAX_GENERATOR_FRAME_BYTES, MAX_GUEST_ARENA_BYTES,
+    GeneratorFrameLayout, GeneratorHandle, GeneratorState, FRAME_HEADER_BYTES, MAX_GENERATOR_FRAME_BYTES, MAX_GUEST_ARENA_BYTES,
 };
 
-fn pos() -> Pos { Pos { line: 3, col: 7 } }
+fn pos() -> Pos {
+    Pos { line: 3, col: 7 }
+}
 
 #[test]
 fn offsets_are_bounded_aligned_and_use_disjoint_parameter_local_delegate_regions() {
@@ -54,7 +55,10 @@ fn generation_tag_prevents_stale_handle_alias_when_offset_is_reused() {
     assert_eq!(original.arena_offset(), new.arena_offset());
 
     for (offset, generation) in [(0, 1), (1, 1), (7, 1), (8, 0), (MAX_GUEST_ARENA_BYTES, 1)] {
-        assert_eq!(GeneratorHandle::new(offset, generation, pos()).unwrap_err().code, "E_GENERATOR_FRAME");
+        assert_eq!(
+            GeneratorHandle::new(offset, generation, pos()).unwrap_err().code,
+            "E_GENERATOR_FRAME"
+        );
     }
     assert_eq!(GeneratorHandle::from_bits(0, pos()).unwrap_err().code, "E_GENERATOR_FRAME");
     let terminal = GeneratorHandle::new(8, u32::MAX, pos()).unwrap();

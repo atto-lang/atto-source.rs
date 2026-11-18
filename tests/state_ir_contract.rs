@@ -1,4 +1,9 @@
-use atto_compiler::{ast::Type, check::{self,TExpr,TStmt}, lexer, parser::Parser};
+use atto_compiler::{
+    ast::Type,
+    check::{self, TExpr, TStmt},
+    lexer,
+    parser::Parser,
+};
 use std::fs;
 
 fn typed() -> check::TProgram {
@@ -31,20 +36,29 @@ fn critical_write_retains_guard_and_protected_opcodes_in_typed_ir() {
 fn critical_read_is_not_lowered_to_ordinary_field_get() {
     let program = typed();
     let read = program.funcs.iter().find(|f| f.name == "Counter.read_count").unwrap();
-    let result = read.body.iter().find_map(|stmt| match stmt {
-        TStmt::Return(Some(value)) => Some(value), _ => None,
-    }).expect("read_count must return a state projection");
-    assert!(matches!(result.e, TExpr::StateFieldRead { .. }),
-        "critical-read must preserve typed ownership authority through IR");
+    let result = read
+        .body
+        .iter()
+        .find_map(|stmt| match stmt {
+            TStmt::Return(Some(value)) => Some(value),
+            _ => None,
+        })
+        .expect("read_count must return a state projection");
+    assert!(
+        matches!(result.e, TExpr::StateFieldRead { .. }),
+        "critical-read must preserve typed ownership authority through IR"
+    );
 }
 
 #[test]
 fn state_constructor_can_still_initialize_storage_without_a_guest_lease() {
     let program = typed();
     let constructor = program.funcs.iter().find(|f| f.name == "Counter.new").unwrap();
-    assert!(constructor.body.iter().any(|stmt| matches!(stmt,TStmt::FieldSet {..})));
-    assert!(!constructor.body.iter().any(|stmt| matches!(stmt,TStmt::StateFieldWrite {..})),
-        "creation must not forge a state write loan");
+    assert!(constructor.body.iter().any(|stmt| matches!(stmt, TStmt::FieldSet { .. })));
+    assert!(
+        !constructor.body.iter().any(|stmt| matches!(stmt, TStmt::StateFieldWrite { .. })),
+        "creation must not forge a state write loan"
+    );
 }
 
 #[test]

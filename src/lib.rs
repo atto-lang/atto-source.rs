@@ -6,31 +6,41 @@
 //! This is a subset compiler: every construct outside the admitted subset is
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
+/// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
+pub mod any_type_lower;
 pub mod ast;
 pub mod check;
+pub mod detached_io;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
-pub mod lexer;
 pub mod io_shorthand;
-pub mod detached_io;
-pub mod parser;
+pub mod lexer;
+/// Source-owned qualified identifiers used by checked module bindings.
+pub mod linked_symbols;
+/// Trusted in-memory package/module linker; no filesystem or network access.
+pub mod linker;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
-/// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
-pub mod any_type_lower;
-/// Source-local scalar products use the checked class/constructor guest ABI.
-pub mod shape_lower;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
-/// Explicitly unlinked foreign prototypes and source-only exports.
-pub mod visibility_lower;
+/// Host-only local package root resolver (strict .atto.pkg.toml subset).
+pub mod package_resolver;
+pub mod parser;
 /// Direct routine-only and statically specialized named callbacks.
 pub mod routine_lower;
+#[cfg(target_os = "linux")]
+mod secure_fs;
+/// Stable SHA-256 digests for namespace symbol IDs and verified source snapshots.
+pub mod sha256;
+/// Source-local scalar products use the checked class/constructor guest ABI.
+pub mod shape_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
 pub mod target_typed;
+/// Explicitly unlinked foreign prototypes and source-only exports.
+pub mod visibility_lower;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};
@@ -48,13 +58,19 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
-    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    let visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    let file_modules = module_lower::lower_with_manifest(visibility.tokens)?;
+    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(
+        file_modules.tokens,
+    )?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
-        return Err(Diagnostic::new(detached.pos, "E_UNSUPPORTED",
-            "supervised do readch/writech syntax recognized, but detached I/O scheduling and completion callbacks are not implemented"));
+        return Err(Diagnostic::new(
+            detached.pos,
+            "E_UNSUPPORTED",
+            "supervised do readch/writech syntax recognized, but detached I/O scheduling and completion callbacks are not implemented",
+        ));
     }
     // The browser guest already has a typed stdio.print output import.
     // Permit the exact stdio.out << value statement form to lower through
@@ -84,9 +100,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             lexer::Tok::RBrace => braces = braces.saturating_sub(1),
             lexer::Tok::Ident(word) if braces == 0 => {
                 let next = toks.get(i + 1).map(|token| &token.tok);
-                if word == "declare" || word == "mtd" ||
-                    (word == "use" && matches!(next,
-                        Some(lexer::Tok::Ident(name)) if name == "namespace")) {
+                if word == "declare"
+                    || word == "mtd"
+                    || (word == "use"
+                        && matches!(next,
+                        Some(lexer::Tok::Ident(name)) if name == "namespace"))
+                {
                     target = true;
                     break;
                 }
@@ -94,7 +113,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    let program = if target {
+    let mut program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
@@ -110,18 +129,19 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             let typed = target_typed::lower_target_signatures(&headers)?;
             let actor_ast = target_typed::build_actor_program(&headers, &typed);
             check::check_target_actor_interface(&actor_ast)?;
-            return Err(Diagnostic::new(toks[0].pos, "E_UNSUPPORTED",
-                "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
+            return Err(Diagnostic::new(
+                toks[0].pos,
+                "E_UNSUPPORTED",
+                "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered",
+            ));
         }
     } else {
         parser::Parser::new(toks).parse_program()?
     };
-    // Validate exports against the parsed top-level symbol table, never a
-    // lexical occurrence inside a class, nested method or foreign prototype.
-    visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
+    // One shared binder for direct-parser and pre-lowered exports.
+    visibility_lower::bind_program_exports(&mut program, visibility.exports, &file_modules.modules)?;
     let typed = check::check(&program)?;
-    let mut bytes = wasm::emit(&typed);
-    visibility_lower::metadata(&mut bytes, &visibility.exports);
+    let bytes = wasm::emit(&typed);
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -217,9 +237,7 @@ mod abi {
                 );
             }
             // SAFETY: single-threaded wasm; the host wrote `length` bytes before calling.
-            let input: &[u8] = unsafe {
-                std::slice::from_raw_parts(std::ptr::addr_of!(INPUT).cast::<u8>(), length as usize)
-            };
+            let input: &[u8] = unsafe { std::slice::from_raw_parts(std::ptr::addr_of!(INPUT).cast::<u8>(), length as usize) };
             let source = match std::str::from_utf8(input) {
                 Ok(s) => s,
                 Err(_) => {

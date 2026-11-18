@@ -2,7 +2,11 @@
 //! These test syntax only; the browser compiler must reject execution until
 //! callable types, ownership-aware captures and Wasm lowering exist.
 
-use atto_compiler::{ast::{BinOp, ExprKind, LambdaBody, Stmt}, lexer, parser::{Parser, MAX_PARAMS}};
+use atto_compiler::{
+    ast::{BinOp, ExprKind, LambdaBody, Stmt},
+    lexer,
+    parser::{Parser, MAX_PARAMS},
+};
 
 fn program(expr: &str) -> String {
     format!("pub fnc main(): int {{ val callback = {expr}; return 0; }}")
@@ -14,8 +18,12 @@ fn parsed(expr: &str) -> Result<atto_compiler::ast::Program, atto_compiler::Diag
 
 fn lambda(expr: &str) -> (Vec<String>, Option<String>) {
     let p = parsed(expr).unwrap_or_else(|e| panic!("{expr}: {e}"));
-    let Stmt::Bind { init, .. } = &p.funcs[0].body[0] else { panic!("not binding") };
-    let ExprKind::Lambda { params, return_type, .. } = &init.kind else { panic!("not lambda") };
+    let Stmt::Bind { init, .. } = &p.funcs[0].body[0] else {
+        panic!("not binding")
+    };
+    let ExprKind::Lambda { params, return_type, .. } = &init.kind else {
+        panic!("not lambda")
+    };
     (params.clone(), return_type.clone())
 }
 
@@ -95,17 +103,20 @@ fn inner_return_semicolon_cannot_be_omitted_or_reused() {
         "values.map(|n| -> return n;).take(2)",
     ] {
         let program = format!("pub fnc main(): int {{ val x = {expression}; return 0; }}");
-        Parser::new(lexer::lex(&program).unwrap()).parse_program()
+        Parser::new(lexer::lex(&program).unwrap())
+            .parse_program()
             .unwrap_or_else(|e| panic!("{expression}: {e}"));
     }
 }
 
 #[test]
 fn conditional_or_still_parses_as_or_and_not_as_lambda() {
-    let p = Parser::new(lexer::lex(
-        "pub fnc main(): int { if true | false then return 1; fi return 0; }"
-    ).unwrap()).parse_program().unwrap();
-    let Stmt::If { arms, .. } = &p.funcs[0].body[0] else { panic!("expected if") };
+    let p = Parser::new(lexer::lex("pub fnc main(): int { if true | false then return 1; fi return 0; }").unwrap())
+        .parse_program()
+        .unwrap();
+    let Stmt::If { arms, .. } = &p.funcs[0].body[0] else {
+        panic!("expected if")
+    };
     assert!(matches!(arms[0].0.kind, ExprKind::Binary(BinOp::Or, _, _)));
 }
 
@@ -130,9 +141,17 @@ fn braced_and_expression_forms_preserve_body_kinds() {
         ("|n| => int -> return n * 2;", 1),
     ] {
         let p = parsed(source).unwrap();
-        let Stmt::Bind { init, .. } = &p.funcs[0].body[0] else { unreachable!() };
-        let ExprKind::Lambda { body, .. } = &init.kind else { unreachable!() };
-        let actual = match body { LambdaBody::Expression(_) => 0, LambdaBody::Statement(_) => 1, LambdaBody::Block(_) => 2 };
+        let Stmt::Bind { init, .. } = &p.funcs[0].body[0] else {
+            unreachable!()
+        };
+        let ExprKind::Lambda { body, .. } = &init.kind else {
+            unreachable!()
+        };
+        let actual = match body {
+            LambdaBody::Expression(_) => 0,
+            LambdaBody::Statement(_) => 1,
+            LambdaBody::Block(_) => 2,
+        };
         assert_eq!(actual, expected, "{source}");
     }
 }

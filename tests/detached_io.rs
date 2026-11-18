@@ -1,5 +1,5 @@
 use atto_compiler::detached_io::{inspect, Callback, Kind};
-use atto_compiler::io_shorthand::{inspect as inspect_direction, Mode, Direction, Context};
+use atto_compiler::io_shorthand::{inspect as inspect_direction, Context, Direction, Mode};
 use atto_compiler::lexer::lex;
 
 fn parse(source: &str) -> Vec<atto_compiler::detached_io::DetachedIo> {
@@ -39,9 +39,7 @@ do writech outgoing, f(1, 2), |receipt| -> void { handle_write(receipt); };
 }
 #[test]
 fn nested_lambda_blocks_and_optional_terminal_semicolon() {
-    let operations = parse(
-        "do writech foo, \"hi\", |result| -> void { if ready then { log(result); } fi }"
-    );
+    let operations = parse("do writech foo, \"hi\", |result| -> void { if ready then { log(result); } fi }");
     assert_eq!(operations.len(), 1);
     assert_eq!(operations[0].callback, Callback::Outcome("result".to_string()));
 }
@@ -92,11 +90,7 @@ fn direction_operator_do_write_is_detached_not_direct_stdout() {
 }
 #[test]
 fn direction_operator_do_read_never_discards_a_local_binding() {
-    for src in [
-        "do inbox >> val message;",
-        "do val message << inbox;",
-        "do stdio.in >> val line;",
-    ] {
+    for src in ["do inbox >> val message;", "do val message << inbox;", "do stdio.in >> val line;"] {
         let err = inspect_direction(&lex(src).unwrap()).unwrap_err();
         assert_eq!(err.code, "E_IO_DISCARD", "{src}: {err}");
     }
