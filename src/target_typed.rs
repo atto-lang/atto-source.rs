@@ -189,7 +189,7 @@ pub fn build_actor_program(headers: &TargetHeaders, module: &TypedActorModule) -
             name: m.method.clone(),
             params: m.params.iter().map(|p| Param {
                 name: p.name.clone(), ty: p.ty.as_ast_type(),
-                mutable: false, pos: p.pos,
+                mutable: false, explicit_take: false, pos: p.pos,
             }).collect(),
             ret: m.returns.as_ast_type(),
             mutable: m.mutable, public: m.public, pos: m.pos,
