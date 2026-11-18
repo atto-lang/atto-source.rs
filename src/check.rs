@@ -18,6 +18,7 @@ use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
 mod loan_liveness;
+mod checked_handle_gate;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
@@ -737,6 +738,11 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // The browser backend cannot execute checked handles. Validate the
+    // complete source AST *before* lambda lifting or generator CFG lowering:
+    // otherwise an unreachable branch, nested callback or declaration
+    // initializer might be rewritten away without proving handle safety.
+    checked_handle_gate::validate(p)?;
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
