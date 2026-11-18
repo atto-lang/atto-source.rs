@@ -37,7 +37,7 @@ fn forged_ast_private_function_name_rejects_collision() {
     let pos = Pos { line: 1, col: 1 };
     program.funcs.push(Func {
         name: "$lambda_0".to_string(), pos, is_generator: false, is_pure: false,
-        declared_effects: None,
+        failure_effects: atto_compiler::ast::FailureEffects::default(),
         params: vec![], ret: Type::Int,
         body: vec![Stmt::Return(Some(Expr {
             kind: ExprKind::Int(Some(0)), pos,
