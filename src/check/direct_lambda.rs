@@ -172,9 +172,10 @@ pub fn lower(input: &Program) -> R<Program> {
                 "lambda parameter types need a direct invocation"))?;
             let mut lifted = d.lambda.clone();
             let mut all_types = types.clone();
-            if let ExprKind::Lambda { params, .. } = &mut lifted.kind {
+            if let ExprKind::Lambda { params, param_types, .. } = &mut lifted.kind {
                 for c in &d.captures {
                     params.push(c.source.clone());
+                    param_types.push(Some(c.ty));
                     all_types.push(c.ty);
                 }
             }
