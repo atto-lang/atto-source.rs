@@ -214,7 +214,7 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
         let f = p.ident()?;
         if fields.contains(&f) { return Err(error(pos, "E_STRUCT_FIELD", "duplicate declared field")); }
         p.expect(Tok::Colon, "':' after struct field")?;
-        if let Err(_) = p.word("int") { return Err(unsupported(pos, "non-int struct fields")); }
+        if p.word("int").is_err() { return Err(unsupported(pos, "non-int struct fields")); }
         p.expect(Tok::Semi, "';' after struct field")?;
         fields.push(f);
     }
@@ -232,6 +232,7 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
     let variable = p.ident()?;
     p.expect(Tok::Colon, "':' after binding")?;
     let ty = collection_type(p, &nominal)?;
+    debug_assert_eq!(ty.nominal_struct, nominal);
     p.expect(Tok::Assign, "'=' after Array type")?;
     p.expect(Tok::LBracket, "'[' for array initializer")?;
     let mut rows: Vec<Vec<i64>> = Vec::new();
