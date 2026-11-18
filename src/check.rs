@@ -3394,7 +3394,9 @@ impl<'a> FnCx<'a> {
         })
     }
 
-    /// Check arguments against parameter types; object arguments move.
+    /// Check arguments against parameter types; owned object formals still
+    /// move in this *legacy* ABI. The future default Foo-by-borrow contract
+    /// needs a versioned migration and is NOT enabled by this change.
     /// Arguments evaluate left-to-right. Inferred Borrow<Class> formals
     /// issue compile-time shared call loans spanning all subsequent argument
     /// evaluation. These end only once all arguments are checked; the guest
@@ -3409,9 +3411,26 @@ impl<'a> FnCx<'a> {
             let mut out = Vec::new();
             for (i, (arg, want)) in args.iter().zip(params).enumerate() {
                 if let Type::BorrowClass(class) = *want {
-                    let ExprKind::Var(name) = &arg.kind else {
-                        return Err(Diagnostic::new(arg.pos, "E_BORROW",
-                            "inferred Borrow<T> needs a named, live class owner"));
+                    // An explicit `borrow! owner` is a spelling of the
+                    // *same* read-only call loan as the implicit `owner`
+                    // form. Both must select the identical live local place;
+                    // we must not invoke `explicit_ownership` for a class
+                    // expression, which only admits lexical borrow bindings.
+                    // In particular, never silently admit `borrow! mut`,
+                    // `borrow! make_temp()`, field projections or reborrows.
+                    let (name, owner_expr) = match &arg.kind {
+                        ExprKind::Var(name) => (name, arg),
+                        ExprKind::Ownership(OwnershipOp::Borrow, false, inner) =>
+                            match &inner.kind {
+                                ExprKind::Var(name) => (name, inner.as_ref()),
+                                _ => return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                                    "borrow! call argument needs a named, live class owner")),
+                            },
+                        ExprKind::Ownership(OwnershipOp::Borrow, true, _) =>
+                            return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                                "borrow! mut requires an exclusive mutable formal, not Borrow<T>")),
+                        _ => return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                            "Borrow<T> call needs a named owner or borrow! named_owner")),
                     };
                     let Some(local) = self.lookup(name) else {
                         return Err(Diagnostic::new(arg.pos, "E_UNBOUND",
@@ -3422,7 +3441,10 @@ impl<'a> FnCx<'a> {
                         return Err(Diagnostic::new(arg.pos, "E_BORROW",
                             "reborrowing a borrowed alias/formal needs verified lifetime provenance"));
                     }
-                    let value = self.value(arg)?;
+                    // Evaluate the owner expression once. For explicit
+                    // borrow! this is the inner named place, not a second
+                    // ownership operation or an owned temporary.
+                    let value = self.value(owner_expr)?;
                     if value.ty != Type::Class(class) {
                         return Err(type_err(arg.pos,
                             format!("argument {} of '{callee}' expects Borrow<{}>",
