@@ -63,6 +63,19 @@ try {
     const guest = new WebAssembly.Instance(module, imports);
     assert.equal(guest.exports.main(), BigInt(expected), filename + ': wrong guest result');
     assert.equal(guest.exports.panic_code.value, 0, filename + ': guest panic_code');
+    if (filename === '998-copy-doublebang-pod-mixed-fields.atto') {
+      // No guest data literals: the fixed Wasm bump heap starts at byte 0.
+      // Each independently owned three-field object occupies 24 bytes.
+      // Check both source and clone directly, not only main's return value.
+      const memory = new DataView(guest.exports.memory.buffer);
+      const checkObject = (offset, number, active) => {
+        assert.equal(memory.getBigInt64(offset, true), BigInt(number));
+        assert.equal(memory.getFloat64(offset + 8, true), 1.5);
+        assert.equal(memory.getInt32(offset + 16, true), active);
+      };
+      checkObject(0, 42, 1);
+      checkObject(24, 7, 0);
+    }
     console.log('PASS compiled guest', filename, expected);
   }
   for (const filename of negatives) {
