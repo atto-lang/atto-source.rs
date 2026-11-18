@@ -151,6 +151,196 @@ fn cleanup_call_graph_must_prove_no_transitive_exception() {
 }
 
 #[test]
+fn handled_exception_effects_are_accepted_in_cleanup() {
+    // The previous transitive-any-throw scanner rejected all of these,
+    // even though ordinary throws do not escape their typed handler.
+    for source in [
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 22;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             val Option<int> caught = trap fail();
+             return 17;
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 22;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           fnc middle(): int { return safe(); }
+           pub fnc main(): int {
+             recover |err, cursor| -> { return middle(); };
+             raise Error("trigger");
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           pub fnc main(): int {
+             try { return 22; }
+             finally { stdio.println(safe()); }
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) {
+               try { return 11; }
+               finally { stdio.println("inner"); }
+             }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 22;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           fnc a(): int { return b(); }
+           fnc b(): int { return safe(); }
+           pub fnc main(): int {
+             defer { stdio.println(a()); };
+             return 22;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc a(int depth): int {
+             if depth eq 0 then return 1; fi
+             try { return b(depth - 1); }
+             catch (Error e) { return 8; }
+           }
+           fnc b(int depth): int { return a(depth); }
+           pub fnc main(): int {
+             defer { stdio.println(a(2)); };
+             return 22;
+           }"#,
+    ] {
+        pass(source);
+    }
+}
+
+#[test]
+fn escaping_effects_remain_forbidden_in_cleanup() {
+    // Ordinary catch is insufficient for raise, and trap never catches it.
+    // The catch handler's *own* failure must also count as escaping.
+    for source in [
+        r#"fnc fail(): int { raise Error("uncaught raise"); }
+           fnc unsafe_catch(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(unsafe_catch()); };
+             return 2;
+           }"#,
+        r#"fnc fail(): int { raise Error("uncaught raise"); }
+           fnc unsafe_trap(): int {
+             val Option<int> caught = trap fail();
+             return 11;
+           }
+           pub fnc main(): int {
+             recover |err, cursor| -> { return unsafe_trap(); };
+             raise Error("original");
+           }"#,
+        r#"fnc fail(): int { throw Error("caught first"); }
+           fnc unsafe_handler(): int {
+             try { return fail(); }
+             catch (Error e) { raise Error("raised by handler"); }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(unsafe_handler()); };
+             return 2;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught first"); }
+           fnc unsafe_handler(): int {
+             try { return fail(); }
+             catch (Error e) { throw Error("thrown by handler"); }
+           }
+           pub fnc main(): int {
+             try { return 2; }
+             finally { stdio.println(unsafe_handler()); }
+           }"#,
+        r#"fnc fail(): int { raise Error("raised"); }
+           fnc middle(): int { return fail(); }
+           fnc unsafe_catch(): int {
+             try { return middle(); }
+             catch (Error e) { return 11; }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(unsafe_catch()); };
+             return 2;
+           }"#,
+        r#"fnc fail(): int { throw Error("thrown"); }
+           fnc unsafe_catch(): int {
+             try { return fail(); }
+             finally { stdio.println("not a catch"); }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(unsafe_catch()); };
+             return 2;
+           }"#,
+        r#"fnc fail(): int { raise Error("raised"); }
+           fnc a(int depth): int {
+             if depth eq 0 then return fail(); fi
+             return b(depth - 1);
+           }
+           fnc b(int depth): int { return a(depth); }
+           pub fnc main(): int {
+             defer { stdio.println(a(1)); };
+             return 2;
+           }"#,
+    ] {
+        reject("E_UNWIND_EFFECT", source);
+    }
+}
+
+#[test]
+fn effect_solver_exhaustive_cleanup_matrix() {
+    // 3 cleanup contexts × 2 handler forms × 10 distinct argument values:
+    // sixty real, deterministic compiled guest artifacts in addition to
+    // the individually named positive/negative effect regressions above.
+    for n in 0..10 {
+        for uses_trap in [false, true] {
+            let safe = if uses_trap {
+                r#"val Option<int> captured = trap fail(); return 8;"#
+            } else {
+                r#"try { return fail(); } catch (Error e) { return 8; }"#
+            };
+            let preamble = format!(
+                r#"fnc fail(): int {{ throw Error("handled"); }}
+                   fnc safe(): int {{ {safe} }}
+                   fnc intermediate(): int {{ return safe(); }}"#,
+            );
+            let callbacks = [
+                format!(r#"defer (|int value| -> _ -> {{ stdio.println(intermediate() + value); }})({n});
+                            return 2;"#),
+                format!(r#"recover (|int value| -> |err, cursor| -> {{
+                              return intermediate() + value;
+                            }})({n});
+                            raise Error("trigger");"#),
+                format!(r#"try {{ return 2; }}
+                            finally {{ stdio.println(intermediate() + {n}); }}"#),
+            ];
+            for body in callbacks {
+                pass(&format!("{preamble} pub fnc main(): int {{ {body} }}"));
+            }
+        }
+    }
+}
+
+#[test]
 fn recovery_capability_binders_cannot_be_shadowed_in_any_scope() {
     for source in [
         r#"pub fnc main(): int {
