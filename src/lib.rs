@@ -4,6 +4,7 @@ pub mod codegen;
 pub mod effects;
 pub mod flow;
 pub mod frontend;
+pub mod actor_task_lifecycle;
 pub mod mir;
 pub mod profile;
 pub mod safety;
