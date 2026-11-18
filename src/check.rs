@@ -2233,6 +2233,42 @@ impl<'a> FnCx<'a> {
                 TStmt::Recover { flag, args: sets, body, pos: *pos }
             }
             Stmt::Expr(e) => {
+                if let ExprKind::Ownership(OwnershipOp::Drop, _, inner) = &e.kind {
+                    // drop! is a consuming, standalone statement. No stored
+                    // owner/borrow may remain usable afterward. The browser
+                    // backend does not yet implement deterministic heap object
+                    // destructors, so only resource-free primitives are legal.
+                    let ExprKind::Var(name) = &inner.kind else {
+                        return Err(Diagnostic::new(e.pos, "E_DROP_CONTEXT",
+                            "drop! requires a named owned local, not a computed value"));
+                    };
+                    let (slot, ty) = match self.lookup(name) {
+                        Some(l) => (l.slot, l.ty),
+                        None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND",
+                            format!("unknown name '{name}'"))),
+                    };
+                    if self.moved.contains(&slot) {
+                        return Err(Diagnostic::new(e.pos, "E_MOVED",
+                            "cannot drop an already moved or dropped owner"));
+                    }
+                    if self.loans.contains_key(&slot)
+                        || self.loans.values().any(|loan| loan.owner == slot) {
+                        return Err(Diagnostic::new(e.pos, "E_BORROW",
+                            "cannot drop an owner while an active loan exists"));
+                    }
+                    if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
+                        return Err(Diagnostic::new(e.pos, "E_MOVED",
+                            "cannot drop a local declared outside a repeated loop"));
+                    }
+                    if !matches!(ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                        return Err(Diagnostic::new(e.pos, "E_DROP_UNSUPPORTED",
+                            "dropping resource-owning values requires verified destructor and reclamation lowering"));
+                    }
+                    let last_value = self.value(inner)?;
+                    self.moved.insert(slot);
+                    // Evaluate the final primitive read once (no destructor).
+                    return Ok(TStmt::Expr(last_value));
+                }
                 let v = self.expr(e)?;
                 if v.ty == Type::GeneratorInt {
                     return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
