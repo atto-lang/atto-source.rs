@@ -734,7 +734,8 @@ impl Parser {
                     Some("static" | "fnc" | "method" | "mtd") => true,
                     Some("receive") if actor && *self.peek_at(1) == Tok::LParen => true,
                     Some("constructor" | "final" | "mut" | "let" | "val" | "const") => false,
-                    Some(_) if *self.peek_at(1) == Tok::LParen => true,
+                    Some(_) if *self.peek_at(1) == Tok::LParen
+                        || self.looks_prefixed_return_type() => true,
                     _ => false,
                 };
                 if !callable {
