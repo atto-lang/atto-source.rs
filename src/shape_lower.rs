@@ -261,8 +261,13 @@ impl ScopeLedger {
             return self.contains_brace(use_scope,body);
         }
         let Some(&binder_scope)=self.scopes.get(binder) else {return true;};
+        // Local declarations do not retroactively shadow earlier expressions
+        // in their scope. Formals are handled by header_bodies above.
+        if binder_scope.is_some() && binder>use_site {
+            return false;
+        }
         match binder_scope {
-            None => true, // file-root binding shadows all local scopes
+            None => true, // conservative file-root conflict, independent of order
             Some(open) => self.contains_brace(use_scope,open),
         }
     }
