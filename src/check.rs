@@ -1507,10 +1507,15 @@ fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
     // clause inside an explicit list means that effect cannot escape.
     // Fully unannotated legacy functions remain inference-only.
     for (index, f) in declared.iter().enumerate() {
-        let Some(contract) = f.declared_effects else { continue; };
+        let contract = &f.failure_effects;
+        if !contract.explicit { continue; }
         let actual = effects[index];
-        if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
-            let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {
+        // Currently a typed Error is the only admitted browser failure type.
+        // When nominal subclasses arrive, compare actual subtype sets here
+        // rather than broadening this check to a channel-presence mask.
+        if (actual.throws && contract.throws.is_empty())
+            || (actual.raises && contract.raises.is_empty()) {
+            let missing = match (actual.throws && contract.throws.is_empty(), actual.raises && contract.raises.is_empty()) {
                 (true, true) => "throws(Error), raises(Error)",
                 (true, false) => "throws(Error)",
                 (false, true) => "raises(Error)",
