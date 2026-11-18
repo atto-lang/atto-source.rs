@@ -7,7 +7,7 @@ fn all_callable_brace_and_end_forms_compile_to_deterministic_wasm() {
         "fnc f(): int { return 5; } pub fnc main(): int { return f(); }",
         "fnc f(): int -> { return 5; } pub fnc main(): int { return f(); }",
         "fnc f() -> int { return 5; } pub fnc main(): int { return f(); }",
-        "fnc f() -> int let int x = 3, x + 2 end pub fnc main(): int { return f(); }",
+        "fnc f() -> int let int x = 3; ^ x + 2; end pub fnc main(): int { return f(); }",
         "fnc f() -> int :: let int x = 3, x + 2 end pub fnc main(): int { return f(); }",
     ] {
         let bytes = compile(src).unwrap_or_else(|d| panic!("{src}: {d}"));

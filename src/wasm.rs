@@ -768,6 +768,10 @@ impl Emit<'_> {
                     BinOp::Div => unreachable!("division not admitted by checker"),
                 }
             }
+            TExpr::Sequence(steps, tail) => {
+                self.stmts(steps);
+                self.expr(tail);
+            }
             TExpr::Ternary(c, a, b) => {
                 self.expr(c);
                 self.open(0x04, vt(v.ty).expect("ternary value type"), Frame::Other);

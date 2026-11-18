@@ -1,5 +1,5 @@
-use atto_compiler::{compile, lexer::lex};
-use atto_compiler::target_syntax::parse_target_declarations;
+use atto_compiler::{compile, lexer::lex, parser::LanguageVersion};
+use atto_compiler::target_syntax::{parse_target_declarations, parse_target_declarations_versioned};
 
 fn parse(src: &str) -> Result<atto_compiler::target_syntax::TargetHeaders, atto_compiler::Diagnostic> {
     parse_target_declarations(&lex(src).unwrap())
@@ -13,8 +13,8 @@ fn mtd_receivers_admit_all_five_body_spellings_as_syntax_only() {
         mtd (self: A) b(): int -> { return 5; }
         mtd (self: A) c() -> int { return 5; }
         mtd (self: A) d() -> int
-            let int x = 3,
-            x + 2
+            let int x = 3;
+            ^ x + 2;
         end
         mtd (self: A) e() -> int ::
             let int x = 3,
@@ -34,7 +34,7 @@ fn first_token_of_bare_erl_method_still_gets_sealed_state_validation() {
     for body in [
         "self.count end",
         ":: self.count end",
-        "self.count = 2 end",
+        "self.count = 2; end",
     ] {
         let src = format!("declare actor A; mtd (self: A) unsafe_read() -> int {body}");
         let d = parse(&src).unwrap_err();
@@ -48,6 +48,8 @@ fn mtd_erlang_syntax_fails_closed() {
         ("declare actor A; mtd (self: A) a() -> int :: 5,", "E_EOF"),
         ("declare actor A; mtd (self: A) a() -> int :: 5, end", "E_SYNTAX"),
         ("declare actor A; mtd (self: A) a() -> int :: 5; end", "E_SYNTAX"),
+        ("declare actor A; mtd (self: A) a() -> int ^ const z: int = 5; end", "E_SYNTAX"),
+        ("declare actor A; mtd (self: A) a() -> int :: ^ const z: int = 5, z + 5 end", "E_SYNTAX"),
         ("declare actor A; mtd (self: A) a(): int :: 5 end", "E_SYNTAX"),
         ("declare actor A; mtd (self: A) a(): int -> 5 end", "E_SYNTAX"),
         ("declare actor A; mtd (self: A) a() -> int :: if true then 5 end", "E_SYNTAX"),
@@ -57,4 +59,12 @@ fn mtd_erlang_syntax_fails_closed() {
         let d = parse(src).unwrap_err();
         assert_eq!(d.code, code, "{src}: {d}");
     }
+
+    // This was previously invalid only because the compiler had no version
+    // gate. It must now remain valid in default v1 and fail under opt-in v2.
+    let unmarked = "declare actor A; mtd (self: A) a() -> int let z: int = 5, z + 5 end";
+    assert!(parse(unmarked).is_ok(), "legacy optional :: must not regress");
+    let d = parse_target_declarations_versioned(&lex(unmarked).unwrap(),
+        LanguageVersion::Explicit).unwrap_err();
+    assert_eq!(d.code, "E_BODY_VERSION");
 }

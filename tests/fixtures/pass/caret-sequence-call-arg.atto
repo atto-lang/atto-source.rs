@@ -1,0 +1,5 @@
+// expect-exit: 42
+fnc add(int x, int y): int { ^ x + y; }
+pub fnc main(): int {
+  ^ add((> let x = 5, x + 3), 34);
+}

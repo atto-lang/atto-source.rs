@@ -416,9 +416,10 @@ check('generated/200-programs', () => {
   assert.ok(seen.size > 190, 'artifacts depend on source');
 });
 
-// The canonical AttoLang grammar has removed %, ^ and ^^: reject all
-// three with a positioned diagnostic and no generated guest bytes.
-for (const op of ['%', '^', '^^']) {
+// '%' remains unsupported arithmetic; '^^' is reserved boolean XOR.
+// Single '^' is now a statement-position return alias, never infix XOR or
+// exponentiation. Its infix misuse fails at the statement terminator.
+for (const op of ['%', '^^']) {
   check(`removed-operator/${op}`, () => {
     const r = compile(`pub fnc main(): int { return 5 ${op} 2; }`);
     assert.equal(r.ok, false);
@@ -427,6 +428,18 @@ for (const op of ['%', '^', '^^']) {
     assert.ok(r.line >= 1 && r.col >= 1);
   });
 }
+check('caret-is-not-infix', () => {
+  const r = compile('pub fnc main(): int { return 5 ^ 2; }');
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'E_SEMICOLON');
+  assert.equal('wasm' in r, false);
+  assert.ok(r.line >= 1 && r.col >= 1);
+});
+check('caret-is-a-return-statement', () => {
+  const r = compile('pub fnc main(): int { ^ 42; }');
+  assert.equal(r.ok, true);
+  assert.equal('wasm' in r, true);
+});
 
 // ---- limits and robustness ---------------------------------------------------
 check('limits/nesting', () => {

@@ -1,0 +1,5 @@
+// expect-exit: 10
+pub fnc main() -> int ::
+    const z: int = 5,
+    z + 5
+end

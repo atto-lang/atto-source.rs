@@ -3,7 +3,7 @@
 use crate::ast::{ActorDecl, ClassDecl};
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
-use crate::parser::{is_reserved, Parser, MAX_FUNCS, MAX_PARAMS};
+use crate::parser::{is_reserved, LanguageVersion, Parser, MAX_FUNCS, MAX_PARAMS};
 type R<T> = Result<T, Diagnostic>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub struct TargetHeaders {
     pub definitions: Vec<ActorDecl>,
     pub receivers: Vec<ReceiverHeader>,
 }
-struct Cursor<'a> { toks: &'a [Token], i: usize }
+struct Cursor<'a> { toks: &'a [Token], i: usize, version: LanguageVersion }
 impl Cursor<'_> {
     fn tok(&self) -> &Tok { &self.toks[self.i.min(self.toks.len()-1)].tok }
     fn pos(&self) -> Pos { self.toks[self.i.min(self.toks.len()-1)].pos }
@@ -147,19 +147,27 @@ impl Cursor<'_> {
         if !arrow_type {
             return Err(self.err("E_SYNTAX", "expected '{' for a method body"));
         }
-        if self.take(&Tok::ColonColon) && *self.tok() == Tok::LBrace {
+        let mut comma_body = self.take(&Tok::ColonColon);
+        let mut saw_statement_separator = false;
+        let mut explicit_return_sequence = false;
+        let mut unparenthesized_seq = false;
+        if comma_body && *self.tok() == Tok::LBrace {
             return Err(self.err("E_SYNTAX", "'::' requires a comma/end body, not '{'"));
         }
         if *self.tok() == Tok::Arrow {
             return Err(self.err("E_SYNTAX", "a second '->' is not a body delimiter"));
         }
+        // This receiver-only scanner is syntax admission, not guest lowering.
+        // Keep nested call/list/sequence commas out of the outer body grammar.
         let (mut braces, mut conditionals, mut items) = (0u32, 0u32, 0usize);
+        let (mut parens, mut brackets) = (0u32, 0u32);
         loop {
             match self.tok() {
                 Tok::Eof => return Err(self.err("E_EOF", "unclosed Erlang-style method body")),
                 Tok::Ident(s) if s == "end" && braces == 0 => {
-                    if conditionals != 0 { return Err(self.err("E_SYNTAX", "unclosed if/fi in Erlang-style body")); }
-                    if items == 0 { return Err(self.err("E_SYNTAX", "empty Erlang-style method body")); }
+                    if conditionals != 0 { return Err(self.err("E_SYNTAX", "unclosed if/fi in method body")); }
+                    if parens != 0 || brackets != 0 { return Err(self.err("E_SYNTAX", "unclosed nested delimiter in method body")); }
+                    if items == 0 { return Err(self.err("E_SYNTAX", "empty method body")); }
                     self.next();
                     return Ok(());
                 }
@@ -171,6 +179,22 @@ impl Cursor<'_> {
                     if conditionals == 0 { return Err(self.err("E_SYNTAX", "unmatched fi")); }
                     conditionals -= 1;
                 }
+                Tok::LParen | Tok::SequenceOpen => {
+                    parens += 1;
+                    if parens > 128 { return Err(self.err("E_NESTING", "body paren nesting limit")); }
+                }
+                Tok::RParen => {
+                    if parens == 0 { return Err(self.err("E_SYNTAX", "unmatched ')'")); }
+                    parens -= 1;
+                }
+                Tok::LBracket => brackets += 1,
+                Tok::RBracket => {
+                    if brackets == 0 { return Err(self.err("E_SYNTAX", "unmatched ']'")); }
+                    brackets -= 1;
+                }
+                Tok::Caret if matches!(self.toks.get(self.i + 1).map(|x| &x.tok),
+                    Some(Tok::Ident(s)) if matches!(s.as_str(), "const" | "val" | "let")) =>
+                    return Err(self.err("E_SYNTAX", "return shorthand expects a value, not a binding")),
                 Tok::LBrace => {
                     braces += 1;
                     if braces > 128 { return Err(self.err("E_NESTING", "body nesting limit")); }
@@ -179,11 +203,38 @@ impl Cursor<'_> {
                     if braces == 0 { return Err(self.err("E_SYNTAX", "unmatched '}'")); }
                     braces -= 1;
                 }
-                Tok::Semi if braces == 0 && conditionals == 0 =>
-                    return Err(self.err("E_SYNTAX", "Erlang-style items require commas, not semicolons")),
-                Tok::Comma if braces == 0 && conditionals == 0 => {
+                Tok::Ident(s) if s == "return" && braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    explicit_return_sequence = true;
+                }
+                Tok::Caret if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    explicit_return_sequence = true;
+                }
+                Tok::Ident(s) if s == "seq" && braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    unparenthesized_seq = true;
+                }
+                Tok::Semi if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    if comma_body {
+                        return Err(self.err("E_SYNTAX", "comma/implicit-tail body requires ',' separators, not ';'"));
+                    }
+                    saw_statement_separator = true;
+                    explicit_return_sequence = false;
+                    unparenthesized_seq = false;
+                }
+                Tok::Comma if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0
+                    && !explicit_return_sequence && !unparenthesized_seq => {
+                    if !comma_body && self.version == LanguageVersion::Explicit {
+                        return Err(self.err("E_BODY_VERSION",
+                            "language version 2 requires '::' before comma/implicit-tail method bodies; insert '::' or use semicolon statements with explicit return/^"));
+                    }
+                    if saw_statement_separator {
+                        return Err(self.err("E_SYNTAX", "cannot mix comma and semicolon separators in one callable body"));
+                    }
+                    // v1 permits unmarked comma bodies. This parser is only a
+                    // syntax preflight: actual tail-return semantics are still
+                    // enforced by the shared versioned production parser.
+                    comma_body = true;
                     if matches!(self.toks.get(self.i + 1).map(|x| &x.tok), Some(Tok::Ident(s)) if s == "end") {
-                        return Err(self.err("E_SYNTAX", "trailing comma in Erlang-style body"));
+                        return Err(self.err("E_SYNTAX", "trailing comma in comma body"));
                     }
                 }
                 _ => {}
@@ -233,12 +284,12 @@ impl Cursor<'_> {
     /// Use production parsing for one declaration; unlike a token-only scan,
     /// it consumes inner Erlang-style method 'end' without closing the class.
     fn definition(&mut self, start: usize) -> R<ActorDecl> {
-        let (decl, end) = Parser::parse_target_actor_at(self.toks, start)?;
+        let (decl, end) = Parser::parse_target_actor_at_versioned(self.toks, start, self.version)?;
         self.i = end;
         Ok(decl)
     }
     fn class_definition(&mut self, start: usize) -> R<ClassDecl> {
-        let (decl, end) = Parser::parse_target_class_at(self.toks, start)?;
+        let (decl, end) = Parser::parse_target_class_at_versioned(self.toks, start, self.version)?;
         self.i = end;
         Ok(decl)
     }
@@ -258,10 +309,18 @@ impl Cursor<'_> {
 /// module imports, forward-declared actors, nominal or typed receivers and functions.
 /// Body braces are balanced only: there is no semantic/state access proof.
 pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
+    parse_target_declarations_versioned(toks, LanguageVersion::Legacy)
+}
+
+/// Opt-in strict callable-body grammar for out-of-line receiver preflight.
+/// Do not accept a different mode from the production parser or linker.
+pub fn parse_target_declarations_versioned(
+    toks: &[Token], version: LanguageVersion,
+) -> R<TargetHeaders> {
     if toks.is_empty() {
         return Err(Diagnostic::new(Pos::default(), "E_EOF", "empty token stream"));
     }
-    let mut c = Cursor { toks, i: 0 };
+    let mut c = Cursor { toks, i: 0, version };
     let mut out = TargetHeaders::default();
     let mut spans: Vec<(usize, usize, usize)> = Vec::new();
     let mut function_spans: Vec<(usize, usize)> = Vec::new();
