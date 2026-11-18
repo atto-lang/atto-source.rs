@@ -867,6 +867,21 @@ impl Parser {
 mod tests {
     use super::*;
     #[test]
+    fn return_first_arrow_is_contextual_and_does_not_steal_comparison_tokens() {
+        let tokens: Vec<_> = Kind::lexer("1<-2")
+            .map(|item| item.expect("valid scalar lexer token"))
+            .collect();
+        assert_eq!(tokens, vec![
+            Kind::Number, Kind::LessThan, Kind::Minus, Kind::Number
+        ]);
+        let spaced = "int < - main()\nbegin\n  return 42;\nend";
+        let error = parse(spaced).expect_err("spaced '< -' is not a declaration marker");
+        assert_eq!(error.class, "syntax_error");
+        assert_eq!(error.message, "return-first marker '<-' must be contiguous");
+        assert!(parse("int <- main()\nbegin\n  return 42;\nend").is_ok());
+    }
+
+    #[test]
     fn rejects_excessive_parenthesis_nesting_before_recursive_descent() {
         let expression = format!(
             "{}1{}",
