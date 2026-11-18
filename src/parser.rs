@@ -523,9 +523,14 @@ impl Parser {
                 ));
             }
             decls += 1;
+            let annotations = self.parse_failure_annotations()?;
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
+            if annotations.explicit && matches!(self.word_at(at), Some("define" | "actor")) {
+                return Err(Diagnostic::new(start, "E_EFFECT_TYPE",
+                    "failure annotations may only precede fnc/routine callable declarations"));
+            }
             match (self.word_at(at), self.word_at(at + 1)) {
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
@@ -564,7 +569,7 @@ impl Parser {
                     };
                     return Err(unsupported(self.pos(), &what));
                 }
-                _ => prog.funcs.push(self.parse_func()?),
+                _ => prog.funcs.push(self.parse_func(annotations)?),
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
@@ -689,9 +694,7 @@ impl Parser {
                     format!("more than {MAX_MEMBERS} members in {kind} '{owner}'"),
                 ));
             }
-            if *self.peek() == Tok::At {
-                return Err(unsupported(self.pos(), "annotations"));
-            }
+            let annotations = self.parse_failure_annotations()?;
             let mpos = self.pos();
             let public = if self.eat_word("pub") {
                 true
@@ -700,6 +703,19 @@ impl Parser {
                 false
             };
             let word = self.word_at(0).map(str::to_owned);
+            if annotations.explicit {
+                let callable = match word.as_deref() {
+                    Some("static" | "fnc" | "method") => true,
+                    Some("receive") if actor && *self.peek_at(1) == Tok::LParen => true,
+                    Some("constructor" | "final" | "mut" | "let" | "val" | "const") => false,
+                    Some(_) if *self.peek_at(1) == Tok::LParen => true,
+                    _ => false,
+                };
+                if !callable {
+                    return Err(Diagnostic::new(mpos, "E_EFFECT_TYPE",
+                        "failure annotations require a method or receive handler"));
+                }
+            }
             match word.as_deref() {
                 Some("static") => {
                     if actor {
@@ -710,7 +726,7 @@ impl Parser {
                         return Err(unsupported(self.pos(), &format!("'{w}' static functions")));
                     }
                     self.expect_word("fnc")?;
-                    let method = self.parse_method(public, true)?;
+                    let method = self.parse_method(public, true, annotations)?;
                     m.methods.push(method);
                 }
                 Some("constructor") => {
@@ -777,7 +793,7 @@ impl Parser {
                 }
                 Some("fnc" | "method") => {
                     self.advance();
-                    let method = self.parse_method(public, false)?;
+                    let method = self.parse_method(public, false, annotations)?;
                     m.methods.push(method);
                 }
                 Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
@@ -798,11 +814,11 @@ impl Parser {
                             format!("actor '{owner}' already declares receive"),
                         ));
                     }
-                    let r = self.parse_receive(owner)?;
+                    let r = self.parse_receive(owner, annotations)?;
                     m.receive = Some(r);
                 }
                 Some(_) if *self.peek_at(1) == Tok::LParen => {
-                    let method = self.parse_method(public, false)?;
+                    let method = self.parse_method(public, false, annotations)?;
                     m.methods.push(method);
                 }
                 Some(_) if *self.peek_at(1) == Tok::Colon && !actor => {
@@ -872,7 +888,7 @@ impl Parser {
     }
 
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
-    fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
+    fn parse_method(&mut self, public: bool, is_static: bool, annotations: FailureEffects) -> R<Method> {
         let (name, pos) = self.ident("a method name")?;
         if *self.peek() == Tok::Lt {
             return Err(unsupported(self.pos(), "generic methods"));
@@ -888,7 +904,7 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
-        let failure_effects = self.parse_failure_effects()?;
+        let failure_effects = self.parse_failure_effects(annotations)?;
         let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
         Ok(Method {
             name,
@@ -903,7 +919,7 @@ impl Parser {
     }
 
     /// `receive ( ActorMail < T > name ) [ : void ] block`.
-    fn parse_receive(&mut self, owner: &str) -> R<Receive> {
+    fn parse_receive(&mut self, owner: &str, annotations: FailureEffects) -> R<Receive> {
         let pos = self.pos();
         self.advance();
         self.expect(Tok::LParen, "'('")?;
@@ -941,7 +957,7 @@ impl Parser {
                 format!("actor mailbox handler '{owner}.receive' must return void"),
             ));
         }
-        let failure_effects = self.parse_failure_effects()?;
+        let failure_effects = self.parse_failure_effects(annotations)?;
         let body = self.parse_block()?;
         Ok(Receive { pos, mail, payload, failure_effects, body })
     }
@@ -960,8 +976,23 @@ impl Parser {
     /// The limited browser backend cannot resolve user-defined Error
     /// subclasses/interfaces yet and must reject those rather than pretending
     /// they inherit the required nominal contracts.
-    fn parse_failure_effects(&mut self) -> R<FailureEffects> {
+    /// Only failure-effect annotations are admitted by this browser subset.
+    /// The same validator and duplicate check apply to prefix annotations
+    /// and trailing effect clauses, yielding one canonical FailureEffects AST.
+    fn parse_failure_annotations(&mut self) -> R<FailureEffects> {
         let mut effects = FailureEffects::default();
+        while *self.peek() == Tok::At {
+            let at = self.pos();
+            self.advance();
+            if !matches!(self.word_at(0), Some("throws" | "raises" | "panics")) {
+                return Err(unsupported(at, "non-failure annotations"));
+            }
+            effects = self.parse_failure_effects(effects)?;
+        }
+        Ok(effects)
+    }
+
+    fn parse_failure_effects(&mut self, mut effects: FailureEffects) -> R<FailureEffects> {
         loop {
             let (kind, at) = match self.word_at(0) {
                 Some("throws") => (0, self.pos()),
@@ -1038,10 +1069,7 @@ impl Parser {
         Ok(params)
     }
 
-    fn parse_func(&mut self) -> R<Func> {
-        if *self.peek() == Tok::At {
-            return Err(unsupported(self.pos(), "annotations"));
-        }
+    fn parse_func(&mut self, annotations: FailureEffects) -> R<Func> {
         let start = self.pos();
         self.eat_word("pub");
         let is_pure = self.eat_word("pure");
@@ -1090,7 +1118,7 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
-        let failure_effects = self.parse_failure_effects()?;
+        let failure_effects = self.parse_failure_effects(annotations)?;
         if is_pure && failure_effects.explicit {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure functions cannot declare throw, raise or panic effects"));
