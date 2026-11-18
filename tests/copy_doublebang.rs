@@ -31,6 +31,7 @@ fn generated_flat_class_copier_emits_real_wasm_bytes() {
     wasm(include_str!("fixtures/pass/995-copy-doublebang-flat-class-mixed-fields.atto"));
     wasm(include_str!("fixtures/pass/996-copy-doublebang-constructor-state.atto"));
     wasm(include_str!("fixtures/pass/997-copy-doublebang-private-state.atto"));
+    wasm(include_str!("fixtures/pass/998-copy-doublebang-pod-mixed-fields.atto"));
     wasm("define class Parcel as pub let int value = 1; end pub fnc main(): int { val q = copy!! (new Parcel()); return q.value; }");
 }
 
@@ -79,7 +80,7 @@ fn verified_pointer_free_class_uses_a_single_bulk_memory_copy() {
     // already-admitted POD class rather than generating per-field loads.
     // The existing guest-execution harness also verifies copied-object
     // independence after source/copy mutation.
-    let bytes = wasm(include_str!("fixtures/pass/993-copy-doublebang-flat-class.atto"));
+    let bytes = wasm(include_str!("fixtures/pass/998-copy-doublebang-pod-mixed-fields.atto"));
     assert!(bytes.windows(4).any(|b| b == [0xFC, 0x0A, 0, 0]),
         "flat POD copier should contain a Wasm memory.copy instruction");
 }
