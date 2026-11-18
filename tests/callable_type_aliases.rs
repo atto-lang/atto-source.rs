@@ -115,5 +115,5 @@ fn existing_direct_lambda_wasm_path_remains_executable() {
         return add(20, 22);
     }";
     let output = atto_compiler::compile(source).unwrap();
-    assert!(output.starts_with(b"\\0asm"));
+    assert!(output.starts_with(b"\0asm"));
 }
