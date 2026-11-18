@@ -13,6 +13,46 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 
 const cases = [
   {
+    name: 'an unhandled ordinary throw reaches recovery with is_raise false',
+    src: `fnc fail(): int { throw Error("ordinary"); }
+      fnc f(): int {
+        recover |err, cursor| -> {
+          stdio.println(err.message);
+          stdio.println(err.is_raise);
+          return 44;
+        };
+        return fail();
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: 'ordinary\nfalse\n', value: 44n,
+  },
+  {
+    name: 'failed defer factory capture does not register half-initialized cleanup',
+    src: `fnc fail_capture(): int { raise Error("capture failed"); }
+      fnc f(): int {
+        recover |err, cursor| -> {
+          stdio.println(err.message);
+          return 61;
+        };
+        defer { stdio.println("prior cleanup"); };
+        defer (|int value| -> _ -> { stdio.println("UNEXPECTED cleanup"); })(fail_capture());
+        return 99;
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: 'prior cleanup\ncapture failed\n', value: 61n,
+  },
+  {
+    name: 'safe transitive user calls in defer retain correct return snapshot',
+    src: `fnc one(int n): int { return n + 1; }
+      fnc two(int n): int { return one(n) + 1; }
+      fnc f(): int {
+        defer (|int value| -> _ -> { stdio.println(two(value)); })(5);
+        return 31;
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: '7\n', value: 31n,
+  },
+  {
     name: 'all three ordinary defer spellings execute LIFO exactly once',
     src: `fnc f(): int {
       defer { stdio.println("block"); };
