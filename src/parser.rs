@@ -1826,6 +1826,45 @@ impl Parser {
             Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
             _ => {
+                // Integer-only compound bitwise assignment. Require a simple
+                // mutable local so the target is evaluated exactly once.
+                if let Tok::Ident(name) = self.peek().clone() {
+                    let candidate = if *self.peek_at(1) == Tok::Amp
+                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
+                        Some((BinOp::BitAnd, 2))
+                    } else if *self.peek_at(1) == Tok::Pipe
+                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
+                        Some((BinOp::BitOr, 2))
+                    } else if *self.peek_at(1) == Tok::Caret
+                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
+                        Some((BinOp::BitXor, 2))
+                    } else if self.triple_at(1, &Tok::Lt) && *self.peek_at(4) == Tok::Assign
+                        && self.joined_at(3) {
+                        Some((BinOp::Shl, 4))
+                    } else if self.triple_at(1, &Tok::Gt) && *self.peek_at(4) == Tok::Assign
+                        && self.joined_at(3) {
+                        Some((BinOp::LShr, 4))
+                    } else if self.word_at(1) == Some("ashr") && *self.peek_at(2) == Tok::Assign {
+                        Some((BinOp::AShr, 2))
+                    } else { None };
+                    if let Some((op, count)) = candidate {
+                        let at = self.toks[self.i + 1].pos;
+                        self.advance(); // lhs
+                        for _ in 0..count { self.advance(); }
+                        let value = self.parse_expr()?;
+                        self.terminator()?;
+                        return Ok(Stmt::Assign {
+                            name: name.clone(),
+                            value: Expr {
+                                kind: ExprKind::Binary(op,
+                                    Box::new(Expr { kind: ExprKind::Var(name), pos }),
+                                    Box::new(value)),
+                                pos: at,
+                            },
+                            pos,
+                        });
+                    }
+                }
                 let e = self.parse_expr()?;
                 // Compound addition uses the existing checked binary addition.
                 // Restrict it to locals: field/index targets need once-only lvalue lowering.
@@ -2638,7 +2677,7 @@ impl Parser {
     /// evaluates a exactly once and b only when a is true. No eager builtin
     /// and no changed meaning for unary & (reserved ownership/borrow form).
     fn parse_logical_and(&mut self) -> R<Expr> {
-        let mut left = self.parse_equality()?;
+        let mut left = self.parse_bitwise_or()?;
         let mut links = 0;
         while *self.peek() == Tok::Amp && *self.peek_at(1) == Tok::Amp {
             let pos = self.pos();
@@ -2646,7 +2685,7 @@ impl Parser {
             self.advance();
             self.grow(1)?;
             links += 1;
-            let right = self.parse_equality()?;
+            let right = self.parse_bitwise_or()?;
             left = Expr {
                 kind: ExprKind::Ternary(
                     Box::new(left),
@@ -2655,6 +2694,54 @@ impl Parser {
                 ),
                 pos,
             };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    // A single '|' in an if/while condition is still the legacy condition
+    // separator. Outside that context it is integer bitwise OR. Parenthesized
+    // expressions reset the condition context and can use bitwise OR normally.
+    fn parse_bitwise_or(&mut self) -> R<Expr> {
+        let mut left = self.parse_bitwise_xor()?;
+        let mut links = 0;
+        while self.cond == 0 && *self.peek() == Tok::Pipe && *self.peek_at(1) != Tok::Pipe {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_bitwise_xor()?;
+            left = Expr { kind: ExprKind::Binary(BinOp::BitOr, Box::new(left), Box::new(right)), pos };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> R<Expr> {
+        let mut left = self.parse_bitwise_and()?;
+        let mut links = 0;
+        while *self.peek() == Tok::Caret {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_bitwise_and()?;
+            left = Expr { kind: ExprKind::Binary(BinOp::BitXor, Box::new(left), Box::new(right)), pos };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_bitwise_and(&mut self) -> R<Expr> {
+        let mut left = self.parse_equality()?;
+        let mut links = 0;
+        while *self.peek() == Tok::Amp && *self.peek_at(1) != Tok::Amp {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_equality()?;
+            left = Expr { kind: ExprKind::Binary(BinOp::BitAnd, Box::new(left), Box::new(right)), pos };
         }
         self.height -= links;
         Ok(left)
@@ -2692,7 +2779,7 @@ impl Parser {
 
     fn parse_comparison(&mut self) -> R<Expr> {
         let mut links = 0;
-        let mut left = self.parse_additive()?;
+        let mut left = self.parse_shift()?;
         loop {
             let pos = self.pos();
             let op = match self.peek() {
@@ -2706,11 +2793,48 @@ impl Parser {
             self.advance();
             self.grow(1)?;
             links += 1;
-            let right = self.parse_additive()?;
+            let right = self.parse_shift()?;
             left = Expr {
                 kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
                 pos,
             };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    // Keep angle brackets as individual tokens for nested generic types
+    // and legacy I/O '<<' / '>>'. Only THREE contiguous brackets are shifts.
+    fn joined_at(&self, offset: usize) -> bool {
+        let Some(a) = self.toks.get(self.i + offset) else { return false; };
+        let Some(b) = self.toks.get(self.i + offset + 1) else { return false; };
+        a.pos.line == b.pos.line && a.pos.col.checked_add(1) == Some(b.pos.col)
+    }
+
+    fn triple_at(&self, offset: usize, kind: &Tok) -> bool {
+        (0..3).all(|n| self.peek_at(offset + n) == kind)
+            && self.joined_at(offset) && self.joined_at(offset + 1)
+    }
+
+    fn parse_shift(&mut self) -> R<Expr> {
+        let mut left = self.parse_additive()?;
+        let mut links = 0;
+        loop {
+            let pos = self.pos();
+            let (op, width) = if self.triple_at(0, &Tok::Lt) {
+                (BinOp::Shl, 3)
+            } else if self.triple_at(0, &Tok::Gt) {
+                (BinOp::LShr, 3)
+            } else if self.is_word("ashr") {
+                (BinOp::AShr, 1)
+            } else {
+                break;
+            };
+            for _ in 0..width { self.advance(); }
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_additive()?;
+            left = Expr { kind: ExprKind::Binary(op, Box::new(left), Box::new(right)), pos };
         }
         self.height -= links;
         Ok(left)
@@ -2775,6 +2899,7 @@ impl Parser {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
             Tok::Bang => UnOp::Not,
+            Tok::Tilde => UnOp::BitNot,
             Tok::Amp => return Err(unsupported(pos, "borrow expressions")),
             Tok::PlusPlus | Tok::MinusMinus => {
                 return Err(Diagnostic::new(
@@ -3269,6 +3394,8 @@ fn describe(t: &Tok) -> String {
                 Tok::Pipe => "|",
                 Tok::PipeGt => "|>",
                 Tok::Amp => "&",
+                Tok::Caret => "^",
+                Tok::Tilde => "~",
                 Tok::At => "@",
                 _ => "?",
             };
