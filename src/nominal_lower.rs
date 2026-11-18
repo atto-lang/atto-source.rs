@@ -276,7 +276,6 @@ struct ScalarBaseField {
     tokens: Vec<Token>,
     name_index: usize,
     public: bool,
-    pos: Pos,
 }
 #[derive(Clone)]
 struct InheritedAlias {
@@ -341,7 +340,7 @@ fn scalar_base_fields(base: &Decl) -> R<Vec<ScalarBaseField>> {
         }
         fields.push(ScalarBaseField {
             name: field_name, tokens: t[begin..i].to_vec(),
-            name_index: at_name, public, pos: t[begin].pos,
+            name_index: at_name, public,
         });
     }
     if fields.is_empty() {
@@ -385,6 +384,7 @@ fn checked_scalar_aliases(
     d: &Decl, all: &BTreeMap<String, Decl>, aliases: &[InheritedAlias],
 ) -> R<Vec<Token>> {
     let mut parent_fields = BTreeMap::<(String, String), ScalarBaseField>::new();
+    let mut physical_order = Vec::new();
     let mut exposed_names = BTreeSet::new();
     let mut any_state = false;
     for parent in &d.parents {
@@ -398,7 +398,9 @@ fn checked_scalar_aliases(
             let fields = scalar_base_fields(base)?;
             for f in fields {
                 exposed_names.insert(f.name.clone());
-                parent_fields.insert((parent.clone(), f.name.clone()), f);
+                let key = (parent.clone(), f.name.clone());
+                physical_order.push(key.clone());
+                parent_fields.insert(key, f);
             }
         }
         // Field-alias names may not shadow inherited method namespaces.
@@ -415,7 +417,7 @@ fn checked_scalar_aliases(
     }
     let mut used_origins = BTreeSet::new();
     let mut alias_names = BTreeSet::new();
-    let mut output = Vec::new();
+    let mut aliases_by_origin = BTreeMap::new();
     for alias in aliases {
         if !d.parents.contains(&alias.parent) {
             return Err(diag(alias.pos, "E_ALIAS_TARGET",
@@ -429,20 +431,28 @@ fn checked_scalar_aliases(
             return Err(diag(alias.pos, "E_ALIAS_VISIBILITY",
                 "private parent fields cannot be re-exported through use"));
         }
-        if !used_origins.insert(key) || !alias_names.insert(alias.alias.clone())
+        if !used_origins.insert(key.clone()) || !alias_names.insert(alias.alias.clone())
             || exposed_names.contains(&alias.alias) || d.methods.contains_key(&alias.alias) {
             return Err(diag(alias.pos, "E_ALIAS_DUPLICATE",
                 "field alias duplicates an origin or collides with an inherited/local member"));
         }
+        aliases_by_origin.insert(key, alias);
+    }
+    if used_origins.len() != parent_fields.len() {
+        return Err(diag(d.pos, "E_UNSUPPORTED",
+            "every inherited physical scalar slot requires exactly one explicit use alias"));
+    }
+    // Parent declaration order and field declaration order, never alias
+    // textual order, determine physical AOT slot layout.
+    let mut output = Vec::new();
+    for key in physical_order {
+        let original = &parent_fields[&key];
+        let alias = aliases_by_origin[&key];
         let mut field_tokens = original.tokens.clone();
         field_tokens[original.name_index] = Token {
             tok: Tok::Ident(alias.alias.clone()), pos: alias.pos,
         };
         output.extend(field_tokens);
-    }
-    if used_origins.len() != parent_fields.len() {
-        return Err(diag(d.pos, "E_UNSUPPORTED",
-            "every inherited physical scalar slot requires exactly one explicit use alias"));
     }
     Ok(output)
 }
