@@ -20,6 +20,9 @@ pub const MAX_MEMBERS: usize = 256;
 /// produce trees that the checker, emitter and `Drop` walk recursively, so
 /// each chain link counts against this budget as well as each nested level.
 pub const MAX_TREE_HEIGHT: u32 = 256;
+/// Conservative limit for recursively nested callable types and lambda heads.
+/// Each nesting level expands through multiple Rust parser frames.
+const MAX_CALLABLE_RECURSION: u32 = 48;
 
 /// Words reserved by the reference lexer (spec chapter 16 keyword table).
 const RESERVED: &[&str] = &[
@@ -445,6 +448,17 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> R<Type> {
+        if self.depth >= MAX_CALLABLE_RECURSION {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested callable types exceed parser stack budget"));
+        }
+        self.enter()?;
+        let result = self.parse_type_inner();
+        self.leave();
+        result
+    }
+
+    fn parse_type_inner(&mut self) -> R<Type> {
         let pos = self.pos();
         if self.eat(&Tok::Pipe) {
             return self.parse_callable_delimited(Tok::Pipe, pos, false);
@@ -2968,6 +2982,10 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        if self.depth >= MAX_CALLABLE_RECURSION {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "lambda return type exceeds parser stack budget"));
+        }
         self.enter()?;
         let result = (|| {
             let mut name = match self.peek().clone() {
@@ -3005,6 +3023,10 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        if self.depth >= MAX_CALLABLE_RECURSION {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambdas exceed parser stack budget"));
+        }
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         let mut param_types = Vec::new();
