@@ -64,8 +64,37 @@ impl Scan {
             ExprKind::Propagate(value) | ExprKind::Member(value, _) =>
                 self.expr(value, next),
             ExprKind::Binary(_, left, right) => {
-                self.expr(left, next)?;
-                self.expr(right, next)
+                // Parser-built additive/equality chains are left-associated.
+                // Recursing down that left spine as though each link were
+                // an independently nested scope cut the effective accepted
+                // expression limit to 128, even though parser::MAX_TREE_HEIGHT
+                // admits up to 256 links. That also made this fail-closed
+                // security check disagree with the parser and typechecker.
+                //
+                // Walk ONLY the homogeneous left Binary spine iteratively.
+                // Keep every Binary counted against MAX_VISITS, retain a
+                // strict parser-sized link budget for programmatic ASTs, and
+                // inspect the leftmost operand followed by right operands in
+                // original source/evaluation order. Branches with true
+                // nesting (unary, ternary, calls, blocks, lambdas) still use
+                // the original MAX_DEPTH=128 bound; do not blindly increase
+                // the recursion allowance or omit a handle hidden in a link.
+                let mut rights: Vec<&Expr> = vec![right];
+                let mut cursor = left.as_ref();
+                while let ExprKind::Binary(_, inner_left, inner_right) = &cursor.kind {
+                    if rights.len() >= crate::parser::MAX_TREE_HEIGHT as usize {
+                        return Err(Diagnostic::new(cursor.pos, "E_NESTING",
+                            "checked-handle binary chain exceeds the parser height budget"));
+                    }
+                    self.enter(cursor.pos, next)?;
+                    rights.push(inner_right);
+                    cursor = inner_left;
+                }
+                self.expr(cursor, next)?;
+                for operand in rights.into_iter().rev() {
+                    self.expr(operand, next)?;
+                }
+                Ok(())
             }
             ExprKind::Ternary(cond, yes, no) => {
                 self.expr(cond, next)?;
