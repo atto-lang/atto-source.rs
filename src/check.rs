@@ -443,6 +443,11 @@ struct FnCx<'a> {
     loop_floors: Vec<u32>,
     /// Class-typed locals whose value has been moved out.
     moved: BTreeSet<u32>,
+    /// Source-local frozen shared handles in the bounded leaf-class profile.
+    /// These are still ordinary Wasm i32 object offsets. The existing guest
+    /// bump heap does not have reference counting or deterministic class drop;
+    /// no general Shared<T>, nested graph or cross-actor sharing is admitted.
+    shared_handles: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
     /// Compiler-issued lexical protected state permissions.
@@ -1850,6 +1855,7 @@ impl<'a> FnCx<'a> {
             loops: 0,
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
+            shared_handles: BTreeSet::new(),
             loans: BTreeMap::new(),
             state_write_scope: false,
             state_read_scope: false,
@@ -1932,6 +1938,7 @@ impl<'a> FnCx<'a> {
         let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
+        let shared_handles = std::mem::take(&mut self.shared_handles);
         let loans = std::mem::take(&mut self.loans);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         let prev_error = std::mem::replace(&mut self.recover_error, error);
@@ -1941,6 +1948,7 @@ impl<'a> FnCx<'a> {
         self.recover_cursor = prev_cursor;
         self.recover_error = prev_error;
         self.loans = loans;
+        self.shared_handles = shared_handles;
         self.moved = moved;
         self.loops = loops;
         self.scopes = scopes;
@@ -2050,6 +2058,7 @@ impl<'a> FnCx<'a> {
         if let Some(ended) = self.scopes.pop() {
             for l in ended {
                 self.loans.remove(&l.slot);
+                self.shared_handles.remove(&l.slot);
                 self.moved.remove(&l.slot);
             }
         }
@@ -2104,6 +2113,16 @@ impl<'a> FnCx<'a> {
                 if let ExprKind::Ownership(OwnershipOp::Borrow, mutable, inner) = &init.kind {
                     return self.borrow_binding(*kind, name, *ty, inner, *mutable, *pos);
                 }
+                if let ExprKind::Ownership(OwnershipOp::Share, false, inner) = &init.kind {
+                    // A narrow *class* path, separate from the existing scalar
+                    // identity share! expression. The source must be a named,
+                    // live owner or an existing tracked frozen handle.
+                    if let ExprKind::Var(source) = &inner.kind {
+                        if matches!(self.lookup(source).map(|l| l.ty), Some(Type::Class(_))) {
+                            return self.share_leaf_class_binding(*kind, name, *ty, inner, *pos);
+                        }
+                    }
+                }
                 let want = match ty {
                     Some(t) => Some(self.resolve(*t, *pos)?),
                     None => None,
@@ -2137,6 +2156,10 @@ impl<'a> FnCx<'a> {
                     Some(l) => (l.slot, l.ty, l.mutable, l.mail.is_some()),
                     None => return Err(Diagnostic::new(*pos, "E_UNBOUND", format!("unknown name '{name}'"))),
                 };
+                if self.shared_handles.contains(&slot) {
+                    return Err(Diagnostic::new(*pos, "E_SHARED_MUTATION",
+                        "frozen shared handle cannot be rebound without a verified shared-owner drop"));
+                }
                 if !mutable || mail {
                     return Err(Diagnostic::new(
                         *pos,
@@ -2731,6 +2754,10 @@ impl<'a> FnCx<'a> {
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
+                if self.shared_handles.contains(&local.slot) {
+                    return Err(Diagnostic::new(pos, "E_SHARED_MUTATION",
+                        "cannot write through a frozen shared handle"));
+                }
                 if let Some(loan) = self.loans.get(&local.slot).copied() {
                     if !loan.mutable {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
@@ -2909,6 +2936,69 @@ impl<'a> FnCx<'a> {
         Ok(v)
     }
 
+    /// First executable sharing slice: readonly leaf-class handles in a
+    /// single guest Wasm allocation domain. No heap/refcount change is made:
+    /// the existing bump-allocated class instance is intentionally never freed.
+    /// A future Shared<T> implementation must add tracked retain/release/drop,
+    /// deep graph freezing, checked runtime identity, and actor domain gates.
+    fn share_leaf_class_binding(&mut self, kind: BindKind, name: &str,
+        annotation: Option<Type>, inner: &Expr, pos: Pos) -> R<TStmt> {
+        let ExprKind::Var(source) = &inner.kind else {
+            return Err(Diagnostic::new(pos, "E_SHARE",
+                "first frozen-class share! profile requires a named local"));
+        };
+        let (source_slot, source_ty) = match self.lookup(source) {
+            Some(l) => (l.slot, l.ty),
+            None => return Err(Diagnostic::new(pos, "E_UNBOUND",
+                format!("unknown share! owner '{source}'"))),
+        };
+        let Type::Class(c) = source_ty else {
+            return Err(Diagnostic::new(pos, "E_SHARE",
+                "frozen-class share! needs a class-typed owned local"));
+        };
+        let class = &self.g.classes[c as usize];
+        // No reachable nested mutable graph or external method that could
+        // manufacture/retain a writable alias. Scalars, enums and immutable
+        // strings can be safely read from the frozen object.
+        if class.state_container || !class.methods.is_empty()
+            || class.fields.iter().any(|f| !matches!(f.ty,
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)))
+        {
+            return Err(Diagnostic::new(pos, "E_SHARE",
+                "frozen-class share! currently admits only leaf classes with scalar fields and no instance methods"));
+        }
+        if self.loans.contains_key(&source_slot)
+            || self.loans.values().any(|loan| loan.owner == source_slot)
+        {
+            return Err(Diagnostic::new(pos, "E_SHARE_ALIAS",
+                "cannot freeze or duplicate a handle with outstanding lexical loans"));
+        }
+        let existing_shared = self.shared_handles.contains(&source_slot);
+        if !existing_shared
+            && self.loop_floors.last().is_some_and(|floor| source_slot < *floor)
+        {
+            return Err(Diagnostic::new(pos, "E_SHARE",
+                "cannot repeatedly freeze an owner declared outside a loop"));
+        }
+        let value = self.value(inner)?;
+        if let Some(t) = annotation {
+            let expected = self.resolve(t, pos)?;
+            if expected != value.ty {
+                return Err(type_err(pos, format!(
+                    "frozen shared binding '{name}' expects {}, found {}",
+                    self.tn(expected), self.tn(value.ty))));
+            }
+        }
+        // Only the already-tracked shared handle may be duplicated. A fresh
+        // freeze consumes the original exclusive ownership capability.
+        let slot = self.declare(name, value.ty, kind == BindKind::Let, pos)?;
+        if !existing_shared {
+            self.moved.insert(source_slot);
+        }
+        self.shared_handles.insert(slot);
+        Ok(TStmt::Set(slot, value))
+    }
+
     /// Class loans are bound to lexical locals; no owner transfer or escape.
     fn borrow_binding(&mut self, kind: BindKind, name: &str, annotation: Option<Type>,
                       inner: &Expr, mutable: bool, pos: Pos) -> R<TStmt> {
@@ -2919,6 +3009,10 @@ impl<'a> FnCx<'a> {
             Some(l) => (l.slot, l.ty),
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
         };
+        if self.shared_handles.contains(&owner) {
+            return Err(Diagnostic::new(pos, "E_SHARE",
+                "loaning a frozen shared class handle needs typed shared-borrow provenance (not yet supported)"));
+        }
         if self.loans.contains_key(&owner) {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
         }
@@ -2982,6 +3076,10 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
                 };
                 let slot = *slot_ref;
+                if self.shared_handles.contains(&slot) {
+                    return Err(Diagnostic::new(pos, "E_SHARE",
+                        "take! of a shared class handle requires verified unique-owner recovery"));
+                }
                 if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
                     return Err(Diagnostic::new(pos, "E_BORROW", "take! is forbidden while an owner is borrowed"));
                 }
@@ -3000,6 +3098,10 @@ impl<'a> FnCx<'a> {
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
+            if self.shared_handles.contains(&slot) {
+                return Err(Diagnostic::new(e.pos, "E_SHARE",
+                    format!("frozen shared handle '{name}' cannot be moved, returned, or passed as an owned class; use a verified shared formal")));
+            }
             if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
                 return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
             }
@@ -3820,6 +3922,10 @@ impl<'a> FnCx<'a> {
         }
         match recv.ty {
             Type::Class(c) => {
+                if matches!(&recv.e, TExpr::Local(slot) if self.shared_handles.contains(slot)) {
+                    return Err(Diagnostic::new(pos, "E_SHARED_MUTATION",
+                        "method dispatch through a frozen shared handle is not yet effect-proven"));
+                }
                 // Calls on a loan may only return copyable, lifetime-independent
                 // values. Owned object returns need result-lifetime provenance.
                 if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot)) {
