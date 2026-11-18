@@ -153,7 +153,6 @@ fn java_compatible_1024_lane_tile_tail_has_exact_offsets() {
     );
 }
 
-
 #[test]
 fn checked_field_spans_agree_with_offsets_and_enforce_backing_bounds() {
     for kind in [
