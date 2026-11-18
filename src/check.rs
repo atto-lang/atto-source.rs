@@ -1306,7 +1306,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
-    audit_cleanup_call_effects(&funcs)?;
+    audit_cleanup_call_effects(&funcs, &p.funcs)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
@@ -1396,7 +1396,8 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
 /// nested handlers and error-producing arguments; a raise always bypasses it.
 /// The catch body is analyzed independently because it may itself escape.
 fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffects {
-    body.iter().fold(EscapeEffects::default(), |all, stmt| {
+    let mut all = EscapeEffects::default();
+    for stmt in body {
         let next = match stmt {
             TStmt::Set(_, value) | TStmt::GlobalSet(_, value)
             | TStmt::Expr(value) | TStmt::StateRegister(value)
@@ -1437,8 +1438,13 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
                 let handled = if catch.is_some() {
                     protected.without_throw()
                 } else { protected };
-                let caught = catch.as_ref().map_or(EscapeEffects::default(),
-                    |b| stmts_escape_effects(b, effects));
+                // An ordinary Error handler cannot execute when the
+                // protected region cannot emit an ordinary Error. Ignore
+                // unreachable handler effects, without discharging raises.
+                let caught = if protected.throws {
+                    catch.as_ref().map_or(EscapeEffects::default(),
+                        |b| stmts_escape_effects(b, effects))
+                } else { EscapeEffects::default() };
                 let cleanup = finally.as_ref().map_or(EscapeEffects::default(),
                     |b| stmts_escape_effects(b, effects));
                 handled.union(caught).union(cleanup)
@@ -1454,8 +1460,13 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
                 captures.union(stmts_escape_effects(body, effects))
             }
         };
-        all.union(next)
-    })
+        all = all.union(next);
+        // The same structural definite-exit analysis used for guest
+        // emission also establishes that later statements cannot execute.
+        // Never infer an outgoing effect from dead code after return/raise.
+        if returns(std::slice::from_ref(stmt)) { break; }
+    }
+    all
 }
 
 /// Infer escaping effects by monotone fixed point, so recursion and
@@ -1465,7 +1476,7 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
 /// safely within cleanup; an escaping raise can never be suppressed by
 /// an ordinary catch/trap. Unreachable-code precision remains deliberately
 /// conservative until the CFG effect solver is complete.
-fn audit_cleanup_call_effects(funcs: &[TFunc]) -> R<()> {
+fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
     let mut effects = vec![EscapeEffects::default(); funcs.len()];
     loop {
         let mut changed = false;
@@ -1477,6 +1488,24 @@ fn audit_cleanup_call_effects(funcs: &[TFunc]) -> R<()> {
             }
         }
         if !changed { break; }
+    }
+    // A clause list asserts an upper bound on the ordinary exceptional
+    // channels, not merely an annotation for documentation. Omission of a
+    // clause inside an explicit list means that effect cannot escape.
+    // Fully unannotated legacy functions remain inference-only.
+    for (index, f) in declared.iter().enumerate() {
+        let Some(contract) = f.declared_effects else { continue; };
+        let actual = effects[index];
+        if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
+            let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {
+                (true, true) => "throws(Error), raises(Error)",
+                (true, false) => "throws(Error)",
+                (false, true) => "raises(Error)",
+                (false, false) => unreachable!(),
+            };
+            return Err(Diagnostic::new(f.pos, "E_EFFECT",
+                format!("function '{}' declares an incomplete exceptional-effect upper bound: escaping {missing}", f.name)));
+        }
     }
 
     // Only registration is limited to the top-level browser profile:
