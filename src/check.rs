@@ -461,6 +461,8 @@ struct FnCx<'a> {
 }
 
 type R<T> = Result<T, Diagnostic>;
+/// Compiler-owned slots and isolated bindings for one cleanup factory.
+type CleanupCaptured = (Vec<(u32, TE)>, Vec<Local>);
 
 fn string_member_err(name: &str, pos: Pos) -> Diagnostic {
     match name {
@@ -1669,7 +1671,7 @@ impl<'a> FnCx<'a> {
     /// scope and are read by the deferred/recovery body on its owning task.
     fn cleanup_factory_args(&mut self, params: &[(String, Type, Pos)],
                             args: &[Expr], pos: Pos, kind: &str)
-        -> R<(Vec<(u32, TE)>, Vec<Local>)>
+        -> R<CleanupCaptured>
     {
         if params.len() != args.len() {
             return Err(Diagnostic::new(pos, "E_ARITY", format!(
