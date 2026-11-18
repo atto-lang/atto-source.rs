@@ -52,6 +52,7 @@ pub enum Tok {
     PipeGt,
     Amp,
     At,
+    Bullet,
     Eof,
 }
 
@@ -320,6 +321,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('|', _) => (Tok::Pipe, 1),
             ('&', _) => (Tok::Amp, 1),
             ('@', _) => (Tok::At, 1),
+            ('•', _) => (Tok::Bullet, 1),
             ('`', _) => {
                 return Err(Diagnostic::new(
                     pos,
