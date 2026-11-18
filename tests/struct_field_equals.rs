@@ -89,3 +89,27 @@ fn explicit_class_constructor_is_not_an_equals_struct_initializer() {
         pub fnc main(): int { val b = new Box(value=42); return b.value; }";
     assert!(compile(source).is_err(), "equals labels cannot reach class constructor ABI");
 }
+
+
+#[test]
+fn initializer_budget_is_bounded_before_guest_artifact_emission() {
+    let mut program = format!("{HEADER}pub fnc main(): int {{\n");
+    for n in 0..257 {
+        program.push_str(&format!("val p{n}=Particle(x=1,y=2);\n"));
+    }
+    program.push_str("return 0;\n}");
+    let toks = atto_compiler::lexer::lex(&program).unwrap();
+    let err = atto_compiler::shape_lower::lower(toks)
+        .expect_err("257 initializers must exceed the bounded source-local profile");
+    assert_eq!(err.code, "E_SOURCE_LIMIT");
+}
+
+#[test]
+fn omitted_source_disambiguation_never_rewrites_unknown_names() {
+    // No 'define struct' -> only the ordinary call parser may consider this.
+    reject("fnc Particle(int x) -> int { return x; }\n\
+            pub fnc main(): int { return Particle(x=1); }", "E_SYNTAX");
+    // A record with the same field shape is not a nominal struct.
+    reject("define record Particle as int x; int y; end\n\
+            pub fnc main(): int { val x=Particle(x=1,y=2); return x.x; }", "E_SYNTAX");
+}
