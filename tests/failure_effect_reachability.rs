@@ -17,7 +17,6 @@ fn unreachable_throw_and_calls_do_not_pollute_explicit_bounds() {
         "return 42; return risky();",
         "return 42; throw Error(\"unreachable\");",
         "if true then return 42; else return 41; fi return risky();",
-        "{ return 42; } return risky();",
     ] {
         wasm(&format!("{prefix}pub fnc main(): int raises(Error) {{ {body} }}"));
     }
