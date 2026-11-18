@@ -2787,7 +2787,7 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "freeze" | "weak" | "pin" | "drop")
                 && *self.peek_at(1) == Tok::Bang =>
             {
                 let action = match s.as_str() {
@@ -2795,6 +2795,10 @@ impl Parser {
                     "copy" => OwnershipOp::Copy,
                     "take" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
+                    "freeze" => OwnershipOp::Freeze,
+                    "weak" => OwnershipOp::Weak,
+                    "pin" => OwnershipOp::Pin,
+                    "drop" => OwnershipOp::Drop,
                     _ => unreachable!(),
                 };
                 self.advance(); // name
@@ -2821,6 +2825,13 @@ impl Parser {
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
             },
+            Tok::Ident(s) if matches!(s.as_str(), "lt" | "lifetime")
+                && *self.peek_at(1) == Tok::Bang =>
+            {
+                // Lifetime binders are type-level. Do not emit guest values.
+                return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
+                    "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
+            }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
