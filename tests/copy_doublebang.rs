@@ -32,6 +32,7 @@ fn generated_flat_class_copier_emits_real_wasm_bytes() {
     wasm(include_str!("fixtures/pass/996-copy-doublebang-constructor-state.atto"));
     wasm(include_str!("fixtures/pass/997-copy-doublebang-private-state.atto"));
     wasm(include_str!("fixtures/pass/998-copy-doublebang-pod-mixed-fields.atto"));
+    wasm(include_str!("fixtures/pass/999-copy-doublebang-pod-interleaved-snapshots.atto"));
     wasm("define class Parcel as pub let int value = 1; end pub fnc main(): int { val q = copy!! (new Parcel()); return q.value; }");
 }
 
