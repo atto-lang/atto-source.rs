@@ -504,7 +504,12 @@ impl Parser {
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
         };
-        if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
+        // In a type-first callable header, adjacent '<-' follows the
+        // complete return type. Preserve the ordinary Lt / Minus tokens so
+        // expressions like 'x<-1' remain a comparison with unary minus.
+        if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe)
+            && !self.is_left_return_delimiter_at(self.i)
+        {
             return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
         }
         Ok(ty)
@@ -515,16 +520,29 @@ impl Parser {
         (self.type_names.len() - 1) as u32
     }
 
+    /// '<-' is a callable-header delimiter only when its characters touch.
+    /// Do not change the lexer: 'x<-1' remains '<' followed by unary '-'.
+    fn is_left_return_delimiter_at(&self, i: usize) -> bool {
+        let (Some(lt), Some(minus)) = (self.toks.get(i), self.toks.get(i + 1)) else {
+            return false;
+        };
+        lt.tok == Tok::Lt && minus.tok == Tok::Minus
+            && lt.pos.line == minus.pos.line
+            && lt.pos.col.checked_add(1) == Some(minus.pos.col)
+    }
+
     /// Bounded declaration-header scan; stop before a body or initializer.
-    fn looks_bullet_header(&self) -> bool {
+    fn looks_leading_return_header(&self) -> bool {
         let end = self.i.saturating_add(128).min(self.toks.len());
-        for (offset, token) in self.toks[self.i..end].iter().enumerate() {
-            match token.tok {
-                Tok::Bullet => return true,
+        for i in self.i..end {
+            if self.toks[i].tok == Tok::Bullet || self.is_left_return_delimiter_at(i) {
+                return true;
+            }
+            match &self.toks[i].tok {
                 // A callable type may contain parentheses; a normal function's
                 // name(...) marks the end of the relevant declaration prefix.
-                Tok::LParen if offset > 0 && matches!(
-                    &self.toks[self.i + offset - 1].tok,
+                Tok::LParen if i > self.i && matches!(
+                    &self.toks[i - 1].tok,
                     Tok::Ident(word) if word == "fnc"
                 ) => {}
                 Tok::LParen => return false,
@@ -535,10 +553,17 @@ impl Parser {
         false
     }
 
-    fn parse_bullet_return(&mut self) -> R<Type> {
+    fn parse_leading_return(&mut self) -> R<Type> {
         let ret = self.parse_type()?;
-        self.expect(Tok::Bullet, "'•' after a leading return type")?;
-        Ok(ret)
+        if self.eat(&Tok::Bullet) {
+            return Ok(ret);
+        }
+        if self.is_left_return_delimiter_at(self.i) {
+            self.advance(); // '<'
+            self.advance(); // '-'
+            return Ok(ret);
+        }
+        Err(self.expected("'•' or '<-' after a leading return type"))
     }
 
     fn same_return_type(&self, left: Type, right: Type) -> bool {
@@ -552,7 +577,7 @@ impl Parser {
 
     /// Matching duplicate annotations warn. Contradictions are hard errors.
     /// Noncontradictory complement types require a future type-set solver.
-    fn parse_bullet_postfix(&mut self, ret: Type) -> R<(bool, bool)> {
+    fn parse_leading_postfix(&mut self, ret: Type) -> R<(bool, bool)> {
         let colon = *self.peek() == Tok::Colon;
         let arrow = *self.peek() == Tok::Arrow;
         if colon || arrow {
@@ -563,18 +588,18 @@ impl Parser {
             if excluded {
                 if self.same_return_type(ret, postfix) {
                     return Err(Diagnostic::new(annotation_pos, "E_RETURN_EXCLUSION",
-                        "postfix '!T' excludes the same return type declared before '•'"));
+                        "postfix '!T' excludes the same return type declared before the function name"));
                 }
                 return Err(unsupported(annotation_pos,
                     "general exclusion return annotations ('!T')"));
             }
             if !self.same_return_type(ret, postfix) {
                 return Err(Diagnostic::new(annotation_pos, "E_RETURN_TYPE_CONFLICT",
-                    "leading '•' return type conflicts with postfix return annotation"));
+                    "leading return type conflicts with postfix return annotation"));
             }
             self.warnings.push(Diagnostic::new(annotation_pos,
                 "W_DUPLICATE_RETURN_TYPE",
-                "return type is already declared before '•'; remove the redundant postfix annotation"));
+                "return type is already declared before the function name; remove the redundant postfix annotation"));
         }
         Ok((arrow, colon))
     }
@@ -1007,7 +1032,7 @@ impl Parser {
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
                 }
-                Some(_) if self.looks_bullet_header() => {
+                Some(_) if self.looks_leading_return_header() => {
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
                 }
@@ -1077,10 +1102,10 @@ impl Parser {
         })
     }
 
-    /// Method headers may carry an explicit type terminated by U+2022.
+    /// Method headers may carry a return type delimited by '•' or '<-'.
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
-        let leading = if self.looks_bullet_header() {
-            Some(self.parse_bullet_return()?)
+        let leading = if self.looks_leading_return_header() {
+            Some(self.parse_leading_return()?)
         } else { None };
         let (name, pos) = self.ident("a method name")?;
         let generic = self.parse_generic_formals()?;
@@ -1093,7 +1118,7 @@ impl Parser {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
         let (ret, arrow_type, colon_type) = if let Some(ret) = leading {
-            let (arrow, colon) = self.parse_bullet_postfix(ret)?;
+            let (arrow, colon) = self.parse_leading_postfix(ret)?;
             (ret, arrow, colon)
         } else {
             let arrow = *self.peek() == Tok::Arrow;
@@ -1220,7 +1245,7 @@ impl Parser {
             }
         }
         let keyword = self.eat_word("fnc") || self.eat_word("routine");
-        if !keyword && !self.looks_bullet_header() {
+        if !keyword && !self.looks_leading_return_header() {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
                     return Err(unsupported(self.pos(), &format!("top-level '{w}'")));
@@ -1239,15 +1264,15 @@ impl Parser {
         } else {
             false
         };
-        let leading = if self.looks_bullet_header() {
-            Some(self.parse_bullet_return()?)
+        let leading = if self.looks_leading_return_header() {
+            Some(self.parse_leading_return()?)
         } else { None };
         let (name, pos) = self.ident("a function name")?;
         let generic = self.parse_generic_formals()?;
         self.expect(Tok::LParen, "'('")?;
         let params = self.parse_params()?;
         let (ret, arrow_type, colon_type) = if let Some(ret) = leading {
-            let (arrow, colon) = self.parse_bullet_postfix(ret)?;
+            let (arrow, colon) = self.parse_leading_postfix(ret)?;
             (ret, arrow, colon)
         } else {
             let arrow = *self.peek() == Tok::Arrow;
