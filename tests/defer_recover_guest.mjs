@@ -13,6 +13,67 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 
 const cases = [
   {
+    name: 'defer accepts a callee whose ordinary throw is caught locally',
+    src: `fnc fail(): int { throw Error("inner"); }
+      fnc safe(): int {
+        try { return fail(); }
+        catch (Error e) { stdio.println("handled"); return 9; }
+      }
+      fnc f(): int {
+        defer { stdio.println(safe()); };
+        return 30;
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: 'handled\n9\n', value: 30n,
+  },
+  {
+    name: 'defer accepts a transitive call whose throw is wrapped in trap',
+    src: `fnc fail(): int { throw Error("inner"); }
+      fnc safe(): int {
+        val Option<int> caught = trap fail();
+        stdio.println("trapped");
+        return 8;
+      }
+      fnc helper(): int { return safe() + 1; }
+      fnc f(): int {
+        defer { stdio.println(helper()); };
+        return 31;
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: 'trapped\n9\n', value: 31n,
+  },
+  {
+    name: 'finally accepts locally caught transitive throw',
+    src: `fnc fail(): int { throw Error("inner"); }
+      fnc safe(): int {
+        try { return fail(); }
+        catch (Error e) { return 12; }
+      }
+      fnc f(): int {
+        try { return 32; }
+        finally { stdio.println(safe()); }
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: '12\n', value: 32n,
+  },
+  {
+    name: 'recovery handler may call a function with internally handled throw',
+    src: `fnc fail(): int { throw Error("inner"); }
+      fnc safe(): int {
+        try { return fail(); }
+        catch (Error e) { stdio.println("safe catch"); return 17; }
+      }
+      fnc f(): int {
+        recover |err, cursor| -> {
+          stdio.println(err.message);
+          return safe();
+        };
+        raise Error("outer original");
+      }
+      pub fnc main(): int { return f(); }`,
+    stdout: 'outer original\nsafe catch\n', value: 17n,
+  },
+  {
     name: 'an unhandled ordinary throw reaches recovery with is_raise false',
     src: `fnc fail(): int { throw Error("ordinary"); }
       fnc f(): int {
