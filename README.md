@@ -2,6 +2,10 @@
 
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
+## Identity-free value class admission (NOT EXECUTABLE)
+
+The proposed `define value class` and visibility variants are recognized before product/nominal lowering and fail with `E_VALUE_UNSUPPORTED`, without guest Wasm output. The current compiler's class-backed struct/record profile is **not** an identity-free value representation. This is a safety gate only, not value construction, recursive equality, copying, inline layout or AOT performance support. See [atto-spec #60](https://github.com/atto-lang/atto-spec/pull/60) and [conformance #57](https://github.com/atto-lang/atto-platform-conformance/pull/57).
+
 ## Namespace and out-of-line receiver syntax (parse-only)
 
 This frontend now has a bounded, parse-only grammar for the proposed use namespace
