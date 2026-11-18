@@ -3634,7 +3634,11 @@ impl<'a> FnCx<'a> {
                 // ErrorView is an ephemeral compiler-issued view, never a
                 // first-class object or a transferable/returnable handle.
                 return match name {
-                    "message" => Ok(TE { e: TExpr::Local(msg), ty: Type::Str }),
+                    // The unwind slot retains the exact original Error *handle*,
+                    // not an encoded string view. Decode its readonly message.
+                    "message" => Ok(TE { e: TExpr::ErrorMessage(Box::new(TE {
+                        e: TExpr::Local(msg), ty: Type::Error,
+                    })), ty: Type::Str }),
                     "is_raise" => Ok(TE { e: TExpr::Local(kind), ty: Type::Bool }),
                     _ => Err(Diagnostic::new(pos, "E_UNBOUND",
                         format!("unknown ErrorView property '{name}'"))),
