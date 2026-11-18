@@ -105,7 +105,7 @@ impl Scan {
             Stmt::YieldFrom(_, pos) | Stmt::Return(_, pos) |
             Stmt::Break(pos) | Stmt::Continue(pos) => *pos,
             Stmt::Expr(e) => e.pos,
-            Stmt::Block(body) => body.first().map_or(Pos { line: 1, col: 1 }, stmt_pos),
+            Stmt::Block(_) => Pos { line: 1, col: 1 },
         };
         self.enter(pos, depth)?;
         match stmt {
@@ -163,23 +163,6 @@ impl Scan {
                 Ok(())
             }
         }
-    }
-}
-
-fn stmt_pos(stmt: &Stmt) -> Pos {
-    match stmt {
-        Stmt::Expr(e) => e.pos,
-        Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } |
-        Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } |
-        Stmt::Try { pos, .. } | Stmt::Defer { pos, .. } |
-        Stmt::Recover { pos, .. } | Stmt::If { pos, .. } |
-        Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
-        Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
-        Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
-        Stmt::Raise(_, pos) | Stmt::Yield(_, pos) |
-        Stmt::YieldFrom(_, pos) | Stmt::Return(_, pos) |
-        Stmt::Break(pos) | Stmt::Continue(pos) => *pos,
-        Stmt::Block(body) => body.first().map_or(Pos { line: 1, col: 1 }, stmt_pos),
     }
 }
 
