@@ -70,17 +70,55 @@ fn expired_alias_is_never_implicitly_owned() {
 }
 
 #[test]
-fn type_shorthands_do_not_fabricate_unproved_guest_references() {
-    for borrowed in ["&Person", "&mut Person", "Borrow<Person>",
-                     "Borrow<Person, a>", "BorrowMut<Person, lifetime=a>"] {
+fn explicit_capability_types_fail_closed_until_their_abi_is_verified() {
+    for capability in ["Borrow<Person>", "BorrowMut<Person>",
+                       "Borrow<Person, a>", "BorrowMut<Person, lifetime=a>",
+                       "Shared<Person>", "Pointer<Person>"] {
         let source = format!(r#"
             define class Person as
                 pub let int age = 42;
             end
-            fnc inspect(item: {borrowed}): int {{ return 1; }}
+            fnc inspect(item: {capability}): int {{ return 1; }}
             pub fnc main(): int {{ return 0; }}
         "#);
         assert_eq!(atto_compiler::compile(&source).unwrap_err().code,
-            "E_UNSUPPORTED_TYPE", "unexpected borrowed type acceptance: {borrowed}");
+            "E_UNSUPPORTED_TYPE", "unproved capability admitted: {capability}");
     }
+}
+
+#[test]
+fn removed_pointer_and_borrow_sigils_are_syntax_errors() {
+    for non_atto_type in ["&Person", "&mut Person", "*Person",
+                          "*const Person", "*mut Person"] {
+        let source = format!(r#"
+            define class Person as
+                pub let int age = 42;
+            end
+            fnc inspect(item: {non_atto_type}): int {{ return 1; }}
+            pub fnc main(): int {{ return 0; }}
+        "#);
+        assert_eq!(atto_compiler::compile(&source).unwrap_err().code,
+            "E_SYNTAX", "Rust pointer/borrow type accepted: {non_atto_type}");
+    }
+    for raw_expr in ["&person", "*person"] {
+        let source = format!(r#"
+            define class Person as
+                pub let int age = 42;
+            end
+            pub fnc main(): int {{
+                val person = new Person();
+                val borrowed = {raw_expr};
+                return borrowed.age;
+            }}
+        "#);
+        assert_eq!(atto_compiler::compile(&source).unwrap_err().code,
+            "E_SYNTAX", "Rust pointer/borrow expr accepted: {raw_expr}");
+    }
+}
+
+#[test]
+fn multiplication_remains_a_valid_arithmetic_operator() {
+    let wasm = atto_compiler::compile("pub fnc main(): int { return 6 * 7; }")
+        .expect("multiplication must not be disabled by pointer grammar");
+    assert!(wasm.starts_with(b"\0asm"));
 }
