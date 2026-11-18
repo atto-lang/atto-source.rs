@@ -152,9 +152,6 @@ fn readonly_borrow_formal_rejects_escapes_mutation_and_unproven_call_abi() {
             fnc inspect(p: Borrow<Person>): int { return p.age; }
             pub fnc main(): int { return inspect(new Person()); }"#, "E_BORROW"),
         (r#"define class Person as pub let int age = 42; end
-            fnc inspect(p: Borrow<Person>, n: int): int { return p.age + n; }
-            pub fnc main(): int { let p = new Person(); return inspect(p, 0); }"#, "E_BORROW"),
-        (r#"define class Person as pub let int age = 42; end
             fnc inspect(): Borrow<Person> { return new Person(); }
             pub fnc main(): int { return 0; }"#, "E_UNSUPPORTED_TYPE"),
         (r#"define class Person as pub let int age = 42; end
@@ -163,6 +160,88 @@ fn readonly_borrow_formal_rejects_escapes_mutation_and_unproven_call_abi() {
             pub fnc main(): int { let p = new Person(); return inspect(p); }"#, "E_BORROW"),
     ];
     for (source, code) in tests {
+        assert_eq!(atto_compiler::compile(source).unwrap_err().code, code);
+    }
+}
+
+#[test]
+fn multi_argument_auto_borrow_supports_mixed_orders_and_shared_owners() {
+    let cases = [
+        r#"define class Person as pub let int age = 42; end
+            fnc inspect(p: Borrow<Person>, n: int): int { return p.age + n; }
+            pub fnc main(): int {
+                let p = new Person();
+                let a = inspect(p, 0);
+                let b = inspect(p, 0);
+                return a + b - p.age;
+            }"#,
+        r#"define class Person as pub let int age = 21; end
+            fnc inspect(a: Borrow<Person>, n: int, b: Borrow<Person>): int {
+                return a.age + b.age + n;
+            }
+            pub fnc main(): int {
+                let p = new Person();
+                let sum = inspect(p, 0, p);
+                let owned = take! p;
+                return sum + owned.age - 21;
+            }"#,
+        r#"define class Person as pub let int age = 20; end
+            define class Pet as pub let int years = 22; end
+            fnc sum(p: Borrow<Person>, pet: Borrow<Pet>): int {
+                return p.age + pet.years;
+            }
+            pub fnc main(): int {
+                let p = new Person();
+                let pet = new Pet();
+                return sum(p, pet) + p.age - p.age;
+            }"#,
+    ];
+    for source in cases {
+        let result = atto_compiler::compile(source).expect("multi-argument borrow must compile");
+        assert!(result.starts_with(b"\\0asm"));
+    }
+}
+
+#[test]
+fn call_loans_deny_moves_exclusive_access_and_unproven_reborrows() {
+    let cases = [
+        (r#"define class Person as pub let int age = 42; end
+            fnc pair(a: Borrow<Person>, b: Person): int { return a.age + b.age; }
+            pub fnc main(): int {
+                let p = new Person();
+                return pair(p, take! p);
+            }"#, "E_BORROW"),
+        (r#"define class Person as pub let int age = 42; end
+            fnc pair(a: Person, b: Borrow<Person>): int { return a.age + b.age; }
+            pub fnc main(): int {
+                let p = new Person();
+                return pair(take! p, p);
+            }"#, "E_MOVED"),
+        (r#"define class Person as pub int age: 42; end
+            fnc inspect(p: Borrow<Person>, n: int): int { return p.age + n; }
+            pub fnc main(): int {
+                let p = new Person();
+                val writer = borrow! mut p;
+                let value = inspect(p, 0);
+                writer.age = value;
+                return p.age;
+            }"#, "E_BORROW"),
+        (r#"define class Person as pub let int age = 42; end
+            fnc inspect(p: Borrow<Person>, n: int): int { return p.age + n; }
+            pub fnc main(): int {
+                let p = new Person();
+                val reader = borrow! p;
+                return inspect(reader, 0);
+            }"#, "E_BORROW"),
+        (r#"define class Person as pub let int age = 42; end
+            fnc consume(p: Person): int { return p.age; }
+            fnc inspect(p: Borrow<Person>, n: int): int { return p.age + n; }
+            pub fnc main(): int {
+                let p = new Person();
+                return inspect(p, consume(p));
+            }"#, "E_BORROW"),
+    ];
+    for (source, code) in cases {
         assert_eq!(atto_compiler::compile(source).unwrap_err().code, code);
     }
 }
