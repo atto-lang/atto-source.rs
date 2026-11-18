@@ -87,7 +87,7 @@ fn drop_does_not_return_a_value_or_accept_computed_temporaries() {
 
 #[test]
 fn class_drop_stays_gated_but_authenticated_flat_copy_is_independent() {
-    let class_prefix = "define class Data as let int value = 42; end ";
+    let class_prefix = "define class Data as pub let int value = 42; end ";
     error(&format!("{class_prefix}pub fnc main(): int {{ val x = new Data(); drop! x; return 0; }}"),
         "E_DROP_UNSUPPORTED");
     // The separate closed-world copy-plan verifier authenticates this flat
