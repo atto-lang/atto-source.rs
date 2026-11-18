@@ -181,3 +181,449 @@ fn methods_and_generators_fail_closed() {
         fnc *gen g(): Generator<int> { try { yield 1; } finally { stdio.println("x"); } }
         pub fnc main(): int { return 0; }"#);
 }
+
+// Integrated #296 regressions (ported without overwriting the #275 tests).
+#[test]
+fn canonical_defer_spelling_factories_and_recover_error_views_compile() {
+    pass(r#"
+        fnc failing(): int raises(Error) { raise Error("boom"); }
+        fnc f(int seed): int {
+            defer { stdio.println("block"); };
+            defer _ -> { stdio.println("underscore"); };
+            defer || -> { stdio.println("legacy"); };
+            defer (|int value| -> _ -> { stdio.println(value); })(seed);
+            recover |err, cursor| -> {
+                stdio.println(err.message);
+                stdio.println(err.is_raise);
+                return 6;
+            };
+            recover |ErrorView reason, RecoveryCursor next| -> {
+                stdio.println(reason.message);
+                next.next();
+            };
+            return failing();
+        }
+        pub fnc main(): int { return f(7); }
+    "#);
+}
+
+#[test]
+fn canonical_cleanup_rejects_bad_factories_and_escaping_handles() {
+    for (code, s) in [
+        ("E_ARITY", r#"pub fnc main(): int {
+            defer (|int v| -> _ -> { stdio.println(v); })();
+            return 0; }"#),
+        ("E_TYPE", r#"pub fnc main(): int {
+            defer (|int v| -> _ -> { stdio.println(v); })("wrong");
+            return 0; }"#),
+        ("E_DUPLICATE", r#"pub fnc main(): int {
+            defer (|int v, int v| -> _ -> { stdio.println(v); })(1, 2);
+            return 0; }"#),
+        ("E_UNBOUND", r#"pub fnc main(): int {
+            val int n = 4;
+            defer _ -> { stdio.println(n); };
+            return 0; }"#),
+        ("E_UNBOUND", r#"pub fnc main(): int {
+            recover |err, c| -> { return err; };
+            raise Error("fail"); }"#),
+        ("E_UNBOUND", r#"pub fnc main(): int {
+            recover |err, c| -> { return c; };
+            raise Error("fail"); }"#),
+        ("E_UNBOUND", r#"pub fnc main(): int {
+            recover |err, c| -> { stdio.println(err.unknown); return 2; };
+            raise Error("fail"); }"#),
+        ("E_DUPLICATE", r#"pub fnc main(): int {
+            recover |reason, reason| -> { return 2; };
+            raise Error("fail"); }"#),
+        ("E_RETURN", r#"pub fnc main(): int {
+            recover |reason, c| -> { stdio.println(reason.message); };
+            raise Error("fail"); }"#),
+    ] {
+        reject(code, s);
+    }
+}
+
+#[test]
+fn cleanup_call_graph_must_prove_no_transitive_exception() {
+    // No user-defined call may replace a pending failure from cleanup,
+    // including hidden calls in expression arguments, try/finally and
+    // recovery handlers. The fixed point checks chains of arbitrary length.
+    for source in [
+        r#"fnc bad(): int { throw Error("throw"); }
+            pub fnc main(): int {
+                defer { stdio.println(bad()); };
+                return 2;
+            }"#,
+        r#"fnc bad(): int { raise Error("raise"); }
+            fnc middle(): int { return bad(); }
+            fnc outer(): int { return middle(); }
+            pub fnc main(): int {
+                defer (|int v| -> _ -> { stdio.println(outer()); })(5);
+                return 2;
+            }"#,
+        r#"fnc bad(): int { raise Error("raise"); }
+            pub fnc main(): int {
+                recover |err, cursor| -> {
+                    stdio.println(bad());
+                    return 10;
+                };
+                raise Error("original");
+            }"#,
+        r#"fnc bad(): int { throw Error("throw"); }
+            pub fnc main(): int {
+                try { return 3; }
+                finally { stdio.println(bad()); }
+            }"#,
+    ] {
+        reject("E_UNWIND_EFFECT", source);
+    }
+    // A pure/safe callable is not barred merely because it is user-defined.
+    // Side-effecting nonthrowing helpers may still run as deferred cleanup.
+    pass(r#"
+        fnc safe(int n): int { return n + 1; }
+        fnc print_safely(int n): void { stdio.println(safe(n)); }
+        pub fnc main(): int {
+            defer (|int value| -> _ -> { print_safely(value); })(5);
+            recover |err, cursor| -> { return safe(10); };
+            return 4;
+        }
+    "#);
+}
+
+#[test]
+fn handled_exception_effects_are_accepted_in_cleanup() {
+    // The previous transitive-any-throw scanner rejected all of these,
+    // even though ordinary throws do not escape their typed handler.
+    for source in [
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 22;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             val Option<int> caught = trap fail();
+             return 17;
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 22;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           fnc middle(): int { return safe(); }
+           pub fnc main(): int {
+             recover |err, cursor| -> { return middle(); };
+             raise Error("trigger");
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           pub fnc main(): int {
+             try { return 22; }
+             finally { stdio.println(safe()); }
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) {
+               try { return 11; }
+               finally { stdio.println("inner"); }
+             }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 22;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc safe(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           fnc a(): int { return b(); }
+           fnc b(): int { return safe(); }
+           pub fnc main(): int {
+             defer { stdio.println(a()); };
+             return 22;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught"); }
+           fnc a(int depth): int {
+             if depth eq 0 then return 1; fi
+             try { return b(depth - 1); }
+             catch (Error e) { return 8; }
+           }
+           fnc b(int depth): int { return a(depth); }
+           pub fnc main(): int {
+             defer { stdio.println(a(2)); };
+             return 22;
+           }"#,
+    ] {
+        pass(source);
+    }
+}
+
+#[test]
+fn escaping_effects_remain_forbidden_in_cleanup() {
+    // Ordinary catch is insufficient for raise, and trap never catches it.
+    // The catch handler's *own* failure must also count as escaping.
+    for source in [
+        r#"fnc fail(): int { raise Error("uncaught raise"); }
+           fnc unsafe_catch(): int {
+             try { return fail(); }
+             catch (Error e) { return 11; }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(unsafe_catch()); };
+             return 2;
+           }"#,
+        r#"fnc fail(): int { raise Error("uncaught raise"); }
+           fnc unsafe_trap(): int {
+             val Option<int> caught = trap fail();
+             return 11;
+           }
+           pub fnc main(): int {
+             recover |err, cursor| -> { return unsafe_trap(); };
+             raise Error("original");
+           }"#,
+        r#"fnc fail(): int { throw Error("caught first"); }
+           fnc unsafe_handler(): int {
+             try { return fail(); }
+             catch (Error e) { raise Error("raised by handler"); }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(unsafe_handler()); };
+             return 2;
+           }"#,
+        r#"fnc fail(): int { throw Error("caught first"); }
+           fnc unsafe_handler(): int {
+             try { return fail(); }
+             catch (Error e) { throw Error("thrown by handler"); }
+           }
+           pub fnc main(): int {
+             try { return 2; }
+             finally { stdio.println(unsafe_handler()); }
+           }"#,
+        r#"fnc fail(): int { raise Error("raised"); }
+           fnc middle(): int { return fail(); }
+           fnc unsafe_catch(): int {
+             try { return middle(); }
+             catch (Error e) { return 11; }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(unsafe_catch()); };
+             return 2;
+           }"#,
+        r#"fnc fail(): int { throw Error("thrown"); }
+           fnc unsafe_catch(): int {
+             try { return fail(); }
+             finally { stdio.println("not a catch"); }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(unsafe_catch()); };
+             return 2;
+           }"#,
+        r#"fnc fail(): int { raise Error("raised"); }
+           fnc a(int depth): int {
+             if depth eq 0 then return fail(); fi
+             return b(depth - 1);
+           }
+           fnc b(int depth): int { return a(depth); }
+           pub fnc main(): int {
+             defer { stdio.println(a(1)); };
+             return 2;
+           }"#,
+    ] {
+        reject("E_UNWIND_EFFECT", source);
+    }
+}
+
+#[test]
+fn effect_solver_exhaustive_cleanup_matrix() {
+    // 3 cleanup contexts × 2 handler forms × 10 distinct argument values:
+    // sixty real, deterministic compiled guest artifacts in addition to
+    // the individually named positive/negative effect regressions above.
+    for n in 0..10 {
+        for uses_trap in [false, true] {
+            let safe = if uses_trap {
+                r#"val Option<int> captured = trap fail(); return 8;"#
+            } else {
+                r#"try { return fail(); } catch (Error e) { return 8; }"#
+            };
+            let preamble = format!(
+                r#"fnc fail(): int {{ throw Error("handled"); }}
+                   fnc safe(): int {{ {safe} }}
+                   fnc intermediate(): int {{ return safe(); }}"#,
+            );
+            let callbacks = [
+                format!(r#"defer (|int value| -> _ -> {{ stdio.println(intermediate() + value); }})({n});
+                            return 2;"#),
+                format!(r#"recover (|int value| -> |err, cursor| -> {{
+                              return intermediate() + value;
+                            }})({n});
+                            raise Error("trigger");"#),
+                format!(r#"try {{ return 2; }}
+                            finally {{ stdio.println(intermediate() + {n}); }}"#),
+            ];
+            for body in callbacks {
+                pass(&format!("{preamble} pub fnc main(): int {{ {body} }}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn declared_throw_raise_effect_upper_bounds_are_checked() {
+    // Explicit declarations describe escaping effects, not all syntactic
+    // calls; a locally caught throw is not an escaping throw.
+    for source in [
+        r#"fnc fail(): int throws(Error) { throw Error("caught"); }
+           fnc safe(): int raises(Error) {
+             try { return fail(); }
+             catch (Error e) { return 9; }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 4;
+           }"#,
+        r#"fnc fail(): int throws(Error) { throw Error("caught"); }
+           fnc safe(): int raises(Error) {
+             val Option<int> result = trap fail();
+             return 9;
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 4;
+           }"#,
+        r#"fnc thrower(): int throws(Error) { throw Error("t"); }
+           fnc escalator(): int throws(Error), raises(Error) {
+             try { return thrower(); }
+             catch (Error e) { raise Error("r"); }
+           }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc thrower(): int throws(Error) { throw Error("t"); }
+           fnc safe(): int panics(Error), raises(Error) {
+             try { return thrower(); }
+             catch (Error e) { return 2; }
+           }
+           pub fnc main(): int { return safe(); }"#,
+        r#"fnc safe(): int raises(Error) {
+             return 5;
+             throw Error("dead");
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 4;
+           }"#,
+        r#"fnc safe(): int raises(Error) {
+             try { return 8; }
+             catch (Error e) { throw Error("unreachable catch"); }
+           }
+           pub fnc main(): int {
+             defer { stdio.println(safe()); };
+             return 4;
+           }"#,
+    ] {
+        pass(source);
+    }
+
+    // Source annotations must not be trusted if code, callees, and effectful
+    // arguments contradict them.  A panics clause cannot license throw/raise.
+    for source in [
+        r#"fnc bad(): int throws(Error) { raise Error("unexpected"); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int raises(Error) { throw Error("unexpected"); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int panics(Error) { throw Error("unexpected"); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int panics(Error) { raise Error("unexpected"); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc deep(): int raises(Error) { raise Error("escaped"); }
+           fnc middle(): int { return deep(); }
+           fnc bad(): int throws(Error) { return middle(); }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc fail(): int throws(Error) { throw Error("caught"); }
+           fnc bad(): int raises(Error) {
+             try { return fail(); }
+             catch (Error e) { throw Error("catch rethrows"); }
+           }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int raises(Error) {
+             val int ignored = 3;
+             raise Error("escaped");
+           }
+           fnc wrong(): int throws(Error) { return bad(); }
+           pub fnc main(): int { return 0; }"#,
+    ] {
+        reject("E_EFFECT", source);
+    }
+    reject("E_DUPLICATE", r#"
+      fnc bad(): int throws(Error, Error) { return 2; }
+      pub fnc main(): int { return 0; }
+    "#);
+}
+
+#[test]
+fn effect_reachability_does_not_hide_reachable_errors() {
+    // Prove the new terminal-path pruning does not erase errors in an
+    // alternative branch, including the path after an if without else.
+    for source in [
+        r#"fnc bad(bool b): int raises(Error) {
+             if b then return 2; fi
+             throw Error("reachable on false");
+           }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(bool b): int raises(Error) {
+             if b then return 2; else throw Error("reachable"); fi
+           }
+           pub fnc main(): int { return 0; }"#,
+        r#"fnc bad(): int raises(Error) {
+             try { return 2; } finally { throw Error("cannot replace"); }
+           }
+           pub fnc main(): int { return 0; }"#,
+    ] {
+        // The final case is rejected by the existing no-exit finally gate.
+        let expected = if source.contains("finally") { "E_UNSUPPORTED" } else { "E_EFFECT" };
+        reject(expected, source);
+    }
+}
+
+#[test]
+fn recovery_capability_binders_cannot_be_shadowed_in_any_scope() {
+    for source in [
+        r#"pub fnc main(): int {
+            recover |err, cursor| -> {
+                let int err = 7;
+                return 9;
+            };
+            raise Error("x");
+        }"#,
+        r#"pub fnc main(): int {
+            recover |err, cursor| -> {
+                let int cursor = 1;
+                return 9;
+            };
+            raise Error("x");
+        }"#,
+        r#"pub fnc main(): int {
+            recover |err, cursor| -> {
+                if true then
+                    val int err = 3;
+                fi
+                return 9;
+            };
+            raise Error("x");
+        }"#,
+    ] {
+        reject("E_RESERVED", source);
+    }
+}
+
