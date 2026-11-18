@@ -282,7 +282,7 @@ mod tests {
         assert!(matches!(CheckedArena::<u8>::new(1, 1, MAX_SLOTS+1), Err(HandleError::Capacity)));
         let arena = CheckedArena::new(1, 1, 1).unwrap();
         let h = arena.ref_owned(42).unwrap();
-        assert_eq!(arena.ref_owned(33), Err(HandleError::Capacity));
+        assert!(matches!(arena.ref_owned(33), Err(HandleError::Capacity)));
         assert_eq!(arena.unref_owned(h), Ok(42));
         let h2 = arena.ref_owned(33).unwrap();
         assert_eq!(arena.unref_owned(h2), Ok(33));
