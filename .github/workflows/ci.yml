@@ -28,8 +28,15 @@ jobs:
           rustc --version
       - name: Test native compiler core over the fixture corpus
         run: cargo test --locked --verbose
+      - name: Rust Clippy all targets (strict)
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Execute compiled SoA guest and inspect physical field columns
+        env:
+          ATTOC: target/release/attoc
+          ATTO_COMPILER_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node tests/collection-layout-guest-execution.mjs
       - name: Execute real native-compiled output I/O shorthand guest in Wasm
         env:
           ATTOC: target/release/attoc
