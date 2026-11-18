@@ -304,8 +304,15 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('=', _) => (Tok::Assign, 1),
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
+            // Keep the last bracket of '<<<=' / '>>>=' separate from
+            // '='. This also protects unspaced triple generic closers
+            // (e.g. T<U<V<W>>>=value) from becoming comparison tokens.
+            ('<', Some('=')) if i >= 2 && chars[i - 1] == '<' && chars[i - 2] == '<' =>
+                (Tok::Lt, 1),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
+            ('>', Some('=')) if i >= 2 && chars[i - 1] == '>' && chars[i - 2] == '>' =>
+                (Tok::Gt, 1),
             ('>', Some('=')) => (Tok::Ge, 2),
             ('>', _) => (Tok::Gt, 1),
             ('*', _) => (Tok::Star, 1),
