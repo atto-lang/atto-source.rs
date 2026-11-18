@@ -217,6 +217,10 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
                 return Err(Diagnostic::new(param.pos, "E_PROFILE",
                     "mut Foo borrowed formals require borrow-default-v1"));
             }
+            if param.ownership == ast::ParamOwnership::Take {
+                return Err(Diagnostic::new(param.pos, "E_PROFILE",
+                    "take! Foo consuming formals require borrow-default-v1; legacy owned Foo remains the unversioned form"));
+            }
         }
     }
     // Validate exports against the parsed top-level symbol table, never a
