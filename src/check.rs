@@ -239,13 +239,14 @@ pub enum TStmt {
         body: Vec<TStmt>,
         catch: Option<Vec<TStmt>>,
         finally: Option<Vec<TStmt>>,
+        pos: Pos,
     },
     /// Registration point of a top-level `defer`: sets `flag`. The body
     /// runs LIFO at every function exit after registration.
-    Defer { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt> },
+    Defer { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt>, pos: Pos },
     /// Registration of a recovery callback: evaluates factory arguments into
     /// `args` slots once, sets `flag`. The body runs only while unwinding.
-    Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt> },
+    Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt>, pos: Pos },
     /// Terminal `c.next()`: delegate the unchanged failure to the next
     /// older recovery callback or the outer boundary.
     RecoverNext,
@@ -1305,6 +1306,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
+    audit_cleanup_call_effects(&funcs)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
@@ -1326,6 +1328,86 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         raise_tag,
         catch_depth,
     })
+}
+
+/// Find functions that can emit an application-level exceptional unwind.
+/// Since the browser slice does not yet have fully checked declared effects,
+/// this conservative fixed point includes any direct throw/raise and *all*
+/// transitive calls to those functions (even if some branches may catch them).
+/// Cycles are bounded by the finite number of typed functions.
+///
+/// Defer, recover and finally must never replace an in-flight return/failure
+/// with an exception from a called function. Previously only direct
+/// throw/raise statements were rejected, leaving this indirect bypass open.
+fn audit_cleanup_call_effects(funcs: &[TFunc]) -> R<()> {
+    let mut may_unwind: BTreeSet<u32> = funcs.iter().enumerate()
+        .filter(|(_, f)| stmt_exists(&f.body,
+            &|s| matches!(s, TStmt::Throw(_) | TStmt::Raise(_))))
+        .map(|(index, _)| index as u32)
+        .collect();
+    loop {
+        let prior = may_unwind.len();
+        for (index, f) in funcs.iter().enumerate() {
+            if any_in_stmts(&f.body, &|e| match &e.e {
+                TExpr::Call(target, _) =>
+                    (*target as usize >= funcs.len()) || may_unwind.contains(target),
+                _ => false,
+            }) {
+                may_unwind.insert(index as u32);
+            }
+        }
+        if may_unwind.len() == prior { break; }
+    }
+    // Registration is top-level in this profile; try/finally may be nested.
+    // Source positions are carried into typed IR for precise, deterministic
+    // fail-closed diagnostics instead of emitting an unsound Wasm artifact.
+    fn verify_scopes(body: &[TStmt], may_unwind: &BTreeSet<u32>, count: usize) -> R<()> {
+        let unsafe_call = |statements: &[TStmt]| any_in_stmts(statements, &|e|
+            matches!(&e.e, TExpr::Call(target, _)
+                if (*target as usize >= count) || may_unwind.contains(target)));
+        for stmt in body {
+            match stmt {
+                TStmt::Defer { body: cleanup, pos, .. }
+                | TStmt::Recover { body: cleanup, pos, .. } => {
+                    if unsafe_call(cleanup) {
+                        return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
+                            "cleanup/recovery callback transitively calls code that may throw or raise"));
+                    }
+                }
+                TStmt::Try { body: inner, catch, finally, pos, .. } => {
+                    if let Some(cleanup) = finally {
+                        if unsafe_call(cleanup) {
+                            return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
+                                "finally transitively calls code that may throw or raise"));
+                        }
+                    }
+                    verify_scopes(inner, may_unwind, count)?;
+                    if let Some(handler) = catch {
+                        verify_scopes(handler, may_unwind, count)?;
+                    }
+                    if let Some(cleanup) = finally {
+                        verify_scopes(cleanup, may_unwind, count)?;
+                    }
+                }
+                TStmt::If(arms, other) => {
+                    for (_, inner) in arms { verify_scopes(inner, may_unwind, count)?; }
+                    if let Some(inner) = other { verify_scopes(inner, may_unwind, count)?; }
+                }
+                TStmt::Loop { body: inner, update, .. } => {
+                    verify_scopes(inner, may_unwind, count)?;
+                    verify_scopes(update, may_unwind, count)?;
+                }
+                TStmt::ForIn { body: inner, .. } | TStmt::Block(inner)
+                | TStmt::StateCriticalWrite(inner) => {
+                    verify_scopes(inner, may_unwind, count)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    for f in funcs { verify_scopes(&f.body, &may_unwind, funcs.len())?; }
+    Ok(())
 }
 
 fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> String {
@@ -1783,6 +1865,17 @@ impl<'a> FnCx<'a> {
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
         }
+        // An ErrorView and RecoveryCursor are compiler-issued capabilities, not
+        // ordinary locals. Shadowing either binder would make an ordinary
+        // expression such as err.message or cursor.next() resolve to the
+        // wrong object and could counterfeit terminal recovery control flow.
+        if self.cleanup_depth > 0 &&
+            (self.recover_error.as_deref() == Some(name)
+                || self.recover_cursor.as_deref() == Some(name))
+        {
+            return Err(Diagnostic::new(pos, "E_RESERVED",
+                format!("recovery capability '{name}' cannot be shadowed")));
+        }
         let slot = self.temp(ty, pos)?;
         self.scopes.last_mut().unwrap().push(Local {
             name: name.to_string(),
@@ -1969,7 +2062,7 @@ impl<'a> FnCx<'a> {
                         }
                         None => None,
                     };
-                    Ok(TStmt::Try { saved, body, catch, finally })
+                    Ok(TStmt::Try { saved, body, catch, finally, pos: *pos })
                 })();
                 self.loops = loops;
                 checked?
@@ -1980,7 +2073,7 @@ impl<'a> FnCx<'a> {
                 let (sets, bound) = self.cleanup_factory_args(params, args, *pos, "defer")?;
                 let flag = self.temp(Type::Bool, *pos)?;
                 let body = self.isolated(bound, None, None, body)?;
-                TStmt::Defer { flag, args: sets, body }
+                TStmt::Defer { flag, args: sets, body, pos: *pos }
             }
             Stmt::Recover { params, err, cursor, body, args, pos } => {
                 self.top_registration(*pos, "recover")?;
@@ -1992,7 +2085,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_RETURN",
                         "a recovery handler must return a value or call the cursor's next() on every path"));
                 }
-                TStmt::Recover { flag, args: sets, body }
+                TStmt::Recover { flag, args: sets, body, pos: *pos }
             }
             Stmt::Expr(e) => {
                 let v = self.expr(e)?;
