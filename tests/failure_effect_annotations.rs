@@ -27,7 +27,7 @@ define class C as
     pub static fnc first(): int { return 40; }
     @raises(Error)
     @panics(Error)
-    second(int n): int {return n + 2;}
+    pub second(int n): int {return n + 2;}
 end
 @throws(Error)
 @raises(Error)
