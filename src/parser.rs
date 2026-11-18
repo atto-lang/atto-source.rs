@@ -10,6 +10,10 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+/// Lower recursion cap for nested lambda syntax and generic return types.
+/// The full expression depth limit is unchanged; these syntactic forms build
+/// deeper Rust call stacks per level and must fail before stack exhaustion.
+const MAX_LAMBDA_RECURSION: u32 = 48;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -3024,6 +3028,10 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        if self.depth >= MAX_LAMBDA_RECURSION {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambda type exceeds the safe parser recursion budget"));
+        }
         self.enter()?;
         let result = (|| {
             let mut name = match self.peek().clone() {
@@ -3061,6 +3069,10 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        if self.depth >= MAX_LAMBDA_RECURSION {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "nested lambda expression exceeds the safe parser recursion budget"));
+        }
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
