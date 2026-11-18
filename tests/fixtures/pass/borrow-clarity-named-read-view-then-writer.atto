@@ -1,0 +1,18 @@
+// expect-exit: 42
+// java: rejects
+// A lexical readonly alias ends before an exclusive mutable loan.
+define class Counter as
+  pub mut int value = 40;
+end
+pub fnc main(): int {
+  let counter = new Counter();
+  block {
+    val view = borrow! counter;
+    stdio.println(view.value);
+  }
+  block {
+    val writer = borrow! mut counter;
+    writer.value = 42;
+  }
+  return counter.value;
+}

@@ -1,0 +1,8 @@
+// expect-error: E_BORROW
+// java: rejects
+// Implicit Borrow<T> does not invent a stable owner either.
+define class Parcel as pub let int value = 42; end
+fnc inspect(p: Borrow<Parcel>): int { return p.value; }
+pub fnc main(): int {
+  return inspect(new Parcel());
+}

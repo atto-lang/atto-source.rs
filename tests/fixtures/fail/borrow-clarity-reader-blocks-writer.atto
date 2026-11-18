@@ -1,0 +1,10 @@
+// expect-error: E_BORROW
+// java: rejects
+// Borrow checker cannot infer that a live readonly loan stopped mattering.
+define class Counter as pub mut int value = 40; end
+pub fnc main(): int {
+  let counter = new Counter();
+  val view = borrow! counter;
+  val writer = borrow! mut counter;
+  return view.value + writer.value;
+}

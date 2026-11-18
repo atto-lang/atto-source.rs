@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+// An explicit and an implicit read loan coexist across one call.
+define class Parcel as
+  pub let int value = 21;
+end
+fnc combine(a: Borrow<Parcel>, b: Borrow<Parcel>): int {
+  return a.value + b.value;
+}
+pub fnc main(): int {
+  let parcel = new Parcel();
+  return combine(borrow! parcel, parcel);
+}

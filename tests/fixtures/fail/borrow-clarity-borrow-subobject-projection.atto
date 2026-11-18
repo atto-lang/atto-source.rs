@@ -1,0 +1,9 @@
+// expect-error: E_BORROW
+// java: rejects
+// TARGET-only field-projection loans need nested provenance; fail closed.
+define class Parcel as pub let int value = 42; end
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val view = borrow! parcel.value;
+  return view;
+}

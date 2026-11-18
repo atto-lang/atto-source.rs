@@ -1,0 +1,13 @@
+// expect-exit: 42
+// java: rejects
+// Explicit and implicit Borrow<Foo> calls both preserve the caller's owner.
+define class Parcel as
+  pub let int value = 14;
+end
+fnc inspect(p: Borrow<Parcel>): int { return p.value; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val explicit_result = inspect(borrow! parcel);
+  val implicit_result = inspect(parcel);
+  return explicit_result + implicit_result + parcel.value;
+}
