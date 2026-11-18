@@ -42,6 +42,24 @@ fn unrelated_callable_binders_do_not_shadow_the_nominal_struct() {
 }
 
 #[test]
+fn later_same_scope_bindings_do_not_retroactively_shadow() {
+    // The initializer is resolved before a later local declaration.
+    pass(&source("val p = Particle(x=10,y=20); val Particle = 7; return p.x+p.y;"));
+    // A nested callable binder still cannot affect a different use site.
+    pass(&format!("{HEADER}fnc helper(int Particle) -> int {{ return Particle; }}\n\
+        pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"));
+}
+
+#[test]
+fn typed_checker_respects_nested_scope_ownership() {
+    pass(&source("block { val Particle=7; } val p=Particle(x=10,y=20); return p.x+p.y;"));
+    reject(&source("block { val Particle=7; val p=Particle(x=10,y=20); } return 0;"),
+        "E_STRUCT_RESOLVE");
+    reject(&source("val Particle=7; block { val p=Particle(x=10,y=20); } return 0;"),
+        "E_STRUCT_RESOLVE");
+}
+
+#[test]
 fn same_callable_scope_remains_shielded() {
     reject(&source("val Particle=7; val p=Particle(x=10,y=20); return p.x;"),
         "E_STRUCT_RESOLVE");
@@ -62,7 +80,7 @@ fn missing_duplicate_unknown_and_mixed_fields_fail_closed() {
 fn calls_ctors_shadowing_and_effectful_values_never_reinterpret_equals() {
     reject(&source("val Particle=7; val p=Particle(x=10,y=20); return p.x;"), "E_STRUCT_RESOLVE");
     reject(&format!("{HEADER}fnc Particle(int x) -> int {{ return x; }}\n\
-        pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"), "E_STRUCT_RESOLVE");
+        pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"), "E_DUPLICATE");
     reject(&format!("{HEADER}fnc helper(int Particle) -> int {{\n\
         val p = Particle(x=10,y=20); return p.x; }}\n\
         pub fnc main(): int {{ return helper(7); }}"), "E_STRUCT_RESOLVE");
@@ -112,4 +130,19 @@ fn omitted_source_disambiguation_never_rewrites_unknown_names() {
     // A record with the same field shape is not a nominal struct.
     reject("define record Particle as int x; int y; end\n\
             pub fnc main(): int { val x=Particle(x=1,y=2); return x.x; }", "E_SYNTAX");
+}
+
+#[test]
+fn compiler_manifest_marks_only_equals_struct_source_sites() {
+    let src = source("val a=Particle{x:1,y:2}; val b=Particle(x=3,y=4); return b.x;");
+    let (lowered, sites) =
+        atto_compiler::shape_lower::lower_with_sites(atto_compiler::lexer::lex(&src).unwrap())
+            .expect("source-local product lower must preserve provenance");
+    assert_eq!(sites.len(), 1, "only the equals-parentheses shorthand is marked");
+    assert_eq!(sites[0].name, "Particle");
+    assert!(sites[0].pos.line > 0 && sites[0].pos.col > 0);
+    // The standalone source-lowering interface is kept for existing users.
+    let legacy=atto_compiler::shape_lower::lower(atto_compiler::lexer::lex(&src).unwrap())
+        .expect("legacy shape lowering");
+    assert_eq!(lowered.len(),legacy.len());
 }

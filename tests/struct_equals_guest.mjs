@@ -92,6 +92,20 @@ try {
   }
   pub fnc main(): int { return builder(1); }`,
   'same-function-formal-scope', 'E_STRUCT_RESOLVE');
+  pass(header + `pub fnc main(): int {
+    block { val Particle=99; }
+    val p = Particle(x=10,y=20);
+    return p.x+p.y;
+  }`, 'disjoint-inner-scope', 30);
+  reject(header + `pub fnc main(): int {
+    val Particle=99;
+    block { val p=Particle(x=10,y=20); }
+    return 0;
+  }`, 'outer-local-shadow', 'E_STRUCT_RESOLVE');
+  reject(header + `pub fnc main(): int {
+    block { val Particle=99; val p=Particle(x=10,y=20); }
+    return 0;
+  }`, 'same-block-shadow', 'E_STRUCT_RESOLVE');
   reject(header + `pub fnc main(): int {
     val p = Particle(x=10, x=11, y=20);
     return p.x;
@@ -120,7 +134,7 @@ try {
   reject(`fnc add(int value) -> int { return value+1; }
     pub fnc main(): int { return add(value=41); }`,
   'ordinary-equals-call');
-  console.log('STRUCT_EQUALS_COMPILED_GUEST_PASS scalar=4 negatives=8');
+  console.log('STRUCT_EQUALS_COMPILED_GUEST_PASS scalar=5 negatives=10');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

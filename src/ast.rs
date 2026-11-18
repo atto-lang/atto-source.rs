@@ -59,6 +59,15 @@ impl Type {
     }
 }
 
+/// Provenance for the restricted source-local field-equals shorthand.
+/// The parser/checker sees a normal generated `new` expression but must
+/// validate its original nominal struct binding using the typed symbol table.
+#[derive(Clone, Debug)]
+pub struct StructInitSite {
+    pub name: String,
+    pub pos: Pos,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Program {
     pub funcs: Vec<Func>,
@@ -71,6 +80,9 @@ pub struct Program {
     /// Spellings referenced by `Type::Named` / `Type::NamedRef`, plus
     /// canonical compiler-interned source callable signatures.
     pub type_names: Vec<(String, Pos)>,
+    /// Only implicit nominal struct field-equals shorthand sites;
+    /// explicit class constructors are absent from this manifest.
+    pub struct_init_sites: Vec<StructInitSite>,
 }
 
 
@@ -180,6 +192,18 @@ pub struct ActorDecl {
     pub methods: Vec<Method>,
 }
 
+/// Explicit effect clauses are an upper-bound contract when supplied.
+/// Absence of a clause list retains source compatibility with the legacy
+/// inferred-effect mode; a partial list forbids omitted throw/raise effects.
+/// Fatal panics remain a distinct runtime channel and are NOT statically
+/// certified by this browser compiler's exception-effect inference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeclaredEffects {
+    pub throws: bool,
+    pub raises: bool,
+    pub panics: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Func {
     pub name: String,
@@ -188,6 +212,8 @@ pub struct Func {
     pub is_generator: bool,
     /// Explicit effect contract: no externally observable effects or impure calls.
     pub is_pure: bool,
+    /// Present when the caller declares one or more exceptional channels.
+    pub declared_effects: Option<DeclaredEffects>,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
@@ -253,8 +279,15 @@ pub enum Stmt {
         finally: Option<Vec<Stmt>>,
         pos: Pos,
     },
-    /// `defer || -> { ... };` registers a LIFO cleanup without running it.
-    Defer { body: Vec<Stmt>, pos: Pos },
+    /// `defer { ... };`, `defer _ -> { ... };`, `defer || -> { ... };`,
+    /// or `defer (|T a| -> _ -> { ... })(value);`.
+    /// Factory arguments are evaluated exactly once at registration.
+    Defer {
+        params: Vec<(String, Type, Pos)>,
+        body: Vec<Stmt>,
+        args: Vec<Expr>,
+        pos: Pos,
+    },
     /// `recover (|T a, ..| -> |err, c| -> { ... })(args);` registers a
     /// recovery callback whose factory arguments are evaluated once, now.
     Recover {

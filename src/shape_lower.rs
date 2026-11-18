@@ -166,162 +166,10 @@ struct StructFieldInit {
     fields_in_source_order: Vec<(String, Token)>,
 }
 
-/// A conservative lexical binder ledger for the source-local executable
-/// struct profile. Unlike a single whole-file scan, declarations inside
-/// *unrelated* brace-bodied callables do not shadow an initializer elsewhere.
-///
-/// This is intentionally NOT full nominal typed-IR resolution: unsupported
-/// body forms, module imports and complex scopes remain fail-closed.
-struct ScopeLedger {
-    /// Innermost enclosing '{' in the original token stream.
-    scopes: Vec<Option<usize>>,
-    /// Immediate enclosing brace of each opening brace token.
-    parents: Vec<Option<usize>>,
-    /// For callable header tokens, the following brace-bodied function's
-    /// opening '{'. This binds typed formals to their body, not the file.
-    header_bodies: Vec<Option<usize>>,
-}
-
-impl ScopeLedger {
-    fn new(t: &[Token]) -> Self {
-        let mut scopes = vec![None; t.len()];
-        let mut parents = vec![None; t.len()];
-        let mut stack = Vec::<usize>::new();
-        for (i, tok) in t.iter().enumerate() {
-            scopes[i] = stack.last().copied();
-            match tok.tok {
-                Tok::LBrace => {
-                    parents[i] = stack.last().copied();
-                    stack.push(i);
-                }
-                Tok::RBrace => {
-                    stack.pop();
-                }
-                _ => {}
-            }
-        }
-
-        let mut header_bodies = vec![None; t.len()];
-        for start in 0..t.len() {
-            let open = if (word(t,start,"fnc") || word(t,start,"routine")
-                || word(t,start,"method")) &&
-                matches!(t.get(start+1).map(|v|&v.tok),Some(Tok::Ident(_))) &&
-                t.get(start+2).is_some_and(|v| v.tok==Tok::LParen) {
-                start+2
-            } else if word(t,start,"constructor") &&
-                t.get(start+1).is_some_and(|v| v.tok==Tok::LParen) {
-                start+1
-            } else {
-                continue;
-            };
-            let mut depth=0usize;
-            let mut after=None;
-            for i in open..t.len().min(open.saturating_add(MAX_CALLABLE_HEADER_TOKENS)) {
-                match t[i].tok {
-                    Tok::LParen => { depth+=1; if depth>128 {break;} }
-                    Tok::RParen => {
-                        if depth==0 {break;}
-                        depth-=1;
-                        if depth==0 {after=Some(i+1);break;}
-                    }
-                    Tok::Eof => break,
-                    _=>{}
-                }
-            }
-            let Some(after)=after else {continue;};
-            // Only the existing brace-bodied executable callable profile.
-            // Do not guess the body of an end-delimited or arrow callable.
-            let mut body=None;
-            for i in after..t.len().min(after.saturating_add(48)) {
-                if t[i].tok==Tok::LBrace {body=Some(i);break;}
-                if matches!(t[i].tok,Tok::Semi|Tok::RBrace|Tok::Eof)
-                    || word(t,i,"end") {break;}
-            }
-            if let Some(body)=body {
-                for slot in &mut header_bodies[start..body] {
-                    // Preserve the innermost header if the grammar nests one.
-                    *slot=Some(body);
-                }
-            }
-        }
-        Self { scopes,parents,header_bodies }
-    }
-
-    fn contains_brace(&self, mut scope: Option<usize>, expected: usize) -> bool {
-        while let Some(open)=scope {
-            if open==expected {return true;}
-            scope=self.parents[open];
-        }
-        false
-    }
-
-    fn binder_visible(&self, binder: usize, use_site: usize) -> bool {
-        let Some(&use_scope)=self.scopes.get(use_site) else {return true;};
-        if let Some(body)=self.header_bodies.get(binder).copied().flatten() {
-            return self.contains_brace(use_scope,body);
-        }
-        let Some(&binder_scope)=self.scopes.get(binder) else {return true;};
-        match binder_scope {
-            None => true, // file-root binding shadows all local scopes
-            Some(open) => self.contains_brace(use_scope,open),
-        }
-    }
-}
-
-/// Is the name at token 'i' a declaration/binding, rather than a normal use?
-/// Global names collide regardless of textual order. Locals and formals only
-/// shadow initializers reachable through their actual lexical scopes.
-fn struct_name_binding(t: &[Token], i: usize) -> Option<bool> {
-    let prev=i.checked_sub(1).and_then(|p|t.get(p));
-    let preceding=match prev.map(|v|&v.tok) {
-        Some(Tok::Ident(w))=>w.as_str(), _=>"",
-    };
-    if matches!(preceding,
-        "fnc"|"routine"|"class"|"actor"|"record"|"enum"|"trait"
-        |"interface"|"supervisor"|"module"|"type"|"alias"|"import") {
-        return Some(true);
-    }
-    // 'import struct Particle' shadows source-local nominal resolution,
-    // whereas 'define struct Particle' is the declaration itself.
-    if preceding=="struct" && i>=2 && word(t,i-2,"import") {
-        return Some(true);
-    }
-    if matches!(preceding,
-        "val"|"let"|"const"|"for"|"of"|"over"|"int"|"float"
-        |"bool"|"string"|"String") {
-        return Some(false);
-    }
-    if prev.is_some_and(|v|v.tok==Tok::Pipe)
-        || t.get(i+1).is_some_and(|v|v.tok==Tok::Pipe) {
-        return Some(false);
-    }
-    let before_type=i.checked_sub(2).and_then(|p|t.get(p));
-    if matches!(prev.map(|v|&v.tok), Some(Tok::Ident(_)))
-        && before_type.is_some_and(|v|
-            matches!(v.tok,Tok::LParen|Tok::Comma)
-            || matches!(&v.tok,Tok::Ident(w) if
-                matches!(w.as_str(),"val"|"let"|"const")))
-        && t.get(i+1).is_some_and(|v|
-            matches!(v.tok,Tok::Comma|Tok::RParen|Tok::Assign|Tok::Question)) {
-        return Some(false);
-    }
-    if t.get(i+1).is_some_and(|v|v.tok==Tok::Colon)
-        && t.get(i+2).is_some_and(|v|matches!(&v.tok,Tok::Ident(_))) {
-        return Some(false);
-    }
-    None
-}
-
-fn shadowed_struct_name(t: &[Token], name: &str, use_site: usize, scopes: &ScopeLedger) -> bool {
-    t.iter().enumerate().any(|(i,tok)| {
-        if !matches!(&tok.tok,Tok::Ident(s) if s==name) {return false;}
-        match struct_name_binding(t,i) {
-            Some(true)=>true,
-            Some(false)=>scopes.binder_visible(i,use_site),
-            None=>false,
-        }
-    })
-}
+// Ambiguity and shadowing are validated by the production typed checker
+// against the actual lexical scope table, not inferred from token neighbors.
+// The source pass records a proven nominal candidate and keeps its position.
+// A failed typed lookup MUST NOT fall back to a general named function call.
 
 /// Only look for field '=' at the outermost argument level; never rewrite an
 /// assignment-like expression buried in another call/grouping expression.
@@ -514,6 +362,13 @@ fn typed_product(t:&[Token],i:usize,defs:&mut BTreeMap<String,Vec<Field>>)
 /// checked class constructors, preserving real runtime allocations and field
 /// reads. Not executable for arbitrary structural/collection operations.
 pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
+    lower_with_sites(t).map(|(out, _)| out)
+}
+
+/// Lower a bounded source-local scalar product profile, returning the
+/// exact original source sites that used the struct-specific equals form.
+/// The main compiler passes this manifest into typed AST checking.
+pub fn lower_with_sites(t: Vec<Token>) -> R<(Vec<Token>, Vec<crate::ast::StructInitSite>)> {
     for x in &t {
         if let Tok::Ident(name)=&x.tok {
             if name.starts_with(PREFIX) {
@@ -524,9 +379,9 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     if !t.iter().enumerate().any(|(i,_)|
         word(&t,i,"struct")||word(&t,i,"record")||
         (word(&t,i,"Tuple")||word(&t,i,"Pair")||word(&t,i,"Entry"))) {
-        return Ok(t);
+        return Ok((t, Vec::new()));
     }
-    let source_scopes=ScopeLedger::new(&t);
+
     let mut declared=BTreeMap::<String,Decl>::new();
     let mut first=Vec::new();
     let mut first_origins=Vec::<Option<usize>>::new();
@@ -555,6 +410,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     let mut synthetic=BTreeMap::<String,Vec<Field>>::new();
     let mut out=Vec::new();
     let mut equals_initializer_count=0usize;
+    let mut struct_init_sites=Vec::<crate::ast::StructInitSite>::new();
     i=0;
     while i<first.len() {
         if let Some((product,next))=typed_product(&first,i,&mut synthetic)? {
@@ -589,12 +445,11 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                             "too many named struct field initializers"));
                     }
                     equals_initializer_count+=1;
-                    let source_index=first_origins[i].ok_or_else(||
-                        error(first[i].pos,"E_STRUCT_RESOLVE",
-                            "generated source cannot instantiate an unresolved struct"))?;
-                    if shadowed_struct_name(&t,&decl.name,source_index,&source_scopes) {
+                    // The checker validates shadowing using typed program
+                    // scopes; only a real source-site may register a candidate.
+                    if first_origins[i].is_none() {
                         return Err(error(first[i].pos,"E_STRUCT_RESOLVE",
-                            "struct equals initializer is ambiguous with a same-named declaration or binding"));
+                            "generated source cannot instantiate an unresolved struct"));
                     }
                     // Never rewrite a qualified/member call, 'new' constructor,
                     // actor spawn, or invocation through another expression.
@@ -605,6 +460,13 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                             "field=value initialization requires a direct resolved nominal struct, not a call/constructor"));
                     }
                     let (candidate,next)=equals_struct_init(&first,i+1,decl)?;
+                    // Mark by original name token's unique (line,column).
+                    // The production parser retains this position on the
+                    // generated ExprKind::New, allowing typed lookup to verify.
+                    struct_init_sites.push(crate::ast::StructInitSite {
+                        name: decl.name.clone(),
+                        pos: first[i].pos,
+                    });
                     out.extend(lower_equals_struct(decl,candidate)?);
                     i=next;continue;
                 }
@@ -624,5 +486,5 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     if out.len()>lexer::MAX_TOKENS {
         return Err(error(t[0].pos,"E_SOURCE_LIMIT","checked product specialization exceeds token budget"));
     }
-    Ok(out)
+    Ok((out,struct_init_sites))
 }
