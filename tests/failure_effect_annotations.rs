@@ -16,7 +16,7 @@ fn annotated_function_and_routine_normalize_to_same_effect_contract() {
     assert_eq!(compile(prefix).unwrap(), compile(suffix).unwrap());
     let routine = "@throws(Error)\nroutine answer(): int {return 42;}\npub fnc main(): int throws(Error) {return answer();}";
     assert_eq!(parse(routine).funcs[0].failure_effects.mask(), 1);
-    assert!(compile(routine).unwrap().starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(compile(routine).unwrap().starts_with(b"\0asm\x01\0\0\0"));
 }
 
 #[test]
@@ -38,7 +38,7 @@ pub fnc main(): int {val c = new C(); return c.second(C.first());}
     assert_eq!(ast.classes[0].methods[0].failure_effects.mask(), 1);
     assert_eq!(ast.classes[0].methods[1].failure_effects.mask(), 6);
     assert_eq!(ast.funcs[0].failure_effects.mask(), 7);
-    assert!(compile(scalar).unwrap().starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(compile(scalar).unwrap().starts_with(b"\0asm\x01\0\0\0"));
 
     let actor = r#"
 define actor Worker as
