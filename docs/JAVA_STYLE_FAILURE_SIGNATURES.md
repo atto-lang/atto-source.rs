@@ -64,3 +64,32 @@ The full language specification should retain the declared **individual error
 types**, not just the boolean throw/raise/panic mask used by this early browser
 subset. This browser change is not a proof that every potential exception is
 handled, nor evidence of parity in native/other backends.
+
+## Annotation-versus-clause hardening
+
+- **Annotations** require a leading `@` and a parenthesized type list,
+  in either canonical PascalCase (`@Throws(Error)`) or legacy lowercase
+  (`@throws(Error)`). Every `@` introduces precisely one kind.
+- **Signature clauses** are lowercase (`throws Error`,
+  `raises Error`, `panics Error`) and may retain legacy parentheses
+  (`throws(Error)`). Bare `Throws(Error)` in a signature is *not*
+  accepted as a different spelling of the keyword.
+- Exact semantic duplicates between any two spellings are rejected.
+  Different kinds may coexist, and every admitted spelling is normalized
+  into the same checked AST bits.
+- The **normative proposed language grammar** also defines
+  `@Throws()`, `@Raises()`, and `@Panics()` as explicit empty
+  allowed-effect sets for their *individual* kinds. **This browser
+  frontend does not yet admit them** because its current three-bit
+  `FailureEffects` checker lacks per-kind declaration-presence tracking.
+  These forms must produce `E_EFFECT_TYPE` and **no Wasm guest** rather
+  than pretending an empty bound was proved.
+- The language-level parser must eventually retain a set of checked
+  nominal Error subclasses, not only three booleans. Until that works,
+  `@Throws(IOError, ParseError)` is *design-intent syntax* and must be
+  rejected by this limited compiler rather than collapsed to
+  `@Throws(Error)`.
+- An explicit `throws` upper bound is **propagation authorization**,
+  not proof that the function or its callers handled the error. Entry
+  points and public APIs still need a checked catch/trap/propagation
+  policy; checked `Result.Err` is a separate must-handle obligation.
