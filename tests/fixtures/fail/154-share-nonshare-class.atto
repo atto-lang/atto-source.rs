@@ -1,10 +1,12 @@
 // expect-error: E_SHARE
 // java: rejects
+// Method-bearing class sharing is unsupported until method effect provenance is sealed.
 define class Parcel as
- pub let int value = 42;
+  pub let int value = 42;
+  pub read(): int { return self.value; }
 end
 pub fnc main(): int {
- val parcel = new Parcel();
- val shared_value = share! parcel;
- return shared_value.value;
+  val parcel = new Parcel();
+  val shared_value = share! parcel;
+  return shared_value.value;
 }

@@ -1,0 +1,12 @@
+// expect-exit: 42
+// java: rejects
+// A unique owner is frozen; further share! duplicates the same guest object offset.
+define class Parcel as
+  pub let int value = 21;
+end
+pub fnc main(): int {
+  val parcel = new Parcel();
+  val a = share! parcel;
+  val b = share! a;
+  return a.value + b.value;
+}

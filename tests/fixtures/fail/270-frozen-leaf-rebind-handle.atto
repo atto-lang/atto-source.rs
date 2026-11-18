@@ -1,0 +1,11 @@
+// expect-error: E_SHARED_MUTATION
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val owned = new Parcel();
+  let frozen = share! owned;
+  frozen = new Parcel();
+  return frozen.value;
+}

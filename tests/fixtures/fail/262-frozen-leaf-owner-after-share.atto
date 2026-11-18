@@ -1,0 +1,10 @@
+// expect-error: E_MOVED
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val owned = new Parcel();
+  val frozen = share! owned;
+  return owned.value;
+}

@@ -1,0 +1,14 @@
+// expect-exit: 42
+// expect-stdout: ready
+// java: rejects
+// String fields are immutable guest string views; no class/actor/closure edge.
+define class Parcel as
+  pub let string label = "ready";
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  val owned = new Parcel();
+  val shared = share! owned;
+  stdio.println(shared.label);
+  return shared.value;
+}
