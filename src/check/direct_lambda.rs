@@ -266,9 +266,13 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             if let Some(cleanup) = finally { rewrite_statements(cleanup, d)?; }
             Ok(())
         }
-        // Cleanup/recovery bodies are checked in an isolated scope that cannot
-        // see enclosing locals, so a direct lambda never reaches them.
-        Stmt::Defer { .. } => Ok(()),
+        // Cleanup/recovery bodies are checked in an isolated scope, but
+        // their factory argument expressions execute at registration and must
+        // undergo the same checked direct-call rewriting as ordinary calls.
+        Stmt::Defer { args, .. } => {
+            for arg in args { rewrite_expr(arg, d)?; }
+            Ok(())
+        },
         Stmt::Recover { args, .. } => {
             for arg in args { rewrite_expr(arg, d)?; }
             Ok(())
