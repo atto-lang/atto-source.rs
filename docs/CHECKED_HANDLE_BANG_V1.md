@@ -1,6 +1,6 @@
 # Checked-handle unary operators — bounded Rust/Wasm profile
 
-**Status: DRAFT / compiled guest NOT YET VERIFIED.** See [PR #264](https://github.com/atto-lang/atto-source.rs/pull/264), [syntax spec PR #67](https://github.com/ores-truffle-oreslang/attolang-language-spec.md/pull/67), and [conformance issue #63](https://github.com/atto-lang/atto-platform-conformance/issues/63).
+**Status: DRAFT. The bounded single-worker guest profile has verified carrier-CI execution; full actor/arena handle semantics remain unimplemented.** See [PR #264](https://github.com/atto-lang/atto-source.rs/pull/264), [syntax spec PR #67](https://github.com/ores-truffle-oreslang/attolang-language-spec.md/pull/67), and [conformance issue #63](https://github.com/atto-lang/atto-platform-conformance/issues/63).
 
 The compiler accepts the following canonical syntaxes and the corresponding `rt` compatibility forms in the same typed AST:
 
@@ -9,6 +9,51 @@ The compiler accepts the following canonical syntaxes and the corresponding `rt`
 | `ref! owner` | `rt ref owner` | Consume the unique class owner into a `CheckedRef<Class>` token |
 | `deref! handle` | `rt deref handle` | Create a scoped, immutable class view with the handle as loan owner |
 | `unref! handle` | `rt unref handle` | Consume the handle exactly once and return the owned class |
+
+## Generational host-arena foundation (not a guest ABI)
+
+`src/checked_handle_runtime.rs` supplies an executable **Rust-side**,
+bounded, synchronized arena model under development. It intentionally
+does not change the admitted guest compiler profile described below.
+
+- `CheckedArena<T>::ref_owned(value)` consumes a Rust-owned value on
+  success and issues an opaque typed `CheckedHandle<T>` with arena,
+  actor, domain, slot and generation identity. On capacity or poisoned
+  synchronization admission failure, `RefAdmissionError<T>` returns
+  the **original owned value**, rather than silently dropping it.
+- `deref_checked(handle)` produces a read-only `CheckedRead<'_,T>`
+  whose lifetime is attached to the arena. Multiple readers can coexist.
+- `unref_owned(handle)` restores the **same owned value** only when
+  no live view exists. It rejects premature retirement, double unref,
+  stale-generation reads, cross-arena use and identity mismatches.
+  Recycled slots increment the generation; on u32 generation overflow
+  the slot is permanently exhausted to prevent ABA.
+- A mutex serializes admission, reads and retirement. Bounds are at
+  most 16,384 slots per arena and unique process-local arena IDs
+  have no wraparound; Rust tests exercise competing `unref_owned` calls.
+- The arena is *not* a freely serializable pointer type; no raw host
+  pointer is exported, and actor/domain IDs are supplied by the
+  trusted runtime rather than cryptographically authenticated here.
+
+**Critical integration restriction:** the existing guest compiler
+issues bare bump-heap offsets for its admitted, non-reused local class
+objects and does **not** yet use `CheckedArena<T>`. No external guest
+can pass a `CheckedHandle<T>` to host code. Do **not** claim this
+module proves guest memory generation, cross-worker handle access,
+guest trap cleanup or `Pointer<T>` dereference. An actor scheduler must
+provide authentic domain authority, explicit guest-handle representation,
+typed MIR loan edges, lifetime and all-path unwind/cancel retirement
+before this can back general `ref!`/`deref!`/`unref!` lowering.
+
+**Verification status of this module:** source committed in compiler
+PR #264; a focused mirror on
+[atto-co/atto-cloud-control-plane.rs](https://github.com/atto-co/atto-cloud-control-plane.rs)
+matched the original `src/` Git tree SHA
+`1d5a6546cae5feba15ecda555cfbc05ac3b8394f`.
+The first two runner attempts had zero job steps, so
+**the new Rust arena tests, optimized tests and guest differential rerun
+have NOT executed**. Older carrier runs verify the pre-existing guest
+profile only, not this new host module.
 
 ## Executable subset
 
