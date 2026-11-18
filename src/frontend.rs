@@ -74,6 +74,8 @@ enum Kind {
     Fnc,
     #[token("return")]
     Return,
+    #[token("begin")]
+    Begin,
     #[token("const")]
     Const,
     #[token("val")]
@@ -86,6 +88,12 @@ enum Kind {
     End,
     #[token("->")]
     Arrow,
+    #[token("<-")]
+    ReturnFirstArrow,
+    #[token("•")]
+    ReturnFirstBullet,
+    #[token(".")]
+    Dot,
     #[token("(")]
     LParen,
     #[token(")")]
@@ -429,6 +437,7 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         tokens,
         cursor: 0,
         source_len: source.len(),
+        source: prepared,
         primary_depth: 0,
     };
     let mut functions = Vec::new();
@@ -477,6 +486,7 @@ struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     source_len: usize,
+    source: String,
     primary_depth: usize,
 }
 impl Parser {
@@ -537,7 +547,34 @@ impl Parser {
         if self.peek() == Some(Kind::Static) {
             self.expect(Kind::Static)?;
         }
-        self.expect(Kind::Fnc)?;
+        let explicit_fnc = if self.peek() == Some(Kind::Fnc) {
+            self.expect(Kind::Fnc)?;
+            true
+        } else {
+            false
+        };
+        let return_first = if self.peek() == Some(Kind::Int) {
+            self.expect(Kind::Int)?;
+            match self.peek() {
+                Some(Kind::ReturnFirstArrow) => { self.expect(Kind::ReturnFirstArrow)?; }
+                Some(Kind::ReturnFirstBullet) => { self.expect(Kind::ReturnFirstBullet)?; }
+                _ => return Err(ParseError {
+                    offset: self.pos(),
+                    class: "syntax_error",
+                    message: "return-first scalar fnc requires <- or •".into(),
+                }),
+            };
+            true
+        } else {
+            if !explicit_fnc {
+                return Err(ParseError {
+                    offset: self.pos(),
+                    class: "syntax_error",
+                    message: "expected fnc or int <-/• callable".into(),
+                });
+            }
+            false
+        };
         let name = self.expect(Kind::Identifier)?.text;
         self.expect(Kind::LParen)?;
         let mut params = Vec::new();
@@ -562,8 +599,30 @@ impl Parser {
                 }
             }
         }
-        self.expect(Kind::RParen)?;
-        let uses_end = match self.peek() {
+        let header_end = self.expect(Kind::RParen)?;
+        let uses_end = if return_first {
+            let begin = self.expect(Kind::Begin)?;
+            let gap = &self.source[header_end.start + header_end.text.len()..begin.start];
+            if !gap.chars().any(|ch| matches!(ch, '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')) {
+                return Err(ParseError {
+                    offset: begin.start,
+                    class: "syntax_error",
+                    message: "begin must be on the next line after a return-first header".into(),
+                });
+            }
+            if let Some(next) = self.tokens.get(self.cursor) {
+                let after = &self.source[begin.start + begin.text.len()..next.start];
+                if !after.chars().any(|ch| matches!(ch, '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')) {
+                    return Err(ParseError {
+                        offset: next.start,
+                        class: "syntax_error",
+                        message: "begin must be alone on its line".into(),
+                    });
+                }
+            }
+            true
+        } else {
+            match self.peek() {
             Some(Kind::Arrow) | Some(Kind::Colon) => {
                 if self.peek() == Some(Kind::Arrow) {
                     self.expect(Kind::Arrow)?;
@@ -585,7 +644,7 @@ impl Parser {
                     message: "expected ': int {', '-> int {' or 'as'".into(),
                 })
             }
-        };
+        }};
         let mut locals = Vec::new();
         // Canonical scalar locals are immutable by default. All admitted
         // spellings lower to the same typed local; this does not admit mut/let
@@ -641,6 +700,9 @@ impl Parser {
         self.expect(Kind::Semicolon)?;
         if uses_end {
             self.expect(Kind::End)?;
+            if return_first && matches!(self.peek(), Some(Kind::Dot | Kind::Semicolon)) {
+                self.cursor += 1;
+            }
         } else {
             self.expect(Kind::RBrace)?;
         }
