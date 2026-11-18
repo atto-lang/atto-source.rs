@@ -70,6 +70,27 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         }
         return Ok(bytes);
     }
+    // A syntactically recognized Array generic in ordinary source goes
+    // through the REAL production AST and checker. Do not let the older
+    // token-only layout preflight mask nominal/type diagnostics, and never
+    // emit unverified array guest code via this incomplete general path.
+    // The exact bounded scalar-struct guest case was fully admitted above.
+    if input_tokens.windows(2).any(|pair| matches!(
+        (&pair[0].tok, &pair[1].tok),
+        (lexer::Tok::Ident(name), lexer::Tok::Lt) if name == "Array"
+    )) {
+        let mut parser = parser::Parser::new(input_tokens);
+        let parsed = parser.parse_program()?;
+        if parsed.array_types.is_empty() {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_UNSUPPORTED", "Array generic source has no validated collection type"));
+        }
+        // The checker validates nominal element resolution and refuses
+        // ordinary runtime usage until its ownership/codegen path exists.
+        let _ = check::check(&parsed)?;
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+            "E_UNSUPPORTED", "general-purpose collection execution is not enabled"));
+    }
     let mut visibility = visibility_lower::lower(input_tokens)?;
     collection_layout::reject_unlowered(&visibility.tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
