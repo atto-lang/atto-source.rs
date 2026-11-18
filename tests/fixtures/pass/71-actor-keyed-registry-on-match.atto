@@ -1,0 +1,24 @@
+// Typed keyed actor references share one physical activation per key.
+// The canonical match syntax requires on for every arm.
+// expect-exit: 0
+// expect-stdout: 40
+// expect-stdout: 42
+// java: rejects
+define serial actor Queue as
+    let int total = 0;
+    receive(msg: int): void {
+        self.total = self.total + msg;
+        match self.total over
+            on 40 -> { stdio.println(40); }
+            on _ -> { stdio.println(self.total); }
+        end
+        return;
+    }
+end
+pub fnc main(): int {
+    val first = ActorRegistry.get_or_create<Queue>("vhost", "payments");
+    val second = ActorRegistry.get_or_create<Queue>("vhost", "payments");
+    first.send(40);
+    second.send(2);
+    return 0;
+}

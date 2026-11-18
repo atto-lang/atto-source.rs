@@ -1,0 +1,6 @@
+// expect-error: E_UNBOUND
+// java: rejects
+pub fnc main(): int {
+    val ref = ActorRegistry.get_or_create<MissingActor>("ns", "queue");
+    return 0;
+}

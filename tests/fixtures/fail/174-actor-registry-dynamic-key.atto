@@ -1,0 +1,10 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+define serial actor Queue as
+    receive(msg: int): void { return; }
+end
+pub fnc main(): int {
+    val ns = "tenant";
+    val q = ActorRegistry.get_or_create<Queue>(ns, "orders");
+    return 0;
+}

@@ -1,0 +1,10 @@
+// expect-error: E_TYPE
+// java: rejects
+define serial actor Queue as
+    receive(msg: int): void { return; }
+end
+pub fnc main(): int {
+    val q = ActorRegistry.get_or_create<Queue>("ns", "queue");
+    q.send(true);
+    return 0;
+}
