@@ -11,6 +11,8 @@ pub mod safety;
 pub mod static_facts;
 pub mod ref_codegen;
 pub mod ref_layout;
+pub mod layout_trace;
+pub mod trace_sites;
 pub mod tiering;
 pub mod actor_isolation_access_v1;
 pub mod layout_plan;
