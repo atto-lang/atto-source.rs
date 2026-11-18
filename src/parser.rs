@@ -1466,6 +1466,13 @@ impl Parser {
                     return self.parse_return_match(pos);
                 }
                 if self.is_word("seq") {
+                    // Parenthesized seq is an expression; reuse ordinary expression
+                    // admission, then the normal return statement terminator.
+                    if *self.peek_at(1) == Tok::LParen {
+                        let value = self.parse_expr()?;
+                        self.terminator()?;
+                        return Ok(Stmt::Return(Some(value), pos));
+                    }
                     self.advance();
                     // A single value-match is also a degenerate one-step
                     // sequence. Preserve return-match's exhaustiveness and
@@ -2468,6 +2475,19 @@ impl Parser {
                 if *self.peek() == Tok::Dot {
                     return Err(unsupported(self.pos(), "spread arguments"));
                 }
+                // An unparenthesized `seq` consumes commas through this
+                // call's closing ')'. This is deliberately the final argument:
+                // use seq(...) or (> ... ) to delimit a sequence before more
+                // call arguments. This avoids guessing at comma ownership.
+                if self.is_word("seq") && *self.peek_at(1) != Tok::LParen {
+                    let pos = self.pos();
+                    self.advance();
+                    args.push(self.parse_comma_sequence(Tok::RParen, pos)?);
+                    if args.len() > MAX_PARAMS {
+                        return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
+                    }
+                    break;
+                }
                 args.push(self.parse_expr()?);
                 if args.len() > MAX_PARAMS {
                     return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many call arguments"));
@@ -2791,14 +2811,41 @@ impl Parser {
                     }
                 } else {
                     let expression = self.parse_expr()?;
-                    if *self.peek() == close {
-                        return Ok(Expr {
-                            kind: ExprKind::Sequence(steps, Box::new(expression)),
-                            pos,
-                        });
+                    // Assignment is a statement, not a value: it can occur in
+                    // a sequence prefix, but never as the terminal value.
+                    // Reuse the checked Stmt::Assign path (including for +=).
+                    if matches!(self.peek(), Tok::Assign | Tok::PlusAssign) {
+                        let assignment_pos = expression.pos;
+                        let additive = *self.peek() == Tok::PlusAssign;
+                        self.advance();
+                        let rhs = self.parse_expr()?;
+                        let name = match expression.kind {
+                            ExprKind::Var(name) => name,
+                            _ => return Err(Diagnostic::new(assignment_pos,
+                                "E_ASSIGN_TARGET", "sequence assignment requires a mutable local")),
+                        };
+                        let value = if additive {
+                            Expr {
+                                kind: ExprKind::Binary(BinOp::Add,
+                                    Box::new(Expr { kind: ExprKind::Var(name.clone()), pos: assignment_pos }),
+                                    Box::new(rhs)),
+                                pos: assignment_pos,
+                            }
+                        } else {
+                            rhs
+                        };
+                        self.expect(Tok::Comma, "',' after sequence assignment")?;
+                        steps.push(Stmt::Assign { name, value, pos: assignment_pos });
+                    } else {
+                        if *self.peek() == close {
+                            return Ok(Expr {
+                                kind: ExprKind::Sequence(steps, Box::new(expression)),
+                                pos,
+                            });
+                        }
+                        self.expect(Tok::Comma, "',' between sequence steps")?;
+                        steps.push(Stmt::Expr(expression));
                     }
-                    self.expect(Tok::Comma, "',' between sequence steps")?;
-                    steps.push(Stmt::Expr(expression));
                 }
                 if *self.peek() == close {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "trailing comma in sequence"));
@@ -2850,6 +2897,13 @@ impl Parser {
                 return Ok(result);
             }
             Tok::Ident(s) => match s.as_str() {
+                "seq" => {
+                    self.advance();
+                    self.expect(Tok::LParen, "'(' after expression-position 'seq'")?;
+                    let result = self.parse_comma_sequence(Tok::RParen, pos)?;
+                    self.expect(Tok::RParen, "')' to close seq")?;
+                    return Ok(result);
+                }
                 "borrow_mut" if *self.peek_at(1) == Tok::Bang => {
                     return Err(Diagnostic::new(pos, "E_SYNTAX", "use 'borrow! mut owner', not 'borrow_mut! owner'"));
                 }
