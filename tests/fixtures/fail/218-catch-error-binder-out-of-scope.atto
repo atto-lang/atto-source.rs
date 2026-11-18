@@ -1,0 +1,6 @@
+// expect-error: E_UNBOUND
+fnc fail(): int throws(Error) { throw Error("lost"); }
+pub fnc main(): int {
+  try { return fail(); } catch (Error caught) { return 0; }
+  return caught.message;
+}

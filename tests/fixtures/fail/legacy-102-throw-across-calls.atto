@@ -1,5 +1,5 @@
-// expect-exit: 13
-// expect-stdout: inner
+// expect-error: E_TYPE
+// Legacy Option-returning trap example: now rejected without guest output.
 // An ordinary throw unwinds across multiple Wasm function calls.
 fnc inner(): int {
   stdio.println("inner");

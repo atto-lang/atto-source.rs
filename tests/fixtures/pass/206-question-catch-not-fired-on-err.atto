@@ -1,0 +1,22 @@
+// expect-exit: 43
+// expect-stdout: finally
+// expect-stdout: same returned Err
+// A normal Err is not a thrown exception: catch never fires, finally does.
+fnc failed(): Result<int,Error> { return Err(Error("same returned Err")); }
+fnc checked(): Result<int,Error> {
+  try {
+    val Result<int,Error> r = trap failed();
+    val int n = r?;
+    return Ok(n);
+  } catch (Error e) {
+    stdio.println("UNEXPECTED CATCH");
+    return Ok(0);
+  } finally { stdio.println("finally"); }
+}
+pub fnc main(): int {
+  val Result<int,Error> r = checked();
+  match r over
+    on Ok(v) -> { return 0; }
+    on Err(e) -> { stdio.println(e.message); return 43; }
+  end
+}

@@ -1,5 +1,5 @@
-// expect-exit: 42
-// expect-stdout: called
+// expect-error: E_TYPE
+// Legacy Option-returning trap example: now rejected without guest output.
 // A successful trap evaluates the operand once, then wraps it in Some.
 fnc value(): int {
   stdio.println("called");

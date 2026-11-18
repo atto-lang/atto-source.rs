@@ -1,0 +1,16 @@
+// expect-exit: 46
+// expect-stdout: option deferred
+fnc empty(): Option<int> { return None; }
+fnc checked(): Option<int> {
+  defer || -> { stdio.println("option deferred"); };
+  val Option<int> r = empty();
+  val int n = r?;
+  return Some(n);
+}
+pub fnc main(): int {
+  val Option<int> r = checked();
+  match r over
+    on None -> { return 46; }
+    on Some(n) -> { return n; }
+  end
+}

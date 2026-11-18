@@ -1,0 +1,19 @@
+// expect-exit: 47
+// A failed ? inside a nested trap operand must unwind every catch-depth
+// increment; a later independent recover must still handle a throw.
+fnc early(): Result<int,Error> {
+  val Result<int,Error> r = Err(Error("early"));
+  val Result<int,Error> wrapped = trap trap (r?);
+  return wrapped;
+}
+fnc recovered(): int {
+  recover (|int v| -> |err, c| -> { return v; })(47);
+  throw Error("later");
+}
+pub fnc main(): int {
+  val Result<int,Error> r = early();
+  match r over
+    on Ok(v) -> { return 0; }
+    on Err(e) -> { return recovered(); }
+  end
+}

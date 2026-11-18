@@ -1,0 +1,17 @@
+// expect-exit: 45
+// expect-stdout: void deferred
+// expect-stdout: void failure
+fnc fail(): void throws(Error) { throw Error("void failure"); }
+fnc checked(): Result<void,Error> {
+  defer || -> { stdio.println("void deferred"); };
+  val Result<void,Error> r = trap fail();
+  r?;
+  return Ok();
+}
+pub fnc main(): int {
+  val Result<void,Error> r = checked();
+  match r over
+    on Ok -> { return 0; }
+    on Err(e) -> { stdio.println(e.message); return 45; }
+  end
+}

@@ -1,0 +1,15 @@
+// expect-exit: 35
+// A returned Result<Option<int>,Error> is not wrapped again.
+fnc maybe(): Result<Option<int>,Error> { return Ok(Some(35)); }
+pub fnc main(): int {
+  val Result<Option<int>,Error> result = trap maybe();
+  match result over
+    on Err(e) -> { return 0; }
+    on Ok(choice) -> {
+      match choice over
+        on None -> { return 0; }
+        on Some(n) -> { return n; }
+      end
+    }
+  end
+}

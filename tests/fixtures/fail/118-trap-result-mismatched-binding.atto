@@ -1,4 +1,4 @@
-// expect-error: E_TYPE
+// expect-error: E_TRAP_ERROR_JOIN
 fnc answer(): Result<int,string> { return Ok(42); }
 pub fnc main(): int {
   val Option<int> outcome = trap answer();
