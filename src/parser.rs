@@ -389,13 +389,15 @@ impl Parser {
 
     fn parse_type(&mut self) -> R<Type> {
         let pos = self.pos();
-        // In typed positions, &T and &mut T are the proposed shorthands
-        // of Borrow<T>/BorrowMut<T>. This guest compiler has no proven
-        // reference-lifetime ABI yet: recognize and reject explicitly rather
-        // than accidentally parse as a by-value owned class handle.
-        if *self.peek() == Tok::Amp {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                "borrow type shorthand '&T' / '&mut T' needs typed region and lifetime lowering"));
+        // References and pointers are spelled Borrow<T>, BorrowMut<T>,
+        // Shared<T> and Pointer<T>. Neither '&T' nor '*T' is valid Atto
+        // type syntax; do not accidentally admit one as an owned handle.
+        match self.peek() {
+            Tok::Amp => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use Borrow<T> or BorrowMut<T>, not '&T' or '&mut T'")),
+            Tok::Star => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use Pointer<T>, not '*T', '*const T' or '*mut T'")),
+            _ => {}
         }
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
@@ -404,9 +406,13 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
-            "Borrow" | "BorrowMut" => {
+            "Borrow" | "BorrowMut" | "Shared" | "Pointer" => {
+                // Reserved type constructors: do not fall through to an
+                // ordinary user-owned class or forged pointer representation.
+                // Typed region, sharing and pointer ABI verification are
+                // required before admitting any of these capabilities.
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
-                    format!("{name}<T> and named lifetime arguments require verified borrowed-reference lowering")));
+                    format!("{name}<T> requires verified ownership/provenance and backend lowering")));
             },
             "fnc" => {
                 // Canonical source type form: fnc(int, bool) -> float.
@@ -2723,7 +2729,10 @@ impl Parser {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
             Tok::Bang => UnOp::Not,
-            Tok::Amp => return Err(unsupported(pos, "borrow expressions")),
+            Tok::Amp => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use 'borrow! owner' or 'borrow! mut owner', not '&owner'")),
+            Tok::Star => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use a checked explicit pointer operation (such as 'rt deref'), not '*pointer'")),
             Tok::PlusPlus | Tok::MinusMinus => {
                 return Err(Diagnostic::new(
                     pos,
