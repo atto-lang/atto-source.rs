@@ -1,0 +1,14 @@
+// expect-exit: 42
+pub fnc main(): int {
+  let number = 40;
+  val choose = true;
+  if choose then
+    val reader = borrow! number;
+    val snapshot = copy! reader;
+  else
+    val alternative = borrow! number;
+    val duplicate = copy! alternative;
+  fi
+  number = 42;
+  return number;
+}

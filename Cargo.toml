@@ -19,3 +19,7 @@ strip = true
 [[bin]]
 name = "attoc"
 path = "src/bin/attoc.rs"
+
+[[bin]]
+name = "atto-loan-cfg-export"
+path = "src/bin/atto_loan_cfg_export.rs"
