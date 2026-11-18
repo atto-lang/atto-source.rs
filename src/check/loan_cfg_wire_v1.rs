@@ -79,7 +79,7 @@ pub fn export_checked_program(program: &TProgram) -> Result<String, Diagnostic> 
                     .join(",")
             };
             let successors = list(point.successors.iter().map(|v| v + 1));
-            let direct = list(point.direct_reads);
+            let direct = list(point.direct_reads.iter().copied());
             out.push_str(&format!(
                 "P|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
                 point.id + 1,
