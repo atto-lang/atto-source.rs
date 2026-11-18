@@ -43,7 +43,7 @@ pub fnc main(): int {val c = new C(); return c.second(C.first());}
     let mtd = r#"
 define class C as
     @throws(Error)
-    mtd add(int n): int {return n + 2;}
+    pub mtd add(int n): int {return n + 2;}
 end
 pub fnc main(): int throws(Error) {val c = new C(); return c.add(40);}
 "#;
