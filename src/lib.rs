@@ -70,7 +70,7 @@ pub fn compile_with_version(
         }
     }
     let program = if target {
-        let headers = target_syntax::parse_target_declarations(&toks)?;
+        let headers = target_syntax::parse_target_declarations_versioned(&toks, version)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
             // receiver headers into equivalent in-class method tokens, then
