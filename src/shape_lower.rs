@@ -19,6 +19,8 @@ pub const PREFIX: &str = "__atto_shape_";
 const MAX_SHAPES: usize = 64;
 const MAX_FIELDS: usize = 8;
 const MAX_NAME_BYTES: usize = 64;
+const MAX_EQUALS_STRUCT_INITIALIZERS: usize = 256;
+const MAX_CALLABLE_HEADER_TOKENS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind { Struct, Record }
@@ -214,7 +216,7 @@ impl ScopeLedger {
             };
             let mut depth=0usize;
             let mut after=None;
-            for i in open..t.len() {
+            for i in open..t.len().min(open.saturating_add(MAX_CALLABLE_HEADER_TOKENS)) {
                 match t[i].tok {
                     Tok::LParen => { depth+=1; if depth>128 {break;} }
                     Tok::RParen => {
@@ -552,6 +554,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     }
     let mut synthetic=BTreeMap::<String,Vec<Field>>::new();
     let mut out=Vec::new();
+    let mut equals_initializer_count=0usize;
     i=0;
     while i<first.len() {
         if let Some((product,next))=typed_product(&first,i,&mut synthetic)? {
@@ -581,6 +584,11 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                 if decl.kind == Kind::Struct && i+1<first.len()
                     && first[i+1].tok==Tok::LParen
                     && contains_struct_equals(&first,i+1) {
+                    if equals_initializer_count>=MAX_EQUALS_STRUCT_INITIALIZERS {
+                        return Err(error(first[i].pos,"E_SOURCE_LIMIT",
+                            "too many named struct field initializers"));
+                    }
+                    equals_initializer_count+=1;
                     let source_index=first_origins[i].ok_or_else(||
                         error(first[i].pos,"E_STRUCT_RESOLVE",
                             "generated source cannot instantiate an unresolved struct"))?;
