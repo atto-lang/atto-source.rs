@@ -2787,7 +2787,7 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "freeze" | "weak" | "pin")
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "freeze" | "weak" | "pin" | "drop")
                 && *self.peek_at(1) == Tok::Bang =>
             {
                 let action = match s.as_str() {
@@ -2798,13 +2798,22 @@ impl Parser {
                     "freeze" => OwnershipOp::Freeze,
                     "weak" => OwnershipOp::Weak,
                     "pin" => OwnershipOp::Pin,
+                    "drop" => OwnershipOp::Drop,
                     _ => unreachable!(),
                 };
                 // Deliberately recognize the new forms at the syntax boundary;
                 // semantic admission is checked separately so unproven guest
                 // pointers/handles never reach a Wasm artifact.
+                // copy!! is a single graph-copy operation, not copy! applied
+                // to a negated expression. Both exclamation marks must touch.
+                // Ordinary 'copy! !x' remains a different token sequence.
+                let deep_copy = s == "copy" && *self.peek_at(2) == Tok::Bang
+                    && self.toks[self.i + 1].pos.line == self.toks[self.i + 2].pos.line
+                    && self.toks[self.i + 1].pos.col.checked_add(1) == Some(self.toks[self.i + 2].pos.col);
                 self.advance(); // name
-                self.advance(); // !
+                self.advance(); // first !
+                if deep_copy { self.advance(); } // second !
+                let action = if deep_copy { OwnershipOp::DeepCopy } else { action };
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
                 if action != OwnershipOp::Borrow && self.is_word("mut") {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
@@ -2812,6 +2821,14 @@ impl Parser {
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
             },
+            Tok::Ident(s) if matches!(s.as_str(), "lt" | "lifetime")
+                && *self.peek_at(1) == Tok::Bang =>
+            {
+                // Lifetime binders are type-level; treating one as a value
+                // would silently erase a borrow-region constraint.
+                return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
+                    "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
+            }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
