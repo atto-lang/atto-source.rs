@@ -69,13 +69,26 @@ fn binary_chain_budget_still_rejects_untrusted_manual_ast() {
 
 #[test]
 fn deeply_nested_nonbinary_expressions_keep_original_depth_limit() {
-    // A true nesting chain still counts depth and returns a diagnostic
-    // rather than overflowing the scanner's call stack.
-    let src = format!(
-        "pub fnc main(): int {{ return {}; }}",
-        format!("{}1", "-".repeat(150))
-    );
-    // Parser may reject first. Both parser and admission use E_NESTING.
-    let err = atto_compiler::compile(&src).expect_err("deep unary nesting rejects");
+    use atto_compiler::ast::UnOp;
+    // Parser versions may reject repeated unary +/- as an unsupported
+    // source spelling before the security gate. Construct a deliberately
+    // hostile AST instead to prove that the checked-handle preflight
+    // *itself* still rejects genuine nesting at MAX_DEPTH.
+    let pos = Pos { line: 7, col: 4 };
+    let mut value = Expr { pos, kind: ExprKind::Int(Some(42)) };
+    for _ in 0..150 {
+        value = Expr {
+            pos,
+            kind: ExprKind::Unary(UnOp::Plus, Box::new(value)),
+        };
+    }
+    let mut program = Program::default();
+    program.funcs.push(Func {
+        name: "main".into(), pos, is_generator: false, is_pure: false,
+        params: Vec::new(), ret: Type::Int,
+        body: vec![Stmt::Return(Some(value), pos)],
+    });
+    let err = check::check(&program).expect_err("real unary AST nesting rejects");
     assert_eq!(err.code, "E_NESTING");
+    assert_eq!((err.pos.line, err.pos.col), (7, 4));
 }
