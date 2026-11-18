@@ -121,14 +121,32 @@ impl<'a> Scope<'a> {
                 let _checked_static_layout = crate::layout_plan::record(&result,e.pos)?;
                 Some(result)
             },
-            ExprKind::Member(base, field) => {
-                match self.expression(base,None,depth+1)? {
-                    Some(t @ (Ty::Record(_) | Ty::OpenRecord)) =>
-                        Some(static_record_field_type(&t,field,e.pos)?),
-                    Some(Ty::Map(_, _)) => return Err(err(e.pos,"E_TYPE",
-                        "Map keys cannot be accessed as Record dot-fields")),
-                    _ => None,
+            ExprKind::Member(_, _) => {
+                // The parser deliberately accepts 240-link member chains.
+                // Walk their left spine iteratively so the extra collection
+                // preflight does not reject well-formed expressions or crash
+                // with a deep recursive Rust call stack.
+                let mut links=Vec::new();
+                let mut current=e;
+                while let ExprKind::Member(base,field)=&current.kind {
+                    if links.len()>=MAX_SCOPE_OP_LINKS {
+                        return Err(err(current.pos,"E_NESTING",
+                            "member chain exceeds scoped preflight link budget"));
+                    }
+                    links.push((field.as_str(),current.pos));
+                    current=base;
                 }
+                let mut ty=self.expression(current,None,depth+1)?;
+                for (field,pos) in links.into_iter().rev() {
+                    ty=match ty {
+                        Some(t @ (Ty::Record(_) | Ty::OpenRecord)) =>
+                            Some(static_record_field_type(&t,field,pos)?),
+                        Some(Ty::Map(_, _)) => return Err(err(pos,"E_TYPE",
+                            "Map keys cannot be accessed as Record dot-fields")),
+                        _=>None,
+                    }
+                }
+                ty
             }
             ExprKind::Index(base,key) => {
                 match self.expression(base,None,depth+1)? {
@@ -240,9 +258,24 @@ impl<'a> Scope<'a> {
                 for arg in args {self.expression(arg,None,depth+1)?;}
                 None
             }
-            ExprKind::MethodCall(recv,_,args) => {
-                self.expression(recv,None,depth+1)?;
-                for arg in args {self.expression(arg,None,depth+1)?;}
+            ExprKind::MethodCall(_,_,_) => {
+                // Likewise, method-chain receivers can be hundreds of links
+                // deep. The ordinary class checker owns method return typing.
+                // This pass only visits arguments for nested collection errors.
+                let mut frames=Vec::new();
+                let mut current=e;
+                while let ExprKind::MethodCall(recv,_,args)=&current.kind {
+                    if frames.len()>=MAX_SCOPE_OP_LINKS {
+                        return Err(err(current.pos,"E_NESTING",
+                            "method chain exceeds scoped preflight link budget"));
+                    }
+                    frames.push(args.as_slice());
+                    current=recv;
+                }
+                self.expression(current,None,depth+1)?;
+                for args in frames.into_iter().rev() {
+                    for arg in args {self.expression(arg,None,depth+1)?;}
+                }
                 None
             }
             // Scalars, regular class members and lambdas still belong to the
