@@ -165,4 +165,24 @@ mod tests {
         assert_eq!(THROW | RAISE | PANIC, 7);
         assert_eq!((RAISE | PANIC) & !THROW, RAISE | PANIC);
     }
+
+    #[test]
+    fn exhaustive_three_bit_effect_algebra_never_hides_raise_or_panic() {
+        // All 8 summaries and all 64 possible pairwise call compositions.
+        // This verifies the finite transfer algebra, not whole-program soundness.
+        for a in 0..=ALL {
+            assert_eq!(a & !THROW, a & (RAISE | PANIC));
+            assert_eq!((a & !THROW) & RAISE, a & RAISE);
+            assert_eq!((a & !THROW) & PANIC, a & PANIC);
+            for b in 0..=ALL {
+                let composition = a | b;
+                let trapped = composition & !THROW;
+                assert_eq!(trapped, (a & !THROW) | (b & !THROW));
+                assert_eq!(trapped & RAISE, composition & RAISE);
+                assert_eq!(trapped & PANIC, composition & PANIC);
+                assert_eq!(composition | a, composition);
+                assert_eq!(composition | b, composition);
+            }
+        }
+    }
 }
