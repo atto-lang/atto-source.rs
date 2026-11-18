@@ -82,6 +82,6 @@ fn different_checked_programs_have_distinct_complete_wire_inventories() {
     let a = manifest(straight()).unwrap();
     let b = manifest(two_branches()).unwrap();
     assert_ne!(a, b);
-    assert_eq!(a.lines().filter(|l| l == "END").count(), 1);
-    assert_eq!(b.lines().filter(|l| l == "END").count(), 1);
+    assert_eq!(a.lines().filter(|l| *l == "END").count(), 1);
+    assert_eq!(b.lines().filter(|l| *l == "END").count(), 1);
 }
