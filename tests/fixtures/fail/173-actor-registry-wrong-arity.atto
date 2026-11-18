@@ -1,0 +1,9 @@
+// expect-error: E_ARITY
+// java: rejects
+define serial actor Queue as
+    receive(msg: int): void { return; }
+end
+pub fnc main(): int {
+    val q = ActorRegistry.get_or_create<Queue>("ns");
+    return 0;
+}
