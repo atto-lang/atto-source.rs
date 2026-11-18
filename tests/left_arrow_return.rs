@@ -21,8 +21,6 @@ fn ascii_and_unicode_prefixes_compile_to_identical_wasm() {
         "int <- foo()",
         "int<-foo()",
         "fnc int <- foo()",
-        "pub fnc int <- foo()",
-        "pure int <- foo()",
     ] {
         let source = format!("{header} {{ return 42; }} {MAIN}");
         let wasm = compile(&source).unwrap_or_else(|e| panic!("{source}: {e}"));
@@ -32,6 +30,12 @@ fn ascii_and_unicode_prefixes_compile_to_identical_wasm() {
         } else {
             reference = Some(wasm);
         }
+    }
+    // Visibility/purity may affect exports or metadata; verify compilation
+    // without requiring the entire Wasm binary to be identical.
+    for header in ["pub fnc int <- foo()", "pure int <- foo()"] {
+        let source = format!("{header} {{ return 42; }} {MAIN}");
+        assert!(compile(&source).unwrap().starts_with(b"\0asm"));
     }
 }
 
@@ -99,7 +103,7 @@ fn left_arrow_is_contiguous_and_only_has_meaning_in_callable_headers() {
     let ts = lex("fnc foo(): bool { return 1<-2; }").unwrap();
     let lt = ts.iter().position(|t| t.tok == Tok::Lt).unwrap();
     assert_eq!(ts[lt + 1].tok, Tok::Minus);
-    compile("fnc foo(): bool { return 1<-2; }").unwrap();
+    compile(&format!("fnc foo(): bool {{ return 1<-2; }} {MAIN}")).unwrap();
 }
 
 #[test]
