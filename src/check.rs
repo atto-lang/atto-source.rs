@@ -1357,6 +1357,11 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
             |acc, v| acc.union(expr_escape_effects(v, effects)))
     }
     match &value.e {
+        // All prefix statements may escape before the final expression.
+        // Dropping them here would incorrectly admit non-throwing callers.
+        TExpr::Sequence(steps, tail) =>
+            stmts_escape_effects(steps, effects)
+                .union(expr_escape_effects(tail, effects)),
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_)
         | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
