@@ -2788,6 +2788,10 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance(); // action
+                if *self.peek() == Tok::Bang {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "do not combine legacy 'rt ref/rt deref/rt unref' with a bang marker; use exactly one spelling"));
+                }
                 if self.is_word("mut") {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                         "checked handle operations do not accept mut qualifiers"));
