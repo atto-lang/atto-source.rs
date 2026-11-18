@@ -198,7 +198,7 @@ fn multi_argument_auto_borrow_supports_mixed_orders_and_shared_owners() {
     ];
     for source in cases {
         let result = atto_compiler::compile(source).expect("multi-argument borrow must compile");
-        assert!(result.starts_with(b"\\0asm"));
+        assert!(result.starts_with(b"\0asm"));
     }
 }
 
