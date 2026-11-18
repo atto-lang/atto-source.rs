@@ -63,6 +63,11 @@ const cases = [
   {id:'v1-unmarked-out-of-line-mtd', version:1, src:'define class C as final int seed: 40; end pub mtd (C self) value() -> int let int x = self.seed, x + 2 end pub fnc main(): int { val c = new C(); return c.value(); }', return:42},
   {id:'v2-reject-unmarked-out-of-line-mtd', version:2, src:'define class C as final int seed: 40; end pub mtd (C self) value() -> int let int x = self.seed, x + 2 end pub fnc main(): int { val c = new C(); return c.value(); }', reject:'E_BODY_VERSION'},
   {id:'v2-marked-out-of-line-mtd', version:2, src:'define class C as final int seed: 40; end pub mtd (C self) value() -> int :: let int x = self.seed, x + 2 end pub fnc main(): int { val c = new C(); return c.value(); }', return:42},
+  {id:'v1-explicit-return-comma',version:1,src:'fnc f() -> int return 1, 42; end pub fnc main(): int { return f(); }',return:42},
+  {id:'v2-explicit-return-comma',version:2,src:'fnc f() -> int return 1, 42; end pub fnc main(): int { return f(); }',return:42},
+  {id:'v1-bare-seq-statement',version:1,src:'fnc f() -> int const int n = seq 1, 42; return n; end pub fnc main(): int { return f(); }',return:42},
+  {id:'v2-bare-seq-statement',version:2,src:'fnc f() -> int const int n = seq 1, 42; return n; end pub fnc main(): int { return f(); }',return:42},
+  {id:'v2-mtd-return-comma',version:2,src:'define class C as final int seed: 40; end pub mtd (C self) value() -> int return 1, self.seed + 2; end pub fnc main(): int { val c = new C(); return c.value(); }',return:42},
 ];
 
 const tmp = await mkdtemp(join(tmpdir(), 'atto-version-gate-'));
