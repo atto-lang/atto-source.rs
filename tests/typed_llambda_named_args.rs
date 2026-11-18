@@ -93,6 +93,28 @@ fn no_reordering_of_effectful_named_arguments_without_temporary_slots() {
 }
 
 #[test]
+fn class_methods_and_constructor_names_bind_without_abi_changes() {
+    ok(r#"
+        define class Calculator as
+            pub fnc add(int a, int b): int { return a + b; }
+        end
+        pub fnc main(): int {
+            val calc = new Calculator();
+            return calc.add(b: 22, a: 20);
+        }
+    "#);
+    ok(r#"
+        define class Empty as
+            constructor(int x, int y) { }
+        end
+        pub fnc main(): int {
+            val item = new Empty(y: 22, x: 20);
+            return 42;
+        }
+    "#);
+}
+
+#[test]
 fn type_annotation_errors_and_limits_are_explicit() {
     let first = "pub fnc main(): int { val c = |int a, a: int| : int -> a; return 0; }";
     assert_eq!(Parser::new(lexer::lex(first).unwrap()).parse_program().unwrap_err().code, "E_DUPLICATE");
