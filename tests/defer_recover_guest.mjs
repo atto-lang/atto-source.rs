@@ -13,6 +13,62 @@ const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc'
 
 const cases = [
   {
+    name: 'all three ordinary defer spellings execute LIFO exactly once',
+    src: \`fnc f(): int {
+      defer { stdio.println("block"); };
+      defer _ -> { stdio.println("underscore"); };
+      defer || -> { stdio.println("lambda"); };
+      return 12;
+    }
+    pub fnc main(): int { return f(); }\`,
+    stdout: 'lambda\nunderscore\nblock\n', value: 12n,
+  },
+  {
+    name: 'defer factory captures a scalar once at registration, before mutation',
+    src: \`fnc capture(): int { stdio.println("evaluate"); return 7; }
+    fnc f(): int {
+      let int current = 1;
+      defer (|int value| -> _ -> { stdio.println(value); })(capture());
+      current = 99;
+      stdio.println("body");
+      return current;
+    }
+    pub fnc main(): int { return f(); }\`,
+    stdout: 'evaluate\nbody\n7\n', value: 99n,
+  },
+  {
+    name: 'canonical recover exposes the original raise message and kind',
+    src: \`fnc fail(): int raises(Error) { raise Error("the original error"); }
+    fnc f(): int {
+      recover |ErrorView err, RecoveryCursor cursor| -> {
+        stdio.println(err.message);
+        stdio.println(err.is_raise);
+        return 23;
+      };
+      defer { stdio.println("cleanup"); };
+      return fail();
+    }
+    pub fnc main(): int { return f(); }\`,
+    stdout: 'cleanup\nthe original error\ntrue\n', value: 23n,
+  },
+  {
+    name: 'recover delegation sees unchanged error and honors LIFO',
+    src: \`fnc f(): int {
+      recover |original, cursor| -> {
+        stdio.println(original.message);
+        stdio.println(original.is_raise);
+        return 31;
+      };
+      recover |err, next| -> {
+        stdio.println(err.message);
+        next.next();
+      };
+      raise Error("same error");
+    }
+    pub fnc main(): int { return f(); }\`,
+    stdout: 'same error\nsame error\ntrue\n', value: 31n,
+  },
+  {
     name: 'normal return runs two defers LIFO after snapshotting the value',
     src: `fnc f(): int {
       let int x = 4;
