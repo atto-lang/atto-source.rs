@@ -1329,7 +1329,8 @@ impl Parser {
             let statements = match self.parse_stmts_until(&["end"]) {
                 Ok(parsed) => parsed,
                 Err(_error) if self.language_version == LanguageVersion::Explicit
-                    && *self.peek() == Tok::Comma =>
+                    && *self.peek() == Tok::Comma
+                    && matches!(first, Some((Tok::Comma, _))) =>
                 {
                     return Err(Diagnostic::new(self.pos(), "E_BODY_VERSION",
                         "language version 2 requires '::' before a comma/implicit-tail callable body; insert '::' after '-> Type' to preserve comma evaluation, or use ';' statements with explicit return/^; version 1 preserves unmarked comma bodies"));
