@@ -2732,7 +2732,7 @@ impl Parser {
             Tok::Amp => return Err(Diagnostic::new(pos, "E_SYNTAX",
                 "use 'borrow! owner' or 'borrow! mut owner', not '&owner'")),
             Tok::Star => return Err(Diagnostic::new(pos, "E_SYNTAX",
-                "use a checked explicit pointer operation (such as 'rt deref'), not '*pointer'")),
+                "use checked 'deref! handle', not '*pointer'")),
             Tok::PlusPlus | Tok::MinusMinus => {
                 return Err(Diagnostic::new(
                     pos,
@@ -2741,10 +2741,11 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
-            // Ownership is a prefix unary expression, like trap. Its operand
-            // may be a name, postfix chain, or a grouped expression; the
-            // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
+            // Ownership and checked-handle operators are contextual unary
+            // prefixes, not calls or raw pointer sigils. The bang spellings
+            // all produce the same AST as the corresponding legacy rt forms.
+            Tok::Ident(s) if matches!(s.as_str(),
+                "borrow" | "copy" | "take" | "share" | "ref" | "deref" | "unref")
                 && *self.peek_at(1) == Tok::Bang =>
             {
                 let action = match s.as_str() {
@@ -2752,16 +2753,47 @@ impl Parser {
                     "copy" => OwnershipOp::Copy,
                     "take" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
+                    "ref" => OwnershipOp::Ref,
+                    "deref" => OwnershipOp::Deref,
+                    "unref" => OwnershipOp::Unref,
                     _ => unreachable!(),
                 };
+                // A separated "ref !x" does NOT mean "ref! x".
+                // The attached marker is required for checked handles.
+                if matches!(action, OwnershipOp::Ref | OwnershipOp::Deref | OwnershipOp::Unref)
+                    && (self.peek_at(1).pos.line != pos.line
+                        || self.peek_at(1).pos.col != pos.col + s.len() as u32)
+                {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX",
+                        "ref!, deref! and unref! require an attached '!' marker"));
+                }
                 self.advance(); // name
                 self.advance(); // !
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
                 if action != OwnershipOp::Borrow && self.is_word("mut") {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "only borrow! permits a mut qualifier; checked handles do not"));
                 }
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
+            },
+            Tok::Ident(s) if s == "rt"
+                && matches!(self.word_at(1), Some("ref" | "deref" | "unref")) =>
+            {
+                self.advance(); // legacy rt
+                let action = match self.word_at(0) {
+                    Some("ref") => OwnershipOp::Ref,
+                    Some("deref") => OwnershipOp::Deref,
+                    Some("unref") => OwnershipOp::Unref,
+                    _ => unreachable!(),
+                };
+                self.advance(); // action
+                if self.is_word("mut") {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "checked handle operations do not accept mut qualifiers"));
+                }
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Ownership(action, false, Box::new(inner)), pos });
             },
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
