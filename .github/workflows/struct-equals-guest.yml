@@ -1,0 +1,39 @@
+name: Struct equals checked guest execution
+
+on:
+  pull_request:
+    paths:
+      - 'src/shape_lower.rs'
+      - 'tests/struct_field_equals.rs'
+      - 'tests/struct_equals_guest.mjs'
+      - '.github/workflows/struct-equals-guest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checked-native-wasm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Log exact checkout and toolchain
+        run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          rustc --version
+          cargo --version
+          node --version
+      - name: Check all Rust compile targets
+        run: cargo check --locked --all-targets
+      - name: Compile and verify focused Rust tests
+        run: cargo test --locked --test struct_field_equals --test preview_data_shapes
+      - name: Build native real source compiler
+        run: cargo build --locked --release --bin attoc
+      - name: Compile and execute actual Wasm guest plus negative no-artifact cases
+        run: ATTOC="$PWD/target/release/attoc" node tests/struct_equals_guest.mjs
