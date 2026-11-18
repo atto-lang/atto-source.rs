@@ -1123,6 +1123,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 generators.push(plan);
                 funcs[i] = Some(TFunc {
                     name: f.name.clone(), params, ret,
+                    param_ownership: f.params.iter().map(|p| p.ownership).collect(),
                     locals: Vec::new(), body: Vec::new(),
                 });
                 continue;
@@ -1151,6 +1152,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             generators.push(TGenerator { function: i as u32, steps, locals: 0, live_after: Vec::new() });
             funcs[i] = Some(TFunc {
                 name: f.name.clone(), params, ret,
+                    param_ownership: f.params.iter().map(|p| p.ownership).collect(),
                 locals: Vec::new(), body: Vec::new(),
             });
             continue;
@@ -1180,6 +1182,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 other => other,
             }).collect(),
             ret,
+            param_ownership: f.params.iter().map(|p| p.ownership).collect(),
             locals: body.1,
             body: body.0,
         });
@@ -1223,6 +1226,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             params.extend(info.ctor_params.iter().copied());
             funcs[kidx as usize] = Some(TFunc {
                 name: format!("{}.constructor", c.name),
+                param_ownership: vec![ParamOwnership::Legacy; params.len()],
                 params,
                 ret: Type::Void,
                 locals: body.1,
@@ -1268,6 +1272,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         funcs[info.new_idx as usize] = Some(TFunc {
             name: format!("{}.new", c.name),
             params: info.ctor_params.clone(),
+            param_ownership: vec![ParamOwnership::Legacy; info.ctor_params.len()],
             ret: me,
             locals: vec![me],
             body,
@@ -1288,6 +1293,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: named.iter().map(|x| x.1).collect(),
+                param_ownership: vec![ParamOwnership::Legacy; named.len()],
                 ret: mi.ret,
                 locals: body.1,
                 body: body.0,
@@ -1322,6 +1328,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             funcs[ridx as usize] = Some(TFunc {
                 name: label,
                 params: vec![Type::Int, Type::Int],
+                param_ownership: vec![ParamOwnership::Legacy; 2],
                 ret: Type::Void,
                 locals: body.1,
                 body: body.0,
@@ -1352,6 +1359,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: mi.params.clone(),
+                param_ownership: vec![ParamOwnership::Legacy; mi.params.len()],
                 ret: mi.ret,
                 locals: body.1,
                 body: body.0,
