@@ -189,10 +189,22 @@ fn shadowed_struct_name(t: &[Token], name: &str) -> bool {
             || t.get(i+1).is_some_and(|v| v.tok == Tok::Pipe) {
             return true;
         }
-        // Name-first formals and local bindings: 'Particle: int'.
+        // Type-first formal/local binding for another nominal type:
+        // 'fnc f(Other Particle)' or 'let Other Particle = ...'.
+        // An initializer call instead has 'Particle(' and is not a binder.
+        let prior_to_type = i.checked_sub(2).and_then(|p| t.get(p));
+        if matches!(preceding.map(|v| &v.tok),Some(Tok::Ident(_)))
+            && prior_to_type.is_some_and(|v|
+                matches!(v.tok,Tok::LParen | Tok::Comma)
+                || matches!(&v.tok,Tok::Ident(s) if
+                    matches!(s.as_str(),"val" | "let" | "const")))
+            && t.get(i+1).is_some_and(|v|
+                matches!(v.tok,Tok::Comma | Tok::RParen | Tok::Assign | Tok::Question)) {
+            return true;
+        }
+        // Name-first formals and local bindings: 'Particle: SomeType'.
         t.get(i+1).is_some_and(|v| v.tok == Tok::Colon)
-            && t.get(i+2).is_some_and(|v|
-                matches!(&v.tok, Tok::Ident(x) if scalar(x).is_some()))
+            && t.get(i+2).is_some_and(|v| matches!(&v.tok, Tok::Ident(_)))
     })
 }
 
