@@ -116,3 +116,44 @@ fn unknown_or_provenance_unsafe_calls_fail_before_guest_emission() {
         assert_eq!(err.code, expected, "{source}");
     }
 }
+
+
+#[test]
+fn compiler_synthesized_resolved_class_formal_also_borrows() {
+    // Programmatic typed-AST entry points must not bypass borrow-v1 just
+    // because the frontend already resolved Person -> Type::Class(0).
+    use atto_compiler::{ast::Type, check, lexer, parser::Parser};
+    let source = r#"
+        define class Person as pub let int age = 21; end
+        fnc inspect(Person p): int { return p.age; }
+        pub fnc main(): int {
+            let p = new Person();
+            return inspect(p) + inspect(p);
+        }
+    "#;
+    let mut program = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    assert_eq!(program.funcs[0].name, "inspect");
+    program.funcs[0].params[0].ty = Type::Class(0);
+    let typed = check::check_borrow_v1(&program).expect("resolved class formal stays borrowed");
+    assert_eq!(typed.funcs.len(), 2);
+}
+
+#[test]
+fn forged_class_index_and_unproved_mutable_formal_fail_closed() {
+    use atto_compiler::{ast::Type, check, lexer, parser::Parser};
+    let src = r#"
+        define class Person as pub let int age = 21; end
+        fnc inspect(Person p): int { return p.age; }
+        pub fnc main(): int { return 42; }
+    "#;
+    let mut p = Parser::new(lexer::lex(src).unwrap()).parse_program().unwrap();
+    p.funcs[0].params[0].ty = Type::Class(1024);
+    assert_eq!(check::check_borrow_v1(&p).err().unwrap().code, "E_UNKNOWN_TYPE");
+
+    let src = r#"
+        define class Person as pub let int age = 21; end
+        fnc inspect(Person mut p): int { return p.age; }
+        pub fnc main(): int { return 42; }
+    "#;
+    assert_eq!(borrow_v1(src).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+}
