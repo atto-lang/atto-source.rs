@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {join} from 'node:path';
+import {createStateRuntime} from './browser/state-runtime.mjs';
 
 const wasmPath = process.argv[2] || 'target/wasm32-unknown-unknown/release/atto_compiler.wasm';
 const nativePath = process.env.ATTOC || 'target/release/attoc';
@@ -57,14 +58,23 @@ for (const [kind, name] of cases) {
     assert.equal(wasm.ok, true, name);
     assert.equal(native.status, 0, name + ': native compiler');
     assert.deepEqual(wasm.wasm, native.stdout, name + ': compiler guest byte parity');
+    const state = createStateRuntime();
     const imports = {atto: {
       print_i64: ()=>{}, print_bool: ()=>{}, print_str: ()=>{},
       print_newline: ()=>{}, print_f64: ()=>{},
       actor_spawn: ()=>{ throw Error('actor spawned in state loan test'); },
       actor_send: ()=>{ throw Error('actor send in state loan test'); },
+      ...state.imports,
     }};
-    const guest = new WebAssembly.Instance(new WebAssembly.Module(wasm.wasm), imports);
-    assert.equal(guest.exports.main(), expectedExit, name + ': executed guest result');
+    try {
+      const guest = new WebAssembly.Instance(new WebAssembly.Module(wasm.wasm), imports);
+      const value = guest.exports.main();
+      state.complete(); // no state tickets or authority may escape guest completion
+      assert.equal(value, expectedExit, name + ': executed guest result');
+    } catch (error) {
+      state.abort();
+      throw error;
+    }
   }
 }
 console.log('PASS state-borrow differential: 1 executed positive, 3 fail-closed negatives, 4 native/browser decisions');
