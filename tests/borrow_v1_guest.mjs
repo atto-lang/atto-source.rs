@@ -69,6 +69,7 @@ const fail = [
   '04-reject-take-to-readonly.atto',
   '05-returned-loan-not-implemented.atto',
   '06-method-class-formal-not-admitted.atto',
+  '07-mutable-class-formal-needs-exclusive-abi.atto',
 ];
 const positiveBytes = [];
 let decisions = 0;
