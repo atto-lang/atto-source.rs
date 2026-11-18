@@ -2787,7 +2787,7 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "freeze" | "weak" | "pin")
                 && *self.peek_at(1) == Tok::Bang =>
             {
                 let action = match s.as_str() {
@@ -2795,8 +2795,14 @@ impl Parser {
                     "copy" => OwnershipOp::Copy,
                     "take" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
+                    "freeze" => OwnershipOp::Freeze,
+                    "weak" => OwnershipOp::Weak,
+                    "pin" => OwnershipOp::Pin,
                     _ => unreachable!(),
                 };
+                // Deliberately recognize the new forms at the syntax boundary;
+                // semantic admission is checked separately so unproven guest
+                // pointers/handles never reach a Wasm artifact.
                 self.advance(); // name
                 self.advance(); // !
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
