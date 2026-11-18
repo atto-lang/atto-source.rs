@@ -2596,6 +2596,14 @@ impl<'a> FnCx<'a> {
                     let class = &self.g.classes[c as usize];
                     let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
                         Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
+                    // A lexical mutable class loan is NOT a protected state
+                    // capability. Only the exact self receiver inside the
+                    // compiler-admitted critical-write scope may touch this
+                    // storage. Do not lower a borrowed alias to FieldSet.
+                    if class.state_container && f.mode == FieldMode::ActorState {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                            "borrow! mut cannot write protected state; use handle_state(critical-write ...) on the exact receiver"));
+                    }
                     if !f.public && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
                     }
@@ -3765,6 +3773,20 @@ impl<'a> FnCx<'a> {
         }
         match recv.ty {
             Type::Class(c) => {
+                // A state method can enter critical-write even if it returns
+                // only int/void. Read-only class loans do not imply permission
+                // to perform such an effect, including via a second argument
+                // evaluated while an earlier shared call loan is live.
+                // Until transitive method effects are proven, fail closed for
+                // *all* state-container methods through such receivers.
+                let receiver_is_loaned = matches!(&recv.e, TExpr::Local(slot)
+                    if self.borrowed_slots.contains(slot)
+                        || self.loans.contains_key(slot)
+                        || self.loans.values().any(|loan| loan.owner == *slot));
+                if self.g.classes[c as usize].state_container && receiver_is_loaned {
+                    return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                        "state-container method on a borrowed or shared-loaned receiver requires verified read-only effects"));
+                }
                 // Calls on a loan may only return copyable, lifetime-independent
                 // values. Owned object returns need result-lifetime provenance.
                 if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot) || self.borrowed_slots.contains(slot)) {
