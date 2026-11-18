@@ -62,6 +62,10 @@ Shared conformance candidates: atto-lang/atto-platform-conformance PR #64.
 
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
+## Identity-free value class admission (NOT EXECUTABLE)
+
+The proposed `define value class` and visibility variants are recognized before product/nominal lowering and fail with `E_VALUE_UNSUPPORTED`, without guest Wasm output. The current compiler's class-backed struct/record profile is **not** an identity-free value representation. This is a safety gate only, not value construction, recursive equality, copying, inline layout or AOT performance support. See [atto-spec #60](https://github.com/atto-lang/atto-spec/pull/60) and [conformance #57](https://github.com/atto-lang/atto-platform-conformance/pull/57).
+
 ## Namespace and out-of-line receiver syntax (parse-only)
 
 This frontend now has a bounded, parse-only grammar for the proposed use namespace
@@ -378,7 +382,7 @@ These are recorded in fixtures and checked by the differential run:
 
 v2 extends v1. Every v1 guest is still a valid v2 guest.
 
-- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; 2 reserved; 3 = heap exhausted). `memory` is exported when strings, classes, **or actors** exist. Scalar-only actor modules export one bounded 64 KiB Wasm32 memory per instance; allocating classes or concatenating strings uses the existing fixed 16-page (1 MiB) memory. This is guest linear memory, not a suspended Wasm execution stack. A string value is an `i64` `offset << 32 | len` into that memory.
+- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; 2 reserved; 3 = heap exhausted; 4 = invalid generator handle/state; 5 = generator dispatch budget; 6 = logical stack exhausted: a call on a recursive cycle would exceed 1024 live recursive frames per `main` or receive invocation, the same quota as the Java backend. Only calls on a recursive cycle of the call graph are counted, so modules without recursion are byte-identical to before). `memory` is exported when strings, classes, **or actors** exist. Scalar-only actor modules export one bounded 64 KiB Wasm32 memory per instance; allocating classes or concatenating strings uses the existing fixed 16-page (1 MiB) memory. This is guest linear memory, not a suspended Wasm execution stack. A string value is an `i64` `offset << 32 | len` into that memory.
 - **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)`, `print_newline()` and `print_f64(f64)` (the host renders Java `Double.toString`; `tests/java-double.mjs`), plus, when the program spawns actors, `actor_spawn(i32 type) -> i32 ref` and `actor_send(i32 ref, i64 value)`. There are no other capabilities.
 - **Actors:** a program with actors also exports `actor_init(i32 type)` and `actor_receive(i32 type, i64 value, i64 sequence)`, and carries a custom section `atto.actors` listing actor type names in type order. The host runs each spawned actor in its own instance of the same compiled module. Worker topology is a separate host concern; an upgraded tenant host can schedule multiple actor instances within one Worker. It calls `actor_init` once and then `actor_receive` once per message, in FIFO order with sequence numbers from 0. Actor state lives in that instance's globals, so actors share no memory. Bool mail is passed as 0 or 1.
 - **Determinism:** output is a pure function of the source. The native and wasm32 hosts emit byte-identical modules.

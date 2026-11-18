@@ -239,13 +239,14 @@ pub enum TStmt {
         body: Vec<TStmt>,
         catch: Option<Vec<TStmt>>,
         finally: Option<Vec<TStmt>>,
+        pos: Pos,
     },
     /// Registration point of a top-level `defer`: sets `flag`. The body
     /// runs LIFO at every function exit after registration.
-    Defer { flag: u32, body: Vec<TStmt> },
+    Defer { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt>, pos: Pos },
     /// Registration of a recovery callback: evaluates factory arguments into
     /// `args` slots once, sets `flag`. The body runs only while unwinding.
-    Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt> },
+    Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt>, pos: Pos },
     /// Terminal `c.next()`: delegate the unchanged failure to the next
     /// older recovery callback or the outer boundary.
     RecoverNext,
@@ -458,9 +459,14 @@ struct FnCx<'a> {
     cleanup_depth: u32,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
+    /// Non-escaping error-view binder; only explicitly admitted read-only
+    /// properties may be lowered from the compiler-owned unwind slots.
+    recover_error: Option<String>,
 }
 
 type R<T> = Result<T, Diagnostic>;
+/// Compiler-owned slots and isolated bindings for one cleanup factory.
+type CleanupCaptured = (Vec<(u32, TE)>, Vec<Local>);
 
 fn string_member_err(name: &str, pos: Pos) -> Diagnostic {
     match name {
@@ -1391,6 +1397,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
+    audit_cleanup_call_effects(&funcs, &p.funcs)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
@@ -1412,6 +1419,231 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         raise_tag,
         catch_depth,
     })
+}
+
+/// The source guest exception channels. Panic/trap is deliberately absent:
+/// it is a fatal runtime outcome, not a catchable or locally recoverable
+/// \`Error\`. These two bits are propagated through the typed call graph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EscapeEffects { throws: bool, raises: bool }
+
+impl EscapeEffects {
+    fn union(self, other: Self) -> Self {
+        Self { throws: self.throws || other.throws, raises: self.raises || other.raises }
+    }
+    fn without_throw(self) -> Self {
+        Self { throws: false, raises: self.raises }
+    }
+    fn any(self) -> bool { self.throws || self.raises }
+}
+
+/// Infer *escaping* effects of a typed expression. A trap discharges only
+/// ordinary throw; it cannot intercept raise or a fatal runtime panic.
+/// Evaluation of arguments occurs outside the called function's handler,
+/// so argument effects must also be included in the result.
+fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
+    fn combine<'a>(values: impl IntoIterator<Item=&'a TE>, effects: &[EscapeEffects]) -> EscapeEffects {
+        values.into_iter().fold(EscapeEffects::default(),
+            |acc, v| acc.union(expr_escape_effects(v, effects)))
+    }
+    match &value.e {
+        TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_)
+        | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
+        | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
+        | TExpr::Spawn(_) => EscapeEffects::default(),
+        TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
+        | TExpr::Not(v) | TExpr::Print { value: v, .. }
+        | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
+        | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
+        | TExpr::FieldGet { obj: v, .. }
+        | TExpr::StateFieldRead { obj: v, .. }
+        | TExpr::PrintObj { obj: v, .. } =>
+            expr_escape_effects(v, effects),
+        TExpr::Trap { value: v, .. } =>
+            expr_escape_effects(v, effects).without_throw(),
+        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b)
+        | TExpr::Send { target: a, value: b } =>
+            combine([a.as_ref(), b.as_ref()], effects),
+        TExpr::Ternary(cond, yes, no) =>
+            combine([cond.as_ref(), yes.as_ref(), no.as_ref()], effects),
+        TExpr::Str(_, receiver, arg) =>
+            expr_escape_effects(receiver, effects)
+                .union(arg.as_ref().map_or(EscapeEffects::default(),
+                    |v| expr_escape_effects(v, effects))),
+        TExpr::AdtNew { payload, .. } =>
+            payload.as_ref().map_or(EscapeEffects::default(),
+                |v| expr_escape_effects(v, effects)),
+        TExpr::Call(target, args) => {
+            let callee = effects.get(*target as usize).copied().unwrap_or(
+                // Unknown typed call targets must fail closed, not be assumed pure.
+                EscapeEffects { throws: true, raises: true });
+            combine(args.iter(), effects).union(callee)
+        }
+    }
+}
+
+/// Compute escaping effects through typed blocks. An ordinary catch handles
+/// the entire ordinary-throw effect of its protected body, including calls,
+/// nested handlers and error-producing arguments; a raise always bypasses it.
+/// The catch body is analyzed independently because it may itself escape.
+fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffects {
+    let mut all = EscapeEffects::default();
+    for stmt in body {
+        let next = match stmt {
+            TStmt::Set(_, value) | TStmt::GlobalSet(_, value)
+            | TStmt::Expr(value) | TStmt::StateRegister(value)
+            | TStmt::Return(Some(value)) =>
+                expr_escape_effects(value, effects),
+            TStmt::Return(None) | TStmt::UnwindFrame { .. }
+            | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
+            | TStmt::Unreachable => EscapeEffects::default(),
+            TStmt::Throw(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: true, raises: false }),
+            TStmt::Raise(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: false, raises: true }),
+            TStmt::FieldSet { obj, value, .. } |
+            TStmt::StateFieldWrite { obj, value, .. } =>
+                expr_escape_effects(obj, effects)
+                    .union(expr_escape_effects(value, effects)),
+            TStmt::StateCriticalWrite(inner) | TStmt::Block(inner) =>
+                stmts_escape_effects(inner, effects),
+            TStmt::If(arms, other) => {
+                let mut result = other.as_ref().map_or(EscapeEffects::default(),
+                    |b| stmts_escape_effects(b, effects));
+                for (cond, arm) in arms {
+                    result = result.union(expr_escape_effects(cond, effects))
+                        .union(stmts_escape_effects(arm, effects));
+                }
+                result
+            }
+            TStmt::Loop { cond, body, update } =>
+                cond.as_ref().map_or(EscapeEffects::default(),
+                    |v| expr_escape_effects(v, effects))
+                    .union(stmts_escape_effects(body, effects))
+                    .union(stmts_escape_effects(update, effects)),
+            TStmt::ForIn { source, body, .. } =>
+                expr_escape_effects(source, effects)
+                    .union(stmts_escape_effects(body, effects)),
+            TStmt::Try { body, catch, finally, .. } => {
+                let protected = stmts_escape_effects(body, effects);
+                let handled = if catch.is_some() {
+                    protected.without_throw()
+                } else { protected };
+                // An ordinary Error handler cannot execute when the
+                // protected region cannot emit an ordinary Error. Ignore
+                // unreachable handler effects, without discharging raises.
+                let caught = if protected.throws {
+                    catch.as_ref().map_or(EscapeEffects::default(),
+                        |b| stmts_escape_effects(b, effects))
+                } else { EscapeEffects::default() };
+                let cleanup = finally.as_ref().map_or(EscapeEffects::default(),
+                    |b| stmts_escape_effects(b, effects));
+                handled.union(caught).union(cleanup)
+            }
+            // Registration expressions run immediately; callbacks run
+            // only on exit/failure. Including them remains conservative.
+            // In particular, we NEVER assume recover handles the current
+            // function's own errors: caller catches outrank callee recover.
+            TStmt::Defer { args, body, .. } |
+            TStmt::Recover { args, body, .. } => {
+                let captures = args.iter().fold(EscapeEffects::default(),
+                    |acc, (_, arg)| acc.union(expr_escape_effects(arg, effects)));
+                captures.union(stmts_escape_effects(body, effects))
+            }
+        };
+        all = all.union(next);
+        // The same structural definite-exit analysis used for guest
+        // emission also establishes that later statements cannot execute.
+        // Never infer an outgoing effect from dead code after return/raise.
+        if returns(std::slice::from_ref(stmt)) { break; }
+    }
+    all
+}
+
+/// Infer escaping effects by monotone fixed point, so recursion and
+/// mutually recursive call groups converge without unsound assumptions.
+/// Validate each cleanup body with those exact effects. A callee that
+/// catches its own throw, or a call wrapped in \`trap\`, can now be used
+/// safely within cleanup; an escaping raise can never be suppressed by
+/// an ordinary catch/trap. Unreachable-code precision remains deliberately
+/// conservative until the CFG effect solver is complete.
+fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
+    let mut effects = vec![EscapeEffects::default(); funcs.len()];
+    loop {
+        let mut changed = false;
+        for (index, f) in funcs.iter().enumerate() {
+            let next = stmts_escape_effects(&f.body, &effects);
+            if next != effects[index] {
+                effects[index] = effects[index].union(next);
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+    // A clause list asserts an upper bound on the ordinary exceptional
+    // channels, not merely an annotation for documentation. Omission of a
+    // clause inside an explicit list means that effect cannot escape.
+    // Fully unannotated legacy functions remain inference-only.
+    for (index, f) in declared.iter().enumerate() {
+        let Some(contract) = f.declared_effects else { continue; };
+        let actual = effects[index];
+        if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
+            let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {
+                (true, true) => "throws(Error), raises(Error)",
+                (true, false) => "throws(Error)",
+                (false, true) => "raises(Error)",
+                (false, false) => unreachable!(),
+            };
+            return Err(Diagnostic::new(f.pos, "E_EFFECT",
+                format!("function '{}' declares an incomplete exceptional-effect upper bound: escaping {missing}", f.name)));
+        }
+    }
+
+    // Only registration is limited to the top-level browser profile:
+    // try/finally and branch nesting can already be arbitrary.
+    fn verify_scopes(body: &[TStmt], effects: &[EscapeEffects]) -> R<()> {
+        for stmt in body {
+            match stmt {
+                TStmt::Defer { body: cleanup, pos, .. } |
+                TStmt::Recover { body: cleanup, pos, .. } => {
+                    if stmts_escape_effects(cleanup, effects).any() {
+                        return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
+                            "cleanup/recovery callback has a provably escaping throw or raise"));
+                    }
+                }
+                TStmt::Try { body: inner, catch, finally, pos, .. } => {
+                    if finally.as_ref().is_some_and(|b|
+                        stmts_escape_effects(b, effects).any())
+                    {
+                        return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
+                            "finally has an escaping throw or raise"));
+                    }
+                    verify_scopes(inner, effects)?;
+                    if let Some(handler) = catch {
+                        verify_scopes(handler, effects)?;
+                    }
+                    if let Some(cleanup) = finally {
+                        verify_scopes(cleanup, effects)?;
+                    }
+                }
+                TStmt::If(arms, other) => {
+                    for (_, inner) in arms { verify_scopes(inner, effects)?; }
+                    if let Some(inner) = other { verify_scopes(inner, effects)?; }
+                }
+                TStmt::Loop { body: inner, update, .. } => {
+                    verify_scopes(inner, effects)?;
+                    verify_scopes(update, effects)?;
+                }
+                TStmt::ForIn { body: inner, .. } |
+                TStmt::Block(inner) | TStmt::StateCriticalWrite(inner) =>
+                    verify_scopes(inner, effects)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    for f in funcs { verify_scopes(&f.body, &effects)?; }
+    Ok(())
 }
 
 fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> String {
@@ -1632,7 +1864,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
             || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
             || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
-        TStmt::Defer { body, .. } => any_in_stmts(body, f),
+        TStmt::Defer { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
         TStmt::Recover { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
         TStmt::UnwindFrame { .. } | TStmt::RecoverNext => false,
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => any_in_stmts(b, f),
@@ -1717,6 +1949,7 @@ impl<'a> FnCx<'a> {
             unwind: None,
             cleanup_depth: 0,
             recover_cursor: None,
+            recover_error: None,
         }
     }
 
@@ -1751,19 +1984,53 @@ impl<'a> FnCx<'a> {
         Ok(())
     }
 
+    /// Evaluate explicitly captured scalar/string arguments exactly once at
+    /// registration. The resulting compiler-owned slots outlive the failed
+    /// scope and are read by the deferred/recovery body on its owning task.
+    fn cleanup_factory_args(&mut self, params: &[(String, Type, Pos)],
+                            args: &[Expr], pos: Pos, kind: &str)
+        -> R<CleanupCaptured>
+    {
+        if params.len() != args.len() {
+            return Err(Diagnostic::new(pos, "E_ARITY", format!(
+                "{kind} factory expects {} argument(s), found {}", params.len(), args.len())));
+        }
+        let mut sets = Vec::new();
+        let mut bound = Vec::new();
+        for ((name, ty, ppos), arg) in params.iter().zip(args) {
+            let ty = self.resolve(*ty, *ppos)?;
+            if !matches!(ty, Type::Int | Type::Bool | Type::Str | Type::Float) {
+                return Err(Diagnostic::new(*ppos, "E_UNSUPPORTED_TYPE",
+                    "cleanup factory parameters are restricted to scalar and string values"));
+            }
+            let v = self.consume_expected(arg, ty)?;
+            if v.ty != ty {
+                return Err(type_err(arg.pos, format!(
+                    "{kind} factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty))));
+            }
+            let slot = self.temp(ty, *ppos)?;
+            sets.push((slot, v));
+            bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
+        }
+        Ok((sets, bound))
+    }
+
     /// Check a cleanup/recovery body in an isolated scope: it cannot see the
     /// enclosing locals (no by-reference capture lifetime is verified), only
     /// the explicit factory parameters in `bound`.
-    fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
+    fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>,
+                error: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
         let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
         let loans = std::mem::take(&mut self.loans);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
+        let prev_error = std::mem::replace(&mut self.recover_error, error);
         self.cleanup_depth += 1;
         let r = self.stmts(body);
         self.cleanup_depth -= 1;
         self.recover_cursor = prev_cursor;
+        self.recover_error = prev_error;
         self.loans = loans;
         self.moved = moved;
         self.loops = loops;
@@ -1833,6 +2100,17 @@ impl<'a> FnCx<'a> {
         }
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
+        }
+        // An ErrorView and RecoveryCursor are compiler-issued capabilities, not
+        // ordinary locals. Shadowing either binder would make an ordinary
+        // expression such as err.message or cursor.next() resolve to the
+        // wrong object and could counterfeit terminal recovery control flow.
+        if self.cleanup_depth > 0 &&
+            (self.recover_error.as_deref() == Some(name)
+                || self.recover_cursor.as_deref() == Some(name))
+        {
+            return Err(Diagnostic::new(pos, "E_RESERVED",
+                format!("recovery capability '{name}' cannot be shadowed")));
         }
         let slot = self.temp(ty, pos)?;
         self.scopes.last_mut().unwrap().push(Local {
@@ -2020,49 +2298,30 @@ impl<'a> FnCx<'a> {
                         }
                         None => None,
                     };
-                    Ok(TStmt::Try { saved, body, catch, finally })
+                    Ok(TStmt::Try { saved, body, catch, finally, pos: *pos })
                 })();
                 self.loops = loops;
                 checked?
             }
-            Stmt::Defer { body, pos } => {
+            Stmt::Defer { params, body, args, pos } => {
                 self.top_registration(*pos, "defer")?;
                 self.unwind_frame(*pos, "defer")?;
+                let (sets, bound) = self.cleanup_factory_args(params, args, *pos, "defer")?;
                 let flag = self.temp(Type::Bool, *pos)?;
-                let body = self.isolated(Vec::new(), None, body)?;
-                TStmt::Defer { flag, body }
+                let body = self.isolated(bound, None, None, body)?;
+                TStmt::Defer { flag, args: sets, body, pos: *pos }
             }
-            Stmt::Recover { params, err: _, cursor, body, args, pos } => {
+            Stmt::Recover { params, err, cursor, body, args, pos } => {
                 self.top_registration(*pos, "recover")?;
                 self.unwind_frame(*pos, "recover")?;
-                if params.len() != args.len() {
-                    return Err(Diagnostic::new(*pos, "E_ARITY", format!(
-                        "recovery factory expects {} argument(s), found {}", params.len(), args.len())));
-                }
-                let mut sets = Vec::new();
-                let mut bound = Vec::new();
-                for ((name, ty, ppos), arg) in params.iter().zip(args) {
-                    let ty = self.resolve(*ty, *ppos)?;
-                    if !matches!(ty, Type::Int | Type::Bool | Type::Str | Type::Float) {
-                        return Err(Diagnostic::new(*ppos, "E_UNSUPPORTED_TYPE",
-                            "recovery factory parameters are restricted to scalar and string values"));
-                    }
-                    let v = self.consume_expected(arg, ty)?;
-                    if v.ty != ty {
-                        return Err(type_err(arg.pos, format!(
-                            "recovery factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty))));
-                    }
-                    let slot = self.temp(ty, *ppos)?;
-                    sets.push((slot, v));
-                    bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
-                }
+                let (sets, bound) = self.cleanup_factory_args(params, args, *pos, "recover")?;
                 let flag = self.temp(Type::Bool, *pos)?;
-                let body = self.isolated(bound, Some(cursor.clone()), body)?;
+                let body = self.isolated(bound, Some(cursor.clone()), Some(err.clone()), body)?;
                 if !returns(&body) {
                     return Err(Diagnostic::new(*pos, "E_RETURN",
                         "a recovery handler must return a value or call the cursor's next() on every path"));
                 }
-                TStmt::Recover { flag, args: sets, body }
+                TStmt::Recover { flag, args: sets, body, pos: *pos }
             }
             Stmt::Expr(e) => {
                 let v = self.expr(e)?;
@@ -2444,6 +2703,10 @@ impl<'a> FnCx<'a> {
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
+        // Guards run in the If condition, before their arm body. Stage each
+        // guarded binding beforehand, but read tagged payloads ONLY after
+        // confirming the corresponding variant discriminant.
+        let mut match_setup = vec![TStmt::Set(tmp, subj)];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             if covered {
@@ -2492,7 +2755,22 @@ impl<'a> FnCx<'a> {
                     } else {
                         TE { e: TExpr::AdtPayload(Box::new(get())), ty }
                     };
-                    body.push(TStmt::Set(slot, value));
+                    let assignment = TStmt::Set(slot, value);
+                    if arm.guard.is_some() {
+                        if let Some(tag_test) = test.as_ref() {
+                            // Reading Some/Ok/Err payload before checking its
+                            // tag would be unsound (and can read uninitialized
+                            // storage for the opposite variant).
+                            match_setup.push(TStmt::If(
+                                vec![(tag_test.clone(), vec![assignment])], None,
+                            ));
+                        } else {
+                            // A whole-value binding is always safe to copy.
+                            match_setup.push(assignment);
+                        }
+                    } else {
+                        body.push(assignment);
+                    }
                 }
                 let guard = match &arm.guard {
                     Some(g) => Some(self.cond(g, "match guard")?),
@@ -2537,10 +2815,8 @@ impl<'a> FnCx<'a> {
                 format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
-        Ok(TStmt::Block(vec![
-            TStmt::Set(tmp, subj),
-            TStmt::If(out, Some(vec![TStmt::Unreachable])),
-        ]))
+        match_setup.push(TStmt::If(out, Some(vec![TStmt::Unreachable])));
+        Ok(TStmt::Block(match_setup))
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
@@ -3413,6 +3689,17 @@ impl<'a> FnCx<'a> {
 
     fn member(&mut self, base: &Expr, name: &str, pos: Pos) -> R<TE> {
         if let ExprKind::Var(n) = &base.kind {
+            if self.recover_error.as_deref() == Some(n) {
+                let (_, _, msg, kind, _) = self.unwind.expect("recovery needs unwind slots");
+                // ErrorView is an ephemeral compiler-issued view, never a
+                // first-class object or a transferable/returnable handle.
+                return match name {
+                    "message" => Ok(TE { e: TExpr::Local(msg), ty: Type::Str }),
+                    "is_raise" => Ok(TE { e: TExpr::Local(kind), ty: Type::Bool }),
+                    _ => Err(Diagnostic::new(pos, "E_UNBOUND",
+                        format!("unknown ErrorView property '{name}'"))),
+                };
+            }
             if let Some(l) = self.lookup(n) {
                 if let Some(payload) = l.mail {
                     return match name {

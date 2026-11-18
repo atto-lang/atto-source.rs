@@ -177,3 +177,190 @@ fn duplicate_bases_and_contracts_are_rejected_before_composition() {
         pub fnc main(): int { return 0; }
     "#, "E_DUPLICATE");
 }
+
+#[test]
+fn inherited_field_alias_v1_reports_precise_fail_closed_boundaries() {
+    // A valid alias is recognized but MUST NOT be silently flattened into an
+    // unrelated new field before the inherited physical layout ABI exists.
+    compiled(r#"
+        define class Dog as pub int age: 5; end
+        define class Cat as pub int age: 10; end
+        define class Hybrid extends Dog, Cat as
+            use Dog.age as dog_age;
+            use Cat.age as cat_age;
+        end
+        pub fnc main(): int {
+            val hybrid = new Hybrid();
+            return hybrid.dog_age + hybrid.cat_age;
+        }
+    "#);
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as use Dog::age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_SYNTAX");
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid as use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_ALIAS_TARGET");
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as use Dog.age dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_SYNTAX");
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as use Dog.age as dog_age end
+        pub fnc main(): int { return 0; }
+    "#, "E_SYNTAX");
+
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as pub use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_SYNTAX");
+}
+
+#[test]
+fn ordinary_class_method_named_use_is_not_a_field_alias() {
+    compiled(r#"
+        define class Base as pub speak(): int { return 2; } end
+        define class Child extends Base as
+            pub use(): int { return 5; }
+        end
+        pub fnc main(): int { return new Child().use(); }
+    "#);
+}
+
+#[test]
+fn exact_direct_scalar_parent_fields_compile_deterministic_wasm() {
+    compiled(r#"
+        define class Dog as pub int age: 5; end
+        define class Cat as pub int age: 10; end
+        define class Hybrid extends Dog, Cat as
+            use Cat.age as cat_age;
+            use Dog.age as dog_age;
+        end
+        pub fnc main(): int {
+            val hybrid = new Hybrid();
+            return hybrid.cat_age + hybrid.dog_age;
+        }
+    "#);
+    compiled(r#"
+        define class Enabled as pub bool ready: true; end
+        define class Hybrid extends Enabled as use Enabled.ready as is_ready; end
+        pub fnc main(): int {
+            val item = new Hybrid();
+            if item.is_ready then return 42; else return 0; fi
+        }
+    "#);
+}
+#[test]
+fn scalar_parent_aliases_reject_wrong_origin_inaccessible_or_duplicate_storage() {
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Cat as pub int age: 10; end
+        define class Hybrid extends Dog as use Cat.age as cat_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_ALIAS_TARGET");
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as use Dog.missing as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_ALIAS_TARGET");
+    rejected(r#"
+        define class Dog as private int age: 5; end
+        define class Hybrid extends Dog as use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_ALIAS_VISIBILITY");
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as
+            use Dog.age as age_one;
+            use Dog.age as age_two;
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_ALIAS_DUPLICATE");
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Cat as pub int age: 10; end
+        define class Hybrid extends Dog, Cat as
+            use Dog.age as same_age;
+            use Cat.age as same_age;
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_ALIAS_DUPLICATE");
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as use Dog.age as age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_ALIAS_DUPLICATE");
+}
+#[test]
+fn stateful_parent_layouts_without_proof_remain_fail_closed() {
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as use Dog.age as dog_age; end
+        pub fnc main(): int { return new Hybrid().age; }
+    "#, "E_UNBOUND");
+    rejected(r#"
+        define class Dog as pub int age: 5; end
+        define class Hybrid extends Dog as end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
+    rejected(r#"
+        define class Dog as pub int age: 5; pub speak(): int { return self.age; } end
+        define class Hybrid extends Dog as use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
+    rejected(r#"
+        define class Dog as pub int age: 5; constructor() {} end
+        define class Hybrid extends Dog as use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
+    rejected(r#"
+        define class Dog as pub int age: 5; pub int mood: 4; end
+        define class Hybrid extends Dog as use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
+    rejected(r#"
+        define class Dog as pub int age: 1 + 4; end
+        define class Hybrid extends Dog as use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
+    rejected(r#"
+        define class Animal as pub int age: 7; end
+        define class Dog extends Animal as end
+        define class Hybrid extends Dog as use Dog.age as dog_age; end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
+}
+
+#[test]
+fn alias_declaration_reordering_does_not_reorder_parent_abi_slots() {
+    use atto_compiler::lexer::{lex, Tok};
+    let source = r#"
+        define class Dog as pub int age: 5; end
+        define class Cat as pub int age: 10; end
+        define class Hybrid extends Dog, Cat as
+            use Cat.age as cat_age;
+            use Dog.age as dog_age;
+        end
+        pub fnc main(): int {
+            val h = new Hybrid();
+            return h.dog_age * 10 + h.cat_age;
+        }
+    "#;
+    let lowered = atto_compiler::nominal_lower::lower(lex(source).unwrap()).unwrap();
+    let child = lowered.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "Hybrid")).unwrap();
+    let body = &lowered[child..];
+    let dog = body.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "dog_age")).unwrap();
+    let cat = body.iter().position(|t| matches!(&t.tok, Tok::Ident(s) if s == "cat_age")).unwrap();
+    assert!(dog < cat, "physical ABI slots must follow Dog,Cat parent order");
+    compiled(source);
+}
