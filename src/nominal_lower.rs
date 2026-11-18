@@ -117,8 +117,10 @@ fn members(t: &[Token], kind: Kind, owner: &str, has_parent: bool) -> R<(BTreeMa
                 return Err(diag(at, "E_ALIAS_TARGET", format!(
                     "cannot alias {ancestor}.{field} as {alias}: class has no ancestors")));
             }
-            return Err(diag(at, "E_UNSUPPORTED", format!(
-                "cannot yet alias {ancestor}.{field} as {alias}: inherited field slots require a checked layout and ownership ABI")));
+            // Syntax is valid. Semantic alias admission and physical-slot
+            // generation run after the complete nominal ancestry is known.
+            i += 7;
+            continue;
         }
         if is(t, i, "fnc") || is(t, i, "method") { i += 1; }
         let is_ctor = is(t, i, "constructor");
@@ -267,6 +269,183 @@ fn decls(t: &[Token]) -> R<BTreeMap<String, Decl>> {
     }
     Ok(out)
 }
+
+#[derive(Clone)]
+struct ScalarBaseField {
+    name: String,
+    tokens: Vec<Token>,
+    name_index: usize,
+    public: bool,
+    pos: Pos,
+}
+#[derive(Clone)]
+struct InheritedAlias {
+    parent: String,
+    field: String,
+    alias: String,
+    start: usize,
+    end: usize,
+    pos: Pos,
+}
+
+/// Admit only initialized, directly owned int/bool storage. Any constructor,
+/// method body, computed initializer, nested object or opaque source syntax
+/// fails closed rather than silently dropping a parent's storage.
+fn scalar_base_fields(base: &Decl) -> R<Vec<ScalarBaseField>> {
+    if !base.parents.is_empty() || !base.contracts.is_empty() || !base.methods.is_empty() {
+        return Err(diag(base.pos, "E_UNSUPPORTED",
+            "state-bearing inheritance requires direct bases without methods or ancestors"));
+    }
+    let t = &base.body;
+    let mut i = 0;
+    let mut fields = Vec::new();
+    let mut names = BTreeSet::new();
+    while i < t.len() {
+        if fields.len() >= 64 {
+            return Err(diag(t[i].pos, "E_SOURCE_LIMIT", "too many inherited scalar fields"));
+        }
+        let begin = i;
+        let public = is(t, i, "pub");
+        if public || is(t, i, "private") { i += 1; }
+        let kind = if is(t, i, "int") { "int" } else if is(t, i, "bool") { "bool" } else {
+            return Err(diag(t[begin].pos, "E_UNSUPPORTED",
+                "inherited state admits only initialized int/bool fields, without constructors"));
+        };
+        i += 1;
+        let field_name = name(t, i)?;
+        let at_name = i - begin;
+        i += 1;
+        if t.get(i).map(|v| &v.tok) != Some(&Tok::Colon) {
+            return Err(diag(t[begin].pos, "E_UNSUPPORTED",
+                "inherited scalar fields require a literal ':' initializer"));
+        }
+        i += 1;
+        if kind == "int" && t.get(i).map(|v| &v.tok) == Some(&Tok::Minus) { i += 1; }
+        let valid_literal = match t.get(i).map(|v| &v.tok) {
+            Some(Tok::Int(_)) if kind == "int" => true,
+            Some(Tok::Ident(v)) if kind == "bool" && (v == "true" || v == "false") => true,
+            _ => false,
+        };
+        if !valid_literal {
+            return Err(diag(t.get(i).map_or(t[begin].pos, |v| v.pos), "E_UNSUPPORTED",
+                "inherited scalar initializers must be literal int/bool values"));
+        }
+        i += 1;
+        if t.get(i).map(|v| &v.tok) != Some(&Tok::Semi) {
+            return Err(diag(t.get(i).map_or(t[begin].pos, |v| v.pos), "E_UNSUPPORTED",
+                "inherited scalar field must be terminated by ';'"));
+        }
+        i += 1;
+        if !names.insert(field_name.clone()) {
+            return Err(diag(t[begin].pos, "E_DUPLICATE", "duplicate inherited field name"));
+        }
+        fields.push(ScalarBaseField {
+            name: field_name, tokens: t[begin..i].to_vec(),
+            name_index: at_name, public, pos: t[begin].pos,
+        });
+    }
+    if fields.is_empty() {
+        return Err(diag(base.pos, "E_UNSUPPORTED", "base constructor/state layout is not supported"));
+    }
+    Ok(fields)
+}
+
+/// Alias declarations have no storage identity. Each exact direct-base field
+/// is represented by ONE physical child-class slot; the alias only chooses the
+/// source-level name of that slot. No extra field is emitted per alias.
+fn alias_declarations(d: &Decl) -> R<Vec<InheritedAlias>> {
+    let t = &d.body;
+    let mut aliases = Vec::new();
+    let mut i = 0;
+    while i < t.len() {
+        if t[i].tok == Tok::LBrace {
+            i = closing(t, i, Tok::LBrace, Tok::RBrace)? + 1;
+            continue;
+        }
+        if is(t, i, "use") && t.get(i + 1).map(|v| &v.tok) != Some(&Tok::LParen) {
+            // The structural spelling was checked by members(). Never
+            // reinterpret an ordinary method named use() as an alias.
+            if i + 6 >= t.len() || t[i + 2].tok != Tok::Dot
+                || !is(t, i + 4, "as") || t[i + 6].tok != Tok::Semi {
+                return Err(diag(t[i].pos, "E_SYNTAX", "malformed inherited field alias"));
+            }
+            aliases.push(InheritedAlias {
+                parent: name(t, i + 1)?,
+                field: name(t, i + 3)?,
+                alias: name(t, i + 5)?,
+                start: i, end: i + 7, pos: t[i].pos,
+            });
+            i += 7;
+        } else { i += 1; }
+    }
+    Ok(aliases)
+}
+
+fn checked_scalar_aliases(
+    d: &Decl, all: &BTreeMap<String, Decl>, aliases: &[InheritedAlias],
+) -> R<Vec<Token>> {
+    let mut parent_fields = BTreeMap::<(String, String), ScalarBaseField>::new();
+    let mut exposed_names = BTreeSet::new();
+    let mut any_state = false;
+    for parent in &d.parents {
+        let base = all.get(parent).ok_or_else(||
+            diag(d.pos, "E_UNBOUND", format!("unknown parent class '{parent}'")))?;
+        if base.kind != Kind::Class {
+            return Err(diag(d.pos, "E_TYPE", "extends requires a concrete class"));
+        }
+        if base.has_fields_or_ctor {
+            any_state = true;
+            let fields = scalar_base_fields(base)?;
+            for f in fields {
+                exposed_names.insert(f.name.clone());
+                parent_fields.insert((parent.clone(), f.name.clone()), f);
+            }
+        }
+        // Field-alias names may not shadow inherited method namespaces.
+        for key in base.methods.keys() { exposed_names.insert(key.clone()); }
+    }
+    if !any_state && !aliases.is_empty() {
+        return Err(diag(aliases[0].pos, "E_ALIAS_TARGET",
+            "field alias target must be an inherited instance field"));
+    }
+    if !any_state { return Ok(Vec::new()); }
+    if d.has_fields_or_ctor || !d.contracts.is_empty() {
+        return Err(diag(d.pos, "E_UNSUPPORTED",
+            "state-bearing inheritance with local fields/constructors or traits is not implemented"));
+    }
+    let mut used_origins = BTreeSet::new();
+    let mut alias_names = BTreeSet::new();
+    let mut output = Vec::new();
+    for alias in aliases {
+        if !d.parents.contains(&alias.parent) {
+            return Err(diag(alias.pos, "E_ALIAS_TARGET",
+                "field alias must select a direct ancestor in the bounded scalar layout"));
+        }
+        let key = (alias.parent.clone(), alias.field.clone());
+        let original = parent_fields.get(&key).ok_or_else(||
+            diag(alias.pos, "E_ALIAS_TARGET", format!(
+                "no inherited instance field '{}.{}'", alias.parent, alias.field)))?;
+        if !original.public {
+            return Err(diag(alias.pos, "E_ALIAS_VISIBILITY",
+                "private parent fields cannot be re-exported through use"));
+        }
+        if !used_origins.insert(key) || !alias_names.insert(alias.alias.clone())
+            || exposed_names.contains(&alias.alias) || d.methods.contains_key(&alias.alias) {
+            return Err(diag(alias.pos, "E_ALIAS_DUPLICATE",
+                "field alias duplicates an origin or collides with an inherited/local member"));
+        }
+        let mut field_tokens = original.tokens.clone();
+        field_tokens[original.name_index] = Token {
+            tok: Tok::Ident(alias.alias.clone()), pos: alias.pos,
+        };
+        output.extend(field_tokens);
+    }
+    if used_origins.len() != parent_fields.len() {
+        return Err(diag(d.pos, "E_UNSUPPORTED",
+            "every inherited physical scalar slot requires exactly one explicit use alias"));
+    }
+    Ok(output)
+}
 fn resolve(
     owner: &str, all: &BTreeMap<String, Decl>,
     cached: &mut BTreeMap<String, BTreeMap<String, Method>>,
@@ -281,7 +460,8 @@ fn resolve(
         for parent in &d.parents {
             let base = all.get(parent).ok_or_else(|| diag(d.pos, "E_UNBOUND", format!("unknown class '{parent}'")))?;
             if base.kind != Kind::Class { return Err(diag(d.pos, "E_TYPE", "extends requires a class, not a trait/interface")); }
-            if base.has_fields_or_ctor { return Err(diag(d.pos, "E_UNSUPPORTED", "inherited fields and constructors require a checked base-layout ABI")); }
+            // Inherited state is admitted separately by checked_scalar_aliases,
+            // which rejects constructors, transitive state and unknown layouts.
             for (key, method) in resolve(parent, all, cached, visiting)? {
                 if method.public {
                     let same = inherited.entry(key).or_default();
@@ -377,6 +557,8 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             continue;
         }
         if !d.requires_lowering { continue; }
+        let aliases = alias_declarations(d)?;
+        let physical_fields = checked_scalar_aliases(d, &all, &aliases)?;
         let resolved = resolve(&d.name, &all, &mut cache, &mut visiting)?;
         let mut additions = Vec::new();
         for (name, method) in resolved {
@@ -397,10 +579,18 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             Token { pos: d.pos, tok: Tok::Ident(d.name.clone()) },
             Token { pos: d.pos, tok: Tok::Ident("as".into()) },
         ]);
+        // Emit one parent-derived physical field for each verified alias,
+        // before local state so parent initialization happens first.
+        output.extend(physical_fields);
+        // Never pass 'use Parent.field as alias' through to the ordinary
+        // parser; its exact original slot is already represented above.
+        let skipped: BTreeSet<usize> = aliases.iter()
+            .flat_map(|a| a.start..a.end).collect();
         // Remove only exact declaration-header override tokens. A token
         // spelled 'override' inside a method body is never a header marker.
         // Source coordinates remain unchanged for every retained token.
-        for token in &d.body {
+        for (i, token) in d.body.iter().enumerate() {
+            if skipped.contains(&i) { continue; }
             let header_override = is(std::slice::from_ref(token), 0, "override")
                 && d.methods.values().any(|m|
                     m.override_pos.is_some_and(|p|
