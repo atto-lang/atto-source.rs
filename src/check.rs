@@ -17,6 +17,7 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod loan_liveness;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
@@ -1806,7 +1807,25 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
-        body.iter().map(|s| self.stmt(s)).collect()
+        let mut checked = Vec::with_capacity(body.len());
+        for (i, statement) in body.iter().enumerate() {
+            checked.push(self.stmt(statement)?);
+            // End a class loan after the final possible use of its binding in
+            // this lexical scope. Never retire a loan from an enclosing scope:
+            // an outer statement may still refer to it after this block.
+            // The exhaustive AST visitor intentionally over-approximates uses
+            // in branching, loops, lambdas and cleanup scopes.
+            let expired: Vec<u32> = self.scopes.last().unwrap().iter()
+                .filter(|local| self.loans.contains_key(&local.slot) &&
+                    !body[i + 1..].iter().any(|next|
+                        loan_liveness::stmt_mentions(next, &local.name)))
+                .map(|local| local.slot)
+                .collect();
+            for slot in expired {
+                self.loans.remove(&slot);
+            }
+        }
+        Ok(checked)
     }
 
     fn cond(&mut self, e: &Expr, what: &str) -> R<TE> {
