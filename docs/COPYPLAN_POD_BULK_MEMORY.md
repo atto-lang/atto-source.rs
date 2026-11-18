@@ -97,3 +97,31 @@ name, missing destination local, extra instruction, and an unauthorized copy
 in main) and requires every invalid variant to fail before producing Wasm.
 These are compiler rejection checks, not an authorization mechanism for
 untrusted external typed IR. All cross-backend portability remains separate.
+
+## Merge-admission follow-up (2026-11-18)
+
+The end-to-end fixture `999-copy-doublebang-pod-interleaved-snapshots.atto`
+creates an original, a first clone, an unrelated same-layout allocation,
+and a second clone. It mutates both clones differently, verifies source and
+unrelated object isolation, and inspects all **four distinct 24-byte objects**
+in guest Wasm linear memory. This catches copying from the wrong source,
+using the wrong destination, omitted fields, and accidental aliasing.
+
+`scripts/ci/copyplan_admission.sh` is a portable no-secrets admission entry
+point for exact mirrored source trees and a normal source checkout. It runs
+the pinned full Cargo suite, native and Wasm32 compiler builds, compiled
+guest execution and full conformance. It also invokes
+`scripts/ci/guard_copyplan_clippy.py`: fail on previously unseen Clippy
+diagnostics, while reporting the 13 known pre-existing warnings as **debt**.
+The guard is not a substitute for eventual whole-repository rustfmt/Clippy
+cleanup. The SHA-pinned vendored `src/copy_graph_v1.rs` remains unchanged.
+
+The carrier workflow must authenticate the **complete original Git tree**
+and its blob count *before* invoking the admission script. The test carrier
+cannot use a private source checkout with its own `GITHUB_TOKEN`; the
+source tree must be mirrored into a temporary branch through a trusted Git
+connector, with exact Git object SHA verification for changed blobs and the
+full tree. Post the exact source head, tree, carrier head and execution
+receipt on both stacked PRs. Do not mark draft PRs ready/merge solely on
+green carrier tests: #265 must be independently reviewed first, with
+current-head tests, and #337 must subsequently be rebased/retargeted.
