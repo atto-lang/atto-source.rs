@@ -47,7 +47,7 @@ fn deeply_immutable_scalar_freeze_is_executable_identity() {
     for expr in ["freeze! 42", "freeze! true", "freeze! \"hello\""] {
         let src = format!("pub fnc main(): int {{ val x = {expr}; return 42; }}");
         let wasm = compile(&src).unwrap_or_else(|e| panic!("{expr}: {e}"));
-        assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
     }
 }
 
