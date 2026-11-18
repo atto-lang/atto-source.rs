@@ -94,7 +94,7 @@ fn transitive_cycle_is_not_a_valid_acyclic_dependency_graph() {
 }
 #[test]
 fn alternate_paths_and_duplicates_do_not_forge_same_file_identity() {
-    let c = MATH.replace("export pub module Math;", "export pub module Math;");
+    let c = MATH.to_owned();
     let b = ORDERS.replace("./math.atto", "+lib/math.atto");
     assert!(compile_linked("src/main.atto", &fixture(MAIN, &b, &c, "app", "app", "app")).is_ok());
     let traversal = ORDERS.replace("./math.atto", "./../math.atto");
