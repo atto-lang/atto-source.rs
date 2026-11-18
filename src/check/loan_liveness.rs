@@ -10,7 +10,9 @@
 use crate::ast::{Expr, ExprKind, LambdaBody, Stmt};
 
 pub(super) fn stmt_mentions(stmt: &Stmt, target: &str, fuel: &mut usize) -> bool {
-    if *fuel == 0 { return true; } // unknown means possibly used: retain the loan
+    if *fuel == 0 {
+        return true;
+    } // unknown means possibly used: retain the loan
     *fuel -= 1;
     match stmt {
         Stmt::Bind { init, .. } => expr_mentions(init, target, fuel),
@@ -67,18 +69,26 @@ pub(super) fn stmt_mentions(stmt: &Stmt, target: &str, fuel: &mut usize) -> bool
             body,
             ..
         } => {
-            init.as_ref().is_some_and(|s| stmt_mentions(s, target, fuel))
-                || cond.as_ref().is_some_and(|e| expr_mentions(e, target, fuel))
-                || update.as_ref().is_some_and(|s| stmt_mentions(s, target, fuel))
+            init.as_ref()
+                .is_some_and(|s| stmt_mentions(s, target, fuel))
+                || cond
+                    .as_ref()
+                    .is_some_and(|e| expr_mentions(e, target, fuel))
+                || update
+                    .as_ref()
+                    .is_some_and(|s| stmt_mentions(s, target, fuel))
                 || body.iter().any(|s| stmt_mentions(s, target, fuel))
         }
         Stmt::ForIn { source, body, .. } => {
-            expr_mentions(source, target, fuel) || body.iter().any(|s| stmt_mentions(s, target, fuel))
+            expr_mentions(source, target, fuel)
+                || body.iter().any(|s| stmt_mentions(s, target, fuel))
         }
         Stmt::Match { subject, arms, .. } => {
             expr_mentions(subject, target, fuel)
                 || arms.iter().any(|a| {
-                    a.guard.as_ref().is_some_and(|e| expr_mentions(e, target, fuel))
+                    a.guard
+                        .as_ref()
+                        .is_some_and(|e| expr_mentions(e, target, fuel))
                         || a.body.iter().any(|s| stmt_mentions(s, target, fuel))
                 })
         }
@@ -87,7 +97,9 @@ pub(super) fn stmt_mentions(stmt: &Stmt, target: &str, fuel: &mut usize) -> bool
 }
 
 fn expr_mentions(expr: &Expr, target: &str, fuel: &mut usize) -> bool {
-    if *fuel == 0 { return true; }
+    if *fuel == 0 {
+        return true;
+    }
     *fuel -= 1;
     match &expr.kind {
         ExprKind::Var(name) => name == target,
@@ -96,15 +108,20 @@ fn expr_mentions(expr: &Expr, target: &str, fuel: &mut usize) -> bool {
         | ExprKind::Ownership(_, _, e)
         | ExprKind::Propagate(e)
         | ExprKind::Member(e, _) => expr_mentions(e, target, fuel),
-        ExprKind::Binary(_, lhs, rhs) => expr_mentions(lhs, target, fuel) || expr_mentions(rhs, target, fuel),
+        ExprKind::Binary(_, lhs, rhs) => {
+            expr_mentions(lhs, target, fuel) || expr_mentions(rhs, target, fuel)
+        }
         ExprKind::Ternary(a, b, c) => {
-            expr_mentions(a, target, fuel) || expr_mentions(b, target, fuel) || expr_mentions(c, target, fuel)
+            expr_mentions(a, target, fuel)
+                || expr_mentions(b, target, fuel)
+                || expr_mentions(c, target, fuel)
         }
         ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) => {
             args.iter().any(|e| expr_mentions(e, target, fuel))
         }
         ExprKind::MethodCall(receiver, _, args) => {
-            expr_mentions(receiver, target, fuel) || args.iter().any(|e| expr_mentions(e, target, fuel))
+            expr_mentions(receiver, target, fuel)
+                || args.iter().any(|e| expr_mentions(e, target, fuel))
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expression(e) => expr_mentions(e, target, fuel),
@@ -128,14 +145,20 @@ mod tests {
 
     #[test]
     fn depleted_budget_preserves_a_loan_even_with_no_apparent_use() {
-        let literal = Expr { kind: ExprKind::Int(Some(42)), pos: Pos { line: 1, col: 1 } };
+        let literal = Expr {
+            kind: ExprKind::Int(Some(42)),
+            pos: Pos { line: 1, col: 1 },
+        };
         let mut fuel = 0;
         assert!(stmt_mentions(&Stmt::Expr(literal), "reader", &mut fuel));
     }
 
     #[test]
     fn ample_budget_can_prove_a_literal_has_no_loan_use() {
-        let literal = Expr { kind: ExprKind::Int(Some(42)), pos: Pos { line: 1, col: 1 } };
+        let literal = Expr {
+            kind: ExprKind::Int(Some(42)),
+            pos: Pos { line: 1, col: 1 },
+        };
         let mut fuel = 8;
         assert!(!stmt_mentions(&Stmt::Expr(literal), "reader", &mut fuel));
     }
