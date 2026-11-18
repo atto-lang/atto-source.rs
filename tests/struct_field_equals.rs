@@ -51,6 +51,15 @@ fn later_same_scope_bindings_do_not_retroactively_shadow() {
 }
 
 #[test]
+fn typed_checker_respects_nested_scope_ownership() {
+    pass(&source("block { val Particle=7; } val p=Particle(x=10,y=20); return p.x+p.y;"));
+    reject(&source("block { val Particle=7; val p=Particle(x=10,y=20); } return 0;"),
+        "E_STRUCT_RESOLVE");
+    reject(&source("val Particle=7; block { val p=Particle(x=10,y=20); } return 0;"),
+        "E_STRUCT_RESOLVE");
+}
+
+#[test]
 fn same_callable_scope_remains_shielded() {
     reject(&source("val Particle=7; val p=Particle(x=10,y=20); return p.x;"),
         "E_STRUCT_RESOLVE");
@@ -71,7 +80,7 @@ fn missing_duplicate_unknown_and_mixed_fields_fail_closed() {
 fn calls_ctors_shadowing_and_effectful_values_never_reinterpret_equals() {
     reject(&source("val Particle=7; val p=Particle(x=10,y=20); return p.x;"), "E_STRUCT_RESOLVE");
     reject(&format!("{HEADER}fnc Particle(int x) -> int {{ return x; }}\n\
-        pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"), "E_STRUCT_RESOLVE");
+        pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"), "E_DUPLICATE");
     reject(&format!("{HEADER}fnc helper(int Particle) -> int {{\n\
         val p = Particle(x=10,y=20); return p.x; }}\n\
         pub fnc main(): int {{ return helper(7); }}"), "E_STRUCT_RESOLVE");
