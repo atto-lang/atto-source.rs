@@ -71,7 +71,7 @@ fn expired_alias_is_never_implicitly_owned() {
 
 #[test]
 fn explicit_capability_types_fail_closed_until_their_abi_is_verified() {
-    for capability in ["Borrow<Person>", "BorrowMut<Person>",
+    for capability in ["BorrowMut<Person>",
                        "Borrow<Person, a>", "BorrowMut<Person, lifetime=a>",
                        "Shared<Person>", "Pointer<Person>"] {
         let source = format!(r#"
@@ -121,4 +121,48 @@ fn multiplication_remains_a_valid_arithmetic_operator() {
     let wasm = atto_compiler::compile("pub fnc main(): int { return 6 * 7; }")
         .expect("multiplication must not be disabled by pointer grammar");
     assert!(wasm.starts_with(b"\0asm"));
+}
+
+#[test]
+fn readonly_borrow_formal_does_not_implicitly_move_caller_owner() {
+    let source = r#"
+        define class Person as pub let int age = 42; end
+        fnc inspect(person: Borrow<Person>): int { return person.age; }
+        pub fnc main(): int {
+            let person = new Person();
+            let a = inspect(person);
+            let b = inspect(person);
+            return a + b - person.age;
+        }
+    "#;
+    let guest = atto_compiler::compile(source).expect("readonly Borrow<Person> must compile");
+    assert!(guest.starts_with(b"\0asm"));
+}
+
+#[test]
+fn readonly_borrow_formal_rejects_escapes_mutation_and_unproven_call_abi() {
+    let tests = [
+        (r#"define class Person as pub let int age = 42; end
+            fnc steal(p: Borrow<Person>): Person { return p; }
+            pub fnc main(): int { let p = new Person(); let q = steal(p); return q.age; }"#, "E_BORROW"),
+        (r#"define class Person as pub let int age = 42; end
+            fnc change(p: Borrow<Person>): void { p.age = 1; }
+            pub fnc main(): int { let p = new Person(); change(p); return 1; }"#, "E_BORROW"),
+        (r#"define class Person as pub let int age = 42; end
+            fnc inspect(p: Borrow<Person>): int { return p.age; }
+            pub fnc main(): int { return inspect(new Person()); }"#, "E_BORROW"),
+        (r#"define class Person as pub let int age = 42; end
+            fnc inspect(p: Borrow<Person>, n: int): int { return p.age + n; }
+            pub fnc main(): int { let p = new Person(); return inspect(p, 0); }"#, "E_BORROW"),
+        (r#"define class Person as pub let int age = 42; end
+            fnc inspect(): Borrow<Person> { return new Person(); }
+            pub fnc main(): int { return 0; }"#, "E_UNSUPPORTED_TYPE"),
+        (r#"define class Person as pub let int age = 42; end
+            fnc consume(p: Person): int { return p.age; }
+            fnc inspect(p: Borrow<Person>): int { return consume(p); }
+            pub fnc main(): int { let p = new Person(); return inspect(p); }"#, "E_BORROW"),
+    ];
+    for (source, code) in tests {
+        assert_eq!(atto_compiler::compile(source).unwrap_err().code, code);
+    }
 }
