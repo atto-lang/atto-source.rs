@@ -172,14 +172,14 @@ fn checked_field_spans_agree_with_offsets_and_enforce_backing_bounds() {
                     .unwrap();
                 assert_eq!(span, start..expected_end, "{kind:?}, row={row}");
                 assert_eq!(
-                    plan.checked_field_span(row, field_index, expected_end - 1),
+                    plan.checked_field_span(row, field_index, plan.total_bytes() - 1),
                     Err(RefError::OutOfRange),
-                    "{kind:?}, row={row} must reject a truncated backing store"
+                    "{kind:?}, row={row} must reject an incomplete owned store"
                 );
                 assert_eq!(
-                    plan.checked_field_span(row, field_index, expected_end),
+                    plan.checked_field_span(row, field_index, plan.total_bytes()),
                     Ok(start..expected_end),
-                    "{kind:?}, row={row} exact end must be admitted"
+                    "{kind:?}, row={row} complete backing must be admitted"
                 );
             }
         }
