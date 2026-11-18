@@ -19,6 +19,8 @@ pub const PREFIX: &str = "__atto_shape_";
 const MAX_SHAPES: usize = 64;
 const MAX_FIELDS: usize = 8;
 const MAX_NAME_BYTES: usize = 64;
+const MAX_EQUALS_STRUCT_INITIALIZERS: usize = 256;
+const MAX_CALLABLE_HEADER_TOKENS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind { Struct, Record }
@@ -154,6 +156,260 @@ fn keyed(t: &[Token], open: usize) -> R<(BTreeMap<String, Token>, usize)> {
     Ok((values,j+1))
 }
 
+/// A distinct source-level candidate for the narrow implicit struct field
+/// initializer. Preserve the source field order and token locations; unlike
+/// named CALL arguments, these labels use '=' only for resolved scalar Structs.
+#[derive(Clone)]
+struct StructFieldInit {
+    nominal: String,
+    pos: Pos,
+    fields_in_source_order: Vec<(String, Token)>,
+}
+
+/// A conservative lexical binder ledger for the source-local executable
+/// struct profile. Unlike a single whole-file scan, declarations inside
+/// *unrelated* brace-bodied callables do not shadow an initializer elsewhere.
+///
+/// This is intentionally NOT full nominal typed-IR resolution: unsupported
+/// body forms, module imports and complex scopes remain fail-closed.
+struct ScopeLedger {
+    /// Innermost enclosing '{' in the original token stream.
+    scopes: Vec<Option<usize>>,
+    /// Immediate enclosing brace of each opening brace token.
+    parents: Vec<Option<usize>>,
+    /// For callable header tokens, the following brace-bodied function's
+    /// opening '{'. This binds typed formals to their body, not the file.
+    header_bodies: Vec<Option<usize>>,
+}
+
+impl ScopeLedger {
+    fn new(t: &[Token]) -> Self {
+        let mut scopes = vec![None; t.len()];
+        let mut parents = vec![None; t.len()];
+        let mut stack = Vec::<usize>::new();
+        for (i, tok) in t.iter().enumerate() {
+            scopes[i] = stack.last().copied();
+            match tok.tok {
+                Tok::LBrace => {
+                    parents[i] = stack.last().copied();
+                    stack.push(i);
+                }
+                Tok::RBrace => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+
+        let mut header_bodies = vec![None; t.len()];
+        for start in 0..t.len() {
+            let open = if (word(t,start,"fnc") || word(t,start,"routine")
+                || word(t,start,"method")) &&
+                matches!(t.get(start+1).map(|v|&v.tok),Some(Tok::Ident(_))) &&
+                t.get(start+2).is_some_and(|v| v.tok==Tok::LParen) {
+                start+2
+            } else if word(t,start,"constructor") &&
+                t.get(start+1).is_some_and(|v| v.tok==Tok::LParen) {
+                start+1
+            } else {
+                continue;
+            };
+            let mut depth=0usize;
+            let mut after=None;
+            for i in open..t.len().min(open.saturating_add(MAX_CALLABLE_HEADER_TOKENS)) {
+                match t[i].tok {
+                    Tok::LParen => { depth+=1; if depth>128 {break;} }
+                    Tok::RParen => {
+                        if depth==0 {break;}
+                        depth-=1;
+                        if depth==0 {after=Some(i+1);break;}
+                    }
+                    Tok::Eof => break,
+                    _=>{}
+                }
+            }
+            let Some(after)=after else {continue;};
+            // Only the existing brace-bodied executable callable profile.
+            // Do not guess the body of an end-delimited or arrow callable.
+            let mut body=None;
+            for i in after..t.len().min(after.saturating_add(48)) {
+                if t[i].tok==Tok::LBrace {body=Some(i);break;}
+                if matches!(t[i].tok,Tok::Semi|Tok::RBrace|Tok::Eof)
+                    || word(t,i,"end") {break;}
+            }
+            if let Some(body)=body {
+                for slot in &mut header_bodies[start..body] {
+                    // Preserve the innermost header if the grammar nests one.
+                    *slot=Some(body);
+                }
+            }
+        }
+        Self { scopes,parents,header_bodies }
+    }
+
+    fn contains_brace(&self, mut scope: Option<usize>, expected: usize) -> bool {
+        while let Some(open)=scope {
+            if open==expected {return true;}
+            scope=self.parents[open];
+        }
+        false
+    }
+
+    fn binder_visible(&self, binder: usize, use_site: usize) -> bool {
+        let Some(&use_scope)=self.scopes.get(use_site) else {return true;};
+        if let Some(body)=self.header_bodies.get(binder).copied().flatten() {
+            return self.contains_brace(use_scope,body);
+        }
+        let Some(&binder_scope)=self.scopes.get(binder) else {return true;};
+        match binder_scope {
+            None => true, // file-root binding shadows all local scopes
+            Some(open) => self.contains_brace(use_scope,open),
+        }
+    }
+}
+
+/// Is the name at token 'i' a declaration/binding, rather than a normal use?
+/// Global names collide regardless of textual order. Locals and formals only
+/// shadow initializers reachable through their actual lexical scopes.
+fn struct_name_binding(t: &[Token], i: usize) -> Option<bool> {
+    let prev=i.checked_sub(1).and_then(|p|t.get(p));
+    let preceding=match prev.map(|v|&v.tok) {
+        Some(Tok::Ident(w))=>w.as_str(), _=>"",
+    };
+    if matches!(preceding,
+        "fnc"|"routine"|"class"|"actor"|"record"|"enum"|"trait"
+        |"interface"|"supervisor"|"module"|"type"|"alias"|"import") {
+        return Some(true);
+    }
+    // 'import struct Particle' shadows source-local nominal resolution,
+    // whereas 'define struct Particle' is the declaration itself.
+    if preceding=="struct" && i>=2 && word(t,i-2,"import") {
+        return Some(true);
+    }
+    if matches!(preceding,
+        "val"|"let"|"const"|"for"|"of"|"over"|"int"|"float"
+        |"bool"|"string"|"String") {
+        return Some(false);
+    }
+    if prev.is_some_and(|v|v.tok==Tok::Pipe)
+        || t.get(i+1).is_some_and(|v|v.tok==Tok::Pipe) {
+        return Some(false);
+    }
+    let before_type=i.checked_sub(2).and_then(|p|t.get(p));
+    if matches!(prev.map(|v|&v.tok), Some(Tok::Ident(_)))
+        && before_type.is_some_and(|v|
+            matches!(v.tok,Tok::LParen|Tok::Comma)
+            || matches!(&v.tok,Tok::Ident(w) if
+                matches!(w.as_str(),"val"|"let"|"const")))
+        && t.get(i+1).is_some_and(|v|
+            matches!(v.tok,Tok::Comma|Tok::RParen|Tok::Assign|Tok::Question)) {
+        return Some(false);
+    }
+    if t.get(i+1).is_some_and(|v|v.tok==Tok::Colon)
+        && t.get(i+2).is_some_and(|v|matches!(&v.tok,Tok::Ident(_))) {
+        return Some(false);
+    }
+    None
+}
+
+fn shadowed_struct_name(t: &[Token], name: &str, use_site: usize, scopes: &ScopeLedger) -> bool {
+    t.iter().enumerate().any(|(i,tok)| {
+        if !matches!(&tok.tok,Tok::Ident(s) if s==name) {return false;}
+        match struct_name_binding(t,i) {
+            Some(true)=>true,
+            Some(false)=>scopes.binder_visible(i,use_site),
+            None=>false,
+        }
+    })
+}
+
+/// Only look for field '=' at the outermost argument level; never rewrite an
+/// assignment-like expression buried in another call/grouping expression.
+fn contains_struct_equals(t: &[Token], open: usize) -> bool {
+    let mut depth = 0usize;
+    for i in open+1..t.len() {
+        match t[i].tok {
+            Tok::LParen => depth += 1,
+            Tok::RParen if depth == 0 => return false,
+            Tok::RParen => depth -= 1,
+            Tok::Ident(_) if depth == 0
+                && t.get(i+1).is_some_and(|v| v.tok == Tok::Assign) => return true,
+            Tok::Eof => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Parse only the full field-pair form 'Struct(x=1, y=2)' into a separate
+/// checked candidate; do not reinterpret a general call or arbitrary expr.
+/// Literal scalars alone are executable in this first source-local profile.
+/// Effectful expressions require ordered typed temps; rejecting is safer than
+/// the existing class constructor's declaration-order evaluation.
+fn equals_struct_init(t: &[Token], open: usize, decl: &Decl) -> R<(StructFieldInit,usize)> {
+    if t.get(open).is_none_or(|v| v.tok != Tok::LParen) {
+        return Err(error(decl.pos,"E_STRUCT_INIT","expected '(' for struct initializer"));
+    }
+    let pos = t[open].pos;
+    let mut fields_in_source_order = Vec::new();
+    let mut j = open + 1;
+    loop {
+        let current = t.get(j).ok_or_else(|| error(pos,"E_EOF","unclosed struct initializer"))?;
+        if current.tok == Tok::RParen { break; }
+        if current.tok == Tok::Eof {
+            return Err(error(pos,"E_EOF","unclosed struct initializer"));
+        }
+        if fields_in_source_order.len() >= MAX_FIELDS {
+            return Err(error(current.pos,"E_SOURCE_LIMIT","too many initialized struct fields"));
+        }
+        let label = id(t,j,"struct initializer field")?;
+        if t.get(j+1).is_none_or(|v| v.tok != Tok::Assign) {
+            return Err(error(current.pos,"E_STRUCT_INIT",
+                "struct equals initializer requires only 'field=value' pairs"));
+        }
+        let value = t.get(j+2).ok_or_else(||error(current.pos,"E_EOF","missing struct field value"))?;
+        if !simple_literal(&value.tok) {
+            return Err(error(value.pos,"E_UNSUPPORTED",
+                "struct equals initializer currently supports only literal scalar fields; effectful expressions require source-order typed temporaries"));
+        }
+        if !decl.fields.iter().any(|f| f.name == label) {
+            return Err(error(current.pos,"E_NO_FIELD",
+                format!("'{}' has no field '{}'",decl.name,label)));
+        }
+        if fields_in_source_order.iter().any(|(key,_)| key == &label) {
+            return Err(error(current.pos,"E_DUPLICATE",
+                format!("duplicate struct initializer field '{label}'")));
+        }
+        fields_in_source_order.push((label,value.clone()));
+        j += 3;
+        if t.get(j).is_some_and(|v| v.tok == Tok::Comma) {
+            j += 1;
+        } else if t.get(j).is_none_or(|v| v.tok != Tok::RParen) {
+            return Err(error(value.pos,"E_STRUCT_INIT",
+                "struct equals initializer fields must be comma-separated"));
+        }
+    }
+    Ok((StructFieldInit {
+        nominal: decl.name.clone(),
+        pos,
+        fields_in_source_order,
+    }, j+1))
+}
+
+/// Convert *only* a checked literal-scalar struct initialization to the
+/// existing compiled guest constructor path. No field-expression evaluation
+/// can be reordered here because this profile rejects all effectful values.
+fn lower_equals_struct(decl: &Decl, syntax: StructFieldInit) -> R<Vec<Token>> {
+    if syntax.nominal != decl.name || decl.kind != Kind::Struct {
+        return Err(error(syntax.pos,"E_STRUCT_INIT","not a resolved nominal struct"));
+    }
+    let mut checked = BTreeMap::new();
+    for (field,value) in syntax.fields_in_source_order {
+        checked.insert(field,value);
+    }
+    constructor_tokens(decl,checked,syntax.pos)
+}
+
 fn constructor_tokens(decl: &Decl, values: BTreeMap<String,Token>, pos: Pos) -> R<Vec<Token>> {
     if values.len()!=decl.fields.len() ||
         decl.fields.iter().any(|f|!values.contains_key(&f.name)) {
@@ -270,8 +526,10 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         (word(&t,i,"Tuple")||word(&t,i,"Pair")||word(&t,i,"Entry"))) {
         return Ok(t);
     }
+    let source_scopes=ScopeLedger::new(&t);
     let mut declared=BTreeMap::<String,Decl>::new();
     let mut first=Vec::new();
+    let mut first_origins=Vec::<Option<usize>>::new();
     let mut i=0;
     while i<t.len() {
         if word(&t,i,"define") &&
@@ -284,15 +542,19 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             if declared.contains_key(&decl.name) {
                 return Err(error(decl.pos,"E_DUPLICATE",format!("duplicate product '{}'",decl.name)));
             }
-            first.extend(fragment(&synthesized(&decl.name,&decl.fields),decl.pos)?);
+            let generated=fragment(&synthesized(&decl.name,&decl.fields),decl.pos)?;
+            first_origins.extend(std::iter::repeat(None).take(generated.len()));
+            first.extend(generated);
             declared.insert(decl.name.clone(),decl);
             i=next;continue;
         }
+        first_origins.push(Some(i));
         first.push(t[i].clone());
         i+=1;
     }
     let mut synthetic=BTreeMap::<String,Vec<Field>>::new();
     let mut out=Vec::new();
+    let mut equals_initializer_count=0usize;
     i=0;
     while i<first.len() {
         if let Some((product,next))=typed_product(&first,i,&mut synthetic)? {
@@ -317,6 +579,33 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                 if i+1<first.len() && first[i+1].tok==Tok::LBrace {
                     let (values,next)=keyed(&first,i+1)?;
                     out.extend(constructor_tokens(decl,values,first[i].pos)?);
+                    i=next;continue;
+                }
+                if decl.kind == Kind::Struct && i+1<first.len()
+                    && first[i+1].tok==Tok::LParen
+                    && contains_struct_equals(&first,i+1) {
+                    if equals_initializer_count>=MAX_EQUALS_STRUCT_INITIALIZERS {
+                        return Err(error(first[i].pos,"E_SOURCE_LIMIT",
+                            "too many named struct field initializers"));
+                    }
+                    equals_initializer_count+=1;
+                    let source_index=first_origins[i].ok_or_else(||
+                        error(first[i].pos,"E_STRUCT_RESOLVE",
+                            "generated source cannot instantiate an unresolved struct"))?;
+                    if shadowed_struct_name(&t,&decl.name,source_index,&source_scopes) {
+                        return Err(error(first[i].pos,"E_STRUCT_RESOLVE",
+                            "struct equals initializer is ambiguous with a same-named declaration or binding"));
+                    }
+                    // Never rewrite a qualified/member call, 'new' constructor,
+                    // actor spawn, or invocation through another expression.
+                    if i>0 && (first[i-1].tok==Tok::Dot ||
+                        matches!(&first[i-1].tok,Tok::Ident(w) if
+                            matches!(w.as_str(),"new" | "spawn"))) {
+                        return Err(error(first[i].pos,"E_STRUCT_TARGET",
+                            "field=value initialization requires a direct resolved nominal struct, not a call/constructor"));
+                    }
+                    let (candidate,next)=equals_struct_init(&first,i+1,decl)?;
+                    out.extend(lower_equals_struct(decl,candidate)?);
                     i=next;continue;
                 }
             }
