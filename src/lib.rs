@@ -54,7 +54,10 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Do not silently erase the 'value' modifier and emit identity-bearing objects.
     value_class_admission::preflight(&source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
-    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    let module_tokens = module_lower::lower(visibility.tokens)?;
+    let nominal_tokens = nominal_lower::lower(module_tokens)?;
+    let (shape_tokens, struct_init_sites) = shape_lower::lower_with_sites(nominal_tokens)?;
+    let toks = any_type_lower::lower(routine_lower::lower(shape_tokens)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
@@ -99,7 +102,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    let program = if target {
+    let mut program = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
@@ -124,6 +127,10 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
+    // Attach original field-equals initializer sites to the parsed AST.
+    // Real name/lexical resolution occurs inside the typed checker, before
+    // any guest output is generated, never in a token adjacency heuristic.
+    program.struct_init_sites = struct_init_sites;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
