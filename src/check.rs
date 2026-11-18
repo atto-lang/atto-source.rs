@@ -761,6 +761,60 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 /// Mutable loans, returned reference lifetimes and generics still require
 /// separate typed proof before enabling this mode as the language default.
 pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
+    // The API also accepts programmatically constructed/rewritten ASTs.
+    // Reject forged or stale indices *before* any resolve() indexing,
+    // desugaring, typed checking, or code generation. Returning a diagnostic
+    // instead of panicking is part of the versioned borrow-mode boundary.
+    let validate_decl_type = |ty: Type, pos: Pos| -> R<()> {
+        let valid = match ty {
+            Type::Named(i) | Type::BorrowNamed(i) | Type::NamedRef(i) |
+            Type::Callable(i) => p.type_names.get(i as usize).is_some(),
+            Type::Class(i) | Type::BorrowClass(i) =>
+                p.classes.get(i as usize).is_some(),
+            Type::Enum(i) => p.enums.get(i as usize).is_some(),
+            Type::ActorRef(i) => p.actors.get(i as usize).is_some(),
+            _ => true,
+        };
+        if !valid {
+            return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE",
+                "borrow-v1: invalid or stale declaration type index"));
+        }
+        Ok(())
+    };
+    for f in &p.funcs {
+        validate_decl_type(f.ret, f.pos)?;
+        for param in &f.params {
+            validate_decl_type(param.ty, param.pos)?;
+        }
+    }
+    for c in &p.classes {
+        for field in &c.fields {
+            validate_decl_type(field.ty, field.pos)?;
+        }
+        if let Some(ctor) = &c.ctor {
+            for param in &ctor.params {
+                validate_decl_type(param.ty, param.pos)?;
+            }
+        }
+        for method in &c.methods {
+            validate_decl_type(method.ret, method.pos)?;
+            for param in &method.params {
+                validate_decl_type(param.ty, param.pos)?;
+            }
+        }
+    }
+    for actor in &p.actors {
+        for field in &actor.fields {
+            validate_decl_type(field.ty, field.pos)?;
+        }
+        for method in &actor.methods {
+            validate_decl_type(method.ret, method.pos)?;
+            for param in &method.params {
+                validate_decl_type(param.ty, param.pos)?;
+            }
+        }
+    }
+
     let mut migrated = p.clone();
     let class_names: BTreeSet<&str> = p.classes.iter().map(|c| c.name.as_str()).collect();
     let is_class_formal = |ty: Type| match ty {
@@ -843,7 +897,8 @@ pub fn check(p: &Program) -> R<TProgram> {
     checked_handle_gate::validate(p)?;
     // Lambda lifting does not yet preserve borrowed-parameter provenance.
     // Fail closed rather than producing lifted owned class captures.
-    if p.funcs.iter().any(|f| f.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_)))) {
+    if p.funcs.iter().any(|f| f.params.iter().any(|p|
+        matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)))) {
         return check_lowered(p);
     }
     let lowered = direct_lambda::lower(p)?;
@@ -855,23 +910,29 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // can borrow classes. Lifetime-bearing returns/receivers/actors must not
     // silently lower as ordinary owned handles.
     for f in &p.funcs {
-        if matches!(f.ret, Type::BorrowNamed(_))
-            || f.is_generator && f.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_))) {
+        if matches!(f.ret, Type::BorrowNamed(_) | Type::BorrowClass(_))
+            || f.is_generator && f.params.iter().any(|p|
+                matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_))) {
             return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
                 "Borrow<T> returns/generator parameters need lifetime-aware lowering"));
         }
     }
     for c in &p.classes {
-        if c.ctor.as_ref().is_some_and(|ctor| ctor.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_))))
-            || c.methods.iter().any(|m| matches!(m.ret, Type::BorrowNamed(_))
-                || m.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_)))) {
+        if c.ctor.as_ref().is_some_and(|ctor| ctor.params.iter().any(|p|
+            matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_))))
+            || c.methods.iter().any(|m|
+                matches!(m.ret, Type::BorrowNamed(_) | Type::BorrowClass(_))
+                || m.params.iter().any(|p|
+                    matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)))) {
             return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
                 "Borrow<T> class method and constructor parameters require receiver lifetime proof"));
         }
     }
     for a in &p.actors {
-        if a.methods.iter().any(|m| matches!(m.ret, Type::BorrowNamed(_))
-            || m.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_)))) {
+        if a.methods.iter().any(|m|
+            matches!(m.ret, Type::BorrowNamed(_) | Type::BorrowClass(_))
+            || m.params.iter().any(|p|
+                matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)))) {
             return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
                 "Borrow<T> actor methods require actor isolation/lifetime proof"));
         }
