@@ -40,6 +40,11 @@ jobs:
           sha256sum target/wasm32-unknown-unknown/release/atto_compiler.wasm
       - name: Reject adversarial mailbox histories before compiled guest tests
         run: node --test tests/actor-trace-refinement.test.mjs
+      - name: Borrow clarity - 17 focused native and browser Wasm guest checks
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/borrow_clarity_guest.mjs
+
       - name: Conformance - wasm32 compiler, guest execution, native-vs-wasm byte parity
         env:
           ATTOC: target/release/attoc
