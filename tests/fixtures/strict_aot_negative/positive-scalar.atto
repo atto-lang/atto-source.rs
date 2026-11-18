@@ -1,0 +1,2 @@
+pub fnc main(): int { return sum(40, 2); }
+fnc sum(int a, int b): int { return a + b; }

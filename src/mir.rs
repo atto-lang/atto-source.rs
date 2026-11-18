@@ -81,6 +81,15 @@ fn validate_expr(
         Expr::Negate(expr) => validate_expr(expr, variables, signatures),
     }
 }
+// Reserve canonical future collection, Option and intrinsic loan identities.
+// This scalar-only compiler must not emit a native object containing a user
+// function that impersonates a compiler-owned generic type constructor.
+// No collection/borrow semantics are implemented by this guard.
+const RESERVED_COLLECTION_NAMES: [&str; 13] = [
+    "Option", "Result", "Array", "FixedArray", "Vector", "List",
+    "FixedList", "Slice", "Tuple", "Map", "Set", "ReadLoan", "WriteLoan",
+];
+
 pub fn lower(program: Program) -> Result<Module, SemanticError> {
     lower_with_ref_layout(program, ManagedRefLayout::default())
 }
@@ -91,6 +100,10 @@ pub fn lower_with_ref_layout(
 ) -> Result<Module, SemanticError> {
     let mut signatures = HashMap::new();
     for function in &program.functions {
+        if RESERVED_COLLECTION_NAMES.contains(&function.name.as_str()) {
+            return Err(failure("reserved_collection_name",
+                format!("'{}' is reserved for a canonical collection, Option or intrinsic loan type", function.name)));
+        }
         if signatures
             .insert(function.name.clone(), function.params.len())
             .is_some()
