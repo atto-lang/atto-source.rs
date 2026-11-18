@@ -577,7 +577,7 @@ impl Emit<'_> {
                 self.set(*flag);
             }
             TStmt::RecoverNext => self.br_to(Frame::RecoverNext),
-            TStmt::Try { saved, body, catch, finally } => self.try_stmt(*saved, body, catch.as_deref(), finally.as_deref()),
+            TStmt::Try { saved, body, catch, finally, .. } => self.try_stmt(*saved, body, catch.as_deref(), finally.as_deref()),
             TStmt::Return(v) => {
                 if let Some(v) = v {
                     self.expr(v);
