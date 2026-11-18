@@ -90,7 +90,7 @@ pub fn lower(input: &Program) -> R<Program> {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "typed callable values require verified Wasm indirect dispatch"));
                     }
-                    if !matches!(kind, BindKind::Val | BindKind::Const) || ty.is_some() {
+                    if !matches!(*kind, BindKind::Val | BindKind::Const) || ty.is_some() {
                         return Err(error(*pos, "E_UNSUPPORTED",
                             "direct lambdas need an unannotated immutable val or const fnc binding"));
                     }
