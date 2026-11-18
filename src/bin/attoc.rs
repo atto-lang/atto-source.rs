@@ -36,14 +36,14 @@ fn run() -> Result<(), CliError> {
             version = match num {
                 "1" => LanguageVersion::Legacy,
                 "2" => LanguageVersion::Explicit,
-                _ => return Err(format!("unsupported language version '{num}'; choose 1 or 2")),
+                _ => return Err(format!("unsupported language version '{num}'; choose 1 or 2").into()),
             };
         } else if arg == "-o" {
             if output.is_some() { return Err("duplicate -o output".into()); }
             i += 1;
             output = Some(args.get(i).ok_or("missing -o output path")?.clone());
         } else if arg.starts_with('-') {
-            return Err(format!("unknown option '{arg}'"));
+            return Err(format!("unknown option '{arg}'").into());
         } else if input.replace(arg.clone()).is_some() {
             return Err("expected exactly one input.atto file".into());
         }
