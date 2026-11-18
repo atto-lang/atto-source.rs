@@ -48,7 +48,7 @@ end
 pub fnc main(): int throws(Error) {val c = new C(); return c.add(40);}
 "#;
     assert_eq!(parse(mtd).classes[0].methods[0].failure_effects.mask(), 1);
-    assert!(compile(mtd).is_ok());
+    compile(mtd).unwrap_or_else(|e| panic!("mtd effect fixture failed: {e}"));
 
     let actor = r#"
 define actor Worker as
