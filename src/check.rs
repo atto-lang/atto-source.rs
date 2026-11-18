@@ -761,6 +761,40 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 /// Mutable loans, returned reference lifetimes and generics still require
 /// separate typed proof before enabling this mode as the language default.
 pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
+    // This is a public compiler API, including direct (non-parser) callers.
+    // Apply the source parser's cardinality limits *before* cloning the AST,
+    // and before any allocation proportional to arbitrary caller-controlled
+    // declarations. Limits cover declarations and their immediate members;
+    // deep AST trees still rely on the parser's nesting/source admission.
+    let invalid_shape = p.funcs.len() > crate::parser::MAX_FUNCS
+        || p.classes.len() > crate::parser::MAX_FUNCS
+        || p.actors.len() > crate::parser::MAX_FUNCS
+        || p.enums.len() > crate::parser::MAX_FUNCS
+        || p.funcs.iter().any(|f| f.params.len() > crate::parser::MAX_PARAMS)
+        || p.classes.iter().any(|c| {
+            c.fields.len().saturating_add(c.methods.len())
+                .saturating_add(usize::from(c.ctor.is_some())) > crate::parser::MAX_MEMBERS
+                || c.ctor.as_ref().is_some_and(|ctor| ctor.params.len() > crate::parser::MAX_PARAMS)
+                || c.methods.iter().any(|m| m.params.len() > crate::parser::MAX_PARAMS)
+        })
+        || p.actors.iter().any(|a| {
+            a.fields.len().saturating_add(a.methods.len())
+                .saturating_add(usize::from(a.receive.is_some())) > crate::parser::MAX_MEMBERS
+                || a.methods.iter().any(|m| m.params.len() > crate::parser::MAX_PARAMS)
+        })
+        || p.enums.iter().any(|e| e.variants.len() > crate::parser::MAX_MEMBERS);
+    if invalid_shape {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            "borrow-v1: programmatic AST exceeds parser declaration or parameter limits"));
+    }
+    // Target-only actor interfaces have no verified executable ownership or
+    // borrow ABI; a direct caller must not bypass the source-only admission
+    // gate and let their signatures silently disappear during codegen.
+    if p.actor_interface.is_some() {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_UNSUPPORTED_TYPE",
+            "borrow-v1: actor interfaces need an executable lifetime/receiver ABI"));
+    }
+
     // The API also accepts programmatically constructed/rewritten ASTs.
     // Reject forged or stale indices *before* any resolve() indexing,
     // desugaring, typed checking, or code generation. Returning a diagnostic
@@ -806,6 +840,13 @@ pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
     for actor in &p.actors {
         for field in &actor.fields {
             validate_decl_type(field.ty, field.pos)?;
+        }
+        // ActorMail<T> is a separate transport capability, not a class
+        // loan. Check even when the source parser would not emit this type:
+        // direct AST callers must never smuggle a forged receive payload
+        // into isolate/mailbox codegen.
+        if let Some(receive) = &actor.receive {
+            validate_decl_type(receive.payload, receive.pos)?;
         }
         for method in &actor.methods {
             validate_decl_type(method.ret, method.pos)?;
