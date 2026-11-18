@@ -2973,6 +2973,31 @@ impl<'a> FnCx<'a> {
                 }
                 Ok(value)
             }
+            OwnershipOp::Freeze => {
+                // Immutable scalar values have no mutable reachable object graph:
+                // freeze! is observationally the identity for this *proven*
+                // subset. Never extend this rule to class/actor/generator handles
+                // without a transitive freeze witness and alias invalidation.
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    return Err(Diagnostic::new(pos, "E_FREEZE_PROOF",
+                        "freeze! requires verified deep immutability; this Wasm subset only admits immutable scalars"));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Weak => {
+                // A weak handle requires generation-fenced allocation identity,
+                // a nullable upgrade result, and ownership-neutral cleanup.
+                // Returning the source value would silently create a strong alias.
+                Err(Diagnostic::new(pos, "E_WEAK_UNSUPPORTED",
+                    "weak! requires a generation-checked weak handle and Option<Shared<T>> upgrade; not lowered by this Wasm backend"))
+            }
+            OwnershipOp::Pin => {
+                // Pinning is stable *pointee storage*, not an OS-thread affinity
+                // hint. Ordinary guest locals/handles cannot promise it yet.
+                Err(Diagnostic::new(pos, "E_PIN_UNSUPPORTED",
+                    "pin! requires stable-address storage and verified cleanup; not lowered by this Wasm backend"))
+            }
             OwnershipOp::Take => {
                 let ExprKind::Var(name) = &inner.kind else {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a named owned local"));
