@@ -144,6 +144,14 @@ console.log('CARET_SPEC_AUDIT',JSON.stringify(summary),
 if(process.env.ATTO_CARET_ENFORCE_ALL==='1'){
   if(summary.passed!==49)process.exitCode=1;
 } else {
+  // Never conceal a genuinely failed or unexecuted normative case in a
+  // successful CI job. Unsupported profiles are disclosed separately and do
+  // NOT count as passes, but an unexpected `failed` result must be red.
+  if(summary.failed > 0 || summary.not_executed > 0) {
+    console.error('CARET_SPEC_UNEXPECTED_FAILURE',
+      'failed='+summary.failed, 'not_executed='+summary.not_executed);
+    process.exitCode=1;
+  }
   // These 42 exact IDs have now passed real native+wasm32 CI (runs\n  // 43823854425 and 43825249538). Tuple-typed negative cases that only\n  // reach E_UNSUPPORTED_TYPE do NOT count as a proven type mismatch.
   // Keep each as a hard regression gate; all remaining proposed cases must
   // appear in the report as failed/unsupported until separately fixed.
