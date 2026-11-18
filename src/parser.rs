@@ -727,6 +727,19 @@ impl Parser {
                 _ => prog.funcs.push(self.parse_func()?),
             }
         }
+        // Type aliases and executable callable values share the declaration
+        // namespace. Check *after* parsing so a later declaration cannot
+        // backdoor a shadowed alias or silently replace an earlier callable.
+        for name in self.type_aliases.keys() {
+            let conflict = prog.funcs.iter().find(|f| &f.name == name).map(|f| f.pos)
+                .or_else(|| prog.classes.iter().find(|c| &c.name == name).map(|c| c.pos))
+                .or_else(|| prog.enums.iter().find(|e| &e.name == name).map(|e| e.pos))
+                .or_else(|| prog.actors.iter().find(|a| &a.name == name).map(|a| a.pos));
+            if let Some(pos) = conflict {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                    format!("callable type alias '{name}' conflicts with a declaration")));
+            }
+        }
         // Generated callable globals participate in a single value namespace.
         // Overloads are fine for ordinary fnc declarations, never for consts.
         for (name, pos) in &callable_globals {
