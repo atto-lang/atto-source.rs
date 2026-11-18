@@ -407,6 +407,9 @@ struct Globals<'a> {
     enums: &'a [EnumDecl],
     actors: Vec<ActorInfo>,
     type_names: &'a [(String, Pos)],
+    /// An explicit source-module migration profile. Legacy source keeps
+    /// owned Foo formal behavior without implicit mode changes.
+    borrow_default_v1: bool,
 }
 
 /// Where the code being checked lives.
@@ -1060,6 +1063,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         enums: &p.enums,
         actors,
         type_names: tn,
+        borrow_default_v1: p.borrow_default_v1,
     };
 
     let main = match g.sigs.get(&("main".to_string(), 0)) {
@@ -1312,6 +1316,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     name: String::new(),
                     ty: mi.ret,
                     mutable: false,
+                    explicit_take: false,
                     pos: m.pos,
                 },
                 mi.ret,
@@ -3470,6 +3475,16 @@ impl<'a> FnCx<'a> {
                     temporary_call_loans.push(alias);
                     out.push(value);
                     continue;
+                }
+                if self.g.borrow_default_v1 && matches!(*want, Type::Class(_))
+                    && !matches!(&arg.kind,
+                        ExprKind::Ownership(OwnershipOp::Take, false, _))
+                {
+                    // In the versioned profile an owned Foo formal only
+                    // exists through an explicit 'take! Foo' declaration.
+                    // Never silently transfer a named owner into it.
+                    return Err(Diagnostic::new(arg.pos, "E_OWNERSHIP",
+                        format!("argument {} of '{callee}' transfers ownership; spell take! owner explicitly", i + 1)));
                 }
                 let value = self.consume_expected(arg, *want)?;
                 if value.ty != *want {
