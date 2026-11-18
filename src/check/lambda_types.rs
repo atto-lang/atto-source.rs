@@ -21,17 +21,33 @@ pub struct CheckedLambda {
 pub fn check_noncapturing(
     lambda: &Expr, expected_params: Option<&[Type]>, expected_result: Option<Type>
 ) -> R<CheckedLambda> {
-    let (names, annotated, body) = match &lambda.kind {
-        ExprKind::Lambda { params, return_type, body } => (params, return_type, body),
+    let (names, param_types, annotated, body) = match &lambda.kind {
+        ExprKind::Lambda { params, param_types, return_type, body } =>
+            (params, param_types, return_type, body),
         _ => return Err(err(lambda.pos, "E_TYPE", "expected a lambda")),
     };
-    let types: &[Type] = match expected_params {
-        Some(types) if types.len() == names.len() => types,
+    if param_types.len() != names.len() {
+        return Err(err(lambda.pos, "E_TYPE", "malformed lambda parameter annotations"));
+    }
+    let types: Vec<Type> = match expected_params {
+        Some(types) if types.len() == names.len() => {
+            for (index, (actual, want)) in param_types.iter().zip(types).enumerate() {
+                if let Some(actual) = actual {
+                    if actual != want {
+                        return Err(err(lambda.pos, "E_TYPE", format!(
+                            "lambda parameter {} is declared {} but callable expects {}",
+                            index + 1, actual.name(), want.name())));
+                    }
+                }
+            }
+            types.to_vec()
+        }
         Some(types) => return Err(err(lambda.pos, "E_ARITY", format!(
             "callback expects {} parameters, found {}", types.len(), names.len()))),
-        None if names.is_empty() => &[],
+        None if param_types.iter().all(Option::is_some) =>
+            param_types.iter().map(|t| t.expect("checked above")).collect(),
         None => return Err(err(lambda.pos, "E_INFER",
-            "lambda parameters need contextual callable types")),
+            "lambda parameters need explicit annotations or contextual callable types")),
     };
     if types.iter().any(|t| !scalar(*t) || *t == Type::Void) {
         return Err(err(lambda.pos, "E_UNSUPPORTED_TYPE", "lambda parameter type is not a scalar value"));
@@ -50,7 +66,7 @@ pub fn check_noncapturing(
         frames: vec![vec![]], returns: vec![], count: 0,
         depth: 0, statement_depth: 0,
     };
-    for (name, ty) in names.iter().zip(types) {
+    for (name, ty) in names.iter().zip(&types) {
         ctx.bind(name, *ty, false, lambda.pos)?;
     }
     let complete = match body {
@@ -80,7 +96,7 @@ pub fn check_noncapturing(
     }
     Ok(CheckedLambda {
         params: names.iter().cloned().zip(types.iter().copied()).collect(),
-        result, annotated: ann.is_some(),
+        result, annotated: ann.is_some() || param_types.iter().any(Option::is_some),
     })
 }
 
