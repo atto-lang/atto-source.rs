@@ -493,7 +493,7 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
         // traversal. The combined browser guest cannot exceed this cap.
         if unit.source.len() > crate::SOURCE_CAP {
             return Err(err(
-                Pos::default(),
+                Pos { line: 1, col: 1 },
                 "E_SOURCE_LIMIT",
                 "source unit exceeds browser source limit",
             ));
@@ -521,7 +521,7 @@ pub fn compile_linked(entry_path: &str, units: &[LinkUnit<'_>]) -> R<Vec<u8>> {
     for path in files.keys() {
         if states.get(*path).copied() != Some(2) {
             return Err(err(
-                Pos::default(),
+                Pos { line: 1, col: 1 },
                 "E_UNBOUND",
                 format!("unreachable source unit '{path}' in linked package graph"),
             ));
