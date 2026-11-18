@@ -4,6 +4,7 @@ pub mod codegen;
 pub mod effects;
 pub mod flow;
 pub mod frontend;
+pub mod actor_task_lifecycle;
 pub mod mir;
 pub mod profile;
 pub mod safety;
@@ -12,13 +13,35 @@ pub mod ref_codegen;
 pub mod ref_layout;
 pub mod layout_trace;
 pub mod trace_sites;
+pub mod tiering;
+pub mod actor_isolation_access_v1;
+pub mod layout_plan;
+pub mod owner_arena;
+
+/// This independent scalar object emitter has no TenantVM runtime or actor
+/// lowering. This is a machine-readable fail-closed capability declaration,
+/// not a placeholder sandbox.
+pub const TENANT_VM_RUNTIME_SUPPORT: &str = "UNSUPPORTED";
 
 /// Compile the current scalar grammar with opt-in signed i64 overflow traps.
 /// No safety/effect certificate is emitted: those IR schemas cannot yet
 /// express the new conditional integer-overflow failure edges.
 pub fn compile_checked_i64(source: &str) -> Result<Vec<u8>, String> {
+    compile_checked_i64_with_ref_layout(source, ref_layout::ManagedRefLayout::default())
+}
+
+/// Compile checked signed-i64 scalar arithmetic using an explicit internal
+/// managed-reference layout. The scalar source language has no reference
+/// operations yet; the choice is retained in validated MIR for future lowering.
+///
+/// This is native object emission, not a hard-RT, overflow-effect, or
+/// runtime-Error certificate. Overflow still traps in the native guest.
+pub fn compile_checked_i64_with_ref_layout(
+    source: &str,
+    managed_refs: ref_layout::ManagedRefLayout,
+) -> Result<Vec<u8>, String> {
     let ast = frontend::parse(source).map_err(|e| e.to_string())?;
-    let module = mir::lower(ast).map_err(|e| e.to_string())?;
+    let module = mir::lower_with_ref_layout(ast, managed_refs).map_err(|e| e.to_string())?;
     // Reuse the bounded traversal guard only; its v1 facts do not model
     // checked overflow edges and must not be published as a certificate.
     let _ = effects::export_effect_ir_checked(&module)?;
@@ -56,6 +79,14 @@ pub fn compile_with_effect_ir(source: &str) -> Result<(Vec<u8>, serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tenant_vm_execution_is_explicitly_unsupported() {
+        assert_eq!(TENANT_VM_RUNTIME_SUPPORT, "UNSUPPORTED");
+        // An RTL/object scalar compiler must never accept actor declarations
+        // without owning the corresponding TenantVM runtime semantics.
+        assert!(compile("define actor Evil as end").is_err());
+    }
+
     #[test]
     fn compiles_real_native_object() {
         let result = compile(
