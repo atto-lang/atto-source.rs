@@ -29,8 +29,8 @@ fn comma_return_sequence_is_not_outer_body_mode() {
 }
 
 #[test]
-fn bare_seq_commas_in_statement_initializers_are_not_outer_body_mode() {
-    compile_both("fnc f() -> int const int n = seq 1, 42; return n; end pub fnc main(): int { return f(); }");
+fn parenthesized_seq_commas_in_statement_initializers_are_not_outer_body_mode() {
+    compile_both("fnc f() -> int const int n = seq(1, 42); return n; end pub fnc main(): int { return f(); }");
 }
 
 #[test]
@@ -57,8 +57,8 @@ fn target_mtd_explicit_return_commas_stay_inside_the_return() {
 }
 
 #[test]
-fn target_mtd_seq_initializer_commas_stay_inside_the_expression() {
-    let f="define class C as final int seed: 40; end pub mtd (C self) get() -> int const int n = seq 1, 42; return n; end pub fnc main(): int { val c = new C(); return c.get(); }";
+fn target_mtd_parenthesized_seq_initializer_commas_stay_inside_the_expression() {
+    let f="define class C as final int seed: 40; end pub mtd (C self) get() -> int const int n = seq(1, 42); return n; end pub fnc main(): int { val c = new C(); return c.get(); }";
     compile_both(f);
 }
 
@@ -81,4 +81,14 @@ fn class_definition_and_default_parser_agree_on_legacy_semantics() {
     assert_eq!(p.classes.len(),1);
     assert!(compile(src).is_ok());
     assert_eq!(compile_with_version(src,LanguageVersion::Explicit).unwrap_err().code,"E_BODY_VERSION");
+}
+
+#[test]
+fn bare_seq_initializer_is_not_falsely_advertised_as_supported() {
+    let src="fnc f() -> int const int n = seq 1, 42; return n; end pub fnc main(): int { return f(); }";
+    for version in [LanguageVersion::Legacy,LanguageVersion::Explicit] {
+        let d=compile_with_version(src,version).unwrap_err();
+        assert_eq!(d.code,"E_SYNTAX");
+        assert_ne!(d.code,"E_BODY_VERSION");
+    }
 }
