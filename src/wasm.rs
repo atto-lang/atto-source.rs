@@ -85,7 +85,7 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
@@ -487,6 +487,13 @@ impl Emit<'_> {
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
             }
+            TStmt::CollectionStore { array, offset, value } => {
+                // The checked collection planner supplies an in-bounds byte
+                // offset, and the value is always a scalar i64 in this slice.
+                self.expr(array);
+                self.expr(value);
+                field_op(&mut self.code, Type::Int, *offset, true);
+            }
             TStmt::FieldSet { obj, offset, ty, value } => {
                 self.expr(obj);
                 self.expr(value);
@@ -869,6 +876,10 @@ impl Emit<'_> {
                 uleb(&mut self.code, *tmp as u64);
                 field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
             },
+            TExpr::CollectionLoad { array, offset } => {
+                self.expr(array);
+                field_op(&mut self.code, Type::Int, *offset, false);
+            }
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
@@ -897,7 +908,7 @@ impl Emit<'_> {
                 self.op(0x23);
                 uleb(&mut self.code, (self.l.state_base + g) as u64);
             }
-            TExpr::Alloc(n) => {
+            TExpr::CollectionAlloc(n) | TExpr::Alloc(n) => {
                 self.i32c(*n as i32);
                 self.call(self.l.helper(H_ALLOC));
             }
