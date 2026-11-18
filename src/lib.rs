@@ -15,6 +15,8 @@ pub mod collection_layout_plan;
 pub mod collection_layout_storage;
 /// Narrow genuine source-compiled scalar collection guest profile; all else fails closed.
 pub mod collection_layout_guest;
+/// Shared canonical generic binding for the main and guest collection parsers.
+pub mod collection_layout_type;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
