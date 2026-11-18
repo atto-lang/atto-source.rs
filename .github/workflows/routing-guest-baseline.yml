@@ -1,0 +1,33 @@
+name: Atto HTTP routing scalar guest - compiled Wasm proof
+
+on:
+  push:
+    branches:
+      - 'feat/http-routing-scalar-guest-baseline-*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  routing-guest-scalar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact local branch, no persisted token
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify checkout identity and record Git tree
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          rustc --version
+          cargo --version
+          node --version
+      - name: Compile and EXECUTE scalar routing Atto guest plus blocked-feature diagnostics
+        run: cargo test --locked --test routing_guest_baseline -- --nocapture
+      - name: Verify shared compiler positive/negative fixture corpus
+        run: cargo test --locked --test fixtures -- --nocapture
