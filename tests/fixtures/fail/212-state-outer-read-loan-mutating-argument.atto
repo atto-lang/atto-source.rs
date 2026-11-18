@@ -1,0 +1,14 @@
+// Earlier shared call argument protects owner through later evaluations.
+// expect-error: E_STATE_BORROW
+define state Counter as
+  state { let int count: 0; }
+  pub bump(): int {
+    handle_state(critical-write |s| -> { s.count = s.count + 1; });
+    return 1;
+  }
+end
+fnc inspect(p: Borrow<Counter>, n: int): int { return n; }
+pub fnc main(): int {
+  let counter = new Counter();
+  return inspect(counter, counter.bump());
+}

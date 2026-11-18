@@ -1,0 +1,11 @@
+// A mutable class alias cannot manufacture a protected state write lease.
+// expect-error: E_STATE_BORROW
+define state Counter as
+  state { let int count: 0; }
+  pub modify_another(Counter other): int {
+    val alias = borrow! mut other;
+    alias.count = 7;
+    return 1;
+  }
+end
+pub fnc main(): int { return 0; }
