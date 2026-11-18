@@ -44,6 +44,66 @@ fn effect_clauses_try_finally_and_delegating_recovery_compile() {
 }
 
 #[test]
+fn canonical_defer_spelling_factories_and_recover_error_views_compile() {
+    pass(r#"
+        fnc failing(): int raises(Error) { raise Error("boom"); }
+        fnc f(int seed): int {
+            defer { stdio.println("block"); };
+            defer _ -> { stdio.println("underscore"); };
+            defer || -> { stdio.println("legacy"); };
+            defer (|int value| -> _ -> { stdio.println(value); })(seed);
+            recover |err, cursor| -> {
+                stdio.println(err.message);
+                stdio.println(err.is_raise);
+                return 6;
+            };
+            recover |ErrorView reason, RecoveryCursor next| -> {
+                stdio.println(reason.message);
+                next.next();
+            };
+            return failing();
+        }
+        pub fnc main(): int { return f(7); }
+    "#);
+}
+
+#[test]
+fn canonical_cleanup_rejects_bad_factories_and_escaping_handles() {
+    for (code, s) in [
+        ("E_ARITY", r#"pub fnc main(): int {
+            defer (|int v| -> _ -> { stdio.println(v); })();
+            return 0; }"#),
+        ("E_TYPE", r#"pub fnc main(): int {
+            defer (|int v| -> _ -> { stdio.println(v); })("wrong");
+            return 0; }"#),
+        ("E_DUPLICATE", r#"pub fnc main(): int {
+            defer (|int v, int v| -> _ -> { stdio.println(v); })(1, 2);
+            return 0; }"#),
+        ("E_UNBOUND", r#"pub fnc main(): int {
+            val int n = 4;
+            defer _ -> { stdio.println(n); };
+            return 0; }"#),
+        ("E_UNBOUND", r#"pub fnc main(): int {
+            recover |err, c| -> { return err; };
+            raise Error("fail"); }"#),
+        ("E_UNBOUND", r#"pub fnc main(): int {
+            recover |err, c| -> { return c; };
+            raise Error("fail"); }"#),
+        ("E_UNBOUND", r#"pub fnc main(): int {
+            recover |err, c| -> { stdio.println(err.unknown); return 2; };
+            raise Error("fail"); }"#),
+        ("E_DUPLICATE", r#"pub fnc main(): int {
+            recover |reason, reason| -> { return 2; };
+            raise Error("fail"); }"#),
+        ("E_RETURN", r#"pub fnc main(): int {
+            recover |reason, c| -> { stdio.println(reason.message); };
+            raise Error("fail"); }"#),
+    ] {
+        reject(code, s);
+    }
+}
+
+#[test]
 fn programs_without_unwind_constructs_keep_their_guest_bytes() {
     // The unwind lowering is opt-in: no extra tag, global or frame for
     // existing throw/trap programs.
