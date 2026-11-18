@@ -1264,7 +1264,13 @@ impl Parser {
                         break;
                     }
                 }
-                Tok::Ident(word) if word == "return" && nested_end.is_empty() => {
+                Tok::Ident(word) if (word == "return" || word == "seq")
+                    && nested_end.is_empty() =>
+                {
+                    // Prefix seq/return expressions own their commas until
+                    // a statement terminator; classify from the semicolon.
+                    // A genuine unmarked comma body still uses its outer
+                    // separator when the first expression is not a seq.
                     return_sequence = true;
                 }
                 Tok::Caret if nested_end.is_empty() => {
