@@ -34,6 +34,10 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/io_shorthand_guest.mjs
+      - name: Execute bitwise operators in native-generated Wasm guests
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/bitwise_guest.mjs
       - name: Build actual Wasm compiler
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
