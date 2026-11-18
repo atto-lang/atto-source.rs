@@ -1233,46 +1233,104 @@ impl Parser {
         Ok(Stmt::Try { body, catch, finally, pos })
     }
 
-    /// `recover (|T a, ...| -> |err, c| -> { body })(args);`
-    fn parse_recover(&mut self, pos: Pos) -> R<Stmt> {
-        self.advance();
-        self.expect(Tok::LParen, "'(' after 'recover'")?;
-        self.expect(Tok::Pipe, "'|' to open the recovery factory parameters")?;
+    /// Shared registration factory header: \`|T first, T second|\`.
+    /// These are explicit values evaluated at registration, not lexical captures.
+    fn parse_cleanup_factory_params(&mut self) -> R<Vec<(String, Type, Pos)>> {
+        self.expect(Tok::Pipe, "'|' to open the factory parameters")?;
         let mut params: Vec<(String, Type, Pos)> = Vec::new();
         if !self.eat(&Tok::Pipe) {
             loop {
                 if params.len() >= MAX_PARAMS {
-                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many recovery factory parameters"));
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                        "too many cleanup factory parameters"));
                 }
                 let ty = self.parse_type()?;
-                let (name, p) = self.ident("a recovery factory parameter name")?;
-                if params.iter().any(|(n, ..)| *n == name) {
-                    return Err(Diagnostic::new(p, "E_DUPLICATE", format!("duplicate parameter '{name}'")));
+                let (name, p) = self.ident("a cleanup factory parameter")?;
+                if name == "_" || params.iter().any(|(n, ..)| *n == name) {
+                    return Err(Diagnostic::new(p, "E_DUPLICATE",
+                        format!("duplicate or reserved factory parameter '{name}'")));
                 }
                 params.push((name, ty, p));
                 if self.eat(&Tok::Pipe) { break; }
                 self.expect(Tok::Comma, "',' or '|' after a factory parameter")?;
             }
         }
-        self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
-        self.expect(Tok::Pipe, "'|err, c|' recovery handler parameters")?;
-        let (err, _) = self.ident("the recovery error parameter")?;
-        self.expect(Tok::Comma, "',' between the error and cursor parameters")?;
-        let (cursor, cursor_pos) = self.ident("the recovery cursor parameter")?;
-        if cursor == err || params.iter().any(|(n, ..)| *n == err || *n == cursor) {
-            return Err(Diagnostic::new(cursor_pos, "E_DUPLICATE", "recovery parameter names must be distinct"));
+        Ok(params)
+    }
+
+    /// A deferred cleanup can be a block, a zero-argument lambda, or a
+    /// factory with explicit, single-evaluation captures.
+    fn parse_defer(&mut self, pos: Pos) -> R<Stmt> {
+        self.advance();
+        let (params, body, args) = if *self.peek() == Tok::LBrace {
+            (Vec::new(), self.parse_block()?, Vec::new())
+        } else if self.eat_word("_") {
+            self.expect(Tok::Arrow, "'->' after 'defer _'")?;
+            (Vec::new(), self.parse_block()?, Vec::new())
+        } else if self.eat(&Tok::Pipe) {
+            self.expect(Tok::Pipe, "empty '||' lambda after 'defer'")?;
+            self.expect(Tok::Arrow, "'->' after 'defer ||'")?;
+            (Vec::new(), self.parse_block()?, Vec::new())
+        } else if self.eat(&Tok::LParen) {
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the defer factory parameters")?;
+            if !self.eat_word("_") {
+                return Err(self.expected("'_' for the zero-argument deferred cleanup"));
+            }
+            self.expect(Tok::Arrow, "'->' before the deferred cleanup body")?;
+            let body = self.parse_block()?;
+            self.expect(Tok::RParen, "')' after the defer factory")?;
+            let args = self.parse_args()?;
+            (params, body, args)
+        } else {
+            return Err(self.expected("'{' or '_ ->' or '|| ->' or a defer factory"));
+        };
+        self.terminator()?;
+        Ok(Stmt::Defer { params, body, args, pos })
+    }
+
+    /// Recovery handlers receive a lexical, non-escaping ErrorView and a
+    /// one-shot cursor; either binder may carry its explicit special type.
+    fn parse_recovery_handler(&mut self, params: &[(String, Type, Pos)])
+        -> R<(String, String, Vec<Stmt>)>
+    {
+        self.expect(Tok::Pipe, "'|' to open the recovery handler")?;
+        if self.word_at(0) == Some("ErrorView") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            self.advance();
+        }
+        let (err, err_pos) = self.ident("the recovery error handle")?;
+        self.expect(Tok::Comma, "',' after the recovery error handle")?;
+        if self.word_at(0) == Some("RecoveryCursor") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            self.advance();
+        }
+        let (cursor, cursor_pos) = self.ident("the recovery cursor")?;
+        if err == cursor || err == "_" || cursor == "_" ||
+            params.iter().any(|(n, ..)| *n == err || *n == cursor)
+        {
+            return Err(Diagnostic::new(if err == "_" { err_pos } else { cursor_pos },
+                "E_DUPLICATE", "recovery bindings must be distinct and cannot be '_'"));
         }
         self.expect(Tok::Pipe, "'|' after the recovery cursor")?;
         self.expect(Tok::Arrow, "'->' before the recovery handler body")?;
-        if *self.peek() != Tok::LBrace {
-            return Err(self.expected("'{' to open the recovery handler body"));
-        }
         let body = self.parse_block()?;
-        self.expect(Tok::RParen, "')' to close the recovery factory")?;
-        if *self.peek() != Tok::LParen {
-            return Err(self.expected("'(' with the recovery factory arguments"));
-        }
-        let args = self.parse_args()?;
+        Ok((err, cursor, body))
+    }
+
+    /// Canonical \`recover |err, cursor| -> { ... };\` and compatible
+    /// \`recover (|T v| -> |err, cursor| -> { ... })(value);\`.
+    fn parse_recover(&mut self, pos: Pos) -> R<Stmt> {
+        self.advance();
+        let (params, err, cursor, body, args) = if self.eat(&Tok::LParen) {
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
+            let (err, cursor, body) = self.parse_recovery_handler(&params)?;
+            self.expect(Tok::RParen, "')' to close the recovery factory")?;
+            let args = self.parse_args()?;
+            (params, err, cursor, body, args)
+        } else {
+            let (err, cursor, body) = self.parse_recovery_handler(&[])?;
+            (Vec::new(), err, cursor, body, Vec::new())
+        };
         self.terminator()?;
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
@@ -1640,19 +1698,8 @@ impl Parser {
                 Ok(Stmt::Raise(error, pos))
             }
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
-            Some("defer") if *self.peek_at(1) == Tok::Pipe && *self.peek_at(2) == Tok::Pipe => {
-                self.advance();
-                self.advance();
-                self.advance();
-                self.expect(Tok::Arrow, "'->' after 'defer ||'")?;
-                if *self.peek() != Tok::LBrace {
-                    return Err(self.expected("'{' to open the deferred cleanup body"));
-                }
-                let body = self.parse_block()?;
-                self.terminator()?;
-                Ok(Stmt::Defer { body, pos })
-            }
-            Some("recover") if *self.peek_at(1) == Tok::LParen => self.parse_recover(pos),
+            Some("defer") => self.parse_defer(pos),
+            Some("recover") => self.parse_recover(pos),
             Some("if") => self.parse_if(),
             Some("guard") => self.parse_guard(),
             Some("while") => {
