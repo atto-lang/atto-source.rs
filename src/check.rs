@@ -289,6 +289,9 @@ pub struct TFunc {
     pub name: String,
     pub params: Vec<Type>,
     pub ret: Type,
+    /// Ownership is retained independently of the lowered i32 class
+    /// handle ABI so future export/import metadata can preserve authority.
+    pub param_ownership: Vec<ParamOwnership>,
     /// declared locals after the parameters
     pub locals: Vec<Type>,
     pub body: Vec<TStmt>,
@@ -461,6 +464,9 @@ struct FnCx<'a> {
     /// Stable provenance: ending an NLL loan never grants ownership of its
     /// alias. Cleared only when the alias's declaring scope exits.
     borrowed_slots: BTreeSet<u32>,
+    /// Read/write rights of exclusive borrowed *formals*. Unlike lexical
+    /// aliases these occupy argument slots and remain valid for the call.
+    exclusive_formals: BTreeSet<u32>,
     /// Monotone NLL visit budget; exhaustion conservatively retains live loans.
     nll_fuel: usize,
     /// Compiler-issued lexical protected state permissions.
@@ -500,7 +506,9 @@ impl Globals<'_> {
             Type::Enum(i) => self.enums[i as usize].name.clone(),
             Type::ActorRef(i) => format!("ActorRef<{}>", self.actors[i as usize].name),
             Type::BorrowClass(i) => format!("Borrow<{}>", self.classes[i as usize].name),
+            Type::BorrowMutClass(i) => format!("BorrowMut<{}>", self.classes[i as usize].name),
             Type::BorrowNamed(i) => format!("Borrow<{}>", self.type_names[i as usize].0),
+            Type::BorrowMutNamed(i) => format!("BorrowMut<{}>", self.type_names[i as usize].0),
             Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
             t => t.name().to_string(),
         }
@@ -530,6 +538,14 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
                 return Err(type_err(*pos, format!("'{n}' is an actor; its references have type ActorRef<{n}>")));
             } else {
                 return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'")));
+            }
+        }
+        Type::BorrowMutNamed(i) => {
+            let (name, pos) = &type_names[i as usize];
+            match classes.iter().position(|c| c == name) {
+                Some(c) => Type::BorrowMutClass(c as u32),
+                None => return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE",
+                    format!("BorrowMut<{name}> requires a declared class"))),
             }
         }
         Type::BorrowNamed(i) => {
@@ -770,8 +786,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // can borrow classes. Lifetime-bearing returns/receivers/actors must not
     // silently lower as ordinary owned handles.
     for f in &p.funcs {
-        if matches!(f.ret, Type::BorrowNamed(_))
-            || f.is_generator && f.params.iter().any(|p| matches!(p.ty, Type::BorrowNamed(_))) {
+        if matches!(f.ret, Type::BorrowNamed(_) | Type::BorrowMutNamed(_))
+            || f.is_generator && f.params.iter().any(|p|
+                matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowMutNamed(_))) {
             return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
                 "Borrow<T> returns/generator parameters need lifetime-aware lowering"));
         }
@@ -1159,7 +1176,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
             params: params.into_iter().map(|ty| match ty {
-                Type::BorrowClass(c) => Type::Class(c),
+                Type::BorrowClass(c) | Type::BorrowMutClass(c) => Type::Class(c),
                 other => other,
             }).collect(),
             ret,
@@ -1399,6 +1416,7 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
         Type::Enum(i) => enums[i as usize].name.clone(),
         Type::ActorRef(i) => format!("ActorRef<{}>", actors[i as usize]),
         Type::BorrowClass(i) => format!("Borrow<{}>", classes[i as usize]),
+        Type::BorrowMutClass(i) => format!("BorrowMut<{}>", classes[i as usize]),
         Type::BorrowNamed(i) => format!("Borrow<{}>", tn[i as usize].0),
         Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => tn[i as usize].0.clone(),
         t => t.name().to_string(),
@@ -1473,13 +1491,18 @@ fn body_check(
                     cx.borrowed_slots.insert(i as u32);
                     Type::Class(c)
                 }
+                Type::BorrowMutClass(c) => {
+                    cx.borrowed_slots.insert(i as u32);
+                    cx.exclusive_formals.insert(i as u32);
+                    Type::Class(c)
+                }
                 other => other,
             };
             cx.scopes[0].push(Local {
                 name: n.to_string(),
                 slot: i as u32,
                 ty: local_type,
-                mutable: *m && !matches!(*t, Type::BorrowClass(_)),
+                mutable: *m && !matches!(*t, Type::BorrowClass(_) | Type::BorrowMutClass(_)),
                 mail: None,
             });
         }
@@ -1704,6 +1727,7 @@ impl<'a> FnCx<'a> {
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
             borrowed_slots: BTreeSet::new(),
+            exclusive_formals: BTreeSet::new(),
             nll_fuel: NLL_WORK_BUDGET,
             state_write_scope: false,
             state_read_scope: false,
@@ -1755,6 +1779,7 @@ impl<'a> FnCx<'a> {
         let moved = std::mem::take(&mut self.moved);
         let loans = std::mem::take(&mut self.loans);
         let borrowed_slots = std::mem::take(&mut self.borrowed_slots);
+        let exclusive_formals = std::mem::take(&mut self.exclusive_formals);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         self.cleanup_depth += 1;
         let r = self.stmts(body);
@@ -1762,6 +1787,7 @@ impl<'a> FnCx<'a> {
         self.recover_cursor = prev_cursor;
         self.loans = loans;
         self.borrowed_slots = borrowed_slots;
+        self.exclusive_formals = exclusive_formals;
         self.moved = moved;
         self.loops = loops;
         self.scopes = scopes;
@@ -2582,11 +2608,14 @@ impl<'a> FnCx<'a> {
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
-                if self.borrowed_slots.contains(&local.slot) && !self.loans.contains_key(&local.slot) {
+                if self.borrowed_slots.contains(&local.slot)
+                    && !self.loans.contains_key(&local.slot)
+                    && !self.exclusive_formals.contains(&local.slot) {
                     return Err(Diagnostic::new(pos, "E_BORROW", "cannot mutate an expired borrowed class alias"));
                 }
-                if let Some(loan) = self.loans.get(&local.slot).copied() {
-                    if !loan.mutable {
+                if let Some(mut_allowed) = self.loans.get(&local.slot).map(|loan| loan.mutable)
+                    .or_else(|| self.exclusive_formals.contains(&local.slot).then_some(true)) {
+                    if !mut_allowed {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
                     }
                     let Type::Class(c) = local.ty else { unreachable!("tracked loans must be class typed") };
@@ -3416,7 +3445,8 @@ impl<'a> FnCx<'a> {
         let checked = (|| -> R<Vec<TE>> {
             let mut out = Vec::new();
             for (i, (arg, want)) in args.iter().zip(params).enumerate() {
-                if let Type::BorrowClass(class) = *want {
+                if let Type::BorrowClass(class) | Type::BorrowMutClass(class) = *want {
+                    let write = matches!(*want, Type::BorrowMutClass(_));
                     // An explicit `borrow! owner` is a spelling of the
                     // *same* read-only call loan as the implicit `owner`
                     // form. Both must select the identical live local place;
@@ -3425,24 +3455,39 @@ impl<'a> FnCx<'a> {
                     // In particular, never silently admit `borrow! mut`,
                     // `borrow! make_temp()`, field projections or reborrows.
                     let (name, owner_expr) = match &arg.kind {
-                        ExprKind::Var(name) => (name, arg),
-                        ExprKind::Ownership(OwnershipOp::Borrow, false, inner) =>
+                        ExprKind::Var(name) if !write => (name, arg),
+                        ExprKind::Ownership(OwnershipOp::Borrow, false, inner) if !write =>
                             match &inner.kind {
                                 ExprKind::Var(name) => (name, inner.as_ref()),
                                 _ => return Err(Diagnostic::new(arg.pos, "E_BORROW",
                                     "borrow! call argument needs a named, live class owner")),
                             },
+                        ExprKind::Ownership(OwnershipOp::Borrow, true, inner) if write =>
+                            match &inner.kind {
+                                ExprKind::Var(name) => (name, inner.as_ref()),
+                                _ => return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                                    "exclusive mut call loan needs a named local owner")),
+                            },
                         ExprKind::Ownership(OwnershipOp::Borrow, true, _) =>
                             return Err(Diagnostic::new(arg.pos, "E_BORROW",
                                 "borrow! mut requires an exclusive mutable formal, not Borrow<T>")),
                         _ => return Err(Diagnostic::new(arg.pos, "E_BORROW",
-                            "Borrow<T> call needs a named owner or borrow! named_owner")),
+                            if write { "exclusive formal requires mut owner or borrow! mut owner" }
+                            else { "Borrow<T> call needs a named owner or borrow! named_owner" })),
                     };
                     let Some(local) = self.lookup(name) else {
                         return Err(Diagnostic::new(arg.pos, "E_UNBOUND",
                             format!("unknown class owner '{name}'")));
                     };
                     let owner_slot = local.slot;
+                    if write && !local.mutable {
+                        return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                            "exclusive mutable call loan requires a mutable owned local"));
+                    }
+                    if write && self.loans.values().any(|loan| loan.owner == owner_slot) {
+                        return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                            "exclusive mutable call conflicts with an already-live loan"));
+                    }
                     if self.borrowed_slots.contains(&owner_slot) {
                         return Err(Diagnostic::new(arg.pos, "E_BORROW",
                             "reborrowing a borrowed alias/formal needs verified lifetime provenance"));
@@ -3471,7 +3516,7 @@ impl<'a> FnCx<'a> {
                     }
                     debug_assert!(alias > self.nparams + self.locals.len() as u32);
                     self.loans.insert(alias, ScopedLoan {
-                        owner: owner_slot, mutable: false,
+                        owner: owner_slot, mutable: write,
                     });
                     temporary_call_loans.push(alias);
                     out.push(value);
