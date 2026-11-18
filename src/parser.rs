@@ -1002,7 +1002,7 @@ impl Parser {
                     }
                     m.fields.push(f.field);
                 }
-                Some("fnc" | "method") => {
+                Some("fnc" | "method" | "mtd") => {
                     self.advance();
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
@@ -1467,6 +1467,11 @@ impl Parser {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     "type-first callable bodies without '{' must start on a new line"));
             }
+            // An optional explicit 'begin' opens the same checked
+            // statement/end grammar. A bare body retains its newline gate.
+            // 'begin' is only a callable-body marker here, not a general
+            // expression or an alternate implicit-return rule.
+            self.eat_word("begin");
             // Reuse the existing explicit statement parser: it enforces
             // ordinary terminators, nesting, and checked explicit returns.
             // Do not treat the last expression as an implicit return.

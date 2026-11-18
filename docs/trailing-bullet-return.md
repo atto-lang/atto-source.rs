@@ -69,3 +69,41 @@ return delimiters; U+25CF `●` is deliberately excluded. This change
 does not add general newline-delimited bodies to legacy headers or alter
 `x<-1` expression lexing. Real compiler execution and other backend
 conformance remain rollout gates.
+
+## Explicit begin/end callable bodies
+
+A type-first callable may put `begin` after the signature to make
+the body boundary explicit. The usual checked statement grammar parses
+the body and its matching `end`. The closer can be written as
+`end`, `end.` or `end;` (exactly one optional punctuation mark).
+Indentation has no grammar effect; the formatter uses two spaces.
+
+~~~atto
+int <- foo()
+begin
+  return 42;
+end.
+
+int• bar()
+begin
+  return 42;
+end.
+
+fnc int <- baz()
+begin
+  return 42;
+end;
+
+fnc int• qux()
+begin
+  return 42;
+end
+~~~
+
+An inline class/actor instance method may use `mtd int• name()`
+or `mtd int <- name()` in addition to legacy `fnc` and bare
+method headers; `mtd` remains invalid as a top-level function keyword.
+`begin/end` does not imply a final-expression return. Unmatched
+`end`, duplicate closer punctuation, empty bodies, and contradictory
+return types fail closed. General nested begin/end expressions and other
+backend parity are separate work.
