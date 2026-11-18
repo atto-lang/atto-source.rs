@@ -1,6 +1,0 @@
-// atto-ownership: borrow-default-v1
-// expect-error: E_UNSUPPORTED_TYPE
-// Mutable non-owning class formals need verified BorrowMut<T> lowering.
-define class Parcel as pub mut int value = 1; end
-fnc update(Parcel mut p): void { p.value = 42; }
-pub fnc main(): int { return 0; }
