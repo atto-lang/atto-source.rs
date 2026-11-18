@@ -1,0 +1,9 @@
+// expect-exit: 42
+type Binary = (int, int) => int;
+fnc apply(int input): int {
+    const Binary add = |int a, b: int| :int -> a + b;
+    return add(input, 22);
+}
+pub fnc main(): int {
+    return apply(20);
+}
