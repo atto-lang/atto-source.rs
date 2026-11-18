@@ -242,7 +242,7 @@ pub enum TStmt {
     },
     /// Registration point of a top-level `defer`: sets `flag`. The body
     /// runs LIFO at every function exit after registration.
-    Defer { flag: u32, body: Vec<TStmt> },
+    Defer { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt> },
     /// Registration of a recovery callback: evaluates factory arguments into
     /// `args` slots once, sets `flag`. The body runs only while unwinding.
     Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt> },
@@ -455,6 +455,9 @@ struct FnCx<'a> {
     cleanup_depth: u32,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
+    /// Non-escaping error-view binder; only explicitly admitted read-only
+    /// properties may be lowered from the compiler-owned unwind slots.
+    recover_error: Option<String>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -1541,7 +1544,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
             || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
             || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
-        TStmt::Defer { body, .. } => any_in_stmts(body, f),
+        TStmt::Defer { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
         TStmt::Recover { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
         TStmt::UnwindFrame { .. } | TStmt::RecoverNext => false,
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => any_in_stmts(b, f),
@@ -1626,6 +1629,7 @@ impl<'a> FnCx<'a> {
             unwind: None,
             cleanup_depth: 0,
             recover_cursor: None,
+            recover_error: None,
         }
     }
 
@@ -1660,19 +1664,53 @@ impl<'a> FnCx<'a> {
         Ok(())
     }
 
+    /// Evaluate explicitly captured scalar/string arguments exactly once at
+    /// registration. The resulting compiler-owned slots outlive the failed
+    /// scope and are read by the deferred/recovery body on its owning task.
+    fn cleanup_factory_args(&mut self, params: &[(String, Type, Pos)],
+                            args: &[Expr], pos: Pos, kind: &str)
+        -> R<(Vec<(u32, TE)>, Vec<Local>)>
+    {
+        if params.len() != args.len() {
+            return Err(Diagnostic::new(pos, "E_ARITY", format!(
+                "{kind} factory expects {} argument(s), found {}", params.len(), args.len())));
+        }
+        let mut sets = Vec::new();
+        let mut bound = Vec::new();
+        for ((name, ty, ppos), arg) in params.iter().zip(args) {
+            let ty = self.resolve(*ty, *ppos)?;
+            if !matches!(ty, Type::Int | Type::Bool | Type::Str | Type::Float) {
+                return Err(Diagnostic::new(*ppos, "E_UNSUPPORTED_TYPE",
+                    "cleanup factory parameters are restricted to scalar and string values"));
+            }
+            let v = self.consume_expected(arg, ty)?;
+            if v.ty != ty {
+                return Err(type_err(arg.pos, format!(
+                    "{kind} factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty))));
+            }
+            let slot = self.temp(ty, *ppos)?;
+            sets.push((slot, v));
+            bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
+        }
+        Ok((sets, bound))
+    }
+
     /// Check a cleanup/recovery body in an isolated scope: it cannot see the
     /// enclosing locals (no by-reference capture lifetime is verified), only
     /// the explicit factory parameters in `bound`.
-    fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
+    fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>,
+                error: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
         let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
         let loans = std::mem::take(&mut self.loans);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
+        let prev_error = std::mem::replace(&mut self.recover_error, error);
         self.cleanup_depth += 1;
         let r = self.stmts(body);
         self.cleanup_depth -= 1;
         self.recover_cursor = prev_cursor;
+        self.recover_error = prev_error;
         self.loans = loans;
         self.moved = moved;
         self.loops = loops;
@@ -1934,39 +1972,20 @@ impl<'a> FnCx<'a> {
                 self.loops = loops;
                 checked?
             }
-            Stmt::Defer { body, pos } => {
+            Stmt::Defer { params, body, args, pos } => {
                 self.top_registration(*pos, "defer")?;
                 self.unwind_frame(*pos, "defer")?;
+                let (sets, bound) = self.cleanup_factory_args(params, args, *pos, "defer")?;
                 let flag = self.temp(Type::Bool, *pos)?;
-                let body = self.isolated(Vec::new(), None, body)?;
-                TStmt::Defer { flag, body }
+                let body = self.isolated(bound, None, None, body)?;
+                TStmt::Defer { flag, args: sets, body }
             }
-            Stmt::Recover { params, err: _, cursor, body, args, pos } => {
+            Stmt::Recover { params, err, cursor, body, args, pos } => {
                 self.top_registration(*pos, "recover")?;
                 self.unwind_frame(*pos, "recover")?;
-                if params.len() != args.len() {
-                    return Err(Diagnostic::new(*pos, "E_ARITY", format!(
-                        "recovery factory expects {} argument(s), found {}", params.len(), args.len())));
-                }
-                let mut sets = Vec::new();
-                let mut bound = Vec::new();
-                for ((name, ty, ppos), arg) in params.iter().zip(args) {
-                    let ty = self.resolve(*ty, *ppos)?;
-                    if !matches!(ty, Type::Int | Type::Bool | Type::Str | Type::Float) {
-                        return Err(Diagnostic::new(*ppos, "E_UNSUPPORTED_TYPE",
-                            "recovery factory parameters are restricted to scalar and string values"));
-                    }
-                    let v = self.consume_expected(arg, ty)?;
-                    if v.ty != ty {
-                        return Err(type_err(arg.pos, format!(
-                            "recovery factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty))));
-                    }
-                    let slot = self.temp(ty, *ppos)?;
-                    sets.push((slot, v));
-                    bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
-                }
+                let (sets, bound) = self.cleanup_factory_args(params, args, *pos, "recover")?;
                 let flag = self.temp(Type::Bool, *pos)?;
-                let body = self.isolated(bound, Some(cursor.clone()), body)?;
+                let body = self.isolated(bound, Some(cursor.clone()), Some(err.clone()), body)?;
                 if !returns(&body) {
                     return Err(Diagnostic::new(*pos, "E_RETURN",
                         "a recovery handler must return a value or call the cursor's next() on every path"));
@@ -3288,6 +3307,17 @@ impl<'a> FnCx<'a> {
 
     fn member(&mut self, base: &Expr, name: &str, pos: Pos) -> R<TE> {
         if let ExprKind::Var(n) = &base.kind {
+            if self.recover_error.as_deref() == Some(n) {
+                let (_, _, msg, kind, _) = self.unwind.expect("recovery needs unwind slots");
+                // ErrorView is an ephemeral compiler-issued view, never a
+                // first-class object or a transferable/returnable handle.
+                return match name {
+                    "message" => Ok(TE { e: TExpr::Local(msg), ty: Type::Str }),
+                    "is_raise" => Ok(TE { e: TExpr::Local(kind), ty: Type::Bool }),
+                    _ => Err(Diagnostic::new(pos, "E_UNBOUND",
+                        format!("unknown ErrorView property '{name}'"))),
+                };
+            }
             if let Some(l) = self.lookup(n) {
                 if let Some(payload) = l.mail {
                     return match name {
