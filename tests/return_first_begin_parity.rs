@@ -48,5 +48,10 @@ fn trivia_and_newline_boundaries_are_enforced() {
     assert!(parse(source).is_ok());
     assert!(parse("int <- main()\nbegin; // invalid\nreturn 42;\nend").is_err());
     assert!(parse("int <- main()\nbegin end").is_err());
-    assert!(parse("int <- main()\nbegin\nreturn 42;\nend;\nfnc main(): int {return 0;}").is_err());
+    // Duplicate declarations are a MIR semantic error, not a lexer/parser
+    // syntax error. Keep that separation so conformance tests exercise the
+    // actual compiler admission boundary rather than a false parse expectation.
+    let duplicate = parse("int <- main()\nbegin\nreturn 42;\nend;\nfnc main(): int {return 0;}").unwrap();
+    let error = oreslang_source_rs::mir::lower(duplicate).unwrap_err();
+    assert_eq!(error.class, "duplicate_declaration");
 }
