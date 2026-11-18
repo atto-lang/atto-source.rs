@@ -31,6 +31,26 @@ fn implicit_struct_equals_and_brace_forms_compile() {
 }
 
 #[test]
+fn unrelated_callable_binders_do_not_shadow_the_nominal_struct() {
+    // A different callable's formal/local is not in main's lexical scope.
+    pass(&format!("{HEADER}fnc helper(int Particle) -> int {{ return Particle; }}\n\
+        pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"));
+    pass(&format!("{HEADER}fnc helper() -> int {{ val Particle=7; return Particle; }}\n\
+        pub fnc main(): int {{ val p=Particle(y=20,x=10); return p.x+p.y; }}"));
+    // Two separate call sites with the same resolved nominal struct.
+    pass(&source("val a=Particle(x=1,y=2); val b=Particle(y=3,x=4); return a.x+b.y;"));
+}
+
+#[test]
+fn same_callable_scope_remains_shielded() {
+    reject(&source("val Particle=7; val p=Particle(x=10,y=20); return p.x;"),
+        "E_STRUCT_RESOLVE");
+    reject(&format!("{HEADER}fnc builder(int Particle) -> int {{\n\
+        val p=Particle(y=20,x=10); return p.x; }}\n\
+        pub fnc main(): int {{ return builder(42); }}"), "E_STRUCT_RESOLVE");
+}
+
+#[test]
 fn missing_duplicate_unknown_and_mixed_fields_fail_closed() {
     reject(&source("val p=Particle(x=10); return p.x;"), "E_SHAPE");
     reject(&source("val p=Particle(x=10,x=11,y=20); return p.x;"), "E_DUPLICATE");
@@ -43,8 +63,9 @@ fn calls_ctors_shadowing_and_effectful_values_never_reinterpret_equals() {
     reject(&source("val Particle=7; val p=Particle(x=10,y=20); return p.x;"), "E_STRUCT_RESOLVE");
     reject(&format!("{HEADER}fnc Particle(int x) -> int {{ return x; }}\n\
         pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"), "E_STRUCT_RESOLVE");
-    reject(&format!("{HEADER}fnc helper(int Particle) -> int {{ return Particle; }}\n\
-        pub fnc main(): int {{ val p=Particle(x=10,y=20); return p.x; }}"), "E_STRUCT_RESOLVE");
+    reject(&format!("{HEADER}fnc helper(int Particle) -> int {{\n\
+        val p = Particle(x=10,y=20); return p.x; }}\n\
+        pub fnc main(): int {{ return helper(7); }}"), "E_STRUCT_RESOLVE");
     reject(&source("val p=new Particle(x=10,y=20); return p.x;"), "E_STRUCT_TARGET");
     reject(&source("val p=Particle(x=increment(10),y=20); return p.x;"), "E_UNSUPPORTED");
     // An ordinary function named 'foo' is NEVER a struct initializer.
