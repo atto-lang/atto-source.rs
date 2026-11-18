@@ -3,7 +3,7 @@
 use crate::ast::{ActorDecl, ClassDecl};
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
-use crate::parser::{is_reserved, Parser, MAX_FUNCS, MAX_PARAMS};
+use crate::parser::{is_reserved, LanguageVersion, Parser, MAX_FUNCS, MAX_PARAMS};
 type R<T> = Result<T, Diagnostic>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub struct TargetHeaders {
     pub definitions: Vec<ActorDecl>,
     pub receivers: Vec<ReceiverHeader>,
 }
-struct Cursor<'a> { toks: &'a [Token], i: usize }
+struct Cursor<'a> { toks: &'a [Token], i: usize, version: LanguageVersion }
 impl Cursor<'_> {
     fn tok(&self) -> &Tok { &self.toks[self.i.min(self.toks.len()-1)].tok }
     fn pos(&self) -> Pos { self.toks[self.i.min(self.toks.len()-1)].pos }
@@ -147,7 +147,8 @@ impl Cursor<'_> {
         if !arrow_type {
             return Err(self.err("E_SYNTAX", "expected '{' for a method body"));
         }
-        let comma_body = self.take(&Tok::ColonColon);
+        let mut comma_body = self.take(&Tok::ColonColon);
+        let mut saw_statement_separator = false;
         if comma_body && *self.tok() == Tok::LBrace {
             return Err(self.err("E_SYNTAX", "'::' requires a comma/end body, not '{'"));
         }
@@ -200,15 +201,26 @@ impl Cursor<'_> {
                     if braces == 0 { return Err(self.err("E_SYNTAX", "unmatched '}'")); }
                     braces -= 1;
                 }
-                Tok::Semi if comma_body && braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 =>
-                    return Err(self.err("E_SYNTAX", "'::' body requires commas, not semicolons")),
-                Tok::Comma if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
-                    if !comma_body {
-                        return Err(self.err("E_SYNTAX",
-                            "unmarked '-> Type ... end' body requires semicolons and explicit returns"));
+                Tok::Semi if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    if comma_body {
+                        return Err(self.err("E_SYNTAX", "comma/implicit-tail body requires ',' separators, not ';'"));
                     }
+                    saw_statement_separator = true;
+                }
+                Tok::Comma if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    if !comma_body && self.version == LanguageVersion::Explicit {
+                        return Err(self.err("E_BODY_VERSION",
+                            "language version 2 requires '::' before comma/implicit-tail method bodies; insert '::' or use semicolon statements with explicit return/^"));
+                    }
+                    if saw_statement_separator {
+                        return Err(self.err("E_SYNTAX", "cannot mix comma and semicolon separators in one callable body"));
+                    }
+                    // v1 permits unmarked comma bodies. This parser is only a
+                    // syntax preflight: actual tail-return semantics are still
+                    // enforced by the shared versioned production parser.
+                    comma_body = true;
                     if matches!(self.toks.get(self.i + 1).map(|x| &x.tok), Some(Tok::Ident(s)) if s == "end") {
-                        return Err(self.err("E_SYNTAX", "trailing comma in '::' body"));
+                        return Err(self.err("E_SYNTAX", "trailing comma in comma body"));
                     }
                 }
                 _ => {}
@@ -283,10 +295,18 @@ impl Cursor<'_> {
 /// module imports, forward-declared actors, nominal or typed receivers and functions.
 /// Body braces are balanced only: there is no semantic/state access proof.
 pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
+    parse_target_declarations_versioned(toks, LanguageVersion::Legacy)
+}
+
+/// Opt-in strict callable-body grammar for out-of-line receiver preflight.
+/// Do not accept a different mode from the production parser or linker.
+pub fn parse_target_declarations_versioned(
+    toks: &[Token], version: LanguageVersion,
+) -> R<TargetHeaders> {
     if toks.is_empty() {
         return Err(Diagnostic::new(Pos::default(), "E_EOF", "empty token stream"));
     }
-    let mut c = Cursor { toks, i: 0 };
+    let mut c = Cursor { toks, i: 0, version };
     let mut out = TargetHeaders::default();
     let mut spans: Vec<(usize, usize, usize)> = Vec::new();
     let mut function_spans: Vec<(usize, usize)> = Vec::new();
