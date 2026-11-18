@@ -1,0 +1,7 @@
+# BorrowMut v1 — bounded synchronous call-loan contract
+
+Draft compiler feature stacked on [Atto source #346](https://github.com/atto-lang/atto-source.rs/pull/346). The versioned first-line migration header is required. Canonical `fnc update(mut Foo value)` and call-site `update(mut owned)` are checked exclusive aliases; `update(borrow! mut owned)` is the same explicit ownership operation. Neither spells a transfer or allocates a new object.
+
+The compiler retains per-formal authority in `TFunc.param_ownership` independently of its erased Wasm object offset. A mutable borrowed formal may mutate a public mutable scalar field, but cannot move, return, rebind, transport or clone the referenced class. A call cannot combine a mutable loan with another loan of the same owner; all call loans end after synchronous invocation. Only top-level non-generator class functions participate; methods, constructors, actor boundaries, async calls, nested objects, field-projection loans and returned borrows remain restricted.
+
+Test matrix: 4 passing compiled guest programs and 12 fail-closed compiler cases. Exact-source native and independent browser Wasm compiler builds, guest execution, negative no-artifact checks and full existing conformance are required. These target fixtures are not proof of pass status until CI completes.
