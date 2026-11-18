@@ -1107,6 +1107,7 @@ impl Parser {
         let leading = if self.looks_leading_return_header() {
             Some(self.parse_leading_return()?)
         } else { None };
+        let has_leading_return = leading.is_some();
         let (name, pos) = self.ident("a method name")?;
         let generic = self.parse_generic_formals()?;
         self.expect(Tok::LParen, "'('")?;
@@ -1126,7 +1127,7 @@ impl Parser {
             (self.parse_return_spec()?, arrow, colon)
         };
         if generic { return Err(unsupported(pos, "generic methods")); }
-        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
+        let body = self.parse_callable_body(arrow_type, colon_type, ret, has_leading_return)?;
         Ok(Method {
             name,
             pos,
@@ -1267,6 +1268,7 @@ impl Parser {
         let leading = if self.looks_leading_return_header() {
             Some(self.parse_leading_return()?)
         } else { None };
+        let has_leading_return = leading.is_some();
         let (name, pos) = self.ident("a function name")?;
         let generic = self.parse_generic_formals()?;
         self.expect(Tok::LParen, "'('")?;
@@ -1290,7 +1292,7 @@ impl Parser {
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
         }
         self.in_generator = is_generator;
-        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
+        let body = self.parse_callable_body(arrow_type, colon_type, ret, has_leading_return)?;
         self.in_generator = false;
         let _ = start;
         Ok(Func {
@@ -1451,7 +1453,32 @@ impl Parser {
 
     /// C-style braces remain the default. The extra -> after : Type is an
     /// explicit body marker; a -> Type header also admits comma/end bodies.
-    fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type) -> R<Vec<Stmt>> {
+    fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type, leading_type: bool) -> R<Vec<Stmt>> {
+        // Type-first declarations have an unambiguous statement/end body when
+        // the first body token is on a later physical source line than the
+        // complete signature. Braced bodies and the legacy ': T -> {' form
+        // retain their existing interpretation. Indentation is irrelevant.
+        if leading_type && *self.peek() != Tok::LBrace
+            && !(colon_type && *self.peek() == Tok::Arrow)
+        {
+            let newline = self.i > 0
+                && self.toks[self.i - 1].pos.line < self.pos().line;
+            if !newline {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "type-first callable bodies without '{' must start on a new line"));
+            }
+            // Reuse the existing explicit statement parser: it enforces
+            // ordinary terminators, nesting, and checked explicit returns.
+            // Do not treat the last expression as an implicit return.
+            let body = self.parse_explicit_end_body()?;
+            // An optional punctuation terminator belongs to this callable,
+            // not the next declaration. A second punctuation token remains
+            // invalid instead of being silently swallowed.
+            if *self.peek() == Tok::Dot || *self.peek() == Tok::Semi {
+                self.advance();
+            }
+            return Ok(body);
+        }
         if arrow_type {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();

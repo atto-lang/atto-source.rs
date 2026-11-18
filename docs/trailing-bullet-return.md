@@ -28,3 +28,44 @@ Generic language-level spelling is T• identity<T>(value: T). The browser compi
 ## Test and rollout notes
 
 The Rust frontend tests cover postfix, bullet and ASCII `<-` spellings, top-level/class/actor/static contexts, nested built-in type spellings, warnings, conflicts, exclusions, malformed source, Unicode strings/comments, type checking, no-warning state leakage, and deterministic emitted Wasm. A new compile_with_warnings entry point reports non-fatal diagnostics, and the native CLI prints these to stderr. The current wasm browser ABI only exposes success/error: surfacing warnings in the playground requires a follow-up ABI/UI change. Cross-backend parity and generic code generation remain separate gates.
+
+
+## Newline/end callable bodies (type-first syntax)
+
+The brace-free type-first form has a **mandatory physical newline** after the
+complete declaration signature (including any postfix annotation/effect
+clauses). Indentation and column position do not determine the block. The
+callable's own \`end\` may be followed by exactly one optional \`.\` or \`;\`.
+
+~~~atto
+int <- foo()
+    return 42;
+end.
+
+int• bar()
+    return 42;
+end;
+
+fnc int <- baz()
+    return 42;
+end
+
+fnc int• qux()
+    return 42
+end.
+~~~
+
+Braced equivalents remain accepted, including same-line bodies. These
+semicolon/newline-separated statement bodies reuse the checked explicit/end
+parser; a trailing expression is **not** an inferred return. Nesting is based
+on the actual grammar (\`if ... fi\`, \`match ... end\`, and class/actor
+\`end\` delimiters each consume their own closing token). Missing closing
+\`end\`, a same-line unbraced statement, an empty body, a second end
+punctuation mark, a conflicting return annotation, and an unsupported
+Unicode BLACK CIRCLE U+25CF delimiter must fail closed.
+
+The spellings \`<-\` and U+2022 \`•\` are the only two admitted prefix
+return delimiters; U+25CF \`●\` is deliberately excluded. This change
+does not add general newline-delimited bodies to legacy headers or alter
+\`x<-1\` expression lexing. Real compiler execution and other backend
+conformance remain rollout gates.
