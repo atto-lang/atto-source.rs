@@ -17,6 +17,10 @@ pub enum Type {
     Named(u32),
     /// Unresolved `ActorRef<Name>`: index into [`Program::type_names`].
     NamedRef(u32),
+    /// Unresolved read-only class formal Borrow<T>.
+    BorrowNamed(u32),
+    /// Resolved non-owning class formal, passed as a class handle.
+    BorrowClass(u32),
     /// Source-level `fnc(T1, T2) -> R` signature. The index refers to a
     /// canonical, compiler-interned signature in `Program::type_names`.
     /// This type is recognized and checked, but cannot yet be represented
@@ -53,6 +57,7 @@ impl Type {
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
+            Type::BorrowNamed(_) | Type::BorrowClass(_) => "Borrow<T>",
             Type::Callable(_) => "fnc(...)->...",
             _ => "object",
         }

@@ -406,11 +406,15 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
-            "Borrow" | "BorrowMut" | "Shared" | "Pointer" => {
-                // Reserved type constructors: do not fall through to an
-                // ordinary user-owned class or forged pointer representation.
-                // Typed region, sharing and pointer ABI verification are
-                // required before admitting any of these capabilities.
+            "Borrow" => {
+                // Read-only named-class formals only; other positions remain
+                // fail-closed in the typed checker.
+                self.expect(Tok::Lt, "'<' after Borrow")?;
+                let (class, class_pos) = self.ident("a borrowed class name")?;
+                self.expect(Tok::Gt, "'>' after borrowed class")?;
+                Type::BorrowNamed(self.type_name(class, class_pos))
+            },
+            "BorrowMut" | "Shared" | "Pointer" => {
                 return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                     format!("{name}<T> requires verified ownership/provenance and backend lowering")));
             },
