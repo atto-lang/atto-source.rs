@@ -374,6 +374,26 @@ fn checked_class_byte_size(field_count: usize, pos: Pos) -> R<u32> {
     Ok(bytes.max(FIELD_BYTES))
 }
 
+#[cfg(test)]
+mod flat_copy_layout_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn zero_small_exact_limit_and_overflow_are_checked() {
+        let pos = || Pos { line: 1, col: 1 };
+        let max_bytes = crate::wasm::HEAP_PAGES * 65536;
+        let max_slots = (max_bytes / FIELD_BYTES) as usize;
+        assert_eq!(checked_class_byte_size(0, pos()).unwrap(), FIELD_BYTES);
+        assert_eq!(checked_class_byte_size(1, pos()).unwrap(), FIELD_BYTES);
+        assert_eq!(checked_class_byte_size(3, pos()).unwrap(), 24);
+        assert_eq!(checked_class_byte_size(max_slots, pos()).unwrap(), max_bytes);
+        for invalid in [max_slots + 1, usize::MAX] {
+            let diagnostic = checked_class_byte_size(invalid, pos()).unwrap_err();
+            assert_eq!(diagnostic.code, "E_COPY_LAYOUT");
+        }
+    }
+}
+
 struct FieldInfo {
     name: String,
     ty: Type,
