@@ -662,7 +662,7 @@ impl Parser {
                         return Err(Diagnostic::new(pos, "E_TYPE",
                             "file-scope callable's lambda does not match its declared type"));
                     }
-                    let ExprKind::Lambda { body, .. } = init.kind else {
+                    let ExprKind::Lambda { params: lambda_params, body, .. } = init.kind else {
                         return Err(Diagnostic::new(pos, "E_TYPE",
                             "file-scope callable initializer must be a lambda"));
                     };
@@ -676,7 +676,7 @@ impl Parser {
                     };
                     prog.funcs.push(Func {
                         name, pos, is_generator: false, is_pure: true,
-                        params: checked.params.into_iter().map(|(name, ty)| Param {
+                        params: lambda_params.into_iter().zip(checked.params).map(|(name, ty)| Param {
                             name, ty, mutable: false, pos,
                         }).collect(),
                         ret: checked.result,
