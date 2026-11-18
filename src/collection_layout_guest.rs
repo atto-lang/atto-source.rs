@@ -398,6 +398,34 @@ fnc main() -> int {
     }
 
     #[test]
+    fn default_aos_has_same_specialization_as_explicit_aos() {
+        let explicit = PROGRAM.replace("layout=soa", "layout=aos");
+        let implicit = PROGRAM.replace("Array<Particle, layout=soa>", "Array<Particle>");
+        assert_eq!(compiler(&explicit).unwrap(), compiler(&implicit).unwrap());
+    }
+
+    #[test]
+    fn struct_brace_and_equals_initializers_have_equal_guest_meaning() {
+        let braces = PROGRAM.replace("Particle(x=10, y=20, velocity=1)",
+            "Particle{x: 10, y: 20, velocity: 1}")
+            .replace("Particle(x=30, y=40, velocity=2)",
+            "Particle{velocity: 2, x: 30, y: 40}");
+        assert_eq!(compiler(PROGRAM).unwrap(), compiler(&braces).unwrap());
+    }
+
+    #[test]
+    fn duplicate_or_unknown_struct_fields_are_compile_failures() {
+        for change in [
+            "Particle(x=10, x=20, velocity=1)",
+            "Particle(x=10, unknown=20, velocity=1)",
+            "Particle(x=10, y=20)",
+        ] {
+            assert_eq!(compiler(&PROGRAM.replace("Particle(x=10, y=20, velocity=1)", change))
+                .unwrap_err().code, "E_STRUCT_FIELD");
+        }
+    }
+
+    #[test]
     fn rejects_nested_expressions_or_unverified_borrow_paths() {
         let bad = PROGRAM.replace("Particle(x=10", "Particle(x=1+9");
         assert!(compiler(&bad).is_err());
