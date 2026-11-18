@@ -1,0 +1,1 @@
+pub fnc main(int value, int value): int { return value; }

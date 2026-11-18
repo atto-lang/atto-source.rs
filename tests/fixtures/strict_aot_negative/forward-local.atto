@@ -1,0 +1,1 @@
+pub fnc main(): int { const first: int = later; const later: int = 42; return first; }
