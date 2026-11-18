@@ -747,6 +747,76 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
     }
 }
 
+/// Check the opt-in, versioned read-only borrowing default for top-level
+/// nonprimitive class formals. Ordinary `fnc inspect(Foo foo)` is checked as
+/// `fnc inspect(Borrow<Foo> foo)` without requiring the latter source spelling.
+///
+/// IMPORTANT: this is deliberately a *bounded migration mode*, not a global
+/// change to existing compiled programs. Reuse the same checker-owned class
+/// loan facts, checked argument provenance and borrowed formal identity as
+/// explicit `Borrow<Foo>`, without generating any phantom owned locals.
+///
+/// Unsupported method/constructor/actor class parameters are rejected rather
+/// than quietly retaining the legacy implicit-move semantics in this mode.
+/// Mutable loans, returned reference lifetimes and generics still require
+/// separate typed proof before enabling this mode as the language default.
+pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
+    let mut migrated = p.clone();
+    let class_names: BTreeSet<&str> = p.classes.iter().map(|c| c.name.as_str()).collect();
+    let is_class_formal = |ty: Type| match ty {
+        Type::Named(i) => p.type_names.get(i as usize)
+            .is_some_and(|(name, _)| class_names.contains(name.as_str())),
+        Type::BorrowNamed(_) => true,
+        _ => false,
+    };
+
+    // A versioned mode must have one predictable ownership interpretation.
+    // This backend only proves top-level synchronous borrowed class formals.
+    // Class/actor methods and constructors must not silently continue moving
+    // their class arguments while ordinary functions change to borrowing.
+    for class in &p.classes {
+        if class.ctor.as_ref().is_some_and(|ctor|
+            ctor.params.iter().any(|q| is_class_formal(q.ty)))
+            || class.methods.iter().any(|method|
+                method.params.iter().any(|q| is_class_formal(q.ty)))
+        {
+            return Err(Diagnostic::new(class.pos, "E_UNSUPPORTED_TYPE",
+                "borrow-v1: class methods and constructors with class formals require verified receiver/parameter lifetimes"));
+        }
+    }
+    for actor in &p.actors {
+        if actor.methods.iter().any(|method|
+            method.params.iter().any(|q| is_class_formal(q.ty)))
+        {
+            return Err(Diagnostic::new(actor.pos, "E_UNSUPPORTED_TYPE",
+                "borrow-v1: actor methods with class formals require proven actor-domain lifetimes"));
+        }
+    }
+
+    let mut rewrites = 0usize;
+    for func in &mut migrated.funcs {
+        for formal in &mut func.params {
+            if let Type::Named(i) = formal.ty {
+                if p.type_names.get(i as usize)
+                    .is_some_and(|(name, _)| class_names.contains(name.as_str()))
+                {
+                    // Preserve the exact source class name index and source
+                    // span. The existing BorrowNamed -> BorrowClass path
+                    // supplies permanent non-owning provenance, call loans,
+                    // and non-escapable typed parameters. In particular, an
+                    // ordinary Foo caller is never moved by this rewrite.
+                    formal.ty = Type::BorrowNamed(i);
+                    rewrites += 1;
+                }
+            }
+        }
+    }
+    // No source rewriting/token guessing and no unchecked ABI conversion.
+    // Even programs with zero class formals follow the same safety gates.
+    debug_assert!(rewrites <= p.funcs.iter().map(|f| f.params.len()).sum::<usize>());
+    check(&migrated)
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     // The browser backend cannot execute checked handles. Validate the
     // complete source AST *before* lambda lifting or generator CFG lowering:
