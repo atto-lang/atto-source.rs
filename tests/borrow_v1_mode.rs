@@ -159,3 +159,74 @@ fn forged_class_index_and_unproved_mutable_formal_fail_closed() {
     "#;
     assert_eq!(borrow_v1(src).unwrap_err().code, "E_UNSUPPORTED_TYPE");
 }
+
+
+#[test]
+fn stale_programmatic_ast_type_indices_are_diagnostics_not_panics() {
+    // The public opt-in checker can receive an AST assembled by another
+    // compiler stage. No forged Named/BorrowNamed/BorrowClass index may
+    // panic via type_names[i] or classes[i], or enter unchecked codegen.
+    use atto_compiler::{ast::Type, check, lexer, parser::Parser};
+    let source = r#"
+        define class Person as pub let int age = 21; end
+        fnc inspect(Person p): int { return p.age; }
+        pub fnc main(): int { return 42; }
+    "#;
+    for ty in [
+        Type::Named(u32::MAX),
+        Type::BorrowNamed(u32::MAX),
+        Type::BorrowClass(u32::MAX),
+        Type::Class(u32::MAX),
+        Type::NamedRef(u32::MAX),
+        Type::ActorRef(u32::MAX),
+    ] {
+        let mut p = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+        p.funcs[0].params[0].ty = ty;
+        let err = check::check_borrow_v1(&p).expect_err(
+            "forged type index must fail before any unchecked array indexing");
+        assert_eq!(err.code, "E_UNKNOWN_TYPE", "{ty:?}");
+    }
+    let mut p = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    p.funcs[0].ret = Type::BorrowClass(u32::MAX);
+    assert_eq!(check::check_borrow_v1(&p).unwrap_err().code, "E_UNKNOWN_TYPE");
+    let mut p = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    p.classes[0].fields[0].ty = Type::Named(u32::MAX);
+    assert_eq!(check::check_borrow_v1(&p).unwrap_err().code, "E_UNKNOWN_TYPE");
+}
+
+#[test]
+fn pre_resolved_borrowed_formal_cannot_become_an_owned_return() {
+    // Even without the textual Borrow<...> spelling, the already-resolved
+    // programmatic AST must carry permanent nonowning parameter provenance.
+    use atto_compiler::{ast::Type, check, lexer, parser::Parser};
+    let source = r#"
+        define class Person as pub let int age = 21; end
+        fnc steal(Person p): Person { return p; }
+        pub fnc main(): int { return 42; }
+    "#;
+    for formal_ty in [Type::Class(0), Type::BorrowClass(0)] {
+        let mut p = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+        p.funcs[0].params[0].ty = formal_ty;
+        let err = check::check_borrow_v1(&p).expect_err(
+            "previously resolved formals are still not owners");
+        assert_eq!(err.code, "E_BORROW", "{formal_ty:?}");
+    }
+}
+
+#[test]
+fn pre_resolved_borrowed_return_and_generator_are_not_lowered_as_owners() {
+    use atto_compiler::{ast::Type, check, lexer, parser::Parser};
+    let source = r#"
+        define class Person as pub let int age = 21; end
+        fnc view(Person p): Person { return p; }
+        pub fnc main(): int { return 42; }
+    "#;
+    let mut p = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    p.funcs[0].ret = Type::BorrowClass(0);
+    assert_eq!(check::check_borrow_v1(&p).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+
+    let mut p = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    p.funcs[0].params[0].ty = Type::BorrowClass(0);
+    p.funcs[0].is_generator = true;
+    assert_eq!(check::check_borrow_v1(&p).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+}
