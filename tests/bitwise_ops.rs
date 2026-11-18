@@ -15,7 +15,7 @@ fn bitwise_operations_compile_and_emit_wasm() {
         "12 & 10 | 2 ^ 6", "(1 | 2) <<< 1",
     ] {
         let bytes = compile(&source(expr)).unwrap_or_else(|e| panic!("{expr}: {e}"));
-        assert_eq!(&bytes[..8], b"\\0asm\\x01\\0\\0\\0", "{expr}");
+        assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0", "{expr}");
     }
 }
 
