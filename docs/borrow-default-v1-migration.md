@@ -9,7 +9,7 @@ The **first source line** must be exactly:
 // atto-ownership: borrow-default-v1
 ```
 
-This is a temporary compiler migration header until project-level configuration and the formatter's versioned ownership contract are ratified. It does not create a new language keyword. An unknown header at the first line rejects with `E_PROFILE`; no run-time detection or silent fallback. Files without this header compile using the existing legacy consuming-`Foo` ABI.
+This is a temporary compiler migration header until project-level configuration and the formatter's versioned ownership contract are ratified. It does not create a new language keyword. An unknown header at the first line rejects with `E_PROFILE`; no run-time detection or silent fallback. Files without this header compile using the existing legacy consuming-`Foo` ABI. A misplaced header on a later line rejects with `E_PROFILE` rather than silently reverting to legacy ownership.
 
 ## Ownership contract in this narrow compiler slice
 
@@ -38,6 +38,6 @@ pub fnc main(): int {
 
 ## Verification
 
-The source fixture corpus includes 4 expected executable guests and 9 rejected invalid programs. The native fixture harness and full native-vs-browser Wasm conformance harness pick them up automatically. To claim implementation, require exact source/carrier blob identity, positive real Wasm guest exit/stdout, negative expected diagnostics with **zero bytes emitted**, and regression tests proving the no-header legacy ABI remains owned.
+The source fixture corpus includes 4 expected executable guests and 11 rejected invalid programs. The native fixture harness and full native-vs-browser Wasm conformance harness pick them up automatically. To claim implementation, require exact source/carrier blob identity, positive real Wasm guest exit/stdout, negative expected diagnostics with **zero bytes emitted**, and regression tests proving the no-header legacy ABI remains owned.
 
 The header is intentionally experimental and must be reviewed with [atto-spec #89](https://github.com/atto-lang/atto-spec/pull/89), [compiler #336](https://github.com/atto-lang/atto-source.rs/pull/336) and [PR #345](https://github.com/atto-lang/atto-source.rs/pull/345) before language-spec/formatter-wide adoption.
