@@ -1,0 +1,20 @@
+// Keys are scoped by namespace and actor type, not just application key.
+// expect-exit: 0
+// expect-stdout: 40
+// expect-stdout: 2
+// java: rejects
+define serial actor Queue as
+    let int total = 0;
+    receive(msg: int): void {
+        self.total = self.total + msg;
+        stdio.println(self.total);
+        return;
+    }
+end
+pub fnc main(): int {
+    val first = ActorRegistry.get_or_create<Queue>("vhost-a", "payments");
+    val second = ActorRegistry.get_or_create<Queue>("vhost-b", "payments");
+    first.send(40);
+    second.send(2);
+    return 0;
+}
