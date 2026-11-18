@@ -208,6 +208,11 @@ pub enum TStmt {
         ty: Type,
         value: TE,
     },
+    /// Compiler-private bulk copy of an authenticated flat POD class.
+    /// Both addresses are already-evaluated locals; no guest source can
+    /// fabricate this instruction or bypass the independent copy witness.
+    /// Reference-bearing fields and protected actor-state never use it.
+    FlatPodCopy { dest: TE, source: TE, bytes: u32 },
     /// Protected state write: verified lexical exclusive access to `obj`.
     StateFieldWrite {
         obj: TE,
@@ -1262,15 +1267,32 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 e: TExpr::Alloc((info.fields.len() as u32 * FIELD_BYTES).max(FIELD_BYTES)),
                 ty: me,
             })];
-            for field in &info.fields {
-                body.push(TStmt::FieldSet {
-                    obj: cloned.clone(),
-                    offset: field.slot,
-                    ty: field.ty,
-                    value: TE { e: TExpr::FieldGet {
-                        obj: Box::new(source.clone()), offset: field.slot,
-                    }, ty: field.ty },
+            // The AOT verifier above already established a complete flat
+            // concrete layout. Bulk memory.copy is valid only for pointer-free
+            // inline slots; never copy class handles, string backing, actor
+            // state, or borrowed/resource capabilities as untyped bytes.
+            // All class slots occupy FIELD_BYTES contiguous bytes, including
+            // i32 enum/bool slots whose remaining padding is allocator-owned.
+            let flat_pod = !info.fields.is_empty() && info.fields.iter().all(|f|
+                matches!(f.ty, Type::Int | Type::Bool | Type::Float | Type::Enum(_)));
+            if flat_pod {
+                body.push(TStmt::FlatPodCopy {
+                    dest: cloned.clone(), source: source.clone(),
+                    bytes: info.fields.len() as u32 * FIELD_BYTES,
                 });
+            } else {
+                // String slots use typed field operations so a future string
+                // representation change cannot silently become raw memcpy.
+                for field in &info.fields {
+                    body.push(TStmt::FieldSet {
+                        obj: cloned.clone(),
+                        offset: field.slot,
+                        ty: field.ty,
+                        value: TE { e: TExpr::FieldGet {
+                            obj: Box::new(source.clone()), offset: field.slot,
+                        }, ty: field.ty },
+                    });
+                }
             }
             body.push(TStmt::Return(Some(cloned)));
             funcs[copy_idx as usize] = Some(TFunc {
@@ -1605,7 +1627,7 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
             pure_stmts(body, pure_indices) && pure_stmts(update, pure_indices),
         TStmt::Block(body) => pure_stmts(body, pure_indices),
         TStmt::Break | TStmt::Continue | TStmt::Unreachable => true,
-        TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
+        TStmt::FieldSet { .. } | TStmt::FlatPodCopy { .. } | TStmt::StateFieldWrite { .. } |
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
@@ -1621,6 +1643,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
+        TStmt::FlatPodCopy { dest, source, .. } => any_in(dest, f) || any_in(source, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
         }
