@@ -43,7 +43,6 @@ impl<'a> Parser<'a> {
     fn new(tokens: &'a [Token]) -> Self { Self { tokens, at: 0 } }
     fn pos(&self) -> Pos { self.tokens.get(self.at).map_or(Pos::default(), |t| t.pos) }
     fn peek(&self) -> &Tok { &self.tokens[self.at].tok }
-    fn peek_next(&self) -> Option<&Tok> { self.tokens.get(self.at+1).map(|t| &t.tok) }
     fn take(&mut self) -> Tok {
         let tok = self.peek().clone();
         if tok != Tok::Eof { self.at += 1; }
@@ -94,72 +93,16 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn parse_layout(p: &mut Parser<'_>) -> Result<Storage, Diagnostic> {
-    let pos = p.pos();
-    let name = match p.peek() {
-        Tok::Ident(name) => name.clone(),
-        _ => return Err(error(pos, "E_LAYOUT_VALUE", "layout must be a compile-time Layout value")),
-    };
-    p.take();
-    match name.as_str() {
-        "aos" => Ok(Storage::Aos),
-        "soa" => Ok(Storage::Soa),
-        "aosoa" => {
-            p.expect(Tok::LParen, "'(' after aosoa")?;
-            let lanes = p.number().map_err(|_| error(pos, "E_LAYOUT_SIZE",
-                "aosoa requires a constant positive integer lane count"))?;
-            p.expect(Tok::RParen, "')' after aosoa lanes")?;
-            if !(1..=crate::collection_layout::MAX_AOSOA_LANES as i64).contains(&lanes) {
-                return Err(error(pos, "E_LAYOUT_SIZE", "aosoa lanes must be in 1..=1024"));
-            }
-            Ok(Storage::Aosoa(lanes as u16))
-        }
-        _ => Err(error(pos, "E_LAYOUT_VALUE", "expected aos, soa or aosoa(N)")),
-    }
-}
-
-/// Bind by declared generic formal names rather than argument text order.
-/// Both Array<Particle, layout=soa> and Array<layout=soa, T=Particle>
-/// therefore create exactly the same normalized ResolvedType.
+/// Reuse the production parser's canonical generic argument resolution.
+/// Guest admission remains restricted to a proved local nominal struct.
 fn collection_type(p: &mut Parser<'_>, nominal: &str) -> Result<ResolvedType, Diagnostic> {
-    p.word("Array")?;
-    p.expect(Tok::Lt, "'<' for Array generics")?;
-    let mut element: Option<String> = None;
-    let mut layout: Option<Storage> = None;
-    let mut named_seen = false;
-    loop {
-        let pos = p.pos();
-        let label = match (p.peek(), p.peek_next()) {
-            (Tok::Ident(name), Some(Tok::Assign)) => Some(name.clone()),
-            _ => None,
-        };
-        match label.as_deref() {
-            Some("T") => {
-                p.take(); p.take(); named_seen = true;
-                if element.is_some() { return Err(error(pos, "E_GENERIC_DUP", "T was bound twice")); }
-                element = Some(p.ident()?);
-            }
-            Some("layout") => {
-                p.take(); p.take(); named_seen = true;
-                if layout.is_some() { return Err(error(pos, "E_GENERIC_DUP", "layout was bound twice")); }
-                layout = Some(parse_layout(p)?);
-            }
-            Some(_) => return Err(error(pos, "E_GENERIC_NAME", "unknown collection generic; expected T or layout")),
-            None => {
-                if named_seen { return Err(error(pos, "E_GENERIC_ORDER", "positional argument after named arguments")); }
-                if element.is_some() { return Err(error(pos, "E_GENERIC_ARITY", "too many collection arguments")); }
-                element = Some(p.ident()?);
-            }
-        }
-        if !p.eat(Tok::Comma) { break; }
-        if *p.peek() == Tok::Gt { return Err(error(p.pos(), "E_LAYOUT_SYNTAX", "trailing generic comma")); }
+    let (specialization, next) = crate::collection_layout_type::parse(p.tokens, p.at)?;
+    p.at = next;
+    if specialization.element != nominal {
+        return Err(error(specialization.pos, "E_UNKNOWN_TYPE",
+            format!("this scope declares '{nominal}', not '{}'", specialization.element)));
     }
-    p.expect(Tok::Gt, "'>' after Array generics")?;
-    let element = element.ok_or_else(|| error(p.pos(), "E_GENERIC_ARITY", "Array requires element type T"))?;
-    if element != nominal {
-        return Err(error(p.pos(), "E_UNKNOWN_TYPE", format!("this scope declares '{nominal}', not '{element}'")));
-    }
-    Ok(ResolvedType { nominal_struct: element, layout: layout.unwrap_or(Storage::Aos) })
+    Ok(ResolvedType { nominal_struct: specialization.element, layout: specialization.layout })
 }
 
 fn struct_row(p: &mut Parser<'_>, struct_name: &str, fields: &[String]) -> Result<Vec<i64>, Diagnostic> {
@@ -194,16 +137,16 @@ fn struct_row(p: &mut Parser<'_>, struct_name: &str, fields: &[String]) -> Resul
 }
 
 fn loc() -> TE {
-    TE { e: TExpr::Local(0), ty: Type::Class(0) }
+    TE { e: TExpr::Local(0), ty: Type::Array(0) }
 }
 fn i64_const(n: i64) -> TE {
     TE { e: TExpr::I64(n), ty: Type::Int }
 }
 fn cell(offset: u32) -> TE {
-    TE { e: TExpr::FieldGet { obj: Box::new(loc()), offset }, ty: Type::Int }
+    TE { e: TExpr::CollectionLoad { array: Box::new(loc()), offset }, ty: Type::Int }
 }
 fn write(offset: u32, value: TE) -> TStmt {
-    TStmt::FieldSet { obj: loc(), offset, ty: Type::Int, value }
+    TStmt::CollectionStore { array: loc(), offset, value }
 }
 
 fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
@@ -260,7 +203,7 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
     }
     let bytes = u32::try_from(plan.total_bytes.max(8))
         .map_err(|_| error(p.pos(), "E_LAYOUT_SIZE", "array is too large for wasm32"))?;
-    let mut body = vec![TStmt::Set(0, TE { e: TExpr::Alloc(bytes), ty: Type::Class(0) })];
+    let mut body = vec![TStmt::Set(0, TE { e: TExpr::CollectionAlloc(bytes), ty: Type::Array(0) })];
     for (row, values) in rows.iter().enumerate() {
         for (field, value) in values.iter().enumerate() {
             let offset = plan.offset(row as u64, field).ok_or_else(||
@@ -312,7 +255,7 @@ fn build(p: &mut Parser<'_>) -> Result<TProgram, Diagnostic> {
     body.push(TStmt::Return(Some(cell(offset))));
     Ok(TProgram {
         funcs: vec![TFunc { name: "main".to_owned(), params: vec![], ret: Type::Int,
-            locals: vec![Type::Class(0)], body }],
+            locals: vec![Type::Array(0)], body }],
         generators: vec![], main: 0, imports: vec![], data: vec![],
         heap: true, globals: vec![], actors: vec![],
         strings: false, guest_eh: false, raise_tag: false, catch_depth: false,
@@ -360,9 +303,9 @@ fnc main() -> int {
         assert_eq!(&wasm[..4], b"\0asm");
         assert!(wasm.len() > 40);
         let typed = try_lower(&crate::lexer::lex(PROGRAM).unwrap()).unwrap().unwrap();
-        let TStmt::FieldSet { offset: ox0, .. } = &typed.funcs[0].body[1] else { panic!("missing first field store") };
-        let TStmt::FieldSet { offset: oy0, .. } = &typed.funcs[0].body[2] else { panic!("missing second field store") };
-        let TStmt::FieldSet { offset: ox1, .. } = &typed.funcs[0].body[4] else { panic!("missing second-row field store") };
+        let TStmt::CollectionStore { offset: ox0, .. } = &typed.funcs[0].body[1] else { panic!("missing first field store") };
+        let TStmt::CollectionStore { offset: oy0, .. } = &typed.funcs[0].body[2] else { panic!("missing second field store") };
+        let TStmt::CollectionStore { offset: ox1, .. } = &typed.funcs[0].body[4] else { panic!("missing second-row field store") };
         assert_eq!((*ox0, *ox1, *oy0), (0, 8, 16)); // true column-major physical addresses
     }
 
