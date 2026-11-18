@@ -109,8 +109,32 @@ fn prepare_borrow_default_v1(program: &mut ast::Program) -> Result<(), Diagnosti
     Ok(())
 }
 
-/// Compile one `.atto` source file to a guest WebAssembly module.
+/// Ownership contract selected by the *invoking* compiler/package, not
+/// inferred from a callee's implementation. Imported signatures will require
+/// compatible versioned metadata before cross-package linking is supported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnershipProfile {
+    Legacy,
+    BorrowDefaultV1,
+}
+
+/// Compile using a source's first-line migration marker when present.
+/// Existing browser ABI and unversioned source behavior remain unchanged.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, None)
+}
+
+/// An explicit compiler/package integration point. A build driver may select
+/// the version without injecting source text; conflicting inline markers
+/// reject instead of silently overriding ownership semantics.
+pub fn compile_with_profile(
+    source: &str, profile: OwnershipProfile
+) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, Some(profile))
+}
+
+/// Compile one `.atto` source file to a guest WebAssembly module.
+fn compile_inner(source: &str, selected: Option<OwnershipProfile>) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -174,13 +198,21 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // BOM on the very first line only.
     let first_line = source.lines().next().unwrap_or("")
         .trim_start_matches('\u{feff}').trim_end_matches('\r');
-    let borrow_default_v1 = match first_line {
-        "// atto-ownership: borrow-default-v1" => true,
+    let header = match first_line {
+        "// atto-ownership: borrow-default-v1" => Some(OwnershipProfile::BorrowDefaultV1),
         other if other.starts_with("// atto-ownership:") =>
             return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_PROFILE",
                 "unknown AttoLang ownership profile; use borrow-default-v1")),
-        _ => false,
+        _ => None,
     };
+    if let (Some(explicit), Some(header_profile)) = (selected, header) {
+        if explicit != header_profile {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_PROFILE",
+                "explicit compiler ownership profile conflicts with source ownership marker"));
+        }
+    }
+    let borrow_default_v1 = selected.or(header).unwrap_or(OwnershipProfile::Legacy)
+        == OwnershipProfile::BorrowDefaultV1;
     for (i, line) in source.lines().enumerate().skip(1) {
         if line.trim_start().starts_with("// atto-ownership:") {
             return Err(Diagnostic::new(Pos { line: i as u32 + 1, col: 1 },
