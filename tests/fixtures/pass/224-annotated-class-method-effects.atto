@@ -1,0 +1,19 @@
+// expect-exit: 42
+define class Calculator as
+    @throws(Error)
+    pub static fnc first(): int {
+        return 40;
+    }
+    @raises(Error)
+    @panics(Error)
+    pub increment(int n): int {
+        return n + 2;
+    }
+end
+@throws(Error)
+@raises(Error)
+@panics(Error)
+pub fnc main(): int {
+    val c = new Calculator();
+    return c.increment(Calculator.first());
+}
