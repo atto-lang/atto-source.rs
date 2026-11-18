@@ -85,3 +85,28 @@ fn newline_requirement_survives_comments_and_multiline_effects() {
     let same_line = "pub fnc main() throws Error raises Error -> int /* comment */ return 42; end";
     assert_eq!(compile(same_line).unwrap_err().code, "E_SYNTAX");
 }
+
+
+#[test]
+fn out_of_line_class_mtds_and_functions_share_effect_delimiters() {
+    let src = r#"
+define class Loader as
+end
+pub mtd (self: Loader) load(int n)
+    throws Error raises Error -> int
+    return n;
+end
+pub mtd (self: Loader) int• fallback(int n)
+    throws Error raises Error
+begin
+    return n;
+end
+pub fnc main() throws Error raises Error -> int {
+    val l = new Loader();
+    return l.load(42);
+}
+"#;
+    let wasm = compile(src).unwrap_or_else(|e| panic!("mtd effect fixture: {e}"));
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+    assert_eq!(wasm, compile(src).unwrap());
+}
