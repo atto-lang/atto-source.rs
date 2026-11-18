@@ -3,9 +3,7 @@
 //! behavior. These host tests also insist on deterministic admitted bytes and
 //! precise fail-closed errors with no generated artifact.
 
-use atto_compiler::{
-    closed_record_guest, collection_types, compile, lexer, parser::Parser,
-};
+use atto_compiler::{closed_record_guest, collection_types, compile, lexer, parser::Parser};
 
 fn program(body: &str) -> String {
     format!("pub fnc main(): int {{\n{body}\n}}")
@@ -81,9 +79,7 @@ fn same_field_name_with_different_scalar_types_interns_separately() {
            two.value;
            return one["value"];"#,
     );
-    let parsed = Parser::new(lexer::lex(&source).unwrap())
-        .parse_program()
-        .unwrap();
+    let parsed = Parser::new(lexer::lex(&source).unwrap()).parse_program().unwrap();
     let checked = collection_types::analyze(&parsed).unwrap();
     let mut lowered = parsed.clone();
     closed_record_guest::lower(&mut lowered, &checked).unwrap();
