@@ -8,7 +8,7 @@ define class Parcel as
 end
 pub fnc main(): int {
   val owned = new Parcel();
-  val shared = share! owned;
-  stdio.println(shared.label);
-  return shared.value;
+  val view = share! owned;
+  stdio.println(view.label);
+  return view.value;
 }
