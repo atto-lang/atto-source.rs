@@ -97,3 +97,79 @@ fn braceless_lambda_comma_body_is_last_value_not_tuple() {
         assert!(matches!(tail.kind, ExprKind::Int(Some(42))), "{src}");
     }
 }
+
+#[test]
+fn explicit_lambda_returns_use_same_checked_comma_sequence_ast() {
+    // The browser compiler deliberately does not yet lower arbitrary lambdas.
+    // Test parser AST only; NEVER count these as executed guest tests.
+    for src in [
+        "pub fnc main(): int { val f = || -> return 10, 20, 42; return 0; }",
+        "pub fnc main(): int { val f = || -> ^ 10, 20, 42; return 0; }",
+        "pub fnc main(): int { val f = || -> return seq 10, 20, 42; return 0; }",
+        "pub fnc main(): int { val f = || -> ^ seq 10, 20, 42; return 0; }",
+        "pub fnc main(): int { val f = || -> return seq(10, 20, 42); return 0; }",
+        "pub fnc main(): int { val f = || -> ^ seq(10, 20, 42); return 0; }",
+        "pub fnc main(): int { val f = || -> return ^ (10, 20, 42); return 0; }",
+    ] {
+        let ast = Parser::new(lex(src).unwrap()).parse_program().unwrap();
+        let Stmt::Bind { init, .. } = &ast.funcs[0].body[0] else { panic!("expected lambda binding: {src}") };
+        let ExprKind::Lambda { body: LambdaBody::Statement(statement), .. } = &init.kind
+            else { panic!("expected explicit-return lambda: {src}") };
+        let Stmt::Return(Some(value), _) = statement.as_ref()
+            else { panic!("expected explicit return: {src}") };
+        let ExprKind::Sequence(prefix, tail) = &value.kind
+            else { panic!("expected sequence, not tuple: {src}") };
+        assert_eq!(prefix.len(), 2, "{src}");
+        assert!(matches!(tail.kind, ExprKind::Int(Some(42))), "{src}");
+    }
+}
+
+#[test]
+fn malformed_explicit_lambda_comma_returns_fail_closed() {
+    for src in [
+        "pub fnc main(): int { val f = || -> return 1,; return 0; }",
+        "pub fnc main(): int { val f = || -> ^ 1,,2; return 0; }",
+        "pub fnc main(): int { val f = || -> return seq 1; 2; return 0; }",
+        "pub fnc main(): int { val f = || -> return ^ (); return 0; }",
+        "pub fnc main(): int { val f = || -> return 1, 2); return 0; }",
+    ] {
+        let lexed = lex(src).unwrap();
+        assert!(Parser::new(lexed).parse_program().is_err(),
+            "malformed explicit lambda return parsed: {src}");
+    }
+    let src = "pub fnc main(): int { val f = || -> return ^ (); return 0; }";
+    let err = Parser::new(lex(src).unwrap()).parse_program().unwrap_err();
+    assert_eq!(err.code, "E_EMPTY_SEQUENCE", "{err}");
+}
+
+#[test]
+fn delimiters_scope_and_effects_hold_under_nesting() {
+    for src in [
+        "fnc add(int a,int b): int { return a+b; } pub fnc main(): int { return add(seq(1,2), seq(20,40)); }",
+        "fnc id(int a): int { return a; } pub fnc main(): int { return id(seq(1, (> 2, 3), 42)); }",
+        "pub fnc main(): int { const int z = seq(let int x = 10, seq(let int y = 2, x * y)); return z + 22; }",
+        "fnc id(int a): int { return a; } pub fnc main(): int { let int z = 1; return id(seq z += 1, z * 21); }",
+    ] { admitted(src); }
+
+    for src in [
+        "pub fnc main(): int { return seq(1,, 42); }",
+        "pub fnc main(): int { return seq((1, 2), 42); }",
+        "pub fnc main(): int { return seq(let int x = 42, x) + x; }",
+        "fnc id(int n): int { return n; } pub fnc main(): int { val n = id(seq let int secret = 42, secret); return secret; }",
+        "fnc b(bool v): int { return 42; } pub fnc main(): int { return b(seq(1, 42)); }",
+        "pub fnc main(): int { let int n = 1; return seq(n = 2, n += 3); }",
+        "pub fnc main(): int { let int n = 1; return seq(n += 1, n += 2,); }",
+        "pure fnc p(): int { let int z = 1; return seq(z += 1, z); } pub fnc main(): int { return p(); }",
+        "pub fnc main(): int { val int value = 42; return seq(take! value, value); }",
+    ] { rejected(src); }
+}
+
+#[test]
+fn sequence_item_budget_is_enforced_before_unbounded_growth() {
+    // Exercise the nested expression parser's global resource admission gate.
+    // This is deliberately generated, not hand-written, to cover > MAX_MEMBERS.
+    let members = (0..1100).map(|_| "1").collect::<Vec<_>>().join(",");
+    let src = format!("pub fnc main(): int {{ return seq({members}); }}");
+    let d = Parser::new(lex(&src).unwrap()).parse_program().unwrap_err();
+    assert_eq!(d.code, "E_SOURCE_LIMIT", "{d}");
+}
