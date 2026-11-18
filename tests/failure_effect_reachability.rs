@@ -26,7 +26,7 @@ fn unreachable_throw_and_calls_do_not_pollute_explicit_bounds() {
 fn unreachable_method_calls_do_not_create_false_effect_violations() {
     wasm(r#"
 define class Service as
-    risky(): int throws(Error) { throw Error("boom"); }
+    risky(): int throws(Error) { return 41; }
     safe(): int raises(Error) { return 42; return self.risky(); }
 end
 pub fnc main(): int { val s = new Service(); return s.safe(); }
@@ -53,11 +53,23 @@ fn reachable_transitive_throws_still_fail_closed() {
 fn explicit_bound_cannot_hide_reachable_method_failure() {
     let source = r#"
 define class Service as
-    risky(): int throws(Error) { throw Error("boom"); }
+    risky(): int throws(Error) { return 41; }
     unsafe_call(): int raises(Error) { return self.risky(); }
 end
 pub fnc main(): int {return 42;}
 "#;
     let err = compile(source).expect_err("bad method bound must fail before guest emission");
     assert_eq!(err.code, "E_EFFECT_TYPE", "{err}");
+}
+
+#[test]
+fn actual_class_method_throw_stays_unsupported_without_unwind_runtime() {
+    let source = r#"
+define class Service as
+    risky(): int throws(Error) { throw Error("boom"); }
+end
+pub fnc main(): int { return 42; }
+"#;
+    let err = compile(source).expect_err("class method throw cannot lower yet");
+    assert_eq!(err.code, "E_UNSUPPORTED", "{err}");
 }
