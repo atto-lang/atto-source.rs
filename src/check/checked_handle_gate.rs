@@ -16,10 +16,10 @@ use super::R;
 /// Bounded traversal, including manually built ASTs using check::check().
 const MAX_VISITS: usize = 65_536;
 const MAX_DEPTH: usize = 128;
-/// A long left-associative expression is not 128 nested lexical scopes.
+/// An operator or postfix receiver spine is not 128 nested lexical scopes.
 /// Keep its admission walk iterative but bounded independently of true
 /// structural nesting. Existing >3,000-term stress cases still fail closed.
-const MAX_BINARY_SPINE: usize = 1_024;
+const MAX_EXPRESSION_SPINE: usize = 1_024;
 
 struct Scan {
     visits: usize,
@@ -49,44 +49,56 @@ impl Scan {
         Ok(())
     }
 
+    /// Walk linear expression receiver/operator spines without treating
+    /// each left-associated operator or chained .member/.method() as a
+    /// fresh *semantic* nesting level. A 250-term chain should compile.
+    ///
+    /// Every AST node is still visited, including RHS expressions, method
+    /// arguments and unreachable branches. The global work budget and an
+    /// independent spine budget bound adversarial/manual ASTs.
     fn expr(&mut self, e: &Expr, depth: usize) -> R<()> {
-        // A left-associative binary AST is a linked spine. Recursively
-        // visiting its left child used to count each harmless operator as
-        // one *structural* nesting level. At just 250 terms this tripped
-        // MAX_DEPTH and made the checked-handle security gate reject valid
-        // code even when no checked handles appeared anywhere.
-        //
-        // Walk that spine iteratively, retaining RHS references in reverse
-        // order so the actual admission scan remains left-to-right. This is
-        // particularly important for deterministic first-error reporting
-        // when both sides contain checked-handle syntax. Each binary node
-        // still consumes one MAX_VISITS unit. Neither linear chain length
-        // nor the temporary Vec is unbounded (MAX_BINARY_SPINE).
-        let mut current = e;
-        let mut right_operands = Vec::new();
-        while let ExprKind::Binary(_, left, right) = &current.kind {
-            if right_operands.len() >= MAX_BINARY_SPINE {
-                return Err(Diagnostic::new(current.pos, "E_NESTING",
-                    "binary expression chain exceeds checked-handle admission limit"));
-            }
-            self.enter(current.pos, depth)?;
-            right_operands.push(right.as_ref());
-            current = left.as_ref();
+        enum Tail<'a> {
+            Operand(&'a Expr),
+            Arguments(&'a [Expr]),
         }
-        // Ordinary nested expressions (for example a RHS unary, a nested
-        // call or a lambda body) still increase *structural* depth.
-        let result = self.expr_nonbinary(current, depth);
-        result?;
-        for right in right_operands.into_iter().rev() {
-            self.expr(right, depth + 1)?;
+
+        let mut node = e;
+        let mut tail = Vec::new();
+        let mut spine_len = 0usize;
+        loop {
+            let (next, extra) = match &node.kind {
+                ExprKind::Binary(_, left, right) =>
+                    (left.as_ref(), Some(Tail::Operand(right.as_ref()))),
+                ExprKind::Member(receiver, _) => (receiver.as_ref(), None),
+                ExprKind::MethodCall(receiver, _, args) =>
+                    (receiver.as_ref(), Some(Tail::Arguments(args))),
+                _ => break,
+            };
+            if spine_len >= MAX_EXPRESSION_SPINE {
+                return Err(Diagnostic::new(node.pos, "E_NESTING",
+                    "expression receiver/operator chain exceeds checked-handle admission limit"));
+            }
+            self.enter(node.pos, depth)?;
+            spine_len += 1;
+            if let Some(extra) = extra { tail.push(extra); }
+            node = next;
+        }
+        // Leftmost expression first, then deferred operands in original
+        // order: the first unverified checked handle cannot disappear behind
+        // another diagnostic from a later source operand.
+        self.expr_leaf(node, depth)?;
+        for extra in tail.into_iter().rev() {
+            match extra {
+                Tail::Operand(value) => self.expr(value, depth + 1)?,
+                Tail::Arguments(values) => self.exprs(values, depth + 1)?,
+            }
         }
         Ok(())
     }
 
-    /// A single nonbinary expression. Keep the original fail-closed
-    /// handling for ref!/deref!/unref! before any lowering can remove a
-    /// dead branch. The binary case is handled by expr() above.
-    fn expr_nonbinary(&mut self, e: &Expr, depth: usize) -> R<()> {
+    /// All genuinely nested expression nodes still increment MAX_DEPTH.
+    /// Binary, member and method spines are already unwrapped in expr().
+    fn expr_leaf(&mut self, e: &Expr, depth: usize) -> R<()> {
         self.enter(e.pos, depth)?;
         let next = depth + 1;
         match &e.kind {
@@ -102,9 +114,9 @@ impl Scan {
             }
             ExprKind::Unary(_, value) | ExprKind::Trap(value) |
             ExprKind::Ownership(_, _, value) |
-            ExprKind::Propagate(value) | ExprKind::Member(value, _) =>
-                self.expr(value, next),
-            ExprKind::Binary(..) => unreachable!("expr() peels binary spines"),
+            ExprKind::Propagate(value) => self.expr(value, next),
+            ExprKind::Binary(..) | ExprKind::Member(..) | ExprKind::MethodCall(..) =>
+                unreachable!("expr() peels all expression receiver/operator spines"),
             ExprKind::Ternary(cond, yes, no) => {
                 self.expr(cond, next)?;
                 self.expr(yes, next)?;
@@ -112,10 +124,6 @@ impl Scan {
             }
             ExprKind::Call(_, args) | ExprKind::New(_, args) |
             ExprKind::Array(args) => self.exprs(args, next),
-            ExprKind::MethodCall(receiver, _, args) => {
-                self.expr(receiver, next)?;
-                self.exprs(args, next)
-            }
             ExprKind::Lambda { body, .. } => match body {
                 LambdaBody::Expression(value) => self.expr(value, next),
                 LambdaBody::Statement(stmt) => self.stmt(stmt, next),
