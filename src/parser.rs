@@ -1257,6 +1257,13 @@ impl Parser {
                 }
                 return self.parse_erlang_body(ret);
             }
+            // An empty unmarked `-> void end` is a valid statement body in
+            // both versions. It must never be misclassified as an empty
+            // implicit-tail sequence by the legacy separator scanner.
+            if self.is_word("end") {
+                self.advance();
+                return Ok(Vec::new());
+            }
             let first = self.first_callable_body_separator();
             if self.language_version == LanguageVersion::Legacy {
                 // In the v1 optional-:: grammar, comma-body/tail-return is
