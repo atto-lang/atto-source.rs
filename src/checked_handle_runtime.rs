@@ -46,6 +46,15 @@ pub struct RefAdmissionError<T> {
     pub owned: T,
 }
 
+impl<T> std::fmt::Debug for RefAdmissionError<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("RefAdmissionError")
+            .field("reason", &self.reason)
+            .field("owned", &"<retained>")
+            .finish()
+    }
+}
+
 /// Typed, opaque checked-handle identity. Copying it does **not** copy or
 /// create ownership; the generation ledger rejects a duplicate unref_owned.
 #[derive(Debug)]
