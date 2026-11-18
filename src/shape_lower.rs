@@ -179,7 +179,8 @@ fn shadowed_struct_name(t: &[Token], name: &str) -> bool {
         };
         // 'struct Name' is the expected original declaration, not a shadow.
         if matches!(owner, "val" | "let" | "const" | "fnc" | "routine"
-            | "class" | "actor" | "record" | "module" | "type" | "alias"
+            | "class" | "actor" | "record" | "enum" | "trait"
+            | "interface" | "supervisor" | "module" | "type" | "alias"
             | "import" | "as" | "for" | "of" | "over"
             | "int" | "float" | "bool" | "string" | "String") {
             return true;
