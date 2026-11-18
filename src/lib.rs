@@ -11,6 +11,8 @@ pub mod ast;
 pub mod collection_layout;
 /// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
 pub mod collection_layout_plan;
+/// Executable Rust storage kernel only; source-compiled guest admission remains gated.
+pub mod collection_layout_storage;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
