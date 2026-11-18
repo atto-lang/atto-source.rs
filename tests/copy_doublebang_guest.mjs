@@ -17,6 +17,7 @@ const positives = [
   '996-copy-doublebang-constructor-state.atto',
   '997-copy-doublebang-private-state.atto',
   '998-copy-doublebang-pod-mixed-fields.atto',
+  '999-copy-doublebang-pod-interleaved-snapshots.atto',
 ];
 const negatives = [
   '991-copy-doublebang-class-unproved.atto',
@@ -75,6 +76,20 @@ try {
       };
       checkObject(0, 42, 1);
       checkObject(24, 7, 0);
+    }
+    if (filename === '999-copy-doublebang-pod-interleaved-snapshots.atto') {
+      // The source has no data segment, so sequential 24-byte objects
+      // occupy offsets original=0, left=24, spacer=48, right=72.
+      const memory = new DataView(guest.exports.memory.buffer);
+      const assertObject = (offset, number, weight, active) => {
+        assert.equal(memory.getBigInt64(offset, true), BigInt(number));
+        assert.equal(memory.getFloat64(offset + 8, true), weight);
+        assert.equal(memory.getInt32(offset + 16, true), active);
+      };
+      assertObject(0, 42, 1.5, 1);
+      assertObject(24, 7, 1.5, 0);
+      assertObject(48, 42, 1.5, 1);
+      assertObject(72, 5, 2.5, 1);
     }
     console.log('PASS compiled guest', filename, expected);
   }
