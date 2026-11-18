@@ -10,6 +10,25 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+
+/// Callable-body grammar compatibility mode. Legacy is the default for
+/// existing source; the strict :: selector is *opt-in* via compiler APIs/CLI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LanguageVersion {
+    Legacy = 1,
+    Explicit = 2,
+}
+
+impl LanguageVersion {
+    pub fn from_number(number: u32) -> Option<Self> {
+        match number {
+            1 => Some(Self::Legacy),
+            2 => Some(Self::Explicit),
+            _ => None,
+        }
+    }
+}
+
 /// Recursive lambda/type spelling paths use substantially more host stack
 /// per source level than ordinary syntax. Fail before a Rust test thread's
 /// 2 MiB stack can be exhausted by adversarial nested lambdas/generics.
@@ -216,6 +235,7 @@ pub struct Parser {
     /// Only the outer Erlang-style callable sequence accepts commas as
     /// statement terminators. Nested C blocks keep their own grammar.
     erlang_body: bool,
+    language_version: LanguageVersion,
     state_method: bool,
     state_binder: Option<String>,
 }
@@ -243,6 +263,10 @@ fn unsupported(pos: Pos, what: &str) -> Diagnostic {
 
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
+        Self::with_version(toks, LanguageVersion::Legacy)
+    }
+
+    pub fn with_version(toks: Vec<Token>, language_version: LanguageVersion) -> Self {
         Parser {
             toks,
             i: 0,
@@ -252,6 +276,7 @@ impl Parser {
             type_names: Vec::new(),
             in_generator: false,
             erlang_body: false,
+            language_version,
             state_method: false,
             state_binder: None,
         }
@@ -1190,11 +1215,36 @@ impl Parser {
 
     // ----------------------------------------------------------- statements
 
-    /// Callable body choice is explicit and never inferred from commas:
-    /// `-> T { ... }` is a brace statement body.
-    /// `-> T ... end` is a semicolon statement body (explicit return).
-    /// `-> T :: ..., tail end` is a comma body (implicit tail return).
-    /// This is a deliberate tightening of the earlier optional-:: contract.
+    /// Inspect only top-level callable-body separators, not commas inside
+    /// calls, tuple-like parentheses, generic types or `(> ...)` sequences.
+    /// Nested blocks have their own delimiters. First delimiter wins: this
+    /// preserves the legacy grammar without a speculative parser fallback.
+    fn first_callable_body_separator(&self) -> Option<(Tok, Pos)> {
+        let (mut parens, mut brackets, mut braces) = (0u32, 0u32, 0u32);
+        for token in self.toks.iter().skip(self.i) {
+            match &token.tok {
+                Tok::LParen | Tok::SequenceOpen => parens += 1,
+                Tok::RParen => parens = parens.saturating_sub(1),
+                Tok::LBracket => brackets += 1,
+                Tok::RBracket => brackets = brackets.saturating_sub(1),
+                Tok::LBrace => braces += 1,
+                Tok::RBrace => braces = braces.saturating_sub(1),
+                Tok::Ident(s) if s == "end"
+                    && parens == 0 && brackets == 0 && braces == 0 => break,
+                Tok::Comma | Tok::Semi
+                    if parens == 0 && brackets == 0 && braces == 0 =>
+                        return Some((token.tok.clone(), token.pos)),
+                Tok::Eof => break,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Explicit :: opts into comma/implicit-tail grammar in both versions.
+    /// Version 1 (default) also admits UNMARKED comma/tail bodies for old
+    /// sources. Version 2 requires :: for those bodies; unmarked -> Type
+    /// uses statement/explicit-return grammar only.
     fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type) -> R<Vec<Stmt>> {
         if arrow_type {
             if *self.peek() == Tok::LBrace {
@@ -1206,6 +1256,18 @@ impl Parser {
                         "'::' requires a comma/end body, not a brace block"));
                 }
                 return self.parse_erlang_body(ret);
+            }
+            let first = self.first_callable_body_separator();
+            if self.language_version == LanguageVersion::Legacy {
+                // In the v1 optional-:: grammar, comma-body/tail-return is
+                // legal without a marker. Existing semicolon statements stay
+                // statements; a lone tail expression is a comma-body.
+                if !matches!(first, Some((Tok::Semi, _))) {
+                    return self.parse_erlang_body(ret);
+                }
+            } else if let Some((Tok::Comma, pos)) = first {
+                return Err(Diagnostic::new(pos, "E_BODY_VERSION",
+                    "language version 2 requires '::' before a comma/implicit-tail callable body; insert '::' after '-> Type' to preserve comma evaluation, or use ';' statements with explicit return/^; version 1 preserves unmarked comma bodies"));
             }
             let statements = self.parse_stmts_until(&["end"])?;
             self.expect_word("end")?;
