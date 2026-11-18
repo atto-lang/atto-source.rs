@@ -27,7 +27,7 @@ define class C as
     pub static fnc first(): int { return 40; }
     @raises(Error)
     @panics(Error)
-    second(int n): int {return n + 2;}
+    pub second(int n): int {return n + 2;}
 end
 @throws(Error)
 @raises(Error)
@@ -43,12 +43,12 @@ pub fnc main(): int {val c = new C(); return c.second(C.first());}
     let mtd = r#"
 define class C as
     @throws(Error)
-    mtd add(int n): int {return n + 2;}
+    pub mtd add(int n): int {return n + 2;}
 end
 pub fnc main(): int throws(Error) {val c = new C(); return c.add(40);}
 "#;
     assert_eq!(parse(mtd).classes[0].methods[0].failure_effects.mask(), 1);
-    assert!(compile(mtd).is_ok());
+    compile(mtd).unwrap_or_else(|e| panic!("mtd effect fixture failed: {e}"));
 
     let actor = r#"
 define actor Worker as
