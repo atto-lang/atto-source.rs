@@ -380,6 +380,57 @@ impl Parser {
 
     // ---------------------------------------------------------------- types
 
+    // Validate lifetime binders in an otherwise unsupported generic head.
+    // Parsing must never erase lifetime parameters and lower an ordinary type.
+    // Full Borrow<T, lt=a> provenance and execution remain gated.
+    fn reject_generic_head(&mut self, kind: &str) -> R<()> {
+        let start = self.pos();
+        self.expect(Tok::Lt, "'<' before generic parameters")?;
+        let mut lifetimes: Vec<String> = Vec::new();
+        let mut count = 0usize;
+        loop {
+            if count >= MAX_PARAMS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "too many generic parameters"));
+            }
+            count += 1;
+            if matches!(self.word_at(0), Some("lt" | "lifetime")) {
+                let marker = self.word_at(0).unwrap().to_owned();
+                let marker_pos = self.pos();
+                self.advance();
+                // The ! marker must touch lt or lifetime in source text.
+                if *self.peek() != Tok::Bang
+                    || self.pos().line != marker_pos.line
+                    || self.pos().col != marker_pos.col + marker.len() as u32
+                {
+                    return Err(Diagnostic::new(marker_pos, "E_SYNTAX",
+                        "lifetime parameters require attached 'lt!' or 'lifetime!'"));
+                }
+                self.advance();
+                let (name, pos) = self.ident("a lifetime parameter name")?;
+                if lifetimes.contains(&name) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                        format!("duplicate lifetime parameter '{name}'")));
+                }
+                lifetimes.push(name);
+            } else {
+                self.ident("a generic type parameter or 'lt!' binder")?;
+            }
+            if !self.eat(&Tok::Comma) { break; }
+            if *self.peek() == Tok::Gt {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "trailing comma in a generic parameter list"));
+            }
+        }
+        self.expect(Tok::Gt, "'>' after generic parameters")?;
+        if lifetimes.is_empty() {
+            Err(unsupported(start, &format!("generic {kind}")))
+        } else {
+            Err(Diagnostic::new(start, "E_UNSUPPORTED_TYPE",
+                format!("{kind} with lt! lifetimes need verified Borrow<T, lt=a> provenance and backend lowering")))
+        }
+    }
+
     fn is_type_word(&self, n: usize) -> bool {
         matches!(
             self.word_at(n),
@@ -389,6 +440,16 @@ impl Parser {
 
     fn parse_type(&mut self) -> R<Type> {
         let pos = self.pos();
+        // References and pointers are spelled Borrow<T>, BorrowMut<T>,
+        // Shared<T> and Pointer<T>. Neither '&T' nor '*T' is valid Atto
+        // type syntax; do not accidentally admit one as an owned handle.
+        match self.peek() {
+            Tok::Amp => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use Borrow<T> or BorrowMut<T>, not '&T' or '&mut T'")),
+            Tok::Star => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use Pointer<T>, not '*T', '*const T' or '*mut T'")),
+            _ => {}
+        }
         let name = match self.peek() {
             Tok::Ident(s) => s.clone(),
             _ => return Err(self.expected("a type")),
@@ -396,6 +457,14 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "Borrow" | "BorrowMut" | "Shared" | "Pointer" => {
+                // Reserved type constructors: do not fall through to an
+                // ordinary user-owned class or forged pointer representation.
+                // Typed region, sharing and pointer ABI verification are
+                // required before admitting any of these capabilities.
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    format!("{name}<T> requires verified ownership/provenance and backend lowering")));
+            },
             "fnc" => {
                 // Canonical source type form: fnc(int, bool) -> float.
                 // The first profile admits scalar callback contracts only,
@@ -717,7 +786,7 @@ impl Parser {
     /// Generic parameters and inheritance clauses are outside the subset.
     fn decl_head(&mut self, kind: &str) -> R<()> {
         if *self.peek() == Tok::Lt {
-            return Err(unsupported(self.pos(), &format!("generic {kind}es")));
+            return self.reject_generic_head(kind);
         }
         if let Some(w @ ("extends" | "implements" | "impl" | "conforms")) = self.word_at(0) {
             return Err(unsupported(self.pos(), &format!("'{w}' on a {kind}")));
@@ -980,6 +1049,7 @@ impl Parser {
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
         let (name, pos) = self.ident("a method name")?;
         if *self.peek() == Tok::Lt {
+            self.reject_generic_head("methods")?;
             return Err(unsupported(self.pos(), "generic methods"));
         }
         self.expect(Tok::LParen, "'('")?;
@@ -1132,6 +1202,7 @@ impl Parser {
         };
         let (name, pos) = self.ident("a function name")?;
         if *self.peek() == Tok::Lt {
+            self.reject_generic_head("functions")?;
             return Err(unsupported(self.pos(), "generic functions"));
         }
         self.expect(Tok::LParen, "'('")?;
@@ -2775,7 +2846,10 @@ impl Parser {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
             Tok::Bang => UnOp::Not,
-            Tok::Amp => return Err(unsupported(pos, "borrow expressions")),
+            Tok::Amp => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use 'borrow! owner' or 'borrow! mut owner', not '&owner'")),
+            Tok::Star => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use checked 'deref! handle', not '*pointer'")),
             Tok::PlusPlus | Tok::MinusMinus => {
                 return Err(Diagnostic::new(
                     pos,
@@ -2784,10 +2858,11 @@ impl Parser {
                 ))
             }
             Tok::Ident(s) if s == "await" => return Err(unsupported(pos, "'await'")),
-            // Ownership is a prefix unary expression, like trap. Its operand
-            // may be a name, postfix chain, or a grouped expression; the
-            // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
+            // Ownership and checked-handle operators are contextual unary
+            // prefixes, not calls or raw pointer sigils. The bang spellings
+            // all produce the same AST as the corresponding legacy rt forms.
+            Tok::Ident(s) if matches!(s.as_str(),
+                "borrow" | "copy" | "take" | "share" | "ref" | "deref" | "unref")
                 && *self.peek_at(1) == Tok::Bang =>
             {
                 let action = match s.as_str() {
@@ -2795,16 +2870,51 @@ impl Parser {
                     "copy" => OwnershipOp::Copy,
                     "take" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
+                    "ref" => OwnershipOp::Ref,
+                    "deref" => OwnershipOp::Deref,
+                    "unref" => OwnershipOp::Unref,
                     _ => unreachable!(),
                 };
+                // A separated "ref !x" does NOT mean "ref! x".
+                // The attached marker is required for checked handles.
+                if matches!(action, OwnershipOp::Ref | OwnershipOp::Deref | OwnershipOp::Unref)
+                    && (self.toks[self.i + 1].pos.line != pos.line
+                        || self.toks[self.i + 1].pos.col != pos.col + s.len() as u32)
+                {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX",
+                        "ref!, deref! and unref! require an attached '!' marker"));
+                }
                 self.advance(); // name
                 self.advance(); // !
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
                 if action != OwnershipOp::Borrow && self.is_word("mut") {
-                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "only borrow! permits a mut qualifier; checked handles do not"));
                 }
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
+            },
+            Tok::Ident(s) if s == "rt"
+                && matches!(self.word_at(1), Some("ref" | "deref" | "unref")) =>
+            {
+                self.advance(); // legacy rt
+                let action = match self.word_at(0) {
+                    Some("ref") => OwnershipOp::Ref,
+                    Some("deref") => OwnershipOp::Deref,
+                    Some("unref") => OwnershipOp::Unref,
+                    _ => unreachable!(),
+                };
+                self.advance(); // action
+                if *self.peek() == Tok::Bang {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "do not combine legacy 'rt ref/rt deref/rt unref' with a bang marker; use exactly one spelling"));
+                }
+                if self.is_word("mut") {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "checked handle operations do not accept mut qualifiers"));
+                }
+                let inner = self.parse_unary()?;
+                return Ok(Expr { kind: ExprKind::Ownership(action, false, Box::new(inner)), pos });
             },
             Tok::Ident(s) if s == "trap" => {
                 self.advance();

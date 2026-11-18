@@ -404,9 +404,11 @@ pub enum LambdaBody {
     Block(Vec<Stmt>),
 }
 
-/// Explicit Atto ownership operators, not pointer address syntax.
+/// Explicit Atto ownership and checked-handle operators, never raw
+/// pointer sigils. Ref/Deref/Unref require a verified checked-handle IR
+/// and must be rejected by backends without that runtime contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnershipOp { Borrow, Copy, Take, Share }
+pub enum OwnershipOp { Borrow, Copy, Take, Share, Ref, Deref, Unref }
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
@@ -421,8 +423,9 @@ pub enum ExprKind {
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
-    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, take! x,
-    /// share! x. Parentheses are optional grouping, not call arguments.
+    /// Prefix ownership/checked handles: borrow!, copy!, take!, share!,
+    /// ref!, deref!, unref!. Parentheses group the operand, not a call.
+    /// rt ref/rt deref/rt unref are compatibility forms, same AST kind.
     Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),

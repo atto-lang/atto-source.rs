@@ -17,11 +17,15 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod loan_liveness;
+mod checked_handle_gate;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
+/// Upper bound on all syntactic last-use AST visits per checked function.
+const NLL_WORK_BUDGET: usize = 32_768;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
@@ -201,6 +205,13 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    /// Class-loan issuance in checked typed IR. The guest representation is
+    /// still a borrowed, non-owning handle; this marker MUST NOT grant drop,
+    /// move, transfer, or actor-share rights to `alias`.
+    ClassBorrow { alias: u32, owner: u32, mutable: bool, value: TE },
+    /// Checked loan interval end, NOT a deallocation or ownership promotion.
+    /// A later use of alias remains rejected by permanent borrow provenance.
+    ClassLoanEnd { alias: u32, owner: u32, mutable: bool },
     /// ordinary class field initialization / assignment
     FieldSet {
         obj: TE,
@@ -445,6 +456,11 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Stable provenance: ending an NLL loan never grants ownership of its
+    /// alias. Cleared only when the alias's declaring scope exits.
+    borrowed_slots: BTreeSet<u32>,
+    /// Monotone NLL visit budget; exhaustion conservatively retains live loans.
+    nll_fuel: usize,
     /// Compiler-issued lexical protected state permissions.
     state_write_scope: bool,
     state_read_scope: bool,
@@ -728,6 +744,11 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // The browser backend cannot execute checked handles. Validate the
+    // complete source AST *before* lambda lifting or generator CFG lowering:
+    // otherwise an unreachable branch, nested callback or declaration
+    // initializer might be rewritten away without proving handle safety.
+    checked_handle_gate::validate(p)?;
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
@@ -1735,6 +1756,9 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
     body.iter().all(|stmt| match stmt {
         TStmt::Set(_, value) | TStmt::Expr(value) =>
             pure_expr(value, pure_indices),
+        // No pure admission for class borrow markers before complete typed
+        // MIR effect and reference-provenance proof.
+        TStmt::ClassBorrow { .. } | TStmt::ClassLoanEnd { .. } => false,
         TStmt::Return(value) =>
             value.as_ref().is_none_or(|value| pure_expr(value, pure_indices)),
         TStmt::If(arms, otherwise) =>
@@ -1760,6 +1784,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::ClassBorrow { value, .. } => any_in(value, f),
+        TStmt::ClassLoanEnd { .. } => false,
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
         TStmt::If(arms, other) => {
@@ -1851,6 +1877,8 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            borrowed_slots: BTreeSet::new(),
+            nll_fuel: NLL_WORK_BUDGET,
             state_write_scope: false,
             state_read_scope: false,
             imports,
@@ -1933,6 +1961,7 @@ impl<'a> FnCx<'a> {
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
         let loans = std::mem::take(&mut self.loans);
+        let borrowed_slots = std::mem::take(&mut self.borrowed_slots);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         let prev_error = std::mem::replace(&mut self.recover_error, error);
         self.cleanup_depth += 1;
@@ -1941,6 +1970,7 @@ impl<'a> FnCx<'a> {
         self.recover_cursor = prev_cursor;
         self.recover_error = prev_error;
         self.loans = loans;
+        self.borrowed_slots = borrowed_slots;
         self.moved = moved;
         self.loops = loops;
         self.scopes = scopes;
@@ -2050,6 +2080,7 @@ impl<'a> FnCx<'a> {
         if let Some(ended) = self.scopes.pop() {
             for l in ended {
                 self.loans.remove(&l.slot);
+                self.borrowed_slots.remove(&l.slot);
                 self.moved.remove(&l.slot);
             }
         }
@@ -2057,7 +2088,21 @@ impl<'a> FnCx<'a> {
 
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.scopes.push(Vec::new());
-        let r = self.stmts(body);
+        let mut r = self.stmts(body);
+        // The scanner can keep a loan live conservatively through a nested
+        // scope. Preserve its final *typed* end marker at lexical exit.
+        if let Ok(ref mut typed) = r {
+            let remaining = self.scopes.last().into_iter()
+                .flat_map(|locals| locals.iter())
+                .filter_map(|local| self.loans.get(&local.slot)
+                    .map(|loan| (local.slot, *loan)))
+                .collect::<Vec<_>>();
+            for (alias, loan) in remaining {
+                typed.push(TStmt::ClassLoanEnd {
+                    alias, owner: loan.owner, mutable: loan.mutable
+                });
+            }
+        }
         self.pop_scope();
         r
     }
@@ -2084,7 +2129,31 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
-        body.iter().map(|s| self.stmt(s)).collect()
+        let mut checked = Vec::with_capacity(body.len());
+        for (i, statement) in body.iter().enumerate() {
+            checked.push(self.stmt(statement)?);
+            // End a class loan after the final possible use of its binding in
+            // this lexical scope. Never retire a loan from an enclosing scope:
+            // an outer statement may still refer to it after this block.
+            // The exhaustive AST visitor intentionally over-approximates uses
+            // in branching, loops, lambdas and cleanup scopes.
+            let active_loans = &self.loans;
+            let fuel = &mut self.nll_fuel;
+            let expired: Vec<u32> = self.scopes.last().unwrap().iter()
+                .filter(|local| active_loans.contains_key(&local.slot) &&
+                    !body[i + 1..].iter().any(|next|
+                        loan_liveness::stmt_mentions(next, &local.name, fuel)))
+                .map(|local| local.slot)
+                .collect();
+            for slot in expired {
+                if let Some(loan) = self.loans.remove(&slot) {
+                    checked.push(TStmt::ClassLoanEnd {
+                        alias: slot, owner: loan.owner, mutable: loan.mutable
+                    });
+                }
+            }
+        }
+        Ok(checked)
     }
 
     fn cond(&mut self, e: &Expr, what: &str) -> R<TE> {
@@ -2144,8 +2213,8 @@ impl<'a> FnCx<'a> {
                         format!("cannot reassign val binding '{name}'"),
                     ));
                 }
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed local or owner while the loan is live"));
+                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed alias or owner while a loan is live"));
                 }
                 let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
@@ -2731,6 +2800,9 @@ impl<'a> FnCx<'a> {
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
+                if self.borrowed_slots.contains(&local.slot) && !self.loans.contains_key(&local.slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "cannot mutate an expired borrowed class alias"));
+                }
                 if let Some(loan) = self.loans.get(&local.slot).copied() {
                     if !loan.mutable {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
@@ -2919,7 +2991,7 @@ impl<'a> FnCx<'a> {
             Some(l) => (l.slot, l.ty),
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
         };
-        if self.loans.contains_key(&owner) {
+        if self.borrowed_slots.contains(&owner) {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
         }
         if let Some(loan) = self.loans.values().find(|loan| loan.owner == owner) {
@@ -2946,7 +3018,8 @@ impl<'a> FnCx<'a> {
         }
         let slot = self.declare(name, value.ty, false, pos)?;
         self.loans.insert(slot, ScopedLoan { owner, mutable });
-        Ok(TStmt::Set(slot, value))
+        self.borrowed_slots.insert(slot);
+        Ok(TStmt::ClassBorrow { alias: slot, owner, mutable, value })
     }
 
     fn explicit_ownership(&mut self, action: OwnershipOp, mutable: bool, inner: &Expr, pos: Pos) -> R<TE> {
@@ -2954,6 +3027,21 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "mut is only valid after borrow!"));
         }
         match action {
+            OwnershipOp::Ref | OwnershipOp::Deref | OwnershipOp::Unref => {
+                // Parsed canonical ref!/deref!/unref! and legacy rt aliases
+                // share this checked-handle AST. Never treat these as ordinary
+                // borrows, generic calls, owner moves or raw pointer access:
+                // this guest backend lacks handle issuance, generation,
+                // access-rights and exactly-once retirement in typed MIR.
+                let spelling = match action {
+                    OwnershipOp::Ref => "ref!",
+                    OwnershipOp::Deref => "deref!",
+                    OwnershipOp::Unref => "unref!",
+                    _ => unreachable!(),
+                };
+                Err(Diagnostic::new(pos, "E_UNSUPPORTED_HANDLE",
+                    format!("{spelling} needs a verified checked-handle typed IR and runtime; no guest code emitted")))
+            }
             OwnershipOp::Borrow => {
                 if mutable {
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
@@ -2982,8 +3070,8 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
                 };
                 let slot = *slot_ref;
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "take! is forbidden while an owner is borrowed"));
+                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "take! cannot move a borrowed alias or an owner with live loans"));
                 }
                 if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                     return Err(Diagnostic::new(pos, "E_MOVED", format!("cannot take '{name}' from outside a loop")));
@@ -3000,8 +3088,8 @@ impl<'a> FnCx<'a> {
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
-            if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
+            if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class alias or owner while a loan is live"));
             }
             if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                 return Err(Diagnostic::new(
@@ -3365,6 +3453,10 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 Some(l) => {
+                    if self.borrowed_slots.contains(&l.slot) && !self.loans.contains_key(&l.slot) {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            format!("loan for borrowed alias '{name}' has ended; it is not an owned value")));
+                    }
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
