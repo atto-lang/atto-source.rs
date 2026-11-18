@@ -43,6 +43,12 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_with_warnings(source).map(|(bytes, _)| bytes)
+}
+
+/// Compile source and return non-fatal compiler diagnostics as well as Wasm.
+/// The established compile function keeps its return type and ABI unchanged.
+pub fn compile_with_warnings(source: &str) -> Result<(Vec<u8>, Vec<Diagnostic>), Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -99,7 +105,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             _ => {}
         }
     }
-    let program = if target {
+    let (program, warnings) = if target {
         let headers = target_syntax::parse_target_declarations(&toks)?;
         if !headers.classes.is_empty() {
             // Out-of-line *immutable class* mtd is executable: translate the
@@ -108,7 +114,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             // Namespace, imports, actor receivers and mutable-self are gated
             // inside the lowering helper, never silently compiled as classes.
             let lowered = target_syntax::lower_class_receivers(&toks, &headers)?;
-            parser::Parser::new(lowered).parse_program()?
+            let mut parser = parser::Parser::new(lowered);
+            let program = parser.parse_program()?;
+            (program, parser.warnings().to_vec())
         } else {
             // Actor mtd stays strictly syntax/type preflight only. An ActorRef
             // must never acquire unverified synchronous method dispatch.
@@ -119,7 +127,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
                 "namespace-scoped actor declarations and mtd methods are syntax-only, not browser-lowered"));
         }
     } else {
-        parser::Parser::new(toks).parse_program()?
+        let mut parser = parser::Parser::new(toks);
+        let program = parser.parse_program()?;
+        (program, parser.warnings().to_vec())
     };
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
@@ -134,7 +144,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             "generated module exceeds 1 MiB",
         ));
     }
-    Ok(bytes)
+    Ok((bytes, warnings))
 }
 
 /// Browser host ABI (`atto-playground` compiler contract v2). One instance is
