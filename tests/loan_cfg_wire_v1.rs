@@ -1,7 +1,13 @@
 //! Compiler-derived portable SSA/CFG evidence format is separate from
 //! executable guest bytes. It never approves a production borrow rejection.
-use atto_compiler::{check::{self, loan_cfg_wire_v1::{self, CONTRACT}},
-    compile, lexer, parser::Parser};
+use atto_compiler::{
+    check::{
+        self,
+        loan_cfg_wire_v1::{self, CONTRACT},
+    },
+    compile, lexer,
+    parser::Parser,
+};
 
 fn manifest(source: &str) -> Result<String, atto_compiler::Diagnostic> {
     let ast = Parser::new(lexer::lex(source)?).parse_program()?;
@@ -29,13 +35,20 @@ fn two_branches() -> &'static str {
 #[test]
 fn real_compiled_scalar_borrow_exports_all_checked_loan_edges() {
     let source = straight();
-    assert_eq!(&compile(source).unwrap()[..8], &[0,97,115,109,1,0,0,0]);
+    assert_eq!(&compile(source).unwrap()[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
     let wire = manifest(source).unwrap();
     assert!(wire.starts_with(&format!("{CONTRACT}\n")));
     assert!(wire.ends_with("END\n"));
     let rows = wire.lines().filter(|l| l.starts_with("P|")).count();
-    let declared: usize = wire.lines().find(|l| l.starts_with("F|"))
-        .unwrap().split('|').nth(3).unwrap().parse().unwrap();
+    let declared: usize = wire
+        .lines()
+        .find(|l| l.starts_with("F|"))
+        .unwrap()
+        .split('|')
+        .nth(3)
+        .unwrap()
+        .parse()
+        .unwrap();
     assert_eq!(rows, declared);
     assert!(wire.contains("|I|1|0|0|0|"));
     assert!(wire.contains("|M|1|0|0|0|"));
@@ -68,7 +81,7 @@ fn unsupported_compiler_cfg_is_never_exported_as_valid_evidence() {
 fn different_checked_programs_have_distinct_complete_wire_inventories() {
     let a = manifest(straight()).unwrap();
     let b = manifest(two_branches()).unwrap();
-    assert_ne!(a,b);
-    assert_eq!(a.lines().filter(|l| l=="END").count(),1);
-    assert_eq!(b.lines().filter(|l| l=="END").count(),1);
+    assert_ne!(a, b);
+    assert_eq!(a.lines().filter(|l| l == "END").count(), 1);
+    assert_eq!(b.lines().filter(|l| l == "END").count(), 1);
 }
