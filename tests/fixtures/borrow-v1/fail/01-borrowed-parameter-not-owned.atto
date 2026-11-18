@@ -1,0 +1,5 @@
+// expect-error: E_BORROW
+// A non-owning formal may not be returned as an owned class.
+define class Person as pub let int age = 21; end
+fnc steal(Person p): Person { return p; }
+pub fnc main(): int { let p = new Person(); return steal(p).age; }
