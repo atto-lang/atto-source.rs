@@ -45,6 +45,9 @@ pub enum Import {
     ActorSpawn,
     /// `actor_send(ref: i32, value: i64)`: enqueue one message
     ActorSend,
+    /// `actor_get_or_create(type:i32,namespace:i64,key:i64)->i32`.
+    /// The host validates the packed UTF-8 strings before activation.
+    ActorGetOrCreate,
     /// Private Worker-owned state-container creation/lexical admission hooks.
     StateRegister,
     StateEnter,
@@ -52,7 +55,7 @@ pub enum Import {
 }
 
 impl Import {
-    pub const ALL: [Import; 10] = [
+    pub const ALL: [Import; 11] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -60,6 +63,7 @@ impl Import {
         Import::PrintF64,
         Import::ActorSpawn,
         Import::ActorSend,
+        Import::ActorGetOrCreate,
         Import::StateRegister,
         Import::StateEnter,
         Import::StateLeave,
@@ -73,6 +77,7 @@ impl Import {
             Import::PrintF64 => "print_f64",
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
+            Import::ActorGetOrCreate => "actor_get_or_create",
             Import::StateRegister => "state_register",
             Import::StateEnter => "state_enter",
             Import::StateLeave => "state_leave",
@@ -178,6 +183,8 @@ pub enum TExpr {
     Alloc(u32),
     /// start an actor of the given type
     Spawn(u32),
+    /// Resolve/create a keyed local actor through a trusted host registry.
+    RegistryGet { actor: u32, namespace: Box<TE>, key: Box<TE> },
     /// enqueue `value` (int, or bool widened to i64) on an actor's mailbox
     Send {
         target: Box<TE>,
@@ -1517,7 +1524,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
-        TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
+        TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::RegistryGet { .. } | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } => false,
     }
@@ -1591,6 +1598,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
+        TExpr::RegistryGet { namespace, key, .. } => any_in(namespace, f) || any_in(key, f),
         _ => false,
     }
 }
@@ -3199,6 +3207,40 @@ impl<'a> FnCx<'a> {
                 self.imports.push(Import::ActorSpawn);
                 TE {
                     e: TExpr::Spawn(a),
+                    ty: Type::ActorRef(a),
+                }
+            }
+            ExprKind::RegistryGet(actor, namespace, key) => {
+                if let Some(me) = self.actor_name() {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        format!("keyed actor activation inside actor '{me}' is not supported yet")));
+                }
+                if matches!(self.owner, Owner::FieldInit { .. }) {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "keyed actor activation in a field initializer"));
+                }
+                let a = match self.g.actor(actor) {
+                    Some(a) => a,
+                    None => return Err(Diagnostic::new(pos, "E_UNBOUND",
+                        format!("unknown actor type '{actor}' in ActorRegistry.get_or_create"))),
+                };
+                // Restrict the first implementation to compile-time literal
+                // keys; source-derived packed UTF-8 is checked by the host.
+                if !matches!(&namespace.kind, ExprKind::Str(_))
+                    || !matches!(&key.kind, ExprKind::Str(_)) {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "ActorRegistry.get_or_create requires literal namespace and application_key"));
+                }
+                let ns = self.value(namespace)?;
+                let k = self.value(key)?;
+                if ns.ty != Type::Str || k.ty != Type::Str {
+                    return Err(type_err(pos, "actor registry key components must be strings"));
+                }
+                self.imports.push(Import::ActorGetOrCreate);
+                TE {
+                    e: TExpr::RegistryGet {
+                        actor: a, namespace: Box::new(ns), key: Box::new(k)
+                    },
                     ty: Type::ActorRef(a),
                 }
             }
