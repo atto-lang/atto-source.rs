@@ -3,7 +3,7 @@
 // it never interprets AttoLang in JavaScript.
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdtemp, readFile, writeFile, rm, stat} from 'node:fs/promises';
+import {mkdtemp, readFile, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 
@@ -59,7 +59,7 @@ function executeGuest(bytes) {
 const fixtures = [
   ['delimited', 'pub fnc main(): int { return seq(1, 42); }', 42],
   ['bare_call', 'fnc calculate(int v): int { return v; } pub fnc main(): int { return calculate(seq 1, 2, 42); }', 42],
-  ['multiline_call', 'fnc calculate(int v): int { return v; } pub fnc main(): int { return calculate(\\n seq\\n 1,\\n 2,\\n 42\\n); }', 42],
+  ['multiline_call', 'fnc calculate(int v): int { return v; } pub fnc main(): int { return calculate(\n seq\n 1,\n 2,\n 42\n); }', 42],
   ['multi_argument', 'fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add(seq(1, 2), 40); }', 42],
   ['bare_final_argument', 'fnc add(int a, int b): int { return a + b; } pub fnc main(): int { return add(40, seq 1, 2); }', 42],
   ['mutable_bare_argument', 'fnc foo(int v): int { return v * 2; } pub fnc main(): int { let int z = 10; const int x = 5; return foo(seq z += x, z); }', 30],
