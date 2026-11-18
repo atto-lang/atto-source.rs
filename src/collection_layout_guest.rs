@@ -96,12 +96,18 @@ impl<'a> Parser<'a> {
 
 fn parse_layout(p: &mut Parser<'_>) -> Result<Storage, Diagnostic> {
     let pos = p.pos();
-    match p.ident()?.as_str() {
+    let name = match p.peek() {
+        Tok::Ident(name) => name.clone(),
+        _ => return Err(error(pos, "E_LAYOUT_VALUE", "layout must be a compile-time Layout value")),
+    };
+    p.take();
+    match name.as_str() {
         "aos" => Ok(Storage::Aos),
         "soa" => Ok(Storage::Soa),
         "aosoa" => {
             p.expect(Tok::LParen, "'(' after aosoa")?;
-            let lanes = p.number()?;
+            let lanes = p.number().map_err(|_| error(pos, "E_LAYOUT_SIZE",
+                "aosoa requires a constant positive integer lane count"))?;
             p.expect(Tok::RParen, "')' after aosoa lanes")?;
             if !(1..=crate::collection_layout::MAX_AOSOA_LANES as i64).contains(&lanes) {
                 return Err(error(pos, "E_LAYOUT_SIZE", "aosoa lanes must be in 1..=1024"));
@@ -373,6 +379,7 @@ fnc main() -> int {
         for (replacement, code) in [
             ("Array<Particle, layout=wat>", "E_LAYOUT_VALUE"),
             ("Array<Particle, layout=aosoa(0)>", "E_LAYOUT_SIZE"),
+            ("Array<Particle, layout=aosoa(n)>", "E_LAYOUT_SIZE"),
             ("Array<Particle, layout=soa, layout=aos>", "E_GENERIC_DUP"),
             ("Array<layout=soa, Particle>", "E_GENERIC_ORDER"),
             ("Array<Particle, layout=soa, nope=1>", "E_GENERIC_NAME"),
