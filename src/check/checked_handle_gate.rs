@@ -17,9 +17,10 @@ use super::R;
 const MAX_VISITS: usize = 65_536;
 const MAX_DEPTH: usize = 128;
 /// An operator or postfix receiver spine is not 128 nested lexical scopes.
-/// Keep its admission walk iterative but bounded independently of true
+/// Keep its admission walk iterative and bounded at 256 links (250-term
+/// valid stress cases pass; 300-term adversarial shapes still fail) independently of true
 /// structural nesting. Existing >3,000-term stress cases still fail closed.
-const MAX_EXPRESSION_SPINE: usize = 1_024;
+const MAX_EXPRESSION_SPINE: usize = 256;
 
 struct Scan {
     visits: usize,
