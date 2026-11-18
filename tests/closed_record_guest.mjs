@@ -87,6 +87,53 @@ positives.push([String.raw`pub fnc main(): int {let Record h={"line\nbreak":42};
 negatives.push([String.raw`pub fnc main(): int {let Record h={"x-y":1,"x\u{2d}y":2}; return 0;} `, "E_DUPLICATE"]);
 negatives.push([String.raw`pub fnc main(): int {let Record h={"x-y":42}; return h["x\u{zz}y"];} `, "E_STRING"]);
 negatives.push([String.raw`pub fnc main(): int {let Record h={"content-type":"json",status_code:42}; return h["content-type"];} `, "E_TYPE"]);
+// Boundary/identity cases: each positive guest is executed, and every negative
+// must be rejected by both actual compiler implementations with zero artifacts.
+positives.push([
+ 'pub fnc main(): int {let Record r={h:35,g:2,f:3,e:4,d:5,c:6,b:8,a:7}; return r["a"]+r.h;}',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record one={value:42}; let Record two={value:true}; two.value; return one["value"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record r={f:1.5,b:true,s:"ok",i:42}; r["f"]; r["b"]; r["s"]; return r["i"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record r={"🚀 launch":40,"x.y:z":2}; return r["🚀 launch"]+r["x.y:z"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record r={"":41,"x-y":1}; val copy=r; return copy[""]+copy["x-y"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let Record one={n:41,label:"first"}; let Record two={label:"second",n:1}; return one.n+two["n"]; }',
+ 42n, ''
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={a:1,b:2,c:3,d:4,e:5,f:6,g:7,h:8,i:9}; return r["a"]; }',
+ 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={}; return 0; }',
+ 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={"🚀 launch":42}; return r["🚀 Launch"]; }',
+ 'E_NO_FIELD'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={x:42}; let int other=7; return other["x"]; }',
+ 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={i:42,s:"ok"}; let int wrong=r["s"]; return wrong; }',
+ 'E_TYPE'
+]);
+
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
  let n=0;
