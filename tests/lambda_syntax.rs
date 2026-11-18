@@ -27,7 +27,7 @@ fn colon_annotated_rx_pipeline_and_arrays_parse() {
     assert_eq!(method, "take");
     let ExprKind::MethodCall(base, method, args) = &base.kind else { panic!("expected map") };
     assert_eq!(method, "map");
-    let ExprKind::Lambda { params, return_type, body } = &args[0].kind else { panic!("expected lambda") };
+    let ExprKind::Lambda { params, return_type, body, .. } = &args[0].kind else { panic!("expected lambda") };
     assert_eq!(params, &["n"]);
     assert_eq!(return_type.as_deref(), Some("int"));
     assert!(matches!(body, LambdaBody::Statement(_)));
