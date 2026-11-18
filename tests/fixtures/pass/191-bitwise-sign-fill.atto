@@ -1,0 +1,8 @@
+// expect-exit: 42
+pub fnc main(): int {
+    let high: int = 1 <<< 63;
+    if (high >>> 63) eq 1 && (high ashr 63) eq -1 then
+        return 42;
+    fi
+    return 0;
+}
