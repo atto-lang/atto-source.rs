@@ -149,6 +149,8 @@ impl Cursor<'_> {
         }
         let mut comma_body = self.take(&Tok::ColonColon);
         let mut saw_statement_separator = false;
+        let mut explicit_return_sequence = false;
+        let mut unparenthesized_seq = false;
         if comma_body && *self.tok() == Tok::LBrace {
             return Err(self.err("E_SYNTAX", "'::' requires a comma/end body, not '{'"));
         }
@@ -201,13 +203,25 @@ impl Cursor<'_> {
                     if braces == 0 { return Err(self.err("E_SYNTAX", "unmatched '}'")); }
                     braces -= 1;
                 }
+                Tok::Ident(s) if s == "return" && braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    explicit_return_sequence = true;
+                }
+                Tok::Caret if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    explicit_return_sequence = true;
+                }
+                Tok::Ident(s) if s == "seq" && braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                    unparenthesized_seq = true;
+                }
                 Tok::Semi if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
                     if comma_body {
                         return Err(self.err("E_SYNTAX", "comma/implicit-tail body requires ',' separators, not ';'"));
                     }
                     saw_statement_separator = true;
+                    explicit_return_sequence = false;
+                    unparenthesized_seq = false;
                 }
-                Tok::Comma if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0 => {
+                Tok::Comma if braces == 0 && conditionals == 0 && parens == 0 && brackets == 0
+                    && !explicit_return_sequence && !unparenthesized_seq => {
                     if !comma_body && self.version == LanguageVersion::Explicit {
                         return Err(self.err("E_BODY_VERSION",
                             "language version 2 requires '::' before comma/implicit-tail method bodies; insert '::' or use semicolon statements with explicit return/^"));
@@ -270,12 +284,12 @@ impl Cursor<'_> {
     /// Use production parsing for one declaration; unlike a token-only scan,
     /// it consumes inner Erlang-style method 'end' without closing the class.
     fn definition(&mut self, start: usize) -> R<ActorDecl> {
-        let (decl, end) = Parser::parse_target_actor_at(self.toks, start)?;
+        let (decl, end) = Parser::parse_target_actor_at_versioned(self.toks, start, self.version)?;
         self.i = end;
         Ok(decl)
     }
     fn class_definition(&mut self, start: usize) -> R<ClassDecl> {
-        let (decl, end) = Parser::parse_target_class_at(self.toks, start)?;
+        let (decl, end) = Parser::parse_target_class_at_versioned(self.toks, start, self.version)?;
         self.i = end;
         Ok(decl)
     }
