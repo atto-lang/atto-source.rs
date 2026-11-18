@@ -104,8 +104,8 @@ fn left_arrow_is_contiguous_and_only_has_meaning_in_callable_headers() {
 
 #[test]
 fn leading_ascii_return_type_is_checked_and_warnings_do_not_leak() {
-    fails("int <- foo() { return true; }", "E_TYPE");
-    fails("bool <- foo() { return 42; }", "E_TYPE");
+    fails(&format!("int <- foo() {{ return true; }} {MAIN}"), "E_TYPE");
+    fails(&format!("bool <- foo() {{ return 42; }} {MAIN}"), "E_TYPE");
     assert_eq!(compile_with_warnings(&format!("int <- foo(): int {{ return 1; }} {MAIN}")).unwrap().1.len(), 1);
     assert!(compile_with_warnings(&format!("int <- foo() {{ return 1; }} {MAIN}")).unwrap().1.is_empty());
 }
