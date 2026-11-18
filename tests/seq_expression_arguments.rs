@@ -1,7 +1,7 @@
 //! Comma-delimited `seq` in expression and function-argument positions.
 //! Real Rust compiler -> checked AST -> deterministic guest Wasm admission.
 use atto_compiler::{
-    ast::{ExprKind, Stmt},
+    ast::{ExprKind, LambdaBody, Stmt},
     compile,
     lexer::lex,
     parser::Parser,
@@ -76,4 +76,24 @@ fn reject_semicolons_bad_commas_and_assignment_escape() {
         "pub fnc main(): int { return seq(let x = 42, x) + x; }",
         "pub fnc main(): int { return (1, 42); }",
     ] { rejected(src); }
+}
+
+#[test]
+fn braceless_lambda_comma_body_is_last_value_not_tuple() {
+    // Lambda codegen is not yet available in this browser compiler.
+    // Verify the real lexer/parser AST without falsely claiming guest execution.
+    for src in [
+        "pub fnc main(): int { val f = || -> 1, 2, 42; return 0; }",
+        "pub fnc main(): int { val f = || -> seq(1, 2, 42); return 0; }",
+        "pub fnc main(): int { val f = || -> (> 1, 2, 42); return 0; }",
+    ] {
+        let ast = Parser::new(lex(src).unwrap()).parse_program().unwrap();
+        let Stmt::Bind { init, .. } = &ast.funcs[0].body[0] else { panic!("expected binding") };
+        let ExprKind::Lambda { body: LambdaBody::Expression(value), .. } = &init.kind
+            else { panic!("expected expression lambda: {src}") };
+        let ExprKind::Sequence(prefix, tail) = &value.kind
+            else { panic!("lambda must have explicit sequence AST: {src}") };
+        assert_eq!(prefix.len(), 2, "{src}");
+        assert!(matches!(tail.kind, ExprKind::Int(Some(42))), "{src}");
+    }
 }
