@@ -1,6 +1,6 @@
-// expect-error: E_UNSUPPORTED_TYPE
+// expect-error: E_SYNTAX
 // java: rejects
-// Type-level &T must not become an owned Person until lifetime MIR is verified.
+// Rejected syntax: use Borrow<Person> instead of a sigil.
 define class Person as
   pub let int age = 42;
 end
