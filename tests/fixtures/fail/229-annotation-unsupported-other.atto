@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+@Other(Error)
+pub fnc main(): int {return 42;}
