@@ -230,3 +230,73 @@ fn pre_resolved_borrowed_return_and_generator_are_not_lowered_as_owners() {
     p.funcs[0].is_generator = true;
     assert_eq!(check::check_borrow_v1(&p).unwrap_err().code, "E_UNSUPPORTED_TYPE");
 }
+
+
+#[test]
+fn programmatic_receive_payload_and_target_interface_fail_closed() {
+    // Neither unsupported actor-interface signatures nor forged ActorMail<T>
+    // payload metadata may bypass the opt-in source admission boundary.
+    use atto_compiler::{ast::{ActorDecl, ActorInterface, Receive, Type},
+        check, diag::Pos, lexer, parser::Parser};
+    let source = "pub fnc main(): int { return 42; }";
+    let base = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    let pos = Pos { line: 1, col: 1 };
+    for invalid_type in [
+        Type::Named(u32::MAX), Type::BorrowNamed(u32::MAX),
+        Type::BorrowClass(u32::MAX), Type::Class(u32::MAX),
+    ] {
+        let mut p = base.clone();
+        p.actors.push(ActorDecl {
+            name: "Worker".to_string(),
+            pos,
+            fields: Vec::new(),
+            methods: Vec::new(),
+            receive: Some(Receive {
+                pos, mail: "mail".to_string(), payload: invalid_type,
+                body: Vec::new()
+            }),
+        });
+        let err = check::check_borrow_v1(&p).expect_err(
+            "forged actor receive type must fail before mailbox codegen");
+        assert_eq!(err.code, "E_UNKNOWN_TYPE", "{invalid_type:?}");
+    }
+    let mut p = base;
+    p.actor_interface = Some(ActorInterface {
+        namespace: None, forwards: Vec::new(), methods: Vec::new()
+    });
+    assert_eq!(check::check_borrow_v1(&p).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+}
+
+#[test]
+fn public_borrow_checker_respects_parser_cardinality_limits() {
+    // Synthetic AST clients are not allowed to bypass the source parser's
+    // bounded declaration/parameter/member dimensions.
+    use atto_compiler::{check, lexer, parser::Parser};
+    let source = r#"
+        define class Parcel as pub let int value = 21; end
+        fnc inspect(Parcel p): int { return p.value; }
+        pub fnc main(): int { return 42; }
+    "#;
+    let base = Parser::new(lexer::lex(source).unwrap()).parse_program().unwrap();
+    let mut oversized = base.clone();
+    oversized.funcs[0].params = vec![
+        oversized.funcs[0].params[0].clone(); atto_compiler::parser::MAX_PARAMS + 1
+    ];
+    assert_eq!(check::check_borrow_v1(&oversized).unwrap_err().code,
+        "E_SOURCE_LIMIT", "too many formal parameters");
+    let mut oversized = base.clone();
+    oversized.funcs = vec![oversized.funcs[0].clone(); atto_compiler::parser::MAX_FUNCS + 1];
+    assert_eq!(check::check_borrow_v1(&oversized).unwrap_err().code,
+        "E_SOURCE_LIMIT", "too many functions");
+    let mut oversized = base.clone();
+    oversized.classes[0].fields = vec![
+        oversized.classes[0].fields[0].clone(); atto_compiler::parser::MAX_MEMBERS + 1
+    ];
+    assert_eq!(check::check_borrow_v1(&oversized).unwrap_err().code,
+        "E_SOURCE_LIMIT", "too many class fields");
+    let mut oversized = base;
+    let extra = oversized.classes[0].clone();
+    oversized.classes = vec![extra; atto_compiler::parser::MAX_FUNCS + 1];
+    assert_eq!(check::check_borrow_v1(&oversized).unwrap_err().code,
+        "E_SOURCE_LIMIT", "too many classes");
+}
