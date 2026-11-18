@@ -487,6 +487,21 @@ impl Emit<'_> {
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
             }
+            TStmt::ClassBorrow { alias, owner, mutable, value } => {
+                // A borrowed alias uses exactly the same guest handle bits
+                // as an ordinary local, but typed IR retains its original
+                // owner/permission identity. No new owned value is created.
+                debug_assert_ne!(*owner, *alias);
+                let _ = mutable;
+                self.expr(value);
+                self.op(0x21);
+                uleb(&mut self.code, *alias as u64);
+            }
+            TStmt::ClassLoanEnd { alias, owner, mutable } => {
+                // Static loan-liveness marker only. NO release, deallocation,
+                // refcount increment, capability promotion or guest code.
+                let _ = (alias, owner, mutable);
+            }
             TStmt::FieldSet { obj, offset, ty, value } => {
                 self.expr(obj);
                 self.expr(value);
