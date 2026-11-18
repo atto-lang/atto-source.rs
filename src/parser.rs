@@ -536,7 +536,13 @@ impl Parser {
     // production nesting rules rather than scanning to the first stray 'end';
     // essential for Erlang-style methods inside a class or actor definition.
     pub(crate) fn parse_target_class_at(toks: &[Token], offset: usize) -> R<(ClassDecl, usize)> {
-        let mut p = Self::new(toks.to_vec());
+        Self::parse_target_class_at_versioned(toks, offset, LanguageVersion::Legacy)
+    }
+
+    pub(crate) fn parse_target_class_at_versioned(
+        toks: &[Token], offset: usize, version: LanguageVersion,
+    ) -> R<(ClassDecl, usize)> {
+        let mut p = Self::with_version(toks.to_vec(), version);
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("class")?;
@@ -545,7 +551,13 @@ impl Parser {
     }
 
     pub(crate) fn parse_target_actor_at(toks: &[Token], offset: usize) -> R<(ActorDecl, usize)> {
-        let mut p = Self::new(toks.to_vec());
+        Self::parse_target_actor_at_versioned(toks, offset, LanguageVersion::Legacy)
+    }
+
+    pub(crate) fn parse_target_actor_at_versioned(
+        toks: &[Token], offset: usize, version: LanguageVersion,
+    ) -> R<(ActorDecl, usize)> {
+        let mut p = Self::with_version(toks.to_vec(), version);
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("actor")?;
