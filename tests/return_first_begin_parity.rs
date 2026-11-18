@@ -2,18 +2,23 @@ use oreslang_source_rs::frontend::{parse, Expr};
 
 #[test]
 fn all_four_return_first_scalar_spellings_lower_to_same_ast() {
-    for (index, header) in [
+    for header in [
         "int <- main()",
         "int• main()",
         "fnc int <- main()",
         "fnc int• main()",
-    ].iter().enumerate() {
-        let closer = ["end", "end.", "end;", "end"][index];
-        let source = format!("{header}\nbegin\n  return 42;\n{closer}\n");
-        let program = parse(&source).expect(&source);
-        assert_eq!(program.functions.len(), 1);
-        assert_eq!(program.functions[0].name, "main");
-        assert_eq!(program.functions[0].expression, Expr::Integer(42));
+    ] {
+        for closer in ["end", "end.", "end;"] {
+            let source = format!("{header}\nbegin\n  return 42;\n{closer}\n");
+            let program = parse(&source).expect(&source);
+            assert_eq!(program.functions.len(), 1);
+            assert_eq!(program.functions[0].name, "main");
+            assert_eq!(program.functions[0].expression, Expr::Integer(42));
+            let mir = oreslang_source_rs::mir::lower(program).expect("validated scalar MIR");
+            assert_eq!(mir.functions.len(), 1);
+            assert_eq!(mir.functions[0].symbol, "main");
+            assert_eq!(mir.functions[0].return_value, Expr::Integer(42));
+        }
     }
 }
 
