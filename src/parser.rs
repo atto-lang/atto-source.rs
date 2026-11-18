@@ -10,6 +10,11 @@ use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
 pub const MAX_DEPTH: u32 = 128;
+/// Recursive lambda/type spelling paths use substantially more host stack
+/// per source level than ordinary syntax. Fail before a Rust test thread's
+/// 2 MiB stack can be exhausted by adversarial nested lambdas/generics.
+/// This is independent of the general AST-depth/height ceilings.
+const MAX_LAMBDA_RECURSION_DEPTH: u32 = 48;
 pub const MAX_FUNCS: usize = 1024;
 pub const MAX_PARAMS: usize = 32;
 /// Members (fields, methods, constructor, receive) in one class or actor,
@@ -2617,6 +2622,10 @@ impl Parser {
     /// `|n| : Result<int, Error> -> ...`. Unlike executable browser types,
     /// this syntax-only annotation admits generic and qualified names.
     fn parse_lambda_type(&mut self) -> R<String> {
+        if self.depth >= MAX_LAMBDA_RECURSION_DEPTH {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "lambda type nesting exceeds safe recursive parser budget"));
+        }
         self.enter()?;
         let result = (|| {
             let mut name = match self.peek().clone() {
@@ -2654,6 +2663,13 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> R<ExprKind> {
+        // Each lambda recursion includes expression precedence, lookahead,
+        // and body parsing frames. A generic MAX_DEPTH=128 is not by itself
+        // sufficient to prevent a real stack overflow on small-stack threads.
+        if self.depth >= MAX_LAMBDA_RECURSION_DEPTH {
+            return Err(Diagnostic::new(self.pos(), "E_NESTING",
+                "lambda nesting exceeds safe recursive parser budget"));
+        }
         self.expect(Tok::Pipe, "'|' to start lambda parameters")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::Pipe) {
