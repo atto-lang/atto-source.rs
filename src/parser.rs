@@ -2881,6 +2881,26 @@ impl Parser {
                 Tok::Dot => {
                     let dot = self.pos();
                     if let ExprKind::Var(base) = &e.kind {
+                        if base == "ActorRegistry" && self.word_at(1) == Some("get_or_create") {
+                            // Targeted standard-library intrinsic; no generic call
+                            // syntax is admitted for unrelated identifiers.
+                            self.advance(); // dot
+                            self.advance(); // get_or_create
+                            self.expect(Tok::Lt, "'<' before actor registry type")?;
+                            let (actor, _) = self.ident("an actor type for get_or_create")?;
+                            self.expect(Tok::Gt, "'>' after actor registry type")?;
+                            let mut args = self.parse_args()?;
+                            if args.len() != 2 {
+                                return Err(Diagnostic::new(dot, "E_ARITY",
+                                    "ActorRegistry.get_or_create<A> requires namespace and application_key"));
+                            }
+                            e = Expr {
+                                kind: ExprKind::RegistryGet(actor, Box::new(args.remove(0)),
+                                                            Box::new(args.remove(0))),
+                                pos: dot,
+                            };
+                            continue;
+                        }
                         if base == "stdio" {
                             if let Some(m @ ("print" | "println")) = self.word_at(1) {
                                 let qualified = format!("stdio.{m}");
