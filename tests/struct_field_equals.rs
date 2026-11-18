@@ -9,7 +9,7 @@ fn source(body: &str) -> String {
 }
 fn pass(program: &str) {
     let wasm = compile(program).unwrap_or_else(|e| panic!("expected guest Wasm, got {e}"));
-    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(wasm, compile(program).unwrap(), "deterministic guest bytes");
 }
 fn reject(program: &str, code: &str) {
