@@ -9,7 +9,7 @@ use atto_compiler::{
 
 fn admitted(src: &str) {
     let first = compile(src).unwrap_or_else(|e| panic!("seq rejected: {e}\n{src}"));
-    assert!(first.len() >= 8 && &first[..8] == b"\\0asm\\x01\\0\\0\\0", "{src}");
+    assert!(first.len() >= 8 && &first[..8] == b"\0asm\x01\0\0\0", "{src}");
     assert_eq!(first, compile(src).unwrap(), "nondeterministic guest bytes: {src}");
 }
 
