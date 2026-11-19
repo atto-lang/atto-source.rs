@@ -37,7 +37,7 @@ fn forward_class_constructor_and_receiver_lower_through_existing_checked_ast() {
 
 #[test]
 fn constructor_header_uses_nominal_owner_and_self_result() {
-    let source = "define class C as end constructor (C)(): self {}";
+    let source = "define class C as end pub constructor (C)(): self {} pub fnc main(): int { val c = new C(); return 7; }";
     let h = parse_target_declarations(&lex(source).unwrap()).unwrap();
     assert_eq!(h.constructors.len(), 1);
     assert_eq!(h.constructors[0].owner, "C");
