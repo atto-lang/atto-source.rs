@@ -315,10 +315,10 @@ pub fn preflight(t: &[Token]) -> R<()> {
     }
     for (name, method_name, method) in receivers {
         if let Some(owner) = all.get_mut(&name) {
-            if matches!(owner.kind, Kind::Actor | Kind::Struct) {
-                if owner.methods.insert(method_name.clone(), method.clone()).is_some() {
-                    return Err(err(method.pos, "E_DUPLICATE", "duplicate inline/out-of-line receiver method"));
-                }
+            if matches!(owner.kind, Kind::Actor | Kind::Struct)
+                && owner.methods.insert(method_name.clone(), method.clone()).is_some()
+            {
+                return Err(err(method.pos, "E_DUPLICATE", "duplicate inline/out-of-line receiver method"));
             }
         }
     }
