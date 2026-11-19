@@ -2,6 +2,28 @@
 // Egress codes: -1 drop, -2 flood to all eligible ports EXCEPT ingress,
 // >=0 one port. The caller must enforce port/VLAN membership on flood.
 
+// Exact nonnegative integer quotient, independent of undecided int / int semantics.
+// Greedy doubling is bounded by signed int width; invalid operands return -1.
+// This is not a constant-time or hot-path optimized primitive.
+pub fnc quotient_nonnegative(int dividend, int divisor): int {
+  if dividend < 0 || divisor <= 0 then
+    return -1;
+  fi
+  let int remaining = dividend;
+  let int quotient = 0;
+  while remaining >= divisor do
+    let int chunk = divisor;
+    let int multiple = 1;
+    while chunk <= remaining - chunk do
+      chunk = chunk * 2;
+      multiple = multiple * 2;
+    done
+    remaining = remaining - chunk;
+    quotient = quotient + multiple;
+  done
+  return quotient;
+}
+
 pub fnc valid_mac(int mac): bool {
   return mac >= 0 && mac <= 281474976710655;
 }
@@ -10,8 +32,8 @@ pub fnc mac_is_group(int mac): bool {
   if !valid_mac(mac) then
     return false;
   fi
-  let int first_octet = mac / 1099511627776;
-  return first_octet != (first_octet / 2) * 2;
+  let int first_octet = quotient_nonnegative(mac, 1099511627776);
+  return first_octet != (quotient_nonnegative(first_octet, 2)) * 2;
 }
 
 pub fnc valid_vlan(int vlan): bool {

@@ -61,22 +61,14 @@ fi
 return -1;
 "#;
 
-#[test]
-fn compile_and_execute_pr_sources_on_tip() {
-    let fixtures = [
-        ("nic", NIC, NIC_MAIN, 41_i64),
-        ("router", ROUTER, ROUTER_MAIN, 42_i64),
-        ("switch", SWITCH, SWITCH_MAIN, 43_i64),
-        ("modem", MODEM, MODEM_MAIN, 44_i64),
-    ];
-    for (name, source, body, expected) in fixtures {
-        let guest = format!("{source}\npub fnc main(): int {{\n{body}\n}}\n");
-        let wasm = atto_compiler::compile(&guest)
-            .unwrap_or_else(|d| panic!("{name}: Atto compiler rejected exact PR source: {d}"));
-        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "{name}: invalid Wasm header");
-        assert_eq!(wasm, atto_compiler::compile(&guest).expect("determinism"),
-                   "{name}: nondeterministic Wasm");
-        let runner = r#"
+fn run_exact_guest(name: &str, source: &str, body: &str, expected: i64) {
+    let guest = format!("{source}\npub fnc main(): int {{\n{body}\n}}\n");
+    let wasm = atto_compiler::compile(&guest)
+        .unwrap_or_else(|d| panic!("{name}: Atto compiler rejected exact PR source: {d}"));
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "{name}: invalid Wasm header");
+    assert_eq!(wasm, atto_compiler::compile(&guest).expect("determinism"),
+               "{name}: nondeterministic Wasm");
+    let runner = r#"
 const fs = require('node:fs');
 const wasm = fs.readFileSync(0);
 if (!WebAssembly.validate(wasm)) throw Error('invalid guest Wasm');
@@ -94,18 +86,38 @@ if (String(got) !== process.argv[1]) throw Error('guest returned '+got+' expecte
 if (inst.exports.panic_code.value !== 0) throw Error('guest panicked');
 console.log('REAL_ATTO_GUEST_EXECUTED '+String(got)+' panic=0');
 "#;
-        let mut child = Command::new("node").args(["-e", runner, &expected.to_string()])
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn().expect("Node.js required for guest Wasm execution");
-        child.stdin.take().expect("Wasm input")
-            .write_all(&wasm).expect("send guest Wasm to Node");
-        let output = child.wait_with_output().expect("collect guest execution");
-        assert!(output.status.success(), "{name}: real compiled guest failed: {}",
-                String::from_utf8_lossy(&output.stderr));
-        let out = String::from_utf8(output.stdout).expect("UTF-8 guest evidence");
-        assert!(out.contains(&format!("REAL_ATTO_GUEST_EXECUTED {expected} panic=0")),
-                "{name}: missing real execution evidence: {out}");
-        println!("VHW_GUEST name={name} result={expected} panic=0 bytes={} kind=SOURCE_COMPILED_WASM_GUEST",
-                 wasm.len());
-    }
+    let mut child = Command::new("node").args(["-e", runner, &expected.to_string()])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().expect("Node.js required for guest Wasm execution");
+    child.stdin.take().expect("Wasm input")
+        .write_all(&wasm).expect("send guest Wasm to Node");
+    let output = child.wait_with_output().expect("collect guest execution");
+    assert!(output.status.success(), "{name}: real compiled guest failed: {}",
+            String::from_utf8_lossy(&output.stderr));
+    let out = String::from_utf8(output.stdout).expect("UTF-8 guest evidence");
+    assert!(out.contains(&format!("REAL_ATTO_GUEST_EXECUTED {expected} panic=0")),
+            "{name}: missing real execution evidence: {out}");
+    println!("VHW_GUEST name={name} result={expected} panic=0 bytes={} kind=SOURCE_COMPILED_WASM_GUEST",
+             wasm.len());
+
+}
+
+#[test]
+fn nic_guest() {
+    run_exact_guest("nic", NIC, NIC_MAIN, 41);
+}
+
+#[test]
+fn router_guest() {
+    run_exact_guest("router", ROUTER, ROUTER_MAIN, 42);
+}
+
+#[test]
+fn switch_guest() {
+    run_exact_guest("switch", SWITCH, SWITCH_MAIN, 43);
+}
+
+#[test]
+fn modem_guest() {
+    run_exact_guest("modem", MODEM, MODEM_MAIN, 44);
 }

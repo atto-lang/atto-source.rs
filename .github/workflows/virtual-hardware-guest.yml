@@ -25,9 +25,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           echo "ATTO_COMPILER_HEAD=$(git rev-parse HEAD)"
           echo "ATTO_COMPILER_TREE=$(git rev-parse HEAD^{tree})"
-          test "$(git hash-object tests/virtual-hardware/nic.atto)" = "e0ab46629285272d07cdeb36cfb11035d097b8ce"
-          test "$(git hash-object tests/virtual-hardware/router.atto)" = "8d865668976ee8f1f9e7b60a3bd7a739cb4a9a5e"
-          test "$(git hash-object tests/virtual-hardware/switch.atto)" = "6cd892821242b327660b7c010552b5549457acb4"
+          test "$(git hash-object tests/virtual-hardware/nic.atto)" = "bf8b29f261b74b7fd4a5324499aa9648ae43cfed"
+          test "$(git hash-object tests/virtual-hardware/router.atto)" = "8f1807e5316732c83dadb08980652a6859f74fd2"
+          test "$(git hash-object tests/virtual-hardware/switch.atto)" = "98727f0beae747017e52735391e08a7c6509ad0b"
           test "$(git hash-object tests/virtual-hardware/modem.atto)" = "51fdf157f1c82606d1205cbbb27705e6a73129e1"
       - name: Install pinned compiler toolchain
         run: |

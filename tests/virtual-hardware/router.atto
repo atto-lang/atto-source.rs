@@ -2,6 +2,28 @@
 // Addresses are unsigned 32-bit integers represented in signed int.
 // This is not a packet parser, byte transport or routing-protocol daemon.
 
+// Exact nonnegative quotient while int / int result semantics remain undecided.
+// Greedy doubling stays within signed 64-bit bounds; invalid input returns -1.
+// This reference path is not constant-time or suitable for a hot data plane.
+pub fnc quotient_nonnegative(int dividend, int divisor): int {
+  if dividend < 0 || divisor <= 0 then
+    return -1;
+  fi
+  let int remaining = dividend;
+  let int quotient = 0;
+  while remaining >= divisor do
+    let int chunk = divisor;
+    let int multiple = 1;
+    while chunk <= remaining - chunk do
+      chunk = chunk * 2;
+      multiple = multiple * 2;
+    done
+    remaining = remaining - chunk;
+    quotient = quotient + multiple;
+  done
+  return quotient;
+}
+
 pub fnc valid_ipv4(int address): bool {
   return address >= 0 && address <= 4294967295;
 }
@@ -17,7 +39,7 @@ pub fnc prefix_divisor(int length): int {
   let int divisor = 4294967296;
   let int step = 0;
   while step < length do
-    divisor = divisor / 2;
+    divisor = quotient_nonnegative(divisor, 2);
     step = step + 1;
   done
   return divisor;
@@ -31,12 +53,12 @@ pub fnc ipv4_prefix_matches(int address, int network, int prefix_length): bool {
   if divisor < 1 then
     return false;
   fi
-  return (address / divisor) == (network / divisor);
+  return (quotient_nonnegative(address, divisor)) == (quotient_nonnegative(network, divisor));
 }
 
 pub fnc valid_ipv4_packet(int total_bytes, int header_bytes, int ttl): bool {
   if header_bytes < 20 || header_bytes > 60 ||
-     header_bytes != (header_bytes / 4) * 4 then
+     header_bytes != (quotient_nonnegative(header_bytes, 4)) * 4 then
     return false;
   fi
   if total_bytes < header_bytes || total_bytes > 65535 then
@@ -96,7 +118,7 @@ pub fnc canonical_ipv4_network(int network, int prefix_length): bool {
   if divisor < 1 then
     return false;
   fi
-  return network == (network / divisor) * divisor;
+  return network == (quotient_nonnegative(network, divisor)) * divisor;
 }
 
 // Existing route selection permits host bits in network addresses; this
