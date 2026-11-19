@@ -54,14 +54,11 @@ fn triple_shift_tokens_cannot_be_mistaken_for_stream_io() {
 fn existing_io_and_boolean_operators_are_unchanged() {
     compile("pub fnc main(): int { stdio.out << 42; return 0; }").unwrap();
     compile("pub fnc main(): int { if true | false then return 1; fi return 0; }").unwrap();
-    // Integer '|' is admitted in an ordinary value expression, not redefined
-    // inside the legacy if/while boolean-OR grammar.
+    // Normative v1 compatibility: legacy unparenthesized condition '|' is
+    // boolean OR; parenthesized value '|' is integer bitwise OR.
     compile("pub fnc main(): int { let bits: int = (1 | 2); if bits eq 3 then return 1; fi return 0; }").unwrap();
-    assert_eq!(
-        compile("pub fnc main(): int { if (1 | 2) eq 3 then return 1; fi return 0; }")
-            .unwrap_err().code,
-        "E_TYPE"
-    );
+    compile("pub fnc main(): int { if (1 | 2) eq 3 then return 1; fi return 0; }").unwrap();
+    compile("pub fnc main(): int { if (true || false) then return 1; fi return 0; }").unwrap();
     compile("pub fnc main(): int { if true && false || true then return 1; fi return 0; }").unwrap();
     assert!(compile(&source("1 << 2")).is_err()); // Not a bit shift
     assert!(compile(&source("8 >> 2")).is_err()); // Not a bit shift

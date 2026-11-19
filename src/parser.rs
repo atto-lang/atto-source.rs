@@ -3213,11 +3213,11 @@ impl Parser {
         Ok(left)
     }
 
-    // A single '|' in an if/while condition, including parenthesized
-    // subconditions, remains the legacy boolean OR separator. Outside that
-    // grammar it is integer bitwise OR. Compute a bitwise value in an ordinary
-    // expression before comparing it in a condition; do not silently change
-    // the meaning of existing conditional '|' until separately specified.
+    // A single '|' in an unparenthesized if/while condition is the legacy
+    // boolean OR separator. Parentheses reset that condition context, so
+    // (flags | mask) eq expected compiles as integer bitwise OR followed by
+    // equality, per atto-spec/language/bitwise-and-stream-operators-v1.md.
+    // Do not reinterpret an unparenthesized conditional '|' as bitwise OR.
     fn parse_bitwise_or(&mut self) -> R<Expr> {
         let mut left = self.parse_bitwise_xor()?;
         let mut links = 0;
@@ -3783,7 +3783,10 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
-                let inner = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
+                // Parenthesized *value* expressions reset the condition
+                // grammar, distinguishing (flags | mask) eq expected from the
+                // legacy unparenthesized condition separator: a | b.
+                let inner = self.parse_expr()?;
                 if *self.peek() == Tok::Comma {
                     return Err(unsupported(self.pos(), "tuples"));
                 }
