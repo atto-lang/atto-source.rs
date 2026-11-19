@@ -3884,6 +3884,16 @@ impl<'a> FnCx<'a> {
                 ),
             ));
         }
+        // An exclusive loan of an owner prohibits reading even a scalar
+        // field through the original owner's name until that loan ends.
+        // This is particularly important for compiler-generated tuple roots:
+        // their scalar projections must not bypass an existing mutable loan.
+        if matches!(&obj.e, TExpr::Local(slot) if
+            self.loans.values().any(|loan| loan.owner == *slot && loan.mutable))
+        {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "cannot read owner fields while an exclusive mutable loan is live"));
+        }
         // A borrowed aggregate cannot yield an independently owned handle.
         // Without a nested-loan provenance IR, such a field could escape
         // the original owner's lifetime by ordinary binding or return.
