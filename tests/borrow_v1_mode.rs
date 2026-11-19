@@ -364,3 +364,41 @@ fn no_mutable_or_scalar_take_formals_without_proven_owner_domain() {
         assert_eq!(borrow_v1(invalid).unwrap_err().code, "E_UNSUPPORTED_TYPE", "{invalid}");
     }
 }
+
+
+#[test]
+fn mixed_read_loans_and_consuming_formals_conflict_in_either_order() {
+    // A call must not transfer an owner while its earlier argument keeps
+    // a shared read loan alive. Conversely, a later readonly argument must
+    // not borrow an already moved owner.
+    let head = r#"
+        define class Person as pub let int age = 21; end
+        fnc borrow_then_take(Person reader, take! Person owner): int {
+            return reader.age + owner.age;
+        }
+        fnc take_then_borrow(take! Person owner, Person reader): int {
+            return owner.age + reader.age;
+        }
+    "#;
+    let first = format!("{head} pub fnc main(): int {{ let p = new Person(); return borrow_then_take(p, take! p); }}");
+    assert_eq!(borrow_v1(&first).unwrap_err().code, "E_BORROW");
+    let second = format!("{head} pub fnc main(): int {{ let p = new Person(); return take_then_borrow(take! p, p); }}");
+    assert_eq!(borrow_v1(&second).unwrap_err().code, "E_MOVED");
+}
+
+#[test]
+fn borrowed_formal_cannot_transfer_its_borrowed_alias() {
+    let source = r#"
+        define class Person as pub let int age = 21; end
+        fnc move_owned(take! Person p): Person { return p; }
+        fnc steal(Person p): int {
+            let moved = move_owned(take! p);
+            return moved.age;
+        }
+        pub fnc main(): int {
+            let p = new Person();
+            return steal(p);
+        }
+    "#;
+    assert_eq!(borrow_v1(source).unwrap_err().code, "E_BORROW");
+}
