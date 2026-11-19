@@ -1124,7 +1124,15 @@ impl<'a> Checker<'a> {
                 };
                 out.push(IrStmt::Set(slot, ir));
                 let release = match &ty {
-                    Ty::Span => self.rt("__span_close", vec![Ir::Local(slot)]),
+                    Ty::Span => {
+                        // Install a task-owned guard AFTER successful acquisition.
+                        // The scheduler can unwind this guard on timeout even if
+                        // the suspended body never reaches its lexical epilogue.
+                        let guard = self.temp();
+                        let enter = self.rt("__span_enter", vec![Ir::Local(slot)]);
+                        out.push(IrStmt::Set(guard, enter));
+                        self.rt("__span_exit", vec![Ir::Local(guard)])
+                    },
                     Ty::Subscription => self.rt("__sub_dispose", vec![Ir::Local(slot)]),
                     Ty::Channel(_) => self.rt("__chan_close", vec![Ir::Local(slot)]),
                     Ty::Object(i) => Ir::Call(self.objs[*i].dispose, vec![Ir::Local(slot)]),

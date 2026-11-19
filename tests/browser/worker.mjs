@@ -44,13 +44,19 @@ self.onmessage=async ({data})=>{
       print_f64:v=>{stdout+=javaDouble(v)},
     };
     instance=new WebAssembly.Instance(guest,{atto});
+    // Root slots 7/8 are internal v2 guest instrumentation, not host-side
+    // lifecycle simulation. They remain zero for legacy guests.
+    const spanCounts=()=>{
+      const mem=new DataView(instance.exports.memory.buffer);
+      return {spanOpens:Number(mem.getBigInt64(56,true)),spanCloses:Number(mem.getBigInt64(64,true))};
+    };
     let value;
     try{value=instance.exports.main()}
     catch(e){
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':'trap: '+e.message;
-      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
+      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind,...spanCounts()});return;
     }
-    self.postMessage({ok:true,value:String(value),stdout});
+    self.postMessage({ok:true,value:String(value),stdout,...spanCounts()});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
 };

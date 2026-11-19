@@ -145,13 +145,29 @@ try{
     ['203-play-channel-bounded.atto', 6, '6\n'],
     ['204-play-channel-unbounded.atto', 42, '42\n'],
     ['205-play-scoped-span.atto', 0, 'span retained over suspension\n'],
+    ['206-play-nested-scoped-spans.atto', 0, 'both spans alive\\n'],
   ]) {
     const source = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const browserOutput = await run(source, 'main() -> ' + expectedReturn);
     assert.equal(browserOutput, expectedStdout + 'main() -> ' + expectedReturn,
       filename + ': exact stdout and returned value from a real Chromium guest');
+    if (filename==='205-play-scoped-span.atto' || filename==='206-play-nested-scoped-spans.atto') {
+      const n=filename.startsWith('205')?1:2;
+      assert.deepEqual(await evaluate('window.__attoLastSpanCounts'), {opens:n,closes:n},
+        filename + ': span closed exactly once after await inside real guest Wasm');
+    }
     console.log('PASS browser: async showcase ' + filename + ' compiled and executed');
   }
+
+  // A timeout must close the suspended guest's live span before trapping.
+  // The counter is read from Wasm linear memory, not inferred from stdout.
+  const timeoutGuest = 'import span from pkg "core.telemetry"; import sleep from pkg "std.time"; '+
+    'pub suspends fnc main(): int { using span("timeout") as s { with timeout(1) { '+
+    'await sleep(2); s.set_attribute("not", "reached"); } } return 0; }';
+  assert.match(await run(timeoutGuest,'E_PANIC'), /E_PANIC/);
+  assert.deepEqual(await evaluate('window.__attoLastSpanCounts'), {opens:1,closes:1},
+    'timeout must trigger exactly-once span cleanup before Wasm guest trap');
+  console.log('PASS browser: timeout unwinds live span in actual guest Wasm');
 
   // A removed operator must not be silently admitted by either frontend.
   assert.match(await run('pub suspends fnc main(): int { return 1 ^^ 2; }', 'E_UNSUPPORTED'),

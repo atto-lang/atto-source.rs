@@ -7,11 +7,11 @@
 // address the bump heap.
 //
 // Runtime root slots (`__rt`): 1 current task, 2 first task, 3 last task,
-// 4 progress flag, 5 virtual clock (ms), 6 last Rx item.
+// 4 progress flag, 5 virtual clock (ms), 6 last Rx item, 7 span opens, 8 span closes.
 //
-// Task record (72 bytes): 0 done, 8 value, 16 status (0 new, 1 suspended,
+// Task record (80 bytes): 0 done, 8 value, 16 status (0 new, 1 suspended,
 // 2 finished), 24 entry closure, 32 frame-stack base, 40 saved frame-stack
-// top, 48 next task, 56 wake time, 64 deadline. A task is also a Future:
+// top, 48 next task, 56 wake time, 64 deadline, 72 active span guard stack. A task is also a Future:
 // the first two words are the Future layout.
 
 fnc __box(int tag, int v): int {
@@ -111,7 +111,7 @@ suspends fnc __await(int f): int {
 // ------------------------------------------------------------------- tasks
 
 fnc __task_spawn(int clo): int {
-  val t = __alloc(72);
+  val t = __alloc(80);
   __store(t, 24, clo);
   __store(t, 32, __alloc(4096));
   if __rt(2) == 0 then
@@ -198,9 +198,11 @@ fnc __sched(int main): int {
       done
       if limit != 0 then
         if wake == 0 then
+          __span_cancel_all();
           __panic(7);
         fi
-        if limit < wake then
+        if limit <= wake then
+          __span_cancel_all();
           __panic(7);
         fi
       fi
@@ -221,6 +223,10 @@ fnc __main(int clo): int {
 }
 
 suspends fnc __sleep(int ms): void {
+  if ms < 0 then
+    __span_cancel_all();
+    __panic(7);
+  fi
   __store(__rt(1), 56, __rt(5) + ms);
   __suspend();
   __store(__rt(1), 56, 0);
@@ -228,6 +234,12 @@ suspends fnc __sleep(int ms): void {
 }
 
 fnc __deadline_push(int ms): int {
+  // 0 is the unset deadline sentinel. Reject a zero or negative scope
+  // before changing task state, closing any previously acquired guards.
+  if ms <= 0 then
+    __span_cancel_all();
+    __panic(7);
+  fi
   val t = __rt(1);
   val old = __load(t, 64);
   let limit = __rt(5) + ms;
@@ -382,11 +394,58 @@ fnc __actor_stop(int a): void {
 
 // --------------------------------------------------------------- telemetry
 // Span (24 bytes): 0 name, 8 attribute count, 16 closed.
+// Guard (24 bytes): 0 span handle (cleared on release), 8 next, 16 owning task.
+// Root slots 7 and 8 are observable via the guest's exported linear memory,
+// allowing an actual browser test to assert cleanup counts, including traps.
 
 fnc __span_new(int name): int {
   val s = __alloc(24);
   __store(s, 0, name);
+  __set_rt(7, __rt(7) + 1);
   return s;
+}
+
+fnc __span_enter(int s): int {
+  if __load(s, 16) != 0 then __panic(12); fi
+  val guard = __alloc(24);
+  __store(guard, 0, s);
+  val t = __rt(1);
+  __store(guard, 16, t);
+  if t != 0 then
+    __store(guard, 8, __load(t, 72));
+    __store(t, 72, guard);
+  fi
+  return guard;
+}
+
+fnc __span_exit(int guard): void {
+  val span = __load(guard, 0);
+  if span == 0 then __panic(12); fi
+  val t = __load(guard, 16);
+  if t != 0 then
+    if __load(t, 72) != guard then __panic(12); fi
+    __store(t, 72, __load(guard, 8));
+  fi
+  __store(guard, 0, 0);
+  __span_close(span);
+}
+
+fnc __span_cancel_all(): void {
+  let t = __rt(2);
+  while t != 0 do
+    let g = __load(t, 72);
+    while g != 0 do
+      val next = __load(g, 8);
+      val span = __load(g, 0);
+      if span != 0 then
+        __store(g, 0, 0);
+        __span_close(span);
+      fi
+      g = next;
+    done
+    __store(t, 72, 0);
+    t = __load(t, 48);
+  done
 }
 
 fnc __span_attr(int s, int key, int value): void {
@@ -397,7 +456,9 @@ fnc __span_attr(int s, int key, int value): void {
 }
 
 fnc __span_close(int s): void {
+  if __load(s, 16) != 0 then __panic(12); fi
   __store(s, 16, 1);
+  __set_rt(8, __rt(8) + 1);
 }
 
 // ---------------------------------------------------------------------- rx
