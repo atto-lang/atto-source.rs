@@ -200,13 +200,15 @@ const UNSUPPORTED_TYPES: &[&str] = &[
 ];
 
 // Compiler-owned ownership/synchronization intrinsics; not executable yet.
+// Cell and RefCell remain valid *user class names* in the existing language.
+// Their generic synchronization behavior is not granted by this policy.
 const UNLOWERED_OWNERSHIP_TYPES: &[&str] = &[
     "Atomic", "AtomicRef", "AtomicBool", "AtomicInt", "AtomicLong",
     "AtomicI8", "AtomicI16", "AtomicI32", "AtomicI64",
     "AtomicU8", "AtomicU16", "AtomicU32", "AtomicU64",
     "Arc", "Weak", "Box", "Rc",
     "Mutex", "RwLock", "MutexGuard", "RwLockReadGuard", "RwLockWriteGuard",
-    "UnsafeCell", "Cell", "RefCell",
+    "UnsafeCell",
 ];
 
 pub fn is_unlowered_ownership_intrinsic(name: &str) -> bool {
