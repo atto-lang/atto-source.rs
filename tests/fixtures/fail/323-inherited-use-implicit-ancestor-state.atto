@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+define class Animal as pub int age: 7; end
+define class Dog extends Animal as end
+define class Hybrid extends Dog as use Dog.age as dog_age; end
+pub fnc main(): int { return 0; }
