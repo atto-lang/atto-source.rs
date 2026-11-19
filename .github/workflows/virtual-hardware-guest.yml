@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - 'tests/virtual_hardware_guest.rs'
+      - 'tests/virtual_hardware_actor_guest.rs'
       - 'tests/virtual-hardware/**'
       - '.github/workflows/virtual-hardware-guest.yml'
 permissions:
