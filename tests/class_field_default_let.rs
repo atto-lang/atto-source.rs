@@ -155,7 +155,7 @@ fn bare_let_and_explicit_let_both_admit_constructor_assignment() {
     for src in [source.to_owned(),
         source.replace("pub int count = 1;", "pub let int count = 1;")] {
         let guest = compile(&src).expect("constructor may assign let field");
-        assert_eq!(&guest[..8], b"\\0asm\\x01\\0\\0\\0");
+        assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
     }
     // Explicit val retains immutable binding semantics.
     let fixed = source.replace("pub int count = 1;", "pub val int count = 1;");
