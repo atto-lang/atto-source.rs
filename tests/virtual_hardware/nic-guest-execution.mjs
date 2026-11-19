@@ -15,7 +15,7 @@ const repo = resolve(here, '../../..');
 const compiler = resolve(process.env.ATTOC || join(repo, 'target/release/attoc'));
 const manifest = JSON.parse(readFileSync(join(here, 'nic/snapshot.json'), 'utf8'));
 const gitBlob = bytes => createHash('sha1')
-  .update(Buffer.concat([Buffer.from('blob ' + bytes.length + '\\0'), bytes]))
+  .update(Buffer.concat([Buffer.from('blob ' + bytes.length + String.fromCharCode(0)), bytes]))
   .digest('hex');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const fixture = [];
@@ -94,7 +94,7 @@ try {
     const r = run(rejectSource, out);
     assert.equal(r.status, 1, 'unverified KVM call must be rejected');
     assert.ok(!existsSync(out), 'rejected source emitted Wasm');
-    const found = r.stderr.match(/\\bE_[A-Z0-9_]+\\b/);
+    const found = r.stderr.match(/E_[A-Z0-9_]+/);
     assert.ok(found, 'missing typed compiler diagnostic: ' + r.stderr);
     if (diagnostic !== null) assert.equal(found[0], diagnostic);
     diagnostic = found[0];
