@@ -1,0 +1,13 @@
+// expect-error: E_MATCH
+// java: rejects
+define enum State as
+  Open
+  Closed
+  Paused
+end
+pub fnc main(): int {
+  match State.Open over
+    on State.Open -> { return 1; }
+    on State.Closed -> { return 2; }
+  end
+}
