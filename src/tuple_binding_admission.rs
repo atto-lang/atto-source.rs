@@ -108,6 +108,10 @@ fn parse_one(toks: &[Token], start: usize, outer: Option<BindingMode>) -> R<(Tup
         // Preserve annotations, never silently drop an explicit type.
         let mut annotation = None;
         if tok(toks, i) == Some(&Tok::Colon) {
+            if name.is_none() {
+                return Err(fail(toks, i, "E_SYNTAX",
+                    "discard '_' cannot carry a type annotation"));
+            }
             i += 1;
             let begin = i;
             let mut generics = 0usize;
