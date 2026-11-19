@@ -1,0 +1,4 @@
+// expect-error: E_TYPE
+// A call-site trap returns Option<int>, never the bare int required by main.
+fnc checked_id(int id): int { return id; }
+pub fnc main(): int { return trap checked_id(5); }

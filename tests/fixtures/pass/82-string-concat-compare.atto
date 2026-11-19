@@ -1,0 +1,52 @@
+// Java: '+' joins two strings (no implicit conversion of other operands) and
+// <, <=, >, >= order strings like String.compareTo (UTF-16 code units).
+// expect-exit: 0
+// expect-stdout: ab
+// expect-stdout: xyz
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: abcd
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: 0123456789
+fnc cat(string a, string b): string { return a + b; }
+pub fnc main(): int {
+  val s = "a" + "b";
+  stdio.println(s);
+  stdio.println(cat("x", "yz"));
+  stdio.println("a" < "b");
+  stdio.println("b" < "a");
+  stdio.println("abc" <= "abd");
+  stdio.println("Z" < "a");
+  stdio.println("é" > "z");
+  stdio.println("" < "a");
+  val t = s + "c" + "d";
+  stdio.println(t);
+  stdio.println(t eq "abcd");
+  stdio.println("𝄞" < "￼");
+  stdio.println("ab" > "abc");
+  stdio.println("ab" >= "ab");
+  let acc: string = "";
+  for (let i = 0; i < 10; i++) do
+    match i
+      0 -> { acc = acc + "0"; }
+      1 -> { acc = acc + "1"; }
+      2 -> { acc = acc + "2"; }
+      3 -> { acc = acc + "3"; }
+      4 -> { acc = acc + "4"; }
+      5 -> { acc = acc + "5"; }
+      6 -> { acc = acc + "6"; }
+      7 -> { acc = acc + "7"; }
+      8 -> { acc = acc + "8"; }
+      _ -> { acc = acc + "9"; }
+    end
+  done
+  stdio.println(acc);
+  return 0;
+}

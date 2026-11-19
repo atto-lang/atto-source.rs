@@ -1,0 +1,8 @@
+// LLVM design admits payload variants; the browser compiler does not yet.
+// expect-error: E_UNSUPPORTED
+// java: rejects
+define enum Message as
+    Start(int job)
+    Stop
+end
+pub fnc main(): int { return 0; }

@@ -1,0 +1,12 @@
+// expect-exit: 42
+pure fnc factorialish(int n): int {
+    if n < 2 then return 1; fi
+    return n * factorialish(n - 1);
+}
+pure fnc add_four(int n): int {
+    val extra = 4;
+    return n + extra;
+}
+pub fnc main(): int {
+    return add_four(factorialish(4) + 14);
+}

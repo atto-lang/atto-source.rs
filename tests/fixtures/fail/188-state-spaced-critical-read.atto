@@ -1,0 +1,8 @@
+// expect-error: E_SYNTAX
+define state Counter as
+  state { let int count: 0; }
+  pub read_count(): int {
+    return handle_state(critical - read |s| -> s.count);
+  }
+end
+pub fnc main(): int { return 0; }

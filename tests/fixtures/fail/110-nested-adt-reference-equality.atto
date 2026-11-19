@@ -1,0 +1,10 @@
+// expect-error: E_UNSUPPORTED
+fnc wrapped(): Option<Result<int,string>> { return Some(Ok(1)); }
+pub fnc main(): int {
+  val a = wrapped();
+  val b = wrapped();
+  if a == b then
+    return 1;
+  fi
+  return 0;
+}

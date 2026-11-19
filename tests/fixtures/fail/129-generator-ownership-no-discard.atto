@@ -1,0 +1,7 @@
+// expect-error: E_GENERATOR_OWNERSHIP
+// java: rejects
+fnc *gen values(): Generator<int> { yield 1; }
+pub fnc main(): int {
+  val gen = values();
+  return 0;
+}

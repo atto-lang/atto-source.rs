@@ -1,0 +1,25 @@
+// LANGUAGE PREVIEW — compiles and runs in this browser playground.
+// Runs on the pinned Rust/Wasm compiler; Java/LLVM parity is not claimed.
+fnc classify(int value): int {
+  return match value over
+    on 0 -> { return 0; }
+    on 1 -> { return 1; }
+    on n when n > 1 -> { return 2; }
+    on _ -> { return -1; }
+  end
+}
+
+fnc xyx(int value): int {
+  return match value over
+    on 0 -> 0,
+    on 1 -> 1,
+    on n when n > 1 -> 2,
+    on _ -> -1,
+  end
+}
+
+pub fnc main(): int {
+  stdio.println(classify(7)); // 2
+  stdio.println(xyx(7));      // 2
+  return 0;
+}

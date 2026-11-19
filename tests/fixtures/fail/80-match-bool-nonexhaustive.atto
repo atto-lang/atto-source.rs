@@ -1,0 +1,9 @@
+// expect-error: E_MATCH
+// java: rejects
+pub fnc main(): int {
+  val b = false;
+  match b
+    true -> { stdio.println("T"); }
+  end
+  return 0;
+}

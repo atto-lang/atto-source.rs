@@ -1,0 +1,10 @@
+// expect-error: E_TYPE
+// A binding guard is valid, but its predicate must be bool.
+// java: rejects
+pub fnc main(): int {
+  match 3
+    k when 42 -> { stdio.println(k); }
+    _ -> { stdio.println(0); }
+  end
+  return 0;
+}

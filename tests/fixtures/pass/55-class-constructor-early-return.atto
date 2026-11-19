@@ -1,0 +1,16 @@
+// expect-exit: 42
+define class C as
+    mut int x = 1;
+    constructor(int v) {
+        if v > 0 then
+            self.x = v;
+            return;
+        fi
+        self.x = 0;
+    }
+    pub get(): int { return self.x; }
+end
+
+pub fnc main(): int {
+    return new C(42).get();
+}

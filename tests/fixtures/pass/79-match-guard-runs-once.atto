@@ -1,0 +1,16 @@
+// A guard runs only when its pattern matched.
+// expect-exit: 0
+// expect-stdout: g
+// expect-stdout: second
+fnc g(): bool {
+  stdio.println("g");
+  return false;
+}
+pub fnc main(): int {
+  match 2
+    1 when g() -> { stdio.println("first"); }
+    2 when g() -> { stdio.println("never"); }
+    _ -> { stdio.println("second"); }
+  end
+  return 0;
+}

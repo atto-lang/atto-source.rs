@@ -1,0 +1,18 @@
+// Printing an object renders every field in declaration order (Java format).
+// expect-exit: 0
+// expect-stdout: P{a=1, b=true, c=-3, n=9}
+// expect-stdout: P{a=1, b=true, c=-3, n=9}|
+define class P as
+    int a: 1
+    pub bool b: true
+    mut int c = -3;
+    n: int = 9;
+end
+
+pub fnc main(): int {
+    val p = new P();
+    stdio.println(p);
+    stdio.print(p);
+    stdio.println("|");
+    return 0;
+}

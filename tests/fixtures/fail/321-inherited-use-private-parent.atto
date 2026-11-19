@@ -1,0 +1,5 @@
+// expect-error: E_ALIAS_VISIBILITY
+// java: rejects
+define class Dog as private int age: 5; end
+define class Hybrid extends Dog as use Dog.age as dog_age; end
+pub fnc main(): int { return 0; }

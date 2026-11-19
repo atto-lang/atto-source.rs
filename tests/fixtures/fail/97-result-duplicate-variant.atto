@@ -1,0 +1,10 @@
+// expect-error: E_MATCH
+// java: rejects
+fnc value(): Result<int,string> { return Ok(4); }
+pub fnc main(): int {
+  match value() over
+    on Ok(n) -> { return n; }
+    on Ok(m) -> { return m; }
+    on Err(e) -> { return 0; }
+  end
+}

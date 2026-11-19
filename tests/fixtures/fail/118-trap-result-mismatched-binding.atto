@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+fnc answer(): Result<int,string> { return Ok(42); }
+pub fnc main(): int {
+  val Option<int> outcome = trap answer();
+  return 0;
+}

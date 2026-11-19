@@ -1,0 +1,7 @@
+// expect-error: E_TYPE
+fnc value(): Result<int,string> { return Ok(5); }
+fnc compute(): Option<int> {
+  val x: int = value()?;
+  return Some(x);
+}
+pub fnc main(): int { return 0; }

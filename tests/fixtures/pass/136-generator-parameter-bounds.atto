@@ -1,0 +1,14 @@
+// expect-exit: 6
+// java: llvm-design
+fnc *gen count_to(int limit): Generator<int> {
+  for (let i = 1; i <= limit; i++) do
+    yield i;
+  done
+}
+pub fnc main(): int {
+  let sum = 0;
+  for value in count_to(0) do sum += 100; done
+  for value in count_to(-7) do sum += 100; done
+  for value in count_to(3) do sum += value; done
+  return sum;
+}

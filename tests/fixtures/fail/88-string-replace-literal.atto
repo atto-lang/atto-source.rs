@@ -1,0 +1,7 @@
+// expect-error: E_UNSUPPORTED
+// java: accepts
+// replace_literal allocates a new string; not lowered yet
+pub fnc main(): int {
+  stdio.println("aXb".replace_literal("X", "-"));
+  return 0;
+}

@@ -1,0 +1,7 @@
+// expect-error: E_ARITY
+// java: rejects
+define class P as
+    mut int x = 5;
+    constructor(int a) { self.x = a; }
+end
+pub fnc main(): int { val p = new P(); return 0; }

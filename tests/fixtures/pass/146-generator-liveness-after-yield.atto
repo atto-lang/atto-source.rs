@@ -1,0 +1,14 @@
+// expect-exit: 18
+// java: llvm-design
+// The first scalar becomes dead after the first yield; the second stays live.
+fnc *gen selective(): Generator<int> {
+  let first = 7;
+  let second = 11;
+  yield first;
+  yield second;
+}
+pub fnc main(): int {
+  let sum = 0;
+  for value in selective() do sum += value; done
+  return sum;
+}

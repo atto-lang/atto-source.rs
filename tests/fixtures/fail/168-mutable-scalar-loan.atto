@@ -1,0 +1,7 @@
+// expect-error: E_BORROW
+// java: rejects
+pub fnc main(): int {
+ let amount = 42;
+ val writer = borrow! mut amount;
+ return writer;
+}

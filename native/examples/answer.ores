@@ -1,0 +1,4 @@
+// Proof of concept, not complete language grammar.
+static fnc answer() -> int {
+    return 40 + 2;
+}

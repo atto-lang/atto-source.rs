@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+// java: rejects
+fnc scalar(): int { return 5; }
+fnc *gen outer(): Generator<int> { yield* scalar(); }
+pub fnc main(): int { return 0; }

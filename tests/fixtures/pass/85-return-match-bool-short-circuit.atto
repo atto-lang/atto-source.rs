@@ -1,0 +1,18 @@
+// Complete bool cases need no default, and only the chosen expression runs.
+// java: rejects
+// expect-exit: 23
+// expect-stdout: selected
+fnc selected(): int {
+  stdio.println("selected");
+  return 23;
+}
+fnc skipped(): int {
+  stdio.println("skipped");
+  return 99;
+}
+pub fnc main(): int {
+  return match true over
+    on false -> skipped(),
+    on true -> selected(),
+  end
+}

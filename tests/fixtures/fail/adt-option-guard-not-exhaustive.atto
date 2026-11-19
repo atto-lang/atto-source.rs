@@ -1,0 +1,9 @@
+// expect-error: E_MATCH
+// java: rejects
+fnc option(): Option<int> { return Some(42); }
+pub fnc main(): int {
+  match option() over
+    on Some(n) when n > 0 -> { return n; }
+    on None -> { return 0; }
+  end
+}

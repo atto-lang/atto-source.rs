@@ -1,0 +1,9 @@
+// expect-error: E_STATE_BORROW
+// A same-type private-field access is NOT an authorized protected-state lease.
+define state Counter as
+  state { let int count: 0; }
+  pub read_other(Counter other): int {
+    return other.count;
+  }
+end
+pub fnc main(): int { return 0; }

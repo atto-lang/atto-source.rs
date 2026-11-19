@@ -1,0 +1,11 @@
+// expect-panic: 1
+// java: llvm-design
+// Checked overflow cannot wrap or leave a resumed generator usable.
+fnc *gen overflowing(): Generator<int> {
+  let value = 9223372036854775807;
+  yield value + 1;
+}
+pub fnc main(): int {
+  for n in overflowing() do return n; done
+  return 0;
+}

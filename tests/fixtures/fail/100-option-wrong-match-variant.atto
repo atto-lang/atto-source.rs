@@ -1,0 +1,9 @@
+// expect-error: E_TYPE
+// java: rejects
+fnc value(): Option<int> { return Some(2); }
+pub fnc main(): int {
+  match value() over
+    on Ok(n) -> { return n; }
+    on None -> { return 0; }
+  end
+}

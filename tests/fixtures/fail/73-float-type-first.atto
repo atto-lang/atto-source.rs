@@ -1,0 +1,7 @@
+// expect-error: E_SYNTAX
+// java: rejects
+// only int, bool and string have the type-first immutable binding form
+pub fnc main(): int {
+  float f = 1.5;
+  return 0;
+}

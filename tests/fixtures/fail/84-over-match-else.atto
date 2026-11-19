@@ -1,0 +1,9 @@
+// expect-error: E_SYNTAX
+// java: rejects
+pub fnc main(): int {
+  match 4 over
+    on 4 -> { stdio.println("a"); }
+    else -> { stdio.println("b"); }
+  end
+  return 0;
+}

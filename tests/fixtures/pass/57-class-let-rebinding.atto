@@ -1,0 +1,10 @@
+// expect-exit: 1
+define class P as
+    pub int x: 1
+end
+
+pub fnc main(): int {
+    let p = new P();
+    p = new P();
+    return p.x;
+}

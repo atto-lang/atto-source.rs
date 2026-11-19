@@ -1,0 +1,4 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// java: rejects
+fnc value(): Result<bool,string> { return Ok(true); }
+pub fnc main(): int { return 0; }

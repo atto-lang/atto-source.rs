@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+// Parameterized count loops are supported; arbitrary argument computation is not.
+fnc *gen base(int limit): Generator<int> {
+  for (let i = 1; i <= limit; i++) do yield i; done
+}
+fnc *gen nested(): Generator<int> { yield* base(4 + 1); }
+pub fnc main(): int { return 0; }

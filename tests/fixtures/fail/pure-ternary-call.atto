@@ -1,0 +1,4 @@
+// expect-error: E_PURE
+fnc impure(int n): int { stdio.println(n); return n; }
+pure fnc hidden(int n): int { return n > 0 ? n : impure(n); }
+pub fnc main(): int { return hidden(42); }

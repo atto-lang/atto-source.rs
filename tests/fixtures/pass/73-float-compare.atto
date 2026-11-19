@@ -1,0 +1,28 @@
+// expect-exit: 3
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: Infinity
+// expect-stdout: NaN
+// expect-stdout: 2.25
+fnc bigger(float a, float b): float {
+  return a > b ? a : b;
+}
+pub fnc main(): int {
+  val a = 1.5;
+  stdio.println(a < 2.0);
+  stdio.println(a eq 1.5);
+  stdio.println(a neq 1.5);
+  stdio.println(2 >= a);
+  stdio.println(1.0 / 0.0);
+  stdio.println(0.0 / 0.0);
+  stdio.println(bigger(2.25, a));
+  let n = 0;
+  let x = 0.5;
+  while x < 4.0 do
+    x = x * 2.0;
+    n = n + 1;
+  done
+  return n;
+}

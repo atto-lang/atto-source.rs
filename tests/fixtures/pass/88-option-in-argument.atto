@@ -1,0 +1,10 @@
+// expect-exit: 9
+fnc unwrap(v: Option<int>): int {
+  match v over
+    on None -> { return 0; }
+    on Some(n) -> { return n; }
+  end
+}
+pub fnc main(): int {
+  return unwrap(Some(9));
+}

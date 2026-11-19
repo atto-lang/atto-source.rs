@@ -1,0 +1,38 @@
+name: Actor persistence parser and scalar codec (no disk runtime)
+on:
+  pull_request:
+    paths:
+      - 'src/ast.rs'
+      - 'src/parser.rs'
+      - 'src/check.rs'
+      - 'src/actor_persistence.rs'
+      - 'src/lib.rs'
+      - 'tests/actor_persistence_frontend.rs'
+      - '.github/workflows/actor-persistence-front-end.yml'
+  push:
+    paths:
+      - 'src/ast.rs'
+      - 'src/parser.rs'
+      - 'src/check.rs'
+      - 'src/actor_persistence.rs'
+      - 'src/lib.rs'
+      - 'tests/actor_persistence_frontend.rs'
+      - '.github/workflows/actor-persistence-front-end.yml'
+permissions:
+  contents: read
+jobs:
+  frontend-scalar-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Rust version
+        run: rustc --version && cargo --version
+      - name: Actor frontend/codec tests
+        run: cargo test --locked --test actor_persistence_frontend
+      - name: Existing compiler regression tests
+        run: cargo test --locked --lib
+      - name: Evidence boundary
+        run: echo 'RUST_HOST_FRONTEND_AND_CODEC_ONLY - no durable disk runtime, fsync or revival tested'

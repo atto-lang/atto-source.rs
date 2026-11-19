@@ -1,0 +1,9 @@
+// expect-error: E_MATCH
+// java: rejects
+fnc f(int n): int {
+  return match n over
+    default -> 1,
+    on 0 -> 0,
+  end
+}
+pub fnc main(): int { return f(3); }

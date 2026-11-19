@@ -1,0 +1,5 @@
+// expect-exit: 42
+pub fnc main(): int {
+    val answer = || -> 42;
+    return answer();
+}

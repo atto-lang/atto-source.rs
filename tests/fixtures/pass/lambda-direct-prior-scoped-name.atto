@@ -1,0 +1,6 @@
+// expect-exit: 42
+pub fnc main(): int {
+    block { val double = 7; }
+    val double = |n| : int -> n * 2;
+    return double(21);
+}

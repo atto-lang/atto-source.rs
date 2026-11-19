@@ -1,0 +1,152 @@
+//! Exact-source Atto virtualization fixtures compiled to WASM && actually executed.
+//! Rust is the test runner only; device logic is 1:1 source from four PRs.
+//! Captured Git blob identities are checked by the companion workflow.
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+const NIC: &str = include_str!("virtual-hardware/nic.atto");
+const ROUTER: &str = include_str!("virtual-hardware/router.atto");
+const SWITCH: &str = include_str!("virtual-hardware/switch.atto");
+const MODEM: &str = include_str!("virtual-hardware/modem.atto");
+
+// The Wasm guest must run every positive && adversarial predicate itself.
+// Do not substitute a Rust computation for any Atto function result.
+const NIC_MAIN: &str = r#"
+if !valid_ethernet_frame_with_vlan(60, 1500, true, 10) &&
+   valid_ethernet_frame_with_vlan(64, 1500, true, 10) &&
+   !can_receive_guest_frame_tagged(64, 60, 124, 64, 1500, true, 10, 0, 8, true) &&
+   can_receive_guest_frame_tagged(64, 64, 128, 64, 1500, true, 10, 0, 8, true) &&
+   guest_region_contains(64, 60, 124) &&
+   !guest_region_contains(64, 60, 123) &&
+   guest_address_aligned(64, 64) &&
+   !guest_address_aligned(65, 64) &&
+   can_receive_guest_frame(64, 60, 124, 64, 1500, 0, 8, true) &&
+   !can_receive_guest_frame(64, 60, 123, 64, 1500, 0, 8, true) then
+  return 41;
+fi
+return -1;
+"#;
+const ROUTER_MAIN: &str = r#"
+if may_forward_on_canonical_route(3232235777, 1500, 20, 2, 3232235776, 24, 3, 1500, true) &&
+   !may_forward_on_canonical_route(3232235777, 1500, 20, 2, 3232235777, 24, 3, 1500, true) &&
+   !may_forward_on_canonical_route(3232235777, 1500, 20, 2, 3232236032, 24, 3, 1500, true) &&
+   canonical_ipv4_network(3232235776, 24) &&
+   !canonical_ipv4_network(3232235777, 24) &&
+   !canonical_ipv4_network(1, 0) &&
+   may_forward_on_link(3232235777, 1500, 20, 2, 0, 1500, true) &&
+   !may_forward_on_link(3232235777, 1501, 20, 2, 0, 1500, true) &&
+   !may_forward_on_link(3758096385, 20, 20, 64, 0, 1500, true) &&
+   !may_forward_on_link(2130706433, 20, 20, 64, 0, 1500, true) &&
+   !may_forward_on_link(2851995649, 20, 20, 64, 0, 1500, true) &&
+   select_canonical_egress_port(3232235777, 0, 0, 1, 3232235776, 24, 3) == 3 then
+  return 42;
+fi
+return -1;
+"#;
+const SWITCH_MAIN: &str = r#"
+if can_admit_vlan_bound_ingress_frame(64, 1500, 0, 2, 10, true, 10, true) &&
+   !can_admit_vlan_bound_ingress_frame(64, 1500, 0, 2, 10, true, 20, true) &&
+   !can_admit_vlan_bound_ingress_frame(60, 1500, 0, 2, 10, false, 10, true) &&
+   can_flood_vlan_bound_frame(2199023255553, 64, 1500, true, 10, 0, 10, 1, 10, 2, true, true) &&
+   !can_flood_vlan_bound_frame(2199023255553, 64, 1500, true, 20, 0, 10, 1, 10, 2, true, true) &&
+   !can_flood_vlan_bound_frame(1652522221568, 64, 1500, true, 10, 0, 10, 1, 10, 2, true, true) &&
+   can_admit_ingress_frame(60, 1500, 0, 2, 1, false, true) &&
+   !can_admit_ingress_frame(60, 1500, 0, 2, 1, true, true) &&
+   !can_admit_ingress_frame(60, 1500, 0, 2, 4095, false, true) &&
+   valid_unicast_destination_mac(2199023255553) &&
+   !valid_unicast_destination_mac(0) &&
+   select_safe_egress_port(0, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == -1 &&
+   select_safe_egress_port(2199023255553, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == 1 &&
+   select_safe_egress_port(1652522221568, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == -1 &&
+   select_safe_egress_port(281474976710655, 2, 2, 1, 2199023255553, 1, 1, 0, 300) == -1 then
+  return 43;
+fi
+return -1;
+"#;
+const MODEM_MAIN: &str = r#"
+if can_ack_session_ticket(4, 64, 64, 2, 2, 1, 1) &&
+   !can_ack_session_ticket(4, 64, 64, 2, 2, 1, 2) &&
+   can_send_session_ticket(4, 64, 0, 1024, 115200, 2, 2, 1, 1) &&
+   !can_send_session_ticket(4, 64, 0, 1024, 115200, 2, 2, 1, 2) &&
+   session_matches(2, 2) &&
+   !session_matches(1, 2) &&
+   can_transmit_session_octet(4, 255, 0, 8, true, true, 2, 2) &&
+   !can_transmit_session_octet(4, 255, 0, 8, true, true, 1, 2) &&
+   can_ack_session_bytes(4, 64, 64, 2, 2) &&
+   !can_ack_session_bytes(4, 64, 64, 1, 2) &&
+   valid_serial_config(115200, 8, 0, 1) &&
+   !valid_serial_config(115201, 8, 0, 1) &&
+   free_modem_fifo(0, 8) == 8 &&
+   free_modem_fifo(8, 8) == 0 &&
+   next_modem_fifo_slot(7, 8) == 0 &&
+   can_transmit_octet(4, 255, 0, 8, true, true) &&
+   !can_transmit_octet(4, 256, 0, 8, true, true) &&
+   can_admit_at_command(1, 2, 0, 8, true, true) &&
+   !can_admit_at_command(4, 2, 0, 8, true, true) &&
+   !can_emit_data(4, 115200, 1, 0, 8192, 6, 7) &&
+   next_modem_state(1, 2, 6, 7) == -1 then
+  return 44;
+fi
+return -1;
+"#;
+
+fn run_exact_guest(name: &str, source: &str, body: &str, expected: i64) {
+    let guest = format!("{source}\npub fnc main(): int {{\n{body}\n}}\n");
+    let wasm = atto_compiler::compile(&guest)
+        .unwrap_or_else(|d| panic!("{name}: Atto compiler rejected exact PR source: {d}"));
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "{name}: invalid Wasm header");
+    assert_eq!(wasm, atto_compiler::compile(&guest).expect("determinism"),
+               "{name}: nondeterministic Wasm");
+    let runner = r#"
+const fs = require('node:fs');
+const wasm = fs.readFileSync(0);
+if (!WebAssembly.validate(wasm)) throw Error('invalid guest Wasm');
+const module = new WebAssembly.Module(wasm);
+const allowed = new Set(['print_i64','print_bool','print_str','print_newline','print_f64',
+  'actor_spawn','actor_send','state_register','state_enter','state_leave']);
+for (const imp of WebAssembly.Module.imports(module))
+  if (imp.module !== 'atto' || !allowed.has(imp.name))
+    throw Error('unrecognized host import: '+imp.module+'.'+imp.name);
+const deny = () => { throw Error('unexpected host effect'); };
+const host = Object.fromEntries([...allowed].map(name => [name, deny]));
+const inst = new WebAssembly.Instance(module, {atto:host});
+const got = inst.exports.main();
+if (String(got) !== process.argv[1]) throw Error('guest returned '+got+' expected '+process.argv[1]);
+if (inst.exports.panic_code.value !== 0) throw Error('guest panicked');
+console.log('REAL_ATTO_GUEST_EXECUTED '+String(got)+' panic=0');
+"#;
+    let mut child = Command::new("node").args(["-e", runner, &expected.to_string()])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().expect("Node.js required for guest Wasm execution");
+    child.stdin.take().expect("Wasm input")
+        .write_all(&wasm).expect("send guest Wasm to Node");
+    let output = child.wait_with_output().expect("collect guest execution");
+    assert!(output.status.success(), "{name}: real compiled guest failed: {}",
+            String::from_utf8_lossy(&output.stderr));
+    let out = String::from_utf8(output.stdout).expect("UTF-8 guest evidence");
+    assert!(out.contains(&format!("REAL_ATTO_GUEST_EXECUTED {expected} panic=0")),
+            "{name}: missing real execution evidence: {out}");
+    println!("VHW_GUEST name={name} result={expected} panic=0 bytes={} kind=SOURCE_COMPILED_WASM_GUEST",
+             wasm.len());
+
+}
+
+#[test]
+fn nic_guest() {
+    run_exact_guest("nic", NIC, NIC_MAIN, 41);
+}
+
+#[test]
+fn router_guest() {
+    run_exact_guest("router", ROUTER, ROUTER_MAIN, 42);
+}
+
+#[test]
+fn switch_guest() {
+    run_exact_guest("switch", SWITCH, SWITCH_MAIN, 43);
+}
+
+#[test]
+fn modem_guest() {
+    run_exact_guest("modem", MODEM, MODEM_MAIN, 44);
+}

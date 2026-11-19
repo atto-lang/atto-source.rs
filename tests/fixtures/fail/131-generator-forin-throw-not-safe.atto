@@ -1,0 +1,10 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+// Guest exception unwinding must close iterators before this is executable.
+fnc *gen numbers(): Generator<int> { yield 3; }
+pub fnc main(): int {
+  for value in numbers() do
+    throw "not yet supported";
+  done
+  return 0;
+}

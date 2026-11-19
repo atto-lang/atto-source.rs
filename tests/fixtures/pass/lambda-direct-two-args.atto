@@ -1,0 +1,5 @@
+// expect-exit: 42
+pub fnc main(): int {
+    val add = |a,b| : int -> a + b;
+    return add(20, 22);
+}

@@ -1,0 +1,4 @@
+pub fnc main(): int {
+    let (a, const r, const mut j) = (1,2,3);
+    return 0;
+}

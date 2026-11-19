@@ -1,0 +1,9 @@
+// A mailbox handler takes ActorMail<T> and returns void, not receive(int): int.
+// expect-error: E_TYPE
+// java: rejects
+define actor Worker as
+    receive(int value): int {
+        return value + 2;
+    }
+end
+pub fnc main(): int { return 0; }

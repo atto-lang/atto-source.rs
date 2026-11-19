@@ -1,0 +1,20 @@
+// expect-exit: 42
+fnc f_colon() : int {
+    return 5;
+}
+fnc f_colon_arrow() : int -> {
+    return 5;
+}
+fnc f_arrow() -> int {
+    return 5;
+}
+fnc f_end() -> int
+    let int x = 3, x + 2
+end
+fnc f_delimited() -> int ::
+    let int x = 3,
+    x + 2
+end
+pub fnc main(): int {
+    return f_colon() + f_colon_arrow() + f_arrow() + f_end() + f_delimited() + 17;
+}

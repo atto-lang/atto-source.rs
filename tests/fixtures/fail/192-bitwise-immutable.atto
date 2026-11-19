@@ -1,0 +1,6 @@
+// expect-error: E_IMMUTABLE
+pub fnc main(): int {
+    val x: int = 12;
+    x |= 1;
+    return x;
+}

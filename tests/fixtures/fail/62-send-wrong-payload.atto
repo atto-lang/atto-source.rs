@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+// java: rejects
+define actor Worker as
+    receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { val w = spawn Worker(); w.send(true); return 0; }

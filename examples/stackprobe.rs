@@ -31,6 +31,23 @@ fn main() {
                 arms.join("\n")
             )
         }),
+        ("match arms", {
+            let arms: Vec<String> = (1..h - 4).map(|i| format!("{i} -> {{ return {i}; }}")).collect();
+            format!(
+                "pub fnc main(): int {{\nval x = 1;\nmatch x\n{}\n_ -> {{ return 0; }}\nend\n}}",
+                arms.join("\n")
+            )
+        }),
+        ("string concat chain", format!("pub fnc main(): int {{ val s = {}; return 0; }}", vec!["\"a\""; h - 3].join(" + "))),
+        ("float chain", format!("pub fnc main(): int {{ val f = {}; return 0; }}", vec!["1.5"; h - 3].join(" * "))),
+        (
+            "member chain",
+            format!("pub fnc main(): int {{ val a = 1; return a{}; }}", ".b".repeat(h - 4)),
+        ),
+        (
+            "method chain",
+            format!("pub fnc main(): int {{ val a = 1; return a{}; }}", ".b()".repeat(h - 4)),
+        ),
         (
             "ternaries",
             format!("pub fnc main(): int {{ val t = true; return {}0; }}", "t ? 1 : ".repeat(d / 2 - 4)),

@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+pub fnc main(): int {
+  val n = match 5 over
+    on _ -> 3,
+  end
+  return n;
+}

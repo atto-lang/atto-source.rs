@@ -1,0 +1,16 @@
+// expect-exit: 42
+// expect-stdout: called
+fnc read(int n): Result<int,string> {
+  stdio.println("called");
+  return Ok(n);
+}
+fnc compute(): Result<int,string> {
+  val x: int = read(40)? + 2;
+  return Ok(x);
+}
+pub fnc main(): int {
+  match compute() over
+    on Ok(value) -> { return value; }
+    on Err(message) -> { stdio.println(message); return 0; }
+  end
+}

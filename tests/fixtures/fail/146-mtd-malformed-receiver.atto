@@ -1,0 +1,3 @@
+// expect-error: E_SYNTAX
+declare actor Foo;
+mtd (Foo self) foo(int): void {}

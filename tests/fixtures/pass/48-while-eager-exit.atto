@@ -3,6 +3,10 @@
 // expect-stdout: 7
 // expect-stdout: 7
 // expect-stdout: 7
+// java: diverges
+// Java short-circuits , and |; canonical AttoLang evaluates both operands (PR #4).
+// java-stdout: 7
+// java-stdout: 7
 fnc tagged(bool b): bool {
   stdio.println(7);
   return b;

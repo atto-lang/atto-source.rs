@@ -1,0 +1,29 @@
+// Strings compare by content and use the Java reference's string members.
+// expect-exit: 0
+// expect-stdout: hello world
+// expect-stdout: x
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: pad
+// expect-stdout: true
+// expect-stdout: hello world
+fnc greet(string who): string { return who; }
+pub fnc main(): int {
+  val s: string = "hello world";
+  String t = "  pad  ";
+  stdio.println(s);
+  stdio.println(greet("x"));
+  stdio.println(s eq "hello world");
+  stdio.println(s neq "nope");
+  stdio.println(s.starts_with("hell"));
+  stdio.println(s.ends_with("x"));
+  stdio.println(s.contains_literal("o w"));
+  stdio.println(t.trim());
+  stdio.println(t.trim() eq "pad");
+  stdio.print(s);
+  stdio.println("");
+  return 0;
+}

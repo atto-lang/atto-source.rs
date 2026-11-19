@@ -1,0 +1,18 @@
+// Objects live in a fixed 1 MiB bump heap with no collector yet; exhausting
+// it panics with code 3 instead of growing memory without bound.
+// expect-panic: 3
+// expect-stdout: start
+define class Node as
+    pub int value: 1
+    pub int extra: 2
+end
+
+pub fnc main(): int {
+    stdio.println("start");
+    let total = 0;
+    for (let i = 0; i < 1000000; i++) {
+        val n = new Node();
+        total = total + n.value;
+    }
+    return total;
+}

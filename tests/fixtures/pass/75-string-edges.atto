@@ -1,0 +1,31 @@
+// expect-exit: 0
+// expect-stdout: []
+// expect-stdout: [a b]
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: 文字
+fnc show(string s): void {
+  stdio.print("[");
+  stdio.print(s);
+  stdio.println("]");
+}
+pub fnc main(): int {
+  show("   ".trim());
+  show("\t a b \n".trim());
+  stdio.println("".starts_with(""));
+  stdio.println("abc".contains_literal(""));
+  stdio.println("abc".ends_with("abc"));
+  stdio.println("ab".ends_with("abc"));
+  stdio.println("abc" eq "abd");
+  stdio.println("" eq "");
+  stdio.println("aaab".contains_literal("aab"));
+  stdio.println("ab" eq "abc");
+  stdio.println("  文字  ".trim());
+  return 0;
+}

@@ -1,0 +1,21 @@
+// expect-exit: 42
+// The outer Some payload is a Result handle passed to a typed function.
+fnc checked(): Option<Result<int,string>> { return Some(Ok(42)); }
+fnc approved(Result<int,string> r): bool {
+  match r over
+    on Ok(n) -> { return n > 0; }
+    on Err(message) -> { return false; }
+  end
+}
+pub fnc main(): int {
+  match checked() over
+    on Some(inner) when approved(inner) -> {
+      match inner over
+        on Ok(n) -> { return n; }
+        on Err(message) -> { return 0; }
+      end
+    }
+    on Some(inner) -> { return 1; }
+    on None -> { return 2; }
+  end
+}

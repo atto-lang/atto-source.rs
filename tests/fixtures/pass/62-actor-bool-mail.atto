@@ -1,0 +1,20 @@
+// expect-exit: 0
+// expect-stdout: yes
+// expect-stdout: no
+define actor W as
+    receive(ActorMail<bool> mail): void {
+        if mail.value then
+            stdio.println("yes");
+        else
+            stdio.println("no");
+        fi
+        return;
+    }
+end
+
+pub fnc main(): int {
+    val a = spawn W();
+    a.send(true);
+    a.send(false);
+    return 0;
+}

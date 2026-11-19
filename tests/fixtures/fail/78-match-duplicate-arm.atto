@@ -1,0 +1,10 @@
+// expect-error: E_MATCH
+// java: rejects
+pub fnc main(): int {
+  match 1
+    1 -> { stdio.println("a"); }
+    1 -> { stdio.println("b"); }
+    _ -> { stdio.println("c"); }
+  end
+  return 0;
+}

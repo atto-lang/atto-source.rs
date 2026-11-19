@@ -1,0 +1,9 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+  match 3
+    true -> { stdio.println("t"); }
+    _ -> { stdio.println("o"); }
+  end
+  return 0;
+}

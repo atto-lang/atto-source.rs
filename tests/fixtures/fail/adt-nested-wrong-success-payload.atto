@@ -1,0 +1,4 @@
+// expect-error: E_TYPE
+// java: rejects
+fnc nested(): Option<Result<int,string>> { return Some(Ok("wrong")); }
+pub fnc main(): int { return 0; }

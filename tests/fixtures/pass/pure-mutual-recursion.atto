@@ -1,0 +1,14 @@
+// Closed-world effect inference across a recursive pure-call cycle.
+// expect-exit: 42
+pure fnc is_even(int n): bool {
+  if n eq 0 then return true; fi
+  return is_odd(n - 1);
+}
+pure fnc is_odd(int n): bool {
+  if n eq 0 then return false; fi
+  return is_even(n - 1);
+}
+pub fnc main(): int {
+  if is_even(42) then return 42; fi
+  return 0;
+}

@@ -1,0 +1,7 @@
+// Java compares references; not admitted here yet.
+// expect-error: E_UNSUPPORTED
+// java: accepts
+define class P as
+    pub int x: 1
+end
+pub fnc main(): int { val a = new P(); val b = new P(); if a eq b then return 1; fi return 0; }

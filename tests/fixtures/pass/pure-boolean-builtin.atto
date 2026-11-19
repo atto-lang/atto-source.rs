@@ -1,0 +1,6 @@
+// expect-exit: 42
+pure fnc both(bool a, bool b): bool { return And(a, b); }
+pure fnc choose(bool ok): int {
+    if ok then return 42; else return 0; fi
+}
+pub fnc main(): int { return choose(both(true, true)); }

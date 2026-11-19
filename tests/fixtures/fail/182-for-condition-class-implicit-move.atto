@@ -1,0 +1,14 @@
+// expect-error: E_MOVED
+// java: rejects
+// A repeated loop position must not transfer a pre-existing local.
+define class Parcel as
+  pub int value: 42;
+end
+fnc positive(Parcel parcel): bool { return parcel.value > 0; }
+pub fnc main(): int {
+  let parcel = new Parcel();
+  for (let i = 0; positive(parcel); i++) {
+    break;
+  }
+  return 1;
+}

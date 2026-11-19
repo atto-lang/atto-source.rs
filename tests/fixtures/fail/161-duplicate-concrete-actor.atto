@@ -1,0 +1,5 @@
+// expect-error: E_DUPLICATE
+use namespace workers;
+declare actor Foo;
+define actor Foo as end
+define actor Foo as end

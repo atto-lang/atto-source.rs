@@ -1,0 +1,10 @@
+// expect-error: E_MOVED
+// java: rejects
+// A repeated loop position must not transfer a pre-existing local.
+pub fnc main(): int {
+  val next = 1;
+  for (let i = 0; i < 3; i = take! next) {
+    stdio.println(i);
+  }
+  return 0;
+}

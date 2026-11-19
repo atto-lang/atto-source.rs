@@ -6,6 +6,11 @@
 // expect-stdout: 4
 // expect-stdout: 5
 // expect-stdout: 6
+// java: diverges
+// Java short-circuits , and |; canonical AttoLang evaluates both operands (PR #4).
+// java-stdout: 1
+// java-stdout: 4
+// java-stdout: 6
 fnc mark(bool value, int n): bool {
   stdio.println(n);
   return value;

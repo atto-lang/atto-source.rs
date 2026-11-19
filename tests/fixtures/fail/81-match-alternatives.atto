@@ -1,0 +1,9 @@
+// expect-error: E_SYNTAX
+// java: rejects
+pub fnc main(): int {
+  match 4
+    1 | 4 -> { stdio.println("alt"); }
+    _ -> { stdio.println("no"); }
+  end
+  return 0;
+}

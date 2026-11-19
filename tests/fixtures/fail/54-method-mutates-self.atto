@@ -1,0 +1,11 @@
+// Instance methods see a read-only self.
+// expect-error: E_OWNERSHIP
+// java: rejects
+define class Counter as
+    mut int n = 0;
+    pub increment(): int {
+        self.n = self.n + 1;
+        return self.n;
+    }
+end
+pub fnc main(): int { val c = new Counter(); return c.increment(); }

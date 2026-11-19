@@ -1,0 +1,10 @@
+// expect-exit: 42
+pure fnc trimmed_match(string input): bool {
+    return input.trim() eq "ready";
+}
+pub fnc main(): int {
+    if trimmed_match(" ready ") then
+        return 42;
+    fi
+    return 0;
+}

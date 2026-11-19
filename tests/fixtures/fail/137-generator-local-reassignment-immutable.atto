@@ -1,0 +1,8 @@
+// expect-error: E_IMMUTABLE
+// java: rejects
+fnc *gen wrong(): Generator<int> {
+  val fixed = 1;
+  fixed += 1;
+  yield fixed;
+}
+pub fnc main(): int { return 0; }

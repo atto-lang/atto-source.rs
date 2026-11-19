@@ -1,0 +1,10 @@
+// expect-error: E_STATE_BORROW
+define state container Counter as
+  state { let int count: 0; }
+  pub bad(): void {
+    handle_state(critical |s| -> {
+      s.count = handle_state(critical-read |s| -> s.count);
+    });
+  }
+end
+pub fnc main(): int { return 0; }

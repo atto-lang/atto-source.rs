@@ -1,0 +1,9 @@
+// expect-error: E_NEW_REQUIRED
+// java: rejects
+define class P as
+    mut int n = 0;
+end
+pub fnc main(): int {
+    val p = P();
+    return 0;
+}

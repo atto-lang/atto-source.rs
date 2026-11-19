@@ -1,0 +1,6 @@
+// expect-error: E_ACTOR
+// java: rejects
+define actor Worker as
+    pub constructor() {}
+end
+pub fnc main(): int { return 0; }

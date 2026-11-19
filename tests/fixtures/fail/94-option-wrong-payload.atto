@@ -1,0 +1,4 @@
+// expect-error: E_TYPE
+// java: rejects
+fnc value(): Option<int> { return Some("not an int"); }
+pub fnc main(): int { return 0; }

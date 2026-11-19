@@ -1,0 +1,4 @@
+// expect-error: E_RESERVED
+fnc Error(string message): string { return message; }
+fnc fail(): int { throw Error("guest"); }
+pub fnc main(): int { return fail(); }

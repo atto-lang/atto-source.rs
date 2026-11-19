@@ -1,0 +1,5 @@
+// expect-error: E_TYPE
+pub fnc main(): int {
+    val double = |n| -> n * 2;
+    return double(true);
+}

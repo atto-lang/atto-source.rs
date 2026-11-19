@@ -1,0 +1,8 @@
+// expect-error: E_PURE
+pure fnc maybe_log(int n): int {
+    if n == -1 then
+        stdio.println(n);
+    fi
+    return n;
+}
+pub fnc main(): int { return maybe_log(42); }

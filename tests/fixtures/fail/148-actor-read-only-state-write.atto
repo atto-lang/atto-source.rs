@@ -1,0 +1,5 @@
+// expect-error: E_READONLY
+declare actor Counter;
+mtd (mut self: Counter) update(): void {
+  self.handle_state(critical-read |s| -> { s.count = 1; });
+}

@@ -1,0 +1,18 @@
+// expect-exit: 42
+// java: llvm-design
+// 12000 iterator closures must reuse bounded arena frames.
+fnc *gen one(): Generator<int> {
+  yield 1;
+}
+pub fnc main(): int {
+  let result = 0;
+  for (let i = 0; i < 12000; i++) do
+    for value in one() do
+      if i < 42 then
+        result += value;
+      fi
+      break;
+    done
+  done
+  return result;
+}

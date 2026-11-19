@@ -8,11 +8,15 @@
 //
 // usage: node tests/conformance.mjs [compiler.wasm]
 import assert from 'node:assert/strict';
+import { auditPlaygroundPreviews } from './playground-preview-audit.mjs';
 import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { sha256, writeEvidence } from './guest-evidence.mjs';
+import { formatJavaDouble } from './java-double.mjs';
+import {createStateRuntime} from './browser/state-runtime.mjs';
+import { verify_actor_trace, BROWSER_MAX_ACTORS, BROWSER_MAX_MAILBOX } from './actor-trace-refinement.mjs';
 
 const here = new URL('.', import.meta.url).pathname;
 const compilerPath = process.argv[2] || join(here, '../target/wasm32-unknown-unknown/release/atto_compiler.wasm');
@@ -44,9 +48,32 @@ export function compile(source) {
   return { ok: true, wasm };
 }
 
-// ---- guest runtime (atto.browser.guest.v1) ---------------------------------
-const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline']);
-export function runGuest(wasm) {
+// ---- guest runtime (atto.browser.guest.v2) ---------------------------------
+// Actors: each spawn instantiates the same module again (as the playground
+// does in a dedicated Web Worker), runs actor_init, and queues mail. After
+// main returns, mailboxes drain FIFO, actor by actor in spawn order: one
+// valid schedule of the concurrent browser runtime.
+const ALLOWED_IMPORTS = new Set(['print_i64', 'print_bool', 'print_str', 'print_newline', 'print_f64', 'actor_spawn', 'actor_send',
+  'state_register', 'state_enter', 'state_leave']);
+const ALLOWED_EXPORTS = new Set(['main', 'panic_code', 'memory', 'actor_init', 'actor_receive']);
+export const MAX_ACTORS = BROWSER_MAX_ACTORS;
+export const MAX_MAILBOX = BROWSER_MAX_MAILBOX;
+
+export function actorNames(module) {
+  const sections = WebAssembly.Module.customSections(module, 'atto.actors');
+  if (!sections.length) return [];
+  assert.equal(sections.length, 1, 'one atto.actors section');
+  const bytes = new Uint8Array(sections[0]);
+  let pos = 0;
+  const leb = () => { let r = 0, s = 0, b; do { b = bytes[pos++]; r |= (b & 127) << s; s += 7; } while (b & 128); return r; };
+  const names = [];
+  for (let n = leb(), i = 0; i < n; i++) { const len = leb(); names.push(decoder.decode(bytes.subarray(pos, pos + len))); pos += len; }
+  assert.equal(pos, bytes.length, 'atto.actors has no trailing bytes');
+  return names;
+}
+
+export function runGuest(wasm, { onActorTrace = null } = {}) {
+  const emit = event => { if (onActorTrace) onActorTrace(event); };
   assert.ok(WebAssembly.validate(wasm), 'guest is valid wasm');
   const module = new WebAssembly.Module(wasm);
   for (const imp of WebAssembly.Module.imports(module)) {
@@ -55,23 +82,85 @@ export function runGuest(wasm) {
   }
   const exportNames = WebAssembly.Module.exports(module).map(e => e.name).sort();
   assert.ok(['main', 'panic_code'].every(n => exportNames.includes(n)), 'guest exports main and panic_code');
-  assert.ok(exportNames.every(n => ['main', 'panic_code', 'memory'].includes(n)), 'no extra exports');
+  assert.ok(exportNames.every(n => ALLOWED_EXPORTS.has(n)), 'no extra exports');
+  const names = actorNames(module);
+  assert.equal(exportNames.includes('actor_receive'), names.length > 0, 'actor exports iff actor table');
   let out = '';
-  let instance;
-  const atto = {
-    print_i64: v => { out += String(v); },
-    print_bool: v => { out += v ? 'true' : 'false'; },
-    print_str: (ptr, len) => { out += decoder.decode(new Uint8Array(instance.exports.memory.buffer, ptr, len)); },
-    print_newline: () => { out += '\n'; },
+  const actors = [];
+  const runtimes = new WeakMap();
+  const instantiate = inActor => {
+    let instance;
+    const state = createStateRuntime();
+    const atto = {
+      print_i64: v => { out += String(v); },
+      print_bool: v => { out += v ? 'true' : 'false'; },
+      print_str: (ptr, len) => { out += decoder.decode(new Uint8Array(instance.exports.memory.buffer, ptr, len)); },
+      print_newline: () => { out += '\n'; },
+      print_f64: v => { out += formatJavaDouble(v); },
+      actor_spawn: type => {
+        if (inActor) throw new Error('spawn inside an actor');
+        if (!(type >= 0 && type < names.length)) throw new Error('unknown actor type');
+        if (actors.length >= MAX_ACTORS) throw new Error('too many actors');
+        const a = { type, instance: instantiate(true), queue: [], queueIds: [],
+          id: actors.length, generation: 1, nextMessageId: 1 };
+        a.instance.exports.actor_init(type);
+        actors.push(a);
+        emit({ kind: 'actor_spawn', actor_id: a.id, generation: a.generation });
+        return actors.length - 1;
+      },
+      actor_send: (ref, value) => {
+        if (inActor) throw new Error('send inside an actor');
+        const a = actors[ref];
+        if (!a) throw new Error('bad actor ref');
+        if (a.queue.length >= MAX_MAILBOX) throw new Error('mailbox full');
+        const messageId = a.nextMessageId++;
+        a.queue.push(value);
+        a.queueIds.push(messageId);
+        emit({ kind: 'send_accept', actor_id: a.id, generation: a.generation,
+          message_id: messageId });
+      },
+      ...state.imports,
+    };
+    instance = new WebAssembly.Instance(module, { atto });
+    runtimes.set(instance, state);
+    return instance;
   };
-  instance = new WebAssembly.Instance(module, { atto });
+  const main = instantiate(false);
+  let value;
   try {
-    const value = instance.exports.main();
+    value = main.exports.main();
     assert.equal(typeof value, 'bigint');
-    return { ok: true, value, stdout: out };
+    runtimes.get(main).complete();
   } catch (error) {
-    return { ok: false, panic: instance.exports.panic_code.value, error: String(error), stdout: out };
+    runtimes.get(main).abort();
+    return { ok: false, panic: main.exports.panic_code.value, error: String(error), stdout: out };
   }
+  // Actor instances and main must never alias one Wasm linear memory.
+  // This checks per-instance isolation, not OS tenant isolation or GC policy.
+  if (actors.length > 0) {
+    const memories = [main.exports.memory, ...actors.map(a => a.instance.exports.memory)];
+    assert.ok(memories.every(m => m instanceof WebAssembly.Memory),
+      'all actor instances must export their own memory');
+    assert.equal(new Set(memories).size, memories.length,
+      'separate actors/main must not share a WebAssembly.Memory');
+  }
+  for (const a of actors) {
+    for (let seq = 0; seq < a.queue.length; seq++) {
+      const messageId = a.queueIds[seq];
+      emit({ kind: 'receive_start', actor_id: a.id, generation: a.generation,
+        message_id: messageId });
+      try { a.instance.exports.actor_receive(a.type, a.queue[seq], BigInt(seq)); }
+      catch (error) {
+        runtimes.get(a.instance).abort();
+        return { ok: false, panic: a.instance.exports.panic_code.value, actor: names[a.type], error: String(error), stdout: out };
+      }
+      emit({ kind: 'receive_complete', actor_id: a.id, generation: a.generation,
+        message_id: messageId });
+    }
+    runtimes.get(a.instance).complete();
+    emit({ kind: 'actor_close', actor_id: a.id, generation: a.generation });
+  }
+  return { ok: true, value, stdout: out, actors: actors.length };
 }
 
 function header(source, key) {
@@ -85,9 +174,17 @@ async function fixtures(kind) {
 
 const java = process.env.ATTO_JAVA;
 const attoc = process.env.ATTOC;
+// The Java runtime sometimes aborts at exit while an actor is still draining
+// ("context is currently executing on another thread"): stdout is then a
+// truncated prefix and the status is 1. That is a runtime shutdown race, not
+// a rejection, so only acceptance and the stdout prefix are compared.
+const JAVA_SHUTDOWN_RACE = 'The context is currently executing on another thread';
 function runJava(path) {
   const r = spawnSync(java, [path], { encoding: 'utf8', timeout: 60_000 });
-  return { status: r.status, stdout: r.stdout, rejected: /oreslang: /.test(r.stderr + r.stdout) };
+  const all = r.stderr + r.stdout;
+  const race = all.includes(JAVA_SHUTDOWN_RACE);
+  const rejected = all.split('\n').some(l => /oreslang: /.test(l) && !l.includes(JAVA_SHUTDOWN_RACE));
+  return { status: r.status, stdout: r.stdout, rejected, race };
 }
 function nativeBytes(path) {
   const r = spawnSync(attoc, [path], { maxBuffer: 1 << 22 });
@@ -95,12 +192,73 @@ function nativeBytes(path) {
 }
 
 let passed = 0, javaChecked = 0, nativeChecked = 0;
+let tracedActorMessages = 0, tracedActorInstances = 0;
 const failures = [];
 function check(label, fn) {
   try { fn(); passed++; } catch (e) { failures.push(`${label}: ${e.message}`); }
 }
 const digests = [];
 const executedGuestCases = []; // recorded only after observed guest assertions pass
+
+
+// ---- reviewed site source: compiler byte parity and real guest outcomes ----
+const siteDir = join(here, 'playground_site_examples');
+const siteManifest = JSON.parse(await readFile(join(siteDir, 'manifest.json'), 'utf8'));
+assert.equal(siteManifest.schema, 'atto.compiler.playground-exact-source.v1');
+assert.equal(siteManifest.site_repository, 'atto-lang/atto-lang.github.io');
+assert.match(siteManifest.site_commit, /^[0-9a-f]{40}$/);
+assert.deepEqual(siteManifest.cases.map(row => row.name).sort(),
+  ['actors','classes','conditions','enums','error','fib','hello','overflow','primes']);
+assert.deepEqual((await readdir(siteDir)).filter(name => name.endsWith('.atto')).sort(),
+  siteManifest.cases.map(row => row.path).sort());
+let siteExecuted = 0;
+for (const row of siteManifest.cases) {
+  const path = join(siteDir, row.path);
+  const bytes = await readFile(path);
+  const source = decoder.decode(bytes);
+  check('playground-site/' + row.name, () => {
+    assert.match(row.site_blob, /^[a-f0-9]{40}$/, 'expected exact upstream Git blob');
+    const blobSha = createHash('sha1')
+      .update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
+    assert.equal(blobSha, row.site_blob, 'unreviewed source drift');
+    const compiled = compile(source);
+    if (row.kind === 'reject') {
+      assert.equal(compiled.ok, false, 'rejected source must fail to compile');
+      assert.equal(compiled.code, row.error_code);
+      assert.equal('wasm' in compiled, false, 'rejected source must emit no guest');
+      if (attoc) assert.equal(nativeBytes(path), null, 'native compiler must reject');
+      return;
+    }
+    assert.equal(compiled.ok, true, compiled.message);
+    assert.ok(WebAssembly.validate(compiled.wasm), 'real compiled guest module');
+    assert.deepEqual(compile(source).wasm, compiled.wasm, 'deterministic guest Wasm');
+    if (attoc) assert.deepEqual(nativeBytes(path), compiled.wasm,
+      'native and wasm32 compiler outputs must match byte for byte');
+    const actorTrace = [];
+    const guest = runGuest(compiled.wasm, {
+      onActorTrace: event => actorTrace.push(event)
+    });
+    if (row.kind === 'panic') {
+      assert.equal(guest.ok, false, 'checked arithmetic must panic, not wrap');
+      assert.equal(guest.panic, row.panic_code, 'guest panic category');
+      assert.ok(guest.stdout.endsWith(row.stdout_suffix), 'stdout before panic preserved');
+    } else {
+      assert.equal(row.kind, 'execute');
+      assert.equal(guest.ok, true, guest.error);
+      assert.equal(guest.value, BigInt(row.exit), 'main result');
+      assert.equal(guest.stdout, row.stdout, 'exact sample stdout');
+      if (row.actor_count !== undefined) {
+        const verified = verify_actor_trace(actorTrace);
+        assert.equal(verified.actor_count, row.actor_count, 'real actor instances');
+        assert.equal(verified.completed, row.actor_messages, 'real mailbox deliveries');
+      }
+    }
+    siteExecuted++;
+  });
+}
+console.log('SITE_PLAYGROUND_GUESTS_EXECUTED=' + siteExecuted +
+  ' upstream_site_sha=' + siteManifest.site_commit);
+
 
 for (const f of await fixtures('pass')) {
   check(`pass/${f.name}`, () => {
@@ -109,8 +267,13 @@ for (const f of await fixtures('pass')) {
     const again = compile(f.source);
     assert.deepEqual(again.wasm, r.wasm, 'deterministic output');
     digests.push(`${createHash('sha256').update(r.wasm).digest('hex')}  ${f.name}`);
-    const g = runGuest(r.wasm);
+    const actorTrace = [];
+    const g = runGuest(r.wasm, { onActorTrace: event => actorTrace.push(event) });
     assert.ok(g.ok, `guest trapped: ${g.error}`);
+    const verified = verify_actor_trace(actorTrace);
+    assert.equal(verified.actor_count, g.actors, 'compiled guest actors match host trace');
+    tracedActorInstances += verified.actor_count;
+    tracedActorMessages += verified.completed;
     assert.equal(g.value, BigInt(header(f.source, 'expect-exit')[0]), 'main() result');
     const want = header(f.source, 'expect-stdout');
     assert.equal(g.stdout, want.length ? want.join('\n') + '\n' : '', 'stdout');
@@ -120,9 +283,44 @@ for (const f of await fixtures('pass')) {
     }
     if (java) {
       const j = runJava(f.path);
-      assert.ok(!j.rejected, `Java reference rejected it: ${j.stdout}`);
-      assert.equal(j.status, Number(BigInt.asUintN(8, g.value)), 'Java exit status agrees');
-      assert.equal(j.stdout, g.stdout, 'Java stdout agrees');
+      const claim = header(f.source, 'java')[0];
+      if (claim === 'llvm-design') {
+        // spelling from the oreslang-source.llvm v1 design contracts; tracked
+        // so this fixture is revisited when the Java parser admits it
+        assert.ok(j.rejected, 'Java now accepts this LLVM-design spelling: update the fixture claim');
+      } else if (claim === 'rejects') {
+        // A passing Rust/Wasm guest must not be reported as Java parity
+        // while the Java compiler still rejects this newer Atto construct.
+        assert.ok(j.rejected, 'Java now accepts this Rust/Wasm-positive fixture: update its parity claim');
+      } else {
+        assert.ok(!j.rejected, `Java reference rejected it: ${j.stdout}`);
+        if (j.race && header(f.source, 'stdout-order')[0] === 'unordered') {
+          // truncated and concurrently interleaved: Java's lines must be a sub-multiset of ours
+          const pool = g.stdout.split('\n');
+          for (const line of j.stdout.split('\n').filter(Boolean)) {
+            const at = pool.indexOf(line);
+            assert.ok(at >= 0, `Java printed a line the browser runtime did not: ${JSON.stringify(line)}`);
+            pool.splice(at, 1);
+          }
+        } else if (j.race) {
+          assert.ok(g.stdout.startsWith(j.stdout), `Java stdout (truncated by its shutdown race) is not a prefix: ${JSON.stringify(j.stdout)}`);
+        } else {
+          assert.equal(j.status, Number(BigInt.asUintN(8, g.value)), 'Java exit status agrees');
+          if (header(f.source, 'stdout-order')[0] === 'unordered') {
+            // several actors print concurrently: only the multiset of lines is defined
+            const lines = t => t.split('\n').sort().join('\n');
+            assert.equal(lines(j.stdout), lines(g.stdout), 'Java stdout lines agree (any actor interleaving)');
+          } else if (claim === 'diverges') {
+            // a documented semantic divergence (see docs/DIFFERENTIAL.md): Java's
+            // own output is pinned so drift on either side is caught
+            const jw = header(f.source, 'java-stdout');
+            assert.ok(jw.length, 'a "java: diverges" fixture pins Java output with "// java-stdout:" lines');
+            assert.equal(j.stdout, jw.join('\n') + '\n', 'Java stdout matches the pinned divergent output');
+          } else {
+            assert.equal(j.stdout, g.stdout, 'Java stdout agrees');
+          }
+        }
+      }
       javaChecked++;
     }
     executedGuestCases.push({
@@ -291,6 +489,9 @@ const chains = {
   eq: n => M(`  val b = ${Array(n).fill('true').join(' == ')};\n  return 0;`),
   and: n => M(`  val t = true;\n  if ${Array(n).fill('t').join(', ')} then\n    return 1;\n  fi\n  return 0;`),
   or: n => M(`  val t = false;\n  if ${Array(n).fill('t').join(' | ')} then\n    return 1;\n  fi\n  return 0;`),
+  match: n => M(`  val x = ${n - 2};\n  match x\n${Array.from({ length: n - 1 }, (_, i) => `    ${i} -> { return ${i}; }\n`).join('')}    _ -> { return -1; }\n  end`),
+  concat: n => M(`  val s = ${Array(n).fill('"ab"').join(' + ')};\n  return 0;`),
+  float: n => M(`  val f = ${Array(n).fill('1.5').join(' * ')};\n  return 0;`),
   elif: n => M(`  val x = ${n - 1};\n  if x eq 0 then return 0;\n${Array.from({ length: n - 1 }, (_, i) => `  elif x eq ${i + 1} then return ${i + 1};\n`).join('')}  fi\n  return -1;`),
 };
 for (const [name, make] of Object.entries(chains)) {
@@ -300,6 +501,26 @@ for (const [name, make] of Object.entries(chains)) {
     runGuest(r.wasm);
   });
   check(`limits/chain-${name}-over-budget-fails-closed`, () => {
+    assert.equal(compile(make(300)).code, 'E_NESTING');
+  });
+}
+// Member and method links share the same budget; a receiver chain recurses
+// through the checker and emitter once per link.
+const CHAIN_CLASS = 'define class P as\n  pub int v: 1\n  pub n(): P { return new P(); }\nend\n';
+const memberChains = {
+  'method-chain-runs': n => CHAIN_CLASS + `pub fnc main(): int { return new P()${'.n()'.repeat(n - 1)}.v; }`,
+  'member-chain-typed': n => `pub fnc main(): int { val a = 1; return a${'.b'.repeat(n)}; }`,
+};
+check('limits/method-chain-within-budget-executes', () => {
+  const r = compile(memberChains['method-chain-runs'](240));
+  assert.equal(r.ok, true, r.message);
+  assert.equal(runGuest(r.wasm).value, 1n);
+});
+check('limits/member-chain-within-budget-is-a-diagnostic-not-a-trap', () => {
+  assert.equal(compile(memberChains['member-chain-typed'](240)).code, 'E_TYPE');
+});
+for (const [name, make] of Object.entries(memberChains)) {
+  check(`limits/${name}-over-budget-fails-closed`, () => {
     assert.equal(compile(make(300)).code, 'E_NESTING');
   });
 }
@@ -384,7 +605,44 @@ check('robustness/random-garbage-never-traps-compiler', () => {
   }
 });
 
+check('boolean/short-circuit-vs-eager-builtin-real-guest', () => {
+  const source = [
+    'fnc touched(): bool { stdio.println("RHS"); return true; }',
+    'pub fnc main(): int {',
+    '  stdio.println(false && touched());',
+    '  stdio.println(true || touched());',
+    '  stdio.println(true && touched());',
+    '  stdio.println(false || touched());',
+    '  stdio.println(And(false, touched()));',
+    '  return 0;',
+    '}',
+  ].join('\n');
+  const compiled = compile(source);
+  assert.equal(compiled.ok, true, compiled.message);
+  const result = runGuest(compiled.wasm);
+  assert.equal(result.value, 0n);
+  assert.equal(result.stdout, 'false\ntrue\nRHS\ntrue\nRHS\ntrue\nRHS\nfalse\n');
+});
+check('formal/compiled-guest-trace-nonvacuous', () => {
+  assert.ok(tracedActorInstances >= 1, 'no compiled actor guest actually executed');
+  assert.ok(tracedActorMessages >= 2, 'no compiled mailbox deliveries actually executed');
+});
+console.log('COMPILED_WASM_GUEST_TRACE actor_instances=' + tracedActorInstances +
+  ' admitted_and_settled=' + tracedActorMessages +
+  ' backend=browser-wasm guest=EXECUTED scheduling=serial-host-only');
 console.log(digests.length ? `artifact digests:\n${digests.join('\n')}` : '');
+// Exact current site preview corpus. Rejections never count as executing a
+// feature; the report explicitly separates admitted, unsupported and guests.
+try {
+  const previewAudit = await auditPlaygroundPreviews({
+    compile, runGuest, nativeBytes: attoc ? nativeBytes : null
+  });
+  console.log('PLAYGROUND_PREVIEW_AUDIT ' + JSON.stringify(previewAudit));
+  passed++;
+} catch (error) {
+  failures.push('playground-preview-corpus: ' + error.message);
+}
+
 console.log(`conformance: ${passed} passed, ${failures.length} failed` +
   (java ? `, ${javaChecked} Java-differential` : ', Java differential skipped (set ATTO_JAVA)') +
   (attoc ? `, ${nativeChecked} native-vs-wasm` : ', native parity skipped (set ATTOC)'));

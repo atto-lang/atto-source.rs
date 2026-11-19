@@ -1,0 +1,17 @@
+// expect-exit: 15
+// java: rejects
+// AttoLang aliases select two independent direct-parent physical slots.
+define class Dog as
+    pub int age: 5;
+end
+define class Cat as
+    pub int age: 10;
+end
+define class Hybrid extends Dog, Cat as
+    use Dog.age as dog_age;
+    use Cat.age as cat_age;
+end
+pub fnc main(): int {
+    val hybrid = new Hybrid();
+    return hybrid.dog_age + hybrid.cat_age;
+}

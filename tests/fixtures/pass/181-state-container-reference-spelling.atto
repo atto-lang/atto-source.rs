@@ -1,0 +1,21 @@
+// Java-canonical long-form "define state container" restricted to owned scalar fields.
+// expect-exit: 0
+// expect-stdout: true
+// expect-stdout: false
+define state container Flag as
+  state { let bool enabled: true; }
+
+  pub disable(): void {
+    handle_state(critical-write |s| -> { s.enabled = false; });
+  }
+  pub read_enabled(): bool {
+    return handle_state(critical-read |s| -> s.enabled);
+  }
+end
+pub fnc main(): int {
+  val flag = new Flag();
+  stdio.println(flag.read_enabled());
+  flag.disable();
+  stdio.println(flag.read_enabled());
+  return 0;
+}

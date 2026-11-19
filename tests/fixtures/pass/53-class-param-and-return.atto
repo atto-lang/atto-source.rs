@@ -1,0 +1,13 @@
+// expect-exit: 42
+define class P as
+    mut int x = 0;
+    constructor(int v) { self.x = v; }
+    pub get(): int { return self.x; }
+end
+
+fnc make(int v): P { return new P(v); }
+fnc read(P p): int { return p.get(); }
+
+pub fnc main(): int {
+    return read(make(42));
+}

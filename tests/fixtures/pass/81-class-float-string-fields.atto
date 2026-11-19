@@ -1,0 +1,14 @@
+// expect-exit: 0
+// expect-stdout: P{x=1.5, name=bob, n=2}
+// expect-stdout: bob
+define class P as
+  pub float x: 1.5
+  pub string name: "bob"
+  pub int n: 2
+end
+pub fnc main(): int {
+  val p = new P();
+  stdio.println(p);
+  stdio.println(p.name);
+  return 0;
+}

@@ -1,0 +1,5 @@
+// expect-error: E_GENERATOR_CYCLE
+// java: rejects
+fnc *gen a(): Generator<int> { yield* b(); }
+fnc *gen b(): Generator<int> { yield* a(); }
+pub fnc main(): int { return 0; }

@@ -14,6 +14,8 @@ pub enum Tok {
     /// Decimal integer literal. `None` means it exceeds 2^63 (only valid
     /// directly after unary minus as `-9223372036854775808`).
     Int(Option<u64>),
+    /// Float literal, stored as `f64::to_bits` so `Tok` stays `Eq`.
+    Float(u64),
     Str(String),
     LParen,
     RParen,
@@ -26,7 +28,12 @@ pub enum Tok {
     Colon,
     ColonColon,
     Arrow,
+    /// Exact contiguous return-first callable delimiter `<-`.
+    LeftArrow,
+    FatArrow,
     Dot,
+    /// Exact contiguous `...` token. Interpretation is restricted to pattern context.
+    Ellipsis,
     Assign,
     EqEq,
     NotEq,
@@ -36,15 +43,20 @@ pub enum Tok {
     Ge,
     Plus,
     PlusPlus,
+    PlusAssign,
     Minus,
     MinusMinus,
     Star,
+    /// Contiguous `yield*` delegation token; whitespace makes it two tokens.
+    YieldStar,
     Slash,
     Bang,
     Question,
     Pipe,
     PipeGt,
     Amp,
+    Caret,
+    Tilde,
     At,
     Eof,
 }
@@ -121,7 +133,15 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 s.push(chars[i]);
                 bump!();
             }
-            out.push(Token { tok: Tok::Ident(s), pos });
+            // Generator delegation is a single contiguous lexical spelling.
+            // Do not consume a separated star: `yield *value` is not `yield*`.
+            let tok = if s == "yield" && chars.get(i) == Some(&'*') {
+                bump!();
+                Tok::YieldStar
+            } else {
+                Tok::Ident(s)
+            };
+            out.push(Token { tok, pos });
             continue;
         }
         if c.is_ascii_digit() {
@@ -132,26 +152,69 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
                 bump!();
             }
-            if i < chars.len() && (chars[i] == 'x' || chars[i] == 'X' || chars[i] == 'b' || chars[i] == 'o') && digits == "0" {
-                return Err(Diagnostic::new(
+            // Flags/masks in the public bitwise preview use binary literals.
+            // Keep exactly the signed i64 range and decimal underscore rules;
+            // other radix prefixes remain explicitly unsupported.
+            if digits == "0" && i > 0 && chars[i - 1] == '0' &&
+                chars.get(i).is_some_and(|c| *c == 'b' || *c == 'B') {
+                bump!();
+                let mut bits = String::new();
+                while i < chars.len() && matches!(chars[i], '0' | '1' | '_') {
+                    if chars[i] != '_' { bits.push(chars[i]); }
+                    bump!();
+                }
+                if bits.is_empty() || i < chars.len() &&
+                    (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL",
+                        "malformed binary integer literal"));
+                }
+                let value = u64::from_str_radix(&bits, 2).ok()
+                    .filter(|v| *v <= (1_u64 << 63))
+                    .ok_or_else(|| Diagnostic::new(pos, "E_INTEGER_RANGE",
+                        "integer literal does not fit in a signed 64-bit int"))?;
+                out.push(Token {
+                    tok: Tok::Int(if value == (1_u64 << 63) { None } else { Some(value) }),
                     pos,
-                    "E_INTEGER_LITERAL",
-                    "only decimal integer literals are supported",
+                });
+                continue;
+            }
+            if i < chars.len() && matches!(chars[i], 'x' | 'X' | 'b' | 'B' | 'o' | 'O') && digits == "0" {
+                return Err(Diagnostic::new(
+                    pos, "E_INTEGER_LITERAL",
+                    "only decimal and binary integer literals are supported",
                 ));
             }
+            // Float literals follow the Java lexer exactly: digits '.' digits,
+            // and/or an exponent e/E [+-] digits; '_' separators allowed.
+            let mut floating = false;
             if i < chars.len() && chars[i] == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit()) {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED_TYPE",
-                    "float literals are not supported by the browser compiler yet",
-                ));
+                floating = true;
+                digits.push('.');
+                bump!();
+                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+                    if chars[i] != '_' {
+                        digits.push(chars[i]);
+                    }
+                    bump!();
+                }
             }
             if i < chars.len() && (chars[i] == 'e' || chars[i] == 'E') {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED_TYPE",
-                    "float literals are not supported by the browser compiler yet",
-                ));
+                floating = true;
+                digits.push('e');
+                bump!();
+                if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
+                    digits.push(chars[i]);
+                    bump!();
+                }
+                if !(i < chars.len() && chars[i].is_ascii_digit()) {
+                    return Err(Diagnostic::new(pos, "E_FLOAT_LITERAL", "malformed exponent"));
+                }
+                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+                    if chars[i] != '_' {
+                        digits.push(chars[i]);
+                    }
+                    bump!();
+                }
             }
             if i < chars.len() && chars[i] == 'i' && !chars.get(i + 1).is_some_and(|d| d.is_alphanumeric() || *d == '_') {
                 return Err(Diagnostic::new(
@@ -162,6 +225,17 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             }
             if i < chars.len() && (chars[i].is_alphabetic() || chars[i] == '_') {
                 return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL", "malformed integer literal"));
+            }
+            if floating {
+                // Rust and Java both parse decimal text with correct rounding.
+                let v: f64 = digits
+                    .parse()
+                    .map_err(|_| Diagnostic::new(pos, "E_FLOAT_LITERAL", "malformed float literal"))?;
+                out.push(Token {
+                    tok: Tok::Float(v.to_bits()),
+                    pos,
+                });
+                continue;
             }
             let value = digits.parse::<u64>().ok().filter(|v| *v <= 1u64 << 63);
             if value.is_none() {
@@ -223,6 +297,14 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                         }
                         other => s.push(other), // spec 16: unknown escape keeps the character
                     }
+                    // Escaped characters, including Unicode scalar escapes,
+                    // must obey the same decoded UTF-8 byte budget as plain
+                    // characters. Without this check repeated \\u{...} could
+                    // bypass MAX_STRING_BYTES and inflate tuple source data.
+                    if s.len() > MAX_STRING_BYTES {
+                        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                            "string literal is too long"));
+                    }
                     bump!();
                     continue;
                 }
@@ -251,23 +333,38 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('-', Some('-')) => (Tok::MinusMinus, 2),
             ('-', _) => (Tok::Minus, 1),
             ('+', Some('+')) => (Tok::PlusPlus, 2),
+            ('+', Some('=')) => (Tok::PlusAssign, 2),
             ('+', _) => (Tok::Plus, 1),
+            ('.', Some('.')) if chars.get(i + 2) == Some(&'.') => (Tok::Ellipsis, 3),
             ('.', _) => (Tok::Dot, 1),
             ('=', Some('=')) => (Tok::EqEq, 2),
+            ('=', Some('>')) => (Tok::FatArrow, 2),
             ('=', _) => (Tok::Assign, 1),
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
+            // Keep the last bracket of '<<<=' / '>>>=' separate from
+            // '='. This also protects unspaced triple generic closers
+            // (e.g. T<U<V<W>>>=value) from becoming comparison tokens.
+            ('<', Some('=')) if i >= 2 && chars[i - 1] == '<' && chars[i - 2] == '<' =>
+                (Tok::Lt, 1),
+            ('<', Some('-')) => (Tok::LeftArrow, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
+            ('>', Some('=')) if i >= 2 && chars[i - 1] == '>' && chars[i - 2] == '>' =>
+                (Tok::Gt, 1),
             ('>', Some('=')) => (Tok::Ge, 2),
             ('>', _) => (Tok::Gt, 1),
             ('*', _) => (Tok::Star, 1),
             ('/', _) => (Tok::Slash, 1),
-            ('%', _) | ('^', _) => {
+            ('%', _) | ('^', Some('^')) => {
                 return Err(Diagnostic::new(
-                    pos, "E_UNSUPPORTED", "removed arithmetic operator is not part of AttoLang"
+                    pos,
+                    "E_UNSUPPORTED",
+                    "removed arithmetic operator is not part of AttoLang",
                 ));
             }
+            ('^', _) => (Tok::Caret, 1),
+            ('~', _) => (Tok::Tilde, 1),
             ('?', _) => (Tok::Question, 1),
             ('|', Some('>')) => (Tok::PipeGt, 2),
             ('|', _) => (Tok::Pipe, 1),

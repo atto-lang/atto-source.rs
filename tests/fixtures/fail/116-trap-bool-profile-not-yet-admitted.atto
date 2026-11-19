@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED_TYPE
+fnc flag(): bool { return true; }
+pub fnc main(): int {
+  val answer = trap flag();
+  return 0;
+}

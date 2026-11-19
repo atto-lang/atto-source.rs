@@ -1,0 +1,7 @@
+// expect-exit: 0
+// expect-stdout: 1.5
+pub fnc main(): int {
+  val f: float = 1.5;
+  stdio.println(f);
+  return 0;
+}

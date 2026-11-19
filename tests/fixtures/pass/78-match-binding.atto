@@ -1,0 +1,17 @@
+// A lower-case name pattern binds the subject.
+// expect-exit: 0
+// expect-stdout: 3
+// expect-stdout: a
+fnc pick(int x): int {
+  match x
+    n -> { return n; }
+  end
+}
+pub fnc main(): int {
+  stdio.println(pick(3));
+  match first 3
+    3 -> { stdio.println("a"); }
+    _ -> { stdio.println("b"); }
+  end
+  return 0;
+}

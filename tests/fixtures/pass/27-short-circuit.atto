@@ -3,6 +3,9 @@
 // expect-stdout: boom
 // expect-stdout: boom
 // expect-stdout: done
+// java: diverges
+// Java short-circuits , and |; canonical AttoLang evaluates both operands (PR #4).
+// java-stdout: done
 fnc boom(): bool {
   stdio.println("boom");
   return true;

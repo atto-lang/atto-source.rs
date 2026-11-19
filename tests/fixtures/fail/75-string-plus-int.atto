@@ -1,0 +1,7 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+  val n = 2;
+  stdio.println("n=" + n);
+  return 0;
+}

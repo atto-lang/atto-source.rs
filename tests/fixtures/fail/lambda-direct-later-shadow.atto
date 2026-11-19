@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+pub fnc main(): int {
+    val double = |n| : int -> n * 2;
+    block { val double = 3; }
+    return double(21);
+}
