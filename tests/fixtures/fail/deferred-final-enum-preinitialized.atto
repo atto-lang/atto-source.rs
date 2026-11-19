@@ -1,0 +1,10 @@
+// expect-error: E_IMMUTABLE
+define enum Phase as
+    Waiting
+    Ready
+end
+define class Task as
+    pub final Phase state = Phase.Waiting;
+    constructor(Phase phase) { self.state = phase; }
+end
+pub fnc main(): int { return 0; }

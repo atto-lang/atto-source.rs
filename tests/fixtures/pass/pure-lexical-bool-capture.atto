@@ -1,0 +1,10 @@
+// Definition-site immutable bool capture survives caller-side shadowing.
+// expect-exit: 42
+pub fnc main(): int {
+  val enabled = true;
+  val choose = |n| : int -> enabled ? n : 0;
+  block {
+    val enabled = false;
+    return choose(42);
+  }
+}

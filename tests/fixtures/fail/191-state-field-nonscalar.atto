@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED_TYPE
+define state container Counter as
+  state { let string count: "hidden"; }
+end
+pub fnc main(): int { return 0; }
