@@ -170,6 +170,8 @@ pub struct Receive {
     pub payload: Type,
     /// true for `receive(ActorMail<T> mail)`, false for `receive(mail: T)`.
     pub envelope: bool,
+    /// Only receive(Job<int> job) enables guest-visible job identity and ACK.
+    pub job: bool,
     pub body: Vec<Stmt>,
 }
 
