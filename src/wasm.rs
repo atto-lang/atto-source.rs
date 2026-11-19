@@ -1182,15 +1182,23 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
 
 /// `alloc(size: i32) -> i32`: bump-allocate from `heap_ptr`; panic 3 when the
 /// fixed memory is exhausted. Objects are never freed (no GC in this subset).
+///
+/// Check size against the *remaining* capacity before computing `p + size`.
+/// A wrapped i32 sum could otherwise pass the old upper-bound comparison and
+/// rewind the bump pointer. Unsigned checks also reject negative i32 sizes.
 fn alloc_body(heap_global: u32) -> (Sig, Vec<u8>, Vec<u8>) {
     let limit = (HEAP_PAGES * 65536) as i64;
     let mut c = vec![0x23];
     uleb(&mut c, heap_global as u64);
-    c.extend_from_slice(&[0x21, 1, 0x20, 1, 0x20, 0, 0x6A, 0x41]); // p = heap; p + size
+    c.extend_from_slice(&[0x21, 1, 0x20, 1, 0x41]); // p = heap; p
     sleb(&mut c, limit);
-    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // if (p + size) >u limit
+    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // if p >u limit: fail closed
     panic(&mut c, PANIC_HEAP);
-    c.extend_from_slice(&[0x0B, 0x20, 1, 0x20, 0, 0x6A, 0x24]); // heap = p + size
+    c.extend_from_slice(&[0x0B, 0x20, 0x00, 0x41]); // size
+    sleb(&mut c, limit);
+    c.extend_from_slice(&[0x20, 0x01, 0x6B, 0x4B, 0x04, 0x40]); // if size >u (limit - p)
+    panic(&mut c, PANIC_HEAP);
+    c.extend_from_slice(&[0x0B, 0x20, 1, 0x20, 0, 0x6A, 0x24]); // heap = p + size (now safe)
     uleb(&mut c, heap_global as u64);
     c.extend_from_slice(&[0x20, 1, 0x0B]); // return p
     (Sig(vec![I32], vec![I32]), vec![1u8, 1, I32], c)
@@ -1787,4 +1795,38 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         section(&mut out, 0, a);
     }
     out
+}
+
+#[cfg(test)]
+mod allocator_safety_tests {
+    use super::{alloc_body, HEAP_PAGES};
+
+    #[test]
+    fn allocation_uses_unsigned_remaining_capacity_before_pointer_addition() {
+        let (_, _, body) = alloc_body(1);
+        // The first comparison validates p <= heap limit. The second is
+        // size >u (heap limit - p); only after both may addition occur.
+        let comparisons = body.iter().filter(|&&b| b == 0x4B).count();
+        assert_eq!(comparisons, 2, "allocator must check pointer and size separately");
+        let subtract_then_compare = body.windows(3)
+            .position(|bytes| bytes == [0x6B, 0x4B, 0x04])
+            .expect("remaining-capacity subtraction precedes unsigned check");
+        let pointer_add = body.windows(3)
+            .position(|bytes| bytes == [0x20, 0x00, 0x6A])
+            .expect("allocator must update bump pointer");
+        assert!(subtract_then_compare < pointer_add, "no unchecked wrapped addition");
+    }
+
+    #[test]
+    fn capacity_boundary_rejects_wrapping_negative_and_excessive_sizes() {
+        let limit = HEAP_PAGES * 65_536;
+        let admitted = |heap: u32, size: u32| heap <= limit && size <= limit - heap;
+        assert!(admitted(0, limit));
+        assert!(admitted(limit - 8, 8));
+        assert!(admitted(limit, 0));
+        assert!(!admitted(limit, 1));
+        assert!(!admitted(limit + 1, 0));
+        assert!(!admitted(256, u32::MAX)); // i32(-1) interpreted unsigned
+        assert!(!admitted(256, u32::MAX - 255)); // wrapped p + size
+    }
 }

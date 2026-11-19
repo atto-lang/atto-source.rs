@@ -54,6 +54,8 @@ pub mod state_admission;
 pub mod target_syntax;
 pub mod tuple_binding_admission;
 pub mod tuple_binding_lower;
+/// Static, fail-closed typed tuple element loans; no object guest ABI yet.
+pub mod tuple_ownership_ir;
 pub mod target_typed;
 pub mod wasm;
 
