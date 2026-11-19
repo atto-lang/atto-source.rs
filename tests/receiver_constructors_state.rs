@@ -170,3 +170,50 @@ fn existing_standalone_state_syntax_bypasses_out_of_line_class_state_proposal() 
     let diagnostic = compile(invalid).expect_err("unguarded state must still fail closed");
     assert_eq!(diagnostic.code, "E_STATE_ACCESS", "{diagnostic}");
 }
+
+#[test]
+fn out_of_line_constructor_self_is_not_publishable_before_completion() {
+    // The out-of-line constructor's 'self' is a construction place, not a
+    // borrowable, publishable ordinary object. A hostile caller must not be
+    // able to observe partially initialized fields or leak the object.
+    for body in [
+        "leak(self);",
+        "val aliased = self;",
+        "return self;",
+        "self.get_value();",
+        "leak( (self) );",
+    ] {
+        let source = format!(r#"
+            define class Counter as
+                pub let int value = 0;
+                get_value(): int {{ return self.value; }}
+            end
+            fnc leak(Counter value): void {{ }}
+            constructor(Counter) (int initial): self {{ {body} }}
+            pub fnc main(): int {{ val c = new Counter(42); return c.value; }}
+        "#);
+        let e = compile(&source).expect_err("under-construction self must fail closed");
+        assert_eq!(e.code, "E_OWNERSHIP", "{body}: {e}");
+    }
+}
+
+#[test]
+fn out_of_line_constructor_field_writes_and_quoted_self_remain_valid() {
+    let source = r#"
+        define class Counter as
+            pub let int value = 0;
+        end
+        constructor (Counter) (int initial): self {
+            // self is mentioned here but comments are not AST identifiers.
+            val note = "self is a construction capability";
+            self.value = initial;
+        }
+        pub fnc main(): int {
+            val c = new Counter(42);
+            return c.value;
+        }
+    "#;
+    let guest = compile(source).expect("lexically safe field writes must still compile");
+    assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
+    assert_eq!(guest, compile(source).unwrap());
+}
