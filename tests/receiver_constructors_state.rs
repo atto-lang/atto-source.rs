@@ -31,7 +31,7 @@ fn forward_class_constructor_and_receiver_lower_through_existing_checked_ast() {
     let lowered = lower_class_receivers(&toks, &h).unwrap();
     assert!(!lowered.iter().any(|t| matches!(&t.tok, atto_compiler::lexer::Tok::Ident(s) if s == "declare")));
     let wasm = compile(CLASS).expect("existing class ctor/receiver must emit real checked Wasm");
-    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert_eq!(&wasm[0..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
     assert_eq!(wasm, compile(CLASS).unwrap(), "deterministic guest output");
 }
 
