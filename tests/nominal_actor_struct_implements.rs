@@ -136,3 +136,16 @@ fn unique_trait_default_may_satisfy_interface_but_cannot_emit_unverified_struct_
         pub fnc main(): int { return 0; }
     "#, "E_UNSUPPORTED");
 }
+
+#[test]
+fn forged_mtd_nested_inside_another_callable_cannot_satisfy_an_interface() {
+    rejects(r#"
+        define interface IPing as ping(): int; end
+        define actor A implements IPing as end
+        pub fnc outer(): int {
+            pub mtd (A self) ping(): int { return 42; }
+            return 0;
+        }
+        pub fnc main(): int { return 0; }
+    "#, "E_IMPL_MISSING");
+}
