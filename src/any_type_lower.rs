@@ -213,11 +213,10 @@ pub fn lower(mut t: Vec<Token>) -> R<Vec<Token>> {
     }
     for i in 0..t.len() {
         if word(&t,i,fn_name) && t.get(i+1).is_some_and(|x| x.tok==Tok::LParen)
-            && i != index-2 {
-            if !word(&t,i+2,local_name) || t.get(i+3).is_none_or(|x| x.tok!=Tok::RParen) {
-                return Err(fail(t[i].pos, "E_UNSUPPORTED",
-                    "Any monomorphization only supports direct calls using the proven immutable binding"));
-            }
+            && i != index-2
+            && (!word(&t,i+2,local_name) || t.get(i+3).is_none_or(|x| x.tok!=Tok::RParen)) {
+            return Err(fail(t[i].pos, "E_UNSUPPORTED",
+                "Any monomorphization only supports direct calls using the proven immutable binding"));
         }
     }
     replacement.push((*index, concrete));
