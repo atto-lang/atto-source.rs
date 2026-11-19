@@ -1,5 +1,5 @@
 # Exact public-site preview sources; every entry is a Git blob SHA-1
-# site_commit 789005d4db2871eba1e6c934060038f7b7423214 (site PR #164, draft candidate; not public)
+# site_commit 553bad12d4dcacdcdb835a59b6180c9ed5ffd237 (site PR #164, draft candidate; not public)
 # preview header correction (comments only) from atto-lang.github.io PR #153 at faca5186d4d672ff5eaf843146e0baae3387a068
 # boolean-operators website correction merged in ca3d55cd43470cd49cd6206b0e87f256112f84b9
 # callable-body-styles website correction merged in 67282439d97dcb76ec17b30cfa1177aad12c3ce7
@@ -43,7 +43,7 @@ stdio-channels	912eb5b9b14c8fd2bbd4f7bac27a6d27309a043c
 supervisor-mailbox	ca5cb7c193c65c9d18237122651dc11c40e1b8b2
 suspends	503d8548bbaabb234eaefac11a0e76f47fd5cda7
 tasks-async	046010b7eb46159ff46f9d09f1ba9a7d09ce904c
-traits-interfaces	27e2db37de0b33504c5079fa0e624fea84885cd2
+traits-interfaces	4a98d85f12aba0444a3581cc84dba56ed75b306b
 trap	d58da3fb80e726daee2f66a87191d367d122d23a
 use-using-with	0f148133c967412fa8a25ccc79cfcc8d34158d98
 visibility-modifiers	7427039dd6072f3772830b05e3a80e3dbe5206e2
