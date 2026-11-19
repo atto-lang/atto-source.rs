@@ -83,9 +83,9 @@ fn inheritance_alias_keeps_package_visibility_without_public_widening() {
     let tokens = atto_compiler::nominal_lower::lower(lex(src).unwrap()).unwrap();
     assert!(tokens.windows(4).any(|t|
         matches!(&t[0].tok, atto_compiler::lexer::Tok::Ident(v) if v == "pub")
-        && matches!(t[1].tok, atto_compiler::lexer::Tok::LBracket)
+        && matches!(&t[1].tok, atto_compiler::lexer::Tok::LBracket)
         && matches!(&t[2].tok, atto_compiler::lexer::Tok::Ident(v) if v == "pkg")
-        && matches!(t[3].tok, atto_compiler::lexer::Tok::RBracket)));
+        && matches!(&t[3].tok, atto_compiler::lexer::Tok::RBracket)));
 }
 #[test]
 fn malformed_scopes_and_unsupported_member_kinds_fail_closed() {
