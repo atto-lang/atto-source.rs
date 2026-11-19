@@ -15,6 +15,8 @@ pub mod lexer;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+/// Candidate bounded host-side Job<T> frame codec; not wired to guest ABI.
+pub mod job_envelope;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
