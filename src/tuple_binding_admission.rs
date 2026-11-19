@@ -1,0 +1,180 @@
+//! Target-only tuple destructuring grammar admission.
+//!
+//! This module recognizes *only the binding header*, not guest tuple values,
+//! ownership transfers, compile-time const provenance, or compiled codegen.
+//! After admission, compile() intentionally fails closed with E_UNSUPPORTED.
+//! The syntax contract lives in atto-spec: language/tuple-destructuring-v1.md.
+use crate::diag::{Diagnostic, Pos};
+use crate::lexer::{Tok, Token};
+use std::collections::BTreeSet;
+
+type R<T> = Result<T, Diagnostic>;
+const MAX_BINDERS: usize = 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingMode { Let, Val, Const }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TupleMember {
+    pub name: Option<String>, // None is the discard-only '_' wildcard
+    pub mode: BindingMode,
+    pub mutable_referent: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootAlias {
+    pub name: String,
+    pub mode: BindingMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TupleBinding {
+    pub pos: Pos,
+    pub members: Vec<TupleMember>,
+    pub alias: Option<RootAlias>,
+}
+
+fn mode(tok: Option<&Tok>) -> Option<BindingMode> {
+    match tok {
+        Some(Tok::Ident(s)) if s == "let" => Some(BindingMode::Let),
+        Some(Tok::Ident(s)) if s == "val" => Some(BindingMode::Val),
+        Some(Tok::Ident(s)) if s == "const" => Some(BindingMode::Const),
+        _ => None,
+    }
+}
+
+fn word(tok: Option<&Tok>, spelling: &str) -> bool {
+    matches!(tok, Some(Tok::Ident(s)) if s == spelling)
+}
+
+fn tok(toks: &[Token], i: usize) -> Option<&Tok> {
+    toks.get(i).map(|t| &t.tok)
+}
+
+fn fail(toks: &[Token], i: usize, code: &'static str, msg: &str) -> Diagnostic {
+    Diagnostic::new(toks.get(i).map_or(Pos::default(), |t| t.pos), code, msg)
+}
+
+fn parse_one(toks: &[Token], start: usize, outer: Option<BindingMode>) -> R<(TupleBinding, usize)> {
+    let open = if outer.is_some() { start + 1 } else { start };
+    if tok(toks, open) != Some(&Tok::LParen) {
+        return Err(fail(toks, open, "E_SYNTAX", "tuple binding requires '('"));
+    }
+    let mut i = open + 1;
+    let mut members = Vec::new();
+    let mut names = BTreeSet::new();
+    let mut saw_comma = false;
+
+    while tok(toks, i) != Some(&Tok::RParen) {
+        if matches!(tok(toks, i), None | Some(Tok::Eof)) {
+            return Err(fail(toks, i, "E_SYNTAX", "unclosed tuple binding"));
+        }
+        if members.len() >= MAX_BINDERS {
+            return Err(fail(toks, i, "E_SOURCE_LIMIT", "tuple binding exceeds 1024 elements"));
+        }
+
+        let explicit = mode(tok(toks, i));
+        if explicit.is_some() { i += 1; }
+        if outer.is_none() && explicit.is_none() && !word(tok(toks, i), "_") {
+            return Err(fail(toks, i, "E_SYNTAX", "each element needs let, val or const without an outer binding kind"));
+        }
+        let inherited = explicit.or(outer).unwrap_or(BindingMode::Val);
+        let mutable_referent = word(tok(toks, i), "mut");
+        if mutable_referent { i += 1; }
+
+        let name = match tok(toks, i) {
+            Some(Tok::Ident(s)) if s == "_" => {
+                if mutable_referent || explicit.is_some() {
+                    return Err(fail(toks, i, "E_SYNTAX", "discard '_' cannot have binding qualifiers"));
+                }
+                None
+            },
+            Some(Tok::Ident(s)) if s != "let" && s != "val" && s != "const" && s != "mut" => Some(s.clone()),
+            _ => return Err(fail(toks, i, "E_SYNTAX", "expected tuple binding name or '_'")),
+        };
+        if let Some(ref name) = name {
+            if !names.insert(name.clone()) {
+                return Err(fail(toks, i, "E_DUPLICATE", "duplicate tuple binding name"));
+            }
+        }
+        i += 1;
+
+        // Element type annotations are scanned without committing to a
+        // lowering grammar. The production parser will verify the type once
+        // tuple lowering is enabled; this profile emits E_UNSUPPORTED.
+        if tok(toks, i) == Some(&Tok::Colon) {
+            i += 1;
+            let begin = i;
+            let mut generics = 0usize;
+            while let Some(t) = tok(toks, i) {
+                if (t == &Tok::Comma || t == &Tok::RParen) && generics == 0 { break; }
+                if t == &Tok::Eof { break; }
+                if t == &Tok::Lt { generics += 1; }
+                if t == &Tok::Gt {
+                    if generics == 0 { break; }
+                    generics -= 1;
+                }
+                i += 1;
+            }
+            if i == begin || generics != 0 {
+                return Err(fail(toks, i, "E_SYNTAX", "invalid tuple binder type annotation"));
+            }
+        }
+
+        members.push(TupleMember { name, mode: inherited, mutable_referent });
+        if tok(toks, i) == Some(&Tok::Comma) {
+            saw_comma = true;
+            i += 1;
+        } else if tok(toks, i) != Some(&Tok::RParen) {
+            return Err(fail(toks, i, "E_SYNTAX", "expected ',' or ')' after tuple binder"));
+        }
+    }
+    if members.len() == 1 && !saw_comma {
+        return Err(fail(toks, i, "E_SYNTAX", "singleton tuple binding needs trailing comma"));
+    }
+    i += 1; // ')'
+
+    let alias = if word(tok(toks, i), "as") {
+        i += 1;
+        let override_mode = mode(tok(toks, i));
+        if override_mode.is_some() { i += 1; }
+        let alias_mode = match override_mode.or(outer) {
+            Some(mode) => mode,
+            None => return Err(fail(toks, i, "E_SYNTAX", "explicit tuple binder list requires as let/val/const for root alias")),
+        };
+        let alias_name = match tok(toks, i) {
+            Some(Tok::Ident(s)) if !["let", "val", "const", "mut", "_"].contains(&s.as_str()) => s.clone(),
+            _ => return Err(fail(toks, i, "E_SYNTAX", "expected root alias name")),
+        };
+        if !names.insert(alias_name.clone()) {
+            return Err(fail(toks, i, "E_DUPLICATE", "root alias conflicts with tuple element"));
+        }
+        i += 1;
+        Some(RootAlias { name: alias_name, mode: alias_mode })
+    } else { None };
+
+    if tok(toks, i) != Some(&Tok::Assign) {
+        return Err(fail(toks, i, "E_SYNTAX", "tuple destructuring requires '=' before initializer"));
+    }
+    Ok((TupleBinding { pos: toks[start].pos, members, alias }, i + 1))
+}
+
+/// Inspect tuple destructuring headers anywhere in the token stream, ignoring
+/// strings/comments because lex() has already normalized them. No codegen.
+pub fn inspect(toks: &[Token]) -> R<Vec<TupleBinding>> {
+    let mut found = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < toks.len() {
+        let outer = mode(tok(toks, i));
+        let explicit_tuple = tok(toks, i) == Some(&Tok::LParen)
+            && mode(tok(toks, i + 1)).is_some();
+        if (outer.is_some() && tok(toks, i + 1) == Some(&Tok::LParen)) || explicit_tuple {
+            let (binding, next) = parse_one(toks, i, if explicit_tuple { None } else { outer })?;
+            found.push(binding);
+            i = next;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(found)
+}
