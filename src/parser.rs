@@ -644,7 +644,7 @@ impl Parser {
                         return Err(Diagnostic::new(self.pos(), "E_STATE",
                             "protected state fields must start with let, as in Java"));
                     }
-                    let parsed = self.parse_type_first_field(false, FieldMode::ActorState)?;
+                    let parsed = self.parse_type_first_field(FieldVisibility::Private, FieldMode::ActorState)?;
                     if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
                         return Err(Diagnostic::new(parsed.field.pos, "E_UNSUPPORTED_TYPE",
                             "Worker-local state container admits only owned int/bool fields"));
@@ -798,13 +798,36 @@ impl Parser {
                 return Err(unsupported(self.pos(), "annotations"));
             }
             let mpos = self.pos();
-            let public = if self.eat_word("pub") {
-                true
+            let visibility = if self.eat_word("pub") {
+                if self.eat(&Tok::LBracket) {
+                    if !self.eat_word("pkg") || !self.eat(&Tok::RBracket) {
+                        return Err(Diagnostic::new(mpos, "E_SYNTAX",
+                            "class field visibility accepts only pub[pkg]"));
+                    }
+                    if actor {
+                        return Err(unsupported(mpos, "pub[pkg] actor members"));
+                    }
+                    FieldVisibility::Package
+                } else {
+                    FieldVisibility::Public
+                }
+            } else if self.eat_word("private") {
+                if *self.peek() == Tok::LBracket {
+                    return Err(Diagnostic::new(mpos, "E_SYNTAX",
+                        "private is unqualified; use private or pub[pkg]"));
+                }
+                FieldVisibility::Private
             } else {
-                self.eat_word("private");
-                false
+                FieldVisibility::Private
             };
+            let public = visibility == FieldVisibility::Public;
             let word = self.word_at(0).map(str::to_owned);
+            if visibility == FieldVisibility::Package
+                && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "method" | "receive"))
+                    || *self.peek_at(1) == Tok::LParen)
+            {
+                return Err(unsupported(mpos, "pub[pkg] on non-field class members"));
+            }
             match word.as_deref() {
                 Some("static") => {
                     if actor {
