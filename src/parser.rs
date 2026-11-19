@@ -1066,7 +1066,7 @@ impl Parser {
                     let f = self.parse_type_first_field(visibility, mode, binding, referent_mutable)?;
                     if f.init_was_colon {
                         return Err(Diagnostic::new(
-                            f.field.init.pos,
+                            f.field.pos,
                             "E_SYNTAX",
                             "a 'let'/'val'/'const' field initializer uses '='",
                         ));
@@ -1170,11 +1170,11 @@ impl Parser {
             mode: FieldMode::Final,
             binding: FieldBinding::Final,
             referent_mutable: false,
-            init,
+            init: Some(init),
         })
     }
 
-    /// `type name (":" | "=") expr`.
+    /// `type name (":" | "=") expr` or deferred `final T name;`.
     fn parse_type_first_field(
         &mut self, visibility: FieldVisibility, mode: FieldMode,
         binding: FieldBinding, referent_mutable: bool,
@@ -1185,10 +1185,22 @@ impl Parser {
             true
         } else if self.eat(&Tok::Assign) {
             false
+        } else if binding == FieldBinding::Final {
+            // No runtime fallback value is synthesized: this is an explicit
+            // constructor-owned, exactly-once initialization obligation.
+            self.terminator()?;
+            return Ok(TypeFirstField {
+                field: Field {
+                    name, pos, ty, visibility, mode, binding,
+                    referent_mutable, init: None,
+                },
+                init_was_colon: false,
+            });
         } else {
-            return Err(unsupported(self.pos(), "fields without an initializer"));
+            return Err(unsupported(self.pos(),
+                "fields without an initializer (only 'final' supports checked deferred assignment)"));
         };
-        let init = self.parse_expr()?;
+        let init = Some(self.parse_expr()?);
         self.terminator()?;
         Ok(TypeFirstField {
             field: Field {

@@ -366,6 +366,9 @@ struct FieldInfo {
     mode: FieldMode,
     /// Do not conflate Val, Final and Const with the browser storage mode.
     binding: FieldBinding,
+    /// Only final fields with no declaration initializer may be written
+    /// exactly once during construction; the CFG gate proves assignment.
+    deferred_final: bool,
     /// Future referent-write authorization is independent of rebinding.
     #[allow(dead_code)]
     referent_mutable: bool,
@@ -1016,8 +1019,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             // runtime initialization merely because Val/Final share a storage mode.
             // Non-const initializer effects are still intentionally unsupported
             // by the current restricted browser field-initialization backend.
-            if !actor && f.binding == FieldBinding::Const && !const_init(&f.init) {
-                return Err(Diagnostic::new(f.init.pos, "E_CONST",
+            if !actor && f.binding == FieldBinding::Const &&
+                !f.init.as_ref().is_some_and(const_init) {
+                return Err(Diagnostic::new(f.pos, "E_CONST",
                     format!("class constant '{}.{}' requires a compile-time initializer", owner, f.name)));
             }
             let ty = res(f.ty)?;
@@ -1045,6 +1049,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 visibility: f.visibility,
                 mode: f.mode,
                 binding: f.binding,
+                deferred_final: f.binding == FieldBinding::Final && f.init.is_none(),
                 referent_mutable: f.referent_mutable,
                 slot: if actor { global_base + i as u32 } else { i as u32 * FIELD_BYTES },
             });
@@ -1239,8 +1244,13 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let me = Type::Class(ci as u32);
         let mut field_inits = Vec::new();
         for (f, fi) in c.fields.iter().zip(&info.fields) {
-            let v = field_init(&g, f, fi.ty, &c.name, false, &mut imports, &mut data)?;
-            field_inits.push((fi.slot, fi.ty, v));
+            if let Some(v) = field_init(&g, f, fi.ty, &c.name, false, &mut imports, &mut data)? {
+                field_inits.push((fi.slot, fi.ty, v));
+            }
+        }
+        if c.ctor.is_none() && info.fields.iter().any(|f| f.deferred_final) {
+            return Err(Diagnostic::new(c.pos, "E_INIT",
+                format!("class '{}' has deferred final fields but no constructor", c.name)));
         }
         if let (Some(k), Some(kidx)) = (&c.ctor, info.ctor_idx) {
             let mut named = vec![("self", me, false)];
@@ -1255,6 +1265,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ctor: true,
                 is_static: false,
             };
+            constructor_definite_init(&k.body, &info.fields, k.pos)?;
             let body = body_check(
                 &g,
                 BodyCheckInput {
@@ -1382,7 +1393,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let owner = Owner::Actor { a: ai as u32 };
         let mut inits = Vec::new();
         for (f, fi) in a.fields.iter().zip(&info.fields) {
-            inits.push((fi.slot, field_init(&g, f, fi.ty, &a.name, true, &mut imports, &mut data)?));
+            inits.push((fi.slot, field_init(&g, f, fi.ty, &a.name, true, &mut imports, &mut data)?
+                .ok_or_else(|| Diagnostic::new(f.pos, "E_INIT", "actor fields require initializers"))?));
         }
         if let (Some(r), Some(ridx)) = (&a.receive, info.receive_idx) {
             let label = format!("{}.receive", a.name);
@@ -1740,10 +1752,15 @@ fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
     }
 }
 
-fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, imports: &mut Vec<Import>, data: &mut Vec<u8>) -> R<TE> {
-    if !const_init(&f.init) {
+fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, imports: &mut Vec<Import>, data: &mut Vec<u8>) -> R<Option<TE>> {
+    let Some(init) = f.init.as_ref() else {
+        // Incomplete final storage is never read before a proven constructor
+        // assignment. No synthetic initializer or implicit default is emitted.
+        return Ok(None);
+    };
+    if !const_init(init) {
         return Err(Diagnostic::new(
-            f.init.pos,
+            init.pos,
             "E_UNSUPPORTED",
             format!(
                 "field initializer '{owner}.{}' must be a constant expression; initialize computed values in the constructor",
@@ -1752,10 +1769,10 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
         ));
     }
     let mut cx = FnCx::new(g, Owner::FieldInit { actor }, Type::Void, imports, data);
-    let v = cx.value(&f.init)?;
+    let v = cx.value(init)?;
     if v.ty != ty {
         return Err(type_err(
-            f.init.pos,
+            init.pos,
             format!(
                 "field '{owner}.{}' has type {} but its initializer has type {}",
                 f.name,
@@ -1764,11 +1781,245 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
             ),
         ));
     }
-    Ok(v)
+    Ok(Some(v))
 }
 
 /// Check one callable body. `named` are the wasm parameters in order.
 #[allow(clippy::too_many_arguments)]
+
+#[derive(Clone)]
+struct ConstructorInitFlow {
+    /// Every currently reachable path has assigned the field.
+    definite: BTreeSet<String>,
+    /// At least one reachable path has assigned the field. A subsequent
+    /// write would violate exactly-once final semantics on that path.
+    possible: BTreeSet<String>,
+}
+
+fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) -> R<()> {
+    match &e.kind {
+        ExprKind::Member(base, name) if matches!(base.kind, ExprKind::SelfRef) => {
+            if fields.iter().any(|f| f.deferred_final && f.name == *name)
+                && !flow.definite.contains(name) {
+                return Err(Diagnostic::new(e.pos, "E_INIT_READ",
+                    format!("read of deferred final field '{name}' before definite initialization")));
+            }
+            Ok(())
+        }
+        ExprKind::Member(base, _) => ctor_init_expr(base, flow, fields),
+        ExprKind::MethodCall(base, _, args) => {
+            ctor_init_expr(base, flow, fields)?;
+            for arg in args { ctor_init_expr(arg, flow, fields)?; }
+            Ok(())
+        }
+        ExprKind::Unary(_, v) | ExprKind::Trap(v) | ExprKind::Propagate(v)
+        | ExprKind::Ownership(_, _, v) => ctor_init_expr(v, flow, fields),
+        ExprKind::Binary(_, a, b) => {
+            ctor_init_expr(a, flow, fields)?;
+            ctor_init_expr(b, flow, fields)
+        }
+        ExprKind::Ternary(cond, yes, no) => {
+            ctor_init_expr(cond, flow, fields)?;
+            ctor_init_expr(yes, flow, fields)?;
+            ctor_init_expr(no, flow, fields)
+        }
+        ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) => {
+            for arg in args { ctor_init_expr(arg, flow, fields)?; }
+            Ok(())
+        }
+        ExprKind::Lambda { body, .. } => {
+            // No constructor state can escape into closures: the companion
+            // shared self-ownership admission rejects those captures. Here
+            // check reads conservatively without granting a write afterward.
+            let mut nested = flow.clone();
+            match body {
+                LambdaBody::Expression(e) => ctor_init_expr(e, &nested, fields),
+                LambdaBody::Statement(s) =>
+                    ctor_init_stmts(std::slice::from_ref(s.as_ref()),
+                        &mut nested, fields, true).map(|_| ()),
+                LambdaBody::Block(stmts) =>
+                    ctor_init_stmts(stmts, &mut nested, fields, true).map(|_| ()),
+            }
+        }
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef |
+        ExprKind::StateRead(_) | ExprKind::Spawn(_) => Ok(()),
+    }
+}
+
+fn ctor_require_initialized(flow: &ConstructorInitFlow, fields: &[FieldInfo], pos: Pos) -> R<()> {
+    for field in fields {
+        if field.deferred_final && !flow.definite.contains(&field.name) {
+            return Err(Diagnostic::new(pos, "E_INIT",
+                format!("constructor may complete without initializing final field '{}'", field.name)));
+        }
+    }
+    Ok(())
+}
+
+/// Returns true if execution can still reach the next statement normally.
+/// Exceptional paths need no successful object publication. The analysis
+/// never relies on Wasm's zero-initialized allocation as a semantic default.
+fn ctor_init_stmts(
+    body: &[Stmt], flow: &mut ConstructorInitFlow,
+    fields: &[FieldInfo], ambiguous: bool,
+) -> R<bool> {
+    for stmt in body {
+        let live = match stmt {
+            Stmt::Bind { init, .. } => {
+                ctor_init_expr(init, flow, fields)?; true
+            }
+            Stmt::Assign { value, .. } => {
+                ctor_init_expr(value, flow, fields)?; true
+            }
+            Stmt::FieldAssign { target, field, value, pos } => {
+                if !matches!(target.kind, ExprKind::SelfRef) {
+                    ctor_init_expr(target, flow, fields)?;
+                }
+                // Evaluate the RHS *before* assignment. self.f = self.f
+                // cannot manufacture initialization out of a prior read.
+                ctor_init_expr(value, flow, fields)?;
+                if fields.iter().any(|f| f.deferred_final && f.name == *field)
+                    && matches!(target.kind, ExprKind::SelfRef) {
+                    if ambiguous {
+                        return Err(Diagnostic::new(*pos, "E_INIT_FLOW",
+                            "deferred final write inside a loop, deferred callback, match or exceptional region is not yet proven exactly once"));
+                    }
+                    if !flow.possible.insert(field.clone()) {
+                        return Err(Diagnostic::new(*pos, "E_INIT_ONCE",
+                            format!("final field '{field}' might be initialized more than once")));
+                    }
+                    flow.definite.insert(field.clone());
+                }
+                true
+            }
+            Stmt::Expr(e) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) => {
+                ctor_init_expr(e, flow, fields)?; true
+            }
+            Stmt::Return(expr, pos) => {
+                if let Some(e) = expr { ctor_init_expr(e, flow, fields)?; }
+                ctor_require_initialized(flow, fields, *pos)?;
+                false
+            }
+            Stmt::Throw(e, _) | Stmt::Raise(e, _) => {
+                ctor_init_expr(e, flow, fields)?; false
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => false,
+            Stmt::Block(stmts) | Stmt::StateWrite { body: stmts, .. } =>
+                ctor_init_stmts(stmts, flow, fields, ambiguous)?,
+            Stmt::If { arms, otherwise, .. } => {
+                // Condition effects do not initialize fields. Merge all
+                // normal exits: intersection for definite, union for possible.
+                let before = flow.clone();
+                let mut survivors = Vec::new();
+                for (condition, arm) in arms {
+                    ctor_init_expr(condition, &before, fields)?;
+                    let mut branch = before.clone();
+                    if ctor_init_stmts(arm, &mut branch, fields, ambiguous)? {
+                        survivors.push(branch);
+                    }
+                }
+                if let Some(other) = otherwise {
+                    let mut branch = before.clone();
+                    if ctor_init_stmts(other, &mut branch, fields, ambiguous)? {
+                        survivors.push(branch);
+                    }
+                } else {
+                    survivors.push(before);
+                }
+                if survivors.is_empty() {
+                    false
+                } else {
+                    let mut merged = survivors[0].clone();
+                    for branch in survivors.iter().skip(1) {
+                        merged.definite.retain(|name| branch.definite.contains(name));
+                        merged.possible.extend(branch.possible.iter().cloned());
+                    }
+                    *flow = merged;
+                    true
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                ctor_init_expr(cond, flow, fields)?;
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
+            Stmt::Loop { body, .. } => {
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
+            Stmt::For { init, cond, update, body, .. } => {
+                if let Some(init) = init {
+                    if !ctor_init_stmts(std::slice::from_ref(init.as_ref()),
+                        flow, fields, ambiguous)? { return Ok(false); }
+                }
+                if let Some(cond) = cond { ctor_init_expr(cond, flow, fields)?; }
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                if let Some(update) = update {
+                    ctor_init_stmts(std::slice::from_ref(update.as_ref()),
+                        &mut nested, fields, true)?;
+                }
+                true
+            }
+            Stmt::ForIn { source, body, .. } => {
+                ctor_init_expr(source, flow, fields)?;
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
+            Stmt::Try { body, catch, finally, .. } => {
+                // Exception edges / cleanup order are not yet part of the
+                // constructor CFG. Inspect all reads but do not allow
+                // deferred-final assignments in these ambiguous regions.
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                if let Some((_, handler)) = catch {
+                    let mut nested = flow.clone();
+                    ctor_init_stmts(handler, &mut nested, fields, true)?;
+                }
+                if let Some(cleanup) = finally {
+                    let mut nested = flow.clone();
+                    ctor_init_stmts(cleanup, &mut nested, fields, true)?;
+                }
+                true
+            }
+            Stmt::Defer { args, body, .. } | Stmt::Recover { args, body, .. } => {
+                for arg in args { ctor_init_expr(arg, flow, fields)?; }
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
+            Stmt::Match { subject, arms, .. } => {
+                ctor_init_expr(subject, flow, fields)?;
+                for arm in arms {
+                    if let Some(guard) = &arm.guard { ctor_init_expr(guard, flow, fields)?; }
+                    let mut nested = flow.clone();
+                    ctor_init_stmts(&arm.body, &mut nested, fields, true)?;
+                }
+                true
+            }
+        };
+        if !live { return Ok(false); }
+    }
+    Ok(true)
+}
+
+fn constructor_definite_init(body: &[Stmt], fields: &[FieldInfo], pos: Pos) -> R<()> {
+    let initial: BTreeSet<String> = fields.iter()
+        .filter(|f| !f.deferred_final).map(|f| f.name.clone()).collect();
+    let mut flow = ConstructorInitFlow {
+        definite: initial.clone(),
+        possible: initial,
+    };
+    if ctor_init_stmts(body, &mut flow, fields, false)? {
+        ctor_require_initialized(&flow, fields, pos)?;
+    }
+    Ok(())
+}
+
 /// A constructor receiver is a temporary initialization capability, not a
 /// publishable reference. This admission pass operates on the *parsed AST*,
 /// so both inline and out-of-line constructors have exactly the same rule.
@@ -3134,7 +3385,11 @@ impl<'a> FnCx<'a> {
                     }
                 };
                 let (offset, fty, mode) = (f.slot, f.ty, f.mode);
-                if !f.binding.rebindable() {
+                // Deferred final fields are the sole immutable exception:
+                // the separate flow-sensitive AST gate proved exactly one
+                // constructor write on all successful paths. Initialized
+                // final/val/const fields remain non-rebindable.
+                if !f.binding.rebindable() && !(ctor && f.deferred_final) {
                     return Err(Diagnostic::new(
                         pos,
                         "E_IMMUTABLE",
