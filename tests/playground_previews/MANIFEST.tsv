@@ -1,5 +1,5 @@
 # Exact public-site preview sources; every entry is a Git blob SHA-1
-# site_commit 553bad12d4dcacdcdb835a59b6180c9ed5ffd237 (site PR #164, draft candidate; not public)
+# site_commit 0cdf478205bf9e4423da88834e5f8b2fe555119d (site PR #164, draft candidate; not public)
 # preview header correction (comments only) from atto-lang.github.io PR #153 at faca5186d4d672ff5eaf843146e0baae3387a068
 # boolean-operators website correction merged in ca3d55cd43470cd49cd6206b0e87f256112f84b9
 # callable-body-styles website correction merged in 67282439d97dcb76ec17b30cfa1177aad12c3ce7
@@ -14,7 +14,7 @@ callable-body-styles	d6e0a920ef8d1dd4247db42c75bef1ce180a1f74
 channel-bounded	4c272c8a288a84ef6842651722bbf4ed3d430035
 channel-probe	0f8a65616e09fb7560c025f3e00dc4040402ebec
 channel-unbounded	70e7325e584aa688eccfd7ff0a72759f70b81424
-closures-functors	85910762679db70d4d6cc95a4b4ec26027c26035
+closures-functors	c3a188515825eb4cdb0350449621388c6f3d3691
 data-shapes	92868ccf56f7683bd79a4615bf957b5c432c4958
 defer-recover	5395c8159b1f7d111ea80d22ea6590960f340c1e
 diamond-inheritance	6e9aa419f7a713ae576527961773f5bc3af0fd8a
