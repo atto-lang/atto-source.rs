@@ -4,7 +4,7 @@
 //! guest references. The runtime compiler must continue rejecting object
 //! tuples until scoped-loan lowering, drop and actor transfer are proven.
 //! Every tuple has one owner: non-Copy names are rooted loans, not copies.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use crate::diag::{Diagnostic, Pos};
 use crate::tuple_binding_admission::{BindingMode, TupleMember};
 
@@ -79,6 +79,8 @@ pub struct Projection {
     pub index: usize,
     pub binding: BindingMode,
     pub operation: ProjectionOp,
+    /// Referent mutability is independent of local name rebinding.
+    pub mutable_referent: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlotState { Available, Moved }
@@ -143,6 +145,9 @@ impl TupleOwner {
         Ok(id)
     }
     pub fn borrow_root(&mut self, kind: LoanKind, scope: u32, pos: Pos) -> R<u64> {
+        if self.mode == BindingMode::Const && kind == LoanKind::Exclusive {
+            return Err(err(pos, "E_CONST_MUT_TARGET", "cannot mutably loan a constexpr tuple root"));
+        }
         self.begin_loan(LoanTarget::Root, kind, scope, pos)
     }
     pub fn borrow_field(&mut self, index: usize, kind: LoanKind, scope: u32, pos: Pos) -> R<u64> {
@@ -169,8 +174,12 @@ impl TupleOwner {
         }
         let mut proposed = self.clone();
         let mut result = Vec::new();
+        let mut names = BTreeSet::new();
         for (i, member) in members.iter().enumerate() {
             let Some(name) = &member.name else { continue; };
+            if !names.insert(name.as_str()) {
+                return Err(err(pos, "E_DUPLICATE", "tuple element binding name used more than once"));
+            }
             let field = proposed.checked_field(i, pos)?;
             if member.annotation.as_ref().is_some_and(|text| !field.matches_annotation(text)) {
                 return Err(err(pos, "E_TYPE", "tuple element type annotation mismatch"));
@@ -198,6 +207,7 @@ impl TupleOwner {
             };
             result.push(Projection {
                 name: name.clone(), index: i, binding: member.mode, operation,
+                mutable_referent: member.mutable_referent,
             });
         }
         *self = proposed;
@@ -239,6 +249,9 @@ impl TupleOwner {
         }
         self.epoch = self.epoch.checked_add(1).ok_or_else(||
             err(pos, "E_SOURCE_LIMIT", "tuple root epoch overflow"))?;
+        // Rebinding could install a runtime value: previous literal
+        // provenance must not certify a subsequent const projection.
+        self.constexpr = false;
         Ok(())
     }
     pub fn copy_field(&self, index: usize, pos: Pos) -> R<()> {
