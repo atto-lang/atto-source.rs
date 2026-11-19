@@ -1104,13 +1104,13 @@ impl Parser {
                     m.fields.push(f);
                 }
                 Some(_) if matches!(self.peek_at(1), Tok::Ident(_)) && !actor => {
-                    // Bare type-first class fields have the same immutable
-                    // binding semantics as 'val', for every scalar/object T.
-                    // Explicit 'let' is required for rebinding; 'mut' is a
-                    // separate referent-write request. Local type-first
-                    // shorthands retain their own compile-time const rules.
+                    // Bare type-first class fields default to 'let' for every
+                    // type, per accepted atto-spec class-field-binding-defaults-v1.
+                    // Field binding does not grant mutable receiver authority;
+                    // explicit val/final/const remain non-rebindable and
+                    // separate referent 'mut' never bypasses loan checks.
                     let f = self.parse_type_first_field(
-                        visibility, FieldMode::Final, FieldBinding::Val, false
+                        visibility, FieldMode::Constructor, FieldBinding::Let, false
                     )?;
                     m.fields.push(f.field);
                 }

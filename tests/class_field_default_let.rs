@@ -1,10 +1,10 @@
-//! Class-field implicit val regression: this is parser/compiler-subset
+//! Class-field implicit let regression: this is parser/compiler-subset
 //! evidence, NOT proof of mutable receiver, val mut, const evaluation or AOT parity.
 use atto_compiler::{compile, lexer::lex, parser::Parser};
 use atto_compiler::ast::{FieldBinding, FieldMode};
 
 #[test]
-fn bare_class_fields_are_val_for_scalar_string_and_class_types() {
+fn bare_class_fields_are_let_for_scalar_string_and_class_types() {
     let source = r#"
         define class Leaf as
           pub int amount = 5;
@@ -24,9 +24,9 @@ fn bare_class_fields_are_val_for_scalar_string_and_class_types() {
     let holder = parsed.classes.iter().find(|c| c.name == "Holder").unwrap();
     for field_name in ["count", "name", "child"] {
         let field = holder.fields.iter().find(|f| f.name == field_name).unwrap();
-        assert_eq!(field.mode, FieldMode::Final,
+        assert_eq!(field.mode, FieldMode::Constructor,
             "implicit class-field mode must be independent of primitive or object type: {field_name}");
-        assert_eq!(field.binding, FieldBinding::Val, "{field_name} must be val");
+        assert_eq!(field.binding, FieldBinding::Let, "{field_name} must be let");
         assert!(!field.referent_mutable, "{field_name} must not imply mut");
     }
     let explicit_let = holder.fields.iter().find(|f| f.name == "explicit_count").unwrap();
@@ -47,7 +47,7 @@ fn bare_class_fields_are_val_for_scalar_string_and_class_types() {
 }
 
 #[test]
-fn implicit_and_explicit_val_both_compile_into_guest_wasm() {
+fn implicit_and_explicit_let_both_compile_into_guest_wasm() {
     let source = r#"
         define class Counter as
           pub int count = 9;
@@ -57,9 +57,9 @@ fn implicit_and_explicit_val_both_compile_into_guest_wasm() {
           return value.count;
         }
     "#;
-    for src in [source.to_owned(), source.replace("pub int count = 9;", "pub val int count = 9;")] {
+    for src in [source.to_owned(), source.replace("pub int count = 9;", "pub let int count = 9;")] {
         let parsed = Parser::new(lex(&src).unwrap()).parse_program().unwrap();
-        assert_eq!(parsed.classes[0].fields[0].mode, FieldMode::Final);
+        assert_eq!(parsed.classes[0].fields[0].mode, FieldMode::Constructor);
         let guest = compile(&src).unwrap();
         assert_eq!(&guest[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
     }
@@ -81,7 +81,7 @@ fn class_val_and_final_fields_cannot_be_reassigned_from_constructor() {
 }
 
 #[test]
-fn val_default_does_not_grant_mutable_readonly_receiver() {
+fn let_default_does_not_grant_mutable_readonly_receiver() {
     let source = r#"
         define class Counter as
           pub int count = 1;
@@ -90,7 +90,7 @@ fn val_default_does_not_grant_mutable_readonly_receiver() {
         pub fnc main(): int { return 0; }
     "#;
     let diagnostic = compile(source).unwrap_err();
-    assert_eq!(diagnostic.code, "E_IMMUTABLE", "{diagnostic}");
+    assert_eq!(diagnostic.code, "E_OWNERSHIP", "{diagnostic}");
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn val_mut_and_let_mut_retain_separate_binding_and_referent_flags() {
           pub val mut int anchored = 7;
           pub let mut int replaceable = 8;
           pub mut int short_let = 9;
-          pub int default_val = 10;
+          pub int default_let = 10;
           pub const int fixed = 11;
         end
         pub fnc main(): int { return 0; }
@@ -111,7 +111,7 @@ fn val_mut_and_let_mut_retain_separate_binding_and_referent_flags() {
     assert_eq!((f[0].binding, f[0].referent_mutable), (FieldBinding::Val, true));
     assert_eq!((f[1].binding, f[1].referent_mutable), (FieldBinding::Let, true));
     assert_eq!((f[2].binding, f[2].referent_mutable), (FieldBinding::Let, true));
-    assert_eq!((f[3].binding, f[3].referent_mutable), (FieldBinding::Val, false));
+    assert_eq!((f[3].binding, f[3].referent_mutable), (FieldBinding::Let, false));
     assert_eq!((f[4].binding, f[4].referent_mutable), (FieldBinding::Const, false));
 }
 
@@ -142,18 +142,23 @@ fn val_mut_binding_cannot_be_reassigned_in_constructor() {
 }
 
 #[test]
-fn bare_val_cannot_be_reassigned_in_constructor_but_explicit_let_can() {
-    let denied = r#"
+fn bare_let_and_explicit_let_both_admit_constructor_assignment() {
+    let source = r#"
         define class Counter as
             pub int count = 1;
             constructor() { self.count = 3; }
         end
         pub fnc main(): int { return 0; }
     "#;
-    let diagnostic = compile(denied).unwrap_err();
-    assert_eq!(diagnostic.code, "E_IMMUTABLE", "{diagnostic}");
-
-    let granted = denied.replace("pub int count = 1;", "pub let int count = 1;");
-    let wasm = compile(&granted).expect("explicit let must retain constructor write authority");
-    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+    // These are exactly equivalent class bindings, not an accidental
+    // mutable-receiver exemption. Constructor authority remains checked.
+    for src in [source.to_owned(),
+        source.replace("pub int count = 1;", "pub let int count = 1;")] {
+        let guest = compile(&src).expect("constructor may assign let field");
+        assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
+    }
+    // Explicit val retains immutable binding semantics.
+    let fixed = source.replace("pub int count = 1;", "pub val int count = 1;");
+    let d = compile(&fixed).unwrap_err();
+    assert_eq!(d.code, "E_IMMUTABLE", "{d}");
 }
