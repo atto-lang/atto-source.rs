@@ -237,7 +237,7 @@ fn inline_constructor_matches_out_of_line_prepublication_ownership() {
             define class Counter as
                 pub let int value = 0;
                 constructor(int initial) {{ {body} }}
-                peek(): int {{ return self.value; }}
+                pub peek(): int {{ return self.value; }}
             end
             fnc publish(Counter c): void {{ }}
             pub fnc main(): int {{ val c = new Counter(42); return c.peek(); }}
@@ -245,7 +245,7 @@ fn inline_constructor_matches_out_of_line_prepublication_ownership() {
         let external = format!(r#"
             define class Counter as
                 pub let int value = 0;
-                peek(): int {{ return self.value; }}
+                pub peek(): int {{ return self.value; }}
             end
             constructor (Counter)(int initial): self {{ {body} }}
             fnc publish(Counter c): void {{ }}
@@ -268,7 +268,7 @@ fn constructor_shared_guard_allows_direct_field_initialization_and_postpublicati
                 val note = "self.peek()";
                 self.value = initial;
             }
-            peek(): int { return self.value; }
+            pub peek(): int { return self.value; }
         end
         pub fnc main(): int {
             val c = new Counter(42);
@@ -278,7 +278,7 @@ fn constructor_shared_guard_allows_direct_field_initialization_and_postpublicati
     let external = r#"
         define class Counter as
             pub let int value = 0;
-            peek(): int { return self.value; }
+            pub peek(): int { return self.value; }
         end
         constructor(Counter) (int initial): self {
             val note = "self.peek()";
