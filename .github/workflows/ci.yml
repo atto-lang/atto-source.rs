@@ -21,6 +21,12 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git rev-parse HEAD
           git rev-parse HEAD^{tree}
+      - name: Verify byte-identical canonical AOT copy admission source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object src/copy_graph_v1.rs)" = "3008a139cfba41131839de3567a263163152cf00"
+          echo "CANONICAL_COPY_GRAPH_SHA_VERIFIED=3008a139cfba41131839de3567a263163152cf00"
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
@@ -30,6 +36,10 @@ jobs:
         run: cargo test --locked --verbose
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/aot_no_fallback_guest.mjs
       - name: Execute real native-compiled output I/O shorthand guest in Wasm
         env:
           ATTOC: target/release/attoc
@@ -50,10 +60,21 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/callable_guest_execution.mjs
 
+      - name: Compile and execute canonical copy!! scalar and flat-class Wasm guests
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node --check tests/copy_doublebang_guest.mjs
+          node tests/copy_doublebang_guest.mjs
       - name: Execute defer/recover/try/raise unwind guests against spec trace oracles
         env:
           ATTOC: target/release/attoc
         run: node tests/defer_recover_guest.mjs
+
+      - name: Execute recursive guests against the logical call-depth quota (spec 25)
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/call_depth_guest.mjs
 
       - name: Target-only actor receiver Wasm ABI rejects unsupported code
         run: node tests/target_syntax_wasm.mjs

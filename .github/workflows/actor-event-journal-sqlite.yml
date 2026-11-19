@@ -1,0 +1,69 @@
+name: Native SQLite actor event journal crash and dedupe (host only)
+on:
+  push:
+    paths:
+      - 'native/persistence_sqlite/atto_actor_journal_v1.*'
+      - 'native/persistence_sqlite/test_actor_journal_v1.c'
+      - 'native/persistence_sqlite/EVENT_JOURNAL_V1.md'
+      - '.github/workflows/actor-event-journal-sqlite.yml'
+  pull_request:
+    paths:
+      - 'native/persistence_sqlite/atto_actor_journal_v1.*'
+      - 'native/persistence_sqlite/test_actor_journal_v1.c'
+      - 'native/persistence_sqlite/EVENT_JOURNAL_V1.md'
+      - '.github/workflows/actor-event-journal-sqlite.yml'
+permissions:
+  contents: read
+jobs:
+  native-journal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        optimize: [1, 2]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Ensure SQLite and OpenSSL headers
+        run: |
+          if ! pkg-config --exists sqlite3 libcrypto; then
+            sudo apt-get update
+            sudo apt-get install -y libsqlite3-dev libssl-dev
+          fi
+      - name: Compile with UBSan at exact PR head
+        run: |
+          cd native/persistence_sqlite
+          ${{ matrix.compiler }} -D_POSIX_C_SOURCE=200809L -std=c11 -Wall -Wextra -Werror -pedantic \
+            -g -O${{ matrix.optimize }} -fsanitize=undefined -fno-omit-frame-pointer \
+            atto_actor_sqlite_v1.c atto_actor_journal_v1.c test_actor_journal_v1.c \
+            -lsqlite3 -lcrypto -o actor_journal_test
+      - name: Run SIGKILL and dedupe tests
+        run: |
+          cd native/persistence_sqlite
+          UBSAN_OPTIONS=halt_on_error=1 timeout 40s ./actor_journal_test
+      - name: Scope
+        run: echo 'HOST_NATIVE_JOURNAL_ONLY; no compiled AttoLang guest, durable mailbox, supervisor or real power-loss test'
+  address-sanitizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Ensure SQLite and OpenSSL headers
+        run: |
+          if ! pkg-config --exists sqlite3 libcrypto; then
+            sudo apt-get update
+            sudo apt-get install -y libsqlite3-dev libssl-dev
+          fi
+      - name: Compile and run ASan + UBSan
+        run: |
+          cd native/persistence_sqlite
+          gcc -D_POSIX_C_SOURCE=200809L -std=c11 -Wall -Wextra -Werror -pedantic \
+            -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
+            atto_actor_sqlite_v1.c atto_actor_journal_v1.c test_actor_journal_v1.c \
+            -lsqlite3 -lcrypto -o actor_journal_asan
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 timeout 40s ./actor_journal_asan
