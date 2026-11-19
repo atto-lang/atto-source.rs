@@ -121,3 +121,36 @@ fn import_lists_obey_source_bounds() {
     let names = (0..257).map(|n| format!("n{n}")).collect::<Vec<_>>().join(", ");
     reject(&format!("import {names} from pkg \"core\";"), "E_SOURCE_LIMIT");
 }
+
+#[test]
+fn import_bindings_never_shadow_file_scope_declarations() {
+    for src in [
+        "import Worker from pkg \"core\"; declare actor Worker;",
+        "import Widget from pkg \"core\"; declare class Widget;",
+        "import Item from pkg \"core\"; declare struct Item;",
+        "import make as run from pkg \"core\"; pub fnc run(): int { return 0; }",
+        "import calculate from pkg \"core\"; int <- calculate() { return 0; }",
+        "import Worker from pkg \"core\"; define actor Worker as end",
+    ] {
+        reject(src, "E_DUPLICATE");
+    }
+}
+
+#[test]
+fn static_imports_must_precede_file_scope_definitions() {
+    reject("pub fnc main(): int { return 0; } import foo from pkg \"core\";", "E_SYNTAX");
+    reject("declare actor Worker; import foo from pkg \"core\";", "E_SYNTAX");
+    reject("define class Foo as end import foo from pkg \"core\";", "E_SYNTAX");
+}
+
+#[test]
+fn import_names_may_coexist_with_unrelated_methods_and_local_names() {
+    let headers = parse(r#"
+        import foo from pkg "core";
+        declare actor Worker;
+        mtd (Worker self) foo(): void {}
+        pub fnc main(): int { val foo = 42; return foo; }
+    "#);
+    assert_eq!(headers.imports, ["foo"]);
+    assert_eq!(headers.receivers.len(), 1);
+}
