@@ -131,7 +131,7 @@ fn checked_handle_gate_checks_all_declaration_containers() {
         mode: FieldMode::Final,
         binding: atto_compiler::ast::FieldBinding::Final,
         referent_mutable: false,
-        init: make_handle(),
+        init: Some(make_handle()),
     };
     let make_method = || Method {
         name: "get".into(), pos, public: false, is_static: false,
