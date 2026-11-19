@@ -1,3 +1,5 @@
+> **AI agent instructions (organization-wide):** Before working on code, issues, or pull requests, read and follow the [organization `AGENTS.md`](https://github.com/atto-lang/.github/blob/main/AGENTS.md), including its **merge-first stealth-development policy**. Honor any repository-local `AGENTS.md`, explicit holds, and GitHub-enforced rules.
+
 ## Named callable return annotations (strict target)
 
 Under the new strict named-callable rule, every function, routine, class/actor method (including static and out-of-line methods) and actor `receive` handler must explicitly specify a result. Write `-> int`, `-> void`, or opt into `-> infer`. The `: T` / `: infer` spelling is also legal; concrete types are preferred. Missing annotations produce `E_RETURN_ANNOTATION`, never a silently inferred `void`. Constructors and contextual lambdas are separate grammar categories.
