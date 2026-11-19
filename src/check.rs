@@ -354,7 +354,7 @@ pub const FIELD_BYTES: u32 = 8;
 struct FieldInfo {
     name: String,
     ty: Type,
-    public: bool,
+    visibility: FieldVisibility,
     mode: FieldMode,
     /// byte offset (classes) or state global (actors)
     slot: u32,
@@ -923,7 +923,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             out.push(FieldInfo {
                 name: f.name.clone(),
                 ty,
-                public: f.public,
+                visibility: f.visibility,
                 mode: f.mode,
                 slot: if actor { global_base + i as u32 } else { i as u32 * FIELD_BYTES },
             });
@@ -2775,7 +2775,7 @@ impl<'a> FnCx<'a> {
                     let class = &self.g.classes[c as usize];
                     let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
                         Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
-                    if !f.public && self.inside_class() != Some(c) {
+                    if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
                     }
                     if f.mode == FieldMode::Final {
@@ -3762,7 +3762,10 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(pos, "E_UNBOUND", what));
             }
         };
-        if !f.public && self.inside_class() != Some(c) {
+        // Every declaration in this single-source compilation unit belongs to
+        // one package. A cross-package linker must compare authenticated package
+        // identities before admitting FieldVisibility::Package across units.
+        if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
             return Err(Diagnostic::new(
                 pos,
                 "E_PRIVATE",
