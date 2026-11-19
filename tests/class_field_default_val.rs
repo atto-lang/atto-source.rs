@@ -155,5 +155,5 @@ fn bare_val_cannot_be_reassigned_in_constructor_but_explicit_let_can() {
 
     let granted = denied.replace("pub int count = 1;", "pub let int count = 1;");
     let wasm = compile(&granted).expect("explicit let must retain constructor write authority");
-    assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
 }
