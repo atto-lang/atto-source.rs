@@ -93,9 +93,9 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::Class(_) | Type::BorrowClass(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
-        Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
+        Type::Named(_) | Type::NamedRef(_) | Type::BorrowNamed(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
 }
 
@@ -507,6 +507,18 @@ impl Emit<'_> {
                 self.expr(v);
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
+            }
+            TStmt::ClassBorrow { alias, owner, mutable, value } => {
+                // This marker carries a nonowning handle and never grants drop or transfer rights.
+                debug_assert_ne!(*alias, *owner);
+                let _ = mutable;
+                self.expr(value);
+                self.op(0x21);
+                uleb(&mut self.code, *alias as u64);
+            }
+            TStmt::ClassLoanEnd { alias, owner, mutable } => {
+                // Static last-use event; no deallocation or ownership promotion in guest code.
+                let _ = (alias, owner, mutable);
             }
             TStmt::CollectionStore { array, offset, value } => {
                 // The checked collection planner supplies an in-bounds byte

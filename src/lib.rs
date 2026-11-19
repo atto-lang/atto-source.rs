@@ -26,6 +26,8 @@ pub mod collection_layout_type;
 #[allow(clippy::needless_return)]
 pub mod copy_graph_v1;
 pub mod check;
+/// Host-only checked-handle runtime foundation; guest ref!/deref!/unref! require authority verification.
+pub mod checked_handle_runtime;
 pub mod diag;
 pub mod generator_cfg;
 pub mod generator_frame;
