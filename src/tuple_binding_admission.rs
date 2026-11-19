@@ -1,8 +1,9 @@
-//! Target-only tuple destructuring grammar admission.
+//! Bounded tuple destructuring grammar admission.
 //!
-//! This module recognizes *only the binding header*, not guest tuple values,
-//! ownership transfers, compile-time const provenance, or compiled codegen.
-//! After admission, compile() intentionally fails closed with E_UNSUPPORTED.
+//! This module recognizes the tuple binding header and per-element qualifiers.
+//! Guest compilation exists only for the separate, checked Copy-scalar
+//! source lowering (tuple_binding_lower). Object tuple ownership/loans,
+//! general const evaluation and independent backend parity remain unsupported.
 //! The syntax contract lives in atto-spec: language/tuple-destructuring-v1.md.
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
