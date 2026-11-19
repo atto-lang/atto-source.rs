@@ -43,6 +43,7 @@ const RESERVED: &[&str] = &[
     "import",
     "from",
     "as",
+    "using",
     "fnc",
     "routine",
     "pure",
@@ -123,6 +124,7 @@ const RESERVED: &[&str] = &[
 /// Statement-leading keywords that name real AttoLang features this compiler
 /// does not lower yet. They are rejected, never approximated.
 const UNSUPPORTED_STMT: &[&str] = &[
+    "using",
     "switch",
     "try",
     "select",
@@ -2746,7 +2748,7 @@ impl Parser {
                     self.advance();
                     BinOp::Ne
                 }
-                Tok::Ident(s) if s == "is" => return Err(unsupported(pos, "the identity operator 'is'")),
+                Tok::Ident(s) if s == "is" => return Err(unsupported(pos, "a type test using 'is' (requires a statically proven type tag in this backend)")),
                 _ => break,
             };
             self.advance();

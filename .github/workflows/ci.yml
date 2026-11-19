@@ -59,6 +59,10 @@ jobs:
         env:
           ATTOC: target/release/attoc
         run: node tests/callable_guest_execution.mjs
+      - name: Execute checked monomorphic Any type tests, captures and rejection oracles
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/type_casting_guest_execution.mjs
 
       - name: Compile and execute canonical copy!! scalar and flat-class Wasm guests
         env:
