@@ -268,3 +268,33 @@ pub fnc main(): int {
     assert!(compile(source).is_ok(),
         "a comparison in call arguments must not be treated as a generic type delimiter");
 }
+
+#[test]
+fn constexpr_element_retains_const_not_runtime_field_provenance() {
+    let source = "pub fnc main(): int {
+        let (a, const r: int, j) as val foo = (1,2,3);
+        return r;
+    }";
+    let lowered = lower(lex(source).unwrap()).unwrap();
+    let mut constant_local_found = false;
+    for slice in lowered.windows(4) {
+        if matches!((&slice[0].tok, &slice[1].tok, &slice[2].tok, &slice[3].tok),
+            (atto_compiler::lexer::Tok::Ident(kind),
+             atto_compiler::lexer::Tok::Ident(name),
+             atto_compiler::lexer::Tok::Colon,
+             atto_compiler::lexer::Tok::Ident(ty))
+            if kind == "const" && name == "r" && ty == "int") {
+            constant_local_found = true;
+        }
+    }
+    assert!(constant_local_found,
+        "const tuple members must remain const after lowering, not become val projections");
+    assert!(compile(source).is_ok());
+
+    let rebinding = "pub fnc main(): int {
+        let (a, const r, j) = (1,2,3);
+        r = 4;
+        return r;
+    }";
+    assert_eq!(compile(rebinding).unwrap_err().code, "E_IMMUTABLE");
+}
