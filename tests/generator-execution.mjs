@@ -1,0 +1,176 @@
+// Actual native-compiled and wasm32-host-compiled guest Wasm execution proof.
+// The tests intentionally import only allowed print_* host functions; all
+// generator allocate/next/close work stays inside the guest Wasm module.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+
+const attoc = process.env.ATTOC || 'target/release/attoc';
+const compilerWasm = process.env.ATTO_COMPILER_WASM ||
+  'target/wasm32-unknown-unknown/release/atto_compiler.wasm';
+const api = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(compilerWasm)), {}).exports;
+assert.equal(api.abi_version(), 2);
+const enc = new TextEncoder();
+const dec = new TextDecoder('utf8', { fatal: true });
+
+function viaWasmCompiler(source) {
+  const input = enc.encode(source);
+  new Uint8Array(api.memory.buffer, api.input_ptr(), input.length).set(input);
+  const code = api.compile(input.length);
+  if (code !== 0) return { rejected: true, code: (() => {
+    const data = new Uint8Array(api.memory.buffer);
+    let i = api.error_ptr(); while (data[i]) i++;
+    return dec.decode(data.subarray(api.error_ptr(), i)).split(':')[0];
+  })() };
+  return { rejected: false, wasm: new Uint8Array(
+    api.memory.buffer, api.result_ptr(), api.result_length()).slice() };
+}
+
+function viaNativeCompiler(file) {
+  const result = spawnSync(attoc, [file], { maxBuffer: 1 << 22 });
+  if (result.status !== 0) {
+    return { rejected: true, code: String(result.stderr).match(/\bE_[A-Z_]+\b/)?.[0], diagnostic: String(result.stderr).slice(0, 600) };
+  }
+  return { rejected: false, wasm: new Uint8Array(result.stdout) };
+}
+
+function runGuest(bytes) {
+  // Construct before the generic validate assertion: engines provide an
+  // exact byte offset and operand-stack reason on invalid generated code.
+  const mod = new WebAssembly.Module(bytes);
+  assert.ok(WebAssembly.validate(bytes), 'actual guest module must validate');
+  let stdout = '';
+  const atto = {
+    print_i64: n => { stdout += String(n); },
+    print_newline: () => { stdout += '\n'; },
+    print_bool: v => { stdout += v ? 'true' : 'false'; },
+    print_str: () => { throw Error('unexpected string print'); },
+    print_f64: () => { throw Error('unexpected float print'); },
+    actor_spawn: () => { throw Error('unexpected actor spawn'); },
+    actor_send: () => { throw Error('unexpected actor send'); },
+  };
+  for (const imp of WebAssembly.Module.imports(mod)) {
+    assert.equal(imp.module, 'atto');
+    assert.ok(Object.hasOwn(atto, imp.name), 'import must be part of the guest ABI');
+  }
+  const instance = new WebAssembly.Instance(mod, { atto });
+  const value = instance.exports.main();
+  assert.equal(instance.exports.panic_code.value, 0, 'no guest trap');
+  return { value, stdout };
+}
+
+for (const [name, expected, output] of [
+  ['128-generator-native-yield.atto', 42n, '42\n'],
+  ['129-generator-close-reuse.atto', 42n, ''],
+  ['130-generator-early-return-close.atto', 42n, ''],
+  ['131-generator-empty.atto', 42n, ''],
+  ['132-generator-yield-star-native.atto', 10n, '10\n'],
+  ['133-generator-nested-empty-yield-star.atto', 8n, ''],
+  ['134-generator-delegate-break-close-reuse.atto', 168n, ''],
+  ['135-generator-parameterized-original.atto', 10n, '10\n'],
+  ['136-generator-parameter-bounds.atto', 6n, ''],
+  ['137-generator-param-delegate-early-close.atto', 42n, ''],
+  ['138-generator-max-int-boundary.atto', 42n, ''],
+  ['139-generator-two-live-locals.atto', 10n, ''],
+  ['140-generator-branches-and-live-locals.atto', 16n, ''],
+  ['141-generator-break-continue-live.atto', 8n, ''],
+  ['142-generator-multi-local-frame-reuse.atto', 42n, ''],
+  ['144-generator-typed-arithmetic-yield.atto', 32n, ''],
+  ['146-generator-liveness-after-yield.atto', 18n, ''],
+  ['147-generator-close-scrubs-delegates.atto', 14n, ''],
+]) {
+  const file = join('tests/fixtures/pass', name);
+  const src = readFileSync(file, 'utf8');
+  const native = viaNativeCompiler(file);
+  const wasmHost = viaWasmCompiler(src);
+  assert.equal(native.rejected, false, name + ': native compiler emitted an error: ' + (native.diagnostic || ''));
+  assert.equal(wasmHost.rejected, false, name + ': wasm-host compiler emitted an error');
+  assert.deepEqual(native.wasm, wasmHost.wasm, name + ': native and wasm-host must be byte-identical');
+  assert.deepEqual(runGuest(native.wasm), { value: expected, stdout: output });
+  assert.deepEqual(viaWasmCompiler(src).wasm, native.wasm, 'deterministic guest bytes');
+  console.log('PASS', name, 'result', String(expected), 'byte parity', native.wasm.length);
+}
+for (const [name, code] of [
+  ['128-generator-delegation-not-yet-lowered.atto', 'E_UNSUPPORTED'],
+  ['129-generator-ownership-no-discard.atto', 'E_GENERATOR_OWNERSHIP'],
+  ['130-generator-scalar-iteration.atto', 'E_TYPE'],
+  ['131-generator-forin-throw-not-safe.atto', 'E_UNSUPPORTED'],
+  ['132-generator-delegation-cycle.atto', 'E_GENERATOR_CYCLE'],
+  ['133-generator-yield-star-scalar-call.atto', 'E_TYPE'],
+  ['134-generator-unsupported-loop-body.atto', 'E_UNSUPPORTED'],
+  ['135-generator-unsupported-delegate-expression.atto', 'E_UNSUPPORTED'],
+  ['136-generator-local-type-mismatch.atto', 'E_TYPE'],
+  ['137-generator-local-reassignment-immutable.atto', 'E_IMMUTABLE'],
+  ['138-generator-branch-scoped-binding.atto', 'E_UNSUPPORTED'],
+  ['139-generator-duplicate-int-local.atto', 'E_DUPLICATE'],
+  ['140-generator-division-effect.atto', 'E_UNSUPPORTED'],
+  ['141-generator-param-immutable.atto', 'E_IMMUTABLE'],
+]) {
+  const file = join('tests/fixtures/fail', name);
+  const src = readFileSync(file, 'utf8');
+  const native = viaNativeCompiler(file);
+  const wasmHost = viaWasmCompiler(src);
+  assert.equal(native.rejected, true, name);
+  assert.equal(wasmHost.rejected, true, name);
+  assert.equal(native.code, code, name);
+  assert.equal(wasmHost.code, code, name);
+  console.log('PASS expected reject', name, code);
+}
+
+
+// Noncooperative dispatch and checked arithmetic overflow are distinct,
+// deterministic guest traps. Both must pass compiler-host byte parity.
+for (const [path, expectedPanic] of [
+  ['tests/fixtures/panic/143-generator-dispatch-budget-trap.atto', 5],
+  ['tests/fixtures/panic/145-generator-overflow-at-resumption.atto', 1],
+]) {
+  const source = readFileSync(path, 'utf8');
+  const native = viaNativeCompiler(path);
+  const browser = viaWasmCompiler(source);
+  assert.equal(native.rejected, false, 'panic fixture must compile');
+  assert.equal(browser.rejected, false, 'wasm-host must compile the same fixture');
+  assert.deepEqual(native.wasm, browser.wasm, 'panic fixture compiler byte parity');
+  const module = new WebAssembly.Module(native.wasm);
+  const instance = new WebAssembly.Instance(module, { atto: {} });
+  assert.throws(() => instance.exports.main(), WebAssembly.RuntimeError);
+  assert.equal(instance.exports.panic_code.value, expectedPanic,
+    'guest panic must preserve the expected checked error category');
+  console.log('PASS expected guest Wasm panic', expectedPanic, path);
+}
+
+
+// Inspect the actual native guest Wasm arena after early closure and reuse.
+// The two 184-byte frames start at offsets 8 and 192 (no data strings or
+// other allocations in this fixture). Parent and child close exactly once;
+// reuse advances each generation, and no captured/yielded payload survives.
+{
+  const path = 'tests/fixtures/pass/147-generator-close-scrubs-delegates.atto';
+  const source = readFileSync(path, 'utf8');
+  const native = viaNativeCompiler(path);
+  const wasmHost = viaWasmCompiler(source);
+  assert.equal(native.rejected, false, native.diagnostic || 'native compilation');
+  assert.equal(wasmHost.rejected, false, 'wasm-host compilation');
+  assert.deepEqual(native.wasm, wasmHost.wasm, 'lifecycle guest byte parity');
+  const mod = new WebAssembly.Module(native.wasm);
+  const imports = WebAssembly.Module.imports(mod);
+  assert.deepEqual(imports, [], 'lifecycle test has no external guest imports');
+  const instance = new WebAssembly.Instance(mod, {});
+  assert.equal(instance.exports.main(), 14n);
+  assert.equal(instance.exports.panic_code.value, 0);
+  const view = new DataView(instance.exports.memory.buffer);
+  const frameSize = 184;
+  for (const offset of [8, 8 + frameSize]) {
+    assert.equal(view.getUint32(offset + 8, true), 5, 'CLOSED frame');
+    assert.equal(view.getUint32(offset + 12, true), 2, 'generation bumped upon reuse');
+    assert.equal(view.getUint32(offset + 4, true), 0, 'closed frame cannot resume at stale PC');
+    for (const slot of [16, 32, 40, 48, ...Array.from({ length: 16 }, (_, i) => 56 + 8 * i)]) {
+      assert.equal(view.getBigInt64(offset + slot, true), 0n,
+        'frame must be zeroized at offset ' + (offset + slot));
+    }
+  }
+  assert.equal(view.getUint32(8 + 24, true), 192,
+    'parent free-list next points to child exactly once');
+  assert.equal(view.getUint32(192 + 24, true), 0, 'child next is null');
+  console.log('PASS nested iterator deterministic close, generation bump, and frame scrub');
+}

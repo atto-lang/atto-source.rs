@@ -1,0 +1,20 @@
+// expect-exit: 14
+// java: llvm-design
+// The second pass reuses both outer and child frames with a new generation.
+fnc *gen child(): Generator<int> {
+  yield 7;
+  yield 8;
+}
+fnc *gen outer(): Generator<int> {
+  yield* child();
+}
+pub fnc main(): int {
+  let sum = 0;
+  for (let iteration = 0; iteration < 2; iteration++) do
+    for value in outer() do
+      sum += value;
+      break;
+    done
+  done
+  return sum;
+}

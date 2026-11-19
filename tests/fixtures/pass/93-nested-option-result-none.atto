@@ -1,0 +1,16 @@
+// expect-exit: 13
+// The outer None is distinct from Some(Err(...)).
+fnc absent(): Option<Result<int,string>> {
+  return None;
+}
+pub fnc main(): int {
+  match absent() over
+    on Some(result) -> {
+      match result over
+        on Ok(value) -> { return value; }
+        on Err(message) -> { stdio.println(message); return 1; }
+      end
+    }
+    on None -> { return 13; }
+  end
+}

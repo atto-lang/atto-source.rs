@@ -1,0 +1,7 @@
+// Source becomes the FIRST function argument at each pipeline stage.
+// expect-exit: 18
+fnc add(int x, int y): int { return x + y; }
+fnc twice(int x): int { return x * 2; }
+pub fnc main(): int {
+  return 5 |> add(4) |> twice();
+}

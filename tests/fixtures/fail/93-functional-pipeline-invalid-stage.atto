@@ -1,0 +1,3 @@
+// expect-error: E_UNSUPPORTED
+fnc twice(int x): int { return x * 2; }
+pub fnc main(): int { return 4 |> 9; }

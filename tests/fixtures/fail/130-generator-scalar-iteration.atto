@@ -1,0 +1,8 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+  for value in 42 do
+    stdio.println(value);
+  done
+  return 0;
+}

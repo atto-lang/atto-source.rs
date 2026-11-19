@@ -1,0 +1,3 @@
+// expect-error: E_UNKNOWN_TYPE
+declare actor Worker;
+mtd (Worker self) run(Mystery value): void {}

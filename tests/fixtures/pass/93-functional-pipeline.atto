@@ -1,0 +1,13 @@
+// A pure functional pipeline evaluates its source exactly once, in order.
+// expect-exit: 121
+// expect-stdout: source
+fnc source(): int {
+  stdio.println("source");
+  return 4;
+}
+fnc twice(int x): int { return x * 2; }
+fnc add_three(int x): int { return x + 3; }
+fnc square(int x): int { return x * x; }
+pub fnc main(): int {
+  return source() |> twice |> add_three |> square;
+}

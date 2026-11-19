@@ -1,0 +1,8 @@
+// expect-error: E_TYPE
+// java: accepts
+// Java keeps the int value (it prints 3); the browser compiler requires a float value
+pub fnc main(): int {
+  val f: float = 3;
+  stdio.println(f);
+  return 0;
+}

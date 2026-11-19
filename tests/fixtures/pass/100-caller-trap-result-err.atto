@@ -1,0 +1,19 @@
+// expect-exit: 7
+// expect-stdout: id must be nonnegative
+// Err is an ordinary Result value, NEVER a trapped None.
+fnc checked_id(int id): Result<int,string> {
+  if id < 0 then return Err("id must be nonnegative"); fi
+  return Ok(id);
+}
+pub fnc main(): int {
+  val Option<Result<int,string>> value = trap checked_id(-1);
+  match value over
+    on Some(result) -> {
+      match result over
+        on Ok(id) -> { return id; }
+        on Err(message) -> { stdio.println(message); return 7; }
+      end
+    }
+    on None -> { return 0; }
+  end
+}

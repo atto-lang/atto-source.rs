@@ -1,0 +1,12 @@
+// expect-error: E_MATCH
+fnc get(): Option<Result<int,string>> { return Some(Ok(1)); }
+pub fnc main(): int {
+  match get() over
+    on Some(result) -> {
+      match result over
+        on Ok(value) -> { return value; }
+      end
+    }
+    on None -> { return 0; }
+  end
+}

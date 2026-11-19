@@ -1,0 +1,21 @@
+// expect-exit: 42
+// java: llvm-design
+fnc *gen running(int limit): Generator<int> {
+  let step = 0;
+  let total = 0;
+  while step < limit do
+    step += 1;
+    total += step;
+    yield total;
+  done
+}
+pub fnc main(): int {
+  let sum = 0;
+  for (let i = 0; i < 12000; i++) do
+    for n in running(999) do
+      if i < 42 then sum += n; fi
+      break;
+    done
+  done
+  return sum;
+}

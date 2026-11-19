@@ -1,0 +1,4 @@
+// expect-error: E_ARITY
+// java: rejects
+fnc value(): Result<int,string> { return Ok(1, 2); }
+pub fnc main(): int { return 0; }

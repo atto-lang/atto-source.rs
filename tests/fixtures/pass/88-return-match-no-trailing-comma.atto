@@ -1,0 +1,9 @@
+// Trailing commas are optional; ternary expressions keep their value type.
+// java: rejects
+// expect-exit: 42
+pub fnc main(): int {
+  return match 5 over
+    on 5 -> (3 > 1 ? 42 : 0),
+    default -> 0
+  end
+}

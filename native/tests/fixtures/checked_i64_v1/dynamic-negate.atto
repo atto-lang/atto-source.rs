@@ -1,0 +1,1 @@
+fnc neg(int a): int { return -a; } pub fnc main(): int { return neg(-9223372036854775808); }

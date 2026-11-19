@@ -1,0 +1,7 @@
+// expect-exit: 1
+// expect-stdout: x
+pub fnc main(): int {
+  val s = "x";
+  stdio.println(s);
+  return 1;
+}

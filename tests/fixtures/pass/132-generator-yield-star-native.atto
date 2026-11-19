@@ -1,0 +1,22 @@
+// expect-exit: 10
+// expect-stdout: 10
+// java: llvm-design
+// One pull emits at most one item of the delegated child.
+fnc *gen count_to_four(): Generator<int> {
+  yield 1;
+  yield 2;
+  yield 3;
+  yield 4;
+}
+fnc *gen with_zero(): Generator<int> {
+  yield 0;
+  yield* count_to_four();
+}
+pub fnc main(): int {
+  let sum = 0;
+  for value in with_zero() do
+    sum += value;
+  done
+  stdio.println(sum);
+  return sum;
+}

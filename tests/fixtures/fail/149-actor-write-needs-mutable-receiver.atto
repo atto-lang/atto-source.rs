@@ -1,0 +1,5 @@
+// expect-error: E_MUTABILITY
+declare actor Counter;
+mtd (self: Counter) update(): void {
+  self.handle_state(critical-write |s| -> { s.count = 1; });
+}

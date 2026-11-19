@@ -1,0 +1,20 @@
+// expect-exit: 13
+// expect-stdout: inner
+// An ordinary throw unwinds across multiple Wasm function calls.
+fnc inner(): int {
+  stdio.println("inner");
+  throw Error("ordinary failure");
+}
+fnc middle(): int {
+  return inner();
+}
+fnc outer(): int {
+  return middle();
+}
+pub fnc main(): int {
+  val Option<int> outcome = trap outer();
+  match outcome over
+    on Some(value) -> { return value; }
+    on None -> { return 13; }
+  end
+}

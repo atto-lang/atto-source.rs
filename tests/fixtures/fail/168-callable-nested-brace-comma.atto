@@ -1,0 +1,9 @@
+// expect-error: E_SEMICOLON
+// Comma sequencing must not leak into nested brace blocks.
+fnc broken() -> int ::
+  if true {
+    let int x = 3, x + 2;
+  }
+  5
+end
+pub fnc main(): int { return broken(); }

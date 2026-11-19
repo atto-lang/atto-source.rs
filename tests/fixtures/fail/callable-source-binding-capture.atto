@@ -1,0 +1,6 @@
+// expect-error: E_CAPTURE
+pub fnc main(): int {
+    val outer = 7;
+    val callback: fnc(int)->int = |n| -> n + outer;
+    return 0;
+}

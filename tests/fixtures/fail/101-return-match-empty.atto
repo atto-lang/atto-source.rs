@@ -1,0 +1,6 @@
+// expect-error: E_SYNTAX
+// java: rejects
+pub fnc main(): int {
+  return match 5 over
+  end
+}

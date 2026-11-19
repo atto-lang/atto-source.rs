@@ -1,0 +1,6 @@
+// expect-error: E_DUPLICATE
+pub fnc main(): int {
+    val double = 7;
+    val double = |n| : int -> n * 2;
+    return double(21);
+}

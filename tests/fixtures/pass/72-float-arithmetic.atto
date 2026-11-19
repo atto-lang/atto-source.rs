@@ -1,0 +1,44 @@
+// float is IEEE binary64; an int operand widens (Java numeric promotion);
+// output follows Java Double.toString.
+// expect-exit: 0
+// expect-stdout: 3.5
+// expect-stdout: 2.5
+// expect-stdout: 3.5
+// expect-stdout: 1.0E7
+// expect-stdout: 1234567.0
+// expect-stdout: 0.001
+// expect-stdout: 1.0E-4
+// expect-stdout: -0.0
+// expect-stdout: 0.30000000000000004
+// expect-stdout: 1000.0
+// expect-stdout: -1.5
+// expect-stdout: 300.0
+// expect-stdout: 1.0E21
+// expect-stdout: 1.234567890125E11
+// expect-stdout: 1000.25
+// expect-stdout: 0.002
+// expect-stdout: 150.0
+// expect-stdout: 3.5
+fnc half(float x): float { return x / 2.0; }
+pub fnc main(): int {
+  val a: float = 1.5;
+  stdio.println(a + 2.0);
+  stdio.println(a + 1);
+  stdio.println(half(7.0));
+  stdio.println(10000000.0);
+  stdio.println(1234567.0);
+  stdio.println(0.001);
+  stdio.println(0.0001);
+  stdio.println(-0.0);
+  stdio.println(0.1 + 0.2);
+  stdio.println(1e3);
+  stdio.println(-a);
+  stdio.println(100.0 * 3.0);
+  stdio.println(1.0E21);
+  stdio.println(123456789012.5);
+  stdio.println(1_000.25);
+  stdio.println(2E-3);
+  stdio.println(1.5e+2);
+  stdio.println(7.0 / 2);
+  return 0;
+}
