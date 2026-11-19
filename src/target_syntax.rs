@@ -635,6 +635,26 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
         let owner = headers.class_definitions.iter().position(|c| c.name == site.owner)
             .ok_or_else(|| Diagnostic::new(site.pos, "E_UNLINKED",
                 "out-of-line constructor requires a concrete local class definition"))?;
+        // The existing inline class-constructor checker permits an ordinary
+        // 'self' local. That must NOT silently downgrade the new out-of-line
+        // contract: construction self is not an independent reference that can
+        // escape to a callee, return, closure or assignment before publication.
+        // Until the full CFG initialization/borrow checker is integrated,
+        // admit only direct field access. Method calls on the under-construction
+        // object also fail closed (their effects may publish the receiver).
+        // Scan lexer tokens only: comments and quoted text cannot forge 'self'.
+        for i in site.body_start..site.end {
+            if !word_at(toks, i, "self") { continue; }
+            if !at(toks, i + 1, &Tok::Dot) ||
+               !matches!(toks.get(i + 2).map(|t| &t.tok), Some(Tok::Ident(_))) {
+                return Err(diagnostic(toks, i, "E_OWNERSHIP",
+                    "under-construction self cannot escape or be passed by reference"));
+            }
+            if at(toks, i + 3, &Tok::LParen) {
+                return Err(diagnostic(toks, i, "E_OWNERSHIP",
+                    "under-construction self cannot call methods before publication"));
+            }
+        }
         // Reuse the *same* production constructor checker and guest codegen.
         // The result marker ': self' is compile-time only, not runtime ABI.
         if site.public {
