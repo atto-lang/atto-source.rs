@@ -1,0 +1,16 @@
+// expect-exit: 42
+// expect-stdout: 42
+// Playground showcase: suspending functions resume through a typed Future.
+// Compiled by both native and wasm32 compiler hosts; guest runs in Wasm.
+suspends fnc load_answer(): int {
+  val pending: Future<int> = task {
+    return 42;
+  };
+  return await pending;
+}
+
+pub suspends fnc main(): int {
+  val answer = await load_answer();
+  stdio.println(answer);
+  return answer;
+}
