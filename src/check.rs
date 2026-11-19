@@ -1767,6 +1767,127 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
 
 /// Check one callable body. `named` are the wasm parameters in order.
 #[allow(clippy::too_many_arguments)]
+/// A constructor receiver is a temporary initialization capability, not a
+/// publishable reference. This admission pass operates on the *parsed AST*,
+/// so both inline and out-of-line constructors have exactly the same rule.
+/// Only direct field projection/assignment is allowed before publication.
+/// Nested callbacks/closures cannot capture even a direct field projection.
+fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
+    let denied = || Diagnostic::new(e.pos, "E_OWNERSHIP",
+        "under-construction self cannot escape, be captured or dispatch methods");
+    match &e.kind {
+        ExprKind::SelfRef => Err(denied()),
+        ExprKind::Member(base, _) if matches!(base.kind, ExprKind::SelfRef) => {
+            if captured { Err(denied()) } else { Ok(()) }
+        }
+        ExprKind::Member(base, _) => constructor_self_expr(base, captured),
+        ExprKind::MethodCall(base, _, args) => {
+            // An arbitrary method can publish its receiver, even if it
+            // returns an innocent scalar. Never dispatch on construction self.
+            constructor_self_expr(base, true)?;
+            for arg in args { constructor_self_expr(arg, captured)?; }
+            Ok(())
+        }
+        ExprKind::Unary(_, inner) | ExprKind::Trap(inner)
+        | ExprKind::Ownership(_, _, inner) | ExprKind::Propagate(inner) =>
+            constructor_self_expr(inner, captured),
+        ExprKind::Binary(_, left, right) => {
+            constructor_self_expr(left, captured)?;
+            constructor_self_expr(right, captured)
+        }
+        ExprKind::Ternary(cond, yes, no) => {
+            constructor_self_expr(cond, captured)?;
+            constructor_self_expr(yes, captured)?;
+            constructor_self_expr(no, captured)
+        }
+        ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) => {
+            for arg in args { constructor_self_expr(arg, captured)?; }
+            Ok(())
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expression(expr) => constructor_self_expr(expr, true),
+            LambdaBody::Statement(stmt) =>
+                constructor_self_stmts(std::slice::from_ref(stmt.as_ref()), true),
+            LambdaBody::Block(stmts) => constructor_self_stmts(stmts, true),
+        },
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_)
+        | ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::StateRead(_)
+        | ExprKind::Spawn(_) => Ok(()),
+    }
+}
+
+fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
+    for stmt in body {
+        match stmt {
+            Stmt::Bind { init, .. } => constructor_self_expr(init, captured)?,
+            Stmt::Assign { value, .. } => constructor_self_expr(value, captured)?,
+            Stmt::FieldAssign { target, value, .. } => {
+                if !matches!(target.kind, ExprKind::SelfRef) || captured {
+                    constructor_self_expr(target, captured)?;
+                }
+                constructor_self_expr(value, captured)?;
+            }
+            Stmt::Expr(expr) | Stmt::Throw(expr, _) | Stmt::Raise(expr, _)
+            | Stmt::Yield(expr, _) | Stmt::YieldFrom(expr, _) =>
+                constructor_self_expr(expr, captured)?,
+            Stmt::Return(Some(expr), _) => constructor_self_expr(expr, captured)?,
+            Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
+            Stmt::StateWrite { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::Block(body) => constructor_self_stmts(body, captured)?,
+            Stmt::Try { body, catch, finally, .. } => {
+                constructor_self_stmts(body, captured)?;
+                if let Some((_, handler)) = catch {
+                    constructor_self_stmts(handler, captured)?;
+                }
+                if let Some(cleanup) = finally {
+                    constructor_self_stmts(cleanup, captured)?;
+                }
+            }
+            Stmt::Defer { args, body, .. } | Stmt::Recover { args, body, .. } => {
+                for arg in args { constructor_self_expr(arg, captured)?; }
+                constructor_self_stmts(body, true)?;
+            }
+            Stmt::If { arms, otherwise, .. } => {
+                for (cond, body) in arms {
+                    constructor_self_expr(cond, captured)?;
+                    constructor_self_stmts(body, captured)?;
+                }
+                if let Some(other) = otherwise {
+                    constructor_self_stmts(other, captured)?;
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                constructor_self_expr(cond, captured)?;
+                constructor_self_stmts(body, captured)?;
+            }
+            Stmt::For { init, cond, update, body, .. } => {
+                if let Some(initializer) = init {
+                    constructor_self_stmts(std::slice::from_ref(initializer.as_ref()), captured)?;
+                }
+                if let Some(cond) = cond { constructor_self_expr(cond, captured)?; }
+                if let Some(update) = update {
+                    constructor_self_stmts(std::slice::from_ref(update.as_ref()), captured)?;
+                }
+                constructor_self_stmts(body, captured)?;
+            }
+            Stmt::ForIn { source, body, .. } => {
+                constructor_self_expr(source, captured)?;
+                constructor_self_stmts(body, captured)?;
+            }
+            Stmt::Match { subject, arms, .. } => {
+                constructor_self_expr(subject, captured)?;
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        constructor_self_expr(guard, captured)?;
+                    }
+                    constructor_self_stmts(&arm.body, captured)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn body_check(
     g: &Globals,
     owner: Owner,
@@ -1779,6 +1900,11 @@ fn body_check(
     imports: &mut Vec<Import>,
     data: &mut Vec<u8>,
 ) -> R<(Vec<TStmt>, Vec<Type>)> {
+    // This is shared by inline class constructors and out-of-line headers
+    // after they are lowered to the same production ClassDecl AST.
+    if matches!(owner, Owner::Class { ctor: true, .. }) {
+        constructor_self_stmts(body, false)?;
+    }
     let mut cx = FnCx::new(g, owner, ret, imports, data);
     cx.nparams = named.len() as u32;
     if let Some((mail_name, payload)) = mail {
