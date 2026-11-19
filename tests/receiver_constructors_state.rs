@@ -87,3 +87,76 @@ fn constructor_ownership_linking_and_duplicate_headers_fail_closed() {
         assert_eq!(d.code, expected, "{source}: {d}");
     }
 }
+
+#[test]
+fn constructor_whitespace_aliases_have_same_tokens_ast_and_guest_bytes() {
+    let headers = [
+        "constructor (Counter)(int initial)",
+        "constructor (Counter) (int initial)",
+        "constructor(Counter) (int initial)",
+    ];
+    let mut canonical_tokens = None;
+    let mut canonical_lowered = None;
+    let mut canonical_wasm = None;
+    for header in headers {
+        let source = format!(r#"
+            define class Counter as
+                pub let int value = 0;
+            end
+            pub {header}: self {{
+                self.value = initial;
+            }}
+            pub fnc main(): int {{
+                val counter = new Counter(42);
+                return counter.value;
+            }}
+        "#);
+        let tokens = lex(&source).unwrap();
+        let parsed = parse_target_declarations(&tokens).unwrap();
+        assert_eq!(parsed.classes, ["Counter"]);
+        assert_eq!(parsed.constructors.len(), 1);
+        assert_eq!(parsed.constructors[0].owner, "Counter");
+        assert!(parsed.constructors[0].public);
+        let lexemes = tokens.iter().map(|t| t.tok.clone()).collect::<Vec<_>>();
+        if let Some(ref baseline) = canonical_tokens {
+            assert_eq!(&lexemes, baseline, "constructor spacing changed token sequence");
+        } else {
+            canonical_tokens = Some(lexemes);
+        }
+        let lowered = lower_class_receivers(&tokens, &parsed).unwrap();
+        let lexemes = lowered.iter().map(|t| t.tok.clone()).collect::<Vec<_>>();
+        if let Some(ref baseline) = canonical_lowered {
+            assert_eq!(&lexemes, baseline, "constructor spacing changed lowered AST tokens");
+        } else {
+            canonical_lowered = Some(lexemes);
+        }
+        let wasm = compile(&source).expect("all three forms must compile to checked class guest");
+        assert_eq!(&wasm[..8], &[0, 97, 115, 109, 1, 0, 0, 0]);
+        if let Some(ref baseline) = canonical_wasm {
+            assert_eq!(&wasm, baseline, "constructor spacing changed Wasm guest bytes");
+        } else {
+            canonical_wasm = Some(wasm);
+        }
+    }
+}
+
+#[test]
+fn whitespace_variations_do_not_create_constructor_overloads() {
+    let source = r#"
+        define class Counter as end
+        constructor (Counter)(): self {}
+        constructor(Counter) (): self {}
+    "#;
+    let error = parse_target_declarations(&lex(source).unwrap()).unwrap_err();
+    assert_eq!(error.code, "E_DUPLICATE");
+    let error = compile(source).unwrap_err();
+    assert_eq!(error.code, "E_DUPLICATE");
+
+    for source in [
+        "define class Counter as end constructor (Counter)(int initial): self",
+        "define class Counter as end constructor (Counter) (int initial): self",
+        "define class Counter as end constructor(Counter) (int initial): self",
+    ] {
+        assert!(compile(source).is_err(), "header without a body is incomplete");
+    }
+}
