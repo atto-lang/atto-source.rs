@@ -1,0 +1,14 @@
+// expect-exit: 42
+// expect-stdout: once
+// Matching an ADT and pre-staging guarded bindings must not repeat its call.
+fnc checked(): Option<int> {
+  stdio.println("once");
+  return Some(42);
+}
+pub fnc main(): int {
+  match checked() over
+    on Some(n) when n > 40 -> { return n; }
+    on Some(n) -> { return 1; }
+    on None -> { return 0; }
+  end
+}

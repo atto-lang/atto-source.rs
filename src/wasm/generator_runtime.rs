@@ -27,6 +27,10 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         // Generator functions never receive protected-state authority.
         state_ticket_slot: None,
         state_write_depth: 0,
+        uw: None,
+        in_recover: false,
+        calls: Vec::new(),
+        landings: Vec::new(),
     };
 
     // new(type_id: i32, arg: i64) -> i64 generation-fenced handle.

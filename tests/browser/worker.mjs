@@ -55,7 +55,7 @@ self.onmessage=async ({data})=>{
       // abandoned state leases only here, never while guest code still runs.
       state.abort();
       const code=instance.exports.panic_code.value;
-      const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':'trap: '+e.message;
+      const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':code===6?'stack overflow (logical call-depth quota)':'trap: '+e.message;
       self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
     }
     state.complete(); // rejects any scope that failed to release its lease

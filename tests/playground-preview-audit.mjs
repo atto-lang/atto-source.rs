@@ -86,6 +86,10 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       'fib-match': { value: 144n, stdout: '0 1 1 2 3 5 8 13 21 34 \n' },
       'guard': { value: 0n, stdout: '42\n' },
       'match-values': { value: 0n, stdout: '2\n2\n' },
+      // Oracle from atto-spec language/defer-recover-unwind-v1.md trace rows:
+      // raise: finally, defers LIFO, recover; throw: defers then recover;
+      // local catch: finally, cleanup, never recover; outer caller catch wins.
+      'defer-recover': { value: 63n, stdout: 'raise finally\nraise cleanup A\nraise cleanup B\nrecovering raise\nthrow cleanup\nrecovering unhandled throw\ncaught finally\ncaught cleanup\n' },
     }[name];
     if (expected) {
       const guest = runGuest(result.wasm);
@@ -104,8 +108,9 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
      'fib-match', 'guard', 'match-values', 'closures-functors',
      'result-option-end', 'modules', 'callable-body-styles',
      'traits-interfaces', 'diamond-inheritance', 'visibility-modifiers',
-     'routine', 'boolean-operators', 'match-types-is', 'data-shapes'].sort(),
-    'the twenty-one requested compiled guest candidates must execute');
+     'routine', 'boolean-operators', 'match-types-is', 'data-shapes',
+     'defer-recover'].sort(),
+    'the twenty-two requested compiled guest candidates must execute');
   outcome.executionCoverage.verified = outcome.guestExecuted.length;
   outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
   console.log('PLAYGROUND_PREVIEW_EXECUTION_COVERAGE ' + JSON.stringify({

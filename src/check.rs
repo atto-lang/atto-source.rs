@@ -226,6 +226,30 @@ pub enum TStmt {
     Expr(TE),
     /// A guest Error(message) carried by a private Wasm exception tag.
     Throw(TE),
+    /// Escalated failure on the separate module-private raise tag. It is
+    /// never matched by `catch`/`trap`; only `recover` or the root sees it.
+    Raise(TE),
+    /// First statement of a top-level body that uses try/defer/recover:
+    /// compiler-owned unwind slots (defer-recover-unwind-v1). `ret` holds
+    /// the snapshotted return value, `msg`/`kind` the pending failure.
+    UnwindFrame { ret: Option<u32>, saved: u32, msg: u32, kind: u32, pending: u32 },
+    /// `try`/`catch (Error)`/`finally`; `saved` snapshots the catch depth.
+    Try {
+        saved: u32,
+        body: Vec<TStmt>,
+        catch: Option<Vec<TStmt>>,
+        finally: Option<Vec<TStmt>>,
+        pos: Pos,
+    },
+    /// Registration point of a top-level `defer`: sets `flag`. The body
+    /// runs LIFO at every function exit after registration.
+    Defer { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt>, pos: Pos },
+    /// Registration of a recovery callback: evaluates factory arguments into
+    /// `args` slots once, sets `flag`. The body runs only while unwinding.
+    Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt>, pos: Pos },
+    /// Terminal `c.next()`: delegate the unchanged failure to the next
+    /// older recovery callback or the outer boundary.
+    RecoverNext,
     Return(Option<TE>),
     /// Pull-driven iterator loop; handle is owned by this loop, and closed
     /// at DONE, early break, or before a function-level return.
@@ -317,6 +341,11 @@ pub struct TProgram {
     pub strings: bool,
     /// Emit one module-private Wasm EH tag only when ordinary throw/trap exists.
     pub guest_eh: bool,
+    /// A second private tag for `raise` (escalated failure).
+    pub raise_tag: bool,
+    /// A guest-global active-catch counter exists because some `recover`
+    /// must defer to an outer caller's catch or trap (two-phase dispatch).
+    pub catch_depth: bool,
 }
 
 /// Size in bytes of every field slot in a class instance.
@@ -325,8 +354,13 @@ pub const FIELD_BYTES: u32 = 8;
 struct FieldInfo {
     name: String,
     ty: Type,
-    public: bool,
+    visibility: FieldVisibility,
     mode: FieldMode,
+    /// Do not conflate Val, Final and Const with the browser storage mode.
+    binding: FieldBinding,
+    /// Future referent-write authorization is independent of rebinding.
+    #[allow(dead_code)]
+    referent_mutable: bool,
     /// byte offset (classes) or state global (actors)
     slot: u32,
 }
@@ -348,6 +382,9 @@ struct ClassInfo {
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
+    /// AOT-generated, private per-concrete-class copier, present only after
+    /// proving every stored field is a by-value/immutable scalar.
+    deep_copy_idx: Option<u32>,
     ctor_idx: Option<u32>,
     ctor_params: Vec<Type>,
 }
@@ -421,9 +458,20 @@ struct FnCx<'a> {
     state_read_scope: bool,
     imports: &'a mut Vec<Import>,
     data: &'a mut Vec<u8>,
+    /// Unwind slots, allocated on the first try/defer/recover.
+    unwind: Option<(Option<u32>, u32, u32, u32, u32)>,
+    /// > 0 while checking an isolated defer/recover body.
+    cleanup_depth: u32,
+    /// Cursor binder of the recovery callback being checked.
+    recover_cursor: Option<String>,
+    /// Non-escaping error-view binder; only explicitly admitted read-only
+    /// properties may be lowered from the compiler-owned unwind slots.
+    recover_error: Option<String>,
 }
 
 type R<T> = Result<T, Diagnostic>;
+/// Compiler-owned slots and isolated bindings for one cleanup factory.
+type CleanupCaptured = (Vec<(u32, TE)>, Vec<Local>);
 
 fn string_member_err(name: &str, pos: Pos) -> Diagnostic {
     match name {
@@ -687,6 +735,55 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
     }
 }
 
+/// Gate every generated class copy against the **canonical** closed-world
+/// AOT descriptor checker, vendored byte-identically from the independently
+/// tested atto-borrow-checker.rs copy_graph_v1 module. No user annotations or
+/// method names can mint a witness, and this does not admit actor sends.
+fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()> {
+    use crate::copy_graph_v1::{
+        admit_copy, CopyMode, CopyRequest, Field as CopyField,
+        FieldKind as CopyFieldKind, TypeDescriptor,
+    };
+
+    let mut layouts = Vec::with_capacity(classes.len());
+    for (id, class) in classes.iter().enumerate() {
+        let fields = class.fields.iter().enumerate().map(|(i, f)| CopyField {
+            id: (i as u32) + 1,
+            kind: match f.ty {
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) =>
+                    CopyFieldKind::Scalar,
+                Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
+                _ => CopyFieldKind::Unresolved,
+            },
+        }).collect();
+        layouts.push(TypeDescriptor {
+            id: id as u32 + 1,
+            parent: None, // the browser compiler does not admit inheritance
+            fields,
+            deep_copy_witness: class.deep_copy_idx.is_some() && !class.state_container,
+            shallow_copy_witness: false, // a deep witness does not grant copy!
+            sendable: false, // actor Sendable is a separate, unimplemented proof
+        });
+    }
+    let requested = ci.checked_add(1).ok_or_else(|| Diagnostic::new(
+        pos, "E_COPY_AOT_WITNESS", "invalid concrete class identifier"))?;
+    let plan = admit_copy(&layouts, CopyRequest {
+        concrete_type: requested,
+        static_type: requested,
+        mode: CopyMode::Deep,
+        actor_send: false,
+    }).map_err(|err| Diagnostic::new(pos, err.0,
+        "class lacks a complete, concrete, closed-world compiler-generated deep copy witness"))?;
+    // The current AOT backend generates flat-object copies only. Do not
+    // broaden witness admission to transitive graphs until the generated
+    // copier has an identity memo and a rollback-safe graph allocation plan.
+    if plan.copied_type_ids != vec![requested] {
+        return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+            "nested mutable class graph requires a memoized AOT copy runtime"));
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
@@ -861,6 +958,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     format!("'{owner}' already declares a field named '{}'", f.name),
                 ));
             }
+            // A class 'const' is constexpr; it must not silently turn into
+            // runtime initialization merely because Val/Final share a storage mode.
+            // Non-const initializer effects are still intentionally unsupported
+            // by the current restricted browser field-initialization backend.
+            if !actor && f.binding == FieldBinding::Const && !const_init(&f.init) {
+                return Err(Diagnostic::new(f.init.pos, "E_CONST",
+                    format!("class constant '{}.{}' requires a compile-time initializer", owner, f.name)));
+            }
             let ty = res(f.ty)?;
             let ok = match ty {
                 Type::Int | Type::Bool => true,
@@ -883,8 +988,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             out.push(FieldInfo {
                 name: f.name.clone(),
                 ty,
-                public: f.public,
+                visibility: f.visibility,
                 mode: f.mode,
+                binding: f.binding,
+                referent_mutable: f.referent_mutable,
                 slot: if actor { global_base + i as u32 } else { i as u32 * FIELD_BYTES },
             });
         }
@@ -900,6 +1007,15 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for m in &mut methods {
             m.idx = take();
         }
+        // This first AOT profile may copy only a flat class of verified
+        // identity-free slots. Class/actor/ADT handles require a graph memo,
+        // and protected actor-state objects cannot bypass their sealed leases.
+        // Custom copy_deep overrides need separate proof/hook chaining.
+        let can_generate_deep_copy = !c.state_container
+            && !c.methods.iter().any(|m| m.name == "copy_deep")
+            && fields.iter().all(|f| matches!(f.ty,
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)));
+        let deep_copy_idx = if can_generate_deep_copy { Some(take()) } else { None };
         let ctor_params = match &c.ctor {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
             None => Vec::new(),
@@ -910,6 +1026,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             fields,
             methods,
             new_idx,
+            deep_copy_idx,
             ctor_idx,
             ctor_params,
         });
@@ -1153,6 +1270,35 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             locals: vec![me],
             body,
         });
+        // Generated source-independent whole-concrete-type copy plan. The
+        // checker has proved that each slot can be copied by value; emitting
+        // an allocation plus typed field loads/stores creates a fresh object
+        // without invoking any initializer or user constructor a second time.
+        // The copy function is private and has no reflective field access.
+        if let Some(copy_idx) = info.deep_copy_idx {
+            authenticate_flat_copy_aot(&g.classes, ci as u32, c.pos)?;
+            let source = TE { e: TExpr::Local(0), ty: me };
+            let cloned = TE { e: TExpr::Local(1), ty: me };
+            let mut body = vec![TStmt::Set(1, TE {
+                e: TExpr::Alloc((info.fields.len() as u32 * FIELD_BYTES).max(FIELD_BYTES)),
+                ty: me,
+            })];
+            for field in &info.fields {
+                body.push(TStmt::FieldSet {
+                    obj: cloned.clone(),
+                    offset: field.slot,
+                    ty: field.ty,
+                    value: TE { e: TExpr::FieldGet {
+                        obj: Box::new(source.clone()), offset: field.slot,
+                    }, ty: field.ty },
+                });
+            }
+            body.push(TStmt::Return(Some(cloned)));
+            funcs[copy_idx as usize] = Some(TFunc {
+                name: format!("{}.copy_deep$generated", c.name),
+                params: vec![me], ret: me, locals: vec![me], body,
+            });
+        }
         for (m, mi) in c.methods.iter().zip(&info.methods) {
             let owner = Owner::Class {
                 c: ci as u32,
@@ -1266,11 +1412,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
+    audit_cleanup_call_effects(&funcs, &p.funcs)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
+    let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
+    let catch_depth = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Recover { .. })));
     Ok(TProgram {
         funcs,
         main,
@@ -1282,7 +1431,234 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         actors: tactors,
         strings,
         guest_eh,
+        raise_tag,
+        catch_depth,
     })
+}
+
+/// The source guest exception channels. Panic/trap is deliberately absent:
+/// it is a fatal runtime outcome, not a catchable or locally recoverable
+/// \`Error\`. These two bits are propagated through the typed call graph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EscapeEffects { throws: bool, raises: bool }
+
+impl EscapeEffects {
+    fn union(self, other: Self) -> Self {
+        Self { throws: self.throws || other.throws, raises: self.raises || other.raises }
+    }
+    fn without_throw(self) -> Self {
+        Self { throws: false, raises: self.raises }
+    }
+    fn any(self) -> bool { self.throws || self.raises }
+}
+
+/// Infer *escaping* effects of a typed expression. A trap discharges only
+/// ordinary throw; it cannot intercept raise or a fatal runtime panic.
+/// Evaluation of arguments occurs outside the called function's handler,
+/// so argument effects must also be included in the result.
+fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
+    fn combine<'a>(values: impl IntoIterator<Item=&'a TE>, effects: &[EscapeEffects]) -> EscapeEffects {
+        values.into_iter().fold(EscapeEffects::default(),
+            |acc, v| acc.union(expr_escape_effects(v, effects)))
+    }
+    match &value.e {
+        TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_)
+        | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
+        | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
+        | TExpr::Spawn(_) => EscapeEffects::default(),
+        TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
+        | TExpr::Not(v) | TExpr::Print { value: v, .. }
+        | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
+        | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
+        | TExpr::FieldGet { obj: v, .. }
+        | TExpr::StateFieldRead { obj: v, .. }
+        | TExpr::PrintObj { obj: v, .. } =>
+            expr_escape_effects(v, effects),
+        TExpr::Trap { value: v, .. } =>
+            expr_escape_effects(v, effects).without_throw(),
+        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b)
+        | TExpr::Send { target: a, value: b } =>
+            combine([a.as_ref(), b.as_ref()], effects),
+        TExpr::Ternary(cond, yes, no) =>
+            combine([cond.as_ref(), yes.as_ref(), no.as_ref()], effects),
+        TExpr::Str(_, receiver, arg) =>
+            expr_escape_effects(receiver, effects)
+                .union(arg.as_ref().map_or(EscapeEffects::default(),
+                    |v| expr_escape_effects(v, effects))),
+        TExpr::AdtNew { payload, .. } =>
+            payload.as_ref().map_or(EscapeEffects::default(),
+                |v| expr_escape_effects(v, effects)),
+        TExpr::Call(target, args) => {
+            let callee = effects.get(*target as usize).copied().unwrap_or(
+                // Unknown typed call targets must fail closed, not be assumed pure.
+                EscapeEffects { throws: true, raises: true });
+            combine(args.iter(), effects).union(callee)
+        }
+    }
+}
+
+/// Compute escaping effects through typed blocks. An ordinary catch handles
+/// the entire ordinary-throw effect of its protected body, including calls,
+/// nested handlers and error-producing arguments; a raise always bypasses it.
+/// The catch body is analyzed independently because it may itself escape.
+fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffects {
+    let mut all = EscapeEffects::default();
+    for stmt in body {
+        let next = match stmt {
+            TStmt::Set(_, value) | TStmt::GlobalSet(_, value)
+            | TStmt::Expr(value) | TStmt::StateRegister(value)
+            | TStmt::Return(Some(value)) =>
+                expr_escape_effects(value, effects),
+            TStmt::Return(None) | TStmt::UnwindFrame { .. }
+            | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
+            | TStmt::Unreachable => EscapeEffects::default(),
+            TStmt::Throw(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: true, raises: false }),
+            TStmt::Raise(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: false, raises: true }),
+            TStmt::FieldSet { obj, value, .. } |
+            TStmt::StateFieldWrite { obj, value, .. } =>
+                expr_escape_effects(obj, effects)
+                    .union(expr_escape_effects(value, effects)),
+            TStmt::StateCriticalWrite(inner) | TStmt::Block(inner) =>
+                stmts_escape_effects(inner, effects),
+            TStmt::If(arms, other) => {
+                let mut result = other.as_ref().map_or(EscapeEffects::default(),
+                    |b| stmts_escape_effects(b, effects));
+                for (cond, arm) in arms {
+                    result = result.union(expr_escape_effects(cond, effects))
+                        .union(stmts_escape_effects(arm, effects));
+                }
+                result
+            }
+            TStmt::Loop { cond, body, update } =>
+                cond.as_ref().map_or(EscapeEffects::default(),
+                    |v| expr_escape_effects(v, effects))
+                    .union(stmts_escape_effects(body, effects))
+                    .union(stmts_escape_effects(update, effects)),
+            TStmt::ForIn { source, body, .. } =>
+                expr_escape_effects(source, effects)
+                    .union(stmts_escape_effects(body, effects)),
+            TStmt::Try { body, catch, finally, .. } => {
+                let protected = stmts_escape_effects(body, effects);
+                let handled = if catch.is_some() {
+                    protected.without_throw()
+                } else { protected };
+                // An ordinary Error handler cannot execute when the
+                // protected region cannot emit an ordinary Error. Ignore
+                // unreachable handler effects, without discharging raises.
+                let caught = if protected.throws {
+                    catch.as_ref().map_or(EscapeEffects::default(),
+                        |b| stmts_escape_effects(b, effects))
+                } else { EscapeEffects::default() };
+                let cleanup = finally.as_ref().map_or(EscapeEffects::default(),
+                    |b| stmts_escape_effects(b, effects));
+                handled.union(caught).union(cleanup)
+            }
+            // Registration expressions run immediately; callbacks run
+            // only on exit/failure. Including them remains conservative.
+            // In particular, we NEVER assume recover handles the current
+            // function's own errors: caller catches outrank callee recover.
+            TStmt::Defer { args, body, .. } |
+            TStmt::Recover { args, body, .. } => {
+                let captures = args.iter().fold(EscapeEffects::default(),
+                    |acc, (_, arg)| acc.union(expr_escape_effects(arg, effects)));
+                captures.union(stmts_escape_effects(body, effects))
+            }
+        };
+        all = all.union(next);
+        // The same structural definite-exit analysis used for guest
+        // emission also establishes that later statements cannot execute.
+        // Never infer an outgoing effect from dead code after return/raise.
+        if returns(std::slice::from_ref(stmt)) { break; }
+    }
+    all
+}
+
+/// Infer escaping effects by monotone fixed point, so recursion and
+/// mutually recursive call groups converge without unsound assumptions.
+/// Validate each cleanup body with those exact effects. A callee that
+/// catches its own throw, or a call wrapped in \`trap\`, can now be used
+/// safely within cleanup; an escaping raise can never be suppressed by
+/// an ordinary catch/trap. Unreachable-code precision remains deliberately
+/// conservative until the CFG effect solver is complete.
+fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
+    let mut effects = vec![EscapeEffects::default(); funcs.len()];
+    loop {
+        let mut changed = false;
+        for (index, f) in funcs.iter().enumerate() {
+            let next = stmts_escape_effects(&f.body, &effects);
+            if next != effects[index] {
+                effects[index] = effects[index].union(next);
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+    // A clause list asserts an upper bound on the ordinary exceptional
+    // channels, not merely an annotation for documentation. Omission of a
+    // clause inside an explicit list means that effect cannot escape.
+    // Fully unannotated legacy functions remain inference-only.
+    for (index, f) in declared.iter().enumerate() {
+        let Some(contract) = f.declared_effects else { continue; };
+        let actual = effects[index];
+        if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
+            let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {
+                (true, true) => "throws(Error), raises(Error)",
+                (true, false) => "throws(Error)",
+                (false, true) => "raises(Error)",
+                (false, false) => unreachable!(),
+            };
+            return Err(Diagnostic::new(f.pos, "E_EFFECT",
+                format!("function '{}' declares an incomplete exceptional-effect upper bound: escaping {missing}", f.name)));
+        }
+    }
+
+    // Only registration is limited to the top-level browser profile:
+    // try/finally and branch nesting can already be arbitrary.
+    fn verify_scopes(body: &[TStmt], effects: &[EscapeEffects]) -> R<()> {
+        for stmt in body {
+            match stmt {
+                TStmt::Defer { body: cleanup, pos, .. } |
+                TStmt::Recover { body: cleanup, pos, .. } => {
+                    if stmts_escape_effects(cleanup, effects).any() {
+                        return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
+                            "cleanup/recovery callback has a provably escaping throw or raise"));
+                    }
+                }
+                TStmt::Try { body: inner, catch, finally, pos, .. } => {
+                    if finally.as_ref().is_some_and(|b|
+                        stmts_escape_effects(b, effects).any())
+                    {
+                        return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
+                            "finally has an escaping throw or raise"));
+                    }
+                    verify_scopes(inner, effects)?;
+                    if let Some(handler) = catch {
+                        verify_scopes(handler, effects)?;
+                    }
+                    if let Some(cleanup) = finally {
+                        verify_scopes(cleanup, effects)?;
+                    }
+                }
+                TStmt::If(arms, other) => {
+                    for (_, inner) in arms { verify_scopes(inner, effects)?; }
+                    if let Some(inner) = other { verify_scopes(inner, effects)?; }
+                }
+                TStmt::Loop { body: inner, update, .. } => {
+                    verify_scopes(inner, effects)?;
+                    verify_scopes(update, effects)?;
+                }
+                TStmt::ForIn { body: inner, .. } |
+                TStmt::Block(inner) | TStmt::StateCriticalWrite(inner) =>
+                    verify_scopes(inner, effects)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    for f in funcs { verify_scopes(&f.body, &effects)?; }
+    Ok(())
 }
 
 fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> String {
@@ -1368,7 +1744,10 @@ fn body_check(
         }
     }
     cx.scopes.push(Vec::new());
-    let tbody = cx.stmts(body)?;
+    let mut tbody = cx.stmts(body)?;
+    if let Some((ret, saved, msg, kind, pending)) = cx.unwind {
+        tbody.insert(0, TStmt::UnwindFrame { ret, saved, msg, kind, pending });
+    }
     if ret != Type::Void && !returns(&tbody) {
         let what = if matches!(owner, Owner::TopLevel) { "fnc" } else { "method" };
         return Err(Diagnostic::new(
@@ -1386,6 +1765,10 @@ fn body_check(
 fn returns(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Return(_) | TStmt::Throw(_) | TStmt::Unreachable => true,
+        TStmt::Raise(_) | TStmt::RecoverNext => true,
+        TStmt::Try { body, catch, finally, .. } =>
+            finally.as_ref().is_some_and(|f| returns(f))
+                || (returns(body) && catch.as_ref().is_none_or(|c| returns(c))),
         TStmt::If(arms, Some(other)) => arms.iter().all(|(_, b)| returns(b)) && returns(other),
         TStmt::Loop { cond: None, body, .. } => !breaks(body),
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => returns(b),
@@ -1473,6 +1856,8 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
+        TStmt::Raise(_) | TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
+        TStmt::Defer { .. } | TStmt::Recover { .. } | TStmt::RecoverNext => false,
     })
 }
 
@@ -1490,6 +1875,13 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
             cond.as_ref().is_some_and(|c| any_in(c, f)) || any_in_stmts(body, f) || any_in_stmts(update, f)
         }
         TStmt::ForIn { source, body, .. } => any_in(source, f) || any_in_stmts(body, f),
+        TStmt::Raise(e) => any_in(e, f),
+        TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
+            || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
+            || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
+        TStmt::Defer { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
+        TStmt::Recover { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
+        TStmt::UnwindFrame { .. } | TStmt::RecoverNext => false,
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => any_in_stmts(b, f),
         TStmt::Return(None) | TStmt::Break | TStmt::Continue | TStmt::Unreachable => false,
     })
@@ -1521,6 +1913,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
 fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
     body.iter().any(|s| match s {
         TStmt::Throw(_) => true,
+        TStmt::Raise(_) | TStmt::Try { .. } | TStmt::UnwindFrame { .. } => true,
         TStmt::If(arms, other) => arms.iter().any(|(_, b)| guest_eh_in_stmts(b))
             || other.as_ref().is_some_and(|b| guest_eh_in_stmts(b)),
         TStmt::Loop { body, update, .. } =>
@@ -1568,7 +1961,127 @@ impl<'a> FnCx<'a> {
             state_read_scope: false,
             imports,
             data,
+            unwind: None,
+            cleanup_depth: 0,
+            recover_cursor: None,
+            recover_error: None,
         }
+    }
+
+    /// Allocate the function's unwind slots once (top-level `fnc` only).
+    fn unwind_frame(&mut self, pos: Pos, what: &str) -> R<()> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("'{what}' in class and actor methods needs supervisor/cleanup integration")));
+        }
+        if self.cleanup_depth > 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("'{what}' inside a defer/recover body is not admitted: cleanup must not unwind")));
+        }
+        if self.unwind.is_none() {
+            let ret = if self.ret == Type::Void { None } else { Some(self.temp(self.ret, pos)?) };
+            let saved = self.temp(Type::Bool, pos)?;
+            let msg = self.temp(Type::Int, pos)?;
+            let kind = self.temp(Type::Bool, pos)?;
+            let pending = self.temp(Type::Bool, pos)?;
+            self.unwind = Some((ret, saved, msg, kind, pending));
+        }
+        Ok(())
+    }
+
+    /// defer/recover register only at the function's top-level scope, so
+    /// the static LIFO order equals the dynamic registration order.
+    fn top_registration(&self, pos: Pos, what: &str) -> R<()> {
+        if self.scopes.len() != 2 || self.loops != 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("'{what}' is admitted only at the top level of a fnc body, not in a nested block or loop")));
+        }
+        Ok(())
+    }
+
+    /// Evaluate explicitly captured scalar/string arguments exactly once at
+    /// registration. The resulting compiler-owned slots outlive the failed
+    /// scope and are read by the deferred/recovery body on its owning task.
+    fn cleanup_factory_args(&mut self, params: &[(String, Type, Pos)],
+                            args: &[Expr], pos: Pos, kind: &str)
+        -> R<CleanupCaptured>
+    {
+        if params.len() != args.len() {
+            return Err(Diagnostic::new(pos, "E_ARITY", format!(
+                "{kind} factory expects {} argument(s), found {}", params.len(), args.len())));
+        }
+        let mut sets = Vec::new();
+        let mut bound = Vec::new();
+        for ((name, ty, ppos), arg) in params.iter().zip(args) {
+            let ty = self.resolve(*ty, *ppos)?;
+            if !matches!(ty, Type::Int | Type::Bool | Type::Str | Type::Float) {
+                return Err(Diagnostic::new(*ppos, "E_UNSUPPORTED_TYPE",
+                    "cleanup factory parameters are restricted to scalar and string values"));
+            }
+            let v = self.consume_expected(arg, ty)?;
+            if v.ty != ty {
+                return Err(type_err(arg.pos, format!(
+                    "{kind} factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty))));
+            }
+            let slot = self.temp(ty, *ppos)?;
+            sets.push((slot, v));
+            bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
+        }
+        Ok((sets, bound))
+    }
+
+    /// Check a cleanup/recovery body in an isolated scope: it cannot see the
+    /// enclosing locals (no by-reference capture lifetime is verified), only
+    /// the explicit factory parameters in `bound`.
+    fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>,
+                error: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
+        let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
+        let loops = std::mem::replace(&mut self.loops, 0);
+        let moved = std::mem::take(&mut self.moved);
+        let loans = std::mem::take(&mut self.loans);
+        let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
+        let prev_error = std::mem::replace(&mut self.recover_error, error);
+        self.cleanup_depth += 1;
+        let r = self.stmts(body);
+        self.cleanup_depth -= 1;
+        self.recover_cursor = prev_cursor;
+        self.recover_error = prev_error;
+        self.loans = loans;
+        self.moved = moved;
+        self.loops = loops;
+        self.scopes = scopes;
+        r
+    }
+
+    /// The message of an admitted `throw`/`raise` operand:
+    /// `Error(message)` or `new Error(message)`.
+    fn guest_error_message(&mut self, error: &Expr, what: &str, pos: Pos) -> R<TE> {
+        if self.owner != Owner::TopLevel {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("ordinary {what} in class and actor methods needs supervisor/cleanup integration")));
+        }
+        if self.cleanup_depth > 0 {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                format!("'{what}' inside a defer/recover body would replace the pending failure")));
+        }
+        let args = match &error.kind {
+            ExprKind::Call(name, args) | ExprKind::New(name, args) if name == "Error" => args,
+            _ => return Err(type_err(error.pos,
+                format!("{what} requires an Error subclass; this browser slice admits only {what} Error(message)"))),
+        };
+        if args.len() != 1 {
+            return Err(Diagnostic::new(error.pos, "E_ARITY",
+                "Error(message) requires exactly one string argument"));
+        }
+        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
+            return Err(Diagnostic::new(error.pos, "E_RESERVED",
+                "the guest Error constructor cannot be shadowed"));
+        }
+        let msg = self.value(&args[0])?;
+        if msg.ty != Type::Str {
+            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
+        }
+        Ok(msg)
     }
 
     fn tn(&self, t: Type) -> String {
@@ -1602,6 +2115,17 @@ impl<'a> FnCx<'a> {
         }
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
+        }
+        // An ErrorView and RecoveryCursor are compiler-issued capabilities, not
+        // ordinary locals. Shadowing either binder would make an ordinary
+        // expression such as err.message or cursor.next() resolve to the
+        // wrong object and could counterfeit terminal recovery control flow.
+        if self.cleanup_depth > 0 &&
+            (self.recover_error.as_deref() == Some(name)
+                || self.recover_cursor.as_deref() == Some(name))
+        {
+            return Err(Diagnostic::new(pos, "E_RESERVED",
+                format!("recovery capability '{name}' cannot be shadowed")));
         }
         let slot = self.temp(ty, pos)?;
         self.scopes.last_mut().unwrap().push(Local {
@@ -1754,7 +2278,103 @@ impl<'a> FnCx<'a> {
                 TStmt::StateCriticalWrite(checked?)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
+            Stmt::Expr(Expr { kind: ExprKind::MethodCall(base, method, args), pos })
+                if method == "next" && args.is_empty()
+                    && matches!(&base.kind, ExprKind::Var(n) if self.recover_cursor.as_deref() == Some(n.as_str())) =>
+            {
+                let _ = pos;
+                TStmt::RecoverNext
+            }
+            Stmt::Raise(error, pos) => {
+                let msg = self.guest_error_message(error, "raise", *pos)?;
+                TStmt::Raise(msg)
+            }
+            Stmt::Try { body, catch, finally, pos } => {
+                self.unwind_frame(*pos, "try")?;
+                let saved = self.temp(Type::Bool, *pos)?;
+                // break/continue may not bypass a handler or finally block.
+                let loops = std::mem::replace(&mut self.loops, 0);
+                let checked = (|| -> R<TStmt> {
+                    let body = self.scoped(body)?;
+                    // Conservative ownership: the handler and finally see
+                    // every move the body might have made before failing.
+                    let catch = match catch {
+                        Some((_binder, handler)) => Some(self.scoped(handler)?),
+                        None => None,
+                    };
+                    let finally = match finally {
+                        Some(cleanup) => {
+                            let cleanup = self.scoped(cleanup)?;
+                            if exits_anywhere(&cleanup) {
+                                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                                    "a finally block must not return, throw or raise: it would replace the pending outcome"));
+                            }
+                            Some(cleanup)
+                        }
+                        None => None,
+                    };
+                    Ok(TStmt::Try { saved, body, catch, finally, pos: *pos })
+                })();
+                self.loops = loops;
+                checked?
+            }
+            Stmt::Defer { params, body, args, pos } => {
+                self.top_registration(*pos, "defer")?;
+                self.unwind_frame(*pos, "defer")?;
+                let (sets, bound) = self.cleanup_factory_args(params, args, *pos, "defer")?;
+                let flag = self.temp(Type::Bool, *pos)?;
+                let body = self.isolated(bound, None, None, body)?;
+                TStmt::Defer { flag, args: sets, body, pos: *pos }
+            }
+            Stmt::Recover { params, err, cursor, body, args, pos } => {
+                self.top_registration(*pos, "recover")?;
+                self.unwind_frame(*pos, "recover")?;
+                let (sets, bound) = self.cleanup_factory_args(params, args, *pos, "recover")?;
+                let flag = self.temp(Type::Bool, *pos)?;
+                let body = self.isolated(bound, Some(cursor.clone()), Some(err.clone()), body)?;
+                if !returns(&body) {
+                    return Err(Diagnostic::new(*pos, "E_RETURN",
+                        "a recovery handler must return a value or call the cursor's next() on every path"));
+                }
+                TStmt::Recover { flag, args: sets, body, pos: *pos }
+            }
             Stmt::Expr(e) => {
+                if let ExprKind::Ownership(OwnershipOp::Drop, _, inner) = &e.kind {
+                    // drop! is a consuming, standalone statement. No stored
+                    // owner/borrow may remain usable afterward. The browser
+                    // backend does not yet implement deterministic heap object
+                    // destructors, so only resource-free primitives are legal.
+                    let ExprKind::Var(name) = &inner.kind else {
+                        return Err(Diagnostic::new(e.pos, "E_DROP_CONTEXT",
+                            "drop! requires a named owned local, not a computed value"));
+                    };
+                    let (slot, ty) = match self.lookup(name) {
+                        Some(l) => (l.slot, l.ty),
+                        None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND",
+                            format!("unknown name '{name}'"))),
+                    };
+                    if self.moved.contains(&slot) {
+                        return Err(Diagnostic::new(e.pos, "E_MOVED",
+                            "cannot drop an already moved or dropped owner"));
+                    }
+                    if self.loans.contains_key(&slot)
+                        || self.loans.values().any(|loan| loan.owner == slot) {
+                        return Err(Diagnostic::new(e.pos, "E_BORROW",
+                            "cannot drop an owner while an active loan exists"));
+                    }
+                    if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
+                        return Err(Diagnostic::new(e.pos, "E_MOVED",
+                            "cannot drop a local declared outside a repeated loop"));
+                    }
+                    if !matches!(ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                        return Err(Diagnostic::new(e.pos, "E_DROP_UNSUPPORTED",
+                            "dropping resource-owning values requires verified destructor and reclamation lowering"));
+                    }
+                    let last_value = self.value(inner)?;
+                    self.moved.insert(slot);
+                    // Evaluate the final primitive read once (no destructor).
+                    return Ok(TStmt::Expr(last_value));
+                }
                 let v = self.expr(e)?;
                 if v.ty == Type::GeneratorInt {
                     return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
@@ -1792,6 +2412,10 @@ impl<'a> FnCx<'a> {
                 })();
                 self.pop_scope();
                 checked?
+            }
+            Stmt::Return(_, pos) if self.cleanup_depth > 0 && self.recover_cursor.is_none() => {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "a defer body cannot return: cleanup must not replace the pending outcome"));
             }
             Stmt::Return(v, pos) => match (v, self.ret) {
                 (None, Type::Void) => TStmt::Return(None),
@@ -2130,6 +2754,10 @@ impl<'a> FnCx<'a> {
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
+        // Guards run in the If condition, before their arm body. Stage each
+        // guarded binding beforehand, but read tagged payloads ONLY after
+        // confirming the corresponding variant discriminant.
+        let mut match_setup = vec![TStmt::Set(tmp, subj)];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             if covered {
@@ -2178,7 +2806,22 @@ impl<'a> FnCx<'a> {
                     } else {
                         TE { e: TExpr::AdtPayload(Box::new(get())), ty }
                     };
-                    body.push(TStmt::Set(slot, value));
+                    let assignment = TStmt::Set(slot, value);
+                    if arm.guard.is_some() {
+                        if let Some(tag_test) = test.as_ref() {
+                            // Reading Some/Ok/Err payload before checking its
+                            // tag would be unsound (and can read uninitialized
+                            // storage for the opposite variant).
+                            match_setup.push(TStmt::If(
+                                vec![(tag_test.clone(), vec![assignment])], None,
+                            ));
+                        } else {
+                            // A whole-value binding is always safe to copy.
+                            match_setup.push(assignment);
+                        }
+                    } else {
+                        body.push(assignment);
+                    }
                 }
                 let guard = match &arm.guard {
                     Some(g) => Some(self.cond(g, "match guard")?),
@@ -2223,10 +2866,8 @@ impl<'a> FnCx<'a> {
                 format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
-        Ok(TStmt::Block(vec![
-            TStmt::Set(tmp, subj),
-            TStmt::If(out, Some(vec![TStmt::Unreachable])),
-        ]))
+        match_setup.push(TStmt::If(out, Some(vec![TStmt::Unreachable])));
+        Ok(TStmt::Block(match_setup))
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
@@ -2240,11 +2881,19 @@ impl<'a> FnCx<'a> {
                     let class = &self.g.classes[c as usize];
                     let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
                         Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
-                    if !f.public && self.inside_class() != Some(c) {
+                    if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
                     }
-                    if f.mode == FieldMode::Final {
-                        return Err(Diagnostic::new(pos, "E_IMMUTABLE", "cannot mutate final field through borrow! mut"));
+                    // A borrowed ordinary class handle is not a checked
+                    // state-container lease: never lower protected state as
+                    // an unrestricted FieldSet from this alternate path.
+                    if f.mode == FieldMode::ActorState {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                            "protected state requires the checked critical-write lease"));
+                    }
+                    if !f.binding.rebindable() {
+                        return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                            "cannot reassign val/final/const field through borrow! mut"));
                     }
                     let (slot, offset, fty) = (local.slot, f.slot, f.ty);
                     // A class-valued field write would install an untracked owned
@@ -2284,7 +2933,7 @@ impl<'a> FnCx<'a> {
                     }
                 };
                 let (offset, fty, mode) = (f.slot, f.ty, f.mode);
-                if mode == FieldMode::Final {
+                if !f.binding.rebindable() {
                     return Err(Diagnostic::new(
                         pos,
                         "E_IMMUTABLE",
@@ -2465,14 +3114,75 @@ impl<'a> FnCx<'a> {
                 }
                 Ok(value)
             }
-            OwnershipOp::Copy | OwnershipOp::Share => {
+            OwnershipOp::Copy | OwnershipOp::DeepCopy | OwnershipOp::Share => {
+                // Identity-free admitted scalars have no mutable descendants:
+                // shallow and deep copies are the same guest value operation.
+                // Copy!! can also use a *compiler-emitted* AOT copier for an
+                // ordinary flat class whose full stored field layout was
+                // independently checked before this expression was lowered.
                 let value = self.value(inner)?;
+                if action == OwnershipOp::DeepCopy {
+                    if let Type::Class(ci) = value.ty {
+                        if let ExprKind::Var(name) = &inner.kind {
+                            if let Some(owner_slot) = self.lookup(name).map(|l| l.slot) {
+                                if self.loans.contains_key(&owner_slot)
+                                    || self.loans.values().any(|l| l.owner == owner_slot && l.mutable)
+                                {
+                                    return Err(Diagnostic::new(pos, "E_BORROW",
+                                        "copy!! cannot read a mutable/exclusive borrowed class owner"));
+                                }
+                            }
+                        }
+                        let class = &self.g.classes[ci as usize];
+                        if class.methods.iter().any(|m| m.name == "copy_deep") {
+                            return Err(Diagnostic::new(pos, "E_COPY_OVERRIDE",
+                                "custom copy_deep overrides need verified complete-plan/hook support"));
+                        }
+                        let Some(copy_idx) = class.deep_copy_idx else {
+                            return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+                                "copy!! class graph contains unproved mutable/reference slots or protected actor state"));
+                        };
+                        authenticate_flat_copy_aot(&self.g.classes, ci, pos)?;
+                        return Ok(TE { e: TExpr::Call(copy_idx, vec![value]), ty: Type::Class(ci) });
+                    }
+                }
                 if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    if action == OwnershipOp::DeepCopy {
+                        return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+                            "copy!! requires a verified concrete graph copier; class, actor, collection and resource handles are not yet admitted by the Rust/Wasm backend"));
+                    }
                     let name = if action == OwnershipOp::Copy { "copy!" } else { "share!" };
                     return Err(Diagnostic::new(pos, if action == OwnershipOp::Copy { "E_COPY" } else { "E_SHARE" },
                         format!("{name} requires a verified immutable copyable scalar; class, actor and generator handles are not shareable")));
                 }
                 Ok(value)
+            }
+            OwnershipOp::Drop => Err(Diagnostic::new(pos, "E_DROP_CONTEXT",
+                "drop! must be a standalone statement with a named owned local")),
+            OwnershipOp::Freeze => {
+                // Immutable primitive values have no mutable reachable object graph:
+                // freeze! is observationally the identity for this *proven*
+                // subset. Never extend this rule to class/actor/generator handles
+                // without a transitive freeze witness and alias invalidation.
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    return Err(Diagnostic::new(pos, "E_FREEZE_PROOF",
+                        "freeze! requires verified deep immutability; this Wasm subset only admits immutable scalars"));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Weak => {
+                // A weak handle requires generation-fenced allocation identity,
+                // a nullable upgrade result, and ownership-neutral cleanup.
+                // Returning the source value would silently create a strong alias.
+                Err(Diagnostic::new(pos, "E_WEAK_UNSUPPORTED",
+                    "weak! requires a generation-checked weak handle and Option<Shared<T>> upgrade; not lowered by this Wasm backend"))
+            }
+            OwnershipOp::Pin => {
+                // Pinning is stable *pointee storage*, not an OS-thread affinity
+                // hint. Ordinary guest locals/handles cannot promise it yet.
+                Err(Diagnostic::new(pos, "E_PIN_UNSUPPORTED",
+                    "pin! requires stable-address storage and verified cleanup; not lowered by this Wasm backend"))
             }
             OwnershipOp::Take => {
                 let ExprKind::Var(name) = &inner.kind else {
@@ -2542,28 +3252,7 @@ impl<'a> FnCx<'a> {
 
     #[inline(never)]
     fn guest_throw(&mut self, error: &Expr, pos: Pos) -> R<TStmt> {
-        if self.owner != Owner::TopLevel {
-            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
-                "ordinary throw in class and actor methods needs supervisor/cleanup integration"));
-        }
-        let args = match &error.kind {
-            ExprKind::Call(name, args) if name == "Error" => args,
-            _ => return Err(type_err(error.pos,
-                "throw requires an Error subclass; this browser slice admits only throw Error(message)")),
-        };
-        if args.len() != 1 {
-            return Err(Diagnostic::new(error.pos, "E_ARITY",
-                "Error(message) requires exactly one string argument"));
-        }
-        if self.g.names.contains_key("Error") || self.g.class("Error").is_some() {
-            return Err(Diagnostic::new(error.pos, "E_RESERVED",
-                "the guest Error constructor cannot be shadowed"));
-        }
-        let msg = self.value(&args[0])?;
-        if msg.ty != Type::Str {
-            return Err(type_err(args[0].pos, "Error(message) requires a string message"));
-        }
-        Ok(TStmt::Throw(msg))
+        Ok(TStmt::Throw(self.guest_error_message(error, "throw", pos)?))
     }
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
@@ -3086,6 +3775,17 @@ impl<'a> FnCx<'a> {
 
     fn member(&mut self, base: &Expr, name: &str, pos: Pos) -> R<TE> {
         if let ExprKind::Var(n) = &base.kind {
+            if self.recover_error.as_deref() == Some(n) {
+                let (_, _, msg, kind, _) = self.unwind.expect("recovery needs unwind slots");
+                // ErrorView is an ephemeral compiler-issued view, never a
+                // first-class object or a transferable/returnable handle.
+                return match name {
+                    "message" => Ok(TE { e: TExpr::Local(msg), ty: Type::Str }),
+                    "is_raise" => Ok(TE { e: TExpr::Local(kind), ty: Type::Bool }),
+                    _ => Err(Diagnostic::new(pos, "E_UNBOUND",
+                        format!("unknown ErrorView property '{name}'"))),
+                };
+            }
             if let Some(l) = self.lookup(n) {
                 if let Some(payload) = l.mail {
                     return match name {
@@ -3197,7 +3897,7 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(pos, "E_UNBOUND", what));
             }
         };
-        if !f.public && self.inside_class() != Some(c) {
+        if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
             return Err(Diagnostic::new(
                 pos,
                 "E_PRIVATE",
@@ -3747,4 +4447,27 @@ pub fn check_target_actor_interface(program: &Program) -> R<()> {
         }
     }
     Ok(())
+}
+
+/// Any return/throw/raise/cursor delegation anywhere in `body`, including
+/// nested blocks: a finally block must never replace the pending outcome.
+fn exits_anywhere(body: &[TStmt]) -> bool {
+    stmt_exists(body, &|s| matches!(s,
+        TStmt::Return(_) | TStmt::Throw(_) | TStmt::Raise(_) | TStmt::RecoverNext))
+}
+
+/// Whether any statement in `body` (recursively) satisfies `f`.
+fn stmt_exists(body: &[TStmt], f: &dyn Fn(&TStmt) -> bool) -> bool {
+    body.iter().any(|s| f(s) || match s {
+        TStmt::If(arms, other) => arms.iter().any(|(_, b)| stmt_exists(b, f))
+            || other.as_ref().is_some_and(|b| stmt_exists(b, f)),
+        TStmt::Loop { body, update, .. } => stmt_exists(body, f) || stmt_exists(update, f),
+        TStmt::ForIn { body, .. } => stmt_exists(body, f),
+        TStmt::Block(b) | TStmt::StateCriticalWrite(b) => stmt_exists(b, f),
+        TStmt::Try { body, catch, finally, .. } => stmt_exists(body, f)
+            || catch.as_ref().is_some_and(|b| stmt_exists(b, f))
+            || finally.as_ref().is_some_and(|b| stmt_exists(b, f)),
+        TStmt::Defer { body, .. } | TStmt::Recover { body, .. } => stmt_exists(body, f),
+        _ => false,
+    })
 }

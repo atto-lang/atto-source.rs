@@ -187,6 +187,18 @@ try{
   assert.equal(await run(stateSource, 'main() -> 0'), '2\n0\nmain() -> 0');
   console.log('PASS browser: byte-verified /play state preview compiles AND executes in Chromium Worker');
 
+  // Exact website preview blob (MANIFEST.tsv): defer/recover/try/raise in a
+  // real Worker, through the wasm32 compiler and legacy Wasm EH guest tags.
+  const unwindSource = await readFile(new URL('./playground_previews/defer-recover.atto', import.meta.url), 'utf8');
+  const unwindBlob = createHash('sha1')
+    .update('blob ' + Buffer.byteLength(unwindSource)).update(Buffer.from([0])).update(unwindSource).digest('hex');
+  assert.equal(unwindBlob, 'ba323a22c2a776e5c67caa719cf2b937898e5df1',
+    'exact /play defer-recover preview Git blob must match the website');
+  assert.equal(await run(unwindSource, 'main() -> 63'),
+    'raise finally\nraise cleanup A\nraise cleanup B\nrecovering raise\nthrow cleanup\n' +
+    'recovering unhandled throw\ncaught finally\ncaught cleanup\nmain() -> 63');
+  console.log('PASS browser: byte-verified /play defer-recover preview executes in Chromium Worker');
+
   // Real guest fault while an exclusive state ticket is physically active.
   // The Worker aborts only after unwind, and each new Worker has fresh tickets.
   const stateOverflow = stateSource.replace('counter.increment(2);',

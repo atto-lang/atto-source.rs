@@ -1,0 +1,19 @@
+// expect-exit: 80
+// java: rejects
+// Two contiguous parent subobject regions; alias declarations intentionally reversed.
+define class Dog as
+    pub int age: 5;
+    pub int height: 20;
+end
+define class Cat as
+    pub int age: 10;
+end
+define class Hybrid extends Dog, Cat as
+    use Cat.age as cat_age;
+    use Dog.height as dog_height;
+    use Dog.age as dog_age;
+end
+pub fnc main(): int {
+    val h = new Hybrid();
+    return h.dog_age * 10 + h.dog_height + h.cat_age;
+}

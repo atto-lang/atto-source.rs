@@ -1,0 +1,22 @@
+// expect-exit: 42
+// java: rejects
+// Both invocations must allocate their own root; modifying left does not
+// mutate the source or the independently allocated right.
+define class Parcel as
+    pub let int value = 21;
+end
+pub fnc main(): int {
+    let original = new Parcel();
+    let left = copy!! original;
+    let right = copy!! original;
+    block {
+        val writer = borrow! mut left;
+        writer.value = 99;
+    }
+    block {
+        val writer = borrow! mut right;
+        writer.value = 20;
+    }
+    // 21 + 20 + (99 - 98) = 42. Catches source/left/right aliases.
+    return original.value + right.value + (left.value - 98);
+}

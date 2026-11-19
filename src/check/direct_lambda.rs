@@ -204,6 +204,7 @@ pub fn lower(input: &Program) -> R<Program> {
                 pos: d.lambda.pos,
                 is_generator: false,
                 is_pure: true,
+                declared_effects: None,
                 params: d.params.into_iter().chain(
                     d.captures.into_iter().map(|c| c.source)
                 ).zip(all_types).map(|(name, ty)| Param {
@@ -258,8 +259,25 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
         }
         Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
             "direct lambda rewriting cannot cross a protected state loan")),
-        Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
+        Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
             rewrite_expr(e, d),
+        Stmt::Try { body, catch, finally, .. } => {
+            rewrite_statements(body, d)?;
+            if let Some((_, handler)) = catch { rewrite_statements(handler, d)?; }
+            if let Some(cleanup) = finally { rewrite_statements(cleanup, d)?; }
+            Ok(())
+        }
+        // Cleanup/recovery bodies are checked in an isolated scope, but
+        // their factory argument expressions execute at registration and must
+        // undergo the same checked direct-call rewriting as ordinary calls.
+        Stmt::Defer { args, .. } => {
+            for arg in args { rewrite_expr(arg, d)?; }
+            Ok(())
+        },
+        Stmt::Recover { args, .. } => {
+            for arg in args { rewrite_expr(arg, d)?; }
+            Ok(())
+        }
         Stmt::Return(Some(e), _) => rewrite_expr(e, d),
         Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => Ok(()),
         Stmt::Block(b) | Stmt::Loop { body: b, .. } => rewrite_statements(b, d),
@@ -441,6 +459,7 @@ fn stmt_pos(s: &Stmt) -> Pos {
         Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |
+        Stmt::Raise(_, pos) | Stmt::Try { pos, .. } | Stmt::Defer { pos, .. } | Stmt::Recover { pos, .. } |
         Stmt::Yield(_, pos) | Stmt::YieldFrom(_, pos) |
         Stmt::Return(_, pos) | Stmt::Break(pos) |
         Stmt::Continue(pos) => *pos,
