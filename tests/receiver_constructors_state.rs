@@ -160,3 +160,13 @@ fn whitespace_variations_do_not_create_constructor_overloads() {
         assert!(compile(source).is_err(), "header without a body is incomplete");
     }
 }
+
+#[test]
+fn existing_standalone_state_syntax_bypasses_out_of_line_class_state_proposal() {
+    let valid = include_str!("fixtures/pass/180-standalone-state-critical.atto");
+    let guest = compile(valid).expect("standalone state must retain its old checked lowering");
+    assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
+    let invalid = include_str!("fixtures/fail/180-state-unguarded-self.atto");
+    let diagnostic = compile(invalid).expect_err("unguarded state must still fail closed");
+    assert_eq!(diagnostic.code, "E_STATE_ACCESS", "{diagnostic}");
+}

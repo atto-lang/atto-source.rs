@@ -1,5 +1,65 @@
 # atto-source.rs: AttoLang browser compiler
 
+## Explicit deep-copy operator (bounded generated-class AOT milestone)
+
+The production Rust/Wasm frontend recognizes contiguous `copy!!` as a
+separate ownership operator. The separated spelling `copy! !expr` remains
+a shallow scalar copy of logical negation. The source operand is evaluated
+**exactly once** and the sender's original local remains valid.
+
+- Scalars (`int`, `bool`, `float`, immutable `string`, nominal `enum`) are
+  copied by value without a heap allocation.
+- **Ordinary flat classes** whose full stored field inventory consists only
+  of these identity-free values now receive a compiler-generated, private
+  AOT function. It bump-allocates a fresh class object, then performs typed
+  load/store of every field. It does not invoke the class constructor or
+  re-run field initializers. Each invocation allocates a separate root.
+- `copy!` on classes is **not** enabled by this milestone; it still requires
+  its own separately verified shallow Copyable witness.
+- Classes with nested class/actor/collection/resource references, state
+  containers, and erased/unproved types fail closed with
+  `E_COPY_DEEP_UNSUPPORTED`. A class with an explicit `copy_deep` method is
+  rejected for this operator with `E_COPY_OVERRIDE` until verified hook
+  chaining is implemented. Exclusive mutable loans reject with `E_BORROW`.
+
+This is **not yet a general graph copier**. The current Wasm object format
+has no general dynamic-subtype tag, and the baseline browser frontend does
+not lower mutable `Array<int>` or inherited class layouts. Graph cycles,
+nested reference identity, memoized copy contexts, native AOT targets,
+`Object.copy_deep()` methods, actor mailmen, and cross-actor Sendable/
+Serializable provenance all remain separate implementation milestones.
+
+Pass/fail `.atto` fixtures are consumed by the native Rust compiler test
+harness and the existing guest Wasm execution harness. The newly added
+`tests/copy_doublebang.rs` checks actual compiler-produced Wasm bytes;
+it does not alone prove runtime isolation. **Only a test run whose job steps
+executed on the exact branch commit can be reported as PASS.** Source-org
+GitHub Actions currently failed with zero recorded steps; those jobs are
+`NOT_EXECUTED`, not compiler or guest failures.
+
+The compiler now imports the canonical closed-world copy-plan preflight
+directly from the borrow-checker. `src/copy_graph_v1.rs` has **identical Git
+blob SHA** `3008a139cfba41131839de3567a263163152cf00` to the
+Rustfmt-hardened borrow-checker model. The compiler constructs copy
+descriptors from actual resolved class field types and authenticates the
+concrete flat class before **both** emitting generated copy code and lowering
+a `copy!!` call. The source CI hashes the vendored module to detect drift.
+This cannot authenticate dynamic mutable Array graphs or prove actor Sendable.
+
+A full **728-blob source-tree** mirror passed funded alternate-org CI:
+Rust 1.85.1 full Cargo tests, 492 AttoLang conformance assertions, 444
+native-versus-Wasm compiler comparisons, and native/Wasm compiler builds
+([CI run #44137504046](https://github.com/gha-indie-worker/atto-ci/actions/runs/44137504046)).
+Whole-project formatting and strict Clippy still have pre-existing drift;
+no green whole-project lint claim is made. The bounded actor graph copying
+model has its own 196-test Rust receipt, but does not lower `Array<T>`
+or actor messages in this compiler.
+
+Candidate normative contract: atto-lang/atto-spec PR #39. Canonical
+type-graph admission and the nonproduction GraphCopyContext model:
+ores-truffle-oreslang/atto-borrow-checker.rs PR #32.
+Shared conformance candidates: atto-lang/atto-platform-conformance PR #64.
+
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
 
 ## Canonical AttoLang naming and specification
