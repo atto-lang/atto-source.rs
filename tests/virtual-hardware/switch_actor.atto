@@ -1,0 +1,43 @@
+// Bounded AttoLang switch actor with one actor-owned FDB entry.
+// Int mail: nonnegative destination MAC; -1 = trusted learn on port 2
+// in VLAN 10, -2 = advance age past 300 s, -3 = flush the entry,
+// -4 = diagnostic drop count. Control events are for a trusted emulator;
+// do not map untrusted frames directly to negative commands.
+// Output -1 = trap/drop, -2 = policy flood candidate, 2 = known egress.
+// Actual flood recipients must pass independent link/VLAN checks.
+define actor VirtualSwitch as
+    let int learned_mac = 0;
+    let int learned_port = -1;
+    let int age = 0;
+    let int drops = 0;
+
+    receive(ActorMail<int> mail): void {
+        if mail.value == -1 then
+            self.learned_mac = 2199023255553;
+            self.learned_port = 2;
+            self.age = 0;
+            stdio.println(2);
+        elif mail.value == -2 then
+            self.age = 301;
+            stdio.println(-2);
+        elif mail.value == -3 then
+            self.learned_mac = 0;
+            self.learned_port = -1;
+            self.age = 0;
+            stdio.println(-3);
+        elif mail.value == -4 then
+            stdio.println(self.drops);
+        else
+            let int egress = -2;
+            if mail.value < 1 || mail.value > 281474976710655 ||
+               (mail.value >= 1652522221568 && mail.value <= 1652522221583) then
+                egress = -1;
+                self.drops = self.drops + 1;
+            elif mail.value == self.learned_mac && self.age <= 300 then
+                egress = self.learned_port;
+            fi
+            stdio.println(egress);
+        fi
+        return;
+    }
+end
