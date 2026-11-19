@@ -101,7 +101,7 @@ fn malformed_scopes_and_unsupported_member_kinds_fail_closed() {
 }
 
 #[test]
-fn implicit_type_first_fields_are_let_and_explicit_val_is_immutable() {
+fn implicit_type_first_fields_are_val_and_explicit_let_remains_mutable() {
     let src = r#"
         define class Box as
             int implicit_equals = 1;
@@ -117,8 +117,9 @@ fn implicit_type_first_fields_are_let_and_explicit_val_is_immutable() {
     let fields = &program.classes[0].fields;
     assert_eq!(fields.len(), 5);
     for field in &fields[..2] {
-        assert_eq!(field.mode, FieldMode::Constructor);
-        assert_eq!(field.binding, FieldBinding::Let);
+        assert_eq!(field.mode, FieldMode::Final);
+        assert_eq!(field.binding, FieldBinding::Val);
+        assert!(!field.referent_mutable);
     }
     assert_eq!(fields[2].mode, FieldMode::Final);
     assert_eq!(fields[2].binding, FieldBinding::Val);
@@ -127,17 +128,17 @@ fn implicit_type_first_fields_are_let_and_explicit_val_is_immutable() {
     compiled(src);
 }
 #[test]
-fn implicit_let_allows_constructor_assignment_but_explicit_val_forbids_it() {
+fn implicit_val_forbids_constructor_assignment_but_explicit_let_permits_it() {
     rejected(r#"
         define class Box as
-            val int count = 1;
+            int count = 1;
             constructor() { self.count = 2; }
         end
         pub fnc main(): int { return 0; }
     "#, "E_IMMUTABLE");
     compiled(r#"
         define class Box as
-            pub int count = 1;
+            pub let int count = 1;
             constructor() { self.count = 2; }
         end
         pub fnc main(): int { return new Box().count; }
