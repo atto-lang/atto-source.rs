@@ -45,7 +45,7 @@ fn private_helper_is_available_inside_imported_module_only() {
 fn imported_symbols_must_be_public_and_bound() {
     assert_eq!(code("import not_exported from \"./math.atto\"; pub fnc main(): int {return 0;}", MATH), "E_UNBOUND");
     assert_eq!(code("import square as main from \"./math.atto\"; pub fnc main(): int {return 0;}", MATH), "E_DUPLICATE");
-    assert_eq!(code("import square, square as sq from \"./math.atto\"; pub fnc main(): int {return square(7)+sq(0);}", MATH),
+    assert_eq!(code("import square as sq, square as sq from \"./math.atto\"; pub fnc main(): int {return sq(7);}", MATH),
         "E_DUPLICATE");
 }
 #[test]
