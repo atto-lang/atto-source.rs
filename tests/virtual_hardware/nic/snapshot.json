@@ -1,0 +1,25 @@
+{
+  "schema": "atto.virtual.hardware.nic.snapshot.v1",
+  "source_repo": "atto-virtual-hardware/atto-vrtl-nic",
+  "source_pr": 3,
+  "source_commit": "0205acc911f223f870d38478fbdfba1bb0b44fbe",
+  "compiler_source_commit": "909cdf51002f8fd18ab3c588f9f550c1d580d08f",
+  "files": [
+    {
+      "path": "src/nic.atto",
+      "copy": "tests/virtual_hardware/nic/nic.atto",
+      "git_blob_sha1": "22da7b87442bd73a2fe20779e2cf875e5379397c"
+    },
+    {
+      "path": "src/vmm_boundary.atto",
+      "copy": "tests/virtual_hardware/nic/vmm_boundary.atto",
+      "git_blob_sha1": "8d7727b697829825d04155f6545a677d3087d1af"
+    },
+    {
+      "path": "src/fast_path.atto",
+      "copy": "tests/virtual_hardware/nic/fast_path.atto",
+      "git_blob_sha1": "0117f7d566d1a19ac99b3d237ecdfe8960a99d09"
+    }
+  ],
+  "scope": "Atto pure NIC/virtqueue admission; control actor and real KVM guest I/O are not yet executable"
+}

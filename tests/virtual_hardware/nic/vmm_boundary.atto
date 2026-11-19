@@ -1,0 +1,92 @@
+// Shared per-device VMM boundary policy, implemented in AttoLang.
+// No KVM ioctls, mmap, DMA, IOMMU mapping or guest-memory dereferences here.
+// These are validation primitives for a future *trusted* native adapter.
+// Generation/owner IDs must originate from the VMM, not untrusted guest bytes.
+
+pub fnc vm_lease_matches(
+  int requested_vm, int current_vm,
+  int requested_generation, int current_generation
+): bool {
+  return requested_vm > 0 and requested_vm == current_vm and
+         requested_generation > 0 and requested_generation == current_generation;
+}
+
+// Checked unsigned guest-physical range, stored in signed Atto int.
+// Compute via subtraction to avoid offset + length overflow.
+pub fnc valid_guest_range(int offset, int bytes, int guest_ram_bytes): bool {
+  if guest_ram_bytes < 4096 or guest_ram_bytes > 1099511627776 then
+    return false;
+  fi
+  if offset < 0 or offset >= guest_ram_bytes or bytes < 1 then
+    return false;
+  fi
+  return bytes <= guest_ram_bytes - offset;
+}
+
+// Small, fixed-size split virtqueues only; packed queues not negotiated.
+pub fnc supported_split_ring_size(int size): bool {
+  return size == 2 or size == 4 or size == 8 or size == 16 or
+         size == 32 or size == 64 or size == 128 or size == 256 or
+         size == 512 or size == 1024;
+}
+
+// Guest and device indices are monotonically increasing u16 counters.
+// A full ring and an empty ring are distinguished by the distance.
+pub fnc split_ring_pending(int available, int used): int {
+  if available < 0 or available > 65535 or used < 0 or used > 65535 then
+    return -1;
+  fi
+  let int distance = available - used;
+  if distance < 0 then
+    distance = distance + 65536;
+  fi
+  return distance;
+}
+
+pub fnc split_ring_can_consume(int available, int used, int size): bool {
+  if !supported_split_ring_size(size) then
+    return false;
+  fi
+  let int pending = split_ring_pending(available, used);
+  return pending >= 1 and pending <= size;
+}
+
+// Accept only one flat descriptor: no NEXT or indirect chaining.
+// Expected flags: 0 device-readable (TX), 2 device-writable (RX).
+// This is NOT a parser for an arbitrary virtqueue descriptor chain.
+pub fnc valid_flat_descriptor(
+  int offset, int length, int guest_ram_bytes,
+  int flags, int expected_flags
+): bool {
+  return (expected_flags == 0 or expected_flags == 2) and
+         flags == expected_flags and length <= 65536 and
+         valid_guest_range(offset, length, guest_ram_bytes);
+}
+
+pub fnc valid_mmio_window(int offset, int width, int region_bytes): bool {
+  if region_bytes < 1 or region_bytes > 65536 then
+    return false;
+  fi
+  if width != 1 and width != 2 and width != 4 and width != 8 then
+    return false;
+  fi
+  if offset < 0 or offset >= region_bytes or width > region_bytes - offset then
+    return false;
+  fi
+  return offset == (offset / width) * width;
+}
+
+// Discrete non-blocking batch admission, not a mailbox per descriptor.
+// A host must *independently* prove the loan, memory ownership, MMIO
+// aperture and IOMMU/VT-d state before touching any host-mapped bytes.
+pub fnc can_start_fast_path_batch(
+  int requested_vm, int current_vm,
+  int requested_generation, int current_generation,
+  int available, int used, int ring_size,
+  bool attached, bool quiescing
+): bool {
+  return attached and !quiescing and
+         vm_lease_matches(requested_vm, current_vm,
+                          requested_generation, current_generation) and
+         split_ring_can_consume(available, used, ring_size);
+}

@@ -1,0 +1,66 @@
+// AttoLang virtio-net fast-path *admission*, not a full virtio device.
+// Requires host-authenticated VM lease and a trusted memory-mapping handle.
+// No mailbox, allocation, suspension or guest byte dereference here.
+
+pub fnc valid_virtual_ethernet_frame(
+  int wire_bytes_without_fcs, int mtu, int vlan
+): bool {
+  if mtu < 576 or mtu > 9216 then
+    return false;
+  fi
+  if vlan == 0 then
+    return wire_bytes_without_fcs >= 60 and
+           wire_bytes_without_fcs <= mtu + 14;
+  fi
+  if vlan < 1 or vlan > 4094 then
+    return false;
+  fi
+  // 802.1Q tag adds four bytes inside the frame, FCS not counted.
+  return wire_bytes_without_fcs >= 64 and
+         wire_bytes_without_fcs <= mtu + 18;
+}
+
+pub fnc virtio_net_header_supported(int header_bytes, int flags, int gso_type): bool {
+  // Legacy minimal 10-byte virtio-net header, no checksum/TSO offloads.
+  // Mergeable buffers, short headers and all other formats are denied.
+  return header_bytes == 10 and flags == 0 and gso_type == 0;
+}
+
+pub fnc nic_can_consume_rx(
+  int vm_id, int lease_vm, int generation, int lease_generation,
+  int offered, int used, int queue_size,
+  int descriptor_offset, int descriptor_bytes, int guest_ram_bytes,
+  int descriptor_flags, int virtio_header_bytes, int virtio_flags, int gso_type,
+  int frame_bytes, int mtu, int vlan,
+  bool link_up, bool attached, bool quiescing
+): bool {
+  if !link_up or !attached or quiescing or
+     !vm_lease_matches(vm_id, lease_vm, generation, lease_generation) then
+    return false;
+  fi
+  if !split_ring_can_consume(offered, used, queue_size) then
+    return false;
+  fi
+  if !virtio_net_header_supported(virtio_header_bytes, virtio_flags, gso_type) then
+    return false;
+  fi
+  if !valid_virtual_ethernet_frame(frame_bytes, mtu, vlan) then
+    return false;
+  fi
+  // Device-writable RX descriptors may have excess unused capacity.
+  if descriptor_bytes < virtio_header_bytes + frame_bytes then
+    return false;
+  fi
+  return valid_flat_descriptor(descriptor_offset, descriptor_bytes,
+                               guest_ram_bytes, descriptor_flags, 2);
+}
+
+// Caller must still authenticate destination switch port and VLAN membership.
+pub fnc nic_can_handoff_switch(
+  int frame_bytes, int mtu, int vlan,
+  int output_port, int output_ports, bool link_up
+): bool {
+  return link_up and valid_virtual_ethernet_frame(frame_bytes, mtu, vlan) and
+         output_ports >= 2 and output_ports <= 4096 and
+         output_port >= 0 and output_port < output_ports;
+}
