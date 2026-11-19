@@ -73,6 +73,11 @@ jobs:
           ATTOC: target/release/attoc
         run: node --test tests/shared-scalar-v1.test.mjs
 
+      - name: Four-backend scalar v3 baseline - execute native and browser Wasm guests
+        env:
+          ATTOC: target/release/attoc
+        run: node --test tests/portable-scalar-v3-four-backend.test.mjs
+
       - name: Execute five callable forms and class mtd guest with negative no-artifact proofs
         env:
           ATTOC: target/release/attoc
