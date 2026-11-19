@@ -1,0 +1,5 @@
+pub fnc fixtures(): Tuple<int,int,int> { return (1,2,3); }
+pub fnc main(): int {
+    let (a, r, mut j) as const foo = fixtures();
+    return 0;
+}
