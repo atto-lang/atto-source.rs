@@ -1742,6 +1742,13 @@ impl<'a> Checker<'a> {
                     Some(Ty::Option(t)) if !t.has_hole() => Some((**t).clone()),
                     _ => None,
                 };
+                // The public compiler intentionally rejects an untyped ADT
+                // constructor (e.g. `val x = Some(42);`). The v2 fallback must
+                // not turn a legacy E_TYPE rejection into executable guest Wasm.
+                // Prelude-owned helpers are checked against their own contracts.
+                if inner.is_none() && !self.cur().prelude {
+                    return Err(type_err(pos, "Some(...) requires an expected Option<T> type"));
+                }
                 let e = self.plain_args(name, args, 1, pos)?[0];
                 let (ir, ty) = self.value(e, inner.as_ref())?;
                 let (ir, ty) = match &inner {
