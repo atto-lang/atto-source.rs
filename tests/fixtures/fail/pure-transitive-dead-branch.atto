@@ -1,0 +1,11 @@
+// An apparently unreachable branch may not launder an impure call.
+// expect-error: E_PURE
+fnc log_value(int n): int {
+  stdio.println(n);
+  return n;
+}
+pure fnc compute(int n): int {
+  if false then return log_value(n); fi
+  return n;
+}
+pub fnc main(): int { return compute(42); }

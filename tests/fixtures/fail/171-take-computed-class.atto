@@ -1,0 +1,9 @@
+// expect-error: E_OWNERSHIP
+// java: rejects
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+ val moved = take! new Parcel();
+ return moved.value;
+}

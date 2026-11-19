@@ -1,0 +1,10 @@
+// expect-exit: 42
+fnc result(): Result<int,string> { return Err("expected"); }
+pub fnc main(): int {
+  match result() over
+    on Err(message) when message == "other" -> { return 1; }
+    on Err(message) when message == "expected" -> { return 42; }
+    on Err(message) -> { return 2; }
+    on Ok(n) -> { return n; }
+  end
+}

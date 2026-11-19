@@ -1,6 +1,118 @@
+## Named callable return annotations (strict target)
+
+Under the new strict named-callable rule, every function, routine, class/actor method (including static and out-of-line methods) and actor `receive` handler must explicitly specify a result. Write `-> int`, `-> void`, or opt into `-> infer`. The `: T` / `: infer` spelling is also legal; concrete types are preferred. Missing annotations produce `E_RETURN_ANNOTATION`, never a silently inferred `void`. Constructors and contextual lambdas are separate grammar categories.
+
+The browser compiler branch implements conservative return inference for simple literal, parameter and arithmetic returns, with `E_RETURN_INFER` on opaque or conflicting results. It does **not** provide complete typed whole-program inference. This is a source-breaking change: existing fixtures and examples that omit a return result need an individually checked migration. Do not blindly rewrite omissions to `void`. CI execution and native/other-backend parity are **not verified** by this README.
+
+## Experimental source-compiled scalar collection guest (draft PR #320)
+
+A strictly bounded `define struct` + `Array<T, layout=aos|soa|aosoa(N)>`
+profile lowers one fixed-length `int`-field collection in `fnc main() -> int`
+into the existing typed IR and **actual guest Wasm linear memory**. It admits
+constant struct field literals, checked constant-index row `+=` mutation,
+and checked column reads; it does **not** admit general-purpose indexing,
+borrow escaping, copy/transfer, actor messaging, dynamic sizes or SIMD.
+Unsupported syntax fails closed; this is not the general production Array type.
+
+To verify the first executable milestone with a real native compiler:
+
+```sh
+cargo test --locked collection_layout_guest
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --release --bin attoc
+ATTOC=target/release/attoc node tests/collection-layout-guest-execution.mjs
+```
+
+The JS test invokes `attoc` on `.atto` source, instantiates emitted Wasm,
+checks `main() == 15`, and inspects guest memory for physical SoA columns
+`[15,30,20,40,1,2]`. A Rust host-storage unit test alone is not evidence.
+Current CI is not verified until a job with nonzero executed steps succeeds.
+See spec #77, Rust #312/#315/#320 and conformance #71.
+
+
 # atto-source.rs: AttoLang browser compiler
 
+## Explicit deep-copy operator (bounded generated-class AOT milestone)
+
+The production Rust/Wasm frontend recognizes contiguous `copy!!` as a
+separate ownership operator. The separated spelling `copy! !expr` remains
+a shallow scalar copy of logical negation. The source operand is evaluated
+**exactly once** and the sender's original local remains valid.
+
+- Scalars (`int`, `bool`, `float`, immutable `string`, nominal `enum`) are
+  copied by value without a heap allocation.
+- **Ordinary flat classes** whose full stored field inventory consists only
+  of these identity-free values now receive a compiler-generated, private
+  AOT function. It bump-allocates a fresh class object, then performs typed
+  load/store of every field. It does not invoke the class constructor or
+  re-run field initializers. Each invocation allocates a separate root.
+- `copy!` on classes is **not** enabled by this milestone; it still requires
+  its own separately verified shallow Copyable witness.
+- Classes with nested class/actor/collection/resource references, state
+  containers, and erased/unproved types fail closed with
+  `E_COPY_DEEP_UNSUPPORTED`. A class with an explicit `copy_deep` method is
+  rejected for this operator with `E_COPY_OVERRIDE` until verified hook
+  chaining is implemented. Exclusive mutable loans reject with `E_BORROW`.
+
+This is **not yet a general graph copier**. The current Wasm object format
+has no general dynamic-subtype tag, and the baseline browser frontend does
+not lower mutable `Array<int>` or inherited class layouts. Graph cycles,
+nested reference identity, memoized copy contexts, native AOT targets,
+`Object.copy_deep()` methods, actor mailmen, and cross-actor Sendable/
+Serializable provenance all remain separate implementation milestones.
+
+Pass/fail `.atto` fixtures are consumed by the native Rust compiler test
+harness and the existing guest Wasm execution harness. The newly added
+`tests/copy_doublebang.rs` checks actual compiler-produced Wasm bytes;
+it does not alone prove runtime isolation. **Only a test run whose job steps
+executed on the exact branch commit can be reported as PASS.** Source-org
+GitHub Actions currently failed with zero recorded steps; those jobs are
+`NOT_EXECUTED`, not compiler or guest failures.
+
+The compiler now imports the canonical closed-world copy-plan preflight
+directly from the borrow-checker. `src/copy_graph_v1.rs` has **identical Git
+blob SHA** `3008a139cfba41131839de3567a263163152cf00` to the
+Rustfmt-hardened borrow-checker model. The compiler constructs copy
+descriptors from actual resolved class field types and authenticates the
+concrete flat class before **both** emitting generated copy code and lowering
+a `copy!!` call. The source CI hashes the vendored module to detect drift.
+This cannot authenticate dynamic mutable Array graphs or prove actor Sendable.
+
+A full **728-blob source-tree** mirror passed funded alternate-org CI:
+Rust 1.85.1 full Cargo tests, 492 AttoLang conformance assertions, 444
+native-versus-Wasm compiler comparisons, and native/Wasm compiler builds
+([CI run #44137504046](https://github.com/gha-indie-worker/atto-ci/actions/runs/44137504046)).
+Whole-project formatting and strict Clippy still have pre-existing drift;
+no green whole-project lint claim is made. The bounded actor graph copying
+model has its own 196-test Rust receipt, but does not lower `Array<T>`
+or actor messages in this compiler.
+
+Candidate normative contract: atto-lang/atto-spec PR #39. Canonical
+type-graph admission and the nonproduction GraphCopyContext model:
+ores-truffle-oreslang/atto-borrow-checker.rs PR #32.
+Shared conformance candidates: atto-lang/atto-platform-conformance PR #64.
+
 A Rust compiler from `.atto` source to WebAssembly. It is built for `wasm32-unknown-unknown`, so the [atto-playground](https://github.com/atto-lang/atto-playground) compiles and runs programs entirely in the browser. No server sees user source.
+
+## Canonical AttoLang naming and specification
+
+This is the canonical [atto-source.rs](https://github.com/atto-lang/atto-source.rs) home. Use `.atto` source, `atto-*` names, and `https://github.com/atto-lang/atto-source.rs.git` for Git remotes. Historical naming is not part of current usage documentation.
+
+- **Normative contract:** [atto-spec](https://github.com/atto-lang/atto-spec), including the versioned ownership, borrowing, equality, lifetime, effects and module-constant contracts. New implementation work must use these specs, not old backend examples.
+- **Guest parity:** [atto-platform-conformance](https://github.com/atto-lang/atto-platform-conformance) and [atto-compilers-parity-testing](https://github.com/atto-lang/atto-compilers-parity-testing). Pin the exact source/tree and toolchain; distinguish passed, failed, unsupported and not-executed outcomes.
+- **Shared and target requirements:** [atto-common-source](https://github.com/atto-lang/atto-common-source) and [atto-target-profiles](https://github.com/atto-lang/atto-target-profiles). Parser-only acceptance and host-only tests do not prove guest execution.
+
+## Identity-free value class admission (NOT EXECUTABLE)
+
+The proposed `define value class` and visibility variants are recognized before product/nominal lowering and fail with `E_VALUE_UNSUPPORTED`, without guest Wasm output. The current compiler's class-backed struct/record profile is **not** an identity-free value representation. This is a safety gate only, not value construction, recursive equality, copying, inline layout or AOT performance support. See [atto-spec #60](https://github.com/atto-lang/atto-spec/pull/60) and [conformance #57](https://github.com/atto-lang/atto-platform-conformance/pull/57).
+
+## Out-of-line class constructors and guarded state proposal (PARTIAL)
+
+See [atto-spec PR #98](https://github.com/atto-lang/atto-spec/pull/98) for the target cross-backend class/struct receiver, `constructor (Type)(args): self`, and `define state on class Type as { ... }` contract.
+
+The browser compiler admits `declare class Name;` followed by exactly one local concrete `define class Name as ... end`; an out-of-line `constructor (Name)(args): self { ... }` is lowered into that class's existing checked constructor path. Existing **immutable class** `mtd` receiver methods remain executable only within their restricted supported subset. The new code has **not** yet received executed exact-head compiler/guest CI evidence, so it remains a draft implementation.
+
+Protected `define state on class` is recognized as a bounded nominal attachment but fails closed with `E_UNSUPPORTED`, because no per-instance guard runtime has been proven for this construct. Struct receiver methods/custom constructors are also rejected before the scalar-shape preview could represent them as identity-bearing classes. `declare struct` is a nominal forward marker, not an executable value layout. Actor constructors remain forbidden; this change does not introduce synchronous `ActorRef` method dispatch. No Java/LLVM/.NET/Forge parity is claimed.
 
 ## Namespace and out-of-line receiver syntax (parse-only)
 
@@ -220,15 +332,15 @@ pinned separately and has not been replaced or relabeled by this change.
 
 The compiler does not define any syntax of its own:
 
-- **Syntax** follows `docs/grammar.ebnf` and `Parser.java` in `oreslang-source.java`. That includes binding forms, the `const mut` / `let mut` referent qualifier, statement terminators with implicit newline termination, condition `,` / `|`, and arity overloading.
+- **Syntax** follows the current AttoLang language specification and checked-in parser grammar. That includes binding forms, the `const mut` / `let mut` referent qualifier, statement terminators with implicit newline termination, condition `,` / `|`, and arity overloading.
 - **`int`** is a signed 64-bit integer with checked arithmetic. Overflow is a panic, never a silent wrap. This matches the LLVM backend's trap and spec chapter 17 (TARGET, decided).
-- **Spec** decisions come from the AttoLang spec chapters 01, 16 and 17.
+- **Spec:** normative language decisions are maintained in the current [atto-spec](https://github.com/atto-lang/atto-spec), including versioned feature contracts. The table here reports only this compiler profile, not a frozen cross-backend specification.
 
 ## Admitted subset
 
 | Area | Admitted |
 | --- | --- |
-| Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`, brace body; parameters `int a`, `int mut a`, `a: int`; arity overloads |
+| Declarations | `[pub] fnc` / `routine` with `: T` or `-> T`; C brace bodies (`: T {}`, `: T -> {}`, `-> T {}`) or comma/`end` bodies (`-> T … end`, `-> T :: … end`); parameters `int a`, `int mut a`, `a: int`; arity overloads |
 | Entry point | zero-argument `main` returning `int` or `void` |
 | Generators (restricted) | One optional immutable `int` parameter, up to 16 persistent `int` locals and pure typed CFG `if`/`while`/`break`/`continue`, checked scalar arithmetic and computed `yield`; plus earlier canonical `CountTo`/limited lazy `yield*` profile. Owned fresh-handle `for ... in` and bounded guest-Wasm 65,536-step pull budgets. Borrowed objects, arbitrary effects, nested-scope binds and advanced cancellation remain gated. |
 | Types | `int` (i64), `bool` / `boolean`, `float` / `f64` (IEEE binary64), `string` / `String`, `void` (return only) |
@@ -241,13 +353,50 @@ The compiler does not define any syntax of its own:
 | Output | `stdio.print(x)` / `stdio.println(x)` for `int`, `bool`, `float` (Java `Double.toString`: `3.5`, `1.0E7`, `1.0E-4`, `NaN`, `Infinity`, `-0.0`), strings and objects (`P{a=1, b=true}`) |
 | Classes | `[pub] define class Name as … end`. Fields of type int, bool, float, string or an enum: `T name: e`, `mut T name = e`, `let T name = e` (assignable in the constructor) and `name: T = e`, `final …`, `val`/`const` (fixed). One `constructor(…)`; instance methods `[pub] [fnc] name(…)`; `[pub] static fnc name(…)`, always called qualified as `Name.f(…)`. Construction is `new Name(…)` |
 | Actors | `define actor Name as … end` or `actor Name … end`. State `let T name = e` (mutable) and `val`/`const`/`final` (fixed), one `receive(ActorMail<int\|bool> mail): void` reading `mail.value` and `mail.sequence`, and helper methods called as `self.f(…)`. `val r = spawn Name();` gives a copyable `ActorRef<Name>`, and `r.send(v)` enqueues mail |
-| Enums | `define enum Name as A B C end` and `Name.A` values compared with `eq`/`neq`. This spelling comes from the oreslang-source.llvm v1 design contract (`contracts/v1/design/enum_pattern_cases.json`). The Java parser does not admit it yet, and the fixtures record that |
+| Enums | `define enum Name as A B C end` and `Name.A` values compared with `eq`/`neq`. This spelling comes from an earlier LLVM design contract (`contracts/v1/design/enum_pattern_cases.json`). The Java parser does not admit it yet, and the fixtures record that |
+
+### Confirmed callable body syntax (accepted by atto-spec #19)
+
+The five declaration-body forms below apply to `fnc`, direct-call-only `routine`,
+and inline instance methods (bare `method_name`, legacy `fnc method_name`
+or `method method_name`). These are alternatives, not simultaneous overloads:
+
+```atto
+fnc five(): int { return 5; }
+fnc five(): int -> { return 5; }
+fnc five() -> int { return 5; }
+fnc five() -> int let int x = 3, x + 2 end
+fnc five() -> int :: let int x = 3, x + 2 end
+```
+
+C bodies retain explicit returns; outer Erlang-like bodies use commas between
+statements and return their final expression, subject to the normal type,
+ownership and control-flow checks. Neither style changes the other style's
+terminators. A `->` after `: T` requires `{`. The `=>` fat arrow remains
+for *callable type* declarations, not these function body headers.
+
+Out-of-line `mtd` supports named receiver headers `(self: T)`,
+`(T self)`, implicit `(T)`, `(T _)`, and explicit `(mut self: T)`
+in the **target preflight**. The formatter contract prefers
+`(self: T)` for named receivers, `(T)` for implicit receivers and
+bare method names for inline instance methods.
+
+For a file containing only local classes and functions, **immutable class
+`mtd` receivers are executable**. The lowering reuses the full production
+class parser, typechecker, and guest Wasm emitter; each method has the same
+ABI and visibility as an equivalent inline method. `(mut self: T)` is
+recognized but **fails with `E_UNSUPPORTED`** until mutable-self ownership
+rules are implemented. Actor/namespace/import-linked receivers remain
+syntax-only and must not acquire unverified synchronous dispatch.
+Actor sealed-state restrictions remain unchanged. Executable support must
+be backed by actual Rust/Wasm guest tests rather than syntax acceptance.
 
 ### Class and actor rules (checked against the Java reference)
 
 - Members are private by default. A private field, method or static function is visible only to code inside its own class, which includes other instances of that class.
 - Instance methods see a read-only `self`. Only the constructor assigns fields (`E_OWNERSHIP`), and fixed fields reject even that (`E_IMMUTABLE`).
 - Objects move. `val b = a`, passing `a` as an argument and `return a` all transfer ownership. Using `a` afterwards is `E_MOVED`, and so is moving an outer object inside a loop. Field reads, method calls on `a` and printing `a` do not move it.
+- Explicit prefix `borrow! owner` and `borrow! mut owner` admit lexical class loans with simultaneous immutable readers or one exclusive mutable writer; `copy! value` and `share! value` accept only verified immutable scalars; `take! owner` invalidates named locals. Parenthesized operands (e.g. `borrow!(owner)`) remain accepted for compatibility, but the formatter's canonical syntax omits grouping around a bare name. Owned class loans cannot escape by return, argument, assignment or take. Moves from loop-external locals are checked in every repeated position, including `while` conditions and `for` condition/update expressions; a `for` initializer executes once and may transfer ownership. This is a bounded native/browser Wasm subset, **not** generalized inter-actor sharing, mutable scalar loans, Arc, suspension, or callable lifetime inference.
 - Actors are isolated. Their bodies cannot reach file-level functions, sibling classes or enums (`E_ISOLATION`). Actor state is private and changes only through mail.
 - `spawn` takes no arguments and actors have no constructor (`E_ACTOR`). `receive` is actor-local: it cannot be `pub`, takes exactly one `ActorMail<T>` and returns `void`.
 
@@ -255,13 +404,13 @@ The following are rejected, with the code shown:
 
 - Removed `%`, `^` and `^^` give `E_UNSUPPORTED` with no artifact emitted.
 - Condition `,` / `|` evaluate **both** boolean operands left-to-right (eager), including observable side effects.
-- `int / int` gives `E_UNSUPPORTED`. Its result type is undecided (spec S-25): Java yields `float` and LLVM rejects it.
-- `|>` is functional composition only: receiver stages, actor pipelines and computed callees remain `E_UNSUPPORTED`; stage call arity and types are checked normally. `|` outside a condition gives `E_UNSUPPORTED`. Java treats it as bitwise, and the grammar has no bitwise operators.
+- `int / int` gives `E_UNSUPPORTED` here. Consult atto-spec for the current language contract, without assuming other compiler behavior.
+- `|>` is functional composition only: receiver stages, actor pipelines and computed callees remain `E_UNSUPPORTED`; stage call arity and types are checked normally. `|` outside a condition gives `E_UNSUPPORTED`. Other backends must follow the current bitwise and stream operator specification.
 - `int / int` stays `E_UNSUPPORTED` (S-25, below); write a float operand.
 - `f32`, sized integers, unsupported generic ADT instantiations, arrays and collections give `E_UNSUPPORTED_TYPE`. Admitted profiles are `Option<int>`, `Result<int,string>`, and `Option<Result<int,string>>`.
 - `string + int` is `E_TYPE`, as in Java (no implicit conversion). `string.replace_literal`, `split_literal`, `is_identifier` and `is_route_segment` give `E_UNSUPPORTED`; unknown string members are `E_UNBOUND`.
+- `maybe ... else ... end` remains reserved and rejected with `E_UNSUPPORTED` until typed matching and `defer` unwind semantics are compiled. A failed `?=` must not become `throw`, and `else` must not become `catch`.
 - Match patterns other than the admitted scalar/enum patterns and v1 ADT constructor variants (`Some(x)`, `None`, `Ok(x)`, `Err(x)`) give `E_UNSUPPORTED`. Tuple and type patterns remain unsupported; wrong-family or non-exhaustive ADT patterns fail with typed diagnostics. Negative literal patterns, `1 | 4` alternatives and `name when …` remain `E_SYNTAX`.
-- `maybe ... else ... end`, even in expression position, is intentionally reserved and rejected with `E_UNSUPPORTED` until typed value-pattern matching and `defer` unwind semantics are implemented. A failed `?=` must never be approximated as `throw`, and `else` must never be treated as `catch`.
 - `switch`, value `match<T>`, imports, lambdas, non-v1 generic ADT instantiations, `for … of`, `try`, `defer`, abstract classes, inheritance, generic classes, static fields, enum payloads and values, `spawn` inside actors, and calling actor methods directly all give `E_UNSUPPORTED`.
 - Comparing object or actor references, a `self` value (`return self`), ternaries choosing between objects, and class-typed fields give `E_UNSUPPORTED`. Fields need an initializer, and field initializers must be constant expressions.
 
@@ -273,7 +422,7 @@ These are recorded in fixtures and checked by the differential run:
 - Conditions. `,` and `|` are eager here (PR #4); Java short-circuits. Fixtures pin Java's output with `// java: diverges` and `// java-stdout:` lines.
 - An `int` where a `float` is required (`val f: float = 3;`, a float parameter). Java keeps the int and prints `3`; here it is `E_TYPE`.
 - `let s = "";` then `s = s + "x"`. Java infers the singleton literal type `""` and rejects the assignment; here the binding has type `string`.
-- Integer overflow. Java wraps silently. Here it panics, following spec 17 and the LLVM backend.
+- Integer overflow. This subset panics on overflow; verify other backend behavior through executed parity tests.
 - Object references. Java compares them by identity, but here comparison is not admitted yet.
 - Object heap. Java has a garbage collector. Here objects come from a fixed 1 MiB bump heap that is never freed, and exhausting it panics with code 3.
 - Cross-actor output order. Different actors run concurrently in both runtimes, so lines from different actors may interleave in any order. Within one actor, mail is processed in FIFO order.
@@ -282,7 +431,7 @@ These are recorded in fixtures and checked by the differential run:
 
 v2 extends v1. Every v1 guest is still a valid v2 guest.
 
-- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; 2 reserved; 3 = heap exhausted). `memory` is exported when strings, classes, **or actors** exist. Scalar-only actor modules export one bounded 64 KiB Wasm32 memory per instance; allocating classes or concatenating strings uses the existing fixed 16-page (1 MiB) memory. This is guest linear memory, not a suspended Wasm execution stack. A string value is an `i64` `offset << 32 | len` into that memory.
+- **Exports:** `main: () -> i64` (a `void` main returns 0) and `panic_code: mut i32` (1 = checked integer overflow; 2 reserved; 3 = heap exhausted; 4 = invalid generator handle/state; 5 = generator dispatch budget; 6 = logical stack exhausted: a call on a recursive cycle would exceed 1024 live recursive frames per `main` or receive invocation, the same quota as the Java backend. Only calls on a recursive cycle of the call graph are counted, so modules without recursion are byte-identical to before). `memory` is exported when strings, classes, **or actors** exist. Scalar-only actor modules export one bounded 64 KiB Wasm32 memory per instance; allocating classes or concatenating strings uses the existing fixed 16-page (1 MiB) memory. This is guest linear memory, not a suspended Wasm execution stack. A string value is an `i64` `offset << 32 | len` into that memory.
 - **Imports:** only the ones used, from module `atto`: `print_i64(i64)`, `print_bool(i32)`, `print_str(i32, i32)`, `print_newline()` and `print_f64(f64)` (the host renders Java `Double.toString`; `tests/java-double.mjs`), plus, when the program spawns actors, `actor_spawn(i32 type) -> i32 ref` and `actor_send(i32 ref, i64 value)`. There are no other capabilities.
 - **Actors:** a program with actors also exports `actor_init(i32 type)` and `actor_receive(i32 type, i64 value, i64 sequence)`, and carries a custom section `atto.actors` listing actor type names in type order. The host runs each spawned actor in its own instance of the same compiled module. Worker topology is a separate host concern; an upgraded tenant host can schedule multiple actor instances within one Worker. It calls `actor_init` once and then `actor_receive` once per message, in FIFO order with sequence numbers from 0. Actor state lives in that instance's globals, so actors share no memory. Bool mail is passed as 0 or 1.
 - **Determinism:** output is a pure function of the source. The native and wasm32 hosts emit byte-identical modules.
@@ -330,7 +479,7 @@ cargo build --locked --release --bin attoc
 cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
 ATTOC=target/release/attoc node tests/conformance.mjs
 # Optional Java reference differential (local only; the reference is private):
-ATTO_JAVA=/path/to/oreslang-java-launcher ATTOC=target/release/attoc node tests/conformance.mjs
+ATTO_JAVA=/absolute/path/to/verified/java-compiler-launcher ATTOC=target/release/attoc node tests/conformance.mjs
 ```
 
 The fixture corpus is in `tests/fixtures/`:
@@ -360,6 +509,32 @@ The fixture corpus is in `tests/fixtures/`:
 
 **Safety and verification boundary:** A compiler compiled to browser Wasm is not proof that its emitted guests use Wasmtime in a browser. Browser guests use WebAssembly APIs/Workers; native Wasmtime claims require separate native execution receipts.
 
-Keep canonical AttoLang (.atto) semantics consistent with the language specification, while treating Oreslang-named tooling and .ores as compatibility surfaces.
+Keep canonical AttoLang (`.atto`) semantics consistent with the language specification; migration-era behavior is not a feature-readiness claim.
 
 Changes asserting compiler/runtime support must identify the exact source head, target, toolchain, executed positive and negative guest tests, and failure/unsupported status; an empty CI step list is **not executed**. Documentation records responsibility, **not** a claim of feature completion.
+
+## Draft I/O direction shorthand (not general channel or stream execution)
+
+The browser subset currently has a **draft**, unverified real-lowering profile
+for standalone stdout writes only:
+
+```atto
+stdio.out << "effectful output";
+writech stdio.out, "effectful output";
+```
+
+Both statements reuse the same typed `stdio.print` guest Wasm emission and
+host import. This profile does **not** add any new guest ABI or a general
+`Writable<T>`/channel runtime. It also does not append a newline.
+Other channel/stream read or write targets and all `select` I/O arms continue
+to fail closed with `E_UNSUPPORTED`. Runtime `const` read bindings fail with
+`E_CONST_EFFECT`; use `val`/ `let` for effectful reads once supported.
+
+Tests: `cargo test --locked --test io_shorthand`, then
+`cargo build --locked --release --bin attoc` and
+`ATTOC=target/release/attoc node tests/io_shorthand_guest.mjs`.
+These are intended checks, not an assertion of passing CI. As of the draft
+commit, source/private-carrier Actions have not reported executed test steps;
+treat guest conformance as **NOT_EXECUTED** until a real run succeeds.
+See [language spec](https://github.com/atto-lang/atto-spec/pull/32) and
+[remaining implementation tracker](https://github.com/atto-lang/atto-source.rs/issues/180).
