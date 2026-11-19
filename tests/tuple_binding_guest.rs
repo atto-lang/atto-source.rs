@@ -19,7 +19,7 @@ fn fixture_call_destructures_and_root_is_let() {
         return a + r + j;
     }}");
     let wasm = compile(&src).expect("scalar tuple return + copy projections must compile");
-    assert!(wasm.starts_with(b"\\0asm"));
+    assert!(wasm.starts_with(b"\0asm"));
 }
 
 #[test]
