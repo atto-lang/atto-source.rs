@@ -594,6 +594,47 @@ console.log('COMPILED_WASM_GUEST_TRACE actor_instances=' + tracedActorInstances 
   ' admitted_and_settled=' + tracedActorMessages +
   ' backend=browser-wasm guest=EXECUTED scheduling=serial-host-only');
 console.log(digests.length ? `artifact digests:\n${digests.join('\n')}` : '');
+
+// Exact, unchanged website reverse-pipeline preview. This must run as real
+// compiler-emitted guest Wasm, not a host-language expression substitution.
+const reversePipePath = join(here, 'functional-pipelines.atto');
+const reversePipeSource = await readFile(reversePipePath, 'utf8');
+check('site/functional-pipelines-source-identity-and-real-guest', () => {
+  const blob = createHash('sha1').update(Buffer.from('blob ' + Buffer.byteLength(reversePipeSource) + '\\0'))
+    .update(reversePipeSource).digest('hex');
+  assert.equal(blob, 'a8d95c4be6f64812f68fb4178df693fe8d595c00', 'the website source must remain byte-identical');
+  const compiled = compile(reversePipeSource);
+  assert.equal(compiled.ok, true, compiled.message);
+  assert.ok(WebAssembly.validate(compiled.wasm));
+  assert.deepEqual(compile(reversePipeSource).wasm, compiled.wasm);
+  if (attoc) assert.deepEqual(nativeBytes(reversePipePath), compiled.wasm, 'native/wasi compiler guest byte parity');
+  const executed = runGuest(compiled.wasm);
+  assert.equal(executed.ok, true, executed.error);
+  assert.equal(executed.value, 83n);
+  assert.equal(executed.stdout, '');
+});
+check('pipe-left/right-associative-call-order-and-negative-admission', () => {
+  const source = [
+    'fnc twice(int x): int { return x * 2; }',
+    'fnc next(int x): int { return x + 1; }',
+    'pub fnc main(): int { return twice <| next <| 20; }',
+  ].join('\\n');
+  const good = compile(source);
+  assert.equal(good.ok, true, good.message);
+  assert.equal(runGuest(good.wasm).value, 42n);
+  for (const bad of [
+    'pub fnc main(): int { return 42 <| 21; }',
+    'fnc twice(int x): int { return x * 2; } pub fnc main(): int { return twice <| true; }',
+    'fnc twice(int x): int { return x * 2; } pub fnc main(): int { return twice <|; }',
+  ]) {
+    const result = compile(bad);
+    assert.equal(result.ok, false, 'invalid reverse pipe admitted');
+    assert.equal('wasm' in result, false, 'invalid source emitted an artifact');
+    assert.match(result.code, /^E_[A-Z_]+$/);
+    assert.ok(result.line > 0 && result.col > 0);
+  }
+});
+
 // Exact current site preview corpus. Rejections never count as executing a
 // feature; the report explicitly separates admitted, unsupported and guests.
 try {
