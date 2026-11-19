@@ -1,0 +1,11 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+fnc *gen wrong(): Generator<int> {
+  let count = 0;
+  if true then
+    let scoped = 7;
+    count += scoped;
+  fi
+  yield count;
+}
+pub fnc main(): int { return 0; }

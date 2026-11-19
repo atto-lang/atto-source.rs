@@ -1,0 +1,4 @@
+// expect-error: E_TYPE
+// java: rejects
+fnc a(): Option<int> { return Err("no"); }
+pub fnc main(): int { return 0; }

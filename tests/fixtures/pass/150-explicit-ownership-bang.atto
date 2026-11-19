@@ -1,0 +1,27 @@
+// expect-exit: 63
+// expect-stdout: 84
+// expect-stdout: 43
+// java: rejects
+// Explicit ownership: class loans and scalar take/copy/share.
+define class Parcel as
+  pub let int value = 42;
+end
+pub fnc main(): int {
+  let parcel = new Parcel();
+  block {
+    val first = borrow! parcel;
+    val second = borrow! parcel;
+    stdio.println(first.value + second.value);
+  }
+  block {
+    val writer = borrow! mut parcel;
+    writer.value = 43;
+  }
+  val source_number = 21;
+  val copied = copy! source_number;
+  val moved = take! parcel;
+  stdio.println(moved.value);
+  val shared_number = share! 42;
+  val grouped_compatibility = copy!(0); // legacy grouped operands remain valid
+  return copied + shared_number + grouped_compatibility;
+}

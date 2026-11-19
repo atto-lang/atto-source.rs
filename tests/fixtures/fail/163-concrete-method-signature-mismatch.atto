@@ -1,0 +1,7 @@
+// expect-error: E_SIGNATURE
+use namespace workers;
+declare actor Foo;
+define actor Foo as
+    foo(): int { return 1; }
+end
+pub mtd (Foo self) foo(): bool { return true; }

@@ -1,0 +1,7 @@
+pub fnc fixtures(): Tuple<int,int,int> {
+    return (10,20,30);
+}
+pub fnc main(): int {
+    let (a,r,mut j) as val foo = fixtures();
+    return a+r+j;
+}

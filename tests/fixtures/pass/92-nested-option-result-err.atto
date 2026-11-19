@@ -1,0 +1,17 @@
+// expect-exit: 6
+// expect-stdout: negative
+// Err remains data beneath Some and does not collapse into None.
+fnc failure(): Option<Result<int,string>> {
+  return Some(Err("negative"));
+}
+pub fnc main(): int {
+  match failure() over
+    on None -> { return 0; }
+    on Some(inner) -> {
+      match inner over
+        on Ok(value) -> { return value; }
+        on Err(message) -> { stdio.println(message); return 6; }
+      end
+    }
+  end
+}

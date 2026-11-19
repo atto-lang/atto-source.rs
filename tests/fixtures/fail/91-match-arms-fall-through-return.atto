@@ -1,0 +1,9 @@
+// expect-error: E_RETURN
+// java: rejects
+fnc f(int x): int {
+  match x
+    1 -> { return 1; }
+    _ -> { stdio.println("x"); }
+  end
+}
+pub fnc main(): int { return f(2); }

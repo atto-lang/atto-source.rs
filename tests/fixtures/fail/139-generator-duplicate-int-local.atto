@@ -1,0 +1,8 @@
+// expect-error: E_DUPLICATE
+// java: rejects
+fnc *gen wrong(): Generator<int> {
+  let count = 0;
+  let count = 2;
+  yield count;
+}
+pub fnc main(): int { return 0; }

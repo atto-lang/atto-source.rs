@@ -1,0 +1,20 @@
+// expect-exit: 42
+// java: llvm-design
+fnc *gen count_to(int limit): Generator<int> {
+  for (let i = 1; i <= limit; i++) do
+    yield i;
+  done
+}
+fnc *gen outer(int limit): Generator<int> {
+  yield* count_to(limit);
+}
+pub fnc main(): int {
+  let sum = 0;
+  for (let i = 0; i < 12000; i++) do
+    for value in outer(1000) do
+      if i < 42 then sum += value; fi
+      break;
+    done
+  done
+  return sum;
+}

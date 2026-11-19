@@ -1,0 +1,3 @@
+// expect-error: E_TYPE
+fnc fail(): int { throw "not an Error"; }
+pub fnc main(): int { return fail(); }

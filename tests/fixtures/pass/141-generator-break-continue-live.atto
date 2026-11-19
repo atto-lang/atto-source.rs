@@ -1,0 +1,16 @@
+// expect-exit: 8
+// java: llvm-design
+fnc *gen odds(int limit): Generator<int> {
+  let i = 0;
+  while i < limit do
+    i += 1;
+    if i eq 2 then continue; fi
+    if i eq 5 then break; fi
+    yield i;
+  done
+}
+pub fnc main(): int {
+  let sum = 0;
+  for n in odds(9) do sum += n; done
+  return sum; // 1 + 3 + 4 = 8
+}

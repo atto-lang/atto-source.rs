@@ -1,0 +1,7 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+fnc *gen wrong(): Generator<int> {
+  let total = 4;
+  yield total / 2;
+}
+pub fnc main(): int { return 0; }

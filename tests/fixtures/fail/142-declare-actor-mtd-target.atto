@@ -1,0 +1,7 @@
+// expect-error: E_UNSUPPORTED
+use namespace workers;
+declare actor Foo1;
+declare actor Foo2;
+mtd (Foo1 self) foo(): void {}
+mtd (Foo2 self) foo(): void {}
+pub fnc main(): int { return 0; }

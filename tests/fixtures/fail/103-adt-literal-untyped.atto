@@ -1,0 +1,6 @@
+// expect-error: E_TYPE
+// java: rejects
+pub fnc main(): int {
+  val x = Some(42);
+  return 0;
+}

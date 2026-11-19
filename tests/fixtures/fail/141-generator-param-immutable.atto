@@ -1,0 +1,7 @@
+// expect-error: E_IMMUTABLE
+// java: rejects
+fnc *gen wrong(int limit): Generator<int> {
+  limit += 1;
+  yield limit;
+}
+pub fnc main(): int { return 0; }

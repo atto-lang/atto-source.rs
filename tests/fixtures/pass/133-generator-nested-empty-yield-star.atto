@@ -1,0 +1,19 @@
+// expect-exit: 8
+// java: llvm-design
+fnc *gen nothing(): Generator<int> {}
+fnc *gen middle(): Generator<int> {
+  yield* nothing();
+  yield 5;
+}
+fnc *gen outer(): Generator<int> {
+  yield 1;
+  yield* middle();
+  yield 2;
+}
+pub fnc main(): int {
+  let sum = 0;
+  for value in outer() do
+    sum += value;
+  done
+  return sum;
+}

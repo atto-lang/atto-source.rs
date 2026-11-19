@@ -1,0 +1,9 @@
+// expect-exit: 13
+fnc r(): Result<int,string> { return Ok(13); }
+pub fnc main(): int {
+  val v: Result<int,string> = r();
+  match v over
+    on Err(msg) -> { stdio.println(msg); return 0; }
+    on Ok(n) -> { return n; }
+  end
+}

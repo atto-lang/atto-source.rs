@@ -1,0 +1,20 @@
+// expect-exit: 42
+// Contextual Ok/Some constructors preserve type through calls and bindings.
+fnc wrap(value: Result<int,string>): Option<Result<int,string>> {
+  return Some(value);
+}
+fnc inspect(outcome: Option<Result<int,string>>): int {
+  match outcome over
+    on Some(result) -> {
+      match result over
+        on Ok(value) -> { return value; }
+        on Err(message) -> { stdio.println(message); return 0; }
+      end
+    }
+    on None -> { return 0; }
+  end
+}
+pub fnc main(): int {
+  val Option<Result<int,string>> value = wrap(Ok(42));
+  return inspect(value);
+}

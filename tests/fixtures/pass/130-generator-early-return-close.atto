@@ -1,0 +1,24 @@
+// expect-exit: 42
+// java: llvm-design
+// 12000 early returns must close the handle before returning.
+fnc *gen stream(): Generator<int> {
+  yield 1;
+  yield 2;
+}
+fnc first_value(): int {
+  for value in stream() do
+    return value;
+  done
+  return 0;
+}
+pub fnc main(): int {
+  let sum = 0;
+  for (let i = 0; i < 12000; i++) do
+    if i < 42 then
+      sum += first_value();
+    else
+      first_value();
+    fi
+  done
+  return sum;
+}

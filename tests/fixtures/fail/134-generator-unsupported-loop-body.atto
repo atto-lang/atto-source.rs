@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+fnc *gen wrong(int limit): Generator<int> {
+  for (let i = 1; i <= limit; i++) do
+    yield i + 1;
+  done
+}
+pub fnc main(): int { return 0; }

@@ -40,3 +40,21 @@ Every class, actor and enum construct was probed against the launcher before it 
 - **Recorded runtime divergence.** Java wraps integer overflow inside actors (it printed `-2` for `2 * 9223372036854775807`). The browser compiler panics, following spec 17. `panic/10-actor-overflow` is excluded from the Java comparison like the other panic fixtures.
 
 Spellings rejected by Java that earlier branches had used are now negative fixtures: `receive(int value): int`, a non-`pub` `static fnc` called from outside, `let n: int = 0` fields and constructing a class without `new`.
+
+## Run of 2026-11-08: floats, strings, match, type-first bindings
+
+- Reference: oreslang-source.java **main `7f35687121`** (2026-11-07), freshly built, GraalVM JDK 25, macOS arm64. The earlier `9424b2d` launcher is three days older; current main changed one admitted form (below).
+- Compiler: branch `feat/browser-compiler-values-20261108`, stacked on `feat/define-class-actor-enum-java-canonical-20261107` (#29)
+- Result: `conformance: 211 passed, 0 failed, 170 Java-differential, 181 native-vs-wasm` (two consecutive runs)
+
+What changed in the reference and in this compiler:
+
+- **Type-first bindings.** Current Java main accepts `int x = 7;` as an immutable binding (`Parser.looksLikePrimitiveTypeFirstImmutableBinding`: exactly `int`, `bool`, `string`, `String`; reassignment is "cannot reassign const binding"). Spec chapter 21 says the same. The former negative fixture `fail/14` is now `pass/69`. `float f = 1.5;` stays a parse error in Java and here.
+- **Eager conditions are a pinned divergence.** `pass/27`, `47` and `48` now carry `// java: diverges` with Java's exact short-circuit output in `// java-stdout:` lines, so the run is green and still fails if either side changes.
+- **Actor output under the Java shutdown race.** For `stdout-order: unordered` fixtures the truncated Java output is compared as a sub-multiset of lines (it was compared as a prefix, which failed when two actors printed in the other order).
+
+Every new construct was probed against the launcher before it was admitted, then pinned in fixtures:
+
+- **Floats** (`pass/71–73`, `fail/73`, `74`, `87`, `92`): binary64, Java widening of an int operand, `7.0 / 2 = 3.5`, Java `Double.toString` output (`1.0E7`, `1.0E-4`, `1.234567890125E11`, `NaN`, `Infinity`, `-0.0`), literal lexing (`1_000.25`, `2E-3`, `1.5e+2`; `1.` and `.5` rejected). Divergence: Java keeps an `int` bound to a `float` (prints `3`); here that is `E_TYPE` (`java: accepts`).
+- **Strings** (`pass/70`, `74`, `75`, `81`, `82`, `fail/75`, `76`, `88`): content `eq`, `+` of two strings (never `string + int`), `<`/`<=`/`>`/`>=` in `String.compareTo` order including the UTF-16 surrogate case (`"𝄞" < "￼"`), `trim`/`starts_with`/`ends_with`/`contains_literal` edge cases, object printing `P{x=1.5, name=bob, n=2}`. `replace_literal` is accepted by Java but not lowered (`java: accepts`). Java infers `let acc = ""` as the literal type `""` and rejects later assignment, so `pass/82` declares `let acc: string`.
+- **Match** (`pass/76–80`, `fail/77–85`, `89–91`): legacy and canonical `over`/`on` forms, `do match` requiring `over`, `else` only in the legacy form, guards evaluated only after the pattern matched, binding patterns, definite return, and Java's "unreachable match arm" / "non-exhaustive match" rejections. `pass/80` (enum value arms) is `java: llvm-design`.

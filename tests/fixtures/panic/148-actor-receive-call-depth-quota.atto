@@ -1,0 +1,18 @@
+// An actor's receive invocation has its own logical stack: recursion inside
+// it panics that actor with the stack quota, after its earlier output.
+// expect-panic: 6
+// expect-stdout: 3
+define actor W as
+    dive(int n): int { return self.dive(n + 1) + 1; }
+    receive(ActorMail<int> mail): void {
+        stdio.println(mail.value);
+        stdio.println(self.dive(mail.value));
+        return;
+    }
+end
+
+pub fnc main(): int {
+    val a = spawn W();
+    a.send(3);
+    return 0;
+}

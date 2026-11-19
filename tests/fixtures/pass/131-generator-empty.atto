@@ -1,0 +1,11 @@
+// expect-exit: 42
+// java: llvm-design
+// An empty generator has no yielded items and still closes.
+fnc *gen empty(): Generator<int> {}
+pub fnc main(): int {
+  let result = 42;
+  for value in empty() do
+    result += value;
+  done
+  return result;
+}

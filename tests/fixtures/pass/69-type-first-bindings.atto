@@ -1,0 +1,16 @@
+// Java Parser.looksLikePrimitiveTypeFirstImmutableBinding: int, bool, string
+// and String admit the immutable "T name = e" form (spec 21).
+// expect-exit: 7
+// expect-stdout: true
+// expect-stdout: hi
+// expect-stdout: there
+pub fnc main(): int {
+  int x = 7;
+  bool b = true;
+  string s = "hi";
+  String t = "there";
+  stdio.println(b);
+  stdio.println(s);
+  stdio.println(t);
+  return x;
+}

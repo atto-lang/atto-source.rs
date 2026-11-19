@@ -1,0 +1,8 @@
+// expect-error: E_TYPE
+// java: accepts
+// Java passes the int through unchanged; the browser compiler requires a float argument
+fnc half(float x): float { return x / 2.0; }
+pub fnc main(): int {
+  stdio.println(half(3));
+  return 0;
+}

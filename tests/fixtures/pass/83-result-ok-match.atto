@@ -1,0 +1,13 @@
+// expect-exit: 21
+fnc value(bool positive): Result<int,string> {
+  if positive then
+    return Ok(21);
+  fi
+  return Err("no");
+}
+pub fnc main(): int {
+  match value(true) over
+    on Ok(n) -> { return n; }
+    on Err(message) -> { stdio.println(message); return 0; }
+  end
+}

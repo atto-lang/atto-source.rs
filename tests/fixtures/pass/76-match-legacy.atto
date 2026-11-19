@@ -1,0 +1,30 @@
+// Legacy match: arms "P -> { }", "else" catch-all, literal guards. A match
+// whose arms all return is a definite return.
+// expect-exit: 0
+// expect-stdout: 10
+// expect-stdout: 20
+// expect-stdout: 30
+// expect-stdout: T
+// expect-stdout: else
+fnc name(int x): int {
+  match x
+    1 -> { return 10; }
+    2 when x > 0 -> { return 20; }
+    _ -> { return 30; }
+  end
+}
+pub fnc main(): int {
+  stdio.println(name(1));
+  stdio.println(name(2));
+  stdio.println(name(9));
+  val b = true;
+  match b
+    true -> { stdio.println("T"); }
+    false -> { stdio.println("F"); }
+  end
+  match 5
+    1 -> { stdio.println("one"); }
+    else -> { stdio.println("else"); }
+  end
+  return 0;
+}

@@ -1,0 +1,9 @@
+// expect-error: E_INIT_READ
+define class Ratio as
+    pub final float value;
+    constructor(float initial) {
+        val prior = self.value;
+        self.value = initial;
+    }
+end
+pub fnc main(): int { return 0; }
