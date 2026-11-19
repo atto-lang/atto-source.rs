@@ -115,3 +115,17 @@ fn scalar_for_initializers_are_not_explicit_tuple_declarations() {
     }
     assert_eq!(parse("(let a, val b) as val pair = (1, 2);").len(), 1);
 }
+
+#[test]
+fn unsupported_for_of_loops_keep_loop_diagnostic_not_tuple_syntax_error() {
+    for binding in ["const", "let"] {
+        let src = format!(
+            "pub fnc main() -> int {{ for ({binding} x of xs) do done return 0; }}"
+        );
+        let d = atto_compiler::compile(&src).unwrap_err();
+        assert_eq!(d.code, "E_UNSUPPORTED",
+            "for-of loop was incorrectly parsed as tuple destructuring: {src}: {d}");
+    }
+    // A real explicit tuple remains a tuple after this disambiguation.
+    assert_eq!(parse("(let x, val y) as val pair = (1, 2);").len(), 1);
+}
