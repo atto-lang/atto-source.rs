@@ -33,12 +33,35 @@ pub struct ReceiverSite {
     pub end: usize,
 }
 
+/// An out-of-line constructor's source tokens, deliberately preserving the
+/// original argument/body spans for checked existing-class lowering.
+#[derive(Clone, Debug)]
+pub struct ConstructorSite {
+    pub owner: String,
+    pub pos: Pos,
+    pub public: bool,
+    pub declaration_start: usize,
+    pub params_start: usize,
+    pub body_start: usize,
+    pub end: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TargetHeaders {
     pub namespace: Option<String>,
     /// Imported module aliases. Imports are not resolved or linked here.
     pub imports: Vec<String>,
     pub actors: Vec<String>,
+    /// Non-instantiating class forward declarations.
+    pub class_forwards: Vec<String>,
+    /// Token ranges for class forward declarations, omitted after linkage.
+    pub class_forward_sites: Vec<(usize, usize)>,
+    /// Parsed but unsupported protected per-instance class state attachments.
+    pub state_owners: Vec<String>,
+    /// Parsed but deliberately unlinked struct forwards.
+    pub struct_forwards: Vec<String>,
+    /// New-style constructor sites; lowered only to checked local classes.
+    pub constructors: Vec<ConstructorSite>,
     /// Class owners found in concrete class definitions.
     pub classes: Vec<String>,
     /// Parsed class definitions; mtd linking/typing remains unsupported.
@@ -237,6 +260,43 @@ impl Cursor<'_> {
         self.i = end;
         Ok(decl)
     }
+    fn constructor_site(&mut self, pos: Pos, public: bool, declaration_start: usize) -> R<ConstructorSite> {
+        self.expect(&Tok::LParen, "expected '(' before constructor owner")?;
+        let owner = self.ident()?;
+        self.expect(&Tok::RParen, "expected ')' after constructor owner")?;
+        let params_start = self.i;
+        self.params()?;
+        self.expect(&Tok::Colon, "out-of-line constructor requires ': self'")?;
+        self.expect_word("self")?;
+        let body_start = self.i;
+        self.body(false, true)?;
+        Ok(ConstructorSite { owner, pos, public, declaration_start,
+            params_start, body_start, end: self.i })
+    }
+
+    /// Guarded state syntax is recognized only, never lowered to unprotected fields.
+    fn state_attachment(&mut self) -> R<String> {
+        self.expect_word("on")?;
+        self.expect_word("class")?;
+        let owner = self.ident()?;
+        self.expect_word("as")?;
+        self.expect(&Tok::LBrace, "expected '{' for guarded class state")?;
+        let mut depth = 1usize;
+        while depth != 0 {
+            match self.tok() {
+                Tok::Eof => return Err(self.err("E_EOF", "unclosed protected class state")),
+                Tok::LBrace => {
+                    depth += 1;
+                    if depth > 128 { return Err(self.err("E_NESTING", "state nesting limit")); }
+                }
+                Tok::RBrace => depth -= 1,
+                _ => {}
+            }
+            self.next();
+        }
+        Ok(owner)
+    }
+
     fn class_definition(&mut self, start: usize) -> R<ClassDecl> {
         let (decl, end) = Parser::parse_target_class_at(self.toks, start)?;
         self.i = end;
@@ -277,7 +337,9 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             out.namespace = Some(c.ident()?);
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
         } else if c.take_word("import") {
-            if !out.actors.is_empty() || !out.classes.is_empty() || !out.receivers.is_empty() {
+            if !out.actors.is_empty() || !out.classes.is_empty() || !out.class_forwards.is_empty() ||
+               !out.struct_forwards.is_empty() || !out.state_owners.is_empty() ||
+               !out.constructors.is_empty() || !out.receivers.is_empty() {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
             }
             c.expect_word("module")?;
@@ -293,10 +355,19 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             c.expect(&Tok::Semi, "expected ';' after module import")?;
             out.imports.push(alias);
         } else if c.take_word("define") {
-            if c.word() == Some("actor") {
+            if c.take_word("state") {
+                let owner = c.state_attachment()?;
+                if out.state_owners.contains(&owner) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                        format!("duplicate protected state attachment for class '{owner}'")));
+                }
+                out.state_owners.push(owner);
+            } else if c.word() == Some("actor") {
                 let actor = c.definition(c.i - 1)?;
                 if out.definitions.iter().any(|other| other.name == actor.name) ||
-                    out.classes.iter().any(|n| n == &actor.name) {
+                    out.classes.iter().any(|n| n == &actor.name) ||
+                    out.class_forwards.contains(&actor.name) ||
+                    out.struct_forwards.contains(&actor.name) {
                     return Err(Diagnostic::new(actor.pos, "E_DUPLICATE",
                         format!("duplicate concrete actor definition '{}'", actor.name)));
                 }
@@ -305,7 +376,8 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 let class = c.class_definition(c.i - 1)?;
                 if out.classes.contains(&class.name) ||
                     out.actors.contains(&class.name) ||
-                    out.definitions.iter().any(|a| a.name == class.name) {
+                    out.definitions.iter().any(|a| a.name == class.name) ||
+                    out.struct_forwards.contains(&class.name) {
                     return Err(Diagnostic::new(class.pos, "E_DUPLICATE",
                         format!("duplicate class or actor owner '{}'", class.name)));
                 }
@@ -316,13 +388,29 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 return Err(c.err("E_SYNTAX", "expected 'class' or 'actor' after define"));
             }
         } else if c.take_word("declare") {
-            c.expect_word("actor")?;
-            let name = c.ident()?;
-            if out.actors.contains(&name) || out.classes.contains(&name) {
-                return Err(c.err("E_DUPLICATE", format!("duplicate actor or class '{name}'")));
+            let start = c.i - 1;
+            let kind = c.word().map(str::to_owned).unwrap_or_default();
+            if !matches!(kind.as_str(), "actor" | "class" | "struct") {
+                return Err(c.err("E_SYNTAX", "expected actor, class or struct after declare"));
             }
-            out.actors.push(name);
-            c.expect(&Tok::Semi, "expected ';' after actor")?;
+            c.next();
+            let name = c.ident()?;
+            if out.actors.contains(&name) || out.class_forwards.contains(&name) ||
+                out.struct_forwards.contains(&name) ||
+                (kind != "class" && out.classes.contains(&name)) ||
+                out.definitions.iter().any(|a| a.name == name) {
+                return Err(c.err("E_DUPLICATE", format!("duplicate nominal forward '{name}'")));
+            }
+            c.expect(&Tok::Semi, "expected ';' after forward declaration")?;
+            match kind.as_str() {
+                "actor" => out.actors.push(name),
+                "class" => {
+                    out.class_forwards.push(name);
+                    out.class_forward_sites.push((start, c.i));
+                }
+                "struct" => out.struct_forwards.push(name),
+                _ => unreachable!(),
+            }
         } else {
             let declaration_start = c.i;
             let public = c.take_word("pub");
@@ -338,6 +426,13 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                     declaration_start, method_start, end,
                 });
                 out.receivers.push(method);
+            } else if c.take_word("constructor") {
+                let site = c.constructor_site(pos, public, declaration_start)?;
+                if out.constructors.iter().any(|prev| prev.owner == site.owner) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                        "at most one authored constructor per nominal owner in v1"));
+                }
+                out.constructors.push(site);
             } else if c.take_word("fnc") || c.take_word("routine") {
                 function_spans.push(c.function()?);
             } else {
@@ -348,7 +443,9 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         decls += 1;
     }
     for receiver in &out.receivers {
-        if !out.actors.contains(&receiver.owner) && !out.classes.contains(&receiver.owner) {
+        if !out.actors.contains(&receiver.owner) && !out.classes.contains(&receiver.owner) &&
+           !out.class_forwards.contains(&receiver.owner) &&
+           !out.struct_forwards.contains(&receiver.owner) {
             return Err(Diagnostic::new(receiver.pos, "E_UNBOUND",
                 format!("receiver owner '{}' is not declared in this source namespace",
                     receiver.owner)));
@@ -365,6 +462,29 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         if duplicate_inline {
             return Err(Diagnostic::new(receiver.pos, "E_DUPLICATE",
                 "out-of-line receiver duplicates an inline method (owner/name/arity)"));
+        }
+    }
+    for owner in &out.state_owners {
+        if !out.classes.contains(owner) && !out.class_forwards.contains(owner) {
+            return Err(Diagnostic::new(toks[0].pos, "E_UNBOUND",
+                format!("guarded state owner '{owner}' has no class declaration")));
+        }
+    }
+    for site in &out.constructors {
+        if out.actors.contains(&site.owner) {
+            return Err(Diagnostic::new(site.pos, "E_ACTOR", "actors never have constructors"));
+        }
+        if out.struct_forwards.contains(&site.owner) {
+            return Err(Diagnostic::new(site.pos, "E_UNSUPPORTED",
+                "struct constructor value ABI is not implemented in this browser backend"));
+        }
+        if !out.classes.contains(&site.owner) && !out.class_forwards.contains(&site.owner) {
+            return Err(Diagnostic::new(site.pos, "E_UNBOUND",
+                format!("constructor owner '{}' is not declared", site.owner)));
+        }
+        if out.class_definitions.iter().any(|d| d.name == site.owner && d.ctor.is_some()) {
+            return Err(Diagnostic::new(site.pos, "E_DUPLICATE",
+                "out-of-line constructor conflicts with inline constructor"));
         }
     }
     for (i, start, end) in spans {
@@ -384,14 +504,19 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
 /// No actor receiver, namespace/import or mutable receiver is admitted here.
 pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<Token>> {
     let pos = toks.first().map(|t| t.pos).unwrap_or_default();
+    if !headers.state_owners.is_empty() {
+        return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+            "guarded class state needs checked per-instance synchronization; no ordinary-field fallback"));
+    }
     if headers.classes.is_empty() || headers.namespace.is_some() ||
        !headers.imports.is_empty() || !headers.actors.is_empty() ||
-       !headers.definitions.is_empty() {
+       !headers.definitions.is_empty() || !headers.struct_forwards.is_empty() {
         return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
             "only local class receivers can be compiled; actor, namespace and import linking is unavailable"));
     }
     if headers.class_ends.len() != headers.class_definitions.len() ||
-        headers.receiver_sites.len() != headers.receivers.len() {
+        headers.receiver_sites.len() != headers.receivers.len() ||
+        headers.class_forwards.len() != headers.class_forward_sites.len() {
         return Err(Diagnostic::new(pos, "E_SYNTAX", "inconsistent receiver token ranges"));
     }
     // One inserted token stream per class. The original class declaration is
@@ -406,6 +531,27 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
     // Validate *all* source ranges before the first semantic self/effect
     // scan. A forged overlapping ledger must be E_SYNTAX, never be interpreted
     // as a receiver body that can accidentally read another declaration.
+    for (start, end) in &headers.class_forward_sites {
+        if *start >= *end || *end > toks.len() {
+            return Err(Diagnostic::new(pos, "E_SYNTAX", "invalid class forward source span"));
+        }
+        for slot in &mut omitted[*start..*end] {
+            if *slot { return Err(Diagnostic::new(pos, "E_SYNTAX", "overlapping class forward")); }
+            *slot = true;
+        }
+    }
+    for site in &headers.constructors {
+        if site.declaration_start >= site.params_start ||
+           site.params_start >= site.body_start ||
+           site.body_start >= site.end || site.end > toks.len() {
+            return Err(Diagnostic::new(site.pos, "E_SYNTAX",
+                "invalid constructor source span"));
+        }
+        for slot in &mut omitted[site.declaration_start..site.end] {
+            if *slot { return Err(Diagnostic::new(site.pos, "E_SYNTAX", "overlapping constructor")); }
+            *slot = true;
+        }
+    }
     for site in &headers.receiver_sites {
         if site.declaration_start >= site.method_start ||
             site.method_start >= site.end || site.end > toks.len() {
@@ -482,6 +628,21 @@ pub fn lower_class_receivers(toks: &[Token], headers: &TargetHeaders) -> R<Vec<T
         }
         insertions[owner].extend_from_slice(&toks[site.method_start..site.end]);
 
+    }
+    // Constructor bodies are appended to the existing class declaration,
+    // never turned into factory methods or used for actor/struct ownership.
+    for site in &headers.constructors {
+        let owner = headers.class_definitions.iter().position(|c| c.name == site.owner)
+            .ok_or_else(|| Diagnostic::new(site.pos, "E_UNLINKED",
+                "out-of-line constructor requires a concrete local class definition"))?;
+        // Reuse the *same* production constructor checker and guest codegen.
+        // The result marker ': self' is compile-time only, not runtime ABI.
+        if site.public {
+            insertions[owner].push(Token { tok: Tok::Ident("pub".to_owned()), pos: site.pos });
+        }
+        insertions[owner].push(Token { tok: Tok::Ident("constructor".to_owned()), pos: site.pos });
+        insertions[owner].extend_from_slice(&toks[site.params_start..site.body_start - 2]);
+        insertions[owner].extend_from_slice(&toks[site.body_start..site.end]);
     }
     let mut insert_at = vec![None; toks.len()];
     for (owner, end) in headers.class_ends.iter().copied().enumerate() {
@@ -725,8 +886,8 @@ fn validate_spawned_actor_calls(
     }
     for i in first..end.saturating_sub(1) {
         if let Some((name, _)) = actor_refs.iter().find(|(n,_)| word_at(toks, i, n)) {
-            if at(toks, i+1, &Tok::Dot)
-                && matches!(toks.get(i+2).map(|t| &t.tok), Some(Tok::Ident(_)))
+            if at(toks, i+1, &Tok::Dot) &&
+                matches!(toks.get(i+2).map(|t| &t.tok), Some(Tok::Ident(_)))
                 && !(word_at(toks, i+2, "send") || word_at(toks, i+2, "get_done")) {
                 return Err(diagnostic(toks, i, "E_ISOLATION",
                     "ActorRef cannot call receiver methods synchronously; send a mailbox message"));
