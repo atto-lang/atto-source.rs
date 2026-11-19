@@ -1,4 +1,4 @@
-//! Contract tests for the static import grammar. No import linker is implied.
+//! Contract tests for comma-separated static imports; no linker is implied.
 use atto_compiler::lexer::lex;
 use atto_compiler::target_syntax::parse_target_declarations;
 
@@ -24,16 +24,27 @@ fn static_namespace_imports_accept_files_and_packages() {
 }
 
 #[test]
-fn static_named_nested_and_renamed_exports_are_parsed_as_bindings() {
+fn comma_separated_imports_support_names_and_aliases() {
     let headers = parse(r#"
-        import { span, tracer as create_tracer } from pkg "core.telemetry";
-        import { calculate, Config } from "./lib.atto";
-        import { telemetry: { writer, trace: { open as begin_trace } }, time: { sleep } } from pkg "core";
+        import span, foo from pkg "core.telemetry";
+        import read as read_file, write as write_file from "./fs.atto";
+        import sleep from pkg "std.time";
+        import alpha as a, beta as b from pkg "+/my_pkg";
         pub fnc main(): int { return 0; }
     "#);
     assert_eq!(headers.imports, [
-        "span", "create_tracer", "calculate", "Config", "writer", "begin_trace", "sleep"
+        "span", "foo", "read_file", "write_file", "sleep", "a", "b"
     ]);
+}
+
+#[test]
+fn dotted_static_export_paths_resolve_to_leaf_bindings_or_explicit_aliases() {
+    let headers = parse(r#"
+        import telemetry.span as span, telemetry.tracer as make_tracer, time.sleep from pkg "core";
+        import foo.bar.baz as result from "./module.atto";
+        pub fnc main(): int { return 0; }
+    "#);
+    assert_eq!(headers.imports, ["span", "make_tracer", "sleep", "result"]);
 }
 
 #[test]
@@ -42,26 +53,30 @@ fn old_import_module_and_pkg_spelling_remain_parse_only_compatibility() {
     assert_eq!(parse("import pkg p from \"+/pkg1\";").imports, ["p"]);
     // No guest module/package loader exists in this target-header path.
     assert!(atto_compiler::compile(
-        "import { foo } from pkg \"core.telemetry\"; pub fnc main(): int { return 0; }"
+        "import foo from pkg \"core.telemetry\"; pub fnc main(): int { return 0; }"
     ).is_err());
 }
 
 #[test]
 fn malformed_and_shadowing_imports_fail_closed() {
     for (src, code) in [
-        ("import {} from pkg \"core\";", "E_SYNTAX"),
-        ("import { a: {} } from pkg \"core\";", "E_SYNTAX"),
+        ("import from pkg \"core\";", "E_SYNTAX"),
+        ("import { a } from pkg \"core\";", "E_SYNTAX"),
+        ("import { a, b } from pkg \"core\";", "E_SYNTAX"),
         ("import * from pkg \"core\";", "E_SYNTAX"),
-        ("import { a } pkg \"core\";", "E_SYNTAX"),
-        ("import { a } from pkg core;", "E_SYNTAX"),
-        ("import { a } from pkg \"\";", "E_SYNTAX"),
-        ("import { a } from pkg \"./local.atto\";", "E_SYNTAX"),
-        ("import { a, a } from pkg \"core\";", "E_DUPLICATE"),
-        ("import { a, b as a } from pkg \"core\";", "E_DUPLICATE"),
-        ("import { x: { a }, y: { a } } from pkg \"core\";", "E_DUPLICATE"),
-        ("import * as a from pkg \"core\"; import { x as a } from pkg \"other\";", "E_DUPLICATE"),
-        ("import { a as } from pkg \"core\";", "E_SYNTAX"),
-        ("import { a } from pkg \"core\"", "E_SYNTAX"),
+        ("import a, from pkg \"core\";", "E_SYNTAX"),
+        ("import , a from pkg \"core\";", "E_SYNTAX"),
+        ("import a from pkg core;", "E_SYNTAX"),
+        ("import a from pkg \"\";", "E_SYNTAX"),
+        ("import a from pkg \"./local.atto\";", "E_SYNTAX"),
+        ("import a from \"local.atto\";", "E_SYNTAX"),
+        ("import a, a from pkg \"core\";", "E_DUPLICATE"),
+        ("import a, b as a from pkg \"core\";", "E_DUPLICATE"),
+        ("import x.a, y.a from pkg \"core\";", "E_DUPLICATE"),
+        ("import * as a from pkg \"core\"; import x as a from pkg \"other\";", "E_DUPLICATE"),
+        ("import a as from pkg \"core\";", "E_SYNTAX"),
+        ("import a. from pkg \"core\";", "E_SYNTAX"),
+        ("import a from pkg \"core\"", "E_SYNTAX"),
         ("declare actor Worker; import * as core from pkg \"core\";", "E_SYNTAX"),
         ("use core.telemetry;", "E_SYNTAX"),
     ] {
@@ -70,11 +85,13 @@ fn malformed_and_shadowing_imports_fail_closed() {
 }
 
 #[test]
-fn selectors_have_bounded_nesting() {
-    let mut source = String::from("import { ");
-    for _ in 0..9 { source.push_str("a: { "); }
-    source.push_str("x");
-    for _ in 0..9 { source.push_str(" }"); }
-    source.push_str(" } from pkg \"core\";");
-    reject(&source, "E_SOURCE_LIMIT");
+fn dotted_paths_have_bounded_nesting() {
+    let path = std::iter::repeat("a").take(9).collect::<Vec<_>>().join(".");
+    reject(&format!("import {path} from pkg \"core\";"), "E_SOURCE_LIMIT");
+}
+
+#[test]
+fn import_lists_obey_source_bounds() {
+    let names = (0..257).map(|n| format!("n{n}")).collect::<Vec<_>>().join(", ");
+    reject(&format!("import {names} from pkg \"core\";"), "E_SOURCE_LIMIT");
 }
