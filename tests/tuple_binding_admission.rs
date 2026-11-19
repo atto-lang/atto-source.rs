@@ -101,3 +101,16 @@ fn compiler_never_exposes_unproven_tuple_runtime() {
         assert_eq!(err.code, "E_UNSUPPORTED", "{s}: {}", err.message);
     }
 }
+
+#[test]
+fn scalar_for_initializers_are_not_explicit_tuple_declarations() {
+    for source in [
+        "pub fnc main(): int { for (let i = 0; i < 5; i++) do done return 42; }",
+        "fnc *gen base(int limit): Generator<int> { for (let i = 1; i <= limit; i++) do yield i; done }",
+        "pub fnc main(): int { for (const i = 0; i < 5; i++) do done return 42; }",
+    ] {
+        assert!(parse(source).is_empty(),
+            "scalar for initializer must not be parsed as a tuple binding: {source}");
+    }
+    assert_eq!(parse("(let a, val b) as val pair = (1, 2);").len(), 1);
+}
