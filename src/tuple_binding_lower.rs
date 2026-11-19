@@ -305,7 +305,9 @@ fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<String, usize>, 
         for (k, member) in b.members.iter().enumerate() {
             if let Some(name) = &member.name {
                 let mutable = member.mode == BindingMode::Let;
-                generated.push_str(&format!("{} {name} = {alias}.e{k};\n",
+                let ty = member.annotation.as_ref()
+                    .map_or(String::new(), |t| format!(": {t}"));
+                generated.push_str(&format!("{} {name}{ty} = {alias}.e{k};\n",
                     if mutable { "let" } else { "val" }));
             }
         }
