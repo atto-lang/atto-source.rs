@@ -804,9 +804,7 @@ impl Parser {
                         return Err(Diagnostic::new(mpos, "E_SYNTAX",
                             "class field visibility accepts only pub[pkg]"));
                     }
-                    if actor {
-                        return Err(unsupported(mpos, "pub[pkg] actor members"));
-                    }
+                    if actor { return Err(unsupported(mpos, "pub[pkg] actor members")); }
                     FieldVisibility::Package
                 } else {
                     FieldVisibility::Public
@@ -938,7 +936,8 @@ impl Parser {
                     m.fields.push(f);
                 }
                 Some(_) if matches!(self.peek_at(1), Tok::Ident(_)) && !actor => {
-                    let f = self.parse_type_first_field(visibility, FieldMode::Constructor)?;
+                    // Omitted let/mut means immutable val, for every type.
+                    let f = self.parse_type_first_field(visibility, FieldMode::Final)?;
                     m.fields.push(f.field);
                 }
                 _ => {
@@ -2368,6 +2367,10 @@ impl Parser {
             )),
             Tok::Float(_) => Err(unsupported(pos, "float literal patterns")),
             Tok::Str(_) => Err(unsupported(pos, "string literal patterns")),
+            // V2 rests and counted groups have a dedicated token. Reject
+            // them deliberately until checked sequence AST and runtime
+            // lowering exist; never reinterpret as a binding or an enum.
+            Tok::Ellipsis => Err(unsupported(pos, "sequence rest/count patterns")),
             Tok::LParen => Err(unsupported(pos, "tuple patterns")),
             Tok::LBracket => Err(Diagnostic::new(
                 pos,
@@ -2403,6 +2406,15 @@ impl Parser {
                     self.advance();
                     if *self.peek() == Tok::Dot {
                         self.advance();
+                        // `of` is reserved, so this check must run BEFORE
+                        // ident("an enum variant") performs reserved-word
+                        // validation. The v2 collection forms are not enum
+                        // variants and may not create a guest artifact yet.
+                        if matches!(w.as_str(), "List" | "Array" | "Tuple")
+                            && self.is_word("of") && *self.peek_at(1) == Tok::LParen
+                        {
+                            return Err(unsupported(pos, "structural sequence patterns"));
+                        }
                         let (variant, _) = self.ident("an enum variant")?;
                         if self.is_word("as") || *self.peek() == Tok::Dot {
                             return Err(unsupported(self.pos(), "variant payload patterns"));
@@ -2824,19 +2836,23 @@ impl Parser {
                     "drop" => OwnershipOp::Drop,
                     _ => unreachable!(),
                 };
-                // Deliberately recognize the new forms at the syntax boundary;
-                // semantic admission is checked separately so unproven guest
-                // pointers/handles never reach a Wasm artifact.
-                // copy!! is a single graph-copy operation, not copy! applied
-                // to a negated expression. Both exclamation marks must touch.
-                // Ordinary 'copy! !x' remains a different token sequence.
-                let deep_copy = s == "copy" && *self.peek_at(2) == Tok::Bang
-                    && self.toks[self.i + 1].pos.line == self.toks[self.i + 2].pos.line
-                    && self.toks[self.i + 1].pos.col.checked_add(1) == Some(self.toks[self.i + 2].pos.col);
                 self.advance(); // name
-                self.advance(); // first !
-                if deep_copy { self.advance(); } // second !
-                let action = if deep_copy { OwnershipOp::DeepCopy } else { action };
+                let first_bang = self.advance(); // !
+                // 'copy!!' is a single canonical operator only when the word
+                // and both bangs are adjacent. 'copy! !x' stays a shallow copy
+                // of the logical negation, never a deep copy.
+                let copy_word_is_adjacent = first_bang.pos.line == pos.line
+                    && first_bang.pos.col == pos.col + 4;
+                let second_bang_is_adjacent = *self.peek() == Tok::Bang
+                    && self.pos().line == first_bang.pos.line
+                    && self.pos().col == first_bang.pos.col + 1;
+                let action = if action == OwnershipOp::Copy && copy_word_is_adjacent
+                    && second_bang_is_adjacent {
+                    self.advance();
+                    OwnershipOp::DeepCopy
+                } else {
+                    action
+                };
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
                 if action != OwnershipOp::Borrow && self.is_word("mut") {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
@@ -2847,8 +2863,7 @@ impl Parser {
             Tok::Ident(s) if matches!(s.as_str(), "lt" | "lifetime")
                 && *self.peek_at(1) == Tok::Bang =>
             {
-                // Lifetime binders are type-level; treating one as a value
-                // would silently erase a borrow-region constraint.
+                // Lifetime binders are type-level. Do not emit guest values.
                 return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
                     "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
             }

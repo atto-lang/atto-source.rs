@@ -1,6 +1,6 @@
 //! Class-field visibility: no accidental widening of scoped/package fields.
 //! This backend accepts a single source package, not cross-package linking.
-use atto_compiler::{ast::FieldVisibility, compile, lexer::lex, parser::Parser};
+use atto_compiler::{ast::{FieldMode, FieldVisibility}, compile, lexer::lex, parser::Parser};
 
 fn compiled(source: &str) {
     let wasm = compile(source).unwrap_or_else(|e| panic!("expected valid guest: {e}"));
@@ -98,4 +98,50 @@ fn malformed_scopes_and_unsupported_member_kinds_fail_closed() {
     }
     rejected("define class C as pub[pkg] read(): int { return 1; } end", "E_UNSUPPORTED");
     rejected("define actor A as pub[pkg] let int x = 1; end", "E_UNSUPPORTED");
+}
+
+#[test]
+fn all_implicit_fields_are_val_and_only_explicit_let_is_mutable() {
+    let src = r#"
+        define class Box as
+            int implicit_equals = 1;
+            int implicit_colon: 2;
+            val int explicit_val = 3;
+            let int mutable_slot = 4;
+            final int final_slot = 5;
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let mut parser = Parser::new(lex(src).unwrap());
+    let program = parser.parse_program().unwrap();
+    let fields = &program.classes[0].fields;
+    assert_eq!(fields.len(), 5);
+    for field in &fields[..3] { assert_eq!(field.mode, FieldMode::Final); }
+    assert_eq!(fields[3].mode, FieldMode::Constructor);
+    assert_eq!(fields[4].mode, FieldMode::Final);
+    compiled(src);
+}
+#[test]
+fn implicit_val_forbids_reassignment_but_let_still_supports_constructor_updates() {
+    rejected(r#"
+        define class Box as
+            int count = 1;
+            constructor() { self.count = 2; }
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_IMMUTABLE");
+    compiled(r#"
+        define class Box as
+            let int count = 1;
+            constructor() { self.count = 2; }
+        end
+        pub fnc main(): int { return new Box().count; }
+    "#);
+}
+#[test]
+fn unsupported_scopes_never_become_public_fields() {
+    for scope in ["pub(pkg)", "pub[other]", "pub[PKG]"] {
+        let src = format!("define class C as {scope} int x = 1; end pub fnc main(): int {{ return 0; }}");
+        assert!(compile(&src).is_err(), "{scope} must fail closed");
+    }
 }

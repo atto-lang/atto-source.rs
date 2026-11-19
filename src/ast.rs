@@ -96,22 +96,18 @@ pub struct ActorInterfaceMethod {
     pub pos: Pos,
 }
 
-/// Visibility is independent of field mutability and ownership.
-/// A compilation unit is one package in the current browser-only compiler;
-/// cross-package linker checks must use real package identity when supported.
+/// Class-field visibility, independent of ownership and mutability.
+/// The browser compiler has a single source package; a future multi-package
+/// linker must authenticate the original declaring package identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FieldVisibility {
-    Private,
-    Package,
-    Public,
-}
+pub enum FieldVisibility { Private, Package, Public }
 
 /// Who may assign a field after its initializer ran.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldMode {
     /// `name: T = e`, `final ...`, `val`/`const` fields: never reassigned.
     Final,
-    /// Class `T name: e`, `mut T name = e`, `let T name = e`: the constructor
+    /// Explicit `mut T name = e` or `let T name = e`: the constructor
     /// may assign it; methods see a read-only `self` (Java ownership rule).
     Constructor,
     /// Actor-owned state, or a protected state-container field whose writes
@@ -431,12 +427,10 @@ pub enum ExprKind {
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
-    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, take! x,
-    /// copy!! x, share! x, freeze! x, weak! x, pin! x, drop! x.
-    /// Lifetime binders lt! a are declarations, not value operations.
-    /// Parentheses group expressions.
-    /// A parsed operation is NOT proof of backend support: unsupported ownership
-    /// rights must be rejected by the checker rather than treated as a no-op.
+    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, copy!! x,
+    /// take! x, share! x, freeze! x, weak! x, pin! x, drop! x.
+    /// lt! a is a lifetime binder, never a runtime expression.
+    /// Syntax does not confer runtime rights: unproven operations fail closed.
     Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
