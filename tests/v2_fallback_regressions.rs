@@ -100,3 +100,22 @@ fn explicit_suspends_declaration_reaches_real_v2_compiler() {
     let wasm = atto_compiler::compile(source).expect("explicit async signature must compile");
     assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0", "emit a real guest Wasm module");
 }
+
+
+#[test]
+fn removed_boolean_xor_fails_closed_in_both_compiler_frontends() {
+    for source in [
+        "pub fnc main(): int { return 1 ^^ 2; }",
+        "pub suspends fnc main(): int { return 1 ^^ 2; }",
+    ] {
+        let d = atto_compiler::compile(source)
+            .expect_err("removed ^^ operator must never emit executable Wasm");
+        assert_eq!(d.code, "E_UNSUPPORTED");
+        assert!(d.pos.line >= 1 && d.pos.col >= 1);
+    }
+    // Neither comments nor literal contents are executable operators.
+    let valid = r#"// ^^ has been removed
+pub fnc main(): int { stdio.println("^^"); return 42; }
+"#;
+    assert!(atto_compiler::compile(valid).is_ok(), "a quoted ^^ is not an operator");
+}
