@@ -68,3 +68,36 @@ fn imported_module_and_member_names_are_case_sensitive_and_public() {
     let err = compile(ENTRY, &hidden_square).expect_err("private function must not leak");
     assert_eq!(err.code, "E_PRIVATE");
 }
+
+#[test]
+fn explicit_dotted_and_folder_derived_namespace_headers_link() {
+    let dotted = ENTRY.replace("use namespace storefront;", "use namespace shop.frontend;");
+    assert!(compile(&dotted, MATH).is_ok(), "dotted explicit namespace must link");
+
+    let derived = ENTRY.replace("use namespace storefront;", "use default namespace;");
+    assert!(compile(&derived, MATH).is_ok(), "containing folder namespace must link");
+
+    let parent = ENTRY.replace("use namespace storefront;", "use default namespace(2);");
+    let linked = compile_linked("shop/src/main.atto", &[
+        LinkUnit { path: "shop/src/main.atto", package: "storefront@1.0.0", source: &parent },
+        LinkUnit { path: "shop/src/math.atto", package: "storefront@1.0.0", source: MATH },
+    ]);
+    assert!(linked.is_ok(), "two-component derived namespace must link: {linked:?}");
+}
+
+#[test]
+fn missing_default_namespace_depth_and_misplaced_headers_fail_closed() {
+    let too_deep = ENTRY.replace("use namespace storefront;", "use default namespace(2);");
+    let diagnostic = compile(&too_deep, MATH).expect_err("src/main.atto has only one parent folder");
+    assert_eq!(diagnostic.code, "E_NAMESPACE_DEPTH");
+
+    let duplicated = ENTRY.replace("use namespace storefront;",
+        "use namespace storefront;\nuse namespace stolen;");
+    let diagnostic = compile(&duplicated, MATH).expect_err("a file has at most one namespace");
+    assert_eq!(diagnostic.code, "E_DUPLICATE");
+
+    let misplaced = ENTRY.replace("use namespace storefront;\nimport module math from \"./math.atto\";",
+        "import module math from \"./math.atto\";\nuse namespace storefront;");
+    let diagnostic = compile(&misplaced, MATH).expect_err("namespace header must precede import");
+    assert_eq!(diagnostic.code, "E_SYNTAX");
+}
