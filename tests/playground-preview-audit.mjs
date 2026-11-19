@@ -23,7 +23,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
   assert.ok(pairs.every(([name, sha]) =>
     /^[a-z-]+$/.test(name) && /^[a-f0-9]{40}$/.test(sha)));
   const names = pairs.map(([name]) => name);
-  assert.equal(new Set(names).size, 42, 'no duplicate preview names');
+  assert.equal(new Set(names).size, pairs.length, 'no duplicate preview names');
   assert.deepEqual((await readdir(corpus)).filter(n => n.endsWith('.atto')).sort(),
     names.map(name => name + '.atto').sort());
   const outcome = { total: 43, admitted: [], unsupported: [],
