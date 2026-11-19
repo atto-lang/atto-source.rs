@@ -1,0 +1,6 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_OWNERSHIP
+// Reject duplicate consuming mode spelled on both sides.
+define class Parcel as pub let int value = 42; end
+fnc consume(take! p: take! Parcel): int { return p.value; }
+pub fnc main(): int { return 42; }

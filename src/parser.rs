@@ -1374,13 +1374,26 @@ impl Parser {
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
-        // compatibility form `name: type [mut]`
+        // compatibility form `name: type [mut]` also admits the same
+        // explicit consuming mode after the colon: `name: take! Class`.
+        // Both spellings preserve one owned formal and require take! at the
+        // call site; neither can silently turn a loan into a move.
         if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a parameter name")?;
             self.advance();
+            let named_take = self.is_word("take") && *self.peek_at(1) == Tok::Bang;
+            if named_take {
+                if explicit_take {
+                    return Err(Diagnostic::new(pos, "E_OWNERSHIP",
+                        "take! cannot be declared twice on the same parameter"));
+                }
+                self.advance(); // take
+                self.advance(); // !
+            }
             let ty = self.parse_type()?;
             let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable, explicit_take, pos);
+            return self.finish_param(name, ty, mutable,
+                explicit_take || named_take, pos);
         }
         let ty = self.parse_type()?;
         let mutable = self.eat_word("mut");
