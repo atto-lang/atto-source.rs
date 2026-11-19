@@ -121,8 +121,14 @@ fn nested_reexport_remains_rejected_after_transitive_linking() {
 }
 #[test]
 fn namespace_in_middle_of_dependency_never_passes_as_header() {
+    // Under the canonical one-header rule, a second header is duplicate.
     let b = ORDERS.replace("define module Orders", "use namespace stolen;\ndefine module Orders");
-    reject(&fixture(MAIN, &b, MATH, "app", "app", "app"), "E_SYNTAX");
+    reject(&fixture(MAIN, &b, MATH, "app", "app", "app"), "E_DUPLICATE");
+
+    // A file with only a late namespace header is misplaced, not duplicate.
+    let late = ORDERS.replace("use namespace sales;\n", "")
+        .replace("define module Orders", "use namespace stolen;\ndefine module Orders");
+    reject(&fixture(MAIN, &late, MATH, "app", "app", "app"), "E_SYNTAX");
 }
 
 #[test]
