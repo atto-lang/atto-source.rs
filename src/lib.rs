@@ -45,6 +45,8 @@ pub mod value_class_admission;
 pub mod nominal_lower;
 /// Source-located actor/struct conformance admission; never an executable ABI.
 pub mod nominal_contract_admission;
+/// Verified local actor mtd -> isolated actor method lowering, never ActorRef dispatch.
+pub mod actor_implements_lower;
 /// Explicitly unlinked foreign prototypes and source-only exports.
 pub mod visibility_lower;
 /// Direct routine-only and statically specialized named callbacks.
@@ -72,10 +74,19 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let source_tokens = lexer::lex(source)?;
-    // Verify actor/struct implementation obligations before any specialized
-    // compilation path can short-circuit into emitting a guest artifact.
-    nominal_contract_admission::preflight(&source_tokens)?;
+    let original_tokens = lexer::lex(source)?;
+    // An actor with a fully checked local interface/trait contract may link
+    // its out-of-line immutable mtd methods to the existing isolated actor
+    // runtime. No mailbox/ActorRef shortcut or class-shaped struct fallback.
+    let source_tokens = if let Some(lowered) =
+        actor_implements_lower::lower(&original_tokens)? {
+        lowered
+    } else {
+        // All non-admitted actor and struct contracts remain fail-closed
+        // before any specialized compilation path can emit Wasm.
+        nominal_contract_admission::preflight(&original_tokens)?;
+        original_tokens
+    };
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
