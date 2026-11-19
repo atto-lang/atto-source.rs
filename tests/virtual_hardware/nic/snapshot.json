@@ -2,8 +2,8 @@
   "schema": "atto.virtual.hardware.nic.snapshot.v1",
   "source_repo": "atto-virtual-hardware/atto-vrtl-nic",
   "source_pr": 3,
-  "source_commit": "0205acc911f223f870d38478fbdfba1bb0b44fbe",
-  "compiler_source_commit": "909cdf51002f8fd18ab3c588f9f550c1d580d08f",
+  "source_commit": "6164e8c489bc2e0594553b1114452b6e4b83c60c",
+  "compiler_source_commit": "97fd5372e28cc6ab46f57aaed9ac8cb4434c2428",
   "files": [
     {
       "path": "src/nic.atto",
@@ -19,7 +19,12 @@
       "path": "src/fast_path.atto",
       "copy": "tests/virtual_hardware/nic/fast_path.atto",
       "git_blob_sha1": "0117f7d566d1a19ac99b3d237ecdfe8960a99d09"
+    },
+    {
+      "path": "src/queue.atto",
+      "copy": "tests/virtual_hardware/nic/queue.atto",
+      "git_blob_sha1": "a33ec9d289cebf4d13a9a4ee96c95f38baca68fa"
     }
   ],
-  "scope": "Atto pure NIC/virtqueue admission; control actor and real KVM guest I/O are not yet executable"
+  "scope": "real Atto pure-device functions executed as Wasm; actor control plane and KVM remain unimplemented"
 }

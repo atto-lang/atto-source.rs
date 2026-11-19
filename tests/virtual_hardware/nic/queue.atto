@@ -1,0 +1,98 @@
+// AttoLang split virtqueue ownership and counter kernel, v1.
+// One flat descriptor per buffer; descriptor storage and packet byte copies
+// are not yet implemented. The trusted VMM MUST authenticate VM capability,
+// attach state, incarnation and guest physical mappings separately.
+//
+// A user- or guest-supplied generation number never itself grants authority.
+// Descriptor lifecycle: 0=free, 1=guest-posted, 2=device-leased,
+// 3=completion-published. Invalid or stale transitions return -1.
+
+pub fnc next_u16_queue_index(int index): int {
+  if index < 0 or index > 65535 then
+    return -1;
+  fi
+  if index == 65535 then
+    return 0;
+  fi
+  return index + 1;
+}
+
+pub fnc queue_can_offer(int available, int used, int ring_size): bool {
+  if !supported_split_ring_size(ring_size) then
+    return false;
+  fi
+  let int pending = split_ring_pending(available, used);
+  return pending >= 0 and pending < ring_size;
+}
+
+pub fnc queue_can_claim(int available, int used, int ring_size): bool {
+  return split_ring_can_consume(available, used, ring_size);
+}
+
+pub fnc next_descriptor_state(
+  int old_state, int event,
+  int current_generation, int expected_generation
+): int {
+  if current_generation < 1 or current_generation != expected_generation then
+    return -1;
+  fi
+  // event 1: guest posts; event 2: device claims; event 3: device
+  // completes; event 4: guest reclaims. Caller authenticates transition.
+  if old_state == 0 and event == 1 then
+    return 1;
+  fi
+  if old_state == 1 and event == 2 then
+    return 2;
+  fi
+  if old_state == 2 and event == 3 then
+    return 3;
+  fi
+  if old_state == 3 and event == 4 then
+    return 0;
+  fi
+  return -1;
+}
+
+// Claims require an authenticated VMM lease and a trusted descriptor
+// snapshot. A flat RX buffer is device-writable (flag 2), while TX is
+// device-readable (flag 0). No NEXT/INDIRECT descriptors are accepted.
+pub fnc queue_can_claim_flat(
+  int requested_vm, int current_vm,
+  int requested_generation, int current_generation,
+  int available, int used, int ring_size,
+  int slot, int descriptor_state,
+  int guest_offset, int descriptor_length, int guest_ram_bytes,
+  int descriptor_flags, bool is_receive,
+  bool attached, bool quiescing
+): bool {
+  if !attached or quiescing or descriptor_state != 1 or
+     slot < 0 or slot >= ring_size or
+     !vm_lease_matches(requested_vm, current_vm,
+                       requested_generation, current_generation) or
+     !queue_can_claim(available, used, ring_size) then
+    return false;
+  fi
+  let int expected_flags = 0;
+  if is_receive then
+    expected_flags = 2;
+  fi
+  return descriptor_length >= 74 and
+         valid_flat_descriptor(guest_offset, descriptor_length,
+                               guest_ram_bytes, descriptor_flags, expected_flags);
+}
+
+pub fnc queue_next_used_after_complete(
+  int requested_vm, int current_vm,
+  int requested_generation, int current_generation,
+  int available, int used, int ring_size,
+  int descriptor_state, bool attached, bool quiescing
+): int {
+  // Completions may finish during quiesce, but not after detach/epoch bump.
+  if !attached or descriptor_state != 2 or
+     !vm_lease_matches(requested_vm, current_vm,
+                       requested_generation, current_generation) or
+     !queue_can_claim(available, used, ring_size) then
+    return -1;
+  fi
+  return next_u16_queue_index(used);
+}
