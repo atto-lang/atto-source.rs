@@ -1,0 +1,1 @@
+fnc f(int x): int { const local: int = x + 1; return local * 2; }

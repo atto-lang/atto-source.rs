@@ -1,0 +1,10 @@
+// expect-exit: 42
+// java: rejects
+pub fnc main(): int {
+  val source = 2;
+  let score = 40;
+  for (let i = take! source; i > 0; i--) {
+    score = score + 1;
+  }
+  return score;
+}

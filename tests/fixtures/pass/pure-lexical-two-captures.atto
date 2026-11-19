@@ -1,0 +1,15 @@
+// Reference: Java lexical binding / LLVM deterministic scalar ownership.
+// Bounded Rust/Wasm subset: definition-site immutable scalars, direct calls.
+// expect-exit: 42
+pub fnc main(): int {
+  val factor = 2;
+  val extra = 4;
+  val scale = |n| : int -> n * factor + extra;
+  block {
+    val factor = 100;
+    block {
+      val extra = 200;
+      return scale(19);
+    }
+  }
+}

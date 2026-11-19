@@ -1,0 +1,10 @@
+// One immutable scalar captured at definition site, unaffected by shadowing.
+// expect-exit: 42
+pub fnc main(): int {
+    val factor = 2;
+    val scale = |n| : int -> n * factor;
+    block {
+        val factor = 100;
+        return scale(21);
+    }
+}

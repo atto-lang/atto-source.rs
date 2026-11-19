@@ -1,0 +1,1 @@
+fnc sub(int a,int b): int { return a-b; } pub fnc main(): int { return sub(-9223372036854775808,1); }

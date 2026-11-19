@@ -17,11 +17,24 @@ fn direct_calls(stmts: &[TStmt]) -> Vec<usize> {
         match item {
             Work::Stmt(stmt) => match stmt {
                 TStmt::Set(_, v) | TStmt::GlobalSet(_, v) | TStmt::Expr(v) |
-                TStmt::Throw(v) => work.push(Work::Expr(v)),
-                TStmt::FieldSet { obj, value, .. } => {
+                TStmt::Throw(v) | TStmt::Raise(v) | TStmt::StateRegister(v) =>
+                    work.push(Work::Expr(v)),
+                TStmt::FieldSet { obj, value, .. } |
+                TStmt::StateFieldWrite { obj, value, .. } |
+                TStmt::CollectionStore { array: obj, value, .. } => {
                     work.push(Work::Expr(obj)); work.push(Work::Expr(value));
                 }
                 TStmt::Return(v) => if let Some(v) = v { work.push(Work::Expr(v)); },
+                TStmt::Try { body, catch, finally, .. } => {
+                    work.extend(body.iter().map(Work::Stmt));
+                    if let Some(catch) = catch { work.extend(catch.iter().map(Work::Stmt)); }
+                    if let Some(finally) = finally { work.extend(finally.iter().map(Work::Stmt)); }
+                }
+                TStmt::Defer { args, body, .. } | TStmt::Recover { args, body, .. } => {
+                    work.extend(args.iter().map(|(_, v)| Work::Expr(v)));
+                    work.extend(body.iter().map(Work::Stmt));
+                }
+                TStmt::StateCriticalWrite(body) => work.extend(body.iter().map(Work::Stmt)),
                 TStmt::ForIn { source, body, .. } => {
                     work.push(Work::Expr(source));
                     work.extend(body.iter().map(Work::Stmt));
@@ -39,7 +52,8 @@ fn direct_calls(stmts: &[TStmt]) -> Vec<usize> {
                     work.extend(update.iter().map(Work::Stmt));
                 }
                 TStmt::Block(body) => work.extend(body.iter().map(Work::Stmt)),
-                TStmt::Break | TStmt::Continue | TStmt::Unreachable => {}
+                TStmt::Break | TStmt::Continue | TStmt::Unreachable |
+                TStmt::RecoverNext | TStmt::UnwindFrame { .. } => {}
             },
             Work::Expr(expr) => match &expr.e {
                 TExpr::Call(idx, args) => {
@@ -48,6 +62,8 @@ fn direct_calls(stmts: &[TStmt]) -> Vec<usize> {
                 }
                 TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v) |
                 TExpr::Not(v) | TExpr::AdtPayload(v) | TExpr::FieldGet { obj: v, .. } |
+                TExpr::StateFieldRead { obj: v, .. } |
+                TExpr::CollectionLoad { array: v, .. } |
                 TExpr::AdtIs { obj: v, .. } | TExpr::AdtPropagate { source: v, .. } |
                 TExpr::Print { value: v, .. } | TExpr::PrintStrVal { value: v, .. } |
                 TExpr::Trap { value: v, .. } | TExpr::PrintObj { obj: v, .. } => {
@@ -72,7 +88,8 @@ fn direct_calls(stmts: &[TStmt]) -> Vec<usize> {
                 }
                 TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) | TExpr::StrConst(..) |
                 TExpr::Local(_) | TExpr::PrintStr { .. } | TExpr::EnumVal(_) |
-                TExpr::GlobalGet(_) | TExpr::Alloc(_) | TExpr::Spawn(_) => {}
+                TExpr::GlobalGet(_) | TExpr::Alloc(_) | TExpr::CollectionAlloc(_) |
+                TExpr::Spawn(_) => {}
             }
         }
     }
@@ -157,6 +174,7 @@ mod tests {
             funcs: bodies.into_iter().map(function).collect(),
             generators: vec![], main: 0, imports: vec![], data: vec![],
             heap: false, globals: vec![], strings: false, guest_eh: false,
+            raise_tag: false, catch_depth: false,
             actors: vec![TActor { name: "Worker".into(), inits: vec![],
                                  receive: Some(root) }],
         }
