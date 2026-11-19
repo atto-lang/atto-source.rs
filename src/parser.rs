@@ -865,19 +865,19 @@ impl Parser {
                 Some("final") => {
                     self.advance();
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                        let f = self.parse_named_field(public, actor)?;
+                        let f = self.parse_named_field(visibility, actor)?;
                         m.fields.push(f);
                     } else if actor {
                         return Err(self.expected("'name: type' after 'final' in an actor"));
                     } else {
                         self.eat_word("mut");
-                        let f = self.parse_type_first_field(public, FieldMode::Final)?;
+                        let f = self.parse_type_first_field(visibility, FieldMode::Final)?;
                         m.fields.push(f.field);
                     }
                 }
                 Some("mut") if !actor => {
                     self.advance();
-                    let f = self.parse_type_first_field(public, FieldMode::Constructor)?;
+                    let f = self.parse_type_first_field(visibility, FieldMode::Constructor)?;
                     m.fields.push(f.field);
                 }
                 Some(w @ ("let" | "val" | "const")) => {
@@ -893,7 +893,7 @@ impl Parser {
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                         return Err(self.expected("a field type before the field name"));
                     }
-                    let f = self.parse_type_first_field(public, mode)?;
+                    let f = self.parse_type_first_field(visibility, mode)?;
                     if f.init_was_colon {
                         return Err(Diagnostic::new(
                             f.field.init.pos,
@@ -934,11 +934,11 @@ impl Parser {
                     m.methods.push(method);
                 }
                 Some(_) if *self.peek_at(1) == Tok::Colon && !actor => {
-                    let f = self.parse_named_field(public, actor)?;
+                    let f = self.parse_named_field(visibility, actor)?;
                     m.fields.push(f);
                 }
                 Some(_) if matches!(self.peek_at(1), Tok::Ident(_)) && !actor => {
-                    let f = self.parse_type_first_field(public, FieldMode::Constructor)?;
+                    let f = self.parse_type_first_field(visibility, FieldMode::Constructor)?;
                     m.fields.push(f.field);
                 }
                 _ => {
@@ -954,7 +954,7 @@ impl Parser {
     }
 
     /// `name: type [= expr]` (immutable field).
-    fn parse_named_field(&mut self, public: bool, _actor: bool) -> R<Field> {
+    fn parse_named_field(&mut self, visibility: FieldVisibility, _actor: bool) -> R<Field> {
         let (name, pos) = self.ident("a field name")?;
         self.expect(Tok::Colon, "':'")?;
         let ty = self.parse_type()?;
@@ -967,14 +967,14 @@ impl Parser {
             name,
             pos,
             ty,
-            public,
+            visibility,
             mode: FieldMode::Final,
             init,
         })
     }
 
     /// `type name (":" | "=") expr`.
-    fn parse_type_first_field(&mut self, public: bool, mode: FieldMode) -> R<TypeFirstField> {
+    fn parse_type_first_field(&mut self, visibility: FieldVisibility, mode: FieldMode) -> R<TypeFirstField> {
         let ty = self.parse_type()?;
         let (name, pos) = self.ident("a field name")?;
         let init_was_colon = if self.eat(&Tok::Colon) {
@@ -991,7 +991,7 @@ impl Parser {
                 name,
                 pos,
                 ty,
-                public,
+                visibility,
                 mode,
                 init,
             },
