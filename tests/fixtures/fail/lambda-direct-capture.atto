@@ -1,6 +1,6 @@
 // expect-error: E_CAPTURE
 pub fnc main(): int {
-    val extra = 5;
+    let extra = 5;
     val plus = |n| -> n + extra;
     return plus(1);
 }

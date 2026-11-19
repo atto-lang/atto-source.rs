@@ -1,0 +1,33 @@
+# Checkout-free / source-free GitHub Actions runner admission canary.
+# SUCCESS here proves ONLY that an eligible runner executes one shell step.
+# It does not certify source access, compiler tests, permissions or release.
+name: Source-free runner admission canary
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# No token permissions, secrets, code checkout, artifacts, caches, or networking.
+permissions: {}
+
+jobs:
+  runner-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Prove runner provisioning without checking out any source
+        shell: bash
+        env:
+          EXPECTED_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_PR_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          test -n "${RUNNER_NAME:-}"
+          test -n "${RUNNER_OS:-}"
+          printf 'SOURCE_FREE_RUNNER_ADMITTED head=%s run=%s attempt=%s os=%s\n' \
+            "$EXPECTED_PR_HEAD" "$EXPECTED_RUN_ID" "$EXPECTED_RUN_ATTEMPT" "$RUNNER_OS"
+          printf 'SOURCE_FREE_ONLY: no checkout, no compiler, no source export, no release certification\n'

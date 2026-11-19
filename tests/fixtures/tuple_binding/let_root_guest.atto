@@ -1,0 +1,10 @@
+pub fnc fixtures(): Tuple<int,int,int> {
+    return (10,20,30);
+}
+
+pub fnc main(): int {
+    let (a, r, mut j) as foo = fixtures();
+    j = 8;
+    foo = fixtures();
+    return a+r+j;
+}

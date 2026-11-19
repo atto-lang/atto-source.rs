@@ -1,0 +1,6 @@
+// expect-error: E_CONST
+fnc runtime_number(): int { return 42; }
+define class Vault as
+    pub const int secret = runtime_number();
+end
+pub fnc main(): int { return 0; }

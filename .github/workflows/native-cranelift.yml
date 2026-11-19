@@ -1,0 +1,114 @@
+name: Native Cranelift compiler (native/, imported from oreslang-source.rs)
+on:
+  push:
+    branches: [main]
+    paths: ["native/**", ".github/workflows/native-cranelift.yml"]
+  pull_request:
+    paths: ["native/**", ".github/workflows/native-cranelift.yml"]
+jobs:
+  native-cranelift:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: native
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable snapshot 2026-10-25
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked --all-targets
+      - name: Export scalar CFG contract
+        run: |
+          cargo run --locked --bin oresc -- --flow 6 tests/fixtures/flow-scalar.ores > target/flow.json
+          cargo run --locked --bin ci_verify -- scalar-flow
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Canonical JVM/LLVM scalar fixture execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in add:42 precedence:40 forward:42 underscores:42 unary:42 owned-identifier:42 nested-comments:42; do
+            name="${pair%%:*}"
+            expected="${pair##*:}"
+            cargo run --locked --bin oresc -- "tests/fixtures/${name}.ores" "target/${name}.o"
+            cc "target/${name}.o" -o "target/${name}"
+            set +e
+            "target/${name}"
+            actual=$?
+            set -e
+            test "$actual" -eq "$expected" || { echo "$name: wanted $expected, got $actual"; exit 1; }
+          done
+      - name: Canonical .atto immutable-binding native execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- tests/fixtures/immutable-bindings.atto target/immutable-bindings.o
+          cc target/immutable-bindings.o -o target/immutable-bindings
+          set +e
+          target/immutable-bindings
+          actual=$?
+          set -e
+          test "$actual" -eq 42 || { echo "immutable-bindings: wanted 42, got $actual"; exit 1; }
+      - name: Canonical semantic error classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in unknown:unknown_name arity:call_arity duplicate:duplicate_declaration overflow:integer_overflow comment:unterminated_comment; do
+            name="${pair%%:*}"
+            expected="${pair##*:}"
+            if cargo run --locked --bin oresc -- --check "tests/fixtures/${name}.ores" >target/diagnostic.out 2>&1; then
+              echo "Expected rejection for $name"; exit 1
+            fi
+            grep -F "$expected" target/diagnostic.out
+          done
+      - name: Verify shared v0 source-backed facts and fail-closed unsupported calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- --static-facts tests/fixtures/forward.ores > target/static-facts-v0.json
+          cargo run --locked --bin ci_verify -- static-facts
+          if cargo run --locked --bin oresc -- --static-facts tests/fixtures/unknown.ores >target/unverified.json; then
+            echo 'Unverified source emitted static facts'; exit 1
+          fi
+      - name: Validate compiler emitted effect IR
+        run: |
+          cargo run --locked --bin oresc -- --effects tests/fixtures/forward.ores > target/effects.json
+          cargo run --locked --bin ci_verify -- effects
+      - name: Compile, link and execute native object
+        run: |
+          cargo run --locked --bin oresc -- examples/answer.ores target/answer.o
+          cc target/answer.o examples/driver.c -o target/answer
+          ./target/answer
+      - name: Verify CFG-v2 exporter preserves scalar and unresolved calls
+        run: |
+          cargo run --locked --bin oresc -- --cfg-ir examples/answer.ores 10 > target/cfg-v2.json
+          cargo run --locked --bin oresc -- --cfg-ir tests/fixtures/forward.ores 10 > target/cfg-v2-call.json
+          cargo run --locked --bin ci_verify -- cfg
+          cargo run --locked --bin ci_verify -- cfg-call
+      - name: Reject excessive source bytes before unbounded allocation
+        run: |
+          cargo run --locked --bin ci_verify -- oversized
+          if cargo run --locked --bin oresc -- --cfg-ir target/oversized.ores 16 >target/oversized.out 2>target/oversized.err; then
+            echo "Oversized input unexpectedly accepted"; exit 1
+          fi
+          grep -Fq 'source too large' target/oversized.err
+      - name: Paired executable object and checked effect facts (one MIR)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin oresc -- --compile-with-effects tests/fixtures/forward.ores target/paired-forward.o target/paired-forward.effects.json
+          cargo run --locked --bin ci_verify -- paired-effects
+          cc target/paired-forward.o -o target/paired-forward
+          set +e
+          target/paired-forward
+          actual=$?
+          set -e
+          test "$actual" -eq 42 || { echo "paired native executable must return 42, got $actual"; exit 1; }
+      - name: Verify safety MIR exporter and fail-closed call edges
+        run: |
+          cargo run --locked --bin oresc -- --safety-ir examples/answer.ores 16 > target/safety.json
+          cargo run --locked --bin oresc -- --safety-ir tests/fixtures/forward.ores 16 > target/safety-calls.json
+          cargo run --locked --bin ci_verify -- safety
