@@ -96,7 +96,7 @@ fn external_direct_actorref_method_call_is_still_illegal() {
         }
     "#;
     let d = compile(source).expect_err("external actorref call must not be executable");
-    assert!(matches!(d.code, "E_ACTOR" | "E_UNBOUND" | "E_TYPE"), "{d}");
+    assert_eq!(d.code, "E_UNSUPPORTED", "{d}");
 }
 #[test]
 fn trait_default_actor_implementation_is_not_silently_dropped() {
