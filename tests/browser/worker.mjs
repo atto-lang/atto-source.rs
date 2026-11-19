@@ -149,6 +149,14 @@ self.onmessage=async ({data})=>{
       ...state.imports,
     };
     instance=new WebAssembly.Instance(guest,{atto});
+    // Internal guest slot counts: real Wasm memory, not a JS-side span mock.
+    const spanCounts=()=>{
+      const memory=instance.exports.memory;
+      if (!(memory instanceof WebAssembly.Memory) || memory.buffer.byteLength < 72)
+        return {spanOpens:null,spanCloses:null};
+      const d=new DataView(memory.buffer);
+      return {spanOpens:Number(d.getBigInt64(56,true)),spanCloses:Number(d.getBigInt64(64,true))};
+    };
     let value;
     try{value=instance.exports.main()}
     catch(e){
@@ -157,9 +165,9 @@ self.onmessage=async ({data})=>{
       state.abort();
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':code===6?'stack overflow (logical call-depth quota)':'trap: '+e.message;
-      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind});return;
+      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind,...spanCounts()});return;
     }
     state.complete(); // rejects any scope that failed to release its lease
-    self.postMessage({ok:true,value:String(value),stdout});
+    self.postMessage({ok:true,value:String(value),stdout,...spanCounts()});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
 };

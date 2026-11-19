@@ -11,7 +11,7 @@ button.addEventListener('click',()=>{
   const worker=new Worker('/worker.mjs',{type:'module'});
   button.disabled=true;out.textContent='Compiling';
   const timer=setTimeout(()=>{worker.terminate();if(id===last){out.textContent='E_TIMEOUT';button.disabled=false}},5000);
-  worker.onmessage=event=>{clearTimeout(timer);worker.terminate();if(id!==last)return;out.textContent=event.data.ok?event.data.stdout+'main() -> '+event.data.value:event.data.error;button.disabled=false};
+  worker.onmessage=event=>{clearTimeout(timer);worker.terminate();if(id!==last)return;window.__attoLastSpanCounts={opens:event.data.spanOpens,closes:event.data.spanCloses};out.textContent=event.data.ok?event.data.stdout+'main() -> '+event.data.value:event.data.error;button.disabled=false};
   worker.onerror=event=>{clearTimeout(timer);worker.terminate();if(id===last){out.textContent='E_WORKER: '+(event.message||'module error')+' '+(event.filename||'')+':'+(event.lineno||0);button.disabled=false}};
   worker.postMessage({source:editor.value});
 });

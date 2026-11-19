@@ -220,6 +220,27 @@ try{
     'invalid code must not poison the next Worker or leave stale guest bytes');
   console.log('PASS browser: state capability bypass and malformed keyword fail closed; recovery executes');
 
+  // Exact Atto sources compiled by the real Rust Wasm compiler in a Chromium
+  // dedicated Worker, then executed as guest Wasm (no JS source evaluator).
+  // The counters come from the guest's own linear memory.
+  for (const [fixture,expected,opens] of [
+    ['205-play-scoped-span.atto','span retained over suspension\nmain() -> 0',1],
+    ['206-play-nested-scoped-spans.atto','both spans alive\nmain() -> 0',2],
+  ]) {
+    const source=await readFile(new URL('./fixtures/pass/'+fixture,import.meta.url),'utf8');
+    assert.equal(await run(source,'main() -> 0'),expected,fixture+' guest stdout and exit');
+    assert.deepEqual(await evaluate('window.__attoLastSpanCounts'),{opens,closes:opens},
+      fixture+': each span was closed exactly once after await in guest Wasm');
+  }
+  const timedOut='import span from pkg "core.telemetry"; import sleep from pkg "std.time"; '+
+    'pub suspends fnc main(): int { using span("timeout") as s { with timeout(1) { '+
+    'await sleep(2); s.set_attribute("not", "reached"); } } return 0; }';
+  assert.match(await run(timedOut,'E_PANIC'),/E_PANIC/,
+    'expired deadline must stop suspended work');
+  assert.deepEqual(await evaluate('window.__attoLastSpanCounts'),{opens:1,closes:1},
+    'deadline must close a live span exactly once before guest failure');
+  console.log('PASS browser: scoped span remains live across suspension, then closes on normal and timeout paths');
+
   assert.ok(requests.some(x=>x.path==='/state-runtime.mjs'),
     'the browser Worker must load the protected-state host admission module');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
