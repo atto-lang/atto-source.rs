@@ -1,0 +1,16 @@
+// expect-error: E_TYPE
+// java: rejects
+define enum Left as
+  A
+  B
+end
+define enum Right as
+  A
+  B
+end
+pub fnc main(): int {
+  match Left.A over
+    on Right.A -> { return 1; }
+    on Left.B -> { return 2; }
+  end
+}

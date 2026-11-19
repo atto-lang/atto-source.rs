@@ -96,17 +96,42 @@ pub struct ActorInterfaceMethod {
     pub pos: Pos,
 }
 
+/// Class-field visibility is independent of ownership and binding mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldVisibility { Private, Package, Public }
+
 /// Who may assign a field after its initializer ran.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldMode {
     /// `name: T = e`, `final ...`, `val`/`const` fields: never reassigned.
     Final,
-    /// Class `T name: e`, `mut T name = e`, `let T name = e`: the constructor
-    /// may assign it; methods see a read-only `self` (Java ownership rule).
+    /// Class `T name = e` (implicit `let` for all T), `mut T name = e`,
+    /// `let T name = e`: this browser-subset mode currently permits constructor
+    /// assignment, while methods still have read-only `self`. It is NOT proof
+    /// of the complete target `let`/`let mut` class receiver semantics.
     Constructor,
     /// Actor-owned state, or a protected state-container field whose writes
     /// require the typed, checked critical-write scope.
     ActorState,
+}
+
+/// Independently records the declared class-field binding contract.
+/// FieldMode remains the currently supported storage/constructor authority;
+/// distinct source modifiers must not be erased into that coarse mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldBinding {
+    Let,
+    Val,
+    Final,
+    Const,
+    ActorState,
+}
+
+impl FieldBinding {
+    /// Rebinding must also be authorized by a writable receiver or unique loan.
+    pub fn rebindable(self) -> bool {
+        matches!(self, Self::Let | Self::ActorState)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -114,8 +139,12 @@ pub struct Field {
     pub name: String,
     pub pos: Pos,
     pub ty: Type,
-    pub public: bool,
+    pub visibility: FieldVisibility,
     pub mode: FieldMode,
+    /// Binding mode is independent of primitive/nonprimitive field type.
+    pub binding: FieldBinding,
+    /// Requests writes through the referent; does not grant name rebinding.
+    pub referent_mutable: bool,
     pub init: Expr,
 }
 
@@ -180,6 +209,18 @@ pub struct ActorDecl {
     pub methods: Vec<Method>,
 }
 
+/// Explicit effect clauses are an upper-bound contract when supplied.
+/// Absence of a clause list retains source compatibility with the legacy
+/// inferred-effect mode; a partial list forbids omitted throw/raise effects.
+/// Fatal panics remain a distinct runtime channel and are NOT statically
+/// certified by this browser compiler's exception-effect inference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeclaredEffects {
+    pub throws: bool,
+    pub raises: bool,
+    pub panics: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Func {
     pub name: String,
@@ -188,6 +229,8 @@ pub struct Func {
     pub is_generator: bool,
     /// Explicit effect contract: no externally observable effects or impure calls.
     pub is_pure: bool,
+    /// Present when the caller declares one or more exceptional channels.
+    pub declared_effects: Option<DeclaredEffects>,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Vec<Stmt>,
@@ -253,8 +296,15 @@ pub enum Stmt {
         finally: Option<Vec<Stmt>>,
         pos: Pos,
     },
-    /// `defer || -> { ... };` registers a LIFO cleanup without running it.
-    Defer { body: Vec<Stmt>, pos: Pos },
+    /// `defer { ... };`, `defer _ -> { ... };`, `defer || -> { ... };`,
+    /// or `defer (|T a| -> _ -> { ... })(value);`.
+    /// Factory arguments are evaluated exactly once at registration.
+    Defer {
+        params: Vec<(String, Type, Pos)>,
+        body: Vec<Stmt>,
+        args: Vec<Expr>,
+        pos: Pos,
+    },
     /// `recover (|T a, ..| -> |err, c| -> { ... })(args);` registers a
     /// recovery callback whose factory arguments are evaluated once, now.
     Recover {
@@ -385,7 +435,7 @@ pub enum LambdaBody {
 
 /// Explicit Atto ownership operators, not pointer address syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnershipOp { Borrow, Copy, Take, Share }
+pub enum OwnershipOp { Borrow, Copy, DeepCopy, Take, Share, Freeze, Weak, Pin, Drop }
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
@@ -400,8 +450,10 @@ pub enum ExprKind {
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
-    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, take! x,
-    /// share! x. Parentheses are optional grouping, not call arguments.
+    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, copy!! x,
+    /// take! x, share! x, freeze! x, weak! x, pin! x, drop! x.
+    /// lt! a is a lifetime binder, never a runtime expression.
+    /// Syntax does not confer runtime rights: unproven operations fail closed.
     Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),

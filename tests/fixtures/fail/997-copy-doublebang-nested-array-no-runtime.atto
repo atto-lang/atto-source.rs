@@ -1,0 +1,14 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// java: rejects
+// A verified graph clone context is not enough to enable Array<Array<int>>:
+// the Rust/Wasm frontend must first implement checked array allocation,
+// indexing, array stores, identity memo and atomic publication.
+define class Payload as
+    pub let Array<Array<int>> values = Array.of(Array.of(42));
+end
+pub fnc main(): int {
+    val original = new Payload();
+    val cloned = copy!! original;
+    cloned.values[0][0] = 99;
+    return original.values[0][0];
+}

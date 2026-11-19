@@ -25,7 +25,7 @@ fn error(pos: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic
 }
 fn name(t: &[Token], i: usize) -> R<String> {
     match t.get(i) {
-        Some(Token { tok: Tok::Ident(n), pos }) if n.len() <= 96
+        Some(Token { tok: Tok::Ident(n), .. }) if n.len() <= 96
             && !matches!(n.as_str(), "pub" | "export" | "class" | "fnc" | "as" | "end") =>
             Ok(n.clone()),
         Some(x) => Err(error(x.pos, "E_SYNTAX", "expected bounded export identifier")),
