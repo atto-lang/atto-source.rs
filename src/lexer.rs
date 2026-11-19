@@ -54,6 +54,8 @@ pub enum Tok {
     Question,
     Pipe,
     PipeGt,
+    /// Right-associative functional application: f <| value.
+    PipeLt,
     Amp,
     At,
     Eof,
@@ -316,6 +318,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
             ('<', Some('-')) => (Tok::LeftArrow, 2),
+            ('<', Some('|')) => (Tok::PipeLt, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
             ('>', Some('=')) => (Tok::Ge, 2),
