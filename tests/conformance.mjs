@@ -134,6 +134,15 @@ export function runGuest(wasm, { onActorTrace = null } = {}) {
     runtimes.get(main).abort();
     return { ok: false, panic: main.exports.panic_code.value, error: String(error), stdout: out };
   }
+  // Actor instances and main must never alias one Wasm linear memory.
+  // This checks per-instance isolation, not OS tenant isolation or GC policy.
+  if (actors.length > 0) {
+    const memories = [main.exports.memory, ...actors.map(a => a.instance.exports.memory)];
+    assert.ok(memories.every(m => m instanceof WebAssembly.Memory),
+      'all actor instances must export their own memory');
+    assert.equal(new Set(memories).size, memories.length,
+      'separate actors/main must not share a WebAssembly.Memory');
+  }
   for (const a of actors) {
     for (let seq = 0; seq < a.queue.length; seq++) {
       const messageId = a.queueIds[seq];

@@ -160,7 +160,10 @@ pub struct Field {
     pub binding: FieldBinding,
     /// Requests writes through the referent; does not grant name rebinding.
     pub referent_mutable: bool,
-    pub init: Expr,
+    /// Initializer is optional only for a class `final` field whose exact
+    /// once-only assignment is proved on every successful constructor path.
+    /// Other fields, including actors, still require declaration initializers.
+    pub init: Option<Expr>,
 }
 
 #[derive(Clone, Debug)]

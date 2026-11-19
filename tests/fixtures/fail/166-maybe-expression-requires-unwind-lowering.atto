@@ -1,0 +1,10 @@
+// expect-error: E_UNSUPPORTED
+// Expression position is gated too; do not treat maybe as a normal callable.
+pub fnc main(): int {
+  return maybe
+    Ok(value) ?= Ok(5),
+    value
+  else
+    on _ -> 0
+  end;
+}

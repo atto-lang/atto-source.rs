@@ -1,0 +1,31 @@
+// expect-exit: 42
+// Integration snapshot: atto-co/atto-durable-objects.atto/examples/epoch_lease_guard.atto (4b5b81179ce975e13c2f47ad57e43946ec4ff0e5)
+// Pure AttoLang scalar lease guard. Not a capability or trusted clock.
+// The host must get latest_generation from an independently trusted authority.
+pub fnc valid_epoch_lease(
+    int presented_generation,
+    int latest_generation,
+    int issued_at_ms,
+    int expires_at_ms,
+    int now_ms
+): bool {
+    return And(And(presented_generation > 0, latest_generation > 0),
+        And(And(presented_generation == latest_generation, issued_at_ms >= 0),
+            And(And(expires_at_ms > issued_at_ms, now_ms >= issued_at_ms),
+                now_ms < expires_at_ms)));
+}
+
+
+pub fnc main(): int {
+  if valid_epoch_lease(3,3,100,200,100),
+      valid_epoch_lease(3,3,100,200,199),
+      !valid_epoch_lease(3,3,100,200,200),
+      !valid_epoch_lease(2,3,100,200,150),
+      !valid_epoch_lease(4,3,100,200,150),
+      !valid_epoch_lease(0,0,100,200,150),
+      !valid_epoch_lease(3,3,-1,200,150),
+      !valid_epoch_lease(3,3,100,200,99) then
+    return 42;
+  fi
+  return 0;
+}
