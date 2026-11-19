@@ -84,7 +84,11 @@ fn default_value(ty: &str) -> &'static str {
 fn create_class(name: &str, shape: &Shape) -> String {
     let mut out = format!("define class {name} as\n");
     for (i, ty) in shape.0.iter().enumerate() {
-        out.push_str(&format!("pub {ty} e{i}: {};\n", default_value(ty)));
+        // Class fields now default to val/final. Tuple storage is populated
+        // exactly once by this generated constructor, so its write authority
+        // must be explicit, as in shape_lower::synthesized. Users still cannot
+        // mutate tuple-root fields outside constructor or via mutable loans.
+        out.push_str(&format!("pub let {ty} e{i} = {};\n", default_value(ty)));
     }
     out.push_str("constructor(");
     for (i, ty) in shape.0.iter().enumerate() {
