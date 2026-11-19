@@ -101,12 +101,33 @@ pub struct ActorInterfaceMethod {
 pub enum FieldMode {
     /// `name: T = e`, `final ...`, `val`/`const` fields: never reassigned.
     Final,
-    /// Class `T name: e`, `mut T name = e`, `let T name = e`: the constructor
-    /// may assign it; methods see a read-only `self` (Java ownership rule).
+    /// Class `T name = e` (implicit `let` for all T), `mut T name = e`,
+    /// `let T name = e`: this browser-subset mode currently permits constructor
+    /// assignment, while methods still have read-only `self`. It is NOT proof
+    /// of the complete target `let`/`let mut` class receiver semantics.
     Constructor,
     /// Actor-owned state, or a protected state-container field whose writes
     /// require the typed, checked critical-write scope.
     ActorState,
+}
+
+/// Independently records the declared class-field binding contract.
+/// FieldMode remains the currently supported storage/constructor authority;
+/// distinct source modifiers must not be erased into that coarse mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldBinding {
+    Let,
+    Val,
+    Final,
+    Const,
+    ActorState,
+}
+
+impl FieldBinding {
+    /// Rebinding must also be authorized by a writable receiver or unique loan.
+    pub fn rebindable(self) -> bool {
+        matches!(self, Self::Let | Self::ActorState)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +137,10 @@ pub struct Field {
     pub ty: Type,
     pub public: bool,
     pub mode: FieldMode,
+    /// Binding mode is independent of primitive/nonprimitive field type.
+    pub binding: FieldBinding,
+    /// Requests writes through the referent; does not grant name rebinding.
+    pub referent_mutable: bool,
     pub init: Expr,
 }
 
