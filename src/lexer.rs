@@ -51,6 +51,8 @@ pub enum Tok {
     Pipe,
     PipeGt,
     Amp,
+    Caret,
+    Tilde,
     At,
     Eof,
 }
@@ -302,19 +304,28 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('=', _) => (Tok::Assign, 1),
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
+            // Keep the last bracket of '<<<=' / '>>>=' separate from
+            // '='. This also protects unspaced triple generic closers
+            // (e.g. T<U<V<W>>>=value) from becoming comparison tokens.
+            ('<', Some('=')) if i >= 2 && chars[i - 1] == '<' && chars[i - 2] == '<' =>
+                (Tok::Lt, 1),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
+            ('>', Some('=')) if i >= 2 && chars[i - 1] == '>' && chars[i - 2] == '>' =>
+                (Tok::Gt, 1),
             ('>', Some('=')) => (Tok::Ge, 2),
             ('>', _) => (Tok::Gt, 1),
             ('*', _) => (Tok::Star, 1),
             ('/', _) => (Tok::Slash, 1),
-            ('%', _) | ('^', _) => {
+            ('%', _) | ('^', Some('^')) => {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED",
                     "removed arithmetic operator is not part of AttoLang",
                 ));
             }
+            ('^', _) => (Tok::Caret, 1),
+            ('~', _) => (Tok::Tilde, 1),
             ('?', _) => (Tok::Question, 1),
             ('|', Some('>')) => (Tok::PipeGt, 2),
             ('|', _) => (Tok::Pipe, 1),

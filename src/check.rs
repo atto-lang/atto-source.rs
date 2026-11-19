@@ -1691,7 +1691,9 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
             let read_only = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
-                BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or => true,
+                BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or |
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                BinOp::Shl | BinOp::LShr | BinOp::AShr => true,
             };
             read_only && pure_expr(a, pure_indices) && pure_expr(b, pure_indices)
         }
@@ -3197,6 +3199,16 @@ impl<'a> FnCx<'a> {
                         }
                     }
                 }
+                UnOp::BitNot => {
+                    if v.ty != Type::Int {
+                        return Err(type_err(pos, format!("'~' needs an int operand, found {}", self.tn(v.ty))));
+                    }
+                    TE {
+                        e: TExpr::Bin(BinOp::BitXor, Box::new(v),
+                            Box::new(TE { e: TExpr::I64(-1), ty: Type::Int })),
+                        ty: Type::Int,
+                    }
+                }
                 UnOp::Not => {
                     if v.ty != Type::Bool {
                         return Err(type_err(pos, format!("'!' needs a bool operand, found {}", self.tn(v.ty))));
@@ -3216,6 +3228,18 @@ impl<'a> FnCx<'a> {
         Ok({
             let a = self.value(l)?;
             let b = self.value(r)?;
+            if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                if a.ty != Type::Int || b.ty != Type::Int {
+                    return Err(type_err(pos, format!(
+                        "bitwise operator '{}' requires two int operands, found {} and {}",
+                        op.symbol(), self.tn(a.ty), self.tn(b.ty))));
+                }
+                return Ok(TE {
+                    e: TExpr::Bin(*op, Box::new(a), Box::new(b)),
+                    ty: Type::Int,
+                });
+            }
             if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
                 let both = a.ty == Type::Str && b.ty == Type::Str;
                 return match op {
@@ -3300,6 +3324,9 @@ impl<'a> FnCx<'a> {
             let ty = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
                 BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                BinOp::Shl | BinOp::LShr | BinOp::AShr =>
+                    unreachable!("bitwise operations handled before numeric promotion"),
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Type::Bool,
                 BinOp::Eq | BinOp::Ne => {
                     if a.ty != b.ty {
