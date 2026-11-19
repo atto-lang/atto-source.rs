@@ -95,3 +95,38 @@ fn import_lists_obey_source_bounds() {
     let names = (0..257).map(|n| format!("n{n}")).collect::<Vec<_>>().join(", ");
     reject(&format!("import {names} from pkg \"core\";"), "E_SOURCE_LIMIT");
 }
+
+#[test]
+fn scoped_using_timeout_await_demo_has_statically_parsed_named_imports() {
+    // The target-header parser checks only the imports. It must not claim
+    // that the nested scope body is executable or validated by this stage.
+    let headers = parse(r#"
+        import span from pkg "core.telemetry";
+        import sleep from pkg "std.time";
+        pub fnc main(): int { return 0; }
+    "#);
+    assert_eq!(headers.imports, ["span", "sleep"]);
+}
+
+#[test]
+fn scoped_using_timeout_await_demo_must_not_produce_guest_without_runtime_support() {
+    // Exact /play surface form: this is an intentionally pending executable
+    // gate, not a simulated success or a test of a source-string interpreter.
+    let source = r#"
+import span from pkg "core.telemetry";
+import sleep from pkg "std.time";
+pub suspends fnc main(): int {
+  using span("playground.demo") as current_span {
+    with timeout(2000) {
+      current_span.set_attribute("feature", "import");
+      await sleep(1);
+      stdio.println("span retained over suspension");
+    }
+  }
+  return 0;
+}
+"#;
+    let rejected = atto_compiler::compile(source)
+        .expect_err("must fail closed until imports, using, timeout and await actually lower");
+    assert!(!rejected.code.is_empty(), "compiler must explain rejection");
+}
