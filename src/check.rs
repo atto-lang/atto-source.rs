@@ -401,7 +401,7 @@ struct ActorInfo {
 
 /// Program-wide declaration tables shared by every body check.
 struct Globals<'a> {
-    sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
+    sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type, Vec<bool>)>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -893,6 +893,16 @@ pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
     let mut rewrites = 0usize;
     for func in &mut migrated.funcs {
         for formal in &mut func.params {
+            if formal.consuming {
+                if !is_class_formal(formal.ty) || formal.mutable
+                    || matches!(formal.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)) {
+                    return Err(Diagnostic::new(formal.pos, "E_UNSUPPORTED_TYPE",
+                        "borrow-v1: take! consuming formal requires an owned class, not a borrow or scalar"));
+                }
+                // Keep this formal owned. Its specific call-site marker is
+                // retained in Globals::sigs and checked before consumption.
+                continue;
+            }
             if is_class_formal(formal.ty) && formal.mutable {
                 // A mutable formal is an explicit effect request. This mode
                 // cannot verify an exclusive caller loan or exported write
@@ -927,10 +937,29 @@ pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
     // No source rewriting/token guessing and no unchecked ABI conversion.
     // Even programs with zero class formals follow the same safety gates.
     debug_assert!(rewrites <= p.funcs.iter().map(|f| f.params.len()).sum::<usize>());
+    if migrated.funcs.iter().any(|f| f.params.iter().any(|q| q.consuming)) {
+        // Checked-handle screening must still run on the complete original
+        // AST. Lambda lowering does not yet preserve consuming effects, so
+        // this versioned subset uses exact top-level checking instead.
+        checked_handle_gate::validate(&migrated)?;
+        return check_lowered(&migrated);
+    }
     check(&migrated)
 }
 
 pub fn check(p: &Program) -> R<TProgram> {
+    // An unversioned compile must never reinterpret a consuming-formal
+    // declaration as the old implicit-move ABI. Only --borrow-v1 registers
+    // and verifies these explicit transfer effects.
+    if p.funcs.iter().any(|f| f.params.iter().any(|q| q.consuming))
+        || p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k|
+            k.params.iter().any(|q| q.consuming))
+            || c.methods.iter().any(|m| m.params.iter().any(|q| q.consuming)))
+        || p.actors.iter().any(|a| a.methods.iter().any(|m|
+            m.params.iter().any(|q| q.consuming))) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_UNSUPPORTED_TYPE",
+            "take! consuming formals require the versioned borrow-v1 profile"));
+    }
     // The browser backend cannot execute checked handles. Validate the
     // complete source AST *before* lambda lifting or generator CFG lowering:
     // otherwise an unreachable branch, nested callback or declaration
@@ -1105,7 +1134,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             ));
         }
         let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
-        sigs.insert(key, (i as u32, params, res(f.ret)?));
+        sigs.insert(key, (i as u32, params, res(f.ret)?,
+            f.params.iter().map(|q| q.consuming).collect()));
         names.entry(f.name.clone()).or_default().push(f.params.len());
     }
 
@@ -1253,7 +1283,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     };
 
     let main = match g.sigs.get(&("main".to_string(), 0)) {
-        Some((i, _, ret)) => {
+        Some((i, _, ret, _)) => {
             if !matches!(ret, Type::Int | Type::Void) {
                 return Err(Diagnostic::new(
                     p.funcs[*i as usize].pos,
@@ -1285,7 +1315,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // ---- top-level functions
     let mut generators = Vec::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
+        let (_, params, ret, _) = g.sigs[&(f.name.clone(), f.params.len())].clone();
         if f.is_generator {
             if let Some(mut plan) = generator_lower::lower(f)? {
                 plan.function = i as u32;
@@ -1502,6 +1532,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     name: String::new(),
                     ty: mi.ret,
                     mutable: false,
+                    consuming: false,
                     pos: m.pos,
                 },
                 mi.ret,
@@ -3596,10 +3627,34 @@ impl<'a> FnCx<'a> {
     /// a runtime local or owned handle); no drop authority is created.
     #[inline(never)]
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
+        self.args_with_transfers(callee, args, params, &[])
+    }
+
+    /// Nonempty consuming markers occur only in the versioned borrow-v1
+    /// top-level function signature. Requiring take! at the caller is what
+    /// separates explicitly transferred owners from default readonly loans.
+    fn args_with_transfers(&mut self, callee: &str, args: &[Expr],
+                           params: &[Type], consuming: &[bool]) -> R<Vec<TE>> {
         let mut temporary_call_loans: Vec<u32> = Vec::new();
         let checked = (|| -> R<Vec<TE>> {
             let mut out = Vec::new();
             for (i, (arg, want)) in args.iter().zip(params).enumerate() {
+                if consuming.get(i).copied().unwrap_or(false) {
+                    if !matches!(want, Type::Class(_)) {
+                        return Err(Diagnostic::new(arg.pos, "E_UNSUPPORTED_TYPE",
+                            "take! formal must resolve to a declared owned class"));
+                    }
+                    // A consuming formal is not a general implicit move.
+                    // Require an explicit named ownership transfer at the
+                    // call site, then reuse the existing checked take! path
+                    // (which rejects aliases, live loans and use-after-move).
+                    if !matches!(&arg.kind,
+                        ExprKind::Ownership(OwnershipOp::Take, false, inner)
+                            if matches!(&inner.kind, ExprKind::Var(_))) {
+                        return Err(Diagnostic::new(arg.pos, "E_OWNERSHIP",
+                            format!("argument {} of '{callee}' requires explicit take! of a named class owner", i + 1)));
+                    }
+                }
                 if let Type::BorrowClass(class) = *want {
                     // An explicit `borrow! owner` is a spelling of the
                     // *same* read-only call loan as the implicit `owner`
@@ -4183,7 +4238,7 @@ impl<'a> FnCx<'a> {
                 return Err(isolation(pos, me, "file/module callable", name));
             }
         }
-        let (idx, params, ret) = match self.g.sigs.get(&(name.to_string(), args.len())) {
+        let (idx, params, ret, consuming) = match self.g.sigs.get(&(name.to_string(), args.len())) {
             Some(s) => s.clone(),
             None => {
                 return Err(match self.g.names.get(name) {
@@ -4205,7 +4260,7 @@ impl<'a> FnCx<'a> {
                 })
             }
         };
-        let targs = self.args(name, args, &params)?;
+        let targs = self.args_with_transfers(name, args, &params, &consuming)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
             ty: ret,
