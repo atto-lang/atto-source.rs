@@ -1,0 +1,49 @@
+name: Struct equals checked guest execution
+
+on:
+  pull_request:
+    paths:
+      - 'src/shape_lower.rs'
+      - 'tests/struct_field_equals.rs'
+      - 'tests/struct_equals_guest.mjs'
+      - '.github/workflows/struct-equals-guest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checked-native-wasm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Bind checkout to exact PR head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+      - name: Install repository-pinned Rust
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.85.1
+      - name: Log exact checkout and toolchain
+        run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          rustc --version
+          cargo --version
+          node --version
+      - name: Check all Rust compile targets
+        run: cargo check --locked --all-targets
+      - name: Compile and verify focused Rust tests
+        run: cargo test --locked --test struct_field_equals --test preview_data_shapes
+      - name: Build native real source compiler
+        run: cargo build --locked --release --bin attoc
+      - name: Compile and execute actual Wasm guest plus negative no-artifact cases
+        run: ATTOC="$PWD/target/release/attoc" node tests/struct_equals_guest.mjs

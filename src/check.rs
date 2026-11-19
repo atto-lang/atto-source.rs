@@ -397,6 +397,8 @@ struct Globals<'a> {
     enums: &'a [EnumDecl],
     actors: Vec<ActorInfo>,
     type_names: &'a [(String, Pos)],
+    /// Exact compiler-issued syntax provenance; not user-source-forgeable.
+    struct_init_sites: &'a [crate::ast::StructInitSite],
 }
 
 /// Where the code being checked lives.
@@ -1005,6 +1007,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         enums: &p.enums,
         actors,
         type_names: tn,
+        struct_init_sites: &p.struct_init_sites,
     };
 
     let main = match g.sigs.get(&("main".to_string(), 0)) {
@@ -3565,6 +3568,23 @@ impl<'a> FnCx<'a> {
     }
 
     fn new_object(&mut self, class: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        // A StructName(field=value) source site was checked for nominal
+        // declaration and literal scalar field shape in shape_lower. Unlike
+        // ordinary 'new Class(...)', it must also obey *typed lexical value
+        // resolution*. A shadowing local/parameter cannot be silently
+        // bypassed by the generated constructor call.
+        if self.g.struct_init_sites.iter().any(|site|
+            site.name == class && site.pos == pos)
+        {
+            if self.lookup(class).is_some() {
+                return Err(Diagnostic::new(pos,"E_STRUCT_RESOLVE",
+                    format!("struct initializer '{class}' is shadowed by a lexical value binding")));
+            }
+            if self.g.names.contains_key(class) {
+                return Err(Diagnostic::new(pos,"E_STRUCT_RESOLVE",
+                    format!("struct initializer '{class}' collides with a callable declaration")));
+            }
+        }
         if let Some(me) = self.actor_name() {
             return Err(isolation(pos, me, "sibling class", class));
         }

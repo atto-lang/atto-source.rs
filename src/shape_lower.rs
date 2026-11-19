@@ -19,6 +19,8 @@ pub const PREFIX: &str = "__atto_shape_";
 const MAX_SHAPES: usize = 64;
 const MAX_FIELDS: usize = 8;
 const MAX_NAME_BYTES: usize = 64;
+const MAX_EQUALS_STRUCT_INITIALIZERS: usize = 256;
+const MAX_CALLABLE_HEADER_TOKENS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind { Struct, Record }
@@ -154,6 +156,108 @@ fn keyed(t: &[Token], open: usize) -> R<(BTreeMap<String, Token>, usize)> {
     Ok((values,j+1))
 }
 
+/// A distinct source-level candidate for the narrow implicit struct field
+/// initializer. Preserve the source field order and token locations; unlike
+/// named CALL arguments, these labels use '=' only for resolved scalar Structs.
+#[derive(Clone)]
+struct StructFieldInit {
+    nominal: String,
+    pos: Pos,
+    fields_in_source_order: Vec<(String, Token)>,
+}
+
+// Ambiguity and shadowing are validated by the production typed checker
+// against the actual lexical scope table, not inferred from token neighbors.
+// The source pass records a proven nominal candidate and keeps its position.
+// A failed typed lookup MUST NOT fall back to a general named function call.
+
+/// Only look for field '=' at the outermost argument level; never rewrite an
+/// assignment-like expression buried in another call/grouping expression.
+fn contains_struct_equals(t: &[Token], open: usize) -> bool {
+    let mut depth = 0usize;
+    for i in open+1..t.len() {
+        match t[i].tok {
+            Tok::LParen => depth += 1,
+            Tok::RParen if depth == 0 => return false,
+            Tok::RParen => depth -= 1,
+            Tok::Ident(_) if depth == 0
+                && t.get(i+1).is_some_and(|v| v.tok == Tok::Assign) => return true,
+            Tok::Eof => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Parse only the full field-pair form 'Struct(x=1, y=2)' into a separate
+/// checked candidate; do not reinterpret a general call or arbitrary expr.
+/// Literal scalars alone are executable in this first source-local profile.
+/// Effectful expressions require ordered typed temps; rejecting is safer than
+/// the existing class constructor's declaration-order evaluation.
+fn equals_struct_init(t: &[Token], open: usize, decl: &Decl) -> R<(StructFieldInit,usize)> {
+    if t.get(open).is_none_or(|v| v.tok != Tok::LParen) {
+        return Err(error(decl.pos,"E_STRUCT_INIT","expected '(' for struct initializer"));
+    }
+    let pos = t[open].pos;
+    let mut fields_in_source_order = Vec::new();
+    let mut j = open + 1;
+    loop {
+        let current = t.get(j).ok_or_else(|| error(pos,"E_EOF","unclosed struct initializer"))?;
+        if current.tok == Tok::RParen { break; }
+        if current.tok == Tok::Eof {
+            return Err(error(pos,"E_EOF","unclosed struct initializer"));
+        }
+        if fields_in_source_order.len() >= MAX_FIELDS {
+            return Err(error(current.pos,"E_SOURCE_LIMIT","too many initialized struct fields"));
+        }
+        let label = id(t,j,"struct initializer field")?;
+        if t.get(j+1).is_none_or(|v| v.tok != Tok::Assign) {
+            return Err(error(current.pos,"E_STRUCT_INIT",
+                "struct equals initializer requires only 'field=value' pairs"));
+        }
+        let value = t.get(j+2).ok_or_else(||error(current.pos,"E_EOF","missing struct field value"))?;
+        if !simple_literal(&value.tok) {
+            return Err(error(value.pos,"E_UNSUPPORTED",
+                "struct equals initializer currently supports only literal scalar fields; effectful expressions require source-order typed temporaries"));
+        }
+        if !decl.fields.iter().any(|f| f.name == label) {
+            return Err(error(current.pos,"E_NO_FIELD",
+                format!("'{}' has no field '{}'",decl.name,label)));
+        }
+        if fields_in_source_order.iter().any(|(key,_)| key == &label) {
+            return Err(error(current.pos,"E_DUPLICATE",
+                format!("duplicate struct initializer field '{label}'")));
+        }
+        fields_in_source_order.push((label,value.clone()));
+        j += 3;
+        if t.get(j).is_some_and(|v| v.tok == Tok::Comma) {
+            j += 1;
+        } else if t.get(j).is_none_or(|v| v.tok != Tok::RParen) {
+            return Err(error(value.pos,"E_STRUCT_INIT",
+                "struct equals initializer fields must be comma-separated"));
+        }
+    }
+    Ok((StructFieldInit {
+        nominal: decl.name.clone(),
+        pos,
+        fields_in_source_order,
+    }, j+1))
+}
+
+/// Convert *only* a checked literal-scalar struct initialization to the
+/// existing compiled guest constructor path. No field-expression evaluation
+/// can be reordered here because this profile rejects all effectful values.
+fn lower_equals_struct(decl: &Decl, syntax: StructFieldInit) -> R<Vec<Token>> {
+    if syntax.nominal != decl.name || decl.kind != Kind::Struct {
+        return Err(error(syntax.pos,"E_STRUCT_INIT","not a resolved nominal struct"));
+    }
+    let mut checked = BTreeMap::new();
+    for (field,value) in syntax.fields_in_source_order {
+        checked.insert(field,value);
+    }
+    constructor_tokens(decl,checked,syntax.pos)
+}
+
 fn constructor_tokens(decl: &Decl, values: BTreeMap<String,Token>, pos: Pos) -> R<Vec<Token>> {
     if values.len()!=decl.fields.len() ||
         decl.fields.iter().any(|f|!values.contains_key(&f.name)) {
@@ -258,6 +362,13 @@ fn typed_product(t:&[Token],i:usize,defs:&mut BTreeMap<String,Vec<Field>>)
 /// checked class constructors, preserving real runtime allocations and field
 /// reads. Not executable for arbitrary structural/collection operations.
 pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
+    lower_with_sites(t).map(|(out, _)| out)
+}
+
+/// Lower a bounded source-local scalar product profile, returning the
+/// exact original source sites that used the struct-specific equals form.
+/// The main compiler passes this manifest into typed AST checking.
+pub fn lower_with_sites(t: Vec<Token>) -> R<(Vec<Token>, Vec<crate::ast::StructInitSite>)> {
     for x in &t {
         if let Tok::Ident(name)=&x.tok {
             if name.starts_with(PREFIX) {
@@ -268,10 +379,12 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     if !t.iter().enumerate().any(|(i,_)|
         word(&t,i,"struct")||word(&t,i,"record")||
         (word(&t,i,"Tuple")||word(&t,i,"Pair")||word(&t,i,"Entry"))) {
-        return Ok(t);
+        return Ok((t, Vec::new()));
     }
+
     let mut declared=BTreeMap::<String,Decl>::new();
     let mut first=Vec::new();
+    let mut first_origins=Vec::<Option<usize>>::new();
     let mut i=0;
     while i<t.len() {
         if word(&t,i,"define") &&
@@ -284,15 +397,20 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
             if declared.contains_key(&decl.name) {
                 return Err(error(decl.pos,"E_DUPLICATE",format!("duplicate product '{}'",decl.name)));
             }
-            first.extend(fragment(&synthesized(&decl.name,&decl.fields),decl.pos)?);
+            let generated=fragment(&synthesized(&decl.name,&decl.fields),decl.pos)?;
+            first_origins.extend(std::iter::repeat(None).take(generated.len()));
+            first.extend(generated);
             declared.insert(decl.name.clone(),decl);
             i=next;continue;
         }
+        first_origins.push(Some(i));
         first.push(t[i].clone());
         i+=1;
     }
     let mut synthetic=BTreeMap::<String,Vec<Field>>::new();
     let mut out=Vec::new();
+    let mut equals_initializer_count=0usize;
+    let mut struct_init_sites=Vec::<crate::ast::StructInitSite>::new();
     i=0;
     while i<first.len() {
         if let Some((product,next))=typed_product(&first,i,&mut synthetic)? {
@@ -319,6 +437,39 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
                     out.extend(constructor_tokens(decl,values,first[i].pos)?);
                     i=next;continue;
                 }
+                if decl.kind == Kind::Struct && i+1<first.len()
+                    && first[i+1].tok==Tok::LParen
+                    && contains_struct_equals(&first,i+1) {
+                    if equals_initializer_count>=MAX_EQUALS_STRUCT_INITIALIZERS {
+                        return Err(error(first[i].pos,"E_SOURCE_LIMIT",
+                            "too many named struct field initializers"));
+                    }
+                    equals_initializer_count+=1;
+                    // The checker validates shadowing using typed program
+                    // scopes; only a real source-site may register a candidate.
+                    if first_origins[i].is_none() {
+                        return Err(error(first[i].pos,"E_STRUCT_RESOLVE",
+                            "generated source cannot instantiate an unresolved struct"));
+                    }
+                    // Never rewrite a qualified/member call, 'new' constructor,
+                    // actor spawn, or invocation through another expression.
+                    if i>0 && (first[i-1].tok==Tok::Dot ||
+                        matches!(&first[i-1].tok,Tok::Ident(w) if
+                            matches!(w.as_str(),"new" | "spawn"))) {
+                        return Err(error(first[i].pos,"E_STRUCT_TARGET",
+                            "field=value initialization requires a direct resolved nominal struct, not a call/constructor"));
+                    }
+                    let (candidate,next)=equals_struct_init(&first,i+1,decl)?;
+                    // Mark by original name token's unique (line,column).
+                    // The production parser retains this position on the
+                    // generated ExprKind::New, allowing typed lookup to verify.
+                    struct_init_sites.push(crate::ast::StructInitSite {
+                        name: decl.name.clone(),
+                        pos: first[i].pos,
+                    });
+                    out.extend(lower_equals_struct(decl,candidate)?);
+                    i=next;continue;
+                }
             }
         }
         out.push(first[i].clone());
@@ -335,5 +486,5 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     if out.len()>lexer::MAX_TOKENS {
         return Err(error(t[0].pos,"E_SOURCE_LIMIT","checked product specialization exceeds token budget"));
     }
-    Ok(out)
+    Ok((out,struct_init_sites))
 }
