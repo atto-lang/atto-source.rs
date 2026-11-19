@@ -61,7 +61,7 @@ fn reject_unknown_or_malformed_receiver() {
 fn reject_duplicate_or_misplaced_namespaces() {
     reject("declare actor A; declare actor A;", "E_DUPLICATE");
     reject("declare actor A; use namespace workers;", "E_SYNTAX");
-    reject("use namespace a; use namespace b;", "E_SYNTAX");
+    reject("use namespace a; use namespace b;", "E_DUPLICATE");
     reject("use namespace a.b; declare actor A;", "E_SYNTAX");
 }
 #[test]

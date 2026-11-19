@@ -475,7 +475,14 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         }
         let pos = c.pos();
         if c.take_word("use") {
-            if decls != 0 { return Err(c.err("E_SYNTAX", "namespace header must come first")); }
+            if c.word() == Some("namespace") && out.namespace.is_some() {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                    "only one namespace declaration is allowed per source file"));
+            }
+            if decls != 0 {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "namespace declaration must precede all imports and declarations"));
+            }
             c.expect_word("namespace")?;
             out.namespace = Some(c.ident()?);
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
