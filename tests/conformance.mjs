@@ -600,7 +600,7 @@ console.log(digests.length ? `artifact digests:\n${digests.join('\n')}` : '');
 const reversePipePath = join(here, 'functional-pipelines.atto');
 const reversePipeSource = await readFile(reversePipePath, 'utf8');
 check('site/functional-pipelines-source-identity-and-real-guest', () => {
-  const blob = createHash('sha1').update(Buffer.from('blob ' + Buffer.byteLength(reversePipeSource) + '\\0'))
+  const blob = createHash('sha1').update(Buffer.from('blob ' + Buffer.byteLength(reversePipeSource) + '\0'))
     .update(reversePipeSource).digest('hex');
   assert.equal(blob, 'a8d95c4be6f64812f68fb4178df693fe8d595c00', 'the website source must remain byte-identical');
   const compiled = compile(reversePipeSource);
@@ -618,7 +618,7 @@ check('pipe-left/right-associative-call-order-and-negative-admission', () => {
     'fnc twice(int x): int { return x * 2; }',
     'fnc next(int x): int { return x + 1; }',
     'pub fnc main(): int { return twice <| next <| 20; }',
-  ].join('\\n');
+  ].join('\n');
   const good = compile(source);
   assert.equal(good.ok, true, good.message);
   assert.equal(runGuest(good.wasm).value, 42n);
