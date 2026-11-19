@@ -35,6 +35,8 @@ pub mod detached_io;
 pub mod parser;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
+/// Bounded host-independent direct relative-file linker.
+pub mod import_link;
 /// Verified source-graph imports and canonical module identities.
 pub mod linked_symbols;
 pub mod linker;
@@ -90,6 +92,15 @@ pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
     compile_inner(source, Some(logical_path))
 }
 
+/// Compile a project entry with trusted caller-supplied relative source loading.
+pub fn compile_with_imports<F>(
+    source: &str, logical_path: &std::path::Path, load: F,
+) -> Result<Vec<u8>, Diagnostic>
+where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    let tokens = import_link::lower(source, logical_path, load)?;
+    compile_prelexed(tokens, Some(logical_path))
+}
+
 fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
@@ -99,7 +110,12 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let original_tokens = namespace::normalize(&lexer::lex(source)?, logical_path)?;
+    compile_prelexed(lexer::lex(source)?, logical_path)
+}
+
+fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
+    -> Result<Vec<u8>, Diagnostic> {
+    let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;

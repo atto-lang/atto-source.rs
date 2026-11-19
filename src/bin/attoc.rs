@@ -63,7 +63,18 @@ fn main() -> ExitCode {
                     source_path.strip_prefix(cwd).ok().map(|p| p.to_path_buf()))
             } else { Some(source_path.to_path_buf()) };
             let result = match relative {
-                Some(name) => atto_compiler::compile_with_path(&source, name.as_path()),
+                Some(name) => match std::env::current_dir().and_then(|p| p.canonicalize()) {
+                    Ok(root) => atto_compiler::compile_with_imports(&source, name.as_path(), |path| {
+                        // Restrict file imports to canonical paths inside this project root.
+                        let resolved = root.join(path).canonicalize()?;
+                        if !resolved.starts_with(&root) {
+                            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
+                                "import resolves outside project root"));
+                        }
+                        std::fs::read_to_string(resolved)
+                    }),
+                    Err(_) => atto_compiler::compile_with_path(&source, name.as_path()),
+                },
                 None => atto_compiler::compile(&source),
             };
             (path, result)
