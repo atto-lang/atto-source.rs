@@ -2713,14 +2713,30 @@ impl<'a> FnCx<'a> {
             // in branching, loops, lambdas and cleanup scopes.
             let active_loans = &self.loans;
             let fuel = &mut self.nll_fuel;
-            let expired: Vec<u32> = self.scopes.last().unwrap().iter()
-                .filter(|local| active_loans.contains_key(&local.slot) &&
-                    !body[i + 1..].iter().any(|next|
-                        loan_liveness::stmt_mentions(next, &local.name, fuel)))
-                .map(|local| local.slot)
-                .collect();
-            for slot in expired {
+            // Retire a proven *used* alias's lexical hazard guard only once
+            // its final source use has executed. A never-used alias has no
+            // executed last-use witness: keep conservative ownership barriers
+            // (drop, deep-copy, owner field reads, tuple-root rebinding) until
+            // its lexical scope exits, while preserving the existing NLL
+            // release path for explicit take!/fresh loan admission.
+            //
+            // Do not remove the guard merely because a future-use scan is
+            // empty: this made copy!!, drop!, owner-field reads and rebinding
+            // silently bypass never-used loan declarations on current main.
+            let expired: Vec<(u32, bool)> = self.scopes.last().unwrap().iter()
+                .filter(|local| active_loans.contains_key(&local.slot))
+                .filter_map(|local| {
+                    let future = body[i + 1..].iter().any(|next|
+                        loan_liveness::stmt_mentions(next, &local.name, fuel));
+                    if future { return None; }
+                    let used_now = loan_liveness::stmt_mentions(statement, &local.name, fuel);
+                    Some((local.slot, used_now))
+                }).collect();
+            for (slot, used_now) in expired {
                 if let Some(loan) = self.loans.remove(&slot) {
+                    if used_now {
+                        self.lexical_loan_guards.remove(&slot);
+                    }
                     checked.push(TStmt::ClassLoanEnd {
                         alias: slot, owner: loan.owner, mutable: loan.mutable
                     });
