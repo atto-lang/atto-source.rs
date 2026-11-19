@@ -1,0 +1,20 @@
+// expect-exit: 42
+routine r_colon() : int {
+    return 5;
+}
+routine r_colon_arrow() : int -> {
+    return 5;
+}
+routine r_arrow() -> int {
+    return 5;
+}
+routine r_end() -> int
+    let int x = 3, x + 2
+end
+routine r_delimited() -> int ::
+    let int x = 3,
+    x + 2
+end
+pub fnc main(): int {
+    return r_colon() + r_colon_arrow() + r_arrow() + r_end() + r_delimited() + 17;
+}

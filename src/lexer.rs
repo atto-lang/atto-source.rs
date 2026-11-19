@@ -28,8 +28,12 @@ pub enum Tok {
     Colon,
     ColonColon,
     Arrow,
+    /// Exact contiguous return-first callable delimiter `<-`.
+    LeftArrow,
     FatArrow,
     Dot,
+    /// Exact contiguous `...` token. Interpretation is restricted to pattern context.
+    Ellipsis,
     Assign,
     EqEq,
     NotEq,
@@ -266,6 +270,14 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                         }
                         other => s.push(other), // spec 16: unknown escape keeps the character
                     }
+                    // Escaped characters, including Unicode scalar escapes,
+                    // must obey the same decoded UTF-8 byte budget as plain
+                    // characters. Without this check repeated \\u{...} could
+                    // bypass MAX_STRING_BYTES and inflate tuple source data.
+                    if s.len() > MAX_STRING_BYTES {
+                        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                            "string literal is too long"));
+                    }
                     bump!();
                     continue;
                 }
@@ -296,12 +308,14 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('+', Some('+')) => (Tok::PlusPlus, 2),
             ('+', Some('=')) => (Tok::PlusAssign, 2),
             ('+', _) => (Tok::Plus, 1),
+            ('.', Some('.')) if chars.get(i + 2) == Some(&'.') => (Tok::Ellipsis, 3),
             ('.', _) => (Tok::Dot, 1),
             ('=', Some('=')) => (Tok::EqEq, 2),
             ('=', Some('>')) => (Tok::FatArrow, 2),
             ('=', _) => (Tok::Assign, 1),
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
+            ('<', Some('-')) => (Tok::LeftArrow, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
             ('>', Some('=')) => (Tok::Ge, 2),
