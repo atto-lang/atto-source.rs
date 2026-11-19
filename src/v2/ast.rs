@@ -239,10 +239,20 @@ pub struct Object {
     pub methods: Vec<Func>,
 }
 
+/// Named static package export; source-level aliases never change module permissions.
+#[derive(Clone, Debug)]
+pub struct NamedImport {
+    pub export: String,
+    pub local: String,
+    pub module: String,
+    pub pos: Pos,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Program {
     pub funcs: Vec<Func>,
     pub objects: Vec<Object>,
+    pub imports: Vec<NamedImport>,
     /// `use a.b.c;`
     pub uses: Vec<(Vec<String>, Pos)>,
 }

@@ -125,10 +125,35 @@ impl Parser {
     pub fn parse_program(&mut self) -> R<Program> {
         let mut p = Program::default();
         while *self.peek() != Tok::Eof {
-            if p.funcs.len() + p.objects.len() + p.uses.len() >= MAX_ITEMS {
+            if p.funcs.len() + p.objects.len() + p.uses.len() + p.imports.len() >= MAX_ITEMS {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many top-level declarations"));
             }
-            if self.is_word("use") {
+            if self.is_word("import") {
+                let pos = self.pos();
+                self.advance();
+                let mut names = Vec::new();
+                loop {
+                    let (export, _) = self.ident("an imported export name")?;
+                    let local = if self.eat_word("as") {
+                        self.ident("an import alias")?.0
+                    } else { export.clone() };
+                    names.push((export, local));
+                    if !self.eat(&Tok::Comma) { break; }
+                }
+                self.expect_word("from")?;
+                self.expect_word("pkg")?;
+                let module = match self.peek().clone() {
+                    Tok::Str(s) => { self.advance(); s }
+                    _ => return Err(self.expected("a quoted package name")),
+                };
+                self.terminator()?;
+                if p.imports.len() + p.funcs.len() + p.objects.len() + p.uses.len() + names.len() > MAX_ITEMS {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many top-level declarations"));
+                }
+                for (export, local) in names {
+                    p.imports.push(NamedImport { export, local, module: module.clone(), pos });
+                }
+            } else if self.is_word("use") {
                 let pos = self.pos();
                 self.advance();
                 let mut path = vec![self.ident("a module name")?.0];

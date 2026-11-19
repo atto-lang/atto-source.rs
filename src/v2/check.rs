@@ -135,6 +135,7 @@ pub struct Checker<'a> {
     needs_sched: bool,
     has_time: bool,
     has_telemetry: bool,
+    named_imports: BTreeMap<String, (String, String)>,
 }
 
 fn add(a: Ir, b: i64) -> Ir {
@@ -174,6 +175,7 @@ pub fn check(prog: &Program, prelude: &Program) -> R<Module> {
         needs_sched: false,
         has_time: false,
         has_telemetry: false,
+        named_imports: BTreeMap::new(),
     };
     c.run()
 }
@@ -183,6 +185,17 @@ impl<'a> Checker<'a> {
 
     fn run(&mut self) -> R<Module> {
         let prog = self.prog;
+        for imp in &prog.imports {
+            match (imp.module.as_str(), imp.export.as_str()) {
+                ("core.telemetry", "span") | ("std.time", "sleep") => {},
+                _ => return Err(err(imp.pos, "E_MODULE", format!("package '{}' has no supported export '{}'", imp.module, imp.export))),
+            }
+            if matches!(imp.local.as_str(), "stdio" | "time" | "telemetry" | "timeout")
+                || self.named_imports.insert(imp.local.clone(), (imp.module.clone(), imp.export.clone())).is_some()
+            {
+                return Err(err(imp.pos, "E_DUPLICATE", format!("import alias '{}' conflicts with another binding or builtin", imp.local)));
+            }
+        }
         for (path, pos) in &prog.uses {
             match path.join(".").as_str() {
                 "std.time" => self.has_time = true,
@@ -193,6 +206,9 @@ impl<'a> Checker<'a> {
         // 1. declare object and function names
         for o in &prog.objects {
             self.reserved_name(&o.name, o.pos)?;
+            if self.named_imports.contains_key(&o.name) {
+                return Err(err(o.pos, "E_DUPLICATE", format!("type '{}' collides with a named import", o.name)));
+            }
             if self.objs.iter().any(|x| x.name == o.name) {
                 return Err(err(o.pos, "E_DUPLICATE", format!("'{}' is already defined", o.name)));
             }
@@ -229,6 +245,9 @@ impl<'a> Checker<'a> {
         }
         for f in &prog.funcs {
             self.reserved_name(&f.name, f.pos)?;
+            if self.named_imports.contains_key(&f.name) {
+                return Err(err(f.pos, "E_DUPLICATE", format!("function '{}' collides with a named import", f.name)));
+            }
             if self.user.contains_key(&f.name) || self.objs.iter().any(|o| o.name == f.name) {
                 return Err(err(f.pos, "E_DUPLICATE", format!("'{}' is already defined", f.name)));
             }
@@ -1735,6 +1754,27 @@ impl<'a> Checker<'a> {
         }
         if self.cur().prelude && name.starts_with("__") {
             return self.intrinsic(name, args, pos, awaited);
+        }
+        // Named imports lower to the same guest runtime as qualified builtin calls.
+        // No JavaScript source evaluator, rewriting, or ambient package access.
+        if let Some((module, export)) = self.named_imports.get(name).cloned() {
+            match (module.as_str(), export.as_str()) {
+                ("core.telemetry", "span") => {
+                    let e = self.plain_args(name, args, 1, pos)?[0];
+                    let n = self.typed(e, &Ty::Str)?;
+                    return Ok((self.rt("__span_new", vec![n]), Ty::Span, false));
+                }
+                ("std.time", "sleep") => {
+                    if !awaited {
+                        return Err(err(pos, "E_AWAIT", "imported sleep suspends; use 'await sleep(ms)'"));
+                    }
+                    let e = self.plain_args(name, args, 1, pos)?[0];
+                    let ms = self.typed(e, &Ty::Int)?;
+                    self.rt_scall("__sleep", vec![ms]);
+                    return Ok((Ir::Const(0), Ty::Void, true));
+                }
+                _ => unreachable!("named package exports were checked in run"),
+            }
         }
         match name {
             "Some" => {
