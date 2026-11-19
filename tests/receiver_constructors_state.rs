@@ -217,3 +217,81 @@ fn out_of_line_constructor_field_writes_and_quoted_self_remain_valid() {
     assert_eq!(&guest[..8], b"\0asm\x01\0\0\0");
     assert_eq!(guest, compile(source).unwrap());
 }
+
+#[test]
+fn inline_constructor_matches_out_of_line_prepublication_ownership() {
+    // Issue #362: legacy inline class constructors previously dispatched
+    // self.method() while the same source under an out-of-line constructor
+    // was rejected by an independent lexical gate. Both use the checked
+    // production ClassDecl constructor body now.
+    let rejected = [
+        "publish(self);",
+        "val alias = self;",
+        "return self;",
+        "self.peek();",
+        "if initial eq 42 then self.peek(); fi",
+        "take! self;",
+    ];
+    for body in rejected {
+        let inline = format!(r#"
+            define class Counter as
+                pub let int value = 0;
+                constructor(int initial) {{ {body} }}
+                peek(): int {{ return self.value; }}
+            end
+            fnc publish(Counter c): void {{ }}
+            pub fnc main(): int {{ val c = new Counter(42); return c.peek(); }}
+        "#);
+        let external = format!(r#"
+            define class Counter as
+                pub let int value = 0;
+                peek(): int {{ return self.value; }}
+            end
+            constructor (Counter)(int initial): self {{ {body} }}
+            fnc publish(Counter c): void {{ }}
+            pub fnc main(): int {{ val c = new Counter(42); return c.peek(); }}
+        "#);
+        for (kind, source) in [("inline", inline), ("out-of-line", external)] {
+            let d = compile(&source).expect_err("construction self must not escape or dispatch");
+            assert_eq!(d.code, "E_OWNERSHIP", "{kind}: {body}: {d}");
+        }
+    }
+}
+
+#[test]
+fn constructor_shared_guard_allows_direct_field_initialization_and_postpublication_dispatch() {
+    let inline = r#"
+        define class Counter as
+            pub let int value = 0;
+            constructor(int initial) {
+                // "self.peek()" in a comment is not an executable call.
+                val note = "self.peek()";
+                self.value = initial;
+            }
+            peek(): int { return self.value; }
+        end
+        pub fnc main(): int {
+            val c = new Counter(42);
+            return c.peek();
+        }
+    "#;
+    let external = r#"
+        define class Counter as
+            pub let int value = 0;
+            peek(): int { return self.value; }
+        end
+        constructor(Counter) (int initial): self {
+            val note = "self.peek()";
+            self.value = initial;
+        }
+        pub fnc main(): int {
+            val c = new Counter(42);
+            return c.peek();
+        }
+    "#;
+    for source in [inline, external] {
+        let bytes = compile(source).expect("safe field writes must emit guest Wasm");
+        assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
+        assert_eq!(bytes, compile(source).unwrap(), "deterministic binary");
+    }
+}
