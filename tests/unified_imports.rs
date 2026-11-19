@@ -104,6 +104,11 @@ fn malformed_and_shadowing_imports_fail_closed() {
         ("import a. from pkg \"core\";", "E_SYNTAX"),
         ("import a from pkg \"core\"", "E_SYNTAX"),
         ("declare actor Worker; import * as core from pkg \"core\";", "E_SYNTAX"),
+        ("fnc init(): void {} import module math from \"./math.atto\";", "E_SYNTAX"),
+        ("pub fnc main(): int { return 0; } import module math from \"./math.atto\";", "E_SYNTAX"),
+        ("use namespace storefront; pub fnc main(): int { return 0; } import x from pkg \"core\";", "E_SYNTAX"),
+        ("routine background(): void {} import x from pkg \"core\";", "E_SYNTAX"),
+        ("define actor Worker as end import x from pkg \"core\";", "E_SYNTAX"),
         ("use core.telemetry;", "E_SYNTAX"),
     ] {
         reject(src, code);
