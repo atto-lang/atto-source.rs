@@ -2141,6 +2141,13 @@ impl Parser {
                         "'yield' is only valid inside a 'fnc *gen' generator"));
                 }
                 self.advance();
+                // A separated 'yield *' is never the delegation token 'yield*'.
+                // Reject it as malformed generator syntax before the unary
+                // pointer gate can reinterpret '*' as a dereference.
+                if *self.peek() == Tok::Star {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX",
+                        "yield* delegation requires a contiguous token"));
+                }
                 let value = self.parse_expr()?;
                 self.terminator()?;
                 Ok(Stmt::Yield(value, pos))
