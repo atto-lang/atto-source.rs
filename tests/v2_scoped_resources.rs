@@ -27,15 +27,31 @@ pub suspends fnc main(): int {
 }
 
 #[test]
-fn invalid_named_imports_and_suspend_effects_fail_closed() {
-    for source in [
-        r#"import span from pkg "other.module"; pub suspends fnc main(): int { return 0; }"#,
-        r#"import bogus from pkg "core.telemetry"; pub suspends fnc main(): int { return 0; }"#,
-        r#"import span, span from pkg "core.telemetry"; pub suspends fnc main(): int { return 0; }"#,
-        r#"import span as stdio from pkg "core.telemetry"; pub suspends fnc main(): int { return 0; }"#,
-        r#"import sleep from pkg "std.time"; pub suspends fnc main(): int { sleep(1); return 0; }"#,
-        r#"import sleep from pkg "std.time"; pub fnc main(): int { await sleep(1); return 0; }"#,
+fn invalid_named_imports_rejected_inside_the_actual_scoped_profile() {
+    for (source, expected) in [
+        (EXACT.replace("pkg \"core.telemetry\"", "pkg \"other.module\""), "E_MODULE"),
+        (EXACT.replace("import span from", "import bogus from"), "E_MODULE"),
+        (EXACT.replace("import span from", "import span, span from"), "E_DUPLICATE"),
+        (EXACT.replace("import span from", "import span as stdio from"), "E_DUPLICATE"),
     ] {
-        assert!(atto_compiler::compile(source).is_err(), "must reject {source:?}");
+        let error = atto_compiler::compile(&source)
+            .expect_err("bad import must not emit guest Wasm");
+        assert_eq!(error.code, expected, "unexpected diagnostic for {source}");
     }
+}
+
+#[test]
+fn scoped_profile_does_not_bypass_legacy_guards_or_effect_checks() {
+    for source in [
+        EXACT.replace("await sleep(1);", "sleep(1); await sleep(1);"),
+        EXACT.replace("pub suspends fnc main", "pub fnc main"),
+        EXACT.replace("await sleep(1);", "task { return 42; }; await sleep(1);"),
+        EXACT.replace("await sleep(1);", "spawn Worker(); await sleep(1);"),
+    ] {
+        assert!(atto_compiler::compile(&source).is_err(),
+            "unsafe or missing-effect syntax must never emit guest Wasm: {source}");
+    }
+    let normal = "pub fnc main(): int { return 6 * 7; }";
+    assert!(atto_compiler::compile(normal).is_ok(),
+        "legacy scalar compilation must be preserved");
 }
