@@ -1030,7 +1030,7 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
 /// `alloc(size: i32) -> i32`: bump-allocate from `heap_ptr`; panic 3 when the
 /// fixed memory is exhausted. Objects are never freed (no GC in this subset).
 fn alloc_body(heap_global: u32, job_reserved: bool) -> (Sig, Vec<u8>, Vec<u8>) {
-    let limit = if job_reserved { 57344 } else { (HEAP_PAGES * 65536) as i64 };
+    let limit = if job_reserved { 65536 } else { (HEAP_PAGES * 65536) as i64 };
     let mut c = vec![0x23];
     uleb(&mut c, heap_global as u64);
     c.extend_from_slice(&[0x21, 1, 0x20, 1, 0x20, 0, 0x6A, 0x41]); // p = heap; p + size
@@ -1276,8 +1276,8 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
-    // Reserve top 8 KiB of every job-bearing actor's 64 KiB private memory.
-    // The host copies exact UTF-8 IDs there, never into compiler data/heap.
+    // Reserve 64 KiB after the legacy first heap page for append-only
+    // job metadata. A Job<int> value retains identity even after later mail.
     let has_job = p.actors.iter().any(|actor| actor.job);
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
@@ -1473,14 +1473,15 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
                 for slot in [2u8,4u8] {
                     j.extend_from_slice(&[0x20,slot,0x42,0,0x53,0x04,0x40,0,0x0B]);
                 }
-                // Guest treats only descriptors into the reserved read-only
-                // contract region as valid. The host also validates byte bounds.
-                for (slot,offset,maxlen) in [(3u8,57344i64,4096i64),(5u8,61440,256)] {
-                    // (descriptor >> 32) == the fixed private memory offset.
+                // Versioned Job<int> text uses unique append-only entries
+                // in private guest memory [65536, 131072), never a reused
+                // scratch descriptor that could alias an actor state snapshot.
+                for (slot,maxlen) in [(3u8,4096i64),(5u8,256)] {
+                    // offset = descriptor >> 32; reject offset < 65536.
                     j.extend_from_slice(&[0x20,slot,0x42,32,0x88,0x42]);
-                    sleb(&mut j,offset);
-                    j.extend_from_slice(&[0x52,0x04,0x40,0,0x0B]); // != trap
-                    // Length is nonzero, bounded, and can be accessed safely.
+                    sleb(&mut j,65536);
+                    j.extend_from_slice(&[0x54,0x04,0x40,0,0x0B]); // lt_u trap
+                    // length = descriptor & 0xffffffff, nonzero and bounded.
                     j.extend_from_slice(&[0x20,slot,0x42]);
                     sleb(&mut j,0xffff_ffffi64);
                     j.extend_from_slice(&[0x83,0x42,0,0x51,0x04,0x40,0,0x0B]);
@@ -1488,7 +1489,14 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
                     sleb(&mut j,0xffff_ffffi64);
                     j.extend_from_slice(&[0x83,0x42]);
                     sleb(&mut j,maxlen);
-                    j.extend_from_slice(&[0x56,0x04,0x40,0,0x0B]); // > max trap
+                    j.extend_from_slice(&[0x56,0x04,0x40,0,0x0B]); // gt_u trap
+                    // Even if length is valid, the pointer+length must lie
+                    // entirely within the reserved 64 KiB metadata region.
+                    j.extend_from_slice(&[0x20,slot,0x42,32,0x88,0x20,slot,0x42]);
+                    sleb(&mut j,0xffff_ffffi64);
+                    j.extend_from_slice(&[0x83,0x7c,0x42]);
+                    sleb(&mut j,131072);
+                    j.extend_from_slice(&[0x56,0x04,0x40,0,0x0B]);
                 }
                 for slot in 1u8..=5 { j.extend_from_slice(&[0x20,slot]); }
                 j.push(0x10);
@@ -1531,7 +1539,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     if has_memory {
         // Fixed and non-growable: strings, the object heap, or a private
         // 64 KiB actor memory even for scalar-only actors.
-        let pages = if p.heap { HEAP_PAGES } else { 1 };
+        let pages = if p.heap { HEAP_PAGES } else if has_job { 2 } else { 1 };
         let mut m = vec![1, 0x01];
         uleb(&mut m, pages as u64);
         uleb(&mut m, pages as u64);
