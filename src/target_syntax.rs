@@ -461,6 +461,17 @@ impl Cursor<'_> {
 /// module imports, forward-declared actors, nominal or typed receivers and functions.
 /// Body braces are balanced only: there is no semantic/state access proof.
 pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
+    parse_target_declarations_with_path(toks, None)
+}
+
+/// Parse with the logical source path required for folder-derived namespaces.
+pub fn parse_target_declarations_with_path(toks: &[Token], logical_path: Option<&std::path::Path>)
+    -> R<TargetHeaders> {
+    let normalized = crate::namespace::normalize(toks, logical_path)?;
+    parse_target_declarations_normalized(&normalized)
+}
+
+fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
     if toks.is_empty() {
         return Err(Diagnostic::new(Pos::default(), "E_EOF", "empty token stream"));
     }
@@ -487,7 +498,14 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                     "namespace declaration must precede all imports and declarations"));
             }
             c.expect_word("namespace")?;
-            out.namespace = Some(c.ident()?);
+            let mut components = vec![c.ident()?];
+            while c.take(&Tok::Dot) {
+                if components.len() >= 32 {
+                    return Err(c.err("E_NAMESPACE_DEPTH", "namespace has more than 32 components"));
+                }
+                components.push(c.ident()?);
+            }
+            out.namespace = Some(components.join("."));
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
         } else if c.take_word("import") {
             if saw_declaration {

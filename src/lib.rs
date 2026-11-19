@@ -54,6 +54,8 @@ pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
+/// File-scoped namespace headers derived from a package-relative source path.
+pub mod namespace;
 pub mod tuple_binding_admission;
 pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
@@ -71,6 +73,18 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, None)
+}
+
+/// Compile with a caller-supplied logical, package-relative source file path.
+/// Required when the source declares `use default namespace[(N)];`.
+pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
+    -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, Some(logical_path))
+}
+
+fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
+    -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -78,7 +92,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let original_tokens = lexer::lex(source)?;
+    let original_tokens = namespace::normalize(&lexer::lex(source)?, logical_path)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;

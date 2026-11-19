@@ -24,7 +24,21 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match atto_compiler::compile(&source) {
+    // Treat source paths as logical paths relative to the invocation's
+    // package working directory. Absolute paths outside that directory have
+    // no implicit namespace root and must not leak host directory names.
+    let source_path = std::path::Path::new(&input);
+    let relative_path = if source_path.is_absolute() {
+        std::env::current_dir().ok()
+            .and_then(|root| source_path.strip_prefix(root).ok().map(|path| path.to_path_buf()))
+    } else {
+        Some(source_path.to_path_buf())
+    };
+    let result = match relative_path {
+        Some(ref name) => atto_compiler::compile_with_path(&source, name.as_path()),
+        None => atto_compiler::compile(&source),
+    };
+    match result {
         Ok(bytes) => {
             if check_only {
                 return ExitCode::SUCCESS;
