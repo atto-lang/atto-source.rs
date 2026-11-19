@@ -111,6 +111,25 @@ pub enum FieldMode {
     ActorState,
 }
 
+/// Independently records the declared class-field binding contract.
+/// FieldMode remains the currently supported storage/constructor authority;
+/// distinct source modifiers must not be erased into that coarse mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldBinding {
+    Let,
+    Val,
+    Final,
+    Const,
+    ActorState,
+}
+
+impl FieldBinding {
+    /// Rebinding must also be authorized by a writable receiver or unique loan.
+    pub fn rebindable(self) -> bool {
+        matches!(self, Self::Let | Self::ActorState)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Field {
     pub name: String,
@@ -118,6 +137,10 @@ pub struct Field {
     pub ty: Type,
     pub public: bool,
     pub mode: FieldMode,
+    /// Binding mode is independent of primitive/nonprimitive field type.
+    pub binding: FieldBinding,
+    /// Requests writes through the referent; does not grant name rebinding.
+    pub referent_mutable: bool,
     pub init: Expr,
 }
 
