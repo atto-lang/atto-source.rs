@@ -460,3 +460,35 @@ fn nonfinal_missing_initializer_never_gets_an_implicit_zero_value() {
         compile(&program).expect_err("non-final declaration without initializer must fail");
     }
 }
+
+#[test]
+fn checked_ast_cannot_synthesize_missing_initializer_for_nonfinal_fields() {
+    // This bypasses the source parser's no-initializer rule deliberately:
+    // future specialized lowerings can construct AST fields directly. The
+    // central checker must still reject absent initializers before codegen.
+    for field in [
+        "pub let int count = 42;",
+        "pub val int count = 42;",
+        "pub const int count = 42;",
+        "pub int count = 42;",
+    ] {
+        let source = format!(r#"
+            define class Counter as
+                {field}
+            end
+            pub fnc main(): int {{
+                val c = new Counter();
+                return c.count;
+            }}
+        "#);
+        let toks = lex(&source).expect("valid source tokens");
+        let mut ast = atto_compiler::parser::Parser::new(toks)
+            .parse_program().expect("valid source AST");
+        assert_eq!(ast.classes.len(), 1, "{field}");
+        assert_eq!(ast.classes[0].fields.len(), 1, "{field}");
+        ast.classes[0].fields[0].init = None; // simulate unsafe future rewrite
+        let diagnostic = atto_compiler::check::check(&ast)
+            .err().expect("cannot lower synthesized missing initializer");
+        assert_eq!(diagnostic.code, "E_INIT", "{field}: {diagnostic}");
+    }
+}
