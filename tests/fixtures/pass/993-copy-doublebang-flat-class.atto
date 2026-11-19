@@ -1,0 +1,15 @@
+// expect-exit: 42
+// java: rejects
+// Generated AOT copier allocates a distinct class instance; source retains value.
+define class Parcel as
+    pub let int value = 42;
+end
+pub fnc main(): int {
+    let original = new Parcel();
+    let cloned = copy!! original;
+    block {
+        val writer = borrow! mut cloned;
+        writer.value = 99;
+    }
+    return original.value;
+}

@@ -1,0 +1,8 @@
+// expect-error: E_PRIVATE
+define state Counter as
+  state { let int count: 0; }
+end
+pub fnc main(): int {
+  val c = new Counter();
+  return c.count;
+}

@@ -1,0 +1,17 @@
+// expect-exit: 42
+// java: rejects
+// Synthesized copy code sees private fields without exposing reflection APIs.
+define class Secret as
+    mut int secret = 1;
+    constructor(int x) {
+        self.secret = x;
+    }
+    pub read(): int {
+        return self.secret;
+    }
+end
+pub fnc main(): int {
+    val source = new Secret(42);
+    val detached = copy!! source;
+    return detached.read();
+}

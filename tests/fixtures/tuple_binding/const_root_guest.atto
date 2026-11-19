@@ -1,0 +1,5 @@
+pub fnc main(): int {
+    let (a, const r, mut j) as const foo = (1,2,3);
+    j = 5;
+    return a+r+j;
+}

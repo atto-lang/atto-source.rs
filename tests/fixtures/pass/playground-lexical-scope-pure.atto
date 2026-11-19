@@ -1,0 +1,25 @@
+// Exact executable shape of the public playground lexical scope / pure example.
+// expect-exit: 0
+// expect-stdout: 42
+// expect-stdout: 42
+// expect-stdout: 2
+// expect-stdout: 42
+pure fnc twice(int value): int {
+  return value * 2;
+}
+pure fnc plus_two(int value): int {
+  return value + 2;
+}
+pub fnc main(): int {
+  val factor = 2;
+  val scale = |value| : int -> value * factor;
+  block {
+    val factor = 100;
+    val only_here = 7;
+    stdio.println(scale(21));
+    stdio.println(twice(21));
+  }
+  stdio.println(factor);
+  stdio.println(plus_two(twice(20)));
+  return 0;
+}
