@@ -356,6 +356,11 @@ struct FieldInfo {
     ty: Type,
     public: bool,
     mode: FieldMode,
+    /// Do not conflate Val, Final and Const with the browser storage mode.
+    binding: FieldBinding,
+    /// Future referent-write authorization is independent of rebinding.
+    #[allow(dead_code)]
+    referent_mutable: bool,
     /// byte offset (classes) or state global (actors)
     slot: u32,
 }
@@ -901,6 +906,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     format!("'{owner}' already declares a field named '{}'", f.name),
                 ));
             }
+            // A class 'const' is constexpr; it must not silently turn into
+            // runtime initialization merely because Val/Final share a storage mode.
+            // Non-const initializer effects are still intentionally unsupported
+            // by the current restricted browser field-initialization backend.
+            if !actor && f.binding == FieldBinding::Const && !const_init(&f.init) {
+                return Err(Diagnostic::new(f.init.pos, "E_CONST",
+                    format!("class constant '{}.{}' requires a compile-time initializer", owner, f.name)));
+            }
             let ty = res(f.ty)?;
             let ok = match ty {
                 Type::Int | Type::Bool => true,
@@ -925,6 +938,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ty,
                 public: f.public,
                 mode: f.mode,
+                binding: f.binding,
+                referent_mutable: f.referent_mutable,
                 slot: if actor { global_base + i as u32 } else { i as u32 * FIELD_BYTES },
             });
         }
@@ -2778,8 +2793,9 @@ impl<'a> FnCx<'a> {
                     if !f.public && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
                     }
-                    if f.mode == FieldMode::Final {
-                        return Err(Diagnostic::new(pos, "E_IMMUTABLE", "cannot mutate final field through borrow! mut"));
+                    if !f.binding.rebindable() {
+                        return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                            "cannot reassign val/final/const field through borrow! mut"));
                     }
                     let (slot, offset, fty) = (local.slot, f.slot, f.ty);
                     // A class-valued field write would install an untracked owned
@@ -2819,7 +2835,7 @@ impl<'a> FnCx<'a> {
                     }
                 };
                 let (offset, fty, mode) = (f.slot, f.ty, f.mode);
-                if mode == FieldMode::Final {
+                if !f.binding.rebindable() {
                     return Err(Diagnostic::new(
                         pos,
                         "E_IMMUTABLE",
