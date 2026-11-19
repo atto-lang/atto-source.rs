@@ -44,10 +44,27 @@ pub fnc main(): int {
 - Bare **class** formals in **top-level** `fnc` use the *same existing* typed `Borrow<Class>` checker and non-owning Wasm handle ABI. This is not a clone, refcount, share, or move.
 - The **existing** `take!` keyword now marks a consuming formal, as `fnc consume(take! Parcel p)`; the caller must use `consume(take! parcel)`. The old owner is invalid afterwards.
 - Scalar, enum and ActorRef formals remain unchanged. Explicit `Borrow<T>` still works; no hidden mutable loans.
-- Bare `Foo mut p` in this profile rejects. `update(mut foo)` needs the separate, future `BorrowMut` and CFG lifetime proof.
+- This stacked #347 compiler additionally admits `fnc update(mut Foo p)` with `update(mut owner)` or `update(borrow! mut owner)` for synchronous, exclusive top-level class loans under the explicit profile; it rejects conflicting reads/writes and retains unsupported async, actor, method and constructor limits. The #346 parent alone does not implement mutable loans.
 - Class constructors/methods and actor methods with bare class formals are explicitly rejected in the v1 profile until receiver/arena effects and sealed actor provenance are fully verified; don't silently use the legacy owned behavior there.
 - Caller/callee loans retain existing negative behavior: no read-to-write, no owned return from borrowed formal, no owned call from borrowed formal, no moving a live borrowed owner, no class borrow of temporary.
 - Legacy source remains unchanged for compatibility, even though the final AttoLang language design intends borrow-by-default everywhere. This is an incremental, reviewable migration stage, **not** completion.
+
+## Operator status in this opt-in profile
+
+| Operation | This compiler branch's admission boundary |
+| --- | --- |
+| `inspect(owner)` / `inspect(borrow! owner)` | Same scoped readonly class loan under the first-line opt-in only |
+| `consume(take! owner)` | Requires a matching consuming `take! Class` formal; caller loses ownership |
+| `update(mut owner)` / `update(borrow! mut owner)` | **Admitted by this stacked #347 compiler only** for exclusive synchronous top-level class-loan formals under `borrow-default-v1`; not a general mutable loan |
+| `share! owner` | No automatic frozen sharing from a default borrow; separate capability verification required |
+| `copy! owner` / `copy!! owner` | No implicit copying at call sites; copy legality and graph plan are separate features |
+| `pin! take! owner`, `drop! owner;` | No implicit pinning or release during a borrowed call; independent backend/destructor checks required |
+| `freeze! take! owner`, `weak! shared` | Not granted by the narrow default-borrow migration |
+
+The checker must reject a call that tries to consume or retain a borrowed
+formal, including through a return value, cloned handle, actor send or
+suspension. Explicit `borrow!` cannot relax any of these rejections. The
+versioned migration profile does not ratify package-wide ownership defaults.
 
 ## Verification
 
