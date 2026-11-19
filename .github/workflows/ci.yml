@@ -36,6 +36,10 @@ jobs:
         run: cargo test --locked --verbose
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Execute AOT closed-world guests and reject runtime compilation fallbacks
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/aot_no_fallback_guest.mjs
       - name: Execute real native-compiled output I/O shorthand guest in Wasm
         env:
           ATTOC: target/release/attoc
