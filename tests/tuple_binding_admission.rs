@@ -60,6 +60,7 @@ fn singleton_empty_and_discard_have_precise_shapes() {
     assert_eq!(parse("let (a, _, j) = fixtures();")[0].members[1].name, None);
     reject("let (only) = (42,);", "E_SYNTAX");
     reject("let (mut _, r) = fixtures();", "E_SYNTAX");
+    reject("let (_: int, r) = fixtures();", "E_SYNTAX");
 }
 
 #[test]
