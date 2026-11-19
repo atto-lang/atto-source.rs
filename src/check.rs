@@ -26,6 +26,16 @@ pub const MAX_LOCALS: usize = 1024;
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
 
+// Canonical collection and loan identities are reserved before guest lowering.
+// This is a name-spoofing guard, not a runtime implementation.
+const RESERVED_COLLECTION_AND_LOAN_NAMES: &[&str] = &[
+    "Option", "Result", "Array", "FixedArray", "List", "FixedList",
+    "Vector", "Slice", "Tuple", "Map", "Set", "ReadLoan", "WriteLoan",
+];
+fn is_reserved_collection_or_loan_name(name: &str) -> bool {
+    RESERVED_COLLECTION_AND_LOAN_NAMES.contains(&name)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
     And,
@@ -922,7 +932,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         if matches!(
             name,
             "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "int" | "bool" | "boolean"
-        ) {
+        ) || is_reserved_collection_or_loan_name(name) {
             return Err(Diagnostic::new(
                 pos,
                 "E_DUPLICATE",
@@ -954,7 +964,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None") {
+        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None")
+            || is_reserved_collection_or_loan_name(&f.name) {
             return Err(Diagnostic::new(
                 f.pos,
                 "E_DUPLICATE",
@@ -1014,6 +1025,18 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     "E_DUPLICATE",
                     format!("'{owner}' already declares a field named '{}'", f.name),
                 ));
+            }
+            // Defense in depth beyond the parser: only an ordinary
+            // class field with explicitly declared final binding/mode may
+            // omit its initializer. Future source rewrites, synthesized
+            // declarations, or actor lowering must never turn missing
+            // val/let/const/actor initializers into zero-filled storage.
+            // Validation precedes field_init(None) and allocation/codegen.
+            if f.init.is_none() &&
+                (actor || f.binding != FieldBinding::Final ||
+                 f.mode != FieldMode::Final) {
+                return Err(Diagnostic::new(f.pos, "E_INIT",
+                    format!("field '{owner}.{}' requires a declaration initializer; only an ordinary class final field may defer initialization to a checked constructor", f.name)));
             }
             // A class 'const' is constexpr; it must not silently turn into
             // runtime initialization merely because Val/Final share a storage mode.
