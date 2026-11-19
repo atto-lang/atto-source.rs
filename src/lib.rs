@@ -7,6 +7,8 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Fail-closed call graph admission for source-compiled synchronous actor handlers.
+pub mod actor_stack_bound;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
@@ -57,6 +59,8 @@ pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
 pub mod tuple_ownership_ir;
 pub mod target_typed;
+/// Parse and reject unsupported top-level type declaration contracts before guest emission.
+pub mod type_declarations;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};
@@ -75,6 +79,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let source_tokens = lexer::lex(source)?;
+    // Parse unlowered type headers precisely rather than treating them as values.
+    // A passing syntax check is never mistaken for runnable Wasm support.
+    if type_declarations::contains_type_declaration(&source_tokens) {
+        type_declarations::parse_tokens(&source_tokens)?;
+        return Err(Diagnostic::new(source_tokens[0].pos, "E_UNSUPPORTED",
+            "type declarations require verified union layout and nominal linking before browser Wasm emission"));
+    }
     // Verify actor/struct implementation obligations before any specialized
     // compilation path can short-circuit into emitting a guest artifact.
     nominal_contract_admission::preflight(&source_tokens)?;
@@ -260,6 +271,8 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
     let typed = check::check(&program)?;
+    // Reject recursive or over-depth synchronous actor call paths before emitting Wasm.
+    actor_stack_bound::verify(&typed)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {

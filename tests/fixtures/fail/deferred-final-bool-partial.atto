@@ -1,0 +1,8 @@
+// expect-error: E_INIT
+define class Flag as
+    pub final bool ready;
+    constructor(bool incoming) {
+        if incoming then self.ready = true; fi
+    }
+end
+pub fnc main(): int { return 0; }

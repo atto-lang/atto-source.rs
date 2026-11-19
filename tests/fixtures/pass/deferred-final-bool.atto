@@ -1,0 +1,13 @@
+// expect-exit: 42
+// Exactly one assignment in each successful constructor branch.
+define class Flag as
+    pub final bool ready;
+    constructor(bool incoming) {
+        if incoming then self.ready = true; else self.ready = false; fi
+    }
+end
+pub fnc main(): int {
+    val flag = new Flag(true);
+    if flag.ready then return 42; fi
+    return 0;
+}
