@@ -7,6 +7,12 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Recognize and reject unlowered named collection layouts before Wasm emission.
+pub mod collection_layout;
+/// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
+pub mod collection_layout_plan;
+/// Executable Rust storage kernel only; source-compiled guest admission remains gated.
+pub mod collection_layout_storage;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
 /// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
 // The canonical verifier is imported byte-identically from the independent
@@ -118,6 +124,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Do not silently erase the 'value' modifier and emit identity-bearing objects.
     value_class_admission::preflight(&source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
+    collection_layout::reject_unlowered(&visibility.tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.

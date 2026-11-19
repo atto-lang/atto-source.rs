@@ -176,13 +176,13 @@ try{
   assert.match(await run(values,'main() -> 1'),/^3\.5\n1\.0E7\nzero\/many\ntrue\nmain\(\) -> 1$/);
   console.log('PASS browser: float (Java Double.toString), string values and match');
 
-  // The full source bytes are mirrored from atto-lang.github.io PR #127,
+  // The full source bytes are mirrored from atto-lang.github.io PR #153 (comment-only header refresh of PR #127),
   // not a hand-written approximation. Test a real Chromium dedicated Worker,
   // with the actual Rust-compiled wasm32 compiler and its emitted guest Wasm.
   const stateSource = await readFile(new URL('./browser/fixtures/play-state-containers.atto',import.meta.url),'utf8');
   const blobHash = createHash('sha1')
     .update('blob '+Buffer.byteLength(stateSource)).update(Buffer.from([0])).update(stateSource).digest('hex');
-  assert.equal(blobHash, 'eac6084e6a02989f8973eb7fc2af7d59baf9db7e',
+  assert.equal(blobHash, '76f853511691aed4233209cb551571ab040983e2',
     'exact /play preview Git blob must match website PR, not a divergent test sample');
   assert.equal(await run(stateSource, 'main() -> 0'), '2\n0\nmain() -> 0');
   console.log('PASS browser: byte-verified /play state preview compiles AND executes in Chromium Worker');
@@ -192,7 +192,7 @@ try{
   const unwindSource = await readFile(new URL('./playground_previews/defer-recover.atto', import.meta.url), 'utf8');
   const unwindBlob = createHash('sha1')
     .update('blob ' + Buffer.byteLength(unwindSource)).update(Buffer.from([0])).update(unwindSource).digest('hex');
-  assert.equal(unwindBlob, 'ba323a22c2a776e5c67caa719cf2b937898e5df1',
+  assert.equal(unwindBlob, '5395c8159b1f7d111ea80d22ea6590960f340c1e',
     'exact /play defer-recover preview Git blob must match the website');
   assert.equal(await run(unwindSource, 'main() -> 63'),
     'raise finally\nraise cleanup A\nraise cleanup B\nrecovering raise\nthrow cleanup\n' +
