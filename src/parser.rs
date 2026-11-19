@@ -82,6 +82,7 @@ const RESERVED: &[&str] = &[
     "continue",
     "switch",
     "match",
+    "maybe",
     "matches",
     "over",
     "default",
@@ -128,6 +129,7 @@ const RESERVED: &[&str] = &[
 /// does not lower yet. They are rejected, never approximated.
 const UNSUPPORTED_STMT: &[&str] = &[
     "using",
+    "maybe",
     "switch",
     "try",
     "select",
@@ -227,6 +229,20 @@ struct TypeFirstField {
     field: Field,
     /// `T name: e` (class field spelling) rather than `T name = e`.
     init_was_colon: bool,
+}
+
+/// Canonical name/return spelling after parsing any callable header.
+/// Keep result inference and body-style markers explicit instead of an
+/// eight-tuple that can be destructured in the wrong order.
+struct CallableHeader {
+    name: String,
+    pos: Pos,
+    params: Vec<Param>,
+    ret: Type,
+    infer: bool,
+    arrow_type: bool,
+    colon_type: bool,
+    return_first: bool,
 }
 
 /// Members collected from a class or actor body.
@@ -1050,7 +1066,7 @@ impl Parser {
                     let f = self.parse_type_first_field(visibility, mode, binding, referent_mutable)?;
                     if f.init_was_colon {
                         return Err(Diagnostic::new(
-                            f.field.init.pos,
+                            f.field.pos,
                             "E_SYNTAX",
                             "a 'let'/'val'/'const' field initializer uses '='",
                         ));
@@ -1154,11 +1170,11 @@ impl Parser {
             mode: FieldMode::Final,
             binding: FieldBinding::Final,
             referent_mutable: false,
-            init,
+            init: Some(init),
         })
     }
 
-    /// `type name (":" | "=") expr`.
+    /// `type name (":" | "=") expr` or deferred `final T name;`.
     fn parse_type_first_field(
         &mut self, visibility: FieldVisibility, mode: FieldMode,
         binding: FieldBinding, referent_mutable: bool,
@@ -1169,10 +1185,22 @@ impl Parser {
             true
         } else if self.eat(&Tok::Assign) {
             false
+        } else if binding == FieldBinding::Final {
+            // No runtime fallback value is synthesized: this is an explicit
+            // constructor-owned, exactly-once initialization obligation.
+            self.terminator()?;
+            return Ok(TypeFirstField {
+                field: Field {
+                    name, pos, ty, visibility, mode, binding,
+                    referent_mutable, init: None,
+                },
+                init_was_colon: false,
+            });
         } else {
-            return Err(unsupported(self.pos(), "fields without an initializer"));
+            return Err(unsupported(self.pos(),
+                "fields without an initializer (only 'final' supports checked deferred assignment)"));
         };
-        let init = self.parse_expr()?;
+        let init = Some(self.parse_expr()?);
         self.terminator()?;
         Ok(TypeFirstField {
             field: Field {
@@ -1218,7 +1246,7 @@ impl Parser {
     /// The left arrow is a single lexical token and never a value operator.
     fn parse_named_callable_header(
         &mut self, what: &'static str,
-    ) -> R<(String, Pos, Vec<Param>, Type, bool, bool, bool, bool)> {
+    ) -> R<CallableHeader> {
         let return_first = self.is_return_first_header();
         let prefixed_type = if return_first {
             let annotation = if self.eat_word("infer") {
@@ -1254,13 +1282,16 @@ impl Parser {
         } else {
             self.parse_return_spec(&params)?
         };
-        Ok((name, pos, params, ret, infer, arrow_type, colon_type, return_first))
+        Ok(CallableHeader {
+            name, pos, params, ret, infer, arrow_type, colon_type, return_first,
+        })
     }
 
     /// Method head after any `fnc`/`method`/`static fnc` keyword.
     fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
-        let (name, pos, params, ret, infer, arrow_type, colon_type, return_first) =
-            self.parse_named_callable_header("a method name")?;
+        let CallableHeader {
+            name, pos, params, ret, infer, arrow_type, colon_type, return_first,
+        } = self.parse_named_callable_header("a method name")?;
         // For an explicit inferred result, the comma/end body still has a
         // checked tail return, never a silently discarded terminal expression.
         let body = self.parse_callable_body(arrow_type, colon_type, return_first,
@@ -1530,8 +1561,9 @@ impl Parser {
         } else {
             false
         };
-        let (name, pos, params, ret, infer, arrow_type, colon_type, return_first) =
-            self.parse_named_callable_header("a function name")?;
+        let CallableHeader {
+            name, pos, params, ret, infer, arrow_type, colon_type, return_first,
+        } = self.parse_named_callable_header("a function name")?;
         let declared_effects = self.parse_effect_clauses()?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
@@ -3624,7 +3656,7 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "nb" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {

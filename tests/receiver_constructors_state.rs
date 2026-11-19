@@ -295,3 +295,88 @@ fn constructor_shared_guard_allows_direct_field_initialization_and_postpublicati
         assert_eq!(bytes, compile(source).unwrap(), "deterministic binary");
     }
 }
+
+#[test]
+fn deferred_final_initializes_exactly_once_on_all_normal_constructor_paths() {
+    let base = r#"
+        define class Ticket as
+            pub final int id;
+            pub let int other = 0;
+            constructor(int initial) {
+                if initial eq 42 then
+                    self.id = initial;
+                else
+                    self.id = 7;
+                fi
+            }
+            pub get_id(): int { return self.id; }
+        end
+        pub fnc main(): int {
+            val ticket = new Ticket(42);
+            return ticket.get_id();
+        }
+    "#;
+    let wasm = compile(base).expect("both branches initialize deferred final field");
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+    assert_eq!(wasm, compile(base).unwrap(), "deterministic guest binary");
+}
+
+#[test]
+fn deferred_final_normal_fallthrough_reads_and_double_writes_are_rejected() {
+    let invalid = [
+        ("", "E_INIT"),
+        ("if initial eq 42 then self.id = initial; fi", "E_INIT"),
+        ("val readback = self.id; self.id = initial;", "E_INIT_READ"),
+        ("self.id = self.id;", "E_INIT_READ"),
+        ("self.id = initial; self.id = 3;", "E_INIT_ONCE"),
+        ("if initial eq 42 then self.id = 42; fi self.id = 7;", "E_INIT_ONCE"),
+        ("return;", "E_INIT"),
+        ("while initial eq 42 do self.id = 1; done", "E_INIT_FLOW"),
+    ];
+    for (body, code) in invalid {
+        let source = format!(r#"
+            define class Ticket as
+                pub final int id;
+                constructor(int initial) {{ {body} }}
+            end
+            pub fnc main(): int {{ val ticket = new Ticket(42); return ticket.id; }}
+        "#);
+        let e = compile(&source).expect_err("unsafe deferred final must fail compilation");
+        assert_eq!(e.code, code, "{body}: {e}");
+    }
+}
+
+#[test]
+fn deferred_final_missing_constructor_or_initialized_final_rebinding_fails() {
+    let no_ctor = r#"
+        define class Ticket as
+            pub final int id;
+        end
+        pub fnc main(): int { val ticket = new Ticket(); return ticket.id; }
+    "#;
+    assert_eq!(compile(no_ctor).unwrap_err().code, "E_INIT");
+    let bound = r#"
+        define class Ticket as
+            pub final int id = 5;
+            constructor(int value) { self.id = value; }
+        end
+        pub fnc main(): int { val ticket = new Ticket(42); return ticket.id; }
+    "#;
+    assert_eq!(compile(bound).unwrap_err().code, "E_IMMUTABLE");
+}
+
+#[test]
+fn deferred_final_supports_out_of_line_constructor_with_same_flow_rules() {
+    let valid = r#"
+        define class Ticket as
+            pub final int id;
+        end
+        constructor (Ticket)(int input): self {
+            self.id = input;
+        }
+        pub fnc main(): int { val t = new Ticket(42); return t.id; }
+    "#;
+    assert_eq!(&compile(valid).unwrap()[..8], b"\0asm\x01\0\0\0");
+    let invalid = valid.replace("self.id = input;", "val readback = self.id; self.id = input;");
+    assert_eq!(compile(&invalid).unwrap_err().code, "E_INIT_READ");
+}
