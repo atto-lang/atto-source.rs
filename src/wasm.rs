@@ -905,6 +905,11 @@ impl Emit<'_> {
                 self.i32c(*a as i32);
                 self.call(self.l.import(Import::ActorSpawn));
             }
+            TExpr::JobAck => {
+                self.get(1); // immutable FIFO sequence of active handler
+                self.get(3); // immutable attempt of active Job<int>
+                self.call(self.l.import(Import::ActorJobAck));
+            }
             TExpr::RegistryGet { actor, namespace, key } => {
                 self.i32c(*actor as i32);
                 // String descriptor: high 32 bits = guest memory offset,
@@ -1024,8 +1029,8 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
 
 /// `alloc(size: i32) -> i32`: bump-allocate from `heap_ptr`; panic 3 when the
 /// fixed memory is exhausted. Objects are never freed (no GC in this subset).
-fn alloc_body(heap_global: u32) -> (Sig, Vec<u8>, Vec<u8>) {
-    let limit = (HEAP_PAGES * 65536) as i64;
+fn alloc_body(heap_global: u32, job_reserved: bool) -> (Sig, Vec<u8>, Vec<u8>) {
+    let limit = if job_reserved { 57344 } else { (HEAP_PAGES * 65536) as i64 };
     let mut c = vec![0x23];
     uleb(&mut c, heap_global as u64);
     c.extend_from_slice(&[0x21, 1, 0x20, 1, 0x20, 0, 0x6A, 0x41]); // p = heap; p + size
@@ -1271,6 +1276,9 @@ fn locals_decl(types: &[Type]) -> Vec<u8> {
 }
 
 pub fn emit(p: &TProgram) -> Vec<u8> {
+    // Reserve top 8 KiB of every job-bearing actor's 64 KiB private memory.
+    // The host copies exact UTF-8 IDs there, never into compiler data/heap.
+    let has_job = p.actors.iter().any(|actor| actor.job);
     let heap_global = 1;
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
@@ -1301,6 +1309,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![]),
             Import::ActorGetOrCreate => Sig(vec![I32, I64, I64], vec![I32]),
+            Import::ActorJobAck => Sig(vec![I64, I64], vec![]),
             Import::StateRegister => Sig(vec![I32], vec![]),
             Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
             Import::StateLeave => Sig(vec![I64], vec![]),
@@ -1315,7 +1324,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     let mut bodies = Vec::new();
     let mut helpers = helper_bodies();
     if p.heap {
-        helpers.push(alloc_body(heap_global));
+        helpers.push(alloc_body(heap_global, has_job));
     }
     if p.strings {
         let alloc = p.heap.then(|| layout.helper(H_ALLOC));
@@ -1418,6 +1427,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         let mut c = vec![0];
         for (ai, a) in p.actors.iter().enumerate() {
             if let Some(r) = a.receive {
+                if a.job { continue; } // job handlers must use the checked job ABI
                 c.extend_from_slice(&[0x20, 0, 0x41]);
                 sleb(&mut c, ai as i64);
                 c.extend_from_slice(&[0x46, 0x04, 0x40]); // actor type match
@@ -1446,6 +1456,48 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         }
         c.extend_from_slice(&[0x00, 0x0B]); // unknown actor type
         bodies.push(c);
+
+        if has_job {
+            // actor_receive_job(type, value, sequence, job_id_descriptor,
+            //                   attempt, correlation_descriptor)
+            // Old 3-parameter actor_receive MUST NOT invoke Job<T> handlers.
+            func_types.push(types.idx(Sig(vec![I32,I64,I64,I64,I64,I64], vec![])));
+            let mut j = vec![0];
+            for (ai,a) in p.actors.iter().enumerate() {
+                if !a.job { continue; }
+                let r = a.receive.expect("checked job receive");
+                j.extend_from_slice(&[0x20,0,0x41]);
+                sleb(&mut j, ai as i64);
+                j.extend_from_slice(&[0x46,0x04,0x40]);
+                // Reject negative queue positions and attempts.
+                for slot in [2u8,4u8] {
+                    j.extend_from_slice(&[0x20,slot,0x42,0,0x53,0x04,0x40,0,0x0B]);
+                }
+                // Guest treats only descriptors into the reserved read-only
+                // contract region as valid. The host also validates byte bounds.
+                for (slot,offset,maxlen) in [(3u8,57344i64,4096i64),(5u8,61440,256)] {
+                    // (descriptor >> 32) == the fixed private memory offset.
+                    j.extend_from_slice(&[0x20,slot,0x42,32,0x88,0x42]);
+                    sleb(&mut j,offset);
+                    j.extend_from_slice(&[0x52,0x04,0x40,0,0x0B]); // != trap
+                    // Length is nonzero, bounded, and can be accessed safely.
+                    j.extend_from_slice(&[0x20,slot,0x42]);
+                    sleb(&mut j,0xffff_ffffi64);
+                    j.extend_from_slice(&[0x83,0x42,0,0x51,0x04,0x40,0,0x0B]);
+                    j.extend_from_slice(&[0x20,slot,0x42]);
+                    sleb(&mut j,0xffff_ffffi64);
+                    j.extend_from_slice(&[0x83,0x42]);
+                    sleb(&mut j,maxlen);
+                    j.extend_from_slice(&[0x56,0x04,0x40,0,0x0B]); // > max trap
+                }
+                for slot in 1u8..=5 { j.extend_from_slice(&[0x20,slot]); }
+                j.push(0x10);
+                uleb(&mut j,layout.func(r) as u64);
+                j.extend_from_slice(&[0x0F,0x0B]);
+            }
+            j.extend_from_slice(&[0x00,0x0B]);
+            bodies.push(j);
+        }
     }
 
     // The tag has no JS import/export. Each instance gets its own identity,
@@ -1525,7 +1577,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     section(&mut out, 6, gsec);
 
     let mut exp = Vec::new();
-    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 });
+    uleb(&mut exp, 2 + u64::from(has_memory) + if has_actors { 2 } else { 0 } + u64::from(has_job));
     name(&mut exp, "main");
     exp.push(0x00);
     uleb(&mut exp, layout.func(p.main) as u64);
@@ -1544,6 +1596,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         name(&mut exp, "actor_receive");
         exp.push(0x00);
         uleb(&mut exp, actor_init_idx as u64 + 1);
+        if has_job {
+            name(&mut exp, "actor_receive_job");
+            exp.push(0);
+            uleb(&mut exp, actor_init_idx as u64 + 2);
+        }
     }
     section(&mut out, 7, exp);
 
@@ -1596,6 +1653,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     if has_actors {
         all.push("atto.actor_init".into());
         all.push("atto.actor_receive".into());
+        if has_job { all.push("atto.actor_receive_job".into()); }
     }
     let mut sub = Vec::new();
     uleb(&mut sub, all.len() as u64);
@@ -1633,6 +1691,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             });
         }
         section(&mut out, 0, modes);
+        if has_job {
+            let mut job = Vec::new();
+            name(&mut job, "atto.job.abi");
+            job.extend_from_slice(&[1,0]); // revision 1, reserved byte 0
+            section(&mut out, 0, job);
+        }
     }
     out
 }
