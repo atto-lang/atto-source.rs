@@ -108,6 +108,36 @@ fn rewrite_types(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R<()> {
             i += 1;
             continue;
         }
+        // 'Tuple < expression' must remain an ordinary comparison when
+        // Tuple is a local identifier. Rewrite generic types only in a
+        // type-introducing context; never classify expressions by spelling.
+        let type_context = if i == 0 { false } else {
+            match &tokens[i - 1].tok {
+                Tok::Colon | Tok::Arrow => true,
+                Tok::Ident(w) if matches!(w.as_str(),
+                    "let" | "val" | "const" | "pub" | "private" |
+                    "final" | "mut" | "static") => true,
+                Tok::LParen | Tok::Comma => {
+                    // Callable argument lists also use these punctuation
+                    // tokens. Require an actual generic close followed by
+                    // an identifier binder, as in '(Tuple<int> value)'.
+                    let mut j = i + 2;
+                    while j < tokens.len()
+                        && tokens[j].tok != Tok::Gt
+                        && tokens[j].tok != Tok::RParen
+                        && tokens[j].tok != Tok::Semi
+                    { j += 1; }
+                    tokens.get(j).is_some_and(|t| t.tok == Tok::Gt)
+                        && tokens.get(j + 1).is_some_and(|t|
+                            matches!(&t.tok, Tok::Ident(w) if w != "then"))
+                }
+                _ => false,
+            }
+        };
+        if !type_context {
+            i += 1;
+            continue;
+        }
         let start = i;
         i += 2;
         let mut ts = Vec::new();
