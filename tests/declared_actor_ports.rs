@@ -517,7 +517,7 @@ fn stage_one_receives_int_emits_real_wasm_header_without_widening_mailbox() {
         pub fnc main(): int { return 0; }";
     let wasm = atto_compiler::compile(source).expect("matched typed receiver must compile");
     assert!(wasm.len() > 8, "empty artifact is not compiler execution");
-    assert_eq!(&wasm[..4], b"\\0asm", "compiled artifact is not WebAssembly");
+    assert_eq!(&wasm[..4], b"\0asm", "compiled artifact is not WebAssembly");
 
     // The header must not silently admit a different concrete ActorMail type.
     let mismatch = source.replace("Counter receives int as", "Counter receives bool as");
