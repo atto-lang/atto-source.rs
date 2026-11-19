@@ -51,6 +51,54 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let source_tokens = lexer::lex(source)?;
+    // A nominal struct is a value; never accidentally dispatch a new
+    // out-of-line struct receiver through shape_lower's identity-bearing
+    // scalar-class preview ABI. Gate it until a true value ABI is verified.
+    let mut structs = Vec::new();
+    for w in source_tokens.windows(3) {
+        if let [lexer::Token { tok: lexer::Tok::Ident(verb), .. },
+                lexer::Token { tok: lexer::Tok::Ident(kind), .. },
+                lexer::Token { tok: lexer::Tok::Ident(name), .. }] = w {
+            if (verb == "define" || verb == "declare") && kind == "struct" {
+                structs.push(name.as_str());
+            }
+        }
+    }
+    for (i, tok) in source_tokens.iter().enumerate() {
+        if !matches!(&tok.tok, lexer::Tok::Ident(word) if word == "mtd" || word == "constructor") {
+            continue;
+        }
+        let at = |j: usize| source_tokens.get(j).map(|t| &t.tok);
+        let owner = match (at(i+1), at(i+2), at(i+3), at(i+4)) {
+            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(n)), _, _) => Some(n.as_str()),
+            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(s)), Some(lexer::Tok::Colon),
+                Some(lexer::Tok::Ident(n))) if s == "self" => Some(n.as_str()),
+            _ => None,
+        };
+        if owner.is_some_and(|name| structs.contains(&name)) {
+            return Err(Diagnostic::new(tok.pos, "E_UNSUPPORTED",
+                "struct receiver/constructor needs a real value ABI; identity-bearing class fallback is forbidden"));
+        }
+    }
+    // The expanded syntax is recognized before normal lowering so that
+    // 'declare class' and out-of-line constructors can attach to a concrete
+    // local class. Protected state may be parsed but MUST NOT be translated
+    // into unlocked ordinary fields on this backend.
+    let has_proposal = source_tokens.windows(2).any(|w|
+        matches!((&w[0].tok, &w[1].tok),
+            (lexer::Tok::Ident(a), lexer::Tok::Ident(b))
+                if (a == "declare" && (b == "class" || b == "struct")) ||
+                   (a == "define" && b == "state")))
+        || source_tokens.windows(5).any(|w|
+            matches!((&w[0].tok, &w[1].tok, &w[2].tok, &w[3].tok, &w[4].tok),
+                (lexer::Tok::Ident(c), lexer::Tok::LParen, lexer::Tok::Ident(_),
+                    lexer::Tok::RParen, lexer::Tok::LParen) if c == "constructor"));
+    let source_tokens = if has_proposal {
+        let headers = target_syntax::parse_target_declarations(&source_tokens)?;
+        target_syntax::lower_class_receivers(&source_tokens, &headers)?
+    } else {
+        source_tokens
+    };
     // Do not silently erase the 'value' modifier and emit identity-bearing objects.
     value_class_admission::preflight(&source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
