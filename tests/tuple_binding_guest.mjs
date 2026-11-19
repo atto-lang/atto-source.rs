@@ -25,13 +25,17 @@ function runCompiler(input, output) {
   if (result.error) throw result.error;
   return result;
 }
-async function positive(input, expected) {
+async function positive(input, expected, printed = []) {
   const output = join(dir, input + '.wasm');
   const compiled = runCompiler(input, output);
   assert.equal(compiled.status, 0, input + ': ' + compiled.stderr);
   const bytes = readFileSync(output);
   assert.equal(bytes.subarray(0,4).toString('hex'), '0061736d');
-  const { instance } = await WebAssembly.instantiate(bytes, {});
+  const printCalls = [];
+  const { instance } = await WebAssembly.instantiate(bytes, {
+    atto: { print_i64(value) { printCalls.push(value); } },
+  });
+  assert.deepEqual(printCalls, printed, input + ': tuple initializer must evaluate exactly once');
   assert.equal(instance.exports.main(), BigInt(expected), input + ': guest exit value mismatch');
   const second = join(dir, input + '.second.wasm');
   const again = runCompiler(input, second);
@@ -52,10 +56,11 @@ try {
   await positive('let_root_guest.atto', 38);
   await positive('val_root_guest.atto', 60);
   await positive('const_root_guest.atto', 8);
+  await positive('once_only_guest.atto', 6, [99n]);
   negative('arity_fail.atto', 'E_ARITY');
   negative('runtime_const_fail.atto', 'E_CONST');
   negative('scalar_const_mut_fail.atto', 'E_CONST_MUT_TARGET');
-  console.log('Tuple guest: 3/3 compiled and executed, 3/3 negative diagnostics, 3/3 deterministic-byte matches.');
+  console.log('Tuple guest: 4/4 executed, 3/3 negative diagnostics, 4/4 deterministic-byte matches, once-only effect verified.');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
