@@ -37,9 +37,19 @@ fn op_at(tokens: &[Token], i: usize) -> Option<Direction> {
     if a.pos.line != b.pos.line || a.pos.col.checked_add(1) != Some(b.pos.col) {
         return None;
     }
+    // Three contiguous angle brackets are integer shifts, NEVER stream I/O.
+    // Examine both sides so neither overlapping pair is misclassified.
+    let embedded_in_triple = |kind: &Tok| {
+        (i > 0 && tokens[i - 1].tok == *kind
+            && tokens[i - 1].pos.line == a.pos.line
+            && tokens[i - 1].pos.col.checked_add(1) == Some(a.pos.col))
+        || tokens.get(i + 2).is_some_and(|next| next.tok == *kind
+            && next.pos.line == b.pos.line
+            && b.pos.col.checked_add(1) == Some(next.pos.col))
+    };
     match (&a.tok, &b.tok) {
-        (Tok::Lt, Tok::Lt) => Some(Direction::Write),
-        (Tok::Gt, Tok::Gt) => Some(Direction::Read),
+        (Tok::Lt, Tok::Lt) if !embedded_in_triple(&Tok::Lt) => Some(Direction::Write),
+        (Tok::Gt, Tok::Gt) if !embedded_in_triple(&Tok::Gt) => Some(Direction::Read),
         _ => None,
     }
 }
