@@ -1,5 +1,5 @@
 //! Regression contract: a namespace header must compose with a lowercase,
- //! explicitly imported relative module and a typed stdio.println call.
+//! explicitly imported relative module and a typed stdio.println call.
 use atto_compiler::linker::{compile_linked, LinkUnit};
 
 const ENTRY: &str = r#"use namespace storefront;
