@@ -91,8 +91,8 @@ fn external_direct_actorref_method_call_is_still_illegal() {
         define interface IPing as ping(): int; end
         define actor A implements IPing as pub ping(): int { return 42; } end
         pub fnc main(): int {
-            val actor = spawn A();
-            return actor.ping();
+            val worker_ref = spawn A();
+            return worker_ref.ping();
         }
     "#;
     let d = compile(source).expect_err("external actorref call must not be executable");
