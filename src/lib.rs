@@ -13,6 +13,8 @@ pub mod collection_layout;
 pub mod collection_layout_plan;
 /// Executable Rust storage kernel only; source-compiled guest admission remains gated.
 pub mod collection_layout_storage;
+/// Narrow genuine source-compiled scalar collection guest profile; all else fails closed.
+pub mod collection_layout_guest;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
 /// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
 // The canonical verifier is imported byte-identically from the independent
@@ -63,6 +65,16 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let source_tokens = lexer::lex(source)?;
+    // Bounded, source-compiled scalar layout specialization: complete grammar
+    // and checked nominal field offsets are required before any Wasm bytes.
+    if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
+        let bytes = wasm::emit(&program);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
+    }
     // A nominal struct is a value; never accidentally dispatch a new
     // out-of-line struct receiver through shape_lower's identity-bearing
     // scalar-class preview ABI. Gate it until a true value ABI is verified.
