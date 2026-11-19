@@ -210,6 +210,26 @@ fn scalar_literal(item: &[Token]) -> Option<&'static str> {
 fn constant_tuple(rhs: &[Token]) -> bool {
     tuple_items(rhs).is_some_and(|items| items.iter().all(|x| scalar_literal(x).is_some()))
 }
+/// Quote tokenized string values with exactly the escapes Atto's lexer
+/// implements. Rust Debug uses \0 for U+0000, but Atto deliberately treats
+/// unknown \0 as literal '0'; using Debug would silently corrupt data.
+fn quote_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn as_code(tokens: &[Token]) -> R<String> {
     let mut out = String::new();
     for t in tokens {
@@ -218,11 +238,16 @@ fn as_code(tokens: &[Token]) -> R<String> {
             Tok::Int(Some(v)) => v.to_string(),
             Tok::Int(None) => "9223372036854775808".to_string(),
             Tok::Float(bits) => {
-                let mut n = f64::from_bits(*bits).to_string();
+                let value = f64::from_bits(*bits);
+                if !value.is_finite() {
+                    return Err(error(t.pos, "E_FLOAT_LITERAL",
+                        "non-finite scalar tuple literal cannot be round-tripped safely"));
+                }
+                let mut n = value.to_string();
                 if !n.contains('.') && !n.contains('e') && !n.contains('E') { n.push_str(".0"); }
                 n
             },
-            Tok::Str(s) => format!("{s:?}"),
+            Tok::Str(s) => quote_string(s),
             Tok::LParen => "(".to_string(), Tok::RParen => ")".to_string(),
             Tok::LBrace => "{".to_string(), Tok::RBrace => "}".to_string(),
             Tok::LBracket => "[".to_string(), Tok::RBracket => "]".to_string(),
