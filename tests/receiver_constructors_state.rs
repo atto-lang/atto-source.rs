@@ -488,7 +488,7 @@ fn checked_ast_cannot_synthesize_missing_initializer_for_nonfinal_fields() {
         assert_eq!(ast.classes[0].fields.len(), 1, "{field}");
         ast.classes[0].fields[0].init = None; // simulate unsafe future rewrite
         let diagnostic = atto_compiler::check::check(&ast)
-            .err().expect("cannot lower synthesized missing initializer");
+            .expect_err("cannot lower synthesized missing initializer");
         assert_eq!(diagnostic.code, "E_INIT", "{field}: {diagnostic}");
     }
 }
