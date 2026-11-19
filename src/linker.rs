@@ -148,18 +148,39 @@ fn relative_path(from: &str, rel: &str, pos: Pos) -> R<String> {
 /// declarations. No import is executable merely because its name occurs in a
 /// namespace. The path must resolve exactly among provided input units.
 fn header(source: &str, file: &str) -> R<Header> {
-    let t = lexer::lex(source)?;
+    // Normalize explicit/dotted and folder-derived namespace spellings using
+    // the same production grammar as the single-file compiler.
+    let raw = lexer::lex(source)?;
+    let t = crate::namespace::normalize(&raw, Some(std::path::Path::new(file)))?;
     let mut i = 0;
     let mut namespace = None;
     let mut imports = Vec::new();
     let mut spans = Vec::new();
     if word(&t, i, "use") {
-        if !word(&t, i + 1, "namespace") || t.get(i + 3).map(|x| &x.tok) != Some(&Tok::Semi) {
-            return Err(err(t[i].pos, "E_SYNTAX", "expected 'use namespace Name;' as first declaration"));
+        if !word(&t, i + 1, "namespace") {
+            return Err(err(t[i].pos, "E_SYNTAX", "expected namespace header before imports"));
         }
-        namespace = Some(ident(&t, i + 2)?);
-        spans.push(span(source, &t, i, i + 3)?);
-        i += 4;
+        let mut at = i + 2;
+        let mut parts = vec![ident(&t, at)?];
+        at += 1;
+        while t.get(at).map(|x| &x.tok) == Some(&Tok::Dot) {
+            parts.push(ident(&t, at + 1)?);
+            at += 2;
+            if parts.len() > 32 {
+                return Err(err(t[i].pos, "E_NAMESPACE_DEPTH", "namespace has more than 32 components"));
+            }
+        }
+        if t.get(at).map(|x| &x.tok) != Some(&Tok::Semi) {
+            return Err(err(t[i].pos, "E_SYNTAX", "namespace must end with a semicolon"));
+        }
+        namespace = Some(parts.join("."));
+        // For a default namespace, the normalized token sequence is longer
+        // or shorter than the original header. Erase the span using *raw*
+        // token offsets, not synthetic token positions.
+        let raw_semi = raw.iter().position(|token| token.tok == Tok::Semi)
+            .ok_or_else(|| err(t[i].pos, "E_SYNTAX", "missing namespace semicolon"))?;
+        spans.push(span(source, &raw, 0, raw_semi)?);
+        i = at + 1;
     }
     while word(&t, i, "import") {
         let pos = t[i].pos;
@@ -239,7 +260,7 @@ fn imported_module(imp: &Import, dependency: &LinkUnit<'_>, entry_package: &str)
             "imported module source cannot expose unrelated file-level symbols",
         ));
     }
-    visibility_lower::resolve_exports(&mut visible.exports, &parsed, &lowered.modules)?;
+    visibility_lower::resolve_exports_with_modules(&mut visible.exports, &parsed, &lowered.modules)?;
     let module = &lowered.modules[0];
     let allowed = visible.exports.iter().find(|e| e.name == imp.name);
     let exported = allowed.is_some() || module.inline_public;
