@@ -161,6 +161,11 @@ pub enum TExpr {
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
+    /// Checked physical-array cell load at a compiler-planned in-bounds
+    /// byte offset. Never represented as a class field or untrusted pointer.
+    CollectionLoad { array: Box<TE>, offset: u32 },
+    /// Bounded source-compiled Array allocation in guest linear memory.
+    CollectionAlloc(u32),
     /// ordinary class field read
     FieldGet {
         obj: Box<TE>,
@@ -201,6 +206,9 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    /// Compiler-planned scalar i64 cell store inside an owned Array allocation.
+    /// Its offset is checked against the resolved nominal layout/length.
+    CollectionStore { array: TE, offset: u32, value: TE },
     /// ordinary class field initialization / assignment
     FieldSet {
         obj: TE,
@@ -793,6 +801,19 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // Validate the bounded CFG and integer-only suspension/lifetime profile
     // before registering signatures. Reject unsupported generator effects
     // before emission; never substitute eager iterator materialization.
+    for spec in &p.array_types {
+        // Nominal resolution is performed by the same production type checker
+        // that validates functions/classes, not by token-level generic guesses.
+        if !p.classes.iter().any(|c| c.name == spec.element) {
+            return Err(Diagnostic::new(spec.pos, "E_UNKNOWN_TYPE",
+                format!("Array element '{}' requires a declared nominal class type", spec.element)));
+        }
+    }
+    if let Some(spec) = p.array_types.first() {
+        return Err(Diagnostic::new(spec.pos, "E_UNSUPPORTED",
+            format!("Array<{}, layout={:?}> is a checked nominal generic specialization, but general-purpose Array storage and borrow lowering are not yet enabled outside the bounded compiled guest profile",
+                spec.element, spec.layout)));
+    }
     for f in &p.funcs {
         if f.is_generator {
             precheck_generator_body(&f.body, &p.funcs)?;
@@ -846,6 +867,39 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
     }
     for a in &p.actors {
+        if a.persistence != ActorPersistenceMode::Volatile {
+            // Validate an AOT-friendly scalar snapshot schema first. No guest
+            // emission may silently treat durable/persistent as volatile.
+            let _schema = crate::actor_persistence::ActorStateSchema::for_actor(a)?;
+            let legacy_load = a.methods.iter().find(|m| m.name == "load_state");
+            let legacy_save = a.methods.iter().find(|m| m.name == "save_state");
+            let has_load = a.persistence_hooks.iter().any(|h| h.name == "load_state");
+            let has_save = a.persistence_hooks.iter().any(|h| h.name == "save_state");
+            match a.persistence {
+                ActorPersistenceMode::Persistent => {
+                    if legacy_load.is_some() || legacy_save.is_some() {
+                        return Err(Diagnostic::new(a.pos, "E_PERSIST_SIGNATURE",
+                            "persistent actor hooks must use susp fnc and exact Result types"));
+                    }
+                    if !has_load || !has_save ||
+                        a.persistence_hooks.iter().any(|h| !h.body_provided) {
+                        return Err(Diagnostic::new(a.pos, "E_PERSIST_HOOKS",
+                            "persistent actors require implemented load_state and save_state hooks"));
+                    }
+                    return Err(Diagnostic::new(a.pos, "E_PERSIST_RUNTIME_UNAVAILABLE",
+                        "hook signatures validated, but suspended storage bodies and recovery are not yet executable"));
+                }
+                ActorPersistenceMode::Durable => {
+                    if has_load || has_save || legacy_load.is_some() || legacy_save.is_some() {
+                        return Err(Diagnostic::new(a.pos, "E_DURABLE_HOOK_OVERRIDE",
+                            "durable actor storage is runtime-owned; user load/save hooks cannot override it"));
+                    }
+                    return Err(Diagnostic::new(a.pos, "E_DURABLE_RUNTIME_UNAVAILABLE",
+                        "automatic durable disk commits and revival are not implemented by this browser backend"));
+                }
+                ActorPersistenceMode::Volatile => unreachable!(),
+            }
+        }
         if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
             || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
             return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
@@ -1465,12 +1519,14 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_)
         | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
+        | TExpr::CollectionAlloc(_)
         | TExpr::Spawn(_) => EscapeEffects::default(),
         TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
         | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
         | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
         | TExpr::FieldGet { obj: v, .. }
+        | TExpr::CollectionLoad { array: v, .. }
         | TExpr::StateFieldRead { obj: v, .. }
         | TExpr::PrintObj { obj: v, .. } =>
             expr_escape_effects(v, effects),
@@ -1516,6 +1572,7 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
                 .union(EscapeEffects { throws: true, raises: false }),
             TStmt::Raise(value) => expr_escape_effects(value, effects)
                 .union(EscapeEffects { throws: false, raises: true }),
+            TStmt::CollectionStore { array: obj, value, .. } |
             TStmt::FieldSet { obj, value, .. } |
             TStmt::StateFieldWrite { obj, value, .. } =>
                 expr_escape_effects(obj, effects)
@@ -1831,6 +1888,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
+        TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } => false,
@@ -1852,7 +1910,7 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
             pure_stmts(body, pure_indices) && pure_stmts(update, pure_indices),
         TStmt::Block(body) => pure_stmts(body, pure_indices),
         TStmt::Break | TStmt::Continue | TStmt::Unreachable => true,
-        TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
+        TStmt::CollectionStore { .. } | TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
@@ -1868,6 +1926,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
+        TStmt::CollectionStore { array, value, .. } =>
+            any_in(array, f) || any_in(value, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
         }
@@ -1904,6 +1964,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
+        TExpr::CollectionLoad { array, .. } => any_in(array, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
     }

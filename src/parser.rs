@@ -94,6 +94,8 @@ const RESERVED: &[&str] = &[
     "trap",
     "defer",
     "actor",
+    "persistent",
+    "durable",
     "isoactor",
     "shared",
     "untrusted",
@@ -137,6 +139,8 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "spawn",
     "await",
     "actor",
+    "persistent",
+    "durable",
     "isoactor",
     "define",
     "import",
@@ -207,6 +211,8 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    /// Canonically interned nominal Array<T, layout=...> type parameters.
+    array_types: Vec<ArrayType>,
     /// Scope of an explicit generator function body.
     in_generator: bool,
     /// Only the outer Erlang-style callable sequence accepts commas as
@@ -229,6 +235,7 @@ struct Members {
     ctor: Option<Constructor>,
     methods: Vec<Method>,
     receive: Option<Receive>,
+    persistence_hooks: Vec<ActorPersistenceHook>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -263,6 +270,7 @@ impl Parser {
             height: 0,
             cond: 0,
             type_names: Vec::new(),
+            array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
             state_method: false,
@@ -398,6 +406,23 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "Array" => {
+                // Reuse the exact same generic binder used by the already
+                // executable, bounded scalar-collection guest profile.
+                let (specialization, next) = crate::collection_layout_type::parse(&self.toks, self.i - 1)?;
+                self.i = next;
+                let idx = self.array_types.iter().position(|t|
+                    t.element == specialization.element && t.layout == specialization.layout);
+                let idx = match idx {
+                    Some(existing) => existing as u32,
+                    None => {
+                        let idx = self.array_types.len() as u32;
+                        self.array_types.push(specialization);
+                        idx
+                    }
+                };
+                Type::Array(idx)
+            },
             "fnc" => {
                 // Canonical source type form: fnc(int, bool) -> float.
                 // The first profile admits scalar callback contracts only,
@@ -529,7 +554,7 @@ impl Parser {
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("actor")?;
-        let decl = p.parse_actor(true)?;
+        let decl = p.parse_actor(true, ActorPersistenceMode::Volatile)?;
         Ok((decl, p.i))
     }
 
@@ -550,6 +575,31 @@ impl Parser {
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
+            // Canonical 'define [pub] (persistent | durable) actor'.
+            // Also retain legacy 'pub define ...' visibility placement.
+            // Never downgrade a qualified actor to ordinary volatile state.
+            if self.word_at(at) == Some("define") {
+                let mut qualifier = at + 1;
+                if self.word_at(qualifier) == Some("pub") {
+                    qualifier += 1;
+                }
+                let mode = match self.word_at(qualifier) {
+                    Some("persistent") => Some(ActorPersistenceMode::Persistent),
+                    Some("durable") => Some(ActorPersistenceMode::Durable),
+                    _ => None,
+                };
+                if let Some(mode) = mode {
+                    if self.word_at(qualifier + 1) != Some("actor") {
+                        return Err(Diagnostic::new(
+                            start, "E_ACTOR_PERSISTENCE_MODIFIER",
+                            "persistent/durable must occur once before 'actor'; not a class modifier",
+                        ));
+                    }
+                    self.i += qualifier + 2;
+                    prog.actors.push(self.parse_actor(true, mode)?);
+                    continue;
+                }
+            }
             match (self.word_at(at), self.word_at(at + 1)) {
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
@@ -564,7 +614,7 @@ impl Parser {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 2;
-                    let decl = self.parse_actor(true)?;
+                    let decl = self.parse_actor(true, ActorPersistenceMode::Volatile)?;
                     prog.actors.push(decl);
                 }
                 (Some("actor"), Some(w)) if w != "fnc" => {
@@ -572,7 +622,7 @@ impl Parser {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 1;
-                    let decl = self.parse_actor(false)?;
+                    let decl = self.parse_actor(false, ActorPersistenceMode::Volatile)?;
                     prog.actors.push(decl);
                 }
                 (Some("define"), Some("enum")) => {
@@ -596,6 +646,7 @@ impl Parser {
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
+        prog.array_types = std::mem::take(&mut self.array_types);
         Ok(prog)
     }
 
@@ -695,7 +746,7 @@ impl Parser {
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
-    fn parse_actor(&mut self, defined: bool) -> R<ActorDecl> {
+    fn parse_actor(&mut self, defined: bool, persistence: ActorPersistenceMode) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
         self.decl_head("actor")?;
         let close = if defined {
@@ -707,9 +758,19 @@ impl Parser {
             "end"
         };
         let m = self.parse_members(&name, true, close)?;
+        if persistence == ActorPersistenceMode::Volatile && !m.persistence_hooks.is_empty() {
+            return Err(Diagnostic::new(pos, "E_PERSIST_SIGNATURE",
+                "persistence hooks require a persistent actor"));
+        }
+        if persistence == ActorPersistenceMode::Durable && !m.persistence_hooks.is_empty() {
+            return Err(Diagnostic::new(pos, "E_DURABLE_HOOK_OVERRIDE",
+                "durable actor persistence is runtime-managed, not overridden by hooks"));
+        }
         Ok(ActorDecl {
             name,
             pos,
+            persistence,
+            persistence_hooks: m.persistence_hooks,
             fields: m.fields,
             receive: m.receive,
             methods: m.methods,
@@ -773,6 +834,87 @@ impl Parser {
         } else {
             self.is_word(close)
         }
+    }
+
+
+    /// A deliberately non-executable syntax gate for persistent actor hooks.
+    /// The full nested Result/Option/ActorStateSnapshot type shape is checked
+    /// exactly here; this browser compiler lacks generic suspended codegen.
+    /// The body is only brace-balanced and cannot reach the Wasm emitter.
+    fn parse_persistence_hook(&mut self, owner: &str) -> R<ActorPersistenceHook> {
+        let pos = self.pos();
+        let parse = (|| -> R<ActorPersistenceHook> {
+            if !self.eat_word("susp") && !self.eat_word("suspends") {
+                return Err(self.expected("'susp' persistence hook"));
+            }
+            self.expect_word("fnc")?;
+            let (name, _) = self.ident("persistence hook name")?;
+            let is_load = match name.as_str() {
+                "load_state" => true,
+                "save_state" => false,
+                _ => return Err(self.expected("load_state or save_state")),
+            };
+            self.expect(Tok::LParen, "'(' after hook name")?;
+            self.expect_word("ctx")?;
+            self.expect(Tok::Colon, "':' after ctx")?;
+            self.expect_word("PersistenceContext")?;
+            if !is_load {
+                self.expect(Tok::Comma, "',' after PersistenceContext")?;
+                self.expect_word("snapshot")?;
+                self.expect(Tok::Colon, "':' after snapshot")?;
+                self.expect_word("ActorStateSnapshot")?;
+                self.expect(Tok::Lt, "'<' in ActorStateSnapshot")?;
+                if !self.is_word(owner) && !self.is_word("State") {
+                    return Err(self.expected("the actor state type or State"));
+                }
+                self.advance();
+                self.expect(Tok::Gt, "'>' in ActorStateSnapshot")?;
+            }
+            self.expect(Tok::RParen, "')' after hook parameters")?;
+            self.expect(Tok::Colon, "':' before hook result")?;
+            self.expect_word("Result")?;
+            self.expect(Tok::Lt, "'<' after Result")?;
+            if is_load {
+                self.expect_word("Option")?;
+                self.expect(Tok::Lt, "'<' after Option")?;
+                self.expect_word("ActorStateSnapshot")?;
+                self.expect(Tok::Lt, "'<' after ActorStateSnapshot")?;
+                if !self.is_word(owner) && !self.is_word("State") {
+                    return Err(self.expected("the actor state type or State"));
+                }
+                self.advance();
+                self.expect(Tok::Gt, "'>' after actor state")?;
+                self.expect(Tok::Gt, "'>' after Option")?;
+            } else {
+                self.expect_word("CheckpointReceipt")?;
+            }
+            self.expect(Tok::Comma, "',' before PersistenceError")?;
+            self.expect_word("PersistenceError")?;
+            self.expect(Tok::Gt, "'>' after Result")?;
+            let body_provided = if self.eat(&Tok::Semi) {
+                false
+            } else if self.eat(&Tok::LBrace) {
+                let mut depth: usize = 1;
+                let mut count: usize = 0;
+                while depth > 0 {
+                    if *self.peek() == Tok::Eof || count >= 32768 {
+                        return Err(self.expected("complete persistence hook body"));
+                    }
+                    match self.advance().tok {
+                        Tok::LBrace => depth += 1,
+                        Tok::RBrace => depth -= 1,
+                        _ => {},
+                    }
+                    count += 1;
+                }
+                true
+            } else {
+                return Err(self.expected("';' or a braced persistence hook body"));
+            };
+            Ok(ActorPersistenceHook { name, pos, body_provided })
+        })();
+        parse.map_err(|e| Diagnostic::new(e.pos, "E_PERSIST_SIGNATURE",
+            format!("invalid persistent actor hook signature: {}", e.message)))
     }
 
     /// Class or actor members up to and including `close` (`end` or `}`).
@@ -858,6 +1000,14 @@ impl Parser {
                     let body = self.parse_block()?;
                     m.ctor = Some(Constructor { pos: mpos, params, body });
                 }
+                Some("state") if actor => {
+                    self.advance();
+                    // Explicit actor-owned sealed state with a typed initializer.
+                    // The browser profile currently admits only int/bool.
+                    let mut f = self.parse_named_field(visibility, true)?;
+                    f.mode = FieldMode::ActorState;
+                    m.fields.push(f);
+                }
                 Some("final") => {
                     self.advance();
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
@@ -910,6 +1060,19 @@ impl Parser {
                     self.advance();
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
+                }
+                Some("susp" | "suspends") if actor => {
+                    if public {
+                        return Err(Diagnostic::new(mpos, "E_PERSIST_SIGNATURE",
+                            "persistence hooks are actor-private lifecycle methods"));
+                    }
+                    let hook = self.parse_persistence_hook(owner)?;
+                    if m.persistence_hooks.iter().any(|existing: &ActorPersistenceHook| existing.name == hook.name)
+                        || m.methods.iter().any(|other| other.name == hook.name) {
+                        return Err(Diagnostic::new(hook.pos, "E_DUPLICATE",
+                            "duplicate persistence hook or conflicting actor method"));
+                    }
+                    m.persistence_hooks.push(hook);
                 }
                 Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
                     return Err(unsupported(self.pos(), &format!("'{w}' members")));
@@ -2106,7 +2269,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating

@@ -1,3 +1,29 @@
+## Experimental source-compiled scalar collection guest (draft PR #320)
+
+A strictly bounded `define struct` + `Array<T, layout=aos|soa|aosoa(N)>`
+profile lowers one fixed-length `int`-field collection in `fnc main() -> int`
+into the existing typed IR and **actual guest Wasm linear memory**. It admits
+constant struct field literals, checked constant-index row `+=` mutation,
+and checked column reads; it does **not** admit general-purpose indexing,
+borrow escaping, copy/transfer, actor messaging, dynamic sizes or SIMD.
+Unsupported syntax fails closed; this is not the general production Array type.
+
+To verify the first executable milestone with a real native compiler:
+
+```sh
+cargo test --locked collection_layout_guest
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --release --bin attoc
+ATTOC=target/release/attoc node tests/collection-layout-guest-execution.mjs
+```
+
+The JS test invokes `attoc` on `.atto` source, instantiates emitted Wasm,
+checks `main() == 15`, and inspects guest memory for physical SoA columns
+`[15,30,20,40,1,2]`. A Rust host-storage unit test alone is not evidence.
+Current CI is not verified until a job with nonzero executed steps succeeds.
+See spec #77, Rust #312/#315/#320 and conformance #71.
+
+
 # atto-source.rs: AttoLang browser compiler
 
 ## Explicit deep-copy operator (bounded generated-class AOT milestone)
