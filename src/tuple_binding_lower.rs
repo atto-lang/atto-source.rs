@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{lex, Tok, Token};
 use crate::tuple_binding_admission::{self, BindingMode};
+use crate::tuple_ownership_ir::{ElementType, Scalar, TupleType};
 
 type R<T> = Result<T, Diagnostic>;
 const PREFIX: &str = "__atto_tuple_private_";
@@ -60,9 +61,18 @@ fn primitive(s: &str) -> Option<&'static str> {
 }
 fn ctor_name(i: usize) -> String { format!("{PREFIX}{i}") }
 fn shape_for(parts: Vec<String>, shapes: &mut Vec<Shape>, pos: Pos) -> R<String> {
-    if parts.len() > LIMIT {
-        return Err(error(pos, "E_SOURCE_LIMIT", "scalar tuples support at most 16 elements"));
-    }
+    // Reuse the same typed shape gate as the independently checked element
+    // ownership planner. The current guest ABI still admits Copy scalars
+    // *only*; a nominal object can never be silently treated as a scalar.
+    let typed = parts.iter().map(|name| match name.as_str() {
+        "int" => Ok(ElementType::Copy(Scalar::Int)),
+        "bool" => Ok(ElementType::Copy(Scalar::Bool)),
+        "float" => Ok(ElementType::Copy(Scalar::Float)),
+        "string" => Ok(ElementType::Copy(Scalar::String)),
+        _ => Err(error(pos, "E_UNSUPPORTED_TYPE",
+            "scalar tuple codegen does not admit owned or unresolved element types")),
+    }).collect::<R<Vec<_>>>()?;
+    let _shape = TupleType::new(typed, pos)?;
     let target = Shape(parts);
     if let Some(idx) = shapes.iter().position(|x| *x == target) {
         Ok(ctor_name(idx))
