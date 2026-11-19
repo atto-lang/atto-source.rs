@@ -42,5 +42,5 @@ fn actual_scoped_resource_demo_is_not_a_false_positive_wasm_guest() {
 #[ignore = "Enable only with real package linking, suspend-safe using cleanup, timeout and await guest execution"]
 fn future_positive_compiler_gate_for_exact_scoped_resource_demo() {
     let guest = atto_compiler::compile(PREVIEW).expect("real executable guest required");
-    assert!(guest.starts_with(b"\\0asm"), "must emit WebAssembly bytes");
+    assert!(guest.starts_with(b"\0asm"), "must emit WebAssembly bytes");
 }
