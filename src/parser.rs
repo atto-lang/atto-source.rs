@@ -689,14 +689,23 @@ impl Parser {
                 }
                 Some("suspends") => {
                     self.advance();
-                    if !(self.eat_word("fnc") || self.eat_word("mtd") || self.eat_word("method")) {
-                        return Err(self.expected("'fnc' or 'mtd' after 'suspends'"));
+                    if actor && self.is_word("receive") && *self.peek_at(1) == Tok::LParen {
+                        if public {
+                            return Err(Diagnostic::new(mpos, "E_ACTOR",
+                                "suspends receive is actor-local and cannot be public"));
+                        }
+                        if m.receive.is_some() {
+                            return Err(Diagnostic::new(mpos, "E_DUPLICATE",
+                                format!("actor '{owner}' already declares receive")));
+                        }
+                        m.receive = Some(self.parse_receive(owner, true)?);
+                    } else {
+                        if !(self.eat_word("fnc") || self.eat_word("mtd") || self.eat_word("method")) {
+                            return Err(self.expected("'fnc', 'mtd' or actor 'receive' after 'suspends'"));
+                        }
+                        let method = self.parse_method(public, false, true)?;
+                        m.methods.push(method);
                     }
-                    if actor {
-                        return Err(unsupported(mpos, "suspends actor mtd until actor carrier scheduling is implemented"));
-                    }
-                    let method = self.parse_method(public, false, true)?;
-                    m.methods.push(method);
                 }
                 Some(w @ ("async" | "suspend" | "structural" | "abstract" | "nlex" | "shared")) => {
                     return Err(unsupported(self.pos(), &format!("'{w}' members")));
@@ -716,7 +725,7 @@ impl Parser {
                             format!("actor '{owner}' already declares receive"),
                         ));
                     }
-                    let r = self.parse_receive(owner)?;
+                    let r = self.parse_receive(owner, false)?;
                     m.receive = Some(r);
                 }
                 Some(_) if *self.peek_at(1) == Tok::LParen => {
@@ -821,7 +830,7 @@ impl Parser {
     }
 
     /// `receive ( ActorMail < T > name ) [ : void ] block`.
-    fn parse_receive(&mut self, owner: &str) -> R<Receive> {
+    fn parse_receive(&mut self, owner: &str, suspends: bool) -> R<Receive> {
         let pos = self.pos();
         self.advance();
         self.expect(Tok::LParen, "'('")?;
@@ -860,7 +869,7 @@ impl Parser {
             ));
         }
         let body = self.parse_block()?;
-        Ok(Receive { pos, mail, payload, body })
+        Ok(Receive { suspends, pos, mail, payload, body })
     }
 
     /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.
