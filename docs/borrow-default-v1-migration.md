@@ -36,6 +36,23 @@ pub fnc main(): int {
 - Caller/callee loans retain existing negative behavior: no read-to-write, no owned return from borrowed formal, no owned call from borrowed formal, no moving a live borrowed owner, no class borrow of temporary.
 - Legacy source remains unchanged for compatibility, even though the final AttoLang language design intends borrow-by-default everywhere. This is an incremental, reviewable migration stage, **not** completion.
 
+## Operator status in this opt-in profile
+
+| Operation | This compiler branch's admission boundary |
+| --- | --- |
+| `inspect(owner)` / `inspect(borrow! owner)` | Same scoped readonly class loan under the first-line opt-in only |
+| `consume(take! owner)` | Requires a matching consuming `take! Class` formal; caller loses ownership |
+| `update(mut owner)` / `update(borrow! mut owner)` | **Not provided by this PR**; developed in stacked mutable-loan PR #347 |
+| `share! owner` | No automatic frozen sharing from a default borrow; separate capability verification required |
+| `copy! owner` / `copy!! owner` | No implicit copying at call sites; copy legality and graph plan are separate features |
+| `pin! take! owner`, `drop! owner;` | No implicit pinning or release during a borrowed call; independent backend/destructor checks required |
+| `freeze! take! owner`, `weak! shared` | Not granted by the narrow default-borrow migration |
+
+The checker must reject a call that tries to consume or retain a borrowed
+formal, including through a return value, cloned handle, actor send or
+suspension. Explicit `borrow!` cannot relax any of these rejections. The
+versioned migration profile does not ratify package-wide ownership defaults.
+
 ## Verification
 
 The source fixture corpus includes 4 expected executable guests and 11 rejected invalid programs. The native fixture harness and full native-vs-browser Wasm conformance harness pick them up automatically. To claim implementation, require exact source/carrier blob identity, positive real Wasm guest exit/stdout, negative expected diagnostics with **zero bytes emitted**, and regression tests proving the no-header legacy ABI remains owned.
