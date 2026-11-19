@@ -511,6 +511,9 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                     if package && (path.starts_with("./") || path.starts_with("../")) {
                         return Err(c.err("E_SYNTAX", "package imports cannot use relative file paths"));
                     }
+                    if !package && !path.starts_with("./") && !path.starts_with("../") {
+                        return Err(c.err("E_SYNTAX", "file imports require a quoted relative path"));
+                    }
                     c.next();
                 }
                 _ => return Err(c.err("E_SYNTAX", "expected a nonempty quoted import path")),
