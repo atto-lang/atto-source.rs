@@ -139,11 +139,11 @@ try{
   // the pinned Rust-to-Wasm compiler, then executes the resulting guest Wasm.
   // Do not substitute JS simulation or the Node-only conformance results.
   for (const [filename, expectedReturn, expectedStdout] of [
-    ['200-play-suspends.atto', 42, '42\\n'],
-    ['201-play-tasks-async.atto', 42, '42\\n'],
-    ['202-play-async-iterators.atto', 60, '60\\n'],
-    ['203-play-channel-bounded.atto', 6, '6\\n'],
-    ['204-play-channel-unbounded.atto', 42, '42\\n'],
+    ['200-play-suspends.atto', 42, '42\n'],
+    ['201-play-tasks-async.atto', 42, '42\n'],
+    ['202-play-async-iterators.atto', 60, '60\n'],
+    ['203-play-channel-bounded.atto', 6, '6\n'],
+    ['204-play-channel-unbounded.atto', 42, '42\n'],
   ]) {
     const source = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const browserOutput = await run(source, 'main() -> ' + expectedReturn);
