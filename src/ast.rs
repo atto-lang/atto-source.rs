@@ -18,6 +18,10 @@ pub enum Type {
     Named(u32),
     /// Unresolved `ActorRef<Name>`: index into [`Program::type_names`].
     NamedRef(u32),
+    /// Unresolved read-only class formal Borrow<T>.
+    BorrowNamed(u32),
+    /// Resolved non-owning class formal; same guest handle bits as Class.
+    BorrowClass(u32),
     /// Canonically interned nominal Array<T, layout=...> specialization.
     /// The index refers to Program::array_types. No implicit storage is granted.
     Array(u32),
@@ -57,6 +61,7 @@ impl Type {
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
+            Type::BorrowNamed(_) | Type::BorrowClass(_) => "Borrow<T>",
             Type::Callable(_) => "fnc(...)->...",
             Type::Array(_) => "Array<T,layout=...>",
             _ => "object",
@@ -281,6 +286,10 @@ pub struct Param {
     pub name: String,
     pub ty: Type,
     pub mutable: bool,
+    /// A consuming parameter in the opt-in borrow-v1 profile, spelled
+    /// `take! Foo name`. Unlike an implicit class formal, the caller must
+    /// explicitly transfer a named owner with `take! owner`.
+    pub consuming: bool,
     pub pos: Pos,
 }
 
@@ -475,7 +484,7 @@ pub enum LambdaBody {
 
 /// Explicit Atto ownership operators, not pointer address syntax.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OwnershipOp { Borrow, Copy, DeepCopy, Take, Share, Freeze, Weak, Pin, Drop }
+pub enum OwnershipOp { Borrow, Copy, DeepCopy, Take, Share, Freeze, Weak, Pin, Drop, Ref, Deref, Unref }
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
@@ -490,8 +499,9 @@ pub enum ExprKind {
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
-    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, copy!! x,
-    /// take! x, share! x, freeze! x, weak! x, pin! x, drop! x.
+    /// Prefix ownership and checked handles: borrow!, copy!, copy!!,
+    /// take!, share!, freeze!, weak!, pin!, drop!, ref!, deref!, unref!.
+    /// Legacy rt ref/rt deref/rt unref map to checked-handle variants.
     /// lt! a is a lifetime binder, never a runtime expression.
     /// Syntax does not confer runtime rights: unproven operations fail closed.
     Ownership(OwnershipOp, bool, Box<Expr>),

@@ -1,0 +1,8 @@
+// expect-exit: 42
+// Explicit borrow! and inferred borrow have identical rights and codegen.
+define class Person as pub let int age = 21; end
+fnc read(Person p): int { return p.age; }
+pub fnc main(): int {
+  let p = new Person();
+  return read(p) + read(borrow! p);
+}

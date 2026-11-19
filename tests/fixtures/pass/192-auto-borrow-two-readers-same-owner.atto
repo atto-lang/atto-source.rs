@@ -1,0 +1,14 @@
+// expect-exit: 42
+// java: rejects
+define class Person as
+  pub let int age = 21;
+end
+fnc pair(a: Borrow<Person>, n: int, b: Borrow<Person>): int {
+  return a.age + n + b.age;
+}
+pub fnc main(): int {
+  let person = new Person();
+  let result = pair(person, 0, person);
+  val owned = take! person;
+  return result + owned.age - 21;
+}

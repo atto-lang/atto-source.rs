@@ -4,16 +4,25 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (input, output, check_only) = match args.as_slice() {
+    let (input, output, check_only, ownership) = match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
-            println!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --check <input.atto>");
+            println!("usage: attoc [--borrow-v1] <input.atto> [-o out.wasm]\n       attoc [--borrow-v1] --check <input.atto>");
             return ExitCode::SUCCESS;
         }
-        [flag, i] if flag == "--check" => (i.clone(), None, true),
-        [i] => (i.clone(), None, false),
-        [i, o, out] if o == "-o" => (i.clone(), Some(out.clone()), false),
+        [flag, i] if flag == "--check" =>
+            (i.clone(), None, true, atto_compiler::OwnershipMode::LegacyMoves),
+        [mode, flag, i] if mode == "--borrow-v1" && flag == "--check" =>
+            (i.clone(), None, true, atto_compiler::OwnershipMode::BorrowV1),
+        [i] =>
+            (i.clone(), None, false, atto_compiler::OwnershipMode::LegacyMoves),
+        [i, o, out] if o == "-o" =>
+            (i.clone(), Some(out.clone()), false, atto_compiler::OwnershipMode::LegacyMoves),
+        [mode, i] if mode == "--borrow-v1" =>
+            (i.clone(), None, false, atto_compiler::OwnershipMode::BorrowV1),
+        [mode, i, o, out] if mode == "--borrow-v1" && o == "-o" =>
+            (i.clone(), Some(out.clone()), false, atto_compiler::OwnershipMode::BorrowV1),
         _ => {
-            eprintln!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --check <input.atto>");
+            eprintln!("usage: attoc [--borrow-v1] <input.atto> [-o out.wasm]\n       attoc [--borrow-v1] --check <input.atto>");
             return ExitCode::from(2);
         }
     };
@@ -24,7 +33,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match atto_compiler::compile(&source) {
+    match atto_compiler::compile_with_mode(&source, ownership) {
         Ok(bytes) => {
             if check_only {
                 return ExitCode::SUCCESS;

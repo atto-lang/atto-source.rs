@@ -1,0 +1,5 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// Returned class views require lifetime-aware typed MIR and are fail-closed.
+define class Person as pub let int age = 21; end
+fnc view(Person p): Borrow<Person> { return p; }
+pub fnc main(): int { return 42; }

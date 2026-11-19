@@ -1,0 +1,7 @@
+// expect-error: E_BORROW
+// java: rejects
+// An explicit borrow! cannot make a computed temporary into a proven place.
+define class Person as pub let int age = 21; end
+fnc make(): Person { return new Person(); }
+fnc inspect(p: Borrow<Person>): int { return p.age; }
+pub fnc main(): int { return inspect(borrow! make()); }

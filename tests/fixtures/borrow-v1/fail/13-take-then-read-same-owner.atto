@@ -1,0 +1,7 @@
+// expect-error: E_MOVED
+define class Person as pub let int age = 21; end
+fnc both(take! Person owned, Person reader): int { return reader.age + owned.age; }
+pub fnc main(): int {
+    let p = new Person();
+    return both(take! p, p);
+}

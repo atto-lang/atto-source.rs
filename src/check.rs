@@ -17,11 +17,15 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
+mod loan_liveness;
+mod checked_handle_gate;
 pub mod lambda_types;
 mod direct_lambda;
 pub mod callable_ir;
 
 pub const MAX_LOCALS: usize = 1024;
+/// Upper bound on all syntactic last-use AST visits per checked function.
+const NLL_WORK_BUDGET: usize = 32_768;
 /// Fixed-size i64 continuation slots; all guest generator frames use one size.
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
@@ -206,6 +210,10 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    /// Checked nonowning class-loan typed IR marker. Never grants owner retirement rights.
+    ClassBorrow { alias: u32, owner: u32, mutable: bool, value: TE },
+    /// Static end of a loan interval; not deallocation or owner promotion.
+    ClassLoanEnd { alias: u32, owner: u32, mutable: bool },
     /// Compiler-planned scalar i64 cell store inside an owned Array allocation.
     /// Its offset is checked against the resolved nominal layout/length.
     CollectionStore { array: TE, offset: u32, value: TE },
@@ -410,7 +418,7 @@ struct ActorInfo {
 
 /// Program-wide declaration tables shared by every body check.
 struct Globals<'a> {
-    sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
+    sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type, Vec<bool>)>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -464,6 +472,16 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Lexical safety guards for owner operations not yet certified for
+    /// NLL-based early release (deep-copy, drop, rebinding, field reads).
+    /// The alias -> owner relation survives NLL retirement, but expires at
+    /// the alias's *lexical* scope exit; it never grants ownership.
+    lexical_loan_guards: BTreeMap<u32, ScopedLoan>,
+    /// Stable provenance: ending an NLL loan never grants ownership of its
+    /// alias. Cleared only when the alias's declaring scope exits.
+    borrowed_slots: BTreeSet<u32>,
+    /// Monotone NLL visit budget; exhaustion conservatively retains live loans.
+    nll_fuel: usize,
     /// Compiler-issued lexical protected state permissions.
     state_write_scope: bool,
     state_read_scope: bool,
@@ -505,6 +523,8 @@ impl Globals<'_> {
             Type::Class(i) => self.classes[i as usize].name.clone(),
             Type::Enum(i) => self.enums[i as usize].name.clone(),
             Type::ActorRef(i) => format!("ActorRef<{}>", self.actors[i as usize].name),
+            Type::BorrowClass(i) => format!("Borrow<{}>", self.classes[i as usize].name),
+            Type::BorrowNamed(i) => format!("Borrow<{}>", self.type_names[i as usize].0),
             Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => self.type_names[i as usize].0.clone(),
             t => t.name().to_string(),
         }
@@ -534,6 +554,14 @@ fn resolve(t: Type, type_names: &[(String, Pos)], classes: &[String], enums: &[E
                 return Err(type_err(*pos, format!("'{n}' is an actor; its references have type ActorRef<{n}>")));
             } else {
                 return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE", format!("unknown type '{n}'")));
+            }
+        }
+        Type::BorrowNamed(i) => {
+            let (name, pos) = &type_names[i as usize];
+            match classes.iter().position(|c| c == name) {
+                Some(c) => Type::BorrowClass(c as u32),
+                None => return Err(Diagnostic::new(*pos, "E_UNKNOWN_TYPE",
+                    format!("Borrow<{name}> requires a declared class"))),
             }
         }
         Type::Callable(_) => {
@@ -795,12 +823,266 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
     Ok(())
 }
 
+/// Check the opt-in, versioned read-only borrowing default for top-level
+/// nonprimitive class formals. Ordinary `fnc inspect(Foo foo)` is checked as
+/// `fnc inspect(Borrow<Foo> foo)` without requiring the latter source spelling.
+///
+/// IMPORTANT: this is deliberately a *bounded migration mode*, not a global
+/// change to existing compiled programs. Reuse the same checker-owned class
+/// loan facts, checked argument provenance and borrowed formal identity as
+/// explicit `Borrow<Foo>`, without generating any phantom owned locals.
+///
+/// Unsupported method/constructor/actor class parameters are rejected rather
+/// than quietly retaining the legacy implicit-move semantics in this mode.
+/// Mutable loans, returned reference lifetimes and generics still require
+/// separate typed proof before enabling this mode as the language default.
+pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
+    // This is a public compiler API, including direct (non-parser) callers.
+    // Apply the source parser's cardinality limits *before* cloning the AST,
+    // and before any allocation proportional to arbitrary caller-controlled
+    // declarations. Limits cover declarations and their immediate members;
+    // deep AST trees still rely on the parser's nesting/source admission.
+    let invalid_shape = p.funcs.len() > crate::parser::MAX_FUNCS
+        || p.classes.len() > crate::parser::MAX_FUNCS
+        || p.actors.len() > crate::parser::MAX_FUNCS
+        || p.enums.len() > crate::parser::MAX_FUNCS
+        || p.funcs.iter().any(|f| f.params.len() > crate::parser::MAX_PARAMS)
+        || p.classes.iter().any(|c| {
+            c.fields.len().saturating_add(c.methods.len())
+                .saturating_add(usize::from(c.ctor.is_some())) > crate::parser::MAX_MEMBERS
+                || c.ctor.as_ref().is_some_and(|ctor| ctor.params.len() > crate::parser::MAX_PARAMS)
+                || c.methods.iter().any(|m| m.params.len() > crate::parser::MAX_PARAMS)
+        })
+        || p.actors.iter().any(|a| {
+            a.fields.len().saturating_add(a.methods.len())
+                .saturating_add(usize::from(a.receive.is_some())) > crate::parser::MAX_MEMBERS
+                || a.methods.iter().any(|m| m.params.len() > crate::parser::MAX_PARAMS)
+        })
+        || p.enums.iter().any(|e| e.variants.len() > crate::parser::MAX_MEMBERS);
+    if invalid_shape {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            "borrow-v1: programmatic AST exceeds parser declaration or parameter limits"));
+    }
+    // Target-only actor interfaces have no verified executable ownership or
+    // borrow ABI; a direct caller must not bypass the source-only admission
+    // gate and let their signatures silently disappear during codegen.
+    if p.actor_interface.is_some() {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_UNSUPPORTED_TYPE",
+            "borrow-v1: actor interfaces need an executable lifetime/receiver ABI"));
+    }
+
+    // The API also accepts programmatically constructed/rewritten ASTs.
+    // Reject forged or stale indices *before* any resolve() indexing,
+    // desugaring, typed checking, or code generation. Returning a diagnostic
+    // instead of panicking is part of the versioned borrow-mode boundary.
+    let validate_decl_type = |ty: Type, pos: Pos| -> R<()> {
+        let valid = match ty {
+            Type::Named(i) | Type::BorrowNamed(i) | Type::NamedRef(i) |
+            Type::Callable(i) => p.type_names.get(i as usize).is_some(),
+            Type::Class(i) | Type::BorrowClass(i) =>
+                p.classes.get(i as usize).is_some(),
+            Type::Enum(i) => p.enums.get(i as usize).is_some(),
+            Type::ActorRef(i) => p.actors.get(i as usize).is_some(),
+            _ => true,
+        };
+        if !valid {
+            return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE",
+                "borrow-v1: invalid or stale declaration type index"));
+        }
+        Ok(())
+    };
+    for f in &p.funcs {
+        validate_decl_type(f.ret, f.pos)?;
+        for param in &f.params {
+            validate_decl_type(param.ty, param.pos)?;
+        }
+    }
+    for c in &p.classes {
+        for field in &c.fields {
+            validate_decl_type(field.ty, field.pos)?;
+        }
+        if let Some(ctor) = &c.ctor {
+            for param in &ctor.params {
+                validate_decl_type(param.ty, param.pos)?;
+            }
+        }
+        for method in &c.methods {
+            validate_decl_type(method.ret, method.pos)?;
+            for param in &method.params {
+                validate_decl_type(param.ty, param.pos)?;
+            }
+        }
+    }
+    for actor in &p.actors {
+        for field in &actor.fields {
+            validate_decl_type(field.ty, field.pos)?;
+        }
+        // ActorMail<T> is a separate transport capability, not a class
+        // loan. Check even when the source parser would not emit this type:
+        // direct AST callers must never smuggle a forged receive payload
+        // into isolate/mailbox codegen.
+        if let Some(receive) = &actor.receive {
+            validate_decl_type(receive.payload, receive.pos)?;
+        }
+        for method in &actor.methods {
+            validate_decl_type(method.ret, method.pos)?;
+            for param in &method.params {
+                validate_decl_type(param.ty, param.pos)?;
+            }
+        }
+    }
+
+    let mut migrated = p.clone();
+    let class_names: BTreeSet<&str> = p.classes.iter().map(|c| c.name.as_str()).collect();
+    let is_class_formal = |ty: Type| match ty {
+        Type::Named(i) => p.type_names.get(i as usize)
+            .is_some_and(|(name, _)| class_names.contains(name.as_str())),
+        // Some compiler frontends synthesize already-resolved program ASTs.
+        // They must not bypass the versioned non-owning mode through Class.
+        Type::Class(_) | Type::BorrowClass(_) | Type::BorrowNamed(_) => true,
+        _ => false,
+    };
+
+    // A versioned mode must have one predictable ownership interpretation.
+    // This backend only proves top-level synchronous borrowed class formals.
+    // Class/actor methods and constructors must not silently continue moving
+    // their class arguments while ordinary functions change to borrowing.
+    for class in &p.classes {
+        if class.ctor.as_ref().is_some_and(|ctor|
+            ctor.params.iter().any(|q| is_class_formal(q.ty) || q.consuming))
+            || class.methods.iter().any(|method|
+                method.params.iter().any(|q| is_class_formal(q.ty) || q.consuming))
+        {
+            return Err(Diagnostic::new(class.pos, "E_UNSUPPORTED_TYPE",
+                "borrow-v1: class methods and constructors with class formals require verified receiver/parameter lifetimes"));
+        }
+    }
+    for actor in &p.actors {
+        if actor.methods.iter().any(|method|
+            method.params.iter().any(|q| is_class_formal(q.ty) || q.consuming))
+        {
+            return Err(Diagnostic::new(actor.pos, "E_UNSUPPORTED_TYPE",
+                "borrow-v1: actor methods with class formals require proven actor-domain lifetimes"));
+        }
+    }
+
+    let mut rewrites = 0usize;
+    for func in &mut migrated.funcs {
+        for formal in &mut func.params {
+            if formal.consuming {
+                if !is_class_formal(formal.ty) || formal.mutable
+                    || matches!(formal.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)) {
+                    return Err(Diagnostic::new(formal.pos, "E_UNSUPPORTED_TYPE",
+                        "borrow-v1: take! consuming formal requires an owned class, not a borrow or scalar"));
+                }
+                // Keep this formal owned. Its specific call-site marker is
+                // retained in Globals::sigs and checked before consumption.
+                continue;
+            }
+            if is_class_formal(formal.ty) && formal.mutable {
+                // A mutable formal is an explicit effect request. This mode
+                // cannot verify an exclusive caller loan or exported write
+                // contract yet. It must not quietly erase the mut permission.
+                return Err(Diagnostic::new(formal.pos, "E_UNSUPPORTED_TYPE",
+                    "borrow-v1: mutable class formals require verified exclusive argument loans"));
+            }
+            match formal.ty {
+                Type::Named(i) if p.type_names.get(i as usize)
+                    .is_some_and(|(name, _)| class_names.contains(name.as_str())) =>
+                {
+                    // Reuse exact source type index and position for
+                    // BorrowNamed resolution and checked call-loan emission.
+                    formal.ty = Type::BorrowNamed(i);
+                    rewrites += 1;
+                }
+                Type::Class(i) => {
+                    // An already-resolved compiler-generated class formal
+                    // must not evade the checked non-owning default. Verify
+                    // its type index before letting typed MIR see a reference.
+                    if p.classes.get(i as usize).is_none() {
+                        return Err(Diagnostic::new(formal.pos, "E_UNKNOWN_TYPE",
+                            "borrow-v1: invalid resolved class formal index"));
+                    }
+                    formal.ty = Type::BorrowClass(i);
+                    rewrites += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    // No source rewriting/token guessing and no unchecked ABI conversion.
+    // Even programs with zero class formals follow the same safety gates.
+    debug_assert!(rewrites <= p.funcs.iter().map(|f| f.params.len()).sum::<usize>());
+    if migrated.funcs.iter().any(|f| f.params.iter().any(|q| q.consuming)) {
+        // Checked-handle screening must still run on the complete original
+        // AST. Lambda lowering does not yet preserve consuming effects, so
+        // this versioned subset uses exact top-level checking instead.
+        checked_handle_gate::validate(&migrated)?;
+        return check_lowered(&migrated);
+    }
+    check(&migrated)
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
+    // An unversioned compile must never reinterpret a consuming-formal
+    // declaration as the old implicit-move ABI. Only --borrow-v1 registers
+    // and verifies these explicit transfer effects.
+    if p.funcs.iter().any(|f| f.params.iter().any(|q| q.consuming))
+        || p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k|
+            k.params.iter().any(|q| q.consuming))
+            || c.methods.iter().any(|m| m.params.iter().any(|q| q.consuming)))
+        || p.actors.iter().any(|a| a.methods.iter().any(|m|
+            m.params.iter().any(|q| q.consuming))) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_UNSUPPORTED_TYPE",
+            "take! consuming formals require the versioned borrow-v1 profile"));
+    }
+    // The browser backend cannot execute checked handles. Validate the
+    // complete source AST *before* lambda lifting or generator CFG lowering:
+    // otherwise an unreachable branch, nested callback or declaration
+    // initializer might be rewritten away without proving handle safety.
+    checked_handle_gate::validate(p)?;
+    // Lambda lifting does not yet preserve borrowed-parameter provenance.
+    // Fail closed rather than producing lifted owned class captures.
+    if p.funcs.iter().any(|f| f.params.iter().any(|p|
+        matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)))) {
+        return check_lowered(p);
+    }
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
 
 fn check_lowered(p: &Program) -> R<TProgram> {
+    // For this bounded ABI, only top-level non-generator function formals
+    // can borrow classes. Lifetime-bearing returns/receivers/actors must not
+    // silently lower as ordinary owned handles.
+    for f in &p.funcs {
+        if matches!(f.ret, Type::BorrowNamed(_) | Type::BorrowClass(_))
+            || f.is_generator && f.params.iter().any(|p|
+                matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_))) {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
+                "Borrow<T> returns/generator parameters need lifetime-aware lowering"));
+        }
+    }
+    for c in &p.classes {
+        if c.ctor.as_ref().is_some_and(|ctor| ctor.params.iter().any(|p|
+            matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_))))
+            || c.methods.iter().any(|m|
+                matches!(m.ret, Type::BorrowNamed(_) | Type::BorrowClass(_))
+                || m.params.iter().any(|p|
+                    matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)))) {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
+                "Borrow<T> class method and constructor parameters require receiver lifetime proof"));
+        }
+    }
+    for a in &p.actors {
+        if a.methods.iter().any(|m|
+            matches!(m.ret, Type::BorrowNamed(_) | Type::BorrowClass(_))
+            || m.params.iter().any(|p|
+                matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)))) {
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
+                "Borrow<T> actor methods require actor isolation/lifetime proof"));
+        }
+    }
     // Validate the bounded CFG and integer-only suspension/lifetime profile
     // before registering signatures. Reject unsupported generator effects
     // before emission; never substitute eager iterator materialization.
@@ -974,7 +1256,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             ));
         }
         let params = f.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?;
-        sigs.insert(key, (i as u32, params, res(f.ret)?));
+        sigs.insert(key, (i as u32, params, res(f.ret)?,
+            f.params.iter().map(|q| q.consuming).collect()));
         names.entry(f.name.clone()).or_default().push(f.params.len());
     }
 
@@ -1144,7 +1427,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     };
 
     let main = match g.sigs.get(&("main".to_string(), 0)) {
-        Some((i, _, ret)) => {
+        Some((i, _, ret, _)) => {
             if !matches!(ret, Type::Int | Type::Void) {
                 return Err(Diagnostic::new(
                     p.funcs[*i as usize].pos,
@@ -1176,7 +1459,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // ---- top-level functions
     let mut generators = Vec::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        let (_, params, ret) = g.sigs[&(f.name.clone(), f.params.len())].clone();
+        let (_, params, ret, _) = g.sigs[&(f.name.clone(), f.params.len())].clone();
         if f.is_generator {
             if let Some(mut plan) = generator_lower::lower(f)? {
                 plan.function = i as u32;
@@ -1235,7 +1518,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         )?;
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
-            params,
+            params: params.into_iter().map(|ty| match ty {
+                Type::BorrowClass(c) => Type::Class(c),
+                other => other,
+            }).collect(),
             ret,
             locals: body.1,
             body: body.0,
@@ -1426,6 +1712,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     name: String::new(),
                     ty: mi.ret,
                     mutable: false,
+                    consuming: false,
                     pos: m.pos,
                 },
                 mi.ret,
@@ -1575,9 +1862,11 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
         let next = match stmt {
             TStmt::Set(_, value) | TStmt::GlobalSet(_, value)
             | TStmt::Expr(value) | TStmt::StateRegister(value)
-            | TStmt::Return(Some(value)) =>
+            | TStmt::Return(Some(value))
+            | TStmt::ClassBorrow { value, .. } =>
                 expr_escape_effects(value, effects),
             TStmt::Return(None) | TStmt::UnwindFrame { .. }
+            | TStmt::ClassLoanEnd { .. }
             | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
             | TStmt::Unreachable => EscapeEffects::default(),
             TStmt::Throw(value) => expr_escape_effects(value, effects)
@@ -1735,6 +2024,8 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
         Type::Class(i) => classes[i as usize].clone(),
         Type::Enum(i) => enums[i as usize].name.clone(),
         Type::ActorRef(i) => format!("ActorRef<{}>", actors[i as usize]),
+        Type::BorrowClass(i) => format!("Borrow<{}>", classes[i as usize]),
+        Type::BorrowNamed(i) => format!("Borrow<{}>", tn[i as usize].0),
         Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) => tn[i as usize].0.clone(),
         t => t.name().to_string(),
     }
@@ -2168,11 +2459,18 @@ fn body_check(
         });
     } else {
         for (i, (n, t, m)) in named.iter().enumerate() {
+            let local_type = match *t {
+                Type::BorrowClass(c) => {
+                    cx.borrowed_slots.insert(i as u32);
+                    Type::Class(c)
+                }
+                other => other,
+            };
             cx.scopes[0].push(Local {
                 name: n.to_string(),
                 slot: i as u32,
-                ty: *t,
-                mutable: *m,
+                ty: local_type,
+                mutable: *m && !matches!(*t, Type::BorrowClass(_)),
                 mail: None,
             });
         }
@@ -2276,6 +2574,9 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
     body.iter().all(|stmt| match stmt {
         TStmt::Set(_, value) | TStmt::Expr(value) =>
             pure_expr(value, pure_indices),
+        // No pure admission for class borrow markers before complete typed
+        // MIR effect and reference-provenance proof.
+        TStmt::ClassBorrow { .. } | TStmt::ClassLoanEnd { .. } => false,
         TStmt::Return(value) =>
             value.as_ref().is_none_or(|value| pure_expr(value, pure_indices)),
         TStmt::If(arms, otherwise) =>
@@ -2301,6 +2602,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::ClassBorrow { value, .. } => any_in(value, f),
+        TStmt::ClassLoanEnd { .. } => false,
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
         TStmt::CollectionStore { array, value, .. } =>
@@ -2395,6 +2698,9 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            lexical_loan_guards: BTreeMap::new(),
+            borrowed_slots: BTreeSet::new(),
+            nll_fuel: NLL_WORK_BUDGET,
             state_write_scope: false,
             state_read_scope: false,
             imports,
@@ -2477,6 +2783,8 @@ impl<'a> FnCx<'a> {
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
         let loans = std::mem::take(&mut self.loans);
+        let lexical_loan_guards = std::mem::take(&mut self.lexical_loan_guards);
+        let borrowed_slots = std::mem::take(&mut self.borrowed_slots);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         let prev_error = std::mem::replace(&mut self.recover_error, error);
         self.cleanup_depth += 1;
@@ -2485,6 +2793,8 @@ impl<'a> FnCx<'a> {
         self.recover_cursor = prev_cursor;
         self.recover_error = prev_error;
         self.loans = loans;
+        self.lexical_loan_guards = lexical_loan_guards;
+        self.borrowed_slots = borrowed_slots;
         self.moved = moved;
         self.loops = loops;
         self.scopes = scopes;
@@ -2594,6 +2904,8 @@ impl<'a> FnCx<'a> {
         if let Some(ended) = self.scopes.pop() {
             for l in ended {
                 self.loans.remove(&l.slot);
+                self.lexical_loan_guards.remove(&l.slot);
+                self.borrowed_slots.remove(&l.slot);
                 self.moved.remove(&l.slot);
             }
         }
@@ -2601,7 +2913,21 @@ impl<'a> FnCx<'a> {
 
     fn scoped(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
         self.scopes.push(Vec::new());
-        let r = self.stmts(body);
+        let mut r = self.stmts(body);
+        // The scanner can keep a loan live conservatively through a nested
+        // scope. Preserve its final *typed* end marker at lexical exit.
+        if let Ok(ref mut typed) = r {
+            let remaining = self.scopes.last().into_iter()
+                .flat_map(|locals| locals.iter())
+                .filter_map(|local| self.loans.get(&local.slot)
+                    .map(|loan| (local.slot, *loan)))
+                .collect::<Vec<_>>();
+            for (alias, loan) in remaining {
+                typed.push(TStmt::ClassLoanEnd {
+                    alias, owner: loan.owner, mutable: loan.mutable
+                });
+            }
+        }
         self.pop_scope();
         r
     }
@@ -2628,7 +2954,47 @@ impl<'a> FnCx<'a> {
     }
 
     fn stmts(&mut self, body: &[Stmt]) -> R<Vec<TStmt>> {
-        body.iter().map(|s| self.stmt(s)).collect()
+        let mut checked = Vec::with_capacity(body.len());
+        for (i, statement) in body.iter().enumerate() {
+            checked.push(self.stmt(statement)?);
+            // End a class loan after the final possible use of its binding in
+            // this lexical scope. Never retire a loan from an enclosing scope:
+            // an outer statement may still refer to it after this block.
+            // The exhaustive AST visitor intentionally over-approximates uses
+            // in branching, loops, lambdas and cleanup scopes.
+            let active_loans = &self.loans;
+            let fuel = &mut self.nll_fuel;
+            // Retire a proven *used* alias's lexical hazard guard only once
+            // its final source use has executed. A never-used alias has no
+            // executed last-use witness: keep conservative ownership barriers
+            // (drop, deep-copy, owner field reads, tuple-root rebinding) until
+            // its lexical scope exits, while preserving the existing NLL
+            // release path for explicit take!/fresh loan admission.
+            //
+            // Do not remove the guard merely because a future-use scan is
+            // empty: this made copy!!, drop!, owner-field reads and rebinding
+            // silently bypass never-used loan declarations on current main.
+            let expired: Vec<(u32, bool)> = self.scopes.last().unwrap().iter()
+                .filter(|local| active_loans.contains_key(&local.slot))
+                .filter_map(|local| {
+                    let future = body[i + 1..].iter().any(|next|
+                        loan_liveness::stmt_mentions(next, &local.name, fuel));
+                    if future { return None; }
+                    let used_now = loan_liveness::stmt_mentions(statement, &local.name, fuel);
+                    Some((local.slot, used_now))
+                }).collect();
+            for (slot, used_now) in expired {
+                if let Some(loan) = self.loans.remove(&slot) {
+                    if used_now {
+                        self.lexical_loan_guards.remove(&slot);
+                    }
+                    checked.push(TStmt::ClassLoanEnd {
+                        alias: slot, owner: loan.owner, mutable: loan.mutable
+                    });
+                }
+            }
+        }
+        Ok(checked)
     }
 
     fn cond(&mut self, e: &Expr, what: &str) -> R<TE> {
@@ -2688,8 +3054,11 @@ impl<'a> FnCx<'a> {
                         format!("cannot reassign val binding '{name}'"),
                     ));
                 }
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed local or owner while the loan is live"));
+                if self.borrowed_slots.contains(&slot)
+                    || self.loans.values().any(|loan| loan.owner == slot)
+                    || self.lexical_loan_guards.values().any(|loan| loan.owner == slot)
+                {
+                    return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed alias or owner while a loan is live"));
                 }
                 let v = self.consume_expected(value, ty)?;
                 if v.ty != ty {
@@ -2796,7 +3165,9 @@ impl<'a> FnCx<'a> {
                             "cannot drop an already moved or dropped owner"));
                     }
                     if self.loans.contains_key(&slot)
-                        || self.loans.values().any(|loan| loan.owner == slot) {
+                        || self.loans.values().any(|loan| loan.owner == slot)
+                        || self.lexical_loan_guards.values().any(|loan| loan.owner == slot)
+                    {
                         return Err(Diagnostic::new(e.pos, "E_BORROW",
                             "cannot drop an owner while an active loan exists"));
                     }
@@ -3311,6 +3682,9 @@ impl<'a> FnCx<'a> {
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
         if let ExprKind::Var(name) = &target.kind {
             if let Some(local) = self.lookup(name) {
+                if self.borrowed_slots.contains(&local.slot) && !self.loans.contains_key(&local.slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "cannot mutate an expired borrowed class alias"));
+                }
                 if let Some(loan) = self.loans.get(&local.slot).copied() {
                     if !loan.mutable {
                         return Err(Diagnostic::new(pos, "E_BORROW", "shared borrow cannot mutate a field"));
@@ -3515,7 +3889,7 @@ impl<'a> FnCx<'a> {
             Some(l) => (l.slot, l.ty),
             None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND", format!("unknown name '{owner_name}'"))),
         };
-        if self.loans.contains_key(&owner) {
+        if self.borrowed_slots.contains(&owner) {
             return Err(Diagnostic::new(pos, "E_BORROW", "reborrowing a borrowed handle requires a verified lifetime contract"));
         }
         if let Some(loan) = self.loans.values().find(|loan| loan.owner == owner) {
@@ -3554,7 +3928,9 @@ impl<'a> FnCx<'a> {
         }
         let slot = self.declare(name, value.ty, false, pos)?;
         self.loans.insert(slot, ScopedLoan { owner, mutable });
-        Ok(TStmt::Set(slot, value))
+        self.lexical_loan_guards.insert(slot, ScopedLoan { owner, mutable });
+        self.borrowed_slots.insert(slot);
+        Ok(TStmt::ClassBorrow { alias: slot, owner, mutable, value })
     }
 
     fn explicit_ownership(&mut self, action: OwnershipOp, mutable: bool, inner: &Expr, pos: Pos) -> R<TE> {
@@ -3562,6 +3938,21 @@ impl<'a> FnCx<'a> {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "mut is only valid after borrow!"));
         }
         match action {
+            OwnershipOp::Ref | OwnershipOp::Deref | OwnershipOp::Unref => {
+                // Parsed canonical ref!/deref!/unref! and legacy rt aliases
+                // share this checked-handle AST. Never treat these as ordinary
+                // borrows, generic calls, owner moves or raw pointer access:
+                // this guest backend lacks handle issuance, generation,
+                // access-rights and exactly-once retirement in typed MIR.
+                let spelling = match action {
+                    OwnershipOp::Ref => "ref!",
+                    OwnershipOp::Deref => "deref!",
+                    OwnershipOp::Unref => "unref!",
+                    _ => unreachable!(),
+                };
+                Err(Diagnostic::new(pos, "E_UNSUPPORTED_HANDLE",
+                    format!("{spelling} needs a verified checked-handle typed IR and runtime; no guest code emitted")))
+            }
             OwnershipOp::Borrow => {
                 if mutable {
                     return Err(Diagnostic::new(pos, "E_BORROW", "borrow! mut must initialize a scoped class loan"));
@@ -3585,6 +3976,7 @@ impl<'a> FnCx<'a> {
                             if let Some(owner_slot) = self.lookup(name).map(|l| l.slot) {
                                 if self.loans.contains_key(&owner_slot)
                                     || self.loans.values().any(|l| l.owner == owner_slot && l.mutable)
+                                    || self.lexical_loan_guards.values().any(|l| l.owner == owner_slot && l.mutable)
                                 {
                                     return Err(Diagnostic::new(pos, "E_BORROW",
                                         "copy!! cannot read a mutable/exclusive borrowed class owner"));
@@ -3651,8 +4043,8 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP", "take! requires a local, not a computed value"));
                 };
                 let slot = *slot_ref;
-                if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                    return Err(Diagnostic::new(pos, "E_BORROW", "take! is forbidden while an owner is borrowed"));
+                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                    return Err(Diagnostic::new(pos, "E_BORROW", "take! cannot move a borrowed alias or an owner with live loans"));
                 }
                 if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                     return Err(Diagnostic::new(pos, "E_MOVED", format!("cannot take '{name}' from outside a loop")));
@@ -3669,8 +4061,8 @@ impl<'a> FnCx<'a> {
         let v = self.value(e)?;
         if let (ExprKind::Var(name), TExpr::Local(slot), Type::Class(_)) = (&e.kind, &v.e, v.ty) {
             let slot = *slot;
-            if self.loans.contains_key(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
-                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class or owner while a loan is live"));
+            if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                return Err(Diagnostic::new(e.pos, "E_BORROW", "cannot transfer a borrowed class alias or owner while a loan is live"));
             }
             if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
                 return Err(Diagnostic::new(
@@ -4034,6 +4426,14 @@ impl<'a> FnCx<'a> {
                     ))
                 }
                 Some(l) => {
+                    // Borrowed formals live for the entire call frame.
+                    // Lexical aliases begin after the formal slots and can
+                    // expire through nonlexical last-use analysis.
+                    if l.slot >= self.nparams && self.borrowed_slots.contains(&l.slot)
+                        && !self.loans.contains_key(&l.slot) {
+                        return Err(Diagnostic::new(pos, "E_BORROW",
+                            format!("loan for borrowed alias '{name}' has ended; it is not an owned value")));
+                    }
                     if self.moved.contains(&l.slot) {
                         return Err(Diagnostic::new(pos, "E_MOVED", format!("use of moved value '{name}'")));
                     }
@@ -4191,25 +4591,124 @@ impl<'a> FnCx<'a> {
         })
     }
 
-    /// Check arguments against parameter types; object arguments move.
+    /// Check arguments against parameter types; owned object formals still
+    /// move in this *legacy* ABI. The future default Foo-by-borrow contract
+    /// needs a versioned migration and is NOT enabled by this change.
+    /// Arguments evaluate left-to-right. Inferred Borrow<Class> formals
+    /// issue compile-time shared call loans spanning all subsequent argument
+    /// evaluation. These end only once all arguments are checked; the guest
+    /// call itself is synchronous and returns no borrowed class handle.
+    ///
+    /// Each ephemeral loan gets an out-of-range, checker-only ID (never
+    /// a runtime local or owned handle); no drop authority is created.
+    #[inline(never)]
     fn args(&mut self, callee: &str, args: &[Expr], params: &[Type]) -> R<Vec<TE>> {
-        let mut out = Vec::new();
-        for (i, (a, want)) in args.iter().zip(params).enumerate() {
-            let v = self.consume_expected(a, *want)?;
-            if v.ty != *want {
-                return Err(type_err(
-                    a.pos,
-                    format!(
-                        "argument {} of '{callee}' has type {} but expected {}",
-                        i + 1,
-                        self.tn(v.ty),
-                        self.tn(*want)
-                    ),
-                ));
+        self.args_with_transfers(callee, args, params, &[])
+    }
+
+    /// Nonempty consuming markers occur only in the versioned borrow-v1
+    /// top-level function signature. Requiring take! at the caller is what
+    /// separates explicitly transferred owners from default readonly loans.
+    fn args_with_transfers(&mut self, callee: &str, args: &[Expr],
+                           params: &[Type], consuming: &[bool]) -> R<Vec<TE>> {
+        let mut temporary_call_loans: Vec<u32> = Vec::new();
+        let checked = (|| -> R<Vec<TE>> {
+            let mut out = Vec::new();
+            for (i, (arg, want)) in args.iter().zip(params).enumerate() {
+                if consuming.get(i).copied().unwrap_or(false) {
+                    if !matches!(want, Type::Class(_)) {
+                        return Err(Diagnostic::new(arg.pos, "E_UNSUPPORTED_TYPE",
+                            "take! formal must resolve to a declared owned class"));
+                    }
+                    // A consuming formal is not a general implicit move.
+                    // Require an explicit named ownership transfer at the
+                    // call site, then reuse the existing checked take! path
+                    // (which rejects aliases, live loans and use-after-move).
+                    if !matches!(&arg.kind,
+                        ExprKind::Ownership(OwnershipOp::Take, false, inner)
+                            if matches!(&inner.kind, ExprKind::Var(_))) {
+                        return Err(Diagnostic::new(arg.pos, "E_OWNERSHIP",
+                            format!("argument {} of '{callee}' requires explicit take! of a named class owner", i + 1)));
+                    }
+                }
+                if let Type::BorrowClass(class) = *want {
+                    // An explicit `borrow! owner` is a spelling of the
+                    // *same* read-only call loan as the implicit `owner`
+                    // form. Both must select the identical live local place;
+                    // we must not invoke `explicit_ownership` for a class
+                    // expression, which only admits lexical borrow bindings.
+                    // In particular, never silently admit `borrow! mut`,
+                    // `borrow! make_temp()`, field projections or reborrows.
+                    let (name, owner_expr) = match &arg.kind {
+                        ExprKind::Var(name) => (name, arg),
+                        ExprKind::Ownership(OwnershipOp::Borrow, false, inner) =>
+                            match &inner.kind {
+                                ExprKind::Var(name) => (name, inner.as_ref()),
+                                _ => return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                                    "borrow! call argument needs a named, live class owner")),
+                            },
+                        ExprKind::Ownership(OwnershipOp::Borrow, true, _) =>
+                            return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                                "borrow! mut requires an exclusive mutable formal, not Borrow<T>")),
+                        _ => return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                            "Borrow<T> call needs a named owner or borrow! named_owner")),
+                    };
+                    let Some(local) = self.lookup(name) else {
+                        return Err(Diagnostic::new(arg.pos, "E_UNBOUND",
+                            format!("unknown class owner '{name}'")));
+                    };
+                    let owner_slot = local.slot;
+                    if self.borrowed_slots.contains(&owner_slot) {
+                        return Err(Diagnostic::new(arg.pos, "E_BORROW",
+                            "reborrowing a borrowed alias/formal needs verified lifetime provenance"));
+                    }
+                    // Evaluate the owner expression once. For explicit
+                    // borrow! this is the inner named place, not a second
+                    // ownership operation or an owned temporary.
+                    let value = self.value(owner_expr)?;
+                    if value.ty != Type::Class(class) {
+                        return Err(type_err(arg.pos,
+                            format!("argument {} of '{callee}' expects Borrow<{}>",
+                                i + 1, self.g.classes[class as usize].name)));
+                    }
+                    // The checker also detects exclusive loans already live
+                    // on this owner. Concurrent read loans on the same owner
+                    // are allowed, but a later take!/owned argument must fail.
+                    // Call loans are *not* class locals: emitting an
+                    // uninitialized class-typed scratch would invent a
+                    // phantom owned handle for future cleanup backends.
+                    // Reserve an out-of-range checker-only token instead.
+                    let mut alias = u32::MAX;
+                    while self.loans.contains_key(&alias) {
+                        alias = alias.checked_sub(1).ok_or_else(||
+                            Diagnostic::new(arg.pos, "E_SOURCE_LIMIT",
+                                "too many simultaneously active compiler loans"))?;
+                    }
+                    debug_assert!(alias > self.nparams + self.locals.len() as u32);
+                    self.loans.insert(alias, ScopedLoan {
+                        owner: owner_slot, mutable: false,
+                    });
+                    temporary_call_loans.push(alias);
+                    out.push(value);
+                    continue;
+                }
+                let value = self.consume_expected(arg, *want)?;
+                if value.ty != *want {
+                    return Err(type_err(arg.pos,
+                        format!("argument {} of '{callee}' has type {} but expected {}",
+                            i + 1, self.tn(value.ty), self.tn(*want))));
+                }
+                out.push(value);
             }
-            out.push(v);
+            Ok(out)
+        })();
+        // This call loan has no guest drop/owner-transfer instruction. Its
+        // checker-only provenance must not persist past a completed call and
+        // affect unrelated subsequent statements or calls.
+        for alias in temporary_call_loans {
+            self.loans.remove(&alias);
         }
-        Ok(out)
+        checked
     }
 
     fn arity(&self, callee: &str, want: usize, got: usize, pos: Pos) -> R<()> {
@@ -4370,7 +4869,8 @@ impl<'a> FnCx<'a> {
         // This is particularly important for compiler-generated tuple roots:
         // their scalar projections must not bypass an existing mutable loan.
         if matches!(&obj.e, TExpr::Local(slot) if
-            self.loans.values().any(|loan| loan.owner == *slot && loan.mutable))
+            (self.loans.values().any(|loan| loan.owner == *slot && loan.mutable)
+                || self.lexical_loan_guards.values().any(|loan| loan.owner == *slot && loan.mutable)))
         {
             return Err(Diagnostic::new(pos, "E_BORROW",
                 "cannot read owner fields while an exclusive mutable loan is live"));
@@ -4378,7 +4878,7 @@ impl<'a> FnCx<'a> {
         // A borrowed aggregate cannot yield an independently owned handle.
         // Without a nested-loan provenance IR, such a field could escape
         // the original owner's lifetime by ordinary binding or return.
-        if matches!(&obj.e, TExpr::Local(slot) if self.loans.contains_key(slot))
+        if matches!(&obj.e, TExpr::Local(slot) if self.loans.contains_key(slot) || self.borrowed_slots.contains(slot))
             && matches!(f.ty, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt)
         {
             return Err(Diagnostic::new(pos, "E_BORROW",
@@ -4501,7 +5001,7 @@ impl<'a> FnCx<'a> {
             Type::Class(c) => {
                 // Calls on a loan may only return copyable, lifetime-independent
                 // values. Owned object returns need result-lifetime provenance.
-                if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot)) {
+                if matches!(&recv.e, TExpr::Local(slot) if self.loans.contains_key(slot) || self.borrowed_slots.contains(slot)) {
                     if let Some(m) = self.g.classes[c as usize].methods.iter().find(|m| m.name == name) {
                         if matches!(m.ret, Type::Class(_) | Type::ActorRef(_) | Type::GeneratorInt) {
                             return Err(Diagnostic::new(pos, "E_BORROW",
@@ -4736,7 +5236,7 @@ impl<'a> FnCx<'a> {
                 return Err(isolation(pos, me, "file/module callable", name));
             }
         }
-        let (idx, params, ret) = match self.g.sigs.get(&(name.to_string(), args.len())) {
+        let (idx, params, ret, consuming) = match self.g.sigs.get(&(name.to_string(), args.len())) {
             Some(s) => s.clone(),
             None => {
                 return Err(match self.g.names.get(name) {
@@ -4758,7 +5258,7 @@ impl<'a> FnCx<'a> {
                 })
             }
         };
-        let targs = self.args(name, args, &params)?;
+        let targs = self.args_with_transfers(name, args, &params, &consuming)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
             ty: ret,
