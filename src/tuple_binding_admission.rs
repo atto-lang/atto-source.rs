@@ -32,6 +32,10 @@ pub struct TupleBinding {
     pub pos: Pos,
     pub members: Vec<TupleMember>,
     pub alias: Option<RootAlias>,
+    /// Original token offset where the declaration begins.
+    pub start_index: usize,
+    /// Original token offset immediately after the '=' token.
+    pub rhs_start_index: usize,
 }
 
 fn mode(tok: Option<&Tok>) -> Option<BindingMode> {
@@ -156,7 +160,7 @@ fn parse_one(toks: &[Token], start: usize, outer: Option<BindingMode>) -> R<(Tup
     if tok(toks, i) != Some(&Tok::Assign) {
         return Err(fail(toks, i, "E_SYNTAX", "tuple destructuring requires '=' before initializer"));
     }
-    Ok((TupleBinding { pos: toks[start].pos, members, alias }, i + 1))
+    Ok((TupleBinding { pos: toks[start].pos, members, alias, start_index: start, rhs_start_index: i + 1 }, i + 1))
 }
 
 /// Inspect tuple destructuring headers anywhere in the token stream, ignoring
