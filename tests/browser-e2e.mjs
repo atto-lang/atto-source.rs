@@ -134,6 +134,29 @@ try{
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
   assert.match(await run(values,'main() -> 1'),/^3\.5\n1\.0E7\nzero\/many\ntrue\nmain\(\) -> 1$/);
   console.log('PASS browser: float (Java Double.toString), string values and match');
+  // Real browser acceptance for the five async playground showcases. This
+  // compiles the exact .atto fixture source inside a Chromium Web Worker using
+  // the pinned Rust-to-Wasm compiler, then executes the resulting guest Wasm.
+  // Do not substitute JS simulation or the Node-only conformance results.
+  for (const [filename, expectedReturn, expectedStdout] of [
+    ['200-play-suspends.atto', 42, '42\\n'],
+    ['201-play-tasks-async.atto', 42, '42\\n'],
+    ['202-play-async-iterators.atto', 60, '60\\n'],
+    ['203-play-channel-bounded.atto', 6, '6\\n'],
+    ['204-play-channel-unbounded.atto', 42, '42\\n'],
+  ]) {
+    const source = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
+    const browserOutput = await run(source, 'main() -> ' + expectedReturn);
+    assert.equal(browserOutput, expectedStdout + 'main() -> ' + expectedReturn,
+      filename + ': exact stdout and returned value from a real Chromium guest');
+    console.log('PASS browser: async showcase ' + filename + ' compiled and executed');
+  }
+
+  // A removed operator must not be silently admitted by either frontend.
+  assert.match(await run('pub suspends fnc main(): int { return 1 ^^ 2; }', 'E_UNSUPPORTED'),
+    /E_UNSUPPORTED/);
+  console.log('PASS browser: removed ^^ rejects in async source');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
