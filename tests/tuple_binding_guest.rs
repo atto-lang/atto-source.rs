@@ -221,3 +221,35 @@ fn bounded_monomorphization_limits_distinct_scalar_shapes() {
     let diagnostic = lower(lex(&source).unwrap()).unwrap_err();
     assert_eq!(diagnostic.code, "E_SOURCE_LIMIT");
 }
+
+
+#[test]
+fn tuple_alias_cannot_acquire_exclusive_class_mutation_backdoor() {
+    // The tuple root is backed by a compiler-owned class, but it must
+    // retain Atto tuple value semantics instead of exposing writable fields.
+    for modifier in ["as foo", "as val foo", "as const foo"] {
+        let source = format!("pub fnc main(): int {{
+            let (a,b) {modifier} = (1,2);
+            let loan = borrow! mut foo;
+            return a+b;
+        }}");
+        assert_eq!(compile(&source).unwrap_err().code, "E_BORROW",
+            "tuple root {modifier} must not gain mutable class access");
+    }
+}
+
+#[test]
+fn owner_scalar_field_read_rejects_live_exclusive_loan() {
+    let source = r#"
+define class Cell as
+    pub int value: 7;
+end
+pub fnc main(): int {
+    let owner = new Cell();
+    let exclusive = borrow! mut owner;
+    return owner.value;
+}
+"#;
+    assert_eq!(compile(source).unwrap_err().code, "E_BORROW",
+        "read through owner while an exclusive loan exists must fail");
+}
