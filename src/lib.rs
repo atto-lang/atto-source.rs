@@ -101,6 +101,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         (&pair[0].tok, &pair[1].tok),
         (lexer::Tok::Ident(name), lexer::Tok::Lt) if name == "Array"
     )) {
+        // Tuple destructuring owns its element-annotation diagnostics.
+        // Parse its header before the general Array<T> probe attempts to
+        // interpret an incomplete tuple declaration as a normal statement.
+        // In particular, let (a: Array<int>, b) must fail as an unsupported
+        // tuple-element type, not a misleading generic E_SYNTAX.
+        let _ = tuple_binding_admission::inspect(&source_tokens)?;
         let mut parser = parser::Parser::new(source_tokens.clone());
         let parsed = parser.parse_program()?;
         if parsed.array_types.is_empty() {
