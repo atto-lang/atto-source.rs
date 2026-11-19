@@ -3093,17 +3093,19 @@ impl Parser {
         Ok(c)
     }
 
-    /// Short-circuit logical operators are distinct from comma/pipe condition
+    /// Short-circuit logical operators (including word aliases 'and'/'or') are distinct from comma/pipe condition
     /// operators, which are eagerly evaluated. The lexer deliberately keeps
     /// paired pipes as two tokens: initial || still starts a zero-arg lambda.
     /// In infix position only, a pair is logical OR.
     fn parse_logical_or(&mut self) -> R<Expr> {
         let mut left = self.parse_logical_and()?;
         let mut links = 0;
-        while *self.peek() == Tok::Pipe && *self.peek_at(1) == Tok::Pipe {
+        while (*self.peek() == Tok::Pipe && *self.peek_at(1) == Tok::Pipe)
+            || self.is_word("or") {
             let pos = self.pos();
+            let word_op = self.is_word("or");
             self.advance();
-            self.advance();
+            if !word_op { self.advance(); }
             self.grow(1)?;
             links += 1;
             let right = self.parse_logical_and()?;
@@ -3126,10 +3128,12 @@ impl Parser {
     fn parse_logical_and(&mut self) -> R<Expr> {
         let mut left = self.parse_equality()?;
         let mut links = 0;
-        while *self.peek() == Tok::Amp && *self.peek_at(1) == Tok::Amp {
+        while (*self.peek() == Tok::Amp && *self.peek_at(1) == Tok::Amp)
+            || self.is_word("and") {
             let pos = self.pos();
+            let word_op = self.is_word("and");
             self.advance();
-            self.advance();
+            if !word_op { self.advance(); }
             self.grow(1)?;
             links += 1;
             let right = self.parse_equality()?;
