@@ -3389,7 +3389,7 @@ impl<'a> FnCx<'a> {
                 // the separate flow-sensitive AST gate proved exactly one
                 // constructor write on all successful paths. Initialized
                 // final/val/const fields remain non-rebindable.
-                if !f.binding.rebindable() && !(ctor && f.deferred_final) {
+                if !(f.binding.rebindable() || ctor && f.deferred_final) {
                     return Err(Diagnostic::new(
                         pos,
                         "E_IMMUTABLE",
