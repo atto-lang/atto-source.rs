@@ -1,6 +1,6 @@
 //! Compiler-level admission for actor/struct required interface and trait methods.
-//! Admitted contracts still fail E_UNSUPPORTED until independently verified
-//! actor mailbox / struct value ABI is available. No guest execution claimed.
+//! Local actor-only methods use the existing actor mailbox backend; struct
+//! value receivers still fail E_UNSUPPORTED until their ABI is proven.
 use atto_compiler::compile;
 
 fn rejects(src: &str, wanted: &str) {
@@ -36,26 +36,33 @@ fn required_abstract_trait_method_is_not_a_default_implementation() {
     }
 }
 #[test]
-fn actor_valid_inline_receiver_is_validated_but_not_guest_lowered() {
-    rejects(r#"
+fn actor_valid_inline_receiver_is_actor_local_guest_compiled() {
+    let src = r#"
         define interface IPing as ping(): int; end
         define actor A implements IPing as
             pub ping(): int { return 42; }
         end
         pub fnc main(): int { return 0; }
-    "#, "E_UNSUPPORTED");
+    "#;
+    assert!(compile(src).unwrap().starts_with(b"\0asm\x01\0\0\0"));
 }
 #[test]
-fn actor_and_struct_out_of_line_mtd_satisfy_contract_but_stay_fail_closed() {
-    for kind in ["actor", "struct"] {
-        rejects(&format!(r#"
-            define interface IPing as ping(): int; end
-            declare {kind} Item implements IPing;
-            define {kind} Item implements IPing as end
-            pub mtd (Item self) ping(): int {{ return 42; }}
-            pub fnc main(): int {{ return 0; }}
-        "#), "E_UNSUPPORTED");
-    }
+fn actor_out_of_line_mtd_compiles_but_struct_value_abi_stays_fail_closed() {
+    let src = r#"
+        define interface IPing as ping(): int; end
+        declare actor Item implements IPing;
+        define actor Item implements IPing as end
+        pub mtd (Item self) ping(): int { return 42; }
+        pub fnc main(): int { return 0; }
+    "#;
+    assert!(compile(src).unwrap().starts_with(b"\0asm\x01\0\0\0"));
+    rejects(r#"
+        define interface IPing as ping(): int; end
+        declare struct Item implements IPing;
+        define struct Item implements IPing as end
+        pub mtd (Item self) ping(): int { return 42; }
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
 }
 #[test]
 fn wrong_return_type_is_not_silently_accepted() {
