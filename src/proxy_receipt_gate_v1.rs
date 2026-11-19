@@ -9,6 +9,7 @@ pub struct ReceiptIdentityV1 {
     pub caller_incarnation: u64,
     pub target_actor: u64,
     pub target_incarnation: u64,
+    pub association_generation: u64,
     pub placement_epoch: u64,
     pub message_id: u64,
     pub attempt: u64,
@@ -17,7 +18,8 @@ impl ReceiptIdentityV1 {
     fn valid(self) -> bool {
         self.protocol_major == 1 && self.tenant != 0
             && self.caller_incarnation != 0 && self.target_actor != 0
-            && self.target_incarnation != 0 && self.placement_epoch != 0
+            && self.target_incarnation != 0 && self.association_generation != 0
+            && self.placement_epoch != 0
             && self.message_id != 0 && self.attempt != 0
     }
 }
