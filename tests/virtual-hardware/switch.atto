@@ -1,28 +1,8 @@
-// Pure AttoLang virtual Ethernet switch forwarding core.
-// Egress codes: -1 drop, -2 flood to all eligible ports EXCEPT ingress,
-// >=0 one port. The caller must enforce port/VLAN membership on flood.
-
-// Exact nonnegative integer quotient, independent of undecided int / int semantics.
-// Greedy doubling is bounded by signed int width; invalid operands return -1.
-// This is not a constant-time or hot-path optimized primitive.
-pub fnc quotient_nonnegative(int dividend, int divisor): int {
-  if dividend < 0 || divisor <= 0 then
-    return -1;
-  fi
-  let int remaining = dividend;
-  let int quotient = 0;
-  while remaining >= divisor do
-    let int chunk = divisor;
-    let int multiple = 1;
-    while chunk <= remaining - chunk do
-      chunk = chunk * 2;
-      multiple = multiple * 2;
-    done
-    remaining = remaining - chunk;
-    quotient = quotient + multiple;
-  done
-  return quotient;
-}
+// Boolean composition uses the compiler-supported, short-circuit && / || operators.
+// Pure AttoLang virtual Ethernet switch decisions (not a live bridge).
+// Egress code: -1 DROP/TRAP; -2 controlled FLOOD; 0..4095 known port.
+// Unknown unicast/broadcast/multicast flooding is never automatic:
+// an owner must call flood_to_port for each authenticated VLAN member.
 
 pub fnc valid_mac(int mac): bool {
   return mac >= 0 && mac <= 281474976710655;
@@ -32,8 +12,37 @@ pub fnc mac_is_group(int mac): bool {
   if !valid_mac(mac) then
     return false;
   fi
-  let int first_octet = quotient_nonnegative(mac, 1099511627776);
-  return first_octet != (quotient_nonnegative(first_octet, 2)) * 2;
+  // Isolate MAC bit 40 using bounded subtraction (no unresolved int division).
+  let int remaining = mac;
+  if remaining >= 140737488355328 then
+    remaining = remaining - 140737488355328;
+  fi
+  if remaining >= 70368744177664 then
+    remaining = remaining - 70368744177664;
+  fi
+  if remaining >= 35184372088832 then
+    remaining = remaining - 35184372088832;
+  fi
+  if remaining >= 17592186044416 then
+    remaining = remaining - 17592186044416;
+  fi
+  if remaining >= 8796093022208 then
+    remaining = remaining - 8796093022208;
+  fi
+  if remaining >= 4398046511104 then
+    remaining = remaining - 4398046511104;
+  fi
+  if remaining >= 2199023255552 then
+    remaining = remaining - 2199023255552;
+  fi
+  return remaining >= 1099511627776;
+}
+
+// IEEE 802.1D bridge-local control addresses 01:80:C2:00:00:00..0F.
+// They must NOT be unknown-multicast-flooded across a transparent bridge.
+// -1 means trap to an authenticated local control plane or discard.
+pub fnc reserved_bridge_control_destination(int mac): bool {
+  return valid_mac(mac) && mac >= 1652522221568 && mac <= 1652522221583;
 }
 
 pub fnc valid_vlan(int vlan): bool {
@@ -51,16 +60,18 @@ pub fnc can_learn_source(int source_mac, int ingress, int port_count, int vlan):
          valid_vlan(vlan);
 }
 
-// One already-learned entry. An actor-owned FDB will call this only after
-// authenticating the entry's generation and the ingress VLAN.
-// Do NOT treat a caller-provided learned entry as an authenticated FDB.
+// One trusted, already-learned entry: not a substitute for actor-owned FDB.
+// Destination 00:00:00:00:00:00 and bridge-local control frames DROP.
+// Mismatched/stale entry FLOODs by policy; structurally corrupt entry DROPs.
+// Callers MUST validate ingress port VLAN membership before this function.
 pub fnc select_egress_port(
   int destination_mac, int ingress, int port_count, int frame_vlan,
   int learned_mac, int learned_port, int learned_vlan,
   int age_seconds, int max_age_seconds
 ): int {
-  if !valid_mac(destination_mac) || !valid_port(ingress, port_count) ||
-     !valid_vlan(frame_vlan) then
+  if !valid_mac(destination_mac) || destination_mac == 0 ||
+     reserved_bridge_control_destination(destination_mac) ||
+     !valid_port(ingress, port_count) || !valid_vlan(frame_vlan) then
     return -1;
   fi
   if mac_is_group(destination_mac) then
@@ -70,8 +81,10 @@ pub fnc select_egress_port(
     return -2;
   fi
   if !valid_port(learned_port, port_count) ||
-     age_seconds < 0 || max_age_seconds < 1 ||
-     max_age_seconds > 86400 || age_seconds > max_age_seconds then
+     age_seconds < 0 || max_age_seconds < 1 || max_age_seconds > 86400 then
+    return -1;
+  fi
+  if age_seconds > max_age_seconds then
     return -2;
   fi
   if learned_port == ingress then
@@ -80,10 +93,17 @@ pub fnc select_egress_port(
   return learned_port;
 }
 
+// All flood recipients MUST be validated with the destination address,
+// ingress/candidate separation, candidate link state and VLAN membership.
+// 'candidate_vlan' is a trusted port configuration, not a packet claim.
 pub fnc flood_to_port(
-  int ingress, int candidate, int port_count,
+  int destination_mac, int ingress, int candidate, int port_count,
   int frame_vlan, int candidate_vlan, bool candidate_up
 ): bool {
+  if !valid_mac(destination_mac) || destination_mac == 0 ||
+     reserved_bridge_control_destination(destination_mac) then
+    return false;
+  fi
   return valid_port(ingress, port_count) &&
          valid_port(candidate, port_count) &&
          candidate != ingress && candidate_up &&
@@ -116,7 +136,7 @@ pub fnc valid_unicast_destination_mac(int mac): bool {
 }
 
 // Egress codes remain -1 drop, -2 flood, >=0 a specific port.
-// This wrapper prevents accidental delivery to the all-zero destination.
+// Mainline egress policy also rejects bridge-local control frames and bad ingress.
 pub fnc select_safe_egress_port(
   int destination_mac, int ingress, int port_count, int frame_vlan,
   int learned_mac, int learned_port, int learned_vlan,
@@ -124,9 +144,6 @@ pub fnc select_safe_egress_port(
 ): int {
   if !valid_mac(destination_mac) || destination_mac == 0 then
     return -1;
-  fi
-  if mac_is_group(destination_mac) then
-    return -2;
   fi
   return select_egress_port(destination_mac, ingress, port_count, frame_vlan,
                              learned_mac, learned_port, learned_vlan,

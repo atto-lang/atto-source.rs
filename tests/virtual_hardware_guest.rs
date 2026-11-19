@@ -29,6 +29,8 @@ if canonical_ipv4_network(3232235776, 24) &&
    may_forward_on_link(3232235777, 1500, 20, 2, 0, 1500, true) &&
    !may_forward_on_link(3232235777, 1501, 20, 2, 0, 1500, true) &&
    !may_forward_on_link(3758096385, 20, 20, 64, 0, 1500, true) &&
+   !may_forward_on_link(2130706433, 20, 20, 64, 0, 1500, true) &&
+   !may_forward_on_link(2851995649, 20, 20, 64, 0, 1500, true) &&
    select_canonical_egress_port(3232235777, 0, 0, 1, 3232235776, 24, 3) == 3 then
   return 42;
 fi
@@ -41,7 +43,9 @@ if can_admit_ingress_frame(60, 1500, 0, 2, 1, false, true) &&
    valid_unicast_destination_mac(2199023255553) &&
    !valid_unicast_destination_mac(0) &&
    select_safe_egress_port(0, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == -1 &&
-   select_safe_egress_port(2199023255553, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == 1 then
+   select_safe_egress_port(2199023255553, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == 1 &&
+   select_safe_egress_port(1652522221568, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == -1 &&
+   select_safe_egress_port(281474976710655, 2, 2, 1, 2199023255553, 1, 1, 0, 300) == -1 then
   return 43;
 fi
 return -1;
@@ -55,7 +59,9 @@ if valid_serial_config(115200, 8, 0, 1) &&
    can_transmit_octet(4, 255, 0, 8, true, true) &&
    !can_transmit_octet(4, 256, 0, 8, true, true) &&
    can_admit_at_command(1, 2, 0, 8, true, true) &&
-   !can_admit_at_command(4, 2, 0, 8, true, true) then
+   !can_admit_at_command(4, 2, 0, 8, true, true) &&
+   !can_emit_data(4, 115200, 1, 0, 8192, 6, 7) &&
+   next_modem_state(1, 2, 6, 7) == -1 then
   return 44;
 fi
 return -1;

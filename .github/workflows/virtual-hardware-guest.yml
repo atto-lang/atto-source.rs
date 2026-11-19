@@ -25,10 +25,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           echo "ATTO_COMPILER_HEAD=$(git rev-parse HEAD)"
           echo "ATTO_COMPILER_TREE=$(git rev-parse HEAD^{tree})"
-          test "$(git hash-object tests/virtual-hardware/nic.atto)" = "bf8b29f261b74b7fd4a5324499aa9648ae43cfed"
-          test "$(git hash-object tests/virtual-hardware/router.atto)" = "8f1807e5316732c83dadb08980652a6859f74fd2"
-          test "$(git hash-object tests/virtual-hardware/switch.atto)" = "98727f0beae747017e52735391e08a7c6509ad0b"
-          test "$(git hash-object tests/virtual-hardware/modem.atto)" = "51fdf157f1c82606d1205cbbb27705e6a73129e1"
+          test "$(git hash-object tests/virtual-hardware/nic.atto)" = "a62174998a4e28f6367b5488d8426b5bb705f5e9"
+          test "$(git hash-object tests/virtual-hardware/router.atto)" = "939290995ee2aa838385481eee39ded3e64fe1f1"
+          test "$(git hash-object tests/virtual-hardware/switch.atto)" = "81d127d1f92028b80211c600122bd73dff950d64"
+          test "$(git hash-object tests/virtual-hardware/modem.atto)" = "6af1b3f7d9c632468d9086fe3d11cebf141c872e"
       - name: Install pinned compiler toolchain
         run: |
           rustup toolchain install 1.85.1 --profile minimal
