@@ -3213,9 +3213,11 @@ impl Parser {
         Ok(left)
     }
 
-    // A single '|' in an if/while condition is still the legacy condition
-    // separator. Outside that context it is integer bitwise OR. Parenthesized
-    // expressions reset the condition context and can use bitwise OR normally.
+    // A single '|' in an if/while condition, including parenthesized
+    // subconditions, remains the legacy boolean OR separator. Outside that
+    // grammar it is integer bitwise OR. Compute a bitwise value in an ordinary
+    // expression before comparing it in a condition; do not silently change
+    // the meaning of existing conditional '|' until separately specified.
     fn parse_bitwise_or(&mut self) -> R<Expr> {
         let mut left = self.parse_bitwise_xor()?;
         let mut links = 0;
