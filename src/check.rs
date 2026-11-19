@@ -356,6 +356,11 @@ struct FieldInfo {
     ty: Type,
     visibility: FieldVisibility,
     mode: FieldMode,
+    /// Do not conflate Val, Final and Const with the browser storage mode.
+    binding: FieldBinding,
+    /// Future referent-write authorization is independent of rebinding.
+    #[allow(dead_code)]
+    referent_mutable: bool,
     /// byte offset (classes) or state global (actors)
     slot: u32,
 }
@@ -953,6 +958,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     format!("'{owner}' already declares a field named '{}'", f.name),
                 ));
             }
+            // A class 'const' is constexpr; it must not silently turn into
+            // runtime initialization merely because Val/Final share a storage mode.
+            // Non-const initializer effects are still intentionally unsupported
+            // by the current restricted browser field-initialization backend.
+            if !actor && f.binding == FieldBinding::Const && !const_init(&f.init) {
+                return Err(Diagnostic::new(f.init.pos, "E_CONST",
+                    format!("class constant '{}.{}' requires a compile-time initializer", owner, f.name)));
+            }
             let ty = res(f.ty)?;
             let ok = match ty {
                 Type::Int | Type::Bool => true,
@@ -977,6 +990,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ty,
                 visibility: f.visibility,
                 mode: f.mode,
+                binding: f.binding,
+                referent_mutable: f.referent_mutable,
                 slot: if actor { global_base + i as u32 } else { i as u32 * FIELD_BYTES },
             });
         }
@@ -2866,13 +2881,19 @@ impl<'a> FnCx<'a> {
                     let class = &self.g.classes[c as usize];
                     let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
                         Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
-                    // Package-visible fields are accessible in this single-source package.
-        // Do not reuse this rule for imports until package identities are checked.
-        if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
+                    if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
                     }
-                    if f.mode == FieldMode::Final {
-                        return Err(Diagnostic::new(pos, "E_IMMUTABLE", "cannot mutate final field through borrow! mut"));
+                    // A borrowed ordinary class handle is not a checked
+                    // state-container lease: never lower protected state as
+                    // an unrestricted FieldSet from this alternate path.
+                    if f.mode == FieldMode::ActorState {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                            "protected state requires the checked critical-write lease"));
+                    }
+                    if !f.binding.rebindable() {
+                        return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                            "cannot reassign val/final/const field through borrow! mut"));
                     }
                     let (slot, offset, fty) = (local.slot, f.slot, f.ty);
                     // A class-valued field write would install an untracked owned
@@ -2912,7 +2933,7 @@ impl<'a> FnCx<'a> {
                     }
                 };
                 let (offset, fty, mode) = (f.slot, f.ty, f.mode);
-                if mode == FieldMode::Final {
+                if !f.binding.rebindable() {
                     return Err(Diagnostic::new(
                         pos,
                         "E_IMMUTABLE",
@@ -3876,8 +3897,6 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(pos, "E_UNBOUND", what));
             }
         };
-        // Package-visible fields are accessible in this single-source package.
-        // Do not reuse this rule for imports until package identities are checked.
         if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
             return Err(Diagnostic::new(
                 pos,

@@ -1,6 +1,6 @@
 //! Class-field visibility: no accidental widening of scoped/package fields.
 //! This backend accepts a single source package, not cross-package linking.
-use atto_compiler::{ast::{FieldMode, FieldVisibility}, compile, lexer::lex, parser::Parser};
+use atto_compiler::{ast::{FieldBinding, FieldMode, FieldVisibility}, compile, lexer::lex, parser::Parser};
 
 fn compiled(source: &str) {
     let wasm = compile(source).unwrap_or_else(|e| panic!("expected valid guest: {e}"));
@@ -101,7 +101,7 @@ fn malformed_scopes_and_unsupported_member_kinds_fail_closed() {
 }
 
 #[test]
-fn all_implicit_fields_are_val_and_only_explicit_let_is_mutable() {
+fn implicit_type_first_fields_are_let_and_explicit_val_is_immutable() {
     let src = r#"
         define class Box as
             int implicit_equals = 1;
@@ -116,23 +116,28 @@ fn all_implicit_fields_are_val_and_only_explicit_let_is_mutable() {
     let program = parser.parse_program().unwrap();
     let fields = &program.classes[0].fields;
     assert_eq!(fields.len(), 5);
-    for field in &fields[..3] { assert_eq!(field.mode, FieldMode::Final); }
+    for field in &fields[..2] {
+        assert_eq!(field.mode, FieldMode::Constructor);
+        assert_eq!(field.binding, FieldBinding::Let);
+    }
+    assert_eq!(fields[2].mode, FieldMode::Final);
+    assert_eq!(fields[2].binding, FieldBinding::Val);
     assert_eq!(fields[3].mode, FieldMode::Constructor);
     assert_eq!(fields[4].mode, FieldMode::Final);
     compiled(src);
 }
 #[test]
-fn implicit_val_forbids_reassignment_but_let_still_supports_constructor_updates() {
+fn implicit_let_allows_constructor_assignment_but_explicit_val_forbids_it() {
     rejected(r#"
         define class Box as
-            int count = 1;
+            val int count = 1;
             constructor() { self.count = 2; }
         end
         pub fnc main(): int { return 0; }
     "#, "E_IMMUTABLE");
     compiled(r#"
         define class Box as
-            let int count = 1;
+            pub int count = 1;
             constructor() { self.count = 2; }
         end
         pub fnc main(): int { return new Box().count; }

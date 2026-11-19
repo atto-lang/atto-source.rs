@@ -339,16 +339,13 @@ fn scalar_base_fields(base: &Decl) -> R<Vec<ScalarBaseField>> {
         if public {
             i += 1;
             if t.get(i).map(|v| &v.tok) == Some(&Tok::LBracket) {
-                if !is(t, i + 1, "pkg") ||
-                   t.get(i + 2).map(|v| &v.tok) != Some(&Tok::RBracket) {
+                if !is(t, i + 1, "pkg") || t.get(i + 2).map(|v| &v.tok) != Some(&Tok::RBracket) {
                     return Err(diag(t[begin].pos, "E_SYNTAX",
                         "only pub[pkg] is supported for scoped field visibility"));
                 }
                 i += 3;
             }
-        } else if is(t, i, "private") {
-            i += 1;
-        }
+        } else if is(t, i, "private") { i += 1; }
         let kind = if is(t, i, "int") { ScalarKind::Int } else if is(t, i, "bool") { ScalarKind::Bool } else {
             return Err(diag(t[begin].pos, "E_UNSUPPORTED",
                 "inherited state admits only initialized int/bool fields, without constructors"));

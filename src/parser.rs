@@ -644,7 +644,7 @@ impl Parser {
                         return Err(Diagnostic::new(self.pos(), "E_STATE",
                             "protected state fields must start with let, as in Java"));
                     }
-                    let parsed = self.parse_type_first_field(FieldVisibility::Private, FieldMode::ActorState)?;
+                    let parsed = self.parse_type_first_field(FieldVisibility::Private, FieldMode::ActorState, FieldBinding::ActorState, false)?;
                     if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
                         return Err(Diagnostic::new(parsed.field.pos, "E_UNSUPPORTED_TYPE",
                             "Worker-local state container admits only owned int/bool fields"));
@@ -806,18 +806,14 @@ impl Parser {
                     }
                     if actor { return Err(unsupported(mpos, "pub[pkg] actor members")); }
                     FieldVisibility::Package
-                } else {
-                    FieldVisibility::Public
-                }
+                } else { FieldVisibility::Public }
             } else if self.eat_word("private") {
                 if *self.peek() == Tok::LBracket {
                     return Err(Diagnostic::new(mpos, "E_SYNTAX",
                         "private is unqualified; use private or pub[pkg]"));
                 }
                 FieldVisibility::Private
-            } else {
-                FieldVisibility::Private
-            };
+            } else { FieldVisibility::Private };
             let public = visibility == FieldVisibility::Public;
             let word = self.word_at(0).map(str::to_owned);
             if visibility == FieldVisibility::Package
@@ -868,14 +864,14 @@ impl Parser {
                     } else if actor {
                         return Err(self.expected("'name: type' after 'final' in an actor"));
                     } else {
-                        self.eat_word("mut");
-                        let f = self.parse_type_first_field(visibility, FieldMode::Final)?;
+                        let referent_mutable = self.eat_word("mut");
+                        let f = self.parse_type_first_field(visibility, FieldMode::Final, FieldBinding::Final, referent_mutable)?;
                         m.fields.push(f.field);
                     }
                 }
                 Some("mut") if !actor => {
                     self.advance();
-                    let f = self.parse_type_first_field(visibility, FieldMode::Constructor)?;
+                    let f = self.parse_type_first_field(visibility, FieldMode::Constructor, FieldBinding::Let, true)?;
                     m.fields.push(f.field);
                 }
                 Some(w @ ("let" | "val" | "const")) => {
@@ -884,14 +880,21 @@ impl Parser {
                         ("let", false) => FieldMode::Constructor,
                         _ => FieldMode::Final,
                     };
+                    let binding = match (w, actor) {
+                        ("let", true) => FieldBinding::ActorState,
+                        ("let", false) => FieldBinding::Let,
+                        ("val", _) => FieldBinding::Val,
+                        ("const", _) => FieldBinding::Const,
+                        _ => unreachable!("exhaustive field keyword"),
+                    };
                     self.advance();
-                    if self.is_word("mut") && w != "val" {
-                        self.advance();
-                    }
+                    // In 'val mut T x', val still forbids name rebinding while
+                    // mut requests separately checked writes through the object.
+                    let referent_mutable = self.eat_word("mut");
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                         return Err(self.expected("a field type before the field name"));
                     }
-                    let f = self.parse_type_first_field(visibility, mode)?;
+                    let f = self.parse_type_first_field(visibility, mode, binding, referent_mutable)?;
                     if f.init_was_colon {
                         return Err(Diagnostic::new(
                             f.field.init.pos,
@@ -936,8 +939,13 @@ impl Parser {
                     m.fields.push(f);
                 }
                 Some(_) if matches!(self.peek_at(1), Tok::Ident(_)) && !actor => {
-                    // Omitted let/mut means immutable val, for every type.
-                    let f = self.parse_type_first_field(visibility, FieldMode::Final)?;
+                    // Ordinary type-first CLASS fields default to 'let' for every T:
+                    // pub int n = 1  ==  pub let int n = 1
+                    // pub Foo x = e  ==  pub let Foo x = e
+                    // Do not apply this to locals: bare type-first locals are const.
+                    // FieldMode::Constructor is the currently implemented subset;
+                    // verified post-construction mutable self support is pending.
+                    let f = self.parse_type_first_field(visibility, FieldMode::Constructor, FieldBinding::Let, false)?;
                     m.fields.push(f.field);
                 }
                 _ => {
@@ -968,12 +976,17 @@ impl Parser {
             ty,
             visibility,
             mode: FieldMode::Final,
+            binding: FieldBinding::Final,
+            referent_mutable: false,
             init,
         })
     }
 
     /// `type name (":" | "=") expr`.
-    fn parse_type_first_field(&mut self, visibility: FieldVisibility, mode: FieldMode) -> R<TypeFirstField> {
+    fn parse_type_first_field(
+        &mut self, visibility: FieldVisibility, mode: FieldMode,
+        binding: FieldBinding, referent_mutable: bool,
+    ) -> R<TypeFirstField> {
         let ty = self.parse_type()?;
         let (name, pos) = self.ident("a field name")?;
         let init_was_colon = if self.eat(&Tok::Colon) {
@@ -992,6 +1005,8 @@ impl Parser {
                 ty,
                 visibility,
                 mode,
+                binding,
+                referent_mutable,
                 init,
             },
             init_was_colon,
