@@ -131,7 +131,7 @@ fn implicit_type_first_fields_are_let_while_explicit_val_remains_fixed() {
 fn implicit_let_permits_checked_constructor_assignment_but_explicit_val_forbids_it() {
     compiled(r#"
         define class Box as
-            int count = 1;
+            pub int count = 1;
             constructor() { self.count = 2; }
         end
         pub fnc main(): int { return new Box().count; }
