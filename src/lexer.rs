@@ -28,6 +28,8 @@ pub enum Tok {
     Colon,
     ColonColon,
     Arrow,
+    /// Exact contiguous return-first callable delimiter `<-`.
+    LeftArrow,
     FatArrow,
     Dot,
     /// Exact contiguous `...` token. Interpretation is restricted to pattern context.
@@ -313,6 +315,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('=', _) => (Tok::Assign, 1),
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
+            ('<', Some('-')) => (Tok::LeftArrow, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
             ('>', Some('=')) => (Tok::Ge, 2),
