@@ -123,7 +123,9 @@ spelling (Foo1 self), unnamed (Foo1), and (Foo1 _) receivers.
 The parser finds target declarations anywhere at file scope, while the
 namespace header must still occur first. The target-only parser now accepts
 `import * as math from "./math.atto";`, `import * as telemetry from pkg "core.telemetry";`,
-and named/nested static selectors such as `import { span as create_span } from pkg "core.telemetry";`.
+and comma-separated names/aliases such as `import span, tracer as make_tracer from pkg "core.telemetry";`.
+Dotted public export selectors such as `import telemetry.span as span from pkg "core";`
+are parsed with bounded path length; brace-style named imports are not canonical.
 Legacy `import module math from "./math.atto";` and `import pkg p from "+/pkg";`
 remain parseable for migration. Imports are **not linked or executable** in this profile.
 The parser rejects duplicate imported local bindings and duplicate actor
