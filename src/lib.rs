@@ -11,6 +11,8 @@ pub mod ast;
 pub mod collection_layout;
 /// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
 pub mod collection_layout_plan;
+/// Executable Rust storage kernel only; source-compiled guest admission remains gated.
+pub mod collection_layout_storage;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
 /// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
 // The canonical verifier is imported byte-identically from the independent
