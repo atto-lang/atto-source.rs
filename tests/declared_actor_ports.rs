@@ -505,3 +505,25 @@ fn attached_receive_witness_still_does_not_authorize_pipe_emission_or_spawn() {
     assert_eq!(linked.require_spawnable("Foo", Pos::default()).unwrap_err().code, "E_UNLINKED");
     assert_eq!(atto_compiler::compile(source).unwrap_err().code, "E_UNSUPPORTED");
 }
+
+#[test]
+fn stage_one_receives_int_emits_real_wasm_header_without_widening_mailbox() {
+    // Compile *actual* .atto source through the compiler's public entrypoint;
+    // the generated module's Wasm magic must be present. This is artifact
+    // production, NOT a guest actor-dispatch or supervisor CONTROL proof.
+    let source = "define actor Counter receives int as
+        receive(ActorMail<int> mail): void { return; }
+        end
+        pub fnc main(): int { return 0; }";
+    let wasm = atto_compiler::compile(source).expect("matched typed receiver must compile");
+    assert!(wasm.len() > 8, "empty artifact is not compiler execution");
+    assert_eq!(&wasm[..4], b"\\0asm", "compiled artifact is not WebAssembly");
+
+    // The header must not silently admit a different concrete ActorMail type.
+    let mismatch = source.replace("Counter receives int as", "Counter receives bool as");
+    assert_eq!(atto_compiler::compile(&mismatch).unwrap_err().code, "E_TYPE");
+    // Explicit outbound bounds remain denied until transitive effects and
+    // CONTROL/DATA separation are actually implemented.
+    let sends = source.replace("Counter receives int as", "Counter receives int sends int as");
+    assert_eq!(atto_compiler::compile(&sends).unwrap_err().code, "E_UNSUPPORTED");
+}
