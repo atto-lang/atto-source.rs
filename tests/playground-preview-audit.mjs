@@ -19,16 +19,16 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
   const raw = await readFile(new URL('MANIFEST.tsv', corpus), 'utf8');
   const pairs = raw.split('\n').filter(line => line && !line.startsWith('#'))
     .map(line => line.split('\t'));
-  assert.equal(pairs.length, 42, 'every public preview has a pinned blob');
+  assert.equal(pairs.length, 43, 'every public preview has a pinned blob');
   assert.ok(pairs.every(([name, sha]) =>
     /^[a-z-]+$/.test(name) && /^[a-f0-9]{40}$/.test(sha)));
   const names = pairs.map(([name]) => name);
   assert.equal(new Set(names).size, 42, 'no duplicate preview names');
   assert.deepEqual((await readdir(corpus)).filter(n => n.endsWith('.atto')).sort(),
     names.map(name => name + '.atto').sort());
-  const outcome = { total: 42, admitted: [], unsupported: [],
+  const outcome = { total: 43, admitted: [], unsupported: [],
     guestExecuted: [], unverified: [], nativeCompared: 0, parityCertified: false,
-    executionCoverage: { verified: 0, remaining: 42 } };
+    executionCoverage: { verified: 0, remaining: 43 } };
   for (const [name, expectedSha] of pairs) {
     const url = new URL(name + '.atto', corpus);
     const sourceBytes = await readFile(url);
@@ -89,6 +89,7 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       // Oracle from atto-spec language/defer-recover-unwind-v1.md trace rows:
       // raise: finally, defers LIFO, recover; throw: defers then recover;
       // local catch: finally, cleanup, never recover; outer caller catch wins.
+      'lambdas': { value: 126n, stdout: '42\n42\n42\n' },
       'defer-recover': { value: 63n, stdout: 'raise finally\nraise cleanup A\nraise cleanup B\nrecovering raise\nthrow cleanup\nrecovering unhandled throw\ncaught finally\ncaught cleanup\n' },
     }[name];
     if (expected) {
@@ -101,18 +102,18 @@ export async function auditPlaygroundPreviews({ compile, runGuest, nativeBytes =
       outcome.unverified.push({ name, reason: 'no independent compiled-guest output oracle' });
     }
   }
-  assert.equal(outcome.admitted.length + outcome.unsupported.length, 42);
+  assert.equal(outcome.admitted.length + outcome.unsupported.length, 43);
   assert.deepEqual(outcome.guestExecuted.slice().sort(),
     ['function-pipeline', 'generators', 'result-option', 'trap',
      'borrow-checking', 'lexical-scope-pure', 'state-containers',
      'fib-match', 'guard', 'match-values', 'closures-functors',
-     'result-option-end', 'modules', 'callable-body-styles',
+     'result-option-end', 'modules', 'lambdas', 'callable-body-styles',
      'traits-interfaces', 'diamond-inheritance', 'visibility-modifiers',
      'routine', 'boolean-operators', 'match-types-is', 'data-shapes',
      'defer-recover'].sort(),
-    'the twenty-two requested compiled guest candidates must execute');
+    'the twenty-three compiled guest candidates must execute');
   outcome.executionCoverage.verified = outcome.guestExecuted.length;
-  outcome.executionCoverage.remaining = 42 - outcome.guestExecuted.length;
+  outcome.executionCoverage.remaining = 43 - outcome.guestExecuted.length;
   console.log('PLAYGROUND_PREVIEW_EXECUTION_COVERAGE ' + JSON.stringify({
     verified: outcome.guestExecuted, unsupported: outcome.unsupported,
     admittedWithoutOracle: outcome.unverified,
