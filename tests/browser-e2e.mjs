@@ -145,7 +145,7 @@ try{
     ['203-play-channel-bounded.atto', 6, '6\n'],
     ['204-play-channel-unbounded.atto', 42, '42\n'],
     ['205-play-scoped-span.atto', 0, 'span retained over suspension\n'],
-    ['206-play-nested-scoped-spans.atto', 0, 'both spans alive\\n'],
+    ['206-play-nested-scoped-spans.atto', 0, 'both spans alive\n'],
   ]) {
     const source = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const browserOutput = await run(source, 'main() -> ' + expectedReturn);
