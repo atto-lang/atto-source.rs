@@ -40,7 +40,7 @@ fn signature_duplicates_and_unsupported_types_reject_without_output() {
 fn immutable_class_mtd_rejects_mutation_alias_escape_and_inline_mutators() {
     for (source, expected) in [
         (
-            "define class C as int value: 1; end mtd (self: C) update() -> int { self.value = 2; return 2; } pub fnc main(): int { return 0; }",
+            "define class C as let int value = 1; end mtd (self: C) update() -> int { self.value = 2; return 2; } pub fnc main(): int { return 0; }",
             "E_OWNERSHIP"
         ),
         (
