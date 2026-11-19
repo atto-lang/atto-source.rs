@@ -38,6 +38,7 @@ pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
+pub mod tuple_binding_admission;
 pub mod target_typed;
 pub mod wasm;
 
@@ -61,6 +62,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     value_class_admission::preflight(&source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    // Parsed tuple-binding headers are target syntax only. The current
+    // browser compiler does not yet lower Tuple values or prove anchored
+    // component loans. Never manufacture owners or emit unsafe guest Wasm.
+    if let Some(binding) = tuple_binding_admission::inspect(&toks)?.first() {
+        return Err(Diagnostic::new(binding.pos, "E_UNSUPPORTED",
+            "tuple destructuring syntax recognized, but typed tuple allocation, const provenance, ownership loans and guest lowering are not implemented"));
+    }
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
