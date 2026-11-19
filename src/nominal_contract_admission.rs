@@ -68,34 +68,49 @@ fn checked_signature(t: &[Token], args_open: usize, sig_end: usize) -> R<Vec<Tok
         return Err(err(t[args_open].pos, "E_UNSUPPORTED",
             "contract signatures require explicit ': scalar_type' and no unverified effects"));
     }
-    match t.get(args_end + 2).map(|x| &x.tok) {
-        Some(Tok::Ident(s)) if matches!(s.as_str(), "int" | "bool" | "string" | "void") => {}
+    let result = match t.get(args_end + 2).map(|x| &x.tok) {
+        Some(Tok::Ident(s)) if matches!(s.as_str(), "int" | "bool" | "string" | "void") => s.clone(),
         _ => return Err(err(t[args_open].pos, "E_UNSUPPORTED",
             "contract signature result must use an admitted scalar type")),
-    }
+    };
     let args = &t[args_open + 1..args_end];
-    if !args.is_empty() {
-        // Admit only "int value" and "value: int" scalar arguments. Larger
-        // signatures, borrow/mut annotations and generics require typed IR.
-        let mut j = 0;
-        while j < args.len() {
-            if j + 1 >= args.len() { return Err(err(t[args_open].pos, "E_UNSUPPORTED", "unproved contract parameter")); }
-            let scalar = |x: &Tok| matches!(x, Tok::Ident(s) if matches!(s.as_str(), "int" | "bool" | "string"));
-            let valid = (scalar(&args[j].tok) && matches!(&args[j + 1].tok, Tok::Ident(_)))
-                || (j + 2 < args.len() && matches!(&args[j].tok, Tok::Ident(_))
-                    && args[j + 1].tok == Tok::Colon && scalar(&args[j + 2].tok));
-            if !valid { return Err(err(args[j].pos, "E_UNSUPPORTED", "unverified parameter type or effect")); }
-            j += if scalar(&args[j].tok) { 2 } else { 3 };
-            if j < args.len() {
-                if args[j].tok != Tok::Comma { return Err(err(args[j].pos, "E_SYNTAX", "missing parameter separator")); }
-                j += 1;
-                if j == args.len() { return Err(err(args[j - 1].pos, "E_SYNTAX", "trailing parameter comma")); }
+    let mut canonical = vec![Tok::LParen];
+    let mut j = 0;
+    while j < args.len() {
+        let scalar = |x: &Tok| match x {
+            Tok::Ident(s) if matches!(s.as_str(), "int" | "bool" | "string") => Some(s.clone()),
+            _ => None,
+        };
+        let (ty, consumed) = if j + 1 < args.len() {
+            if let Some(s) = scalar(&args[j].tok) {
+                if matches!(&args[j + 1].tok, Tok::Ident(_)) { (s, 2) }
+                else { return Err(err(args[j].pos, "E_UNSUPPORTED", "unproved typed parameter")); }
+            } else if j + 2 < args.len() && args[j + 1].tok == Tok::Colon {
+                if let Some(s) = scalar(&args[j + 2].tok) { (s, 3) }
+                else { return Err(err(args[j].pos, "E_UNSUPPORTED", "unproved typed parameter")); }
+            } else {
+                return Err(err(args[j].pos, "E_UNSUPPORTED", "unproved parameter ownership/type"));
+            }
+        } else {
+            return Err(err(args[j].pos, "E_UNSUPPORTED", "incomplete typed parameter"));
+        };
+        if canonical.len() > 1 { canonical.push(Tok::Comma); }
+        canonical.push(Tok::Ident(ty));
+        j += consumed;
+        if j < args.len() {
+            if args[j].tok != Tok::Comma {
+                return Err(err(args[j].pos, "E_SYNTAX", "missing parameter separator"));
+            }
+            j += 1;
+            if j == args.len() {
+                return Err(err(args[j - 1].pos, "E_SYNTAX", "trailing parameter comma"));
             }
         }
     }
-    // Compare source signatures exactly in this conservative profile:
-    // never claim equivalence for a yet-unresolved generic or named type.
-    Ok(t[args_open..=sig_end].iter().map(|x| x.tok.clone()).collect())
+    canonical.push(Tok::RParen);
+    canonical.push(Tok::Colon);
+    canonical.push(Tok::Ident(result));
+    Ok(canonical)
 }
 fn scan_methods(t: &[Token], kind: Kind) -> R<BTreeMap<String, Method>> {
     let mut out = BTreeMap::new();
