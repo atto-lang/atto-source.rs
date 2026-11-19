@@ -2793,6 +2793,13 @@ impl<'a> FnCx<'a> {
                     if !f.public && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
                     }
+                    // A borrowed ordinary class handle is not a checked
+                    // state-container lease: never lower protected state as
+                    // an unrestricted FieldSet from this alternate path.
+                    if f.mode == FieldMode::ActorState {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                            "protected state requires the checked critical-write lease"));
+                    }
                     if !f.binding.rebindable() {
                         return Err(Diagnostic::new(pos, "E_IMMUTABLE",
                             "cannot reassign val/final/const field through borrow! mut"));
