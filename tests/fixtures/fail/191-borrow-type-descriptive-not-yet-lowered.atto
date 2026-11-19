@@ -1,0 +1,8 @@
+// expect-error: E_UNSUPPORTED_TYPE
+// java: rejects
+// Historical fixture filename: borrowed return types are not implemented.
+define class Person as
+  pub let int age = 42;
+end
+fnc inspect(): Borrow<Person> { return new Person(); }
+pub fnc main(): int { return 0; }

@@ -1,0 +1,6 @@
+// expect-error: E_BORROW
+// A temporary producer is not a named live owner.
+define class Person as pub let int age = 21; end
+fnc make(): Person { return new Person(); }
+fnc read(Person p): int { return p.age; }
+pub fnc main(): int { return read(make()); }

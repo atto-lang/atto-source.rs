@@ -61,8 +61,25 @@ pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Compile one `.atto` source file to a guest WebAssembly module.
+/// Compiler ownership profile. Existing/default callers remain legacy
+/// until a reviewed source-version and explicit consuming-formal migration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnershipMode {
+    /// Historical class parameters may consume their arguments.
+    LegacyMoves,
+    /// Opt-in: ordinary *top-level class* formals are verified readonly loans.
+    /// Unsupported mut/return/actor/method profiles reject before guest output.
+    BorrowV1,
+}
+
+/// Preserve the historical ABI and compilation semantics for existing callers.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_with_mode(source, OwnershipMode::LegacyMoves)
+}
+
+/// Compile using an explicit, versioned ownership mode; no implicit source
+/// comment, environment variable, or AST-rewrite heuristic selects this mode.
+pub fn compile_with_mode(source: &str, mode: OwnershipMode) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -252,7 +269,10 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
     visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
-    let typed = check::check(&program)?;
+    let typed = match mode {
+        OwnershipMode::LegacyMoves => check::check(&program)?,
+        OwnershipMode::BorrowV1 => check::check_borrow_v1(&program)?,
+    };
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
     if bytes.len() > wasm::MAX_OUTPUT {
@@ -319,9 +339,21 @@ mod abi {
         STATE.with(|s| s.borrow().col)
     }
 
-    /// Returns 0 on success, 1 on a diagnostic. On error `result_length` is 0.
+    /// Existing ABI entry point is unchanged for legacy callers.
     #[no_mangle]
     pub extern "C" fn compile(length: i32) -> i32 {
+        compile_mode(length, OwnershipMode::LegacyMoves)
+    }
+
+    /// Additional opt-in ABI export. This does not change abi_version()
+    /// or the behavior of the existing compile() entry point.
+    #[no_mangle]
+    pub extern "C" fn compile_borrow_v1(length: i32) -> i32 {
+        compile_mode(length, OwnershipMode::BorrowV1)
+    }
+
+    /// Returns 0 on success, 1 on a diagnostic. On error result_length is 0.
+    fn compile_mode(length: i32, mode: OwnershipMode) -> i32 {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.bytes = Vec::new();
@@ -362,7 +394,7 @@ mod abi {
                     )
                 }
             };
-            match super::compile(source) {
+            match super::compile_with_mode(source, mode) {
                 Ok(bytes) => {
                     st.bytes = bytes;
                     0

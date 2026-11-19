@@ -4,11 +4,19 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (input, output) = match args.as_slice() {
-        [i] => (i.clone(), None),
-        [i, o, out] if o == "-o" => (i.clone(), Some(out.clone())),
+    // Opt-in source compilation mode: legacy callers remain unchanged.
+    // In borrow-v1, plain top-level Foo formals lower to the same checked
+    // readonly Borrow<Foo> call ABI, with unsafe forms rejected.
+    let (input, output, ownership) = match args.as_slice() {
+        [i] => (i.clone(), None, atto_compiler::OwnershipMode::LegacyMoves),
+        [i, o, out] if o == "-o" =>
+            (i.clone(), Some(out.clone()), atto_compiler::OwnershipMode::LegacyMoves),
+        [mode, i] if mode == "--borrow-v1" =>
+            (i.clone(), None, atto_compiler::OwnershipMode::BorrowV1),
+        [mode, i, o, out] if mode == "--borrow-v1" && o == "-o" =>
+            (i.clone(), Some(out.clone()), atto_compiler::OwnershipMode::BorrowV1),
         _ => {
-            eprintln!("usage: attoc <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc [--borrow-v1] <input.atto> [-o out.wasm]");
             return ExitCode::from(2);
         }
     };
@@ -19,7 +27,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match atto_compiler::compile(&source) {
+    match atto_compiler::compile_with_mode(&source, ownership) {
         Ok(bytes) => {
             if let Some(o) = output {
                 if std::fs::write(&o, &bytes).is_err() {

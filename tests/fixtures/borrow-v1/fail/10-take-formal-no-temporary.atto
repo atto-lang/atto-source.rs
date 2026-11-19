@@ -1,0 +1,8 @@
+// expect-error: E_OWNERSHIP
+define class Person as pub let int age = 21; end
+fnc transfer(take! Person p): Person { return p; }
+fnc make(): Person { return new Person(); }
+pub fnc main(): int {
+    let q = transfer(take! make());
+    return q.age;
+}

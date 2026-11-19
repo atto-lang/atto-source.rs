@@ -391,6 +391,57 @@ impl Parser {
 
     // ---------------------------------------------------------------- types
 
+    // Validate lifetime binders in an otherwise unsupported generic head.
+    // Parsing must never erase lifetime parameters and lower an ordinary type.
+    // Full Borrow<T, lt=a> provenance and execution remain gated.
+    fn reject_generic_head(&mut self, kind: &str) -> R<()> {
+        let start = self.pos();
+        self.expect(Tok::Lt, "'<' before generic parameters")?;
+        let mut lifetimes: Vec<String> = Vec::new();
+        let mut count = 0usize;
+        loop {
+            if count >= MAX_PARAMS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "too many generic parameters"));
+            }
+            count += 1;
+            if matches!(self.word_at(0), Some("lt" | "lifetime")) {
+                let marker = self.word_at(0).unwrap().to_owned();
+                let marker_pos = self.pos();
+                self.advance();
+                // The ! marker must touch lt or lifetime in source text.
+                if *self.peek() != Tok::Bang
+                    || self.pos().line != marker_pos.line
+                    || self.pos().col != marker_pos.col + marker.len() as u32
+                {
+                    return Err(Diagnostic::new(marker_pos, "E_SYNTAX",
+                        "lifetime parameters require attached 'lt!' or 'lifetime!'"));
+                }
+                self.advance();
+                let (name, pos) = self.ident("a lifetime parameter name")?;
+                if lifetimes.contains(&name) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                        format!("duplicate lifetime parameter '{name}'")));
+                }
+                lifetimes.push(name);
+            } else {
+                self.ident("a generic type parameter or 'lt!' binder")?;
+            }
+            if !self.eat(&Tok::Comma) { break; }
+            if *self.peek() == Tok::Gt {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "trailing comma in a generic parameter list"));
+            }
+        }
+        self.expect(Tok::Gt, "'>' after generic parameters")?;
+        if lifetimes.is_empty() {
+            Err(unsupported(start, &format!("generic {kind}")))
+        } else {
+            Err(Diagnostic::new(start, "E_UNSUPPORTED_TYPE",
+                format!("{kind} with lt! lifetimes need verified Borrow<T, lt=a> provenance and backend lowering")))
+        }
+    }
+
     fn is_type_word(&self, n: usize) -> bool {
         matches!(
             self.word_at(n),
@@ -781,7 +832,7 @@ impl Parser {
     /// Generic parameters and inheritance clauses are outside the subset.
     fn decl_head(&mut self, kind: &str) -> R<()> {
         if *self.peek() == Tok::Lt {
-            return Err(unsupported(self.pos(), &format!("generic {kind}es")));
+            return self.reject_generic_head(kind);
         }
         if let Some(w @ ("extends" | "implements" | "impl" | "conforms")) = self.word_at(0) {
             return Err(unsupported(self.pos(), &format!("'{w}' on a {kind}")));
@@ -1747,33 +1798,60 @@ impl Parser {
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
 
+    /// A consuming formal must be explicitly marked in the declaration:
+    /// `fnc move(take! Foo owner)` or `fnc move(owner: take! Foo)`.
+    /// The bang is attached, just as for expression-level ownership tokens.
+    /// This is *not* a general ownership type; borrow-v1 enforces the class
+    /// restriction and caller take! proof after resolving nominal types.
+    fn take_formal_marker(&mut self) -> R<bool> {
+        if !self.is_word("take") || *self.peek_at(1) != Tok::Bang {
+            return Ok(false);
+        }
+        let at = self.pos();
+        let bang = self.toks[self.i + 1].pos;
+        if bang.line != at.line || bang.col != at.col + 4 {
+            return Err(Diagnostic::new(at, "E_SYNTAX",
+                "consuming parameter marker requires attached 'take!'"));
+        }
+        self.advance(); // take
+        self.advance(); // !
+        Ok(true)
+    }
+
     fn parse_param(&mut self) -> R<Param> {
         let pos = self.pos();
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
-        // compatibility form `name: type [mut]`
-        if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+        let consuming = self.take_formal_marker()?;
+        // compatibility form `name: [take!] type [mut]`
+        if !consuming && matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, pos) = self.ident("a parameter name")?;
             self.advance();
+            let consuming = self.take_formal_marker()?;
             let ty = self.parse_type()?;
             let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable, pos);
+            return self.finish_param(name, ty, mutable, consuming, pos);
         }
         let ty = self.parse_type()?;
         let mutable = self.eat_word("mut");
         let (name, pos) = self.ident("a parameter name")?;
-        self.finish_param(name, ty, mutable, pos)
+        self.finish_param(name, ty, mutable, consuming, pos)
     }
 
-    fn finish_param(&self, name: String, ty: Type, mutable: bool, pos: Pos) -> R<Param> {
+    fn finish_param(&self, name: String, ty: Type, mutable: bool,
+                    consuming: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
             return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
+        }
+        if consuming && (mutable || !matches!(ty, Type::Named(_) | Type::Class(_))) {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "take! formal requires a non-mutable declared class type"));
         }
         if *self.peek() == Tok::Assign {
             return Err(unsupported(self.pos(), "default parameter values"));
         }
-        Ok(Param { name, ty, mutable, pos })
+        Ok(Param { name, ty, mutable, consuming, pos })
     }
 
     // ----------------------------------------------------------- statements
@@ -3204,7 +3282,10 @@ impl Parser {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
             Tok::Bang => UnOp::Not,
-            Tok::Amp => return Err(unsupported(pos, "borrow expressions")),
+            Tok::Amp => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use 'borrow! owner' or 'borrow! mut owner', not '&owner'")),
+            Tok::Star => return Err(Diagnostic::new(pos, "E_SYNTAX",
+                "use checked 'deref! handle', not '*pointer'")),
             Tok::PlusPlus | Tok::MinusMinus => {
                 return Err(Diagnostic::new(
                     pos,
