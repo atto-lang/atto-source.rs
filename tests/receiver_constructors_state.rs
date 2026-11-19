@@ -407,7 +407,7 @@ fn deferred_final_multi_field_branch_join_preserves_exactly_once_and_defaults() 
         }
     "#;
     let wasm = compile(source).expect("both finals are initialized on every path");
-    assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
     assert_eq!(wasm, compile(source).unwrap(), "deterministic Wasm output");
 
     let existing_defaults = r#"
@@ -416,7 +416,7 @@ fn deferred_final_multi_field_branch_join_preserves_exactly_once_and_defaults() 
         end
         pub fnc main(): int { val c = new Counter(); return c.count; }
     "#;
-    assert_eq!(&compile(existing_defaults).unwrap()[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(&compile(existing_defaults).unwrap()[..8], b"\0asm\x01\0\0\0");
 }
 
 #[test]
