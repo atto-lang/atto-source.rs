@@ -268,6 +268,14 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                         }
                         other => s.push(other), // spec 16: unknown escape keeps the character
                     }
+                    // Escaped characters, including Unicode scalar escapes,
+                    // must obey the same decoded UTF-8 byte budget as plain
+                    // characters. Without this check repeated \\u{...} could
+                    // bypass MAX_STRING_BYTES and inflate tuple source data.
+                    if s.len() > MAX_STRING_BYTES {
+                        return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                            "string literal is too long"));
+                    }
                     bump!();
                     continue;
                 }
