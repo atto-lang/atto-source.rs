@@ -203,12 +203,12 @@ pub(super) fn validate(program: &Program) -> R<()> {
         scan.stmts(&function.body, 0)?;
     }
     for class in &program.classes {
-        for field in &class.fields { scan.expr(&field.init, 0)?; }
+        for field in &class.fields { if let Some(init) = &field.init { scan.expr(init, 0)?; } }
         if let Some(ctor) = &class.ctor { scan.stmts(&ctor.body, 0)?; }
         for method in &class.methods { scan.stmts(&method.body, 0)?; }
     }
     for actor in &program.actors {
-        for field in &actor.fields { scan.expr(&field.init, 0)?; }
+        for field in &actor.fields { if let Some(init) = &field.init { scan.expr(init, 0)?; } }
         if let Some(receive) = &actor.receive { scan.stmts(&receive.body, 0)?; }
         for method in &actor.methods { scan.stmts(&method.body, 0)?; }
     }
