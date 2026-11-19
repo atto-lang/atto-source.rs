@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use crate::module_lower::ModuleDecl;
 type R<T> = Result<T, Diagnostic>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,23 +37,46 @@ fn name(t: &[Token], i: usize) -> R<String> {
 /// not arbitrary tokens: a class member named Foo is NOT a top-level fnc
 /// Foo, and a foreign prototype never grants source-level export authority.
 pub fn resolve_exports(exports: &mut [Export], parsed: &crate::ast::Program) -> R<()> {
+    resolve_exports_with_modules(exports, parsed, &[])
+}
+
+/// Resolve a file-owned module export only from a checked module declaration.
+/// Module imports never grant re-export authority to their consumer.
+pub fn resolve_exports_with_modules(
+    exports: &mut [Export],
+    parsed: &crate::ast::Program,
+    modules: &[ModuleDecl],
+) -> R<()> {
     for export in exports {
         let class_count = parsed.classes.iter()
             .filter(|c| c.name == export.name && !c.state_container).count();
         let fnc_count = parsed.funcs.iter()
             .filter(|f| f.name == export.name).count();
-        let matches = class_count + fnc_count;
+        let module_count = modules.iter().filter(|m| m.name == export.name).count();
+        let matches = class_count + fnc_count + module_count;
         if matches == 0 {
             return Err(error(export.pos, "E_UNBOUND",
-                format!("export '{}' has no top-level declaration", export.name)));
+                format!("export '{}' has no file-local declaration", export.name)));
         }
         if matches != 1 {
             return Err(error(export.pos, "E_DUPLICATE",
                 format!("export '{}' is ambiguous without an arity-qualified export", export.name)));
         }
-        let kind = if class_count == 1 { "class" } else { "fnc" };
+        let kind = if class_count == 1 {
+            "class"
+        } else if module_count == 1 {
+            "module"
+        } else {
+            "fnc"
+        };
         if !export.kind.is_empty() && export.kind != kind {
             return Err(error(export.pos, "E_TYPE", "export declaration kind mismatch"));
+        }
+        if kind == "module" && export.visibility == Visibility::Package
+            && modules.iter().any(|m| m.name == export.name && m.inline_public)
+        {
+            return Err(error(export.pos, "E_VISIBILITY",
+                "public module declaration cannot be downgraded to pub[pkg]"));
         }
         export.kind = kind;
     }
@@ -122,8 +146,8 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
                 Visibility::Package
             } else { Visibility::Public };
             let mut kind = "";
-            if word(&t, j, "class") || word(&t, j, "fnc") {
-                kind = if word(&t, j, "class") { "class" } else { "fnc" };
+            if word(&t, j, "class") || word(&t, j, "fnc") || word(&t, j, "module") {
+                kind = if word(&t, j, "class") { "class" } else if word(&t, j, "module") { "module" } else { "fnc" };
                 j += 1;
             }
             let id = name(&t, j)?;
@@ -214,7 +238,7 @@ pub fn metadata(bytes: &mut Vec<u8>, exports: &[Export]) {
         leb(&mut section, e.name.len());
         section.extend_from_slice(e.name.as_bytes());
         section.push(match e.visibility { Visibility::Public => 1, Visibility::Package => 2 });
-        section.push(if e.kind == "class" { 1 } else { 2 });
+        section.push(match e.kind { "class" => 1, "module" => 3, _ => 2 });
     }
     bytes.push(0);
     leb(bytes, section.len());

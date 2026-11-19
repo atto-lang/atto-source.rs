@@ -35,8 +35,15 @@ pub mod detached_io;
 pub mod parser;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
-/// Caller-supplied one-hop relative source linking with no ambient I/O.
+/// Bounded host-independent direct relative-file linker.
 pub mod import_link;
+/// Verified source-graph imports and canonical module identities.
+pub mod linked_symbols;
+pub mod linker;
+pub mod package_resolver;
+#[cfg(target_os = "linux")]
+mod secure_fs;
+pub mod sha256;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
@@ -85,9 +92,7 @@ pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
     compile_inner(source, Some(logical_path))
 }
 
-/// Compile a project entry point by resolving direct relative file imports.
-/// The load callback is the sole authority for dependency contents.
-/// Callers must restrict it to the intended package root.
+/// Compile a project entry with trusted caller-supplied relative source loading.
 pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, load: F,
 ) -> Result<Vec<u8>, Diagnostic>
@@ -234,7 +239,9 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     value_class_admission::preflight(&source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
     collection_layout::reject_unlowered(&visibility.tokens)?;
-    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    let lowered_modules = module_lower::lower_with_manifest(visibility.tokens)?;
+    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(
+        nominal_lower::lower(lowered_modules.tokens)?)?)?)?;
     // Only the checked, bounded Copy-scalar Tuple profile can reach guest
     // lowering. Non-scalar tuple graphs/borrows fail closed before parser.
     let toks = tuple_binding_lower::lower(toks)?;
@@ -306,7 +313,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     };
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
-    visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
+    visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
