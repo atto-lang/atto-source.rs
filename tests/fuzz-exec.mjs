@@ -2,7 +2,8 @@
 // Mutates every positive fixture at the token level, compiles each mutant
 // with the real wasm32 compiler, validates accepted output, and EXECUTES it
 // in a worker with a deadline. A trap that is not a contract panic
-// (panic_code 1 or 3) or stack exhaustion is a soundness bug in the checker
+// (panic_code 1, 3 or 6 = logical stack quota) or engine stack exhaustion is a
+// soundness bug in the checker
 // (definite-return, typing) or the emitter.
 //
 // usage: node tests/fuzz-exec.mjs [mutants-per-fixture=300] [seed=99]
@@ -72,7 +73,7 @@ for (const name of readdirSync(dir).filter(n => n.endsWith('.atto')).sort()) {
     const r = await run(w);
     if (r.timeout) timeouts++;
     else if (!r.ok) {
-      if (r.pc === 1 || r.pc === 3 || r.range) panics++;
+      if (r.pc === 1 || r.pc === 3 || r.pc === 6 || r.range) panics++;
       else bad.push(['UNSOUND_TRAP', r.msg, src]);
     }
   }
