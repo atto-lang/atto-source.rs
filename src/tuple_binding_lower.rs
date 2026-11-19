@@ -182,7 +182,7 @@ fn rewrite_types(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R<()> {
 
 /// Split an already balanced parenthesized tuple, respecting nested calls.
 /// Items remain token slices so guest expression evaluation is not duplicated.
-fn tuple_items<'a>(t: &'a [Token]) -> Option<Vec<&'a [Token]>> {
+fn tuple_items(t: &[Token]) -> Option<Vec<&[Token]>> {
     if t.first()?.tok != Tok::LParen || t.last()?.tok != Tok::RParen { return None; }
     let mut start = 1usize;
     let mut items = Vec::new();
