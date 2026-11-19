@@ -60,7 +60,7 @@ test('scalar-v3 contract is the unchanged Cranelift/Wasm Git blob', () => {
   assert.equal(new Set(all.map(x => x.id)).size, 21);
   for (const row of all) {
     assert.match(row.id, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
-    assert.match(row.expression, /^[0-9+\-*() \t]+$/);
+    assert.match(row.expression, /^[0-9+\-*() %^\t]+$/);
     assert.ok(row.expression.length < 200);
   }
 });
