@@ -217,7 +217,24 @@ fn as_code(tokens: &[Token]) -> R<String> {
 /// Gather explicit top-level scalar tuple-return signatures, so a tuple
 /// binder consuming `fixtures()` cannot accidentally project an arbitrary
 /// class merely because it has similarly named fields.
-fn tuple_functions(tokens: &[Token], shapes: &[Shape]) -> BTreeMap<String, usize> {
+/// Count only source-level call/parameter commas; nested generic/function
+/// delimiters do not accidentally change overload resolution.
+fn argument_count(tokens: &[Token]) -> usize {
+    if tokens.is_empty() { return 0; }
+    let mut depth = 0usize;
+    let mut count = 1usize;
+    for t in tokens {
+        match t.tok {
+            Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::Lt => depth += 1,
+            Tok::RParen | Tok::RBracket | Tok::RBrace | Tok::Gt if depth > 0 => depth -= 1,
+            Tok::Comma if depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
+fn tuple_functions(tokens: &[Token], shapes: &[Shape]) -> BTreeMap<(String, usize), usize> {
     let mut result = BTreeMap::new();
     for i in 0..tokens.len().saturating_sub(3) {
         if !word(&tokens[i], "fnc") { continue; }
@@ -231,29 +248,30 @@ fn tuple_functions(tokens: &[Token], shapes: &[Shape]) -> BTreeMap<String, usize
         if let Some(n) = shapes.iter().enumerate().find_map(|(j,_)|
             (ctor_name(j) == ret).then_some(j))
         {
-            result.insert(name.to_string(), n);
+            result.insert((name.to_string(), argument_count(&tokens[i+3..end])), n);
         }
     }
     result
 }
 
-fn tuple_call(rhs: &[Token], funcs: &BTreeMap<String, usize>) -> bool {
-    rhs.len() >= 3 && id(&rhs[0]).is_some_and(|n| funcs.contains_key(n))
-        && rhs[1].tok == Tok::LParen
-        && matching(rhs, 1, Tok::LParen, Tok::RParen) == Some(rhs.len()-1)
+fn tuple_call(rhs: &[Token], funcs: &BTreeMap<(String, usize), usize>) -> Option<usize> {
+    if rhs.len() < 3 || rhs[1].tok != Tok::LParen { return None; }
+    let name = id(&rhs[0])?;
+    if matching(rhs, 1, Tok::LParen, Tok::RParen) != Some(rhs.len()-1) { return None; }
+    funcs.get(&(name.to_string(), argument_count(&rhs[2..rhs.len()-1]))).copied()
 }
 
 /// A tuple initializer must either be an explicit tuple constructor or a
 /// typed function return. This disallows arbitrary non-Tuple objects.
-fn checked_rhs(rhs: &[Token], functions: &BTreeMap<String, usize>, pos: Pos) -> R<()> {
-    if tuple_items(rhs).is_some() || tuple_call(rhs, functions) {
+fn checked_rhs(rhs: &[Token], functions: &BTreeMap<(String, usize), usize>, pos: Pos) -> R<()> {
+    if tuple_items(rhs).is_some() || tuple_call(rhs, functions).is_some() {
         return Ok(());
     }
     Err(error(pos, "E_UNSUPPORTED",
         "tuple destructuring requires a scalar tuple literal or a function returning Tuple<...>"))
 }
 
-fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<String, usize>, shapes: &[Shape]) -> R<()> {
+fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<(String, usize), usize>, shapes: &[Shape]) -> R<()> {
     let bindings = tuple_binding_admission::inspect(tokens)?;
     for (i, b) in bindings.iter().enumerate().rev() {
         let mut end = b.rhs_start_index;
@@ -276,9 +294,8 @@ fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<String, usize>, 
         let actual_arity = if let Some(items) = tuple_items(rhs) {
             items.len()
         } else {
-            let callee = id(&rhs[0]).unwrap_or_default();
-            let index = *functions.get(callee).ok_or_else(|| error(b.pos,
-                "E_UNSUPPORTED", "tuple-returning callable is not statically known"))?;
+            let index = tuple_call(rhs, functions).ok_or_else(|| error(b.pos,
+                "E_UNSUPPORTED", "tuple-returning callable overload is not statically known"))?;
             shapes[index].0.len()
         };
         if actual_arity != b.members.len() {
