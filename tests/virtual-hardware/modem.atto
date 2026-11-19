@@ -1,0 +1,129 @@
+// AttoLang virtual serial-modem session-control core.
+// State: 0=powered-off, 1=ready, 2=dialing, 3=training, 4=online.
+// Event: 1=power-on, 2=dial, 3=remote-answer, 4=carrier-lock,
+//        5=hangup, 6=reset, 7=power-off.
+// A rejected transition is -1 and MUST NOT mutate device state.
+
+pub fnc valid_modem_state(int state): bool {
+  return state >= 0 and state <= 4;
+}
+
+pub fnc valid_baud_rate(int baud): bool {
+  return baud == 300 or baud == 1200 or baud == 2400 or
+         baud == 4800 or baud == 9600 or baud == 19200 or
+         baud == 38400 or baud == 57600 or baud == 115200;
+}
+
+pub fnc next_modem_state(int state, int event): int {
+  if !valid_modem_state(state) then
+    return -1;
+  fi
+  if event == 7 then
+    return 0;
+  fi
+  if state == 0 and event == 1 then
+    return 1;
+  fi
+  if state == 1 and event == 2 then
+    return 2;
+  fi
+  if state == 2 and event == 3 then
+    return 3;
+  fi
+  if state == 3 and event == 4 then
+    return 4;
+  fi
+  if state >= 1 and (event == 5 or event == 6) then
+    return 1;
+  fi
+  return -1;
+}
+
+pub fnc carrier_detected(int state): bool {
+  return state == 4;
+}
+
+// Pure budget decision: payload bytes exclude framing, are never negative,
+// and cannot overrun the configured in-flight capacity.
+pub fnc can_emit_data(
+  int state, int baud, int payload_bytes, int in_flight, int capacity
+): bool {
+  if !carrier_detected(state) or !valid_baud_rate(baud) then
+    return false;
+  fi
+  if capacity < 1 or capacity > 65536 or
+     in_flight < 0 or in_flight > capacity or
+     payload_bytes < 1 or payload_bytes > 4096 then
+    return false;
+  fi
+  return payload_bytes <= capacity - in_flight;
+}
+
+// 16-bit frame counter for diagnostics ONLY. It is NOT an authentication
+// nonce, anti-replay token, sequence for trusted delivery, or crypto key.
+pub fnc next_frame_counter(int counter): int {
+  if counter < 0 or counter > 65535 then
+    return -1;
+  fi
+  if counter == 65535 then
+    return 0;
+  fi
+  return counter + 1;
+}
+
+// 0=none, 1=odd, 2=even parity. Data bits 5..8; stop bits 1..2.
+pub fnc valid_serial_config(int baud, int data_bits, int parity, int stop_bits): bool {
+  return valid_baud_rate(baud) and data_bits >= 5 and data_bits <= 8
+    and parity >= 0 and parity <= 2 and stop_bits >= 1 and stop_bits <= 2;
+}
+
+pub fnc valid_modem_fifo(int used, int capacity): bool {
+  return capacity >= 1 and capacity <= 4096 and used >= 0 and used <= capacity;
+}
+
+pub fnc free_modem_fifo(int used, int capacity): int {
+  if !valid_modem_fifo(used, capacity) then
+    return -1;
+  fi
+  return capacity - used;
+}
+
+pub fnc next_modem_fifo_slot(int current, int capacity): int {
+  if capacity < 1 or capacity > 4096 or current < 0 or current >= capacity then
+    return -1;
+  fi
+  if current + 1 == capacity then
+    return 0;
+  fi
+  return current + 1;
+}
+
+// DTR and CTS are necessary to transmit in online/data mode.
+pub fnc can_transmit_octet(
+  int state, int octet, int used, int capacity, bool dtr, bool cts
+): bool {
+  return carrier_detected(state) and octet >= 0 and octet <= 255
+    and valid_modem_fifo(used, capacity) and used < capacity and dtr and cts;
+}
+
+// RTS expresses local receiver readiness; carrier must be established.
+pub fnc can_receive_octet(
+  int state, int octet, int used, int capacity, bool rts
+): bool {
+  return carrier_detected(state) and octet >= 0 and octet <= 255
+    and valid_modem_fifo(used, capacity) and used < capacity and rts;
+}
+
+// AT admission is command-mode only. This checks length, CR terminator,
+// carrier/handshake state and FIFO capacity; it does not parse AT commands.
+pub fnc can_admit_at_command(
+  int state, int bytes, int used, int capacity, bool dtr, bool terminated_cr
+): bool {
+  if state != 1 or !dtr or !terminated_cr then
+    return false;
+  fi
+  if bytes < 2 or bytes > 256 or !valid_modem_fifo(used, capacity) then
+    return false;
+  fi
+  return bytes <= capacity - used;
+}

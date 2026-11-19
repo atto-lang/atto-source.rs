@@ -1,0 +1,139 @@
+// IPv4 virtual-router decision core written in AttoLang.
+// Addresses are unsigned 32-bit integers represented in signed int.
+// This is not a packet parser, byte transport or routing-protocol daemon.
+
+pub fnc valid_ipv4(int address): bool {
+  return address >= 0 and address <= 4294967295;
+}
+
+pub fnc valid_prefix_length(int length): bool {
+  return length >= 0 and length <= 32;
+}
+
+pub fnc prefix_divisor(int length): int {
+  if !valid_prefix_length(length) then
+    return -1;
+  fi
+  let int divisor = 4294967296;
+  let int step = 0;
+  while step < length do
+    divisor = divisor / 2;
+    step = step + 1;
+  done
+  return divisor;
+}
+
+pub fnc ipv4_prefix_matches(int address, int network, int prefix_length): bool {
+  if !valid_ipv4(address) or !valid_ipv4(network) then
+    return false;
+  fi
+  let int divisor = prefix_divisor(prefix_length);
+  if divisor < 1 then
+    return false;
+  fi
+  return (address / divisor) == (network / divisor);
+}
+
+pub fnc valid_ipv4_packet(int total_bytes, int header_bytes, int ttl): bool {
+  if header_bytes < 20 or header_bytes > 60 or
+     header_bytes != (header_bytes / 4) * 4 then
+    return false;
+  fi
+  if total_bytes < header_bytes or total_bytes > 65535 then
+    return false;
+  fi
+  return ttl >= 1 and ttl <= 255;
+}
+
+pub fnc forwarded_ttl(int ttl): int {
+  if ttl <= 1 or ttl > 255 then
+    return -1;
+  fi
+  return ttl - 1;
+}
+
+// Returns an egress port [0,4095], or -1 (no route).
+// Ties use route A. Routes with invalid addresses, prefixes or ports
+// are ignored. A /0 default route matches every valid destination.
+pub fnc select_egress_port(
+  int destination,
+  int network_a, int prefix_a, int port_a,
+  int network_b, int prefix_b, int port_b
+): int {
+  if !valid_ipv4(destination) then
+    return -1;
+  fi
+  let int best_port = -1;
+  let int best_prefix = -1;
+  if port_a >= 0 and port_a < 4096 and
+     ipv4_prefix_matches(destination, network_a, prefix_a) then
+    best_port = port_a;
+    best_prefix = prefix_a;
+  fi
+  if port_b >= 0 and port_b < 4096 and prefix_b > best_prefix and
+     ipv4_prefix_matches(destination, network_b, prefix_b) then
+    best_port = port_b;
+  fi
+  return best_port;
+}
+
+// Validated forwarding requires a packet check and non-expired TTL
+// before the caller may use the selected egress.
+pub fnc may_forward(
+  int total_bytes, int header_bytes, int ttl, int egress_port
+): bool {
+  return valid_ipv4_packet(total_bytes, header_bytes, ttl) and
+         forwarded_ttl(ttl) >= 0 and egress_port >= 0 and egress_port < 4096;
+}
+
+// Reject noncanonical route advertisements before admitting forwarding.
+ // /0 is canonical only for network address 0.
+pub fnc canonical_ipv4_network(int network, int prefix_length): bool {
+  if !valid_ipv4(network) then
+    return false;
+  fi
+  let int divisor = prefix_divisor(prefix_length);
+  if divisor < 1 then
+    return false;
+  fi
+  return network == (network / divisor) * divisor;
+}
+
+// Existing route selection permits host bits in network addresses; this
+// additional entry point rejects that ambiguity before selecting routes.
+pub fnc select_canonical_egress_port(
+  int destination,
+  int network_a, int prefix_a, int port_a,
+  int network_b, int prefix_b, int port_b
+): int {
+  let int safe_port_a = -1;
+  let int safe_port_b = -1;
+  if canonical_ipv4_network(network_a, prefix_a) then
+    safe_port_a = port_a;
+  fi
+  if canonical_ipv4_network(network_b, prefix_b) then
+    safe_port_b = port_b;
+  fi
+  return select_egress_port(destination, network_a, prefix_a, safe_port_a,
+                            network_b, prefix_b, safe_port_b);
+}
+
+pub fnc unicast_ipv4_destination(int destination): bool {
+  return destination > 0 and destination < 3758096384;
+}
+
+// MTU budget applies to the full IPv4 packet including its header.
+// No fragmentation, subnet-broadcast resolution or checksum update occurs.
+pub fnc may_forward_on_link(
+  int destination, int total_bytes, int header_bytes,
+  int ttl, int egress_port, int egress_mtu, bool link_up
+): bool {
+  if !link_up or !unicast_ipv4_destination(destination) then
+    return false;
+  fi
+  if egress_mtu < 576 or egress_mtu > 9216 then
+    return false;
+  fi
+  return total_bytes <= egress_mtu and
+         may_forward(total_bytes, header_bytes, ttl, egress_port);
+}

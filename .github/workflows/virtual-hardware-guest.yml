@@ -1,0 +1,41 @@
+name: Exact PR Atto virtual-hardware compiled Wasm guests
+on:
+  push:
+    branches:
+      - 'test/virtual-hardware-guest-*'
+  pull_request:
+    paths:
+      - 'tests/virtual_hardware_guest.rs'
+      - 'tests/virtual-hardware/**'
+      - '.github/workflows/virtual-hardware-guest.yml'
+permissions:
+  contents: read
+jobs:
+  atto-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify exact local compiler checkout and PR source blob identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "ATTO_COMPILER_HEAD=$(git rev-parse HEAD)"
+          echo "ATTO_COMPILER_TREE=$(git rev-parse HEAD^{tree})"
+          test "$(git hash-object tests/virtual-hardware/nic.atto)" = "6392233af553ef30fb912cb48b90c462d8938a21"
+          test "$(git hash-object tests/virtual-hardware/router.atto)" = "97c82d172be9f4dd76359461785b21acabc3f5bc"
+          test "$(git hash-object tests/virtual-hardware/switch.atto)" = "dc01cf8c174766de3ff0e63c16cef0edb977d572"
+          test "$(git hash-object tests/virtual-hardware/modem.atto)" = "bff522d6c73301a174e9dd178d1fa85450f1c37e"
+      - name: Install pinned compiler toolchain
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup default 1.85.1
+          rustc --version
+          node --version
+      - name: Compile exact Atto virtual device source and execute produced guest Wasm
+        env:
+          RUST_MIN_STACK: "16777216"
+        run: cargo test --locked --test virtual_hardware_guest -- --nocapture
