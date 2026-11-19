@@ -51,7 +51,7 @@ const I32: u8 = 0x7F;
 const I64: u8 = 0x7E;
 const F64: u8 = 0x7C;
 
-fn uleb(out: &mut Vec<u8>, mut v: u64) {
+pub(crate) fn uleb(out: &mut Vec<u8>, mut v: u64) {
     loop {
         let b = (v & 0x7F) as u8;
         v >>= 7;
@@ -63,7 +63,7 @@ fn uleb(out: &mut Vec<u8>, mut v: u64) {
     }
 }
 
-fn sleb(out: &mut Vec<u8>, mut v: i64) {
+pub(crate) fn sleb(out: &mut Vec<u8>, mut v: i64) {
     loop {
         let b = (v & 0x7F) as u8;
         v >>= 7;
@@ -75,12 +75,12 @@ fn sleb(out: &mut Vec<u8>, mut v: i64) {
     }
 }
 
-fn name(out: &mut Vec<u8>, s: &str) {
+pub(crate) fn name(out: &mut Vec<u8>, s: &str) {
     uleb(out, s.len() as u64);
     out.extend_from_slice(s.as_bytes());
 }
 
-fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
+pub(crate) fn section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
     out.push(id);
     uleb(out, body.len() as u64);
     out.extend(body);
@@ -100,7 +100,7 @@ fn vt(t: Type) -> Option<u8> {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct Sig(Vec<u8>, Vec<u8>);
+pub(crate) struct Sig(pub(crate) Vec<u8>, pub(crate) Vec<u8>);
 
 struct Types(Vec<Sig>);
 impl Types {
@@ -1128,7 +1128,7 @@ fn panic(c: &mut Vec<u8>, code: i32) {
     c.extend_from_slice(&[0x24, 0x00, 0x00]);
 }
 
-fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
+pub(crate) fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     // (signature, extra locals as (count,type) pairs encoded, code)
     let bin = Sig(vec![I64, I64], vec![I64]);
     let r_local = vec![1u8, 1, I64]; // 1 group: 1 x i64 (local 2)
