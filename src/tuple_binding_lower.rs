@@ -379,6 +379,7 @@ fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<(String, usize),
             return Err(error(b.pos, "E_CONST",
                 "local tuple const requires a compile-time scalar tuple literal; a runtime fixtures() call is not const"));
         }
+        let constant_elements = if constant_tuple(rhs) { tuple_items(rhs) } else { None };
         let owned = format!("{PREFIX}owner_{i}");
         let alias = b.alias.as_ref().map_or(owned.as_str(), |a| a.name.as_str());
         let root_mutable = b.alias.as_ref().is_some_and(|a| a.mode == BindingMode::Let);
@@ -386,11 +387,23 @@ fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<(String, usize),
             if root_mutable { "let" } else { "val" }, as_code(rhs)?);
         for (k, member) in b.members.iter().enumerate() {
             if let Some(name) = &member.name {
-                let mutable = member.mode == BindingMode::Let;
                 let ty = member.annotation.as_ref()
                     .map_or(String::new(), |t| format!(": {t}"));
-                generated.push_str(&format!("{} {name}{ty} = {alias}.e{k};\n",
-                    if mutable { "let" } else { "val" }));
+                let (kind, init) = match member.mode {
+                    BindingMode::Let => ("let", format!("{alias}.e{k}")),
+                    BindingMode::Val => ("val", format!("{alias}.e{k}")),
+                    // A const element is a true constexpr local: preserve
+                    // the checked source literal, not a field read from
+                    // the runtime materialized tuple root.
+                    BindingMode::Const => {
+                        let part = constant_elements.as_ref()
+                            .and_then(|items| items.get(k))
+                            .ok_or_else(|| error(b.pos, "E_CONST",
+                                "tuple const element requires a constexpr literal"))?;
+                        ("const", as_code(part)?)
+                    }
+                };
+                generated.push_str(&format!("{kind} {name}{ty} = {init};\n"));
             }
         }
         tokens.splice(b.start_index..=end, synthetic(&generated, b.pos)?);
