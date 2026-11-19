@@ -60,6 +60,11 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/conformance.mjs
 
+      - name: Shared scalar-v1 native vs wasm32 byte parity with guest execution
+        env:
+          ATTOC: target/release/attoc
+        run: node --test tests/shared-scalar-v1.test.mjs
+
       - name: Execute five callable forms and class mtd guest with negative no-artifact proofs
         env:
           ATTOC: target/release/attoc
