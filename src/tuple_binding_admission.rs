@@ -216,6 +216,15 @@ pub fn inspect(toks: &[Token]) -> R<Vec<TupleBinding>> {
     let mut found = Vec::new();
     let mut i = 0usize;
     while i + 1 < toks.len() {
+        // A parenthesized for-header is a loop, not a tuple declaration.
+        // In particular, for (const x of xs) must reach parse_for(), which
+        // rejects the unsupported "of" loop with E_UNSUPPORTED rather than
+        // being misdiagnosed as a malformed tuple binder.
+        if tok(toks, i) == Some(&Tok::LParen)
+            && i > 0 && word(tok(toks, i - 1), "for") {
+            i += 1;
+            continue;
+        }
         let outer = mode(tok(toks, i));
         // A C-style for-loop initializer like 'for (let i = 0; ...)'
         // begins with the same '(' + binding keyword, but it is NOT a
