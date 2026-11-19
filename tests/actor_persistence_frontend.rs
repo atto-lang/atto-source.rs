@@ -220,9 +220,10 @@ fn golden_scalar_wire_matches_shared_cross_backend_fixture() {
     // Golden vector: atto-platform-conformance/contracts/actor-persistence-scalar-wire-v1.json
     // This is a host serializer assertion, NOT guest AOT codegen or disk recovery.
     let p = parse(
-        "define durable actor Counter as\\n\\
-         state count: int = 0;\\n\\
-         state enabled: bool = true;\\n end"
+        r#"define durable actor Counter as
+    state count: int = 0;
+    state enabled: bool = true;
+end"#
     ).unwrap();
     let schema = ActorStateSchema::for_actor(&p.actors[0]).unwrap();
     assert_eq!(schema.schema_id, 0xbd8486fc17afa1c9);

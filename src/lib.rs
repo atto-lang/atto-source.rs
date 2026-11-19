@@ -7,8 +7,24 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
-/// Versioned actor-owned scalar snapshot codec groundwork (not disk recovery).
+/// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
+/// Recognize and reject unlowered named collection layouts before Wasm emission.
+pub mod collection_layout;
+/// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
+pub mod collection_layout_plan;
+/// Executable Rust storage kernel only; source-compiled guest admission remains gated.
+pub mod collection_layout_storage;
+/// Narrow genuine source-compiled scalar collection guest profile; all else fails closed.
+pub mod collection_layout_guest;
+/// Shared canonical generic binding for production and guest collection parsers.
+pub mod collection_layout_type;
+/// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
+/// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
+// The canonical verifier is imported byte-identically from the independent
+// checker. Do not edit its SHA-pinned body for Clippy-only style changes.
+#[allow(clippy::needless_return)]
+pub mod copy_graph_v1;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -23,6 +39,8 @@ pub mod module_lower;
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
 pub mod shape_lower;
+/// Identity-free value classes cannot be compiled as identity-bearing browser classes.
+pub mod value_class_admission;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
 /// Explicitly unlinked foreign prototypes and source-only exports.
@@ -50,7 +68,109 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    let source_tokens = lexer::lex(source)?;
+    // Bounded, source-compiled scalar layout specialization: complete grammar
+    // and checked nominal field offsets are required before any Wasm bytes.
+    if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
+        let bytes = wasm::emit(&program);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
+    }
+    // Nested generic Array graphs require a distinct owned allocation, indexing
+    // and deep-copy ABI. Never misclassify their missing runtime as malformed
+    // named layout syntax, or silently reinterpret copy!! graph requirements.
+    for tokens in source_tokens.windows(4) {
+        if matches!(
+            (&tokens[0].tok, &tokens[1].tok, &tokens[2].tok, &tokens[3].tok),
+            (lexer::Tok::Ident(outer), lexer::Tok::Lt,
+             lexer::Tok::Ident(inner), lexer::Tok::Lt)
+                if outer == "Array" && inner == "Array"
+        ) {
+            return Err(Diagnostic::new(tokens[0].pos, "E_UNSUPPORTED_TYPE",
+                "nested Array<T> requires verified owned allocation, indexing and copy!! graph lowering"));
+        }
+    }
+    // Nominal Array generic syntax goes through the production AST/checker.
+    // General-purpose allocation remains fail-closed until fully checked.
+    if source_tokens.windows(2).any(|pair| matches!(
+        (&pair[0].tok, &pair[1].tok),
+        (lexer::Tok::Ident(name), lexer::Tok::Lt) if name == "Array"
+    )) {
+        let mut parser = parser::Parser::new(source_tokens.clone());
+        let parsed = parser.parse_program()?;
+        if parsed.array_types.is_empty() {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_UNSUPPORTED", "Array generic source has no validated collection type"));
+        }
+        let _ = check::check(&parsed)?;
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+            "E_UNSUPPORTED", "general-purpose collection execution is not enabled"));
+    }
+    // A nominal struct is a value; never accidentally dispatch a new
+    // out-of-line struct receiver through shape_lower's identity-bearing
+    // scalar-class preview ABI. Gate it until a true value ABI is verified.
+    let mut structs = Vec::new();
+    for w in source_tokens.windows(3) {
+        if let [lexer::Token { tok: lexer::Tok::Ident(verb), .. },
+                lexer::Token { tok: lexer::Tok::Ident(kind), .. },
+                lexer::Token { tok: lexer::Tok::Ident(name), .. }] = w {
+            if (verb == "define" || verb == "declare") && kind == "struct" {
+                structs.push(name.as_str());
+            }
+        }
+    }
+    for (i, tok) in source_tokens.iter().enumerate() {
+        if !matches!(&tok.tok, lexer::Tok::Ident(word) if word == "mtd" || word == "constructor") {
+            continue;
+        }
+        let at = |j: usize| source_tokens.get(j).map(|t| &t.tok);
+        let owner = match (at(i+1), at(i+2), at(i+3), at(i+4), at(i+5)) {
+            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(s)), Some(lexer::Tok::Colon),
+                Some(lexer::Tok::Ident(n)), _) if s == "self" => Some(n.as_str()),
+            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(m)),
+                Some(lexer::Tok::Ident(s)), Some(lexer::Tok::Colon),
+                Some(lexer::Tok::Ident(n))) if m == "mut" && s == "self" => Some(n.as_str()),
+            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(n)),
+                Some(lexer::Tok::RParen), _, _) => Some(n.as_str()),
+            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(n)),
+                Some(lexer::Tok::Ident(s)), _, _) if s == "self" || s == "_" => Some(n.as_str()),
+            _ => None,
+        };
+        if owner.is_some_and(|name| structs.contains(&name)) {
+            return Err(Diagnostic::new(tok.pos, "E_UNSUPPORTED",
+                "struct receiver/constructor needs a real value ABI; identity-bearing class fallback is forbidden"));
+        }
+    }
+    // The expanded syntax is recognized before normal lowering so that
+    // 'declare class' and out-of-line constructors can attach to a concrete
+    // local class. Protected state may be parsed but MUST NOT be translated
+    // into unlocked ordinary fields on this backend.
+    let has_proposal = source_tokens.windows(2).any(|w|
+        matches!((&w[0].tok, &w[1].tok),
+            (lexer::Tok::Ident(a), lexer::Tok::Ident(b))
+                if a == "declare" && (b == "class" || b == "struct")))
+        || source_tokens.windows(4).any(|w|
+            matches!((&w[0].tok, &w[1].tok, &w[2].tok, &w[3].tok),
+                (lexer::Tok::Ident(a), lexer::Tok::Ident(b),
+                 lexer::Tok::Ident(c), lexer::Tok::Ident(d))
+                    if a == "define" && b == "state" && c == "on" && d == "class"))
+        || source_tokens.windows(5).any(|w|
+            matches!((&w[0].tok, &w[1].tok, &w[2].tok, &w[3].tok, &w[4].tok),
+                (lexer::Tok::Ident(c), lexer::Tok::LParen, lexer::Tok::Ident(_),
+                    lexer::Tok::RParen, lexer::Tok::LParen) if c == "constructor"));
+    let source_tokens = if has_proposal {
+        let headers = target_syntax::parse_target_declarations(&source_tokens)?;
+        target_syntax::lower_class_receivers(&source_tokens, &headers)?
+    } else {
+        source_tokens
+    };
+    // Do not silently erase the 'value' modifier and emit identity-bearing objects.
+    value_class_admission::preflight(&source_tokens)?;
+    let mut visibility = visibility_lower::lower(source_tokens)?;
+    collection_layout::reject_unlowered(&visibility.tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
