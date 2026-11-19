@@ -96,6 +96,16 @@ pub struct ActorInterfaceMethod {
     pub pos: Pos,
 }
 
+/// Visibility is independent of field mutability and ownership.
+/// A compilation unit is one package in the current browser-only compiler;
+/// cross-package linker checks must use real package identity when supported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldVisibility {
+    Private,
+    Package,
+    Public,
+}
+
 /// Who may assign a field after its initializer ran.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldMode {
@@ -114,7 +124,7 @@ pub struct Field {
     pub name: String,
     pub pos: Pos,
     pub ty: Type,
-    pub public: bool,
+    pub visibility: FieldVisibility,
     pub mode: FieldMode,
     pub init: Expr,
 }
