@@ -1,0 +1,3 @@
+# AttoLang rs compiler AI instructions
+
+See [AGENTS.md](../AGENTS.md) and [AOT / zero-GC restrictions](../docs/AOT_ZERO_GC_DYNAMISM.md). No runtime eval, class/method injection, arbitrary reflection or hidden JIT fallback in sealed guest AOT. Compile typed proxy wrappers, virtual dispatch metadata, closures/async machines statically. Audit actor heaps, task frames, ownership/cycles and deterministic cleanup; never claim zero process GC just because AttoLang code was transpiled or the host is Rust. Require compile-time negative cases and exact-head stepful guest receipts. Preserve Rust-only tooling and security.
