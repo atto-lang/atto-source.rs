@@ -67,7 +67,11 @@ fn fragment(src: &str, pos: Pos) -> R<Vec<Token>> {
 fn synthesized(klass: &str, fields: &[Field]) -> String {
     let mut src = format!("define class {klass} as\n");
     for f in fields {
-        src.push_str(&format!("pub {} {}: {};\n", f.ty, f.name, default(&f.ty)));
+        // Lowered product storage is populated by the compiler-generated
+        // constructor, not by user code. Make that constructor-write authority
+        // explicit: bare class fields now default to immutable `val`.
+        // This preserves the existing product ABI and initialization order.
+        src.push_str(&format!("pub let {} {} = {};\n", f.ty, f.name, default(&f.ty)));
     }
     src.push_str("constructor(");
     for (i, f) in fields.iter().enumerate() {
