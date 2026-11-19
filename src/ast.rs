@@ -203,6 +203,10 @@ pub struct Param {
     pub name: String,
     pub ty: Type,
     pub mutable: bool,
+    /// A consuming parameter in the opt-in borrow-v1 profile, spelled
+    /// `take! Foo name`. Unlike an implicit class formal, the caller must
+    /// explicitly transfer a named owner with `take! owner`.
+    pub consuming: bool,
     pub pos: Pos,
 }
 
