@@ -149,3 +149,31 @@ pub fnc select_safe_egress_port(
                              learned_mac, learned_port, learned_vlan,
                              age_seconds, max_age_seconds);
 }
+
+// Bind on-wire 802.1Q VLAN to authenticated ingress-port assignment.
+// observed_vlan=0 for untagged; the host must first authenticate TPID/TCI.
+pub fnc can_admit_vlan_bound_ingress_frame(
+  int bytes, int mtu, int ingress, int port_count,
+  int assigned_vlan, bool tagged, int observed_vlan, bool ingress_up
+): bool {
+  if !can_admit_ingress_frame(bytes, mtu, ingress, port_count,
+                             assigned_vlan, tagged, ingress_up) then
+    return false;
+  fi
+  if tagged then
+    return observed_vlan == assigned_vlan;
+  fi
+  return observed_vlan == 0;
+}
+
+// Flood only after trusted ingress VLAN and recipient membership checks.
+pub fnc can_flood_vlan_bound_frame(
+  int destination_mac, int bytes, int mtu, bool tagged, int observed_vlan,
+  int ingress, int ingress_vlan, int candidate, int candidate_vlan,
+  int port_count, bool ingress_up, bool candidate_up
+): bool {
+  return can_admit_vlan_bound_ingress_frame(bytes, mtu, ingress, port_count,
+            ingress_vlan, tagged, observed_vlan, ingress_up)
+    && flood_to_port(destination_mac, ingress, candidate, port_count,
+            ingress_vlan, candidate_vlan, candidate_up);
+}

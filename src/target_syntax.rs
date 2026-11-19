@@ -49,7 +49,7 @@ pub struct ConstructorSite {
 #[derive(Clone, Debug, Default)]
 pub struct TargetHeaders {
     pub namespace: Option<String>,
-    /// Imported module aliases. Imports are not resolved or linked here.
+    /// Local names of static imports. Export paths are not resolved or linked here.
     pub imports: Vec<String>,
     pub actors: Vec<String>,
     /// Non-instantiating class forward declarations.
@@ -106,6 +106,35 @@ impl Cursor<'_> {
                 self.next(); Ok(s)
             }
             _ => Err(self.err("E_SYNTAX", "expected an identifier")),
+        }
+    }
+    /// Parse a comma-separated list of static public export paths.
+    /// This stage only records the *local* bindings: it does not resolve
+    /// packages, export paths, visibility, or run any imported code.
+    fn import_names(&mut self, locals: &mut Vec<String>) -> R<()> {
+        loop {
+            if locals.len() >= 256 {
+                return Err(self.err("E_SOURCE_LIMIT", "too many imported bindings"));
+            }
+            let mut local = self.ident()?;
+            let mut depth = 1;
+            while self.take(&Tok::Dot) {
+                if depth >= 8 {
+                    return Err(self.err("E_SOURCE_LIMIT", "import export path exceeds 8 components"));
+                }
+                local = self.ident()?;
+                depth += 1;
+            }
+            if self.take_word("as") {
+                local = self.ident()?;
+            }
+            if locals.contains(&local) {
+                return Err(self.err("E_DUPLICATE", format!("duplicate import binding '{local}'")));
+            }
+            locals.push(local);
+            if !self.take(&Tok::Comma) { return Ok(()); }
+            // The next iteration must parse a further export name; a
+            // trailing comma before 'from' fails through ident().
         }
     }
     /// Bounded type-only lookahead for '<-' before a named callable.
@@ -403,13 +432,13 @@ impl Cursor<'_> {
         self.i = end;
         Ok(decl)
     }
-    fn function(&mut self) -> R<(usize, usize)> {
+    fn function(&mut self) -> R<(String, usize, usize)> {
         let return_first = self.return_first_header();
         if return_first {
             self.type_name()?;
             self.expect(&Tok::LeftArrow, "expected '<-' after return type")?;
         }
-        self.ident()?;
+        let name = self.ident()?;
         self.params()?;
         let arrow_type = !return_first && *self.tok() == Tok::Arrow;
         let colon_type = !return_first && *self.tok() == Tok::Colon;
@@ -424,7 +453,7 @@ impl Cursor<'_> {
         }
         let start = self.i;
         self.body(arrow_type, colon_type, return_first)?;
-        Ok((start, self.i))
+        Ok((name, start, self.i))
     }
 }
 
@@ -432,6 +461,17 @@ impl Cursor<'_> {
 /// module imports, forward-declared actors, nominal or typed receivers and functions.
 /// Body braces are balanced only: there is no semantic/state access proof.
 pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
+    parse_target_declarations_with_path(toks, None)
+}
+
+/// Parse with the logical source path required for folder-derived namespaces.
+pub fn parse_target_declarations_with_path(toks: &[Token], logical_path: Option<&std::path::Path>)
+    -> R<TargetHeaders> {
+    let normalized = crate::namespace::normalize(toks, logical_path)?;
+    parse_target_declarations_normalized(&normalized)
+}
+
+fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
     if toks.is_empty() {
         return Err(Diagnostic::new(Pos::default(), "E_EOF", "empty token stream"));
     }
@@ -439,6 +479,9 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
     let mut out = TargetHeaders::default();
     let mut spans: Vec<(usize, usize, usize)> = Vec::new();
     let mut function_spans: Vec<(usize, usize)> = Vec::new();
+    let mut function_names: Vec<String> = Vec::new();
+    let mut import_sites: Vec<(String, Pos)> = Vec::new();
+    let mut saw_declaration = false;
     let mut decls = 0;
     while *c.tok() != Tok::Eof {
         if decls >= MAX_FUNCS {
@@ -446,29 +489,77 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
         }
         let pos = c.pos();
         if c.take_word("use") {
-            if decls != 0 { return Err(c.err("E_SYNTAX", "namespace header must come first")); }
+            if c.word() == Some("namespace") && out.namespace.is_some() {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                    "only one namespace declaration is allowed per source file"));
+            }
+            if decls != 0 {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "namespace declaration must precede all imports and declarations"));
+            }
             c.expect_word("namespace")?;
-            out.namespace = Some(c.ident()?);
+            let mut components = vec![c.ident()?];
+            while c.take(&Tok::Dot) {
+                if components.len() >= 32 {
+                    return Err(c.err("E_NAMESPACE_DEPTH", "namespace has more than 32 components"));
+                }
+                components.push(c.ident()?);
+            }
+            out.namespace = Some(components.join("."));
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
         } else if c.take_word("import") {
+            if saw_declaration {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "imports must precede all non-import declarations"));
+            }
             if !out.actors.is_empty() || !out.classes.is_empty() || !out.class_forwards.is_empty() ||
                !out.struct_forwards.is_empty() || !out.state_owners.is_empty() ||
                !out.constructors.is_empty() || !out.receivers.is_empty() {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
             }
-            c.expect_word("module")?;
-            let alias = c.ident()?;
-            if out.imports.contains(&alias) {
-                return Err(c.err("E_DUPLICATE", format!("duplicate module import '{alias}'")));
-            }
+            let mut bindings = Vec::new();
+            let legacy_pkg = if c.take_word("module") {
+                // Legacy import module name from "./file.atto" syntax.
+                bindings.push(c.ident()?);
+                false
+            } else if c.take_word("pkg") {
+                // Legacy import pkg name from "+/package" syntax.
+                bindings.push(c.ident()?);
+                true
+            } else if c.take(&Tok::Star) {
+                c.expect_word("as")?;
+                bindings.push(c.ident()?);
+                false
+            } else if matches!(c.tok(), Tok::Ident(_)) {
+                c.import_names(&mut bindings)?;
+                false
+            } else {
+                return Err(c.err("E_SYNTAX", "expected '* as name' or comma-separated import names"));
+            };
             c.expect_word("from")?;
-            match c.tok() {
-                Tok::Str(_) => c.next(),
-                _ => return Err(c.err("E_SYNTAX", "expected a quoted module import path")),
+            let package = legacy_pkg || c.take_word("pkg");
+            match c.tok().clone() {
+                Tok::Str(path) if !path.is_empty() => {
+                    if package && (path.starts_with("./") || path.starts_with("../")) {
+                        return Err(c.err("E_SYNTAX", "package imports cannot use relative file paths"));
+                    }
+                    if !package && !path.starts_with("./") && !path.starts_with("../") {
+                        return Err(c.err("E_SYNTAX", "file imports require a quoted relative path"));
+                    }
+                    c.next();
+                }
+                _ => return Err(c.err("E_SYNTAX", "expected a nonempty quoted import path")),
             }
-            c.expect(&Tok::Semi, "expected ';' after module import")?;
-            out.imports.push(alias);
+            c.expect(&Tok::Semi, "expected ';' after import")?;
+            for alias in bindings {
+                if out.imports.contains(&alias) {
+                    return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
+                }
+                import_sites.push((alias.clone(), pos));
+                out.imports.push(alias);
+            }
         } else if c.take_word("define") {
+            saw_declaration = true;
             if c.take_word("state") {
                 let owner = c.state_attachment()?;
                 if out.state_owners.contains(&owner) {
@@ -502,6 +593,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 return Err(c.err("E_SYNTAX", "expected 'class' or 'actor' after define"));
             }
         } else if c.take_word("declare") {
+            saw_declaration = true;
             let start = c.i - 1;
             let kind = c.word().map(str::to_owned).unwrap_or_default();
             if !matches!(kind.as_str(), "actor" | "class" | "struct") {
@@ -530,6 +622,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 _ => unreachable!(),
             }
         } else {
+            saw_declaration = true;
             let declaration_start = c.i;
             let public = c.take_word("pub");
             if c.take_word("mtd") {
@@ -552,17 +645,35 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 }
                 out.constructors.push(site);
             } else if c.take_word("fnc") || c.take_word("routine") {
-                function_spans.push(c.function()?);
+                let (name, start, end) = c.function()?;
+                function_names.push(name);
+                function_spans.push((start, end));
             } else if c.return_first_header() {
                 // A keyword-free T <- name(...) callable is unambiguous in
                 // declaration scope, and has the same owner/name/arity identity.
-                function_spans.push(c.function()?);
+                let (name, start, end) = c.function()?;
+                function_names.push(name);
+                function_spans.push((start, end));
             } else {
                 return Err(c.err("E_SYNTAX",
                     "expected namespace header, module import, declared/concrete actor, receiver method, or fnc"));
             }
         }
         decls += 1;
+    }
+    // Imports are local static bindings, never permissive aliases that can
+    // shadow a declared nominal owner or a file-level callable. Detect
+    // collisions independent of declaration order, before any lowering.
+    for (import_name, import_pos) in &import_sites {
+        let nominal_collision = out.actors.contains(import_name)
+            || out.classes.contains(import_name)
+            || out.class_forwards.contains(import_name)
+            || out.struct_forwards.contains(import_name)
+            || out.definitions.iter().any(|decl| &decl.name == import_name);
+        if nominal_collision || function_names.contains(import_name) {
+            return Err(Diagnostic::new(*import_pos, "E_DUPLICATE",
+                format!("import binding '{import_name}' conflicts with a local declaration")));
+        }
     }
     for receiver in &out.receivers {
         if !out.actors.contains(&receiver.owner) && !out.classes.contains(&receiver.owner) &&

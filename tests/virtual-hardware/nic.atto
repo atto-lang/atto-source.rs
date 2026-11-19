@@ -65,6 +65,10 @@ pub fnc valid_ethernet_frame_with_vlan(
   if tagged then
     header_bytes = 18;
   fi
+  // A single 802.1Q tag increases the minimum frame to 64 bytes (FCS excluded).
+  if tagged && bytes < 64 then
+    return false;
+  fi
   return bytes >= 60 && bytes <= mtu + header_bytes;
 }
 
@@ -183,4 +187,15 @@ pub fnc can_receive_guest_frame(int offset, int bytes, int region_bytes,
   return guest_region_contains(offset, bytes, region_bytes)
     && guest_address_aligned(offset, alignment)
     && can_receive(bytes, mtu, used, capacity, link_up);
+}
+
+// The same guest aperture, ring and link checks also apply to tagged frames.
+// A caller must parse and authenticate the actual VLAN TPID/TCI from memory.
+pub fnc can_receive_guest_frame_tagged(
+  int offset, int bytes, int region_bytes, int alignment,
+  int mtu, bool tagged, int vlan, int used, int capacity, bool link_up
+): bool {
+  return guest_region_contains(offset, bytes, region_bytes)
+    && guest_address_aligned(offset, alignment)
+    && can_receive_tagged(bytes, mtu, tagged, vlan, used, capacity, link_up);
 }

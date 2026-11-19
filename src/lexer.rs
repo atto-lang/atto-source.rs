@@ -57,6 +57,8 @@ pub enum Tok {
     /// Right-associative functional application: f <| value.
     PipeLt,
     Amp,
+    Caret,
+    Tilde,
     At,
     Eof,
 }
@@ -152,11 +154,36 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 }
                 bump!();
             }
-            if i < chars.len() && (chars[i] == 'x' || chars[i] == 'X' || chars[i] == 'b' || chars[i] == 'o') && digits == "0" {
-                return Err(Diagnostic::new(
+            // Flags/masks in the public bitwise preview use binary literals.
+            // Keep exactly the signed i64 range and decimal underscore rules;
+            // other radix prefixes remain explicitly unsupported.
+            if digits == "0" && i > 0 && chars[i - 1] == '0' &&
+                chars.get(i).is_some_and(|c| *c == 'b' || *c == 'B') {
+                bump!();
+                let mut bits = String::new();
+                while i < chars.len() && matches!(chars[i], '0' | '1' | '_') {
+                    if chars[i] != '_' { bits.push(chars[i]); }
+                    bump!();
+                }
+                if bits.is_empty() || i < chars.len() &&
+                    (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL",
+                        "malformed binary integer literal"));
+                }
+                let value = u64::from_str_radix(&bits, 2).ok()
+                    .filter(|v| *v <= (1_u64 << 63))
+                    .ok_or_else(|| Diagnostic::new(pos, "E_INTEGER_RANGE",
+                        "integer literal does not fit in a signed 64-bit int"))?;
+                out.push(Token {
+                    tok: Tok::Int(if value == (1_u64 << 63) { None } else { Some(value) }),
                     pos,
-                    "E_INTEGER_LITERAL",
-                    "only decimal integer literals are supported",
+                });
+                continue;
+            }
+            if i < chars.len() && matches!(chars[i], 'x' | 'X' | 'b' | 'B' | 'o' | 'O') && digits == "0" {
+                return Err(Diagnostic::new(
+                    pos, "E_INTEGER_LITERAL",
+                    "only decimal and binary integer literals are supported",
                 ));
             }
             // Float literals follow the Java lexer exactly: digits '.' digits,
@@ -317,21 +344,30 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('=', _) => (Tok::Assign, 1),
             ('!', Some('=')) => (Tok::NotEq, 2),
             ('!', _) => (Tok::Bang, 1),
+            // Keep the last bracket of '<<<=' / '>>>=' separate from
+            // '='. This also protects unspaced triple generic closers
+            // (e.g. T<U<V<W>>>=value) from becoming comparison tokens.
+            ('<', Some('=')) if i >= 2 && chars[i - 1] == '<' && chars[i - 2] == '<' =>
+                (Tok::Lt, 1),
             ('<', Some('-')) => (Tok::LeftArrow, 2),
             ('<', Some('|')) => (Tok::PipeLt, 2),
             ('<', Some('=')) => (Tok::Le, 2),
             ('<', _) => (Tok::Lt, 1),
+            ('>', Some('=')) if i >= 2 && chars[i - 1] == '>' && chars[i - 2] == '>' =>
+                (Tok::Gt, 1),
             ('>', Some('=')) => (Tok::Ge, 2),
             ('>', _) => (Tok::Gt, 1),
             ('*', _) => (Tok::Star, 1),
             ('/', _) => (Tok::Slash, 1),
-            ('%', _) | ('^', _) => {
+            ('%', _) | ('^', Some('^')) => {
                 return Err(Diagnostic::new(
                     pos,
                     "E_UNSUPPORTED",
                     "removed arithmetic operator is not part of AttoLang",
                 ));
             }
+            ('^', _) => (Tok::Caret, 1),
+            ('~', _) => (Tok::Tilde, 1),
             ('?', _) => (Tok::Question, 1),
             ('|', Some('>')) => (Tok::PipeGt, 2),
             ('|', _) => (Tok::Pipe, 1),

@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use crate::module_lower::ModuleDecl;
 type R<T> = Result<T, Diagnostic>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,23 +37,46 @@ fn name(t: &[Token], i: usize) -> R<String> {
 /// not arbitrary tokens: a class member named Foo is NOT a top-level fnc
 /// Foo, and a foreign prototype never grants source-level export authority.
 pub fn resolve_exports(exports: &mut [Export], parsed: &crate::ast::Program) -> R<()> {
+    resolve_exports_with_modules(exports, parsed, &[])
+}
+
+/// Resolve a file-owned module export only from a checked module declaration.
+/// Module imports never grant re-export authority to their consumer.
+pub fn resolve_exports_with_modules(
+    exports: &mut [Export],
+    parsed: &crate::ast::Program,
+    modules: &[ModuleDecl],
+) -> R<()> {
     for export in exports {
         let class_count = parsed.classes.iter()
             .filter(|c| c.name == export.name && !c.state_container).count();
         let fnc_count = parsed.funcs.iter()
             .filter(|f| f.name == export.name).count();
-        let matches = class_count + fnc_count;
+        let module_count = modules.iter().filter(|m| m.name == export.name).count();
+        let matches = class_count + fnc_count + module_count;
         if matches == 0 {
             return Err(error(export.pos, "E_UNBOUND",
-                format!("export '{}' has no top-level declaration", export.name)));
+                format!("export '{}' has no file-local declaration", export.name)));
         }
         if matches != 1 {
             return Err(error(export.pos, "E_DUPLICATE",
                 format!("export '{}' is ambiguous without an arity-qualified export", export.name)));
         }
-        let kind = if class_count == 1 { "class" } else { "fnc" };
+        let kind = if class_count == 1 {
+            "class"
+        } else if module_count == 1 {
+            "module"
+        } else {
+            "fnc"
+        };
         if !export.kind.is_empty() && export.kind != kind {
             return Err(error(export.pos, "E_TYPE", "export declaration kind mismatch"));
+        }
+        if kind == "module" && export.visibility == Visibility::Package
+            && modules.iter().any(|m| m.name == export.name && m.inline_public)
+        {
+            return Err(error(export.pos, "E_VISIBILITY",
+                "public module declaration cannot be downgraded to pub[pkg]"));
         }
         export.kind = kind;
     }
@@ -96,6 +120,35 @@ fn external_prototype(t: &[Token], start: usize) -> R<(usize, String)> {
     }
     Ok((i + 1, id))
 }
+/// Parse exactly one file-level export directive. The linked-source
+/// resolver uses this same grammar before erasing the directive so that
+/// visibility checks cannot disagree with standalone source admission.
+pub(crate) fn parse_export_directive(t: &[Token], start: usize) -> R<(Export, usize)> {
+    let pos = t.get(start).map_or(Pos::default(), |x| x.pos);
+    if !word(t, start, "export") || !word(t, start + 1, "pub") {
+        return Err(error(pos, "E_SYNTAX", "export requires pub or pub[pkg]"));
+    }
+    let mut j = start + 2;
+    let visibility = if t.get(j).map(|x| &x.tok) == Some(&Tok::LBracket) {
+        if !word(t, j + 1, "pkg") || t.get(j + 2).map(|x| &x.tok) != Some(&Tok::RBracket) {
+            return Err(error(pos, "E_SYNTAX", "only pub[pkg] package visibility is supported"));
+        }
+        j += 3;
+        Visibility::Package
+    } else { Visibility::Public };
+    let mut kind = "";
+    if word(t, j, "class") || word(t, j, "fnc") || word(t, j, "module") {
+        kind = if word(t, j, "class") { "class" }
+            else if word(t, j, "module") { "module" } else { "fnc" };
+        j += 1;
+    }
+    let id = name(t, j)?;
+    if t.get(j + 1).map(|x| &x.tok) != Some(&Tok::Semi) {
+        return Err(error(pos, "E_SYNTAX", "export must end with semicolon"));
+    }
+    Ok((Export { name: id, kind, visibility, pos }, j + 2))
+}
+
 pub fn lower(t: Vec<Token>) -> R<Lowered> {
     if !t.iter().any(|x| matches!(&x.tok, Tok::Ident(s)
         if matches!(s.as_str(), "export" | "external" | "internal" | "protected"))) {
@@ -108,33 +161,16 @@ pub fn lower(t: Vec<Token>) -> R<Lowered> {
     while i < t.len() {
         let pos = t[i].pos;
         if word(&t, i, "export") {
-            if exports.len() >= 128 { return Err(error(pos, "E_SOURCE_LIMIT", "export budget exceeded")); }
-            if !word(&t, i + 1, "pub") {
-                return Err(error(pos, "E_SYNTAX", "export requires pub or pub[pkg]"));
+            if exports.len() >= 128 {
+                return Err(error(pos, "E_SOURCE_LIMIT", "export budget exceeded"));
             }
-            let mut j = i + 2;
-            let visibility = if t.get(j).map(|x| &x.tok) == Some(&Tok::LBracket) {
-                if !word(&t, j + 1, "pkg") ||
-                   t.get(j + 2).map(|x| &x.tok) != Some(&Tok::RBracket) {
-                    return Err(error(pos, "E_SYNTAX", "only pub[pkg] package visibility is supported"));
-                }
-                j += 3;
-                Visibility::Package
-            } else { Visibility::Public };
-            let mut kind = "";
-            if word(&t, j, "class") || word(&t, j, "fnc") {
-                kind = if word(&t, j, "class") { "class" } else { "fnc" };
-                j += 1;
+            let (export, next) = parse_export_directive(&t, i)?;
+            if exports.iter().any(|e| e.name == export.name) {
+                return Err(error(pos, "E_DUPLICATE",
+                    format!("duplicate exported name '{}'", export.name)));
             }
-            let id = name(&t, j)?;
-            if t.get(j + 1).map(|x| &x.tok) != Some(&Tok::Semi) {
-                return Err(error(pos, "E_SYNTAX", "export must end with semicolon"));
-            }
-            if exports.iter().any(|e| e.name == id) {
-                return Err(error(pos, "E_DUPLICATE", format!("duplicate exported name '{id}'")));
-            }
-            exports.push(Export { name: id, kind, visibility, pos });
-            i = j + 2;
+            exports.push(export);
+            i = next;
             continue;
         }
         if word(&t, i, "external") {
@@ -214,9 +250,51 @@ pub fn metadata(bytes: &mut Vec<u8>, exports: &[Export]) {
         leb(&mut section, e.name.len());
         section.extend_from_slice(e.name.as_bytes());
         section.push(match e.visibility { Visibility::Public => 1, Visibility::Package => 2 });
-        section.push(if e.kind == "class" { 1 } else { 2 });
+        section.push(match e.kind { "class" => 1, "module" => 3, _ => 2 });
     }
     bytes.push(0);
     leb(bytes, section.len());
     bytes.extend_from_slice(&section);
+}
+
+#[cfg(test)]
+mod export_directive_contract_tests {
+    use super::{lower, parse_export_directive, Visibility};
+    use crate::lexer::lex;
+
+    #[test]
+    fn export_directive_parser_matches_standalone_lowering() {
+        for (source, kind, visibility) in [
+            ("export pub module Math;", "module", Visibility::Public),
+            ("export pub fnc square;", "fnc", Visibility::Public),
+            ("export pub[pkg] class Widget;", "class", Visibility::Package),
+            ("export pub Thing;", "", Visibility::Public),
+        ] {
+            let tokens = lex(source).unwrap();
+            let (parsed, next) = parse_export_directive(&tokens, 0).unwrap();
+            assert_eq!(tokens[next].tok, crate::lexer::Tok::Eof);
+            assert_eq!(parsed.kind, kind);
+            assert_eq!(parsed.visibility, visibility);
+            let lowered = lower(tokens).unwrap();
+            assert_eq!(lowered.exports.len(), 1);
+            assert_eq!(lowered.exports[0].name, parsed.name);
+            assert_eq!(lowered.exports[0].kind, parsed.kind);
+            assert_eq!(lowered.exports[0].visibility, parsed.visibility);
+        }
+    }
+
+    #[test]
+    fn malformed_export_directives_remain_fail_closed() {
+        for source in [
+            "export pub[other] module Math;",
+            "export pub module Math",
+            "export module Math;",
+            "export pub module;",
+            "export pub[pkg fnc name;",
+        ] {
+            let tokens = lex(source).unwrap();
+            assert!(parse_export_directive(&tokens, 0).is_err(), "{source}");
+            assert!(lower(tokens).is_err(), "{source}");
+        }
+    }
 }

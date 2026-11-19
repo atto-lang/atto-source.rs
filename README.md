@@ -1,3 +1,5 @@
+> **AI agent instructions (organization-wide):** Before working on code, issues, or pull requests, read and follow the [organization `AGENTS.md`](https://github.com/atto-lang/.github/blob/main/AGENTS.md), including its **merge-first stealth-development policy**. Honor any repository-local `AGENTS.md`, explicit holds, and GitHub-enforced rules.
+
 ## Named callable return annotations (strict target)
 
 Under the new strict named-callable rule, every function, routine, class/actor method (including static and out-of-line methods) and actor `receive` handler must explicitly specify a result. Write `-> int`, `-> void`, or opt into `-> infer`. The `: T` / `: infer` spelling is also legal; concrete types are preferred. Missing annotations produce `E_RETURN_ANNOTATION`, never a silently inferred `void`. Constructors and contextual lambdas are separate grammar categories.
@@ -121,8 +123,14 @@ header, multiple declare actor statements in one file, and typed mtd receivers
 such as (mut self: Foo1) and (self: Foo2), as well as the nominal
 spelling (Foo1 self), unnamed (Foo1), and (Foo1 _) receivers.
 The parser finds target declarations anywhere at file scope, while the
-namespace header must still occur first. Explicit module imports of the form
-import module math from "./math.atto" can follow that header. The parser rejects duplicate actor
+namespace header must still occur first. The target-only parser now accepts
+`import * as math from "./math.atto";`, `import * as telemetry from pkg "core.telemetry";`,
+and comma-separated names/aliases such as `import span, tracer as make_tracer from pkg "core.telemetry";`.
+Dotted public export selectors such as `import telemetry.span as span from pkg "core";`
+are parsed with bounded path length; brace-style named imports are not canonical.
+Legacy `import module math from "./math.atto";` and `import pkg p from "+/pkg";`
+remain parseable for migration. Imports are **not linked or executable** in this profile.
+The parser rejects duplicate imported local bindings and duplicate actor
 names, same-owner/name/arity receiver signatures, unknown receiver owners,
 misplaced namespace headers, malformed signatures and excessive body nesting.
 

@@ -35,6 +35,15 @@ pub mod detached_io;
 pub mod parser;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
+/// Bounded host-independent direct relative-file linker.
+pub mod import_link;
+/// Verified source-graph imports and canonical module identities.
+pub mod linked_symbols;
+pub mod linker;
+pub mod package_resolver;
+#[cfg(target_os = "linux")]
+mod secure_fs;
+pub mod sha256;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
@@ -54,6 +63,8 @@ pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
+/// File-scoped namespace headers derived from a package-relative source path.
+pub mod namespace;
 pub mod tuple_binding_admission;
 pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
@@ -71,6 +82,27 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, None)
+}
+
+/// Compile with a caller-supplied logical, package-relative source file path.
+/// Required when the source declares `use default namespace[(N)];`.
+pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
+    -> Result<Vec<u8>, Diagnostic> {
+    compile_inner(source, Some(logical_path))
+}
+
+/// Compile a project entry with trusted caller-supplied relative source loading.
+pub fn compile_with_imports<F>(
+    source: &str, logical_path: &std::path::Path, load: F,
+) -> Result<Vec<u8>, Diagnostic>
+where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    let tokens = import_link::lower(source, logical_path, load)?;
+    compile_prelexed(tokens, Some(logical_path))
+}
+
+fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
+    -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
         return Err(Diagnostic::new(
             Pos { line: 1, col: 1 },
@@ -78,7 +110,12 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let original_tokens = lexer::lex(source)?;
+    compile_prelexed(lexer::lex(source)?, logical_path)
+}
+
+fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
+    -> Result<Vec<u8>, Diagnostic> {
+    let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
@@ -202,7 +239,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     value_class_admission::preflight(&source_tokens)?;
     let mut visibility = visibility_lower::lower(source_tokens)?;
     collection_layout::reject_unlowered(&visibility.tokens)?;
-    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    let lowered_modules = module_lower::lower_with_manifest(visibility.tokens)?;
+    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(
+        nominal_lower::lower(lowered_modules.tokens)?)?)?)?;
     // Only the checked, bounded Copy-scalar Tuple profile can reach guest
     // lowering. Non-scalar tuple graphs/borrows fail closed before parser.
     let toks = tuple_binding_lower::lower(toks)?;
@@ -274,7 +313,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     };
     // Validate exports against the parsed top-level symbol table, never a
     // lexical occurrence inside a class, nested method or foreign prototype.
-    visibility_lower::resolve_exports(&mut visibility.exports, &program)?;
+    visibility_lower::resolve_exports_with_modules(&mut visibility.exports, &program, &lowered_modules.modules)?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
