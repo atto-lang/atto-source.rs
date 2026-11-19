@@ -63,3 +63,30 @@ pub fnc main(): int {
 "#;
     assert_eq!(compile(reject).unwrap_err().code, "E_IMMUTABLE");
 }
+
+#[test]
+fn unqualified_tuple_lhs_reports_syntax_not_runtime_unsupported() {
+    let source = r#"
+pub fnc fixtures(): Tuple<int,int,int> { return (1,2,3); }
+pub fnc main(): int {
+    (a, r, mut j) = fixtures();
+    return 0;
+}
+"#;
+    assert_eq!(compile(source).unwrap_err().code, "E_SYNTAX");
+}
+
+#[test]
+fn tuple_gate_preserves_parenthesized_comparison_expressions() {
+    let source = r#"
+pub fnc main(): int {
+    let a = 2;
+    let b = 4;
+    if (a < b) then
+       return 1;
+    fi
+    return 0;
+}
+"#;
+    assert!(compile(source).is_ok());
+}
