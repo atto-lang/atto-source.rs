@@ -155,9 +155,7 @@ pub fn lower(t: &[Token]) -> R<Option<Vec<Token>>> {
                     if !definition_names.insert(owner.clone()) {
                         return Err(error(t, beginning, "E_DUPLICATE", "actor defined more than once"));
                     }
-                    if !insertions.contains_key(&end) {
-                        insertions.insert(end, Vec::new());
-                    }
+                    insertions.entry(end).or_default();
                     end_by_owner.insert(owner, end);
                     // Erase only the checked implements list from an actor
                     // header; the entire actor body stays with the real
