@@ -89,6 +89,7 @@ enum SlotState { Available, Moved }
 pub struct TupleOwner {
     ty: TupleType,
     mode: BindingMode,
+    constexpr: bool,
     states: Vec<SlotState>,
     loans: BTreeMap<u64, Loan>,
     next_loan: u64,
@@ -101,7 +102,7 @@ impl TupleOwner {
         }
         Ok(Self {
             states: vec![SlotState::Available; ty.elements.len()],
-            ty, mode, loans: BTreeMap::new(), next_loan: 1, epoch: 0,
+            ty, mode, constexpr, loans: BTreeMap::new(), next_loan: 1, epoch: 0,
         })
     }
     pub fn shape(&self) -> &TupleType { &self.ty }
@@ -179,7 +180,7 @@ impl TupleOwner {
             }
             let operation = match field {
                 ElementType::Copy(_) => {
-                    if member.mode == BindingMode::Const && proposed.mode != BindingMode::Const {
+                    if member.mode == BindingMode::Const && !proposed.constexpr {
                         return Err(err(pos, "E_CONST", "const element needs proven static provenance"));
                     }
                     ProjectionOp::CopyValue
