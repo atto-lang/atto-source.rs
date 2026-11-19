@@ -366,6 +366,9 @@ struct FieldInfo {
     mode: FieldMode,
     /// Do not conflate Val, Final and Const with the browser storage mode.
     binding: FieldBinding,
+    /// Only final fields with no declaration initializer may be written
+    /// exactly once during construction; the CFG gate proves assignment.
+    deferred_final: bool,
     /// Future referent-write authorization is independent of rebinding.
     #[allow(dead_code)]
     referent_mutable: bool,
@@ -1016,8 +1019,9 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             // runtime initialization merely because Val/Final share a storage mode.
             // Non-const initializer effects are still intentionally unsupported
             // by the current restricted browser field-initialization backend.
-            if !actor && f.binding == FieldBinding::Const && !const_init(&f.init) {
-                return Err(Diagnostic::new(f.init.pos, "E_CONST",
+            if !actor && f.binding == FieldBinding::Const &&
+                !f.init.as_ref().is_some_and(const_init) {
+                return Err(Diagnostic::new(f.pos, "E_CONST",
                     format!("class constant '{}.{}' requires a compile-time initializer", owner, f.name)));
             }
             let ty = res(f.ty)?;
@@ -1045,6 +1049,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 visibility: f.visibility,
                 mode: f.mode,
                 binding: f.binding,
+                deferred_final: f.binding == FieldBinding::Final && f.init.is_none(),
                 referent_mutable: f.referent_mutable,
                 slot: if actor { global_base + i as u32 } else { i as u32 * FIELD_BYTES },
             });
@@ -1243,8 +1248,13 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let me = Type::Class(ci as u32);
         let mut field_inits = Vec::new();
         for (f, fi) in c.fields.iter().zip(&info.fields) {
-            let v = field_init(&g, f, fi.ty, &c.name, false, &mut imports, &mut data)?;
-            field_inits.push((fi.slot, fi.ty, v));
+            if let Some(v) = field_init(&g, f, fi.ty, &c.name, false, &mut imports, &mut data)? {
+                field_inits.push((fi.slot, fi.ty, v));
+            }
+        }
+        if c.ctor.is_none() && info.fields.iter().any(|f| f.deferred_final) {
+            return Err(Diagnostic::new(c.pos, "E_INIT",
+                format!("class '{}' has deferred final fields but no constructor", c.name)));
         }
         if let (Some(k), Some(kidx)) = (&c.ctor, info.ctor_idx) {
             let mut named = vec![("self", me, false)];
@@ -1259,6 +1269,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ctor: true,
                 is_static: false,
             };
+            constructor_definite_init(&k.body, &info.fields, k.pos)?;
             let body = body_check(
                 &g,
                 owner,
@@ -1383,7 +1394,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let owner = Owner::Actor { a: ai as u32 };
         let mut inits = Vec::new();
         for (f, fi) in a.fields.iter().zip(&info.fields) {
-            inits.push((fi.slot, field_init(&g, f, fi.ty, &a.name, true, &mut imports, &mut data)?));
+            inits.push((fi.slot, field_init(&g, f, fi.ty, &a.name, true, &mut imports, &mut data)?
+                .ok_or_else(|| Diagnostic::new(f.pos, "E_INIT", "actor fields require initializers"))?));
         }
         if let (Some(r), Some(ridx)) = (&a.receive, info.receive_idx) {
             let label = format!("{}.receive", a.name);
@@ -1738,10 +1750,15 @@ fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
     }
 }
 
-fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, imports: &mut Vec<Import>, data: &mut Vec<u8>) -> R<TE> {
-    if !const_init(&f.init) {
+fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, imports: &mut Vec<Import>, data: &mut Vec<u8>) -> R<Option<TE>> {
+    let Some(init) = f.init.as_ref() else {
+        // Incomplete final storage is never read before a proven constructor
+        // assignment. No synthetic initializer or implicit default is emitted.
+        return Ok(None);
+    };
+    if !const_init(init) {
         return Err(Diagnostic::new(
-            f.init.pos,
+            init.pos,
             "E_UNSUPPORTED",
             format!(
                 "field initializer '{owner}.{}' must be a constant expression; initialize computed values in the constructor",
@@ -1750,10 +1767,10 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
         ));
     }
     let mut cx = FnCx::new(g, Owner::FieldInit { actor }, Type::Void, imports, data);
-    let v = cx.value(&f.init)?;
+    let v = cx.value(init)?;
     if v.ty != ty {
         return Err(type_err(
-            f.init.pos,
+            init.pos,
             format!(
                 "field '{owner}.{}' has type {} but its initializer has type {}",
                 f.name,
@@ -1762,7 +1779,7 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
             ),
         ));
     }
-    Ok(v)
+    Ok(Some(v))
 }
 
 /// Check one callable body. `named` are the wasm parameters in order.
@@ -3124,7 +3141,11 @@ impl<'a> FnCx<'a> {
                     }
                 };
                 let (offset, fty, mode) = (f.slot, f.ty, f.mode);
-                if !f.binding.rebindable() {
+                // Deferred final fields are the sole immutable exception:
+                // the separate flow-sensitive AST gate proved exactly one
+                // constructor write on all successful paths. Initialized
+                // final/val/const fields remain non-rebindable.
+                if !f.binding.rebindable() && !(ctor && f.deferred_final) {
                     return Err(Diagnostic::new(
                         pos,
                         "E_IMMUTABLE",
