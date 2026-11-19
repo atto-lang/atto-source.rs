@@ -69,10 +69,16 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             continue;
         }
         let at = |j: usize| source_tokens.get(j).map(|t| &t.tok);
-        let owner = match (at(i+1), at(i+2), at(i+3), at(i+4)) {
-            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(n)), _, _) => Some(n.as_str()),
+        let owner = match (at(i+1), at(i+2), at(i+3), at(i+4), at(i+5)) {
             (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(s)), Some(lexer::Tok::Colon),
-                Some(lexer::Tok::Ident(n))) if s == "self" => Some(n.as_str()),
+                Some(lexer::Tok::Ident(n)), _) if s == "self" => Some(n.as_str()),
+            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(m)),
+                Some(lexer::Tok::Ident(s)), Some(lexer::Tok::Colon),
+                Some(lexer::Tok::Ident(n))) if m == "mut" && s == "self" => Some(n.as_str()),
+            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(n)),
+                Some(lexer::Tok::RParen), _, _) => Some(n.as_str()),
+            (Some(lexer::Tok::LParen), Some(lexer::Tok::Ident(n)),
+                Some(lexer::Tok::Ident(s)), _, _) if s == "self" || s == "_" => Some(n.as_str()),
             _ => None,
         };
         if owner.is_some_and(|name| structs.contains(&name)) {
