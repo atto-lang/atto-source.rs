@@ -1,7 +1,7 @@
 // expect-error: E_IMMUTABLE
-// Unqualified class fields are val; only an explicit let allows reassignment.
+// Explicit val class fields are fixed; even a constructor cannot reassign them.
 define class Counter as
-    pub int count = 1;
+    pub val int count = 1;
     constructor() { self.count = 2; }
 end
 pub fnc main(): int { return 0; }
