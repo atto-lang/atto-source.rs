@@ -108,38 +108,34 @@ impl Cursor<'_> {
             _ => Err(self.err("E_SYNTAX", "expected an identifier")),
         }
     }
-    /// Statically select exported names. This parse-only stage collects local
-    /// bindings; export visibility and nested-module resolution need a linker.
-    fn import_members(&mut self, locals: &mut Vec<String>, depth: usize) -> R<()> {
-        if depth >= 8 {
-            return Err(self.err("E_SOURCE_LIMIT", "import selector nesting exceeds 8 levels"));
-        }
-        self.expect(&Tok::LBrace, "expected '{' for named imports")?;
-        if self.take(&Tok::RBrace) {
-            return Err(self.err("E_SYNTAX", "empty import selection"));
-        }
+    /// Parse a comma-separated list of static public export paths.
+    /// This stage only records the *local* bindings: it does not resolve
+    /// packages, export paths, visibility, or run any imported code.
+    fn import_names(&mut self, locals: &mut Vec<String>) -> R<()> {
         loop {
             if locals.len() >= 256 {
                 return Err(self.err("E_SOURCE_LIMIT", "too many imported bindings"));
             }
-            let exported = self.ident()?;
-            if self.take(&Tok::Colon) {
-                self.import_members(locals, depth + 1)?;
-            } else {
-                let local = if self.take_word("as") { self.ident()? } else { exported };
-                if locals.contains(&local) {
-                    return Err(self.err("E_DUPLICATE", format!("duplicate import binding '{local}'")));
+            let mut local = self.ident()?;
+            let mut depth = 1;
+            while self.take(&Tok::Dot) {
+                if depth >= 8 {
+                    return Err(self.err("E_SOURCE_LIMIT", "import export path exceeds 8 components"));
                 }
-                locals.push(local);
+                local = self.ident()?;
+                depth += 1;
             }
-            if self.take(&Tok::Comma) {
-                if self.take(&Tok::RBrace) { break; }
-            } else {
-                self.expect(&Tok::RBrace, "expected '}' after import selection")?;
-                break;
+            if self.take_word("as") {
+                local = self.ident()?;
             }
+            if locals.contains(&local) {
+                return Err(self.err("E_DUPLICATE", format!("duplicate import binding '{local}'")));
+            }
+            locals.push(local);
+            if !self.take(&Tok::Comma) { return Ok(()); }
+            // The next iteration must parse a further export name; a
+            // trailing comma before 'from' fails through ident().
         }
-        Ok(())
     }
     /// Bounded type-only lookahead for '<-' before a named callable.
     /// No expression operators are accepted in this declaration position.
@@ -502,11 +498,11 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 c.expect_word("as")?;
                 bindings.push(c.ident()?);
                 false
-            } else if *c.tok() == Tok::LBrace {
-                c.import_members(&mut bindings, 0)?;
+            } else if matches!(c.tok(), Tok::Ident(_)) {
+                c.import_names(&mut bindings)?;
                 false
             } else {
-                return Err(c.err("E_SYNTAX", "expected '* as name' or '{ exported }' in import"));
+                return Err(c.err("E_SYNTAX", "expected '* as name' or comma-separated import names"));
             };
             c.expect_word("from")?;
             let package = legacy_pkg || c.take_word("pkg");
