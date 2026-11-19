@@ -1,0 +1,30 @@
+// LANGUAGE PREVIEW — compiles and runs in this browser playground.
+// Runs on the pinned Rust/Wasm compiler; Java/LLVM parity is not claimed.
+// Cross-backend DESIGN PREVIEW: && and || are short-circuiting bool operations.
+// The ^^ token remains reserved by Atto; use Xor(a,b) for executable XOR.
+// Other backend/compiler parity and public-pinned Wasm deployment are separate.
+// And(a,b), Or(a,b), Xor(a,b) are browser-v2 compatibility functions.
+pub fnc main(): int {
+  val a = true;
+  val b = false;
+  val c = true;
+  val d = false;
+  stdio.println(a && b);
+  stdio.println(a || b);
+  stdio.println(Xor(a, b)); // ^^ remains reserved; executable XOR uses the builtin.
+  stdio.println(And(a, b));
+  stdio.println(Or(a, b));
+  stdio.println(Xor(a, b));
+  // Variadic and array gate forms.
+  stdio.println(And(a, b, c));
+  stdio.println(Or(a, b, c, d));
+  stdio.println(Xor(a, b));
+  stdio.println(And([a, b, c]));
+  stdio.println(Or([a, b, c, d]));
+  stdio.println(Xor([a, b]));
+  // Requested word-form aliases (pending lexer/compiler support):
+  // stdio.println(a AND b);
+  // stdio.println(a OR b);
+  // stdio.println(a XOR b);
+  return 0;
+}

@@ -1,0 +1,6 @@
+// expect-error: E_UNSUPPORTED
+// General Array<T> values must fail closed before executable lowering.
+pub fnc main(): int {
+  val pieces = ["users", "42"];
+  return 0;
+}

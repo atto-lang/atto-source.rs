@@ -1,0 +1,5 @@
+// expect-error: E_ARITY
+pub fnc main(): int {
+    val callback: fnc(int,int)->int = |n| -> n * 2;
+    return 0;
+}

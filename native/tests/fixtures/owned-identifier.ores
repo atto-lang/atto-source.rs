@@ -1,0 +1,12 @@
+// 'owned' is an ordinary function, parameter, and local identifier.
+// Ordinary lexical shadowing still applies: invoke() resolves the function
+// without a same-named local in scope.
+fnc owned(int owned): int {
+  const local: int = owned;
+  return local;
+}
+fnc invoke(int value): int { return owned(value); }
+pub fnc main(): int {
+  const owned: int = 21;
+  return invoke(owned) + 21;
+}

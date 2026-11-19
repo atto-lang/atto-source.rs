@@ -1,0 +1,41 @@
+// Standalone Worker-local state container: read, write, reset, per-instance isolation.
+// expect-exit: 0
+// expect-stdout: 2
+// expect-stdout: 0
+// expect-stdout: 7
+// expect-stdout: 2
+define state Counter as
+  state {
+    let int count: 0;
+  }
+
+  pub increment(int amount): void {
+    handle_state(critical |s| -> {
+      s.count = s.count + amount;
+    });
+  }
+
+  pub reset(): void {
+    handle_state(critical-write |s| -> {
+      s.count = 0;
+    });
+  }
+
+  pub read_count(): int {
+    return handle_state(critical-read |s| -> s.count);
+  }
+end
+
+pub fnc main(): int {
+  val first = new Counter();
+  val second = new Counter();
+  first.increment(2);
+  stdio.println(first.read_count());
+  first.reset();
+  stdio.println(first.read_count());
+  second.increment(7);
+  stdio.println(second.read_count());
+  first.increment(2);
+  stdio.println(first.read_count());
+  return 0;
+}

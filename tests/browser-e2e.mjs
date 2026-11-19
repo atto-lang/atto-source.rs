@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -10,6 +11,7 @@ const requests=[];
 const files=new Map([
   ['/index.html',[new URL('./browser/index.html',import.meta.url),'text/html; charset=utf-8']],
   ['/worker.mjs',[new URL('./browser/worker.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/state-runtime.mjs',[new URL('./browser/state-runtime.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -26,7 +28,7 @@ async function until(fn,label){
     try{const value=await fn();if(value)return value;last=value}catch(e){last=e.message}
     await sleep(100);
   }
-  throw new Error(label+' timed out: '+last);
+  throw new Error((typeof label==='function'?label():label)+' timed out: '+last);
 }
 let chrome,ws;
 try{
@@ -72,11 +74,50 @@ try{
       const value=await evaluate("document.querySelector('#result').textContent");
       lastOutput=value;
       return value?.includes(expected)?value:null;
-    },expected+' (last browser output: '+lastOutput+')');
+    },()=>expected+' (last browser output: '+lastOutput+')');
     return state;
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
   console.log('PASS browser: actual Rust compiler Wasm and guest Wasm produce 42');
+  const linkedMtdSource = await readFile(new URL('./fixtures/pass/173-class-mtd-executable.atto', import.meta.url), 'utf8');
+  assert.equal(await run(linkedMtdSource, 'main() -> 20'), 'main() -> 20');
+  console.log('PASS browser: compiled native class mtd methods dispatch and return 20');
+  const illegalMtd = 'define class C as int value: 1; end mtd (self: C) update() -> int { self.value = 2; return 2; } pub fnc main(): int { return 0; }';
+  assert.match(await run(illegalMtd, 'E_OWNERSHIP'), /E_OWNERSHIP/);
+  console.log('PASS browser: immutable class receiver mutation fails closed');
+  // Exercise the exact lexically captured, pure-function sample from the
+  // public playground through Chromium's real Wasm compiler and guest workers.
+  const lexical = await readFile(new URL('./fixtures/pass/playground-lexical-scope-pure.atto', import.meta.url), 'utf8');
+  assert.equal(await run(lexical, 'main() -> 0'), '42\n42\n2\n42\nmain() -> 0');
+  console.log('PASS browser: lexical capture, scope shadowing and pure arithmetic (42/42/2/42)');
+  const impure = await readFile(new URL('./fixtures/fail/pure-transitive-call.atto', import.meta.url), 'utf8');
+  assert.match(await run(impure, 'E_PURE'), /E_PURE/);
+  console.log('PASS browser: transitive impurity is rejected by the compiler');
+  // Parity-inspired lexical tests: Java's closure lifetime is broader, but
+  // this deliberately bounded Rust/Wasm profile must preserve lexical values.
+  for (const [fixture, expected] of [
+    ['pure-lexical-two-captures.atto', 'main() -> 42'],
+    ['pure-lexical-bool-capture.atto', 'main() -> 42'],
+    ['pure-mutual-recursion.atto', 'main() -> 42'],
+    ['lexical-constructor-lambda-capture.atto', 'main() -> 42']
+  ]) {
+    const source = await readFile(new URL('./fixtures/pass/' + fixture, import.meta.url), 'utf8');
+    assert.match(await run(source, expected), /^main\(\) -> 42$/);
+  }
+  console.log('PASS browser: immutable lexical captures and mutually recursive pure functions');
+  for (const [fixture, expected] of [
+    ['pure-transitive-dead-branch.atto', 'E_PURE'],
+    ['lexical-out-of-scope-capture.atto', 'E_CAPTURE'],
+    ['lexical-escaping-mutable-counter.atto', 'E_CAPTURE'],
+    ['lexical-constructor-lambda-escape.atto', 'E_UNSUPPORTED']
+  ]) {
+    const source = await readFile(new URL('./fixtures/fail/' + fixture, import.meta.url), 'utf8');
+    assert.match(await run(source, expected), new RegExp(expected));
+  }
+  console.log('PASS browser: effects and invalid captures cannot masquerade as pure or lexical');
+
+
+
   assert.match(await run('pub fnc main(): int {\n  val x = 7;\n  x = 8;\n  return x;\n}','E_IMMUTABLE'),/E_IMMUTABLE/);
   console.log('PASS browser: val reassignment fails closed');
   assert.match(await run('pub fnc main(): int { return 6 * 8; }','main() -> 48'),/48/);
@@ -134,6 +175,53 @@ try{
   const values='fnc label(int n): string {\n  match n over\n    on 0 -> { return "zero"; }\n    on _ -> { return "many"; }\n  end\n}\npub fnc main(): int {\n  val f: float = 7.0 / 2;\n  stdio.println(f);\n  stdio.println(1e7);\n  stdio.println(label(0) + "/" + label(3));\n  stdio.println("  pad ".trim() eq "pad");\n  return 1;\n}';
   assert.match(await run(values,'main() -> 1'),/^3\.5\n1\.0E7\nzero\/many\ntrue\nmain\(\) -> 1$/);
   console.log('PASS browser: float (Java Double.toString), string values and match');
+
+  // The full source bytes are mirrored from atto-lang.github.io PR #153 (comment-only header refresh of PR #127),
+  // not a hand-written approximation. Test a real Chromium dedicated Worker,
+  // with the actual Rust-compiled wasm32 compiler and its emitted guest Wasm.
+  const stateSource = await readFile(new URL('./browser/fixtures/play-state-containers.atto',import.meta.url),'utf8');
+  const blobHash = createHash('sha1')
+    .update('blob '+Buffer.byteLength(stateSource)).update(Buffer.from([0])).update(stateSource).digest('hex');
+  assert.equal(blobHash, '76f853511691aed4233209cb551571ab040983e2',
+    'exact /play preview Git blob must match website PR, not a divergent test sample');
+  assert.equal(await run(stateSource, 'main() -> 0'), '2\n0\nmain() -> 0');
+  console.log('PASS browser: byte-verified /play state preview compiles AND executes in Chromium Worker');
+
+  // Exact website preview blob (MANIFEST.tsv): defer/recover/try/raise in a
+  // real Worker, through the wasm32 compiler and legacy Wasm EH guest tags.
+  const unwindSource = await readFile(new URL('./playground_previews/defer-recover.atto', import.meta.url), 'utf8');
+  const unwindBlob = createHash('sha1')
+    .update('blob ' + Buffer.byteLength(unwindSource)).update(Buffer.from([0])).update(unwindSource).digest('hex');
+  assert.equal(unwindBlob, '5395c8159b1f7d111ea80d22ea6590960f340c1e',
+    'exact /play defer-recover preview Git blob must match the website');
+  assert.equal(await run(unwindSource, 'main() -> 63'),
+    'raise finally\nraise cleanup A\nraise cleanup B\nrecovering raise\nthrow cleanup\n' +
+    'recovering unhandled throw\ncaught finally\ncaught cleanup\nmain() -> 63');
+  console.log('PASS browser: byte-verified /play defer-recover preview executes in Chromium Worker');
+
+  // Real guest fault while an exclusive state ticket is physically active.
+  // The Worker aborts only after unwind, and each new Worker has fresh tickets.
+  const stateOverflow = stateSource.replace('counter.increment(2);',
+    'counter.increment(9223372036854775807);\n  counter.increment(1);');
+  assert.notEqual(stateOverflow,stateSource,'overflow fixture must alter the program');
+  assert.match(await run(stateOverflow,'E_PANIC'),/E_PANIC: integer overflow/);
+  assert.equal(await run(stateSource, 'main() -> 0'), '2\n0\nmain() -> 0');
+  console.log('PASS browser: state write panic aborts host ticket and next Worker recovers');
+
+  const independent = await readFile(new URL('./fixtures/pass/180-standalone-state-critical.atto',import.meta.url),'utf8');
+  assert.equal(await run(independent,'main() -> 0'), '2\n0\n7\n2\nmain() -> 0');
+  console.log('PASS browser: separate state instances, critical read/write, reset');
+
+  const unguarded = await readFile(new URL('./fixtures/fail/196-state-same-class-access.atto',import.meta.url),'utf8');
+  assert.match(await run(unguarded,'E_STATE_BORROW'), /^E_STATE_BORROW:/);
+  const spacedCriticalRead = await readFile(new URL('./fixtures/fail/188-state-spaced-critical-read.atto',import.meta.url),'utf8');
+  assert.match(await run(spacedCriticalRead,'E_SYNTAX'), /^E_SYNTAX:/);
+  assert.equal(await run(stateSource,'main() -> 0'),'2\n0\nmain() -> 0',
+    'invalid code must not poison the next Worker or leave stale guest bytes');
+  console.log('PASS browser: state capability bypass and malformed keyword fail closed; recovery executes');
+
+  assert.ok(requests.some(x=>x.path==='/state-runtime.mjs'),
+    'the browser Worker must load the protected-state host admission module');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');

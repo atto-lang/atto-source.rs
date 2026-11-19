@@ -1,0 +1,12 @@
+// LANGUAGE PREVIEW — compiles and runs in this browser playground.
+// Runs on the pinned Rust/Wasm compiler; Java/LLVM parity is not claimed.
+// The left value flows into the next ordinary function call.
+fnc twice(int x): int { return x * 2; }
+fnc add_three(int x): int { return x + 3; }
+fnc square(int x): int { return x * x; }
+
+pub fnc main(): int {
+  val answer = 4 |> twice |> add_three |> square;
+  stdio.println(answer); // 121
+  return answer;
+}

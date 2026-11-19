@@ -1,0 +1,20 @@
+// expect-exit: 42
+// expect-stdout: 42
+// java: rejects
+define class Parcel as
+  pub let int value = 40;
+  pub get(): int { return self.value; }
+end
+pub fnc main(): int {
+  let parcel = new Parcel();
+  block {
+    val reader = borrow! parcel;
+    stdio.println(reader.get() + 2);
+  }
+  block {
+    val writer = borrow! mut parcel;
+    writer.value = 42;
+  }
+  val moved = take! parcel;
+  return moved.get();
+}
