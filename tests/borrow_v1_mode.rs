@@ -300,3 +300,67 @@ fn public_borrow_checker_respects_parser_cardinality_limits() {
     assert_eq!(check::check_borrow_v1(&oversized).unwrap_err().code,
         "E_SOURCE_LIMIT", "too many classes");
 }
+
+
+#[test]
+fn explicit_consuming_class_formal_is_owned_only_in_versioned_mode() {
+    let source = r#"
+        define class Person as pub let int age = 21; end
+        fnc move_owned(take! Person p): Person { return p; }
+        pub fnc main(): int {
+            let p = new Person();
+            let recovered = move_owned(take! p);
+            return recovered.age + 21;
+        }
+    "#;
+    assert_eq!(compile(source).unwrap_err().code, "E_UNSUPPORTED_TYPE",
+        "legacy mode must never silently admit a new consuming-formal ABI");
+    assert!(borrow_v1(source).unwrap().starts_with(b"\0asm"));
+}
+
+#[test]
+fn consuming_formal_also_accepts_named_type_form_and_preserves_owner() {
+    let source = r#"
+        define class Person as pub let int age = 42; end
+        fnc read_once(p: take! Person): int { return p.age; }
+        pub fnc main(): int {
+            let p = new Person();
+            return read_once(take! p);
+        }
+    "#;
+    assert!(borrow_v1(source).unwrap().starts_with(b"\0asm"));
+}
+
+#[test]
+fn consuming_formal_requires_explicit_live_owner_transfer() {
+    const HEADER: &str = r#"
+        define class Person as pub let int age = 21; end
+        fnc move_owned(take! Person p): Person { return p; }
+    "#;
+    let negatives = [
+        (format!("{HEADER} pub fnc main(): int {{ let p = new Person(); let q = move_owned(p); return q.age; }}"),
+         "E_OWNERSHIP"),
+        (format!("{HEADER} pub fnc main(): int {{ let p = new Person(); let q = move_owned(borrow! p); return q.age; }}"),
+         "E_OWNERSHIP"),
+        (format!("{HEADER} fnc make(): Person {{ return new Person(); }} pub fnc main(): int {{ let q = move_owned(take! make()); return q.age; }}"),
+         "E_OWNERSHIP"),
+        (format!("{HEADER} pub fnc main(): int {{ let p = new Person(); let q = move_owned(take! p); return p.age; }}"),
+         "E_MOVED"),
+        (format!("{HEADER} pub fnc main(): int {{ let p = new Person(); let q = move_owned(take! p); let r = move_owned(take! p); return q.age; }}"),
+         "E_MOVED"),
+    ];
+    for (source, expected) in negatives {
+        assert_eq!(borrow_v1(&source).unwrap_err().code, expected, "{source}");
+    }
+}
+
+#[test]
+fn no_mutable_or_scalar_take_formals_without_proven_owner_domain() {
+    for invalid in [
+        "fnc unsupported(take! int a): int { return a; } pub fnc main(): int { return 42; }",
+        "define class Person as pub let int age = 21; end fnc unsupported(take! Person mut p): int { return p.age; } pub fnc main(): int { return 42; }",
+        "define class Person as pub let int age = 21; end fnc unsupported(take! Borrow<Person> p): int { return p.age; } pub fnc main(): int { return 42; }",
+    ] {
+        assert_eq!(borrow_v1(invalid).unwrap_err().code, "E_UNSUPPORTED_TYPE", "{invalid}");
+    }
+}
