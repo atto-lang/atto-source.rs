@@ -519,7 +519,8 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
             }
             let mut bindings = Vec::new();
             let legacy_pkg = if c.take_word("module") {
-                // Explicit module namespace import: canonical `import module name from pkg "x"`;\n                // no class instance or runtime object is created by this header.
+                // Explicit module namespace import: canonical `import module name from pkg "x"`;
+                // no class instance or runtime object is created by this header.
                 bindings.push(c.ident()?);
                 false
             } else if c.take_word("pkg") {
