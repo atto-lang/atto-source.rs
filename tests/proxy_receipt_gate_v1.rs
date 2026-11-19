@@ -4,7 +4,8 @@ use atto_compiler::proxy_receipt_gate_v1::{
 };
 fn id() -> Id {
     Id { protocol_major: 1, tenant: 11, caller_incarnation: 12,
-        target_actor: 13, target_incarnation: 14, placement_epoch: 15,
+        target_actor: 13, target_incarnation: 14, association_generation: 17,
+        placement_epoch: 15,
         message_id: 16, attempt: 1 }
 }
 #[test]
@@ -19,6 +20,7 @@ fn remote_proxy_ack_gate_is_not_local_enqueue() {
                 Id { caller_incarnation: 99, ..i },
                 Id { target_actor: 99, ..i },
                 Id { target_incarnation: 99, ..i },
+                Id { association_generation: 99, ..i },
                 Id { placement_epoch: 99, ..i },
                 Id { attempt: 99, ..i },
                 Id { protocol_major: 2, ..i }] {
