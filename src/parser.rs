@@ -207,6 +207,8 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    /// Canonically interned nominal Array<T, layout=...> type parameters.
+    array_types: Vec<ArrayType>,
     /// Scope of an explicit generator function body.
     in_generator: bool,
     /// Only the outer Erlang-style callable sequence accepts commas as
@@ -263,6 +265,7 @@ impl Parser {
             height: 0,
             cond: 0,
             type_names: Vec::new(),
+            array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
             state_method: false,
@@ -398,6 +401,23 @@ impl Parser {
         self.advance();
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "Array" => {
+                // Reuse the exact same generic binder used by the already
+                // executable, bounded scalar-collection guest profile.
+                let (specialization, next) = crate::collection_layout_type::parse(&self.toks, self.i - 1)?;
+                self.i = next;
+                let idx = self.array_types.iter().position(|t|
+                    t.element == specialization.element && t.layout == specialization.layout);
+                let idx = match idx {
+                    Some(existing) => existing as u32,
+                    None => {
+                        let idx = self.array_types.len() as u32;
+                        self.array_types.push(specialization);
+                        idx
+                    }
+                };
+                Type::Array(idx)
+            },
             "fnc" => {
                 // Canonical source type form: fnc(int, bool) -> float.
                 // The first profile admits scalar callback contracts only,
@@ -596,6 +616,7 @@ impl Parser {
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
+        prog.array_types = std::mem::take(&mut self.array_types);
         Ok(prog)
     }
 
@@ -2105,7 +2126,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating

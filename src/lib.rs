@@ -15,6 +15,8 @@ pub mod collection_layout_plan;
 pub mod collection_layout_storage;
 /// Narrow genuine source-compiled scalar collection guest profile; all else fails closed.
 pub mod collection_layout_guest;
+/// Shared canonical generic binding for production and guest collection parsers.
+pub mod collection_layout_type;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
 /// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
 // The canonical verifier is imported byte-identically from the independent
@@ -74,6 +76,36 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
                 "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
         }
         return Ok(bytes);
+    }
+    // Nested generic Array graphs require a distinct owned allocation, indexing
+    // and deep-copy ABI. Never misclassify their missing runtime as malformed
+    // named layout syntax, or silently reinterpret copy!! graph requirements.
+    for tokens in source_tokens.windows(4) {
+        if matches!(
+            (&tokens[0].tok, &tokens[1].tok, &tokens[2].tok, &tokens[3].tok),
+            (lexer::Tok::Ident(outer), lexer::Tok::Lt,
+             lexer::Tok::Ident(inner), lexer::Tok::Lt)
+                if outer == "Array" && inner == "Array"
+        ) {
+            return Err(Diagnostic::new(tokens[0].pos, "E_UNSUPPORTED_TYPE",
+                "nested Array<T> requires verified owned allocation, indexing and copy!! graph lowering"));
+        }
+    }
+    // Nominal Array generic syntax goes through the production AST/checker.
+    // General-purpose allocation remains fail-closed until fully checked.
+    if source_tokens.windows(2).any(|pair| matches!(
+        (&pair[0].tok, &pair[1].tok),
+        (lexer::Tok::Ident(name), lexer::Tok::Lt) if name == "Array"
+    )) {
+        let mut parser = parser::Parser::new(source_tokens.clone());
+        let parsed = parser.parse_program()?;
+        if parsed.array_types.is_empty() {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_UNSUPPORTED", "Array generic source has no validated collection type"));
+        }
+        let _ = check::check(&parsed)?;
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+            "E_UNSUPPORTED", "general-purpose collection execution is not enabled"));
     }
     // A nominal struct is a value; never accidentally dispatch a new
     // out-of-line struct receiver through shape_lower's identity-bearing

@@ -241,11 +241,16 @@ mod tests {
 
     #[test]
     fn no_false_guest_execution_promotion() {
-        for ty in ["Array<Particle, layout=soa>", "Vector<Particle, layout=aosoa(16)>",
-                   "List<layout=aos, T=Particle>"] {
+        for (ty, expected) in [
+            // The production nominal resolver now distinguishes unknown
+            // element types from unsupported collection execution.
+            ("Array<Particle, layout=soa>", "E_UNKNOWN_TYPE"),
+            ("Vector<Particle, layout=aosoa(16)>", "E_UNSUPPORTED"),
+            ("List<layout=aos, T=Particle>", "E_UNSUPPORTED"),
+        ] {
             let input = format!("fnc example() -> {ty} {{ return []; }}");
             let err = crate::compile(&input).unwrap_err();
-            assert_eq!(err.code, "E_UNSUPPORTED");
+            assert_eq!(err.code, expected, "{ty}");
         }
     }
 }
