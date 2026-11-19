@@ -121,10 +121,9 @@ pub enum FieldVisibility { Private, Package, Public }
 pub enum FieldMode {
     /// `name: T = e`, `final ...`, `val`/`const` fields: never reassigned.
     Final,
-    /// Class `T name = e` (implicit `let` for all T), `mut T name = e`,
-    /// `let T name = e`: this browser-subset mode currently permits constructor
-    /// assignment, while methods still have read-only `self`. It is NOT proof
-    /// of the complete target `let`/`let mut` class receiver semantics.
+    /// Explicit `mut T name = e` or `let T name = e`. This browser-subset
+    /// mode currently permits constructor assignment, while methods still
+    /// have read-only `self`; it does not prove mutable receiver semantics.
     Constructor,
     /// Actor-owned state, or a protected state-container field whose writes
     /// require the typed, checked critical-write scope.
