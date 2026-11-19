@@ -145,3 +145,79 @@ fn raw_scalar_tuple_tokens_have_deterministic_lowering() {
     assert!(first.iter().any(|t| matches!(&t.tok,
         atto_compiler::lexer::Tok::Ident(name) if name.starts_with("__atto_tuple_private_"))));
 }
+
+#[test]
+fn tuple_named_local_comparison_remains_an_expression() {
+    let source = "pub fnc main(): int {
+        let Tuple = 3;
+        let is_smaller = Tuple < 7;
+        if is_smaller then
+            return 1;
+        fi
+        return 0;
+    }";
+    assert!(compile(source).is_ok(),
+        "identifier named Tuple must not trigger generic type rewriting");
+}
+
+#[test]
+fn tuple_trailing_comma_and_singleton_constructor_are_canonical() {
+    let single = "pub fnc one(): Tuple<int> { return (42,); }
+pub fnc main(): int { let (value,) as val root = one(); return value; }";
+    assert!(compile(single).is_ok(),
+        "one-item Tuple constructor must receive exactly one argument");
+    let multi = "pub fnc main(): int {
+        let (a,b) = (5, 7,);
+        return a+b;
+    }";
+    assert!(compile(multi).is_ok(),
+        "trailing source comma must not leak to the constructor argument list");
+}
+
+#[test]
+fn controls_in_scalar_tuple_strings_round_trip_exactly() {
+    let source = r#"pub fnc main(): int {
+        let (s,) as val root = ("\u{0}\u{1f}\n",);
+        return 0;
+    }"#;
+    let original = lex(source).unwrap();
+    let expected = String::from("\u{0}\u{1f}\n");
+    assert!(original.iter().any(|t|
+        matches!(&t.tok, atto_compiler::lexer::Tok::Str(s) if s == &expected)));
+    let transformed = lower(original).unwrap();
+    assert!(transformed.iter().any(|t|
+        matches!(&t.tok, atto_compiler::lexer::Tok::Str(s) if s == &expected)),
+        "Atto's string escape semantics must survive tuple lowering");
+}
+
+#[test]
+fn nonfinite_floats_cannot_be_emitted_as_identifiers() {
+    let source = "pub fnc main(): int {
+        let (too_big,) = (1e309,);
+        return 0;
+    }";
+    match lex(source) {
+        Ok(tokens) => {
+            let diagnostic = lower(tokens).unwrap_err();
+            assert_eq!(diagnostic.code, "E_FLOAT_LITERAL");
+        }
+        Err(diagnostic) => assert_eq!(diagnostic.code, "E_FLOAT_LITERAL"),
+    }
+}
+
+#[test]
+fn bounded_monomorphization_limits_distinct_scalar_shapes() {
+    let types = ["int", "bool", "float", "string"];
+    let literals = ["1", "true", "3.0", "\"a\""];
+    let mut source = String::new();
+    for i in 0..65 {
+        let digits = [i % 4, (i / 4) % 4, (i / 16) % 4, (i / 64) % 4];
+        let decl = digits.map(|d| types[d]).join(",");
+        let values = digits.map(|d| literals[d]).join(",");
+        source.push_str(&format!(
+            "pub fnc shape_{i}(): Tuple<{decl}> {{ return ({values}); }}\n"
+        ));
+    }
+    let diagnostic = lower(lex(&source).unwrap()).unwrap_err();
+    assert_eq!(diagnostic.code, "E_SOURCE_LIMIT");
+}
