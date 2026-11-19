@@ -35,6 +35,8 @@ pub mod detached_io;
 pub mod parser;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
+/// Caller-supplied one-hop relative source linking with no ambient I/O.
+pub mod import_link;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
@@ -83,6 +85,17 @@ pub fn compile_with_path(source: &str, logical_path: &std::path::Path)
     compile_inner(source, Some(logical_path))
 }
 
+/// Compile a project entry point by resolving direct relative file imports.
+/// The load callback is the sole authority for dependency contents.
+/// Callers must restrict it to the intended package root.
+pub fn compile_with_imports<F>(
+    source: &str, logical_path: &std::path::Path, load: F,
+) -> Result<Vec<u8>, Diagnostic>
+where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    let tokens = import_link::lower(source, logical_path, load)?;
+    compile_prelexed(tokens, Some(logical_path))
+}
+
 fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
@@ -92,7 +105,12 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let original_tokens = namespace::normalize(&lexer::lex(source)?, logical_path)?;
+    compile_prelexed(lexer::lex(source)?, logical_path)
+}
+
+fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
+    -> Result<Vec<u8>, Diagnostic> {
+    let original_tokens = namespace::normalize(&tokens, logical_path)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
