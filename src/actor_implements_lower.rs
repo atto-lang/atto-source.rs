@@ -124,6 +124,34 @@ pub fn lower(t: &[Token]) -> R<Option<Vec<Token>>> {
                 }
                 let end = nominal_body_end(t, header_end + 1)?;
                 if kind == "actor" {
+                    // This first production lowering has no independently
+                    // certified critical-read/write actor-state access path.
+                    // Never let lexical rewriting bypass sealed actor fields:
+                    // only genuinely stateless actor definitions are admitted.
+                    let (mut braces, mut parens) = (0usize, 0usize);
+                    for k in header_end + 1..end {
+                        match t[k].tok {
+                            Tok::LBrace => braces += 1,
+                            Tok::RBrace => braces = braces.saturating_sub(1),
+                            Tok::LParen => parens += 1,
+                            Tok::RParen => parens = parens.saturating_sub(1),
+                            _ => {}
+                        }
+                        if braces == 0 && parens == 0 {
+                            let binder = ["state", "let", "val", "const", "final", "mut"]
+                                .iter().any(|w| word(t, k, w));
+                            let typed_field = matches!(&t[k].tok, Tok::Ident(n)
+                                    if ["int", "bool", "float", "string"].contains(&n.as_str()))
+                                && matches!(t.get(k + 1).map(|x| &x.tok), Some(Tok::Ident(_)));
+                            let named_field = matches!(&t[k].tok, Tok::Ident(n)
+                                    if !["receive", "fnc", "method", "pub", "private"].contains(&n.as_str()))
+                                && t.get(k + 1).map(|x| &x.tok) == Some(&Tok::Colon);
+                            if binder || typed_field || named_field {
+                                return Err(error(t, k, "E_UNSUPPORTED",
+                                    "actor implements mtd cannot access unverified sealed actor state"));
+                            }
+                        }
+                    }
                     if !definition_names.insert(owner.clone()) {
                         return Err(error(t, beginning, "E_DUPLICATE", "actor defined more than once"));
                     }
