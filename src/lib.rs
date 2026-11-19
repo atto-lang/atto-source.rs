@@ -57,6 +57,8 @@ pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
 pub mod tuple_ownership_ir;
 pub mod target_typed;
+/// Parse and reject unsupported top-level type declaration contracts before guest emission.
+pub mod type_declarations;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};
@@ -75,6 +77,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let source_tokens = lexer::lex(source)?;
+    // Parse unlowered type headers precisely rather than treating them as values.
+    // A passing syntax check is never mistaken for runnable Wasm support.
+    if type_declarations::contains_type_declaration(&source_tokens) {
+        type_declarations::parse_tokens(&source_tokens)?;
+        return Err(Diagnostic::new(source_tokens[0].pos, "E_UNSUPPORTED",
+            "type declarations require verified union layout and nominal linking before browser Wasm emission"));
+    }
     // Verify actor/struct implementation obligations before any specialized
     // compilation path can short-circuit into emitting a guest artifact.
     nominal_contract_admission::preflight(&source_tokens)?;
