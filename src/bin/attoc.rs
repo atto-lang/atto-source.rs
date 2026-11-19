@@ -30,12 +30,12 @@ fn main() -> ExitCode {
     let source_path = std::path::Path::new(&input);
     let relative_path = if source_path.is_absolute() {
         std::env::current_dir().ok()
-            .and_then(|root| source_path.strip_prefix(root).ok().map(str::to_owned))
+            .and_then(|root| source_path.strip_prefix(root).ok().map(|path| path.to_path_buf()))
     } else {
-        Some(input.clone())
+        Some(source_path.to_path_buf())
     };
     let result = match relative_path {
-        Some(ref name) => atto_compiler::compile_with_path(&source, std::path::Path::new(name)),
+        Some(ref name) => atto_compiler::compile_with_path(&source, name.as_path()),
         None => atto_compiler::compile(&source),
     };
     match result {
