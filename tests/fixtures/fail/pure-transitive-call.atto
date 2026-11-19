@@ -1,0 +1,7 @@
+// expect-error: E_PURE
+fnc log_value(int n): int {
+    stdio.println(n);
+    return n;
+}
+pure fnc sneaky(int n): int { return log_value(n); }
+pub fnc main(): int { return sneaky(42); }

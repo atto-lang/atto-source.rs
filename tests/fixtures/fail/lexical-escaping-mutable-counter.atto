@@ -1,0 +1,7 @@
+// Java supports mutable escaping closures; this Rust/Wasm subset rejects.
+// expect-error: E_CAPTURE
+pub fnc main(): int {
+  let count = 0;
+  val next = |n| : int -> n + count;
+  return next(42);
+}

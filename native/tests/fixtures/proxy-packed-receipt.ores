@@ -1,0 +1,23 @@
+// Executed source ABI oracle, not an actor-owned allocation/IO binding.
+// Packed request ticket = incarnation * 2^32 + row.
+// Packed completion = serial * 2^32 + (row * 8 + lane + 1).
+// Large serials force packed values above IEEE-754's exact-integer limit
+// (2^53), but within signed 64-bit. Lower 32-bit fields must not round.
+// LLVM currently rejects / and %, so compare base and packed values using
+// only shared signed-i64 addition, multiplication, and subtraction.
+fnc packed_ticket(): int {
+  return 33554433 * 4294967296 + 65535;
+}
+fnc ticket_base(): int {
+  return 33554433 * 4294967296;
+}
+fnc packed_receipt(): int {
+  return 67108865 * 4294967296 + (7 * 8 + 3);
+}
+fnc receipt_base(): int {
+  return 67108865 * 4294967296;
+}
+pub fnc main(): int {
+  return 42 + (packed_ticket() - ticket_base() - 65535)
+       + (packed_receipt() - receipt_base() - 59);
+}

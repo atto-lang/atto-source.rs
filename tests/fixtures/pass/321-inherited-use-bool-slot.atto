@@ -1,0 +1,12 @@
+// expect-exit: 42
+// java: rejects
+define class Switch as
+    pub bool ready: true;
+end
+define class Device extends Switch as
+    use Switch.ready as switched_on;
+end
+pub fnc main(): int {
+    val device = new Device();
+    if device.switched_on then return 42; else return 0; fi
+}

@@ -1,0 +1,3 @@
+// Canonical .atto guest source: private scalar helper, public native API.
+pub fnc answer(int value): int { return bump(value); }
+fnc bump(int value): int { return value + 1; }

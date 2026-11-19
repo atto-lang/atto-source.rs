@@ -1,0 +1,14 @@
+// expect-exit: 42
+define enum Phase as
+    Waiting
+    Ready
+end
+define class Task as
+    pub final Phase state;
+    constructor(Phase phase) { self.state = phase; }
+end
+pub fnc main(): int {
+    val task = new Task(Phase.Ready);
+    if task.state eq Phase.Ready then return 42; fi
+    return 0;
+}
