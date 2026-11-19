@@ -256,3 +256,45 @@ pub fn metadata(bytes: &mut Vec<u8>, exports: &[Export]) {
     leb(bytes, section.len());
     bytes.extend_from_slice(&section);
 }
+
+#[cfg(test)]
+mod export_directive_contract_tests {
+    use super::{lower, parse_export_directive, Visibility};
+    use crate::lexer::lex;
+
+    #[test]
+    fn export_directive_parser_matches_standalone_lowering() {
+        for (source, kind, visibility) in [
+            ("export pub module Math;", "module", Visibility::Public),
+            ("export pub fnc square;", "fnc", Visibility::Public),
+            ("export pub[pkg] class Widget;", "class", Visibility::Package),
+            ("export pub Thing;", "", Visibility::Public),
+        ] {
+            let tokens = lex(source).unwrap();
+            let (parsed, next) = parse_export_directive(&tokens, 0).unwrap();
+            assert_eq!(tokens[next].tok, crate::lexer::Tok::Eof);
+            assert_eq!(parsed.kind, kind);
+            assert_eq!(parsed.visibility, visibility);
+            let lowered = lower(tokens).unwrap();
+            assert_eq!(lowered.exports.len(), 1);
+            assert_eq!(lowered.exports[0].name, parsed.name);
+            assert_eq!(lowered.exports[0].kind, parsed.kind);
+            assert_eq!(lowered.exports[0].visibility, parsed.visibility);
+        }
+    }
+
+    #[test]
+    fn malformed_export_directives_remain_fail_closed() {
+        for source in [
+            "export pub[other] module Math;",
+            "export pub module Math",
+            "export module Math;",
+            "export pub module;",
+            "export pub[pkg fnc name;",
+        ] {
+            let tokens = lex(source).unwrap();
+            assert!(parse_export_directive(&tokens, 0).is_err(), "{source}");
+            assert!(lower(tokens).is_err(), "{source}");
+        }
+    }
+}
