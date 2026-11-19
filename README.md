@@ -121,8 +121,12 @@ header, multiple declare actor statements in one file, and typed mtd receivers
 such as (mut self: Foo1) and (self: Foo2), as well as the nominal
 spelling (Foo1 self), unnamed (Foo1), and (Foo1 _) receivers.
 The parser finds target declarations anywhere at file scope, while the
-namespace header must still occur first. Explicit module imports of the form
-import module math from "./math.atto" can follow that header. The parser rejects duplicate actor
+namespace header must still occur first. The target-only parser now accepts
+`import * as math from "./math.atto";`, `import * as telemetry from pkg "core.telemetry";`,
+and named/nested static selectors such as `import { span as create_span } from pkg "core.telemetry";`.
+Legacy `import module math from "./math.atto";` and `import pkg p from "+/pkg";`
+remain parseable for migration. Imports are **not linked or executable** in this profile.
+The parser rejects duplicate imported local bindings and duplicate actor
 names, same-owner/name/arity receiver signatures, unknown receiver owners,
 misplaced namespace headers, malformed signatures and excessive body nesting.
 
