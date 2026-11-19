@@ -116,3 +116,23 @@ fn struct_value_receiver_remains_explicitly_unsupported() {
         pub fnc main(): int { return 0; }
     "#, "E_UNSUPPORTED");
 }
+
+#[test]
+fn contract_lowering_never_downgrades_actor_owned_state_to_ordinary_fields() {
+    fail(r#"
+        define interface I as ping(): int; end
+        define actor A implements I as
+            let int total = 0;
+            pub ping(): int { return self.total; }
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
+    fail(r#"
+        define interface I as ping(): int; end
+        define actor A implements I as
+            value: int = 0;
+            pub ping(): int { return 42; }
+        end
+        pub fnc main(): int { return 0; }
+    "#, "E_UNSUPPORTED");
+}
