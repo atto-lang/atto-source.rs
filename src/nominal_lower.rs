@@ -25,6 +25,8 @@ struct Method {
     origin: String,
     public: bool,
     overriding: bool,
+    // An abstract trait method is an obligation, never an inherited executable body.
+    concrete: bool,
     /// Exact source position of the override keyword; body identifiers
     /// named 'override' must never be rewritten or dropped.
     override_pos: Option<Pos>,
@@ -159,8 +161,8 @@ fn members(t: &[Token], kind: Kind, owner: &str, has_parent: bool) -> R<(BTreeMa
         if kind == Kind::Interface && has_body {
             return Err(diag(t[end].pos, "E_UNSUPPORTED", "interface members require signatures, not trait defaults"));
         }
-        if kind != Kind::Interface && !has_body {
-            return Err(diag(t[end].pos, "E_UNSUPPORTED", "concrete nominal members require braced implementation"));
+        if kind == Kind::Class && !has_body {
+            return Err(diag(t[end].pos, "E_UNSUPPORTED", "concrete class members require braced implementation"));
         }
         if has_body { end = closing(t, end, Tok::LBrace, Tok::RBrace)?; }
         if is_ctor {
@@ -177,6 +179,7 @@ fn members(t: &[Token], kind: Kind, owner: &str, has_parent: bool) -> R<(BTreeMa
             name: member_name.clone(), sig: signature,
             tokens: copied, origin: format!("{owner}::{member_name}"),
             public, overriding: override_at.is_some(),
+            concrete: has_body,
             override_pos: override_at.map(|i| t[i].pos), pos: t[start].pos,
         };
         if out.insert(member_name.clone(), m).is_some() {
@@ -585,8 +588,20 @@ fn resolve(
                     }
                 }
                 Kind::Trait => for (key, method) in &trait_or_if.methods {
-                    let same = inherited.entry(key.clone()).or_default();
-                    if !same.iter().any(|m| m.origin == method.origin) { same.push(method.clone()); }
+                    if !method.concrete {
+                        // A trait can declare abstract requirements alongside
+                        // concrete defaults. Missing methods must fail before
+                        // Wasm emission, just like interface obligations.
+                        if let Some(old) = requirements.insert(key.clone(), method.sig.clone()) {
+                            if old != method.sig {
+                                return Err(diag(method.pos, "E_SIGNATURE",
+                                    format!("conflicting requirements for trait method '{key}'")));
+                            }
+                        }
+                    } else {
+                        let same = inherited.entry(key.clone()).or_default();
+                        if !same.iter().any(|m| m.origin == method.origin) { same.push(method.clone()); }
+                    }
                 },
                 Kind::Class => return Err(diag(d.pos, "E_TYPE", "implements expects interface or trait, not class")),
             }
@@ -631,10 +646,17 @@ fn resolve(
             result.insert(name.clone(), local.clone());
         }
         for (name, sig) in requirements {
-            let selected = result.get(&name).ok_or_else(|| diag(d.pos, "E_INTERFACE", format!("missing required interface method '{name}'")))?;
-            if !selected.public { return Err(diag(selected.pos, "E_PRIVATE", format!("interface method '{name}' must be public"))); }
+            let selected = result.get(&name).ok_or_else(|| diag(d.pos, "E_INTERFACE",
+                format!("missing required interface or trait method '{name}'")))?;
+            if !selected.concrete {
+                return Err(diag(selected.pos, "E_INTERFACE",
+                    format!("abstract method '{name}' has no concrete implementation")));
+            }
+            if !selected.public { return Err(diag(selected.pos, "E_PRIVATE",
+                format!("contract method '{name}' must be public"))); }
             if selected.sig != sig {
-                return Err(diag(selected.pos, "E_SIGNATURE", format!("interface method '{name}' signature mismatch")));
+                return Err(diag(selected.pos, "E_SIGNATURE",
+                    format!("contract method '{name}' signature mismatch")));
             }
         }
         Ok(result)
