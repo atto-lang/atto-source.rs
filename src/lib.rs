@@ -43,6 +43,8 @@ pub mod shape_lower;
 pub mod value_class_admission;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
+/// Source-located actor/struct conformance admission; never an executable ABI.
+pub mod nominal_contract_admission;
 /// Explicitly unlinked foreign prototypes and source-only exports.
 pub mod visibility_lower;
 /// Direct routine-only and statically specialized named callbacks.
@@ -71,6 +73,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let source_tokens = lexer::lex(source)?;
+    // Verify actor/struct implementation obligations before any specialized
+    // compilation path can short-circuit into emitting a guest artifact.
+    nominal_contract_admission::preflight(&source_tokens)?;
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
