@@ -44,3 +44,11 @@ fn ordinary_scalar_guest_remains_executable() {
         .expect("safe scalar subset must remain enabled");
     assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
 }
+
+#[test]
+fn ordinary_user_named_cell_is_not_an_atomic_intrinsic() {
+    // The unlowered-atomic guard must not collide with an ordinary Atto class.
+    let source = "define class Cell as pub int value = 1; end pub fnc main(): int { return 42; }";
+    let guest = compile(source).expect("user-defined Cell must stay valid");
+    assert_eq!(&guest[0..4], &[0, 97, 115, 109]); // Wasm binary magic
+}
