@@ -105,6 +105,25 @@ pub fnc main(): int { let (a,b) as foo = fixtures(); return b; }
 }
 
 #[test]
+fn tuple_annotation_type_is_not_discarded() {
+    let ok = "pub fnc main(): int {
+        let (a: int, b: bool) = (3, true);
+        return a;
+    }";
+    assert!(compile(ok).is_ok());
+    let wrong = "pub fnc main(): int {
+        let (a: bool, b: int) = (3, 4);
+        return b;
+    }";
+    assert_eq!(compile(wrong).unwrap_err().code, "E_TYPE");
+    let unsupported = "pub fnc main(): int {
+        let (a: Array<int>, b) = (3, 4);
+        return b;
+    }";
+    assert_eq!(compile(unsupported).unwrap_err().code, "E_UNSUPPORTED_TYPE");
+}
+
+#[test]
 fn raw_scalar_tuple_tokens_have_deterministic_lowering() {
     let a = lex("pub fnc main(): int { let (a,b) as foo = (5,6); return a+b; }").unwrap();
     let first = lower(a.clone()).unwrap();
