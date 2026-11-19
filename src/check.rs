@@ -1223,15 +1223,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             .collect();
         let body = body_check(
             &g,
-            Owner::TopLevel,
-            &named,
-            None,
-            ret,
-            &f.body,
-            &f.name,
-            f.pos,
-            &mut imports,
-            &mut data,
+            BodyCheckInput {
+                owner: Owner::TopLevel, named: &named, mail: None,
+                ret, body: &f.body, label: &f.name, pos: f.pos,
+            },
+            &mut imports, &mut data,
         )?;
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
@@ -1272,15 +1268,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             constructor_definite_init(&k.body, &info.fields, k.pos)?;
             let body = body_check(
                 &g,
-                owner,
-                &named,
-                None,
-                Type::Void,
-                &k.body,
-                "constructor",
-                k.pos,
-                &mut imports,
-                &mut data,
+                BodyCheckInput {
+                    owner, named: &named, mail: None, ret: Type::Void,
+                    body: &k.body, label: "constructor", pos: k.pos,
+                },
+                &mut imports, &mut data,
             )?;
             let mut params = vec![me];
             params.extend(info.ctor_params.iter().copied());
@@ -1376,7 +1368,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
             named.extend(m.params.iter().zip(&mi.params).map(|(q, t)| (q.name.as_str(), *t, q.mutable)));
             let label = format!("{}.{}", c.name, m.name);
-            let body = body_check(&g, owner, &named, None, mi.ret, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            let body = body_check(
+                &g,
+                BodyCheckInput {
+                    owner, named: &named, mail: None, ret: mi.ret,
+                    body: &m.body, label: &label, pos: m.pos,
+                },
+                &mut imports, &mut data,
+            )?;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: named.iter().map(|x| x.1).collect(),
@@ -1402,15 +1401,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             let named = [("$value", Type::Int, false), ("$sequence", Type::Int, false)];
             let body = body_check(
                 &g,
-                owner,
-                &named,
-                Some((r.mail.as_str(), info.payload)),
-                Type::Void,
-                &r.body,
-                &label,
-                r.pos,
-                &mut imports,
-                &mut data,
+                BodyCheckInput {
+                    owner, named: &named, mail: Some((r.mail.as_str(), info.payload)),
+                    ret: Type::Void, body: &r.body, label: &label, pos: r.pos,
+                },
+                &mut imports, &mut data,
             )?;
             funcs[ridx as usize] = Some(TFunc {
                 name: label,
@@ -1439,7 +1434,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 .map(|(q, t)| (q.name.as_str(), *t, q.mutable))
                 .collect();
             let label = format!("{}.{}", a.name, m.name);
-            let body = body_check(&g, owner, &named, None, mi.ret, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            let body = body_check(
+                &g,
+                BodyCheckInput {
+                    owner, named: &named, mail: None, ret: mi.ret,
+                    body: &m.body, label: &label, pos: m.pos,
+                },
+                &mut imports, &mut data,
+            )?;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: mi.params.clone(),
@@ -2139,18 +2141,26 @@ fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
     Ok(())
 }
 
+/// Verified callable signature and its source body. Grouping this
+/// context avoids long positional argument lists where receiver/return
+/// authority could accidentally be swapped between checker call sites.
+struct BodyCheckInput<'a> {
+    owner: Owner,
+    named: &'a [(&'a str, Type, bool)],
+    mail: Option<(&'a str, Type)>,
+    ret: Type,
+    body: &'a [Stmt],
+    label: &'a str,
+    pos: Pos,
+}
+
 fn body_check(
     g: &Globals,
-    owner: Owner,
-    named: &[(&str, Type, bool)],
-    mail: Option<(&str, Type)>,
-    ret: Type,
-    body: &[Stmt],
-    label: &str,
-    pos: Pos,
+    input: BodyCheckInput<'_>,
     imports: &mut Vec<Import>,
     data: &mut Vec<u8>,
 ) -> R<(Vec<TStmt>, Vec<Type>)> {
+    let BodyCheckInput { owner, named, mail, ret, body, label, pos } = input;
     // This is shared by inline class constructors and out-of-line headers
     // after they are lowered to the same production ClassDecl AST.
     if matches!(owner, Owner::Class { ctor: true, .. }) {
@@ -3379,7 +3389,7 @@ impl<'a> FnCx<'a> {
                 // the separate flow-sensitive AST gate proved exactly one
                 // constructor write on all successful paths. Initialized
                 // final/val/const fields remain non-rebindable.
-                if !f.binding.rebindable() && !(ctor && f.deferred_final) {
+                if !(f.binding.rebindable() || ctor && f.deferred_final) {
                     return Err(Diagnostic::new(
                         pos,
                         "E_IMMUTABLE",
