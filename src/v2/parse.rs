@@ -101,7 +101,7 @@ impl Parser {
     fn enter(&mut self) -> R<()> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
-            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "nesting is too deep"));
+            return Err(Diagnostic::new(self.pos(), "E_NESTING", "nesting is too deep"));
         }
         Ok(())
     }
@@ -626,7 +626,7 @@ impl Parser {
                     break;
                 }
                 if arms.len() > 64 {
-                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many elif arms"));
+                    return Err(Diagnostic::new(pos, "E_NESTING", "too many elif arms"));
                 }
             }
             self.eat_word("fi");
@@ -653,7 +653,7 @@ impl Parser {
                 break;
             }
             if arms.len() > 64 {
-                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many elif arms"));
+                return Err(Diagnostic::new(pos, "E_NESTING", "too many elif arms"));
             }
         }
         if !self.eat_word("fi") {
@@ -851,7 +851,7 @@ impl Parser {
             self.advance();
             links += 1;
             if links > 256 {
-                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "operator chain is too long"));
+                return Err(Diagnostic::new(pos, "E_NESTING", "operator chain is too long"));
             }
             let right = next(self)?;
             left = Expr { kind: Ex::Binary(op, Box::new(left), Box::new(right)), pos };
@@ -894,7 +894,7 @@ impl Parser {
             self.advance();
             links += 1;
             if links > 256 {
-                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "operator chain is too long"));
+                return Err(Diagnostic::new(pos, "E_NESTING", "operator chain is too long"));
             }
             let right = self.parse_comparison()?;
             left = Expr { kind: Ex::Binary(op, Box::new(left), Box::new(right)), pos };
@@ -917,7 +917,7 @@ impl Parser {
             self.advance();
             links += 1;
             if links > 256 {
-                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "operator chain is too long"));
+                return Err(Diagnostic::new(pos, "E_NESTING", "operator chain is too long"));
             }
             let right = self.parse_additive()?;
             left = Expr { kind: Ex::Binary(op, Box::new(left), Box::new(right)), pos };
@@ -938,7 +938,7 @@ impl Parser {
             self.advance();
             links += 1;
             if links > 256 {
-                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "operator chain is too long"));
+                return Err(Diagnostic::new(pos, "E_NESTING", "operator chain is too long"));
             }
             let right = self.parse_multiplicative()?;
             left = Expr { kind: Ex::Binary(op, Box::new(left), Box::new(right)), pos };
@@ -959,7 +959,7 @@ impl Parser {
             self.advance();
             links += 1;
             if links > 256 {
-                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "operator chain is too long"));
+                return Err(Diagnostic::new(pos, "E_NESTING", "operator chain is too long"));
             }
             let right = self.parse_unary()?;
             left = Expr { kind: Ex::Binary(op, Box::new(left), Box::new(right)), pos };
