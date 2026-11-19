@@ -499,8 +499,18 @@ impl Parser {
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
         };
+        // A postfix '?' is a TYPE constructor only inside parse_type().
+        // It never means parameter omission or expression propagation here.
+        let ty = if self.eat(&Tok::Question) {
+            match ty {
+                Type::Int => Type::OptionInt,
+                Type::ResultIntStr => Type::OptionResultIntStr,
+                _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    "postfix type '?' requires a supported Option payload (int or Result<int,string>) in this compiler")),
+            }
+        } else { ty };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
-            return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
+            return Err(unsupported(self.pos(), "generic, repeated optional, union and sequence types"));
         }
         Ok(ty)
     }
@@ -1077,6 +1087,10 @@ impl Parser {
                         format!("duplicate parameter name '{}'", p.name),
                     ));
                 }
+                if !p.omittable && params.iter().any(|q| q.omittable) {
+                    return Err(Diagnostic::new(p.pos, "E_OMITTABLE_ORDER",
+                        "required parameters cannot follow an omittable parameter; use named calls after named-argument lowering is available"));
+                }
                 params.push(p);
                 if !self.eat(&Tok::Comma) {
                     break;
@@ -1357,28 +1371,40 @@ impl Parser {
         if self.is_word("structural") {
             return Err(unsupported(pos, "structural parameters"));
         }
-        // compatibility form `name: type [mut]`
-        if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
+        // Name-first `x?: int?` and `x: int?` are unambiguous by the colon.
+        // Type-first `int? x?` uses the same two independent marker slots.
+        let name_first = matches!(self.peek(), Tok::Ident(_))
+            && (*self.peek_at(1) == Tok::Colon ||
+                (*self.peek_at(1) == Tok::Question && *self.peek_at(2) == Tok::Colon));
+        if name_first {
             let (name, pos) = self.ident("a parameter name")?;
-            self.advance();
+            let omittable = self.eat(&Tok::Question);
+            self.expect(Tok::Colon, "':' after parameter name")?;
             let ty = self.parse_type()?;
             let mutable = self.eat_word("mut");
-            return self.finish_param(name, ty, mutable, pos);
+            return self.finish_param(name, ty, mutable, omittable, pos);
         }
         let ty = self.parse_type()?;
         let mutable = self.eat_word("mut");
         let (name, pos) = self.ident("a parameter name")?;
-        self.finish_param(name, ty, mutable, pos)
+        let omittable = self.eat(&Tok::Question);
+        self.finish_param(name, ty, mutable, omittable, pos)
     }
 
-    fn finish_param(&self, name: String, ty: Type, mutable: bool, pos: Pos) -> R<Param> {
+    fn finish_param(&self, name: String, ty: Type, mutable: bool, omittable: bool, pos: Pos) -> R<Param> {
         if ty == Type::Void {
             return Err(Diagnostic::new(pos, "E_TYPE", "a parameter cannot have type void"));
         }
         if *self.peek() == Tok::Assign {
             return Err(unsupported(self.pos(), "default parameter values"));
         }
-        Ok(Param { name, ty, mutable, pos })
+        // Non-Option omittable parameters will require an explicit validated
+        // default; do not invent a zero value or silently inject null.
+        if omittable && !matches!(ty, Type::OptionInt | Type::OptionResultIntStr) {
+            return Err(Diagnostic::new(pos, "E_OMITTABLE_DEFAULT",
+                "an omittable non-Option parameter requires a checked default; this compiler currently supports only Option<T> with implicit None"));
+        }
+        Ok(Param { name, ty, mutable, omittable, pos })
     }
 
     // ----------------------------------------------------------- statements

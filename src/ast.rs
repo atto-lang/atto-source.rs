@@ -212,6 +212,8 @@ pub struct Param {
     pub name: String,
     pub ty: Type,
     pub mutable: bool,
+    /// Parameter may be omitted at the call site; distinct from its Option<T> value type.
+    pub omittable: bool,
     pub pos: Pos,
 }
 

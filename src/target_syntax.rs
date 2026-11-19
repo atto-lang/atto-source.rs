@@ -10,6 +10,8 @@ type R<T> = Result<T, Diagnostic>;
 pub struct ReceiverParam {
     pub name: String,
     pub type_name: String,
+    /// Preserved independently from Option<T> at target-only mtd syntax level.
+    pub omittable: bool,
     pub pos: Pos,
 }
 
@@ -90,14 +92,22 @@ impl Cursor<'_> {
             Tok::Ident(s) => { self.next(); s }
             _ => return Err(self.err("E_SYNTAX", "expected a type name")),
         };
-        if self.take(&Tok::Lt) {
-            if name != "ActorRef" {
+        let mut name = if self.take(&Tok::Lt) {
+            if !matches!(name.as_str(), "ActorRef" | "Option") {
                 return Err(self.err("E_UNSUPPORTED_TYPE",
-                    "target receiver generics admit only ActorRef<Actor>"));
+                    "target receiver generics admit only ActorRef<T> or Option<T> signatures"));
             }
-            let actor = self.ident()?;
-            self.expect(&Tok::Gt, "expected '>' in ActorRef<Actor>")?;
-            return Ok(format!("ActorRef<{actor}>"));
+            // Exactly one generic level in target syntax: codegen must fail
+            // closed rather than infer an unverified nested generic ABI.
+            let inner = self.ident()?;
+            self.expect(&Tok::Gt, "expected '>' after generic payload")?;
+            format!("{name}<{inner}>")
+        } else { name };
+        if self.take(&Tok::Question) {
+            name = format!("Option<{name}>");
+        }
+        if *self.tok() == Tok::Question {
+            return Err(self.err("E_SYNTAX", "repeated postfix type '?' is ambiguous; write Option<Option<T>> explicitly"));
         }
         Ok(name)
     }
@@ -110,13 +120,34 @@ impl Cursor<'_> {
                 return Err(self.err("E_SOURCE_LIMIT", "too many parameters"));
             }
             let pos = self.pos();
-            let type_name = self.type_name()?;
-            let name = self.ident()?;
+            let name_first = matches!(self.tok(), Tok::Ident(_)) &&
+                (matches!(self.toks.get(self.i + 1).map(|t| &t.tok), Some(Tok::Colon)) ||
+                 (matches!(self.toks.get(self.i + 1).map(|t| &t.tok), Some(Tok::Question)) &&
+                  matches!(self.toks.get(self.i + 2).map(|t| &t.tok), Some(Tok::Colon))));
+            let (name, type_name, omittable) = if name_first {
+                let name = self.ident()?;
+                let omit = self.take(&Tok::Question);
+                self.expect(&Tok::Colon, "expected ':' after parameter name")?;
+                (name, self.type_name()?, omit)
+            } else {
+                let ty = self.type_name()?;
+                let name = self.ident()?;
+                let omit = self.take(&Tok::Question);
+                (name, ty, omit)
+            };
             if params.iter().any(|p: &ReceiverParam| p.name == name) {
                 return Err(Diagnostic::new(pos, "E_DUPLICATE",
                     format!("duplicate method parameter '{name}'")));
             }
-            params.push(ReceiverParam { name, type_name, pos });
+            if omittable && !type_name.starts_with("Option<") {
+                return Err(self.err("E_OMITTABLE_DEFAULT",
+                    "omittable non-Option method parameter requires a checked default"));
+            }
+            if !omittable && params.iter().any(|p: &ReceiverParam| p.omittable) {
+                return Err(self.err("E_OMITTABLE_ORDER",
+                    "required method parameter cannot follow an omittable formal"));
+            }
+            params.push(ReceiverParam { name, type_name, omittable, pos });
             if !self.take(&Tok::Comma) {
                 self.expect(&Tok::RParen, "expected ')' after parameters")?;
                 return Ok(params);

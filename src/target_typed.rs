@@ -98,6 +98,10 @@ impl TypedActorModule {
     }
 
     fn type_of(&self, name: &str, pos: Pos) -> Result<TargetType, Diagnostic> {
+        if name.starts_with("Option<") {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "Option<T> / T? target actor receiver signatures are parsed, but the target actor Option ABI is not yet linked"));
+        }
         Ok(match name {
             "int" => TargetType::Int,
             "bool" | "boolean" => TargetType::Bool,
@@ -189,7 +193,7 @@ pub fn build_actor_program(headers: &TargetHeaders, module: &TypedActorModule) -
             name: m.method.clone(),
             params: m.params.iter().map(|p| Param {
                 name: p.name.clone(), ty: p.ty.as_ast_type(),
-                mutable: false, pos: p.pos,
+                mutable: false, omittable: false, pos: p.pos,
             }).collect(),
             ret: m.returns.as_ast_type(),
             mutable: m.mutable, public: m.public, pos: m.pos,
