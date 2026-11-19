@@ -12,7 +12,11 @@ const MODEM: &str = include_str!("virtual-hardware/modem.atto");
 // The Wasm guest must run every positive && adversarial predicate itself.
 // Do not substitute a Rust computation for any Atto function result.
 const NIC_MAIN: &str = r#"
-if guest_region_contains(64, 60, 124) &&
+if !valid_ethernet_frame_with_vlan(60, 1500, true, 10) &&
+   valid_ethernet_frame_with_vlan(64, 1500, true, 10) &&
+   !can_receive_guest_frame_tagged(64, 60, 124, 64, 1500, true, 10, 0, 8, true) &&
+   can_receive_guest_frame_tagged(64, 64, 128, 64, 1500, true, 10, 0, 8, true) &&
+   guest_region_contains(64, 60, 124) &&
    !guest_region_contains(64, 60, 123) &&
    guest_address_aligned(64, 64) &&
    !guest_address_aligned(65, 64) &&
@@ -23,7 +27,10 @@ fi
 return -1;
 "#;
 const ROUTER_MAIN: &str = r#"
-if canonical_ipv4_network(3232235776, 24) &&
+if may_forward_on_canonical_route(3232235777, 1500, 20, 2, 3232235776, 24, 3, 1500, true) &&
+   !may_forward_on_canonical_route(3232235777, 1500, 20, 2, 3232235777, 24, 3, 1500, true) &&
+   !may_forward_on_canonical_route(3232235777, 1500, 20, 2, 3232236032, 24, 3, 1500, true) &&
+   canonical_ipv4_network(3232235776, 24) &&
    !canonical_ipv4_network(3232235777, 24) &&
    !canonical_ipv4_network(1, 0) &&
    may_forward_on_link(3232235777, 1500, 20, 2, 0, 1500, true) &&
@@ -37,7 +44,13 @@ fi
 return -1;
 "#;
 const SWITCH_MAIN: &str = r#"
-if can_admit_ingress_frame(60, 1500, 0, 2, 1, false, true) &&
+if can_admit_vlan_bound_ingress_frame(64, 1500, 0, 2, 10, true, 10, true) &&
+   !can_admit_vlan_bound_ingress_frame(64, 1500, 0, 2, 10, true, 20, true) &&
+   !can_admit_vlan_bound_ingress_frame(60, 1500, 0, 2, 10, false, 10, true) &&
+   can_flood_vlan_bound_frame(2199023255553, 64, 1500, true, 10, 0, 10, 1, 10, 2, true, true) &&
+   !can_flood_vlan_bound_frame(2199023255553, 64, 1500, true, 20, 0, 10, 1, 10, 2, true, true) &&
+   !can_flood_vlan_bound_frame(1652522221568, 64, 1500, true, 10, 0, 10, 1, 10, 2, true, true) &&
+   can_admit_ingress_frame(60, 1500, 0, 2, 1, false, true) &&
    !can_admit_ingress_frame(60, 1500, 0, 2, 1, true, true) &&
    !can_admit_ingress_frame(60, 1500, 0, 2, 4095, false, true) &&
    valid_unicast_destination_mac(2199023255553) &&
@@ -51,7 +64,13 @@ fi
 return -1;
 "#;
 const MODEM_MAIN: &str = r#"
-if valid_serial_config(115200, 8, 0, 1) &&
+if session_matches(2, 2) &&
+   !session_matches(1, 2) &&
+   can_transmit_session_octet(4, 255, 0, 8, true, true, 2, 2) &&
+   !can_transmit_session_octet(4, 255, 0, 8, true, true, 1, 2) &&
+   can_ack_session_bytes(4, 64, 64, 2, 2) &&
+   !can_ack_session_bytes(4, 64, 64, 1, 2) &&
+   valid_serial_config(115200, 8, 0, 1) &&
    !valid_serial_config(115201, 8, 0, 1) &&
    free_modem_fifo(0, 8) == 8 &&
    free_modem_fifo(8, 8) == 0 &&

@@ -1,0 +1,60 @@
+// Bounded AttoLang virtual NIC actor (scalar mailbox profile).
+// Int mail: 60..1514 = untagged frame byte length (no FCS).
+// Completion is generation * 65536 + 1 (never the legacy unversioned -1).
+// -2 = link down and revoke all outstanding slots; -3 = link up;
+// -4 = diagnostic counters, -5 = generation for trusted adapter. All else rejects.
+// The transport MUST authenticate control messages and completion ownership.
+// A positive admission reserves one of four actor-owned slots.
+// This is NOT a driver, buffer parser, DMA queue or host authentication.
+define actor VirtualNic as
+    let int used = 0;
+    let int drops = 0;
+    let int link_up = 1;
+    let int generation = 1;
+
+    receive(ActorMail<int> mail): void {
+        if mail.value == self.generation * 65536 + 1 then
+            if self.used > 0 then
+                self.used = self.used - 1;
+                stdio.println(self.used);
+            else
+                self.drops = self.drops + 1;
+                stdio.println(-1);
+            fi
+        elif mail.value >= 0 then
+            if self.link_up == 1 &&
+               mail.value >= 60 && mail.value <= 1514 &&
+               self.used < 4 then
+                self.used = self.used + 1;
+                stdio.println(self.used);
+            else
+                self.drops = self.drops + 1;
+                stdio.println(-1);
+            fi
+        elif mail.value == -2 then
+            self.link_up = 0;
+            self.used = 0;
+            if self.generation < 2147483647 then
+                self.generation = self.generation + 1;
+            fi
+            stdio.println(-2);
+        elif mail.value == -3 then
+            if self.generation < 2147483647 then
+                self.link_up = 1;
+                stdio.println(-3);
+            else
+                self.drops = self.drops + 1;
+                stdio.println(-1);
+            fi
+        elif mail.value == -4 then
+            stdio.println(self.used);
+            stdio.println(self.drops);
+        elif mail.value == -5 then
+            stdio.println(self.generation);
+        else
+            self.drops = self.drops + 1;
+            stdio.println(-1);
+        fi
+        return;
+    }
+end

@@ -210,3 +210,17 @@ pub fnc may_forward_on_link(
   return total_bytes <= egress_mtu &&
          may_forward(destination, total_bytes, header_bytes, ttl, egress_port);
 }
+
+// A trusted egress-port number alone is not evidence of a matching route.
+// Require an exactly canonical route network and its matching destination.
+// The adapter still owns FIB provenance/generation and validates header bytes.
+pub fnc may_forward_on_canonical_route(
+  int destination, int total_bytes, int header_bytes, int ttl,
+  int route_network, int route_prefix, int route_port,
+  int egress_mtu, bool link_up
+): bool {
+  return canonical_ipv4_network(route_network, route_prefix)
+    && ipv4_prefix_matches(destination, route_network, route_prefix)
+    && may_forward_on_link(destination, total_bytes, header_bytes,
+                           ttl, route_port, egress_mtu, link_up);
+}

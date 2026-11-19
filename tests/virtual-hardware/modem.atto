@@ -159,3 +159,35 @@ pub fnc can_admit_at_command(
   fi
   return bytes <= capacity - used;
 }
+
+// Epoch-fenced scalar serial admission. Epoch equality must be backed by the
+// same authenticated actor incarnation, never an untrusted client claim.
+pub fnc session_matches(int expected_generation, int current_generation): bool {
+  return valid_session_generation(expected_generation)
+    && expected_generation == current_generation;
+}
+
+pub fnc can_transmit_session_octet(
+  int state, int octet, int used, int capacity, bool dtr, bool cts,
+  int expected_generation, int current_generation
+): bool {
+  return session_matches(expected_generation, current_generation)
+    && can_transmit_octet(state, octet, used, capacity, dtr, cts);
+}
+
+pub fnc can_receive_session_octet(
+  int state, int octet, int used, int capacity, bool rts,
+  int expected_generation, int current_generation
+): bool {
+  return session_matches(expected_generation, current_generation)
+    && can_receive_octet(state, octet, used, capacity, rts);
+}
+
+pub fnc can_ack_session_bytes(
+  int state, int in_flight, int acknowledged_bytes,
+  int expected_generation, int current_generation
+): bool {
+  return state == 4 && session_matches(expected_generation, current_generation)
+    && acknowledged_bytes > 0 && acknowledged_bytes <= in_flight
+    && in_flight >= 0 && in_flight <= 65536;
+}
