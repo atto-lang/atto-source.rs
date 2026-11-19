@@ -380,3 +380,83 @@ fn deferred_final_supports_out_of_line_constructor_with_same_flow_rules() {
     let invalid = valid.replace("self.id = input;", "val readback = self.id; self.id = input;");
     assert_eq!(compile(&invalid).unwrap_err().code, "E_INIT_READ");
 }
+
+#[test]
+fn deferred_final_multi_field_branch_join_preserves_exactly_once_and_defaults() {
+    // All of these paths must be proven initialized independently. A
+    // declaration-initialized val field is not a deferred final obligation.
+    let source = r#"
+        define class Pair as
+            pub final int left;
+            pub final int right;
+            pub val int base = 0;
+            constructor(int initial) {
+                if initial eq 42 then
+                    self.left = initial;
+                    self.right = 0;
+                else
+                    self.right = initial;
+                    self.left = 0;
+                fi
+            }
+            pub total(): int { return self.left + self.right + self.base; }
+        end
+        pub fnc main(): int {
+            val pair = new Pair(42);
+            return pair.total();
+        }
+    "#;
+    let wasm = compile(source).expect("both finals are initialized on every path");
+    assert_eq!(&wasm[..8], b"\\0asm\\x01\\0\\0\\0");
+    assert_eq!(wasm, compile(source).unwrap(), "deterministic Wasm output");
+
+    let existing_defaults = r#"
+        define class Counter as
+            pub val int count = 42;
+        end
+        pub fnc main(): int { val c = new Counter(); return c.count; }
+    "#;
+    assert_eq!(&compile(existing_defaults).unwrap()[..8], b"\\0asm\\x01\\0\\0\\0");
+}
+
+#[test]
+fn deferred_final_multi_field_partial_or_duplicate_branches_fail_closed() {
+    for (body, expected) in [
+        ("self.left = initial;", "E_INIT"),
+        ("if initial eq 42 then self.left = initial; self.right = 0; else self.left = initial; fi", "E_INIT"),
+        ("if initial eq 42 then self.left = initial; fi self.left = 3; self.right = 0;", "E_INIT_ONCE"),
+        ("if initial eq 42 then self.left = initial; return; else self.right = 0; fi", "E_INIT"),
+        ("self.right = self.left; self.left = initial;", "E_INIT_READ"),
+    ] {
+        let program = format!(r#"
+            define class Pair as
+                pub final int left;
+                pub final int right;
+                constructor(int initial) {{ {body} }}
+            end
+            pub fnc main(): int {{ val pair = new Pair(42); return pair.left; }}
+        "#);
+        let diagnostic = compile(&program).expect_err("must not publish incomplete class");
+        assert_eq!(diagnostic.code, expected, "{body}: {diagnostic}");
+    }
+}
+
+#[test]
+fn nonfinal_missing_initializer_never_gets_an_implicit_zero_value() {
+    // The parser rejects these now; the type checker additionally rejects
+    // unexpected missing initializers from future source transformations.
+    for declaration in [
+        "pub let int count;",
+        "pub val int count;",
+        "pub const int count;",
+        "pub int count;",
+    ] {
+        let program = format!(r#"
+            define class Counter as
+                {declaration}
+            end
+            pub fnc main(): int {{ val c = new Counter(); return c.count; }}
+        "#);
+        compile(&program).expect_err("non-final declaration without initializer must fail");
+    }
+}
