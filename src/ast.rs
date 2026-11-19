@@ -425,6 +425,7 @@ pub enum UnOp {
     Neg,
     Plus,
     Not,
+    BitNot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -433,6 +434,12 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    LShr,
+    AShr,
     Eq,
     Ne,
     Lt,
@@ -452,6 +459,12 @@ impl BinOp {
             BinOp::Sub => "-",
             BinOp::Mul => "*",
             BinOp::Div => "/",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<<",
+            BinOp::LShr => ">>>",
+            BinOp::AShr => "ashr",
             BinOp::Eq => "eq",
             BinOp::Ne => "neq",
             BinOp::Lt => "<",
