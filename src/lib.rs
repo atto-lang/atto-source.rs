@@ -7,6 +7,12 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
+/// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
+// The canonical verifier is imported byte-identically from the independent
+// checker. Do not edit its SHA-pinned body for Clippy-only style changes.
+#[allow(clippy::needless_return)]
+pub mod copy_graph_v1;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -21,6 +27,8 @@ pub mod module_lower;
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
 pub mod shape_lower;
+/// Identity-free value classes cannot be compiled as identity-bearing browser classes.
+pub mod value_class_admission;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
 /// Explicitly unlinked foreign prototypes and source-only exports.
@@ -48,7 +56,10 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
+    let source_tokens = lexer::lex(source)?;
+    // Do not silently erase the 'value' modifier and emit identity-bearing objects.
+    value_class_admission::preflight(&source_tokens)?;
+    let mut visibility = visibility_lower::lower(source_tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.

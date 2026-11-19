@@ -1,0 +1,9 @@
+// expect-error: E_UNBOUND
+// java: rejects
+define class Dog as pub int age: 5; end
+define class Cat as pub int age: 10; end
+define class Hybrid extends Dog, Cat as
+    use Dog.age as dog_age;
+    use Cat.age as cat_age;
+end
+pub fnc main(): int { return new Hybrid().age; }
