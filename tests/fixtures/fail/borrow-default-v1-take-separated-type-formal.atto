@@ -1,0 +1,6 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_SYNTAX
+// Type-first separated marker must fail at the take token, not type checking.
+define class Parcel as pub let int value = 42; end
+fnc consume(take ! Parcel p): int { return p.value; }
+pub fnc main(): int { return 42; }
