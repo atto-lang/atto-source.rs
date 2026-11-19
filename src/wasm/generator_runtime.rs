@@ -29,6 +29,8 @@ pub(super) fn bodies(p: &TProgram, l: &Layout) -> Vec<(Sig, Vec<u8>)> {
         state_write_depth: 0,
         uw: None,
         in_recover: false,
+        // Generators cannot lower raw object copies.
+        flat_pod_copy_authorized: false,
         calls: Vec::new(),
         landings: Vec::new(),
     };

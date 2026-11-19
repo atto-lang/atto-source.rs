@@ -1,0 +1,39 @@
+// expect-exit: 42
+// java: rejects
+// Interleave independent POD snapshots with another allocation: no aliasing,
+// pointer mix-up, wrong length, or stale copied padding/float/bool values.
+define class Snapshot as
+    pub let int number = 42;
+    pub float weight: 1.5;
+    pub bool active: true;
+end
+pub fnc main(): int {
+    let original = new Snapshot();
+    let left = copy!! original;
+    let spacer = new Snapshot();
+    let right = copy!! original;
+    block {
+        val writer = borrow! mut left;
+        writer.number = 7;
+        writer.active = false;
+    }
+    block {
+        val writer = borrow! mut right;
+        writer.number = 5;
+        writer.weight = 2.5;
+    }
+    if original.active then
+        if !left.active then
+            if right.active then
+                if spacer.weight eq 1.5 then
+                    if left.weight eq 1.5 then
+                        if right.weight eq 2.5 then
+                            return original.number;
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    fi
+    return 0;
+}

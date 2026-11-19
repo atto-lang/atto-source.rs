@@ -1,0 +1,26 @@
+// expect-exit: 42
+// java: rejects
+// Flat POD class: compiler may use memory.copy for bool/float/int slots.
+// A fresh clone can be mutated without affecting the source.
+define class Snapshot as
+    pub let int number = 42;
+    pub float weight: 1.5;
+    pub bool active: true;
+end
+pub fnc main(): int {
+    let original = new Snapshot();
+    let cloned = copy!! original;
+    block {
+        val writer = borrow! mut cloned;
+        writer.number = 7;
+        writer.active = false;
+    }
+    if original.active then
+        if cloned.weight eq 1.5 then
+            if !cloned.active then
+                return original.number;
+            fi
+        fi
+    fi
+    return 0;
+}

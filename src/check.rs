@@ -208,6 +208,18 @@ pub enum TStmt {
         ty: Type,
         value: TE,
     },
+    /// Compiler-private bulk copy of an authenticated flat POD class.
+    /// Both addresses are already-evaluated locals; no guest source can
+    /// fabricate this instruction or bypass the independent copy witness.
+    /// Reference-bearing fields and protected actor-state never use it.
+    FlatPodCopy {
+        /// Compiler-controlled local for the already-allocated copy.
+        dest_slot: u32,
+        /// Compiler-controlled local for the original object.
+        source_slot: u32,
+        /// Verified concrete class size; never a source-derived expression.
+        bytes: u32,
+    },
     /// Protected state write: verified lexical exclusive access to `obj`.
     StateFieldWrite {
         obj: TE,
@@ -350,6 +362,38 @@ pub struct TProgram {
 
 /// Size in bytes of every field slot in a class instance.
 pub const FIELD_BYTES: u32 = 8;
+
+/// A class must fit in the bounded Wasm object heap. Check before generating
+/// both constructor and copier rather than truncating the field count to u32.
+fn checked_class_byte_size(field_count: usize, pos: Pos) -> R<u32> {
+    let bytes = field_count
+        .checked_mul(FIELD_BYTES as usize)
+        .filter(|n| *n <= crate::wasm::HEAP_PAGES as usize * 65536)
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| Diagnostic::new(
+            pos, "E_COPY_LAYOUT", "class layout exceeds the bounded Wasm object heap"))?;
+    Ok(bytes.max(FIELD_BYTES))
+}
+
+#[cfg(test)]
+mod flat_copy_layout_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn zero_small_exact_limit_and_overflow_are_checked() {
+        let pos = || Pos { line: 1, col: 1 };
+        let max_bytes = crate::wasm::HEAP_PAGES * 65536;
+        let max_slots = (max_bytes / FIELD_BYTES) as usize;
+        assert_eq!(checked_class_byte_size(0, pos()).unwrap(), FIELD_BYTES);
+        assert_eq!(checked_class_byte_size(1, pos()).unwrap(), FIELD_BYTES);
+        assert_eq!(checked_class_byte_size(3, pos()).unwrap(), 24);
+        assert_eq!(checked_class_byte_size(max_slots, pos()).unwrap(), max_bytes);
+        for invalid in [max_slots + 1, usize::MAX] {
+            let diagnostic = checked_class_byte_size(invalid, pos()).unwrap_err();
+            assert_eq!(diagnostic.code, "E_COPY_LAYOUT");
+        }
+    }
+}
 
 struct FieldInfo {
     name: String,
@@ -1218,10 +1262,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             e: TExpr::Local(n),
             ty: me,
         };
+        let object_bytes = checked_class_byte_size(info.fields.len(), c.pos)?;
         let mut body = vec![TStmt::Set(
             n,
             TE {
-                e: TExpr::Alloc((info.fields.len() as u32 * FIELD_BYTES).max(FIELD_BYTES)),
+                e: TExpr::Alloc(object_bytes),
                 ty: me,
             },
         )];
@@ -1265,18 +1310,38 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             let source = TE { e: TExpr::Local(0), ty: me };
             let cloned = TE { e: TExpr::Local(1), ty: me };
             let mut body = vec![TStmt::Set(1, TE {
-                e: TExpr::Alloc((info.fields.len() as u32 * FIELD_BYTES).max(FIELD_BYTES)),
+                e: TExpr::Alloc(object_bytes),
                 ty: me,
             })];
-            for field in &info.fields {
-                body.push(TStmt::FieldSet {
-                    obj: cloned.clone(),
-                    offset: field.slot,
-                    ty: field.ty,
-                    value: TE { e: TExpr::FieldGet {
-                        obj: Box::new(source.clone()), offset: field.slot,
-                    }, ty: field.ty },
+            // The AOT verifier above already established a complete flat
+            // concrete layout. Bulk memory.copy is valid only for pointer-free
+            // inline slots; never copy class handles, string backing, actor
+            // state, or borrowed/resource capabilities as untyped bytes.
+            // All class slots occupy FIELD_BYTES contiguous bytes, including
+            // i32 enum/bool slots whose remaining padding is allocator-owned.
+            let flat_pod = !info.fields.is_empty() && info.fields.iter().all(|f|
+                matches!(f.ty, Type::Int | Type::Bool | Type::Float | Type::Enum(_)));
+            if flat_pod {
+                body.push(TStmt::FlatPodCopy {
+                    // Pre-evaluated locals only: no effectful expression can
+                    // reach an untyped bulk-memory operation.
+                    dest_slot: 1,
+                    source_slot: 0,
+                    bytes: object_bytes,
                 });
+            } else {
+                // String slots use typed field operations so a future string
+                // representation change cannot silently become raw memcpy.
+                for field in &info.fields {
+                    body.push(TStmt::FieldSet {
+                        obj: cloned.clone(),
+                        offset: field.slot,
+                        ty: field.ty,
+                        value: TE { e: TExpr::FieldGet {
+                            obj: Box::new(source.clone()), offset: field.slot,
+                        }, ty: field.ty },
+                    });
+                }
             }
             body.push(TStmt::Return(Some(cloned)));
             funcs[copy_idx as usize] = Some(TFunc {
@@ -1494,9 +1559,12 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
             | TStmt::Expr(value) | TStmt::StateRegister(value)
             | TStmt::Return(Some(value)) =>
                 expr_escape_effects(value, effects),
-            TStmt::Return(None) | TStmt::UnwindFrame { .. }
-            | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
-            | TStmt::Unreachable => EscapeEffects::default(),
+            // An authenticated raw POD copy cannot produce a catchable Error
+            // or a raise; a WebAssembly memory trap is fatal instead.
+            TStmt::FlatPodCopy { .. } | TStmt::Return(None)
+            | TStmt::UnwindFrame { .. } | TStmt::RecoverNext
+            | TStmt::Break | TStmt::Continue | TStmt::Unreachable =>
+                EscapeEffects::default(),
             TStmt::Throw(value) => expr_escape_effects(value, effects)
                 .union(EscapeEffects { throws: true, raises: false }),
             TStmt::Raise(value) => expr_escape_effects(value, effects)
@@ -1558,6 +1626,21 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
         if returns(std::slice::from_ref(stmt)) { break; }
     }
     all
+}
+
+#[cfg(test)]
+mod flat_copy_effects_integration_tests {
+    use super::*;
+
+    #[test]
+    fn checked_pod_copy_does_not_claim_throw_or_raise() {
+        let stmt = TStmt::FlatPodCopy {
+            dest_slot: 1,
+            source_slot: 0,
+            bytes: 24,
+        };
+        assert_eq!(stmts_escape_effects(&[stmt], &[]), EscapeEffects::default());
+    }
 }
 
 /// Infer escaping effects by monotone fixed point, so recursion and
@@ -1837,7 +1920,7 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
             pure_stmts(body, pure_indices) && pure_stmts(update, pure_indices),
         TStmt::Block(body) => pure_stmts(body, pure_indices),
         TStmt::Break | TStmt::Continue | TStmt::Unreachable => true,
-        TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
+        TStmt::FieldSet { .. } | TStmt::FlatPodCopy { .. } | TStmt::StateFieldWrite { .. } |
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
@@ -1853,6 +1936,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
+        // Flat POD copies encode only local slots, not expression trees.
+        TStmt::FlatPodCopy { .. } => false,
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
         }
