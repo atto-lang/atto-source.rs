@@ -1,3 +1,5 @@
+> **AI agent instructions (organization-wide):** Before working on code, issues, or pull requests, read and follow the [organization `AGENTS.md`](https://github.com/ores-truffle-oreslang/.github/blob/main/AGENTS.md), including its **merge-first stealth-development policy**. Honor any repository-local `AGENTS.md`, explicit holds, and GitHub-enforced rules.
+
 > **Canonical home moved (2026-11-16):** this compiler now lives in
 > [atto-lang/atto-source.rs](https://github.com/atto-lang/atto-source.rs) at the native/ (subtree, full history),
 > merged in atto-lang commit `60dbf3160d`. All commits up to `e0b8124c69`
