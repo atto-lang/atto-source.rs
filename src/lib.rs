@@ -50,6 +50,8 @@ pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
+pub mod tuple_binding_admission;
+pub mod tuple_binding_lower;
 pub mod target_typed;
 pub mod wasm;
 
@@ -172,6 +174,9 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     let mut visibility = visibility_lower::lower(source_tokens)?;
     collection_layout::reject_unlowered(&visibility.tokens)?;
     let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    // Only the checked, bounded Copy-scalar Tuple profile can reach guest
+    // lowering. Non-scalar tuple graphs/borrows fail closed before parser.
+    let toks = tuple_binding_lower::lower(toks)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {

@@ -2940,6 +2940,10 @@ impl<'a> FnCx<'a> {
                     }
                     let Type::Class(c) = local.ty else { unreachable!("tracked loans must be class typed") };
                     let class = &self.g.classes[c as usize];
+                    if class.name.starts_with("__atto_tuple_private_") {
+                        return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                            "tuple root elements cannot be mutated through a class loan"));
+                    }
                     let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
                         Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
                     if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
@@ -3143,6 +3147,18 @@ impl<'a> FnCx<'a> {
             let expected = self.resolve(annotation, pos)?;
             if expected != value.ty {
                 return Err(type_err(pos, format!("borrowed binding '{name}' expects {}, found {}", self.tn(expected), self.tn(value.ty))));
+            }
+        }
+        // Tuple roots are value-aggregate anchors. Their non-Copy storage
+        // is a private implementation detail, not a writable user class.
+        // Mutable loans could bypass as-val/as-const guarantees and mutate
+        // projected fields behind independently copied element binders.
+        if mutable {
+            if let Type::Class(c) = owner_ty {
+                if self.g.classes[c as usize].name.starts_with("__atto_tuple_private_") {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "mutable borrowing of a tuple root is not supported; use explicit element binding modes"));
+                }
             }
         }
         if !matches!(owner_ty, Type::Class(_)) {
@@ -3967,6 +3983,16 @@ impl<'a> FnCx<'a> {
                     class.name, class.name
                 ),
             ));
+        }
+        // An exclusive loan of an owner prohibits reading even a scalar
+        // field through the original owner's name until that loan ends.
+        // This is particularly important for compiler-generated tuple roots:
+        // their scalar projections must not bypass an existing mutable loan.
+        if matches!(&obj.e, TExpr::Local(slot) if
+            self.loans.values().any(|loan| loan.owner == *slot && loan.mutable))
+        {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "cannot read owner fields while an exclusive mutable loan is live"));
         }
         // A borrowed aggregate cannot yield an independently owned handle.
         // Without a nested-loan provenance IR, such a field could escape
