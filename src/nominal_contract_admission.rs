@@ -5,7 +5,7 @@
 //! It diagnoses provably broken contracts and refuses currently unverified
 //! actor/struct ABI on otherwise valid contracts. Do not interpret successful
 //! preflight as a compiled value or remotely callable actor.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 
@@ -30,7 +30,6 @@ struct Owner {
     kind: Kind,
     pos: Pos,
     contracts: Vec<String>,
-    declared: bool,
     methods: BTreeMap<String, Method>,
 }
 
@@ -177,6 +176,15 @@ fn scan_mtd(t: &[Token], i: usize) -> R<(String, String, Method, usize)> {
 /// A safe early rule for actor/struct implements, before the backend may
 /// accidentally interpret their methods as ordinary class methods.
 pub fn preflight(t: &[Token]) -> R<()> {
+    // Do not alter existing class-only receiver paths or ordinary programs:
+    // the target admission pass is needed solely when an actor/struct header
+    // actually declares an implements clause.
+    let targeted = t.windows(4).any(|w|
+        matches!((&w[0].tok, &w[1].tok, &w[2].tok, &w[3].tok),
+            (Tok::Ident(verb), Tok::Ident(kind), Tok::Ident(_), Tok::Ident(clause))
+                if (verb == "define" || verb == "declare")
+                    && (kind == "actor" || kind == "struct") && clause == "implements"));
+    if !targeted { return Ok(()); }
     let mut all = BTreeMap::<String, Owner>::new();
     let mut forwards = BTreeMap::<String, (Kind, Vec<String>, Pos)>::new();
     let mut receivers = Vec::new();
@@ -264,7 +272,7 @@ pub fn preflight(t: &[Token]) -> R<()> {
             let methods = if matches!(kind, Kind::Actor | Kind::Struct | Kind::Trait | Kind::Interface) {
                 scan_methods(&t[body_start..j], kind)?
             } else { BTreeMap::new() };
-            if all.insert(owner_name.clone(), Owner { kind, pos, contracts, declared: false, methods }).is_some() {
+            if all.insert(owner_name.clone(), Owner { kind, pos, contracts, methods }).is_some() {
                 return Err(err(pos, "E_DUPLICATE", "duplicate nominal definition"));
             }
             i = j + 1;
