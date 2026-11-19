@@ -222,8 +222,12 @@ pub fn inspect(toks: &[Token]) -> R<Vec<TupleBinding>> {
         // tuple declaration. An immediate '=' after the first local name
         // identifies the scalar initializer, preserving generator loops.
         let scalar_initializer = tok(toks, i + 3) == Some(&Tok::Assign);
+        // 'for (const x of items)' is a for-of header, not a tuple
+        // binder, even though its first two tokens look like '(const'.
+        let loop_header = i > 0 && word(tok(toks, i - 1), "for");
         let explicit_tuple = tok(toks, i) == Some(&Tok::LParen)
-            && mode(tok(toks, i + 1)).is_some() && !scalar_initializer;
+            && mode(tok(toks, i + 1)).is_some()
+            && !scalar_initializer && !loop_header;
         if (outer.is_some() && tok(toks, i + 1) == Some(&Tok::LParen)) || explicit_tuple {
             let (binding, next) = parse_one(toks, i, if explicit_tuple { None } else { outer })?;
             found.push(binding);
