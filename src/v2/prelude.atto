@@ -223,7 +223,13 @@ fnc __main(int clo): int {
 }
 
 suspends fnc __sleep(int ms): void {
+  // Virtual clock and deadlines are signed i64. Reject an addition that
+  // would overflow BEFORE arithmetic can trap and skip scope cleanup.
   if ms < 0 then
+    __span_cancel_all();
+    __panic(7);
+  fi
+  if ms > 9223372036854775807 - __rt(5) then
     __span_cancel_all();
     __panic(7);
   fi
@@ -237,6 +243,10 @@ fnc __deadline_push(int ms): int {
   // 0 is the unset deadline sentinel. Reject a zero or negative scope
   // before changing task state, closing any previously acquired guards.
   if ms <= 0 then
+    __span_cancel_all();
+    __panic(7);
+  fi
+  if ms > 9223372036854775807 - __rt(5) then
     __span_cancel_all();
     __panic(7);
   fi

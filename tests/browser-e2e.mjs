@@ -241,6 +241,22 @@ try{
     'deadline must close a live span exactly once before guest failure');
   console.log('PASS browser: scoped span remains live across suspension, then closes on normal and timeout paths');
 
+  // Overflow must not let checked arithmetic bypass a suspended span's
+  // cancellation cleanup. The 1ms advance makes MAX + virtual_now overflow.
+  for (const scenario of ['sleep', 'deadline']) {
+    const body=scenario==='sleep'
+      ? 'with timeout(2000) { await sleep(1); await sleep(9223372036854775807); }'
+      : 'with timeout(2000) { await sleep(1); with timeout(9223372036854775807) { await sleep(1); } }';
+    const source='import span from pkg "core.telemetry"; import sleep from pkg "std.time"; '+
+      'pub suspends fnc main(): int { using span("overflow") as s { '+body+' } return 0; }';
+    assert.match(await run(source,'E_PANIC'),/E_PANIC/,
+      scenario+': virtual-clock overflow must fail closed');
+    assert.deepEqual(await evaluate('window.__attoLastSpanCounts'),{opens:1,closes:1},
+      scenario+': cleanup before overflow failure in real guest Wasm');
+  }
+  console.log('PASS browser: virtual-clock overflow closes spans before guest failure');
+
+
   assert.ok(requests.some(x=>x.path==='/state-runtime.mjs'),
     'the browser Worker must load the protected-state host admission module');
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
