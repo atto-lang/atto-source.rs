@@ -55,3 +55,10 @@ jobs:
           node tests/linked_guest_wasm.test.mjs \
             /tmp/atto-public.wasm /tmp/atto-package.wasm \
             /tmp/atto-deep.wasm /tmp/atto-filesystem.wasm
+
+      - name: Emit namespace storefront lowercase math guest
+        shell: bash
+        run: cargo +1.85.1 run --locked --quiet --example namespace_storefront_guest -- /tmp/atto-namespace-storefront.wasm
+      - name: Execute namespace storefront guest and assert stdout
+        shell: bash
+        run: node tests/namespace_storefront_wasm.test.mjs /tmp/atto-namespace-storefront.wasm
