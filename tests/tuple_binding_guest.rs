@@ -298,3 +298,14 @@ fn constexpr_element_retains_const_not_runtime_field_provenance() {
     }";
     assert_eq!(compile(rebinding).unwrap_err().code, "E_IMMUTABLE");
 }
+
+#[test]
+fn decoded_string_byte_quota_cannot_be_bypassed_by_escapes() {
+    let many_escapes = "\\n".repeat(atto_compiler::lexer::MAX_STRING_BYTES + 1);
+    let source = format!(
+        "pub fnc main(): int {{ let (s,) = (\"{many_escapes}\",); return 0; }}"
+    );
+    let error = compile(&source).unwrap_err();
+    assert_eq!(error.code, "E_SOURCE_LIMIT",
+        "decoded string escapes must obey MAX_STRING_BYTES");
+}
