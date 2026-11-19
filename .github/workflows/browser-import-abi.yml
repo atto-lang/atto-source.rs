@@ -1,0 +1,30 @@
+name: Browser guest import signature ABI gate
+on:
+  pull_request:
+    paths:
+      - 'tests/browser/worker.mjs'
+      - 'tests/browser/abi-admission.test.mjs'
+      - '.github/workflows/browser-import-abi.yml'
+  push:
+    paths:
+      - 'tests/browser/worker.mjs'
+      - 'tests/browser/abi-admission.test.mjs'
+      - '.github/workflows/browser-import-abi.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  wasm-import-signatures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Run hostile binary import signature admissions
+        run: node --test tests/browser/abi-admission.test.mjs
+      - name: Evidence boundary
+        run: echo 'REAL_NODE_BINARY_ABI_NEGATIVES; does not prove compiled AttoLang guest or arbitrary FFI'
