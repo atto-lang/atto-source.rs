@@ -432,13 +432,13 @@ impl Cursor<'_> {
         self.i = end;
         Ok(decl)
     }
-    fn function(&mut self) -> R<(usize, usize)> {
+    fn function(&mut self) -> R<(String, usize, usize)> {
         let return_first = self.return_first_header();
         if return_first {
             self.type_name()?;
             self.expect(&Tok::LeftArrow, "expected '<-' after return type")?;
         }
-        self.ident()?;
+        let name = self.ident()?;
         self.params()?;
         let arrow_type = !return_first && *self.tok() == Tok::Arrow;
         let colon_type = !return_first && *self.tok() == Tok::Colon;
@@ -453,7 +453,7 @@ impl Cursor<'_> {
         }
         let start = self.i;
         self.body(arrow_type, colon_type, return_first)?;
-        Ok((start, self.i))
+        Ok((name, start, self.i))
     }
 }
 
@@ -468,6 +468,9 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
     let mut out = TargetHeaders::default();
     let mut spans: Vec<(usize, usize, usize)> = Vec::new();
     let mut function_spans: Vec<(usize, usize)> = Vec::new();
+    let mut function_names: Vec<String> = Vec::new();
+    let mut import_sites: Vec<(String, Pos)> = Vec::new();
+    let mut saw_declaration = false;
     let mut decls = 0;
     while *c.tok() != Tok::Eof {
         if decls >= MAX_FUNCS {
@@ -487,6 +490,10 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             out.namespace = Some(c.ident()?);
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
         } else if c.take_word("import") {
+            if saw_declaration {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "imports must precede all non-import declarations"));
+            }
             if !out.actors.is_empty() || !out.classes.is_empty() || !out.class_forwards.is_empty() ||
                !out.struct_forwards.is_empty() || !out.state_owners.is_empty() ||
                !out.constructors.is_empty() || !out.receivers.is_empty() {
@@ -530,9 +537,11 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 if out.imports.contains(&alias) {
                     return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
                 }
+                import_sites.push((alias.clone(), pos));
                 out.imports.push(alias);
             }
         } else if c.take_word("define") {
+            saw_declaration = true;
             if c.take_word("state") {
                 let owner = c.state_attachment()?;
                 if out.state_owners.contains(&owner) {
@@ -566,6 +575,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 return Err(c.err("E_SYNTAX", "expected 'class' or 'actor' after define"));
             }
         } else if c.take_word("declare") {
+            saw_declaration = true;
             let start = c.i - 1;
             let kind = c.word().map(str::to_owned).unwrap_or_default();
             if !matches!(kind.as_str(), "actor" | "class" | "struct") {
@@ -594,6 +604,7 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 _ => unreachable!(),
             }
         } else {
+            saw_declaration = true;
             let declaration_start = c.i;
             let public = c.take_word("pub");
             if c.take_word("mtd") {
@@ -616,17 +627,35 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 }
                 out.constructors.push(site);
             } else if c.take_word("fnc") || c.take_word("routine") {
-                function_spans.push(c.function()?);
+                let (name, start, end) = c.function()?;
+                function_names.push(name);
+                function_spans.push((start, end));
             } else if c.return_first_header() {
                 // A keyword-free T <- name(...) callable is unambiguous in
                 // declaration scope, and has the same owner/name/arity identity.
-                function_spans.push(c.function()?);
+                let (name, start, end) = c.function()?;
+                function_names.push(name);
+                function_spans.push((start, end));
             } else {
                 return Err(c.err("E_SYNTAX",
                     "expected namespace header, module import, declared/concrete actor, receiver method, or fnc"));
             }
         }
         decls += 1;
+    }
+    // Imports are local static bindings, never permissive aliases that can
+    // shadow a declared nominal owner or a file-level callable. Detect
+    // collisions independent of declaration order, before any lowering.
+    for (import_name, import_pos) in &import_sites {
+        let nominal_collision = out.actors.contains(import_name)
+            || out.classes.contains(import_name)
+            || out.class_forwards.contains(import_name)
+            || out.struct_forwards.contains(import_name)
+            || out.definitions.iter().any(|decl| &decl.name == import_name);
+        if nominal_collision || function_names.contains(import_name) {
+            return Err(Diagnostic::new(*import_pos, "E_DUPLICATE",
+                format!("import binding '{import_name}' conflicts with a local declaration")));
+        }
     }
     for receiver in &out.receivers {
         if !out.actors.contains(&receiver.owner) && !out.classes.contains(&receiver.owner) &&
