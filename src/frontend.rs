@@ -6,6 +6,17 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     pub functions: Vec<Function>,
+    /// Explicit file-level export metadata, including package-only names.
+    pub exports: Vec<ExportDecl>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportScope { Public, Package }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportDecl {
+    pub name: String,
+    pub scope: ExportScope,
+    pub kind: Option<String>,
+    pub offset: usize,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Function {
@@ -51,6 +62,10 @@ impl std::error::Error for ParseError {}
 enum Kind {
     #[token("pub")]
     Pub,
+    #[token("export")]
+    Export,
+    #[token("class")]
+    Class,
     #[token("define")]
     Define,
     #[token("static")]
@@ -77,6 +92,10 @@ enum Kind {
     RParen,
     #[token("{")]
     LBrace,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
     #[token("}")]
     RBrace,
     #[token(";")]
@@ -93,12 +112,19 @@ enum Kind {
     Minus,
     #[token("*")]
     Star,
+    // Explicitly classify removed operators instead of letting a generic
+    // lexer error obscure the canonical Java/LLVM diagnostic family.
+    #[token("%")]
+    RemovedModulo,
+    #[token("^^")]
+    RemovedDoubleCaret,
+    #[token("^")]
+    RemovedCaret,
     #[regex(r"[0-9][0-9_]*")]
     Number,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Identifier,
-    #[regex(r"[ \t\n\r\f]+", logos::skip)]
-    #[regex(r"//[^\r\n]*", logos::skip, allow_greedy = true)]
+    #[regex(r"[ \t\n\r\f\u{0085}\u{2028}\u{2029}]+|//[^\r\n\u{0085}\u{2028}\u{2029}]*", logos::skip, allow_greedy = true)]
     Whitespace,
 }
 #[derive(Clone, Debug)]
@@ -107,6 +133,23 @@ struct Token {
     text: String,
     start: usize,
 }
+// Keep source comments aligned with the Logos lexer, which recognizes
+// CR, LF, NEL (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR. Offsets stay
+// byte-based so a // comment cannot hide a later /* block or actor declaration.
+fn line_break_width(bytes: &[u8], at: usize) -> usize {
+    match bytes.get(at).copied() {
+        Some(b'\r' | b'\n') => 1,
+        Some(0xc2) if bytes.get(at + 1) == Some(&0x85) => 2,
+        Some(0xe2)
+            if bytes.get(at + 1) == Some(&0x80)
+                && matches!(bytes.get(at + 2), Some(0xa8 | 0xa9)) =>
+        {
+            3
+        }
+        _ => 0,
+    }
+}
+
 /// Strip nested block comments without moving token offsets. Unsupported Unicode
 /// inside a comment becomes ASCII whitespace; outside stays byte-identical.
 fn without_block_comments(source: &str) -> Result<String, ParseError> {
@@ -119,7 +162,7 @@ fn without_block_comments(source: &str) -> Result<String, ParseError> {
         // A block opener inside a // line comment is not a block comment.
         // Leave the line untouched for Logos to skip; preserve source offsets.
         if depth == 0 && i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'/' {
-            while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
+            while i < src.len() && line_break_width(src, i) == 0 {
                 i += 1;
             }
         } else if i + 1 < src.len() && src[i] == b'/' && src[i + 1] == b'*' {
@@ -181,6 +224,8 @@ fn normalized_integer_digits(token: &Token) -> Result<String, ParseError> {
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_TOKENS: usize = 2048;
 pub const MAX_PAREN_NESTING: usize = 64;
+pub const MAX_PRIMARY_DEPTH: usize = 64;
+pub const MAX_INFIX_OPERATORS: usize = 64;
 
 /// Execution-domain words reserved by every Oreslang backend (Java and LLVM
 /// reject them as identifiers too).
@@ -195,12 +240,29 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
             continue;
         }
         let opens_block = tokens.get(index + 1).map(|next| next.kind) == Some(Kind::LBrace);
+        let opens_task_scope = token.text == "task"
+            && tokens.get(index + 1).map(|next| next.text.as_str()) == Some("scope")
+            && tokens.get(index + 2).map(|next| next.kind) == Some(Kind::LBrace);
+        // Await is valid in the language only inside a suspends fnc/mtd.
+        // This scalar-only compiler cannot typecheck or lower those functions,
+        // so reject them *semantically*, before IR can be emitted.
+        if token.text == "await" || token.text == "suspends" {
+            return Err(ParseError {
+                offset: token.start,
+                class: "suspension_unsupported",
+                message: format!(
+                    "'{}' requires checked suspends/await continuation lowering; this backend cannot execute it",
+                    token.text
+                ),
+            });
+        }
         let message = if EXECUTION_DOMAIN_WORDS.contains(&token.text.as_str()) {
             format!(
                 "execution domain '{}' is reserved and not lowered by this backend; no implicit CPU fallback",
                 token.text
             )
-        } else if opens_block && (token.text == "task" || token.text == "nb") {
+        } else if (opens_block && (token.text == "task" || token.text == "nb"))
+            || opens_task_scope {
             "execution task requires scheduler-aware Future lowering; no implicit inline execution"
                 .into()
         } else {
@@ -215,15 +277,99 @@ fn reject_execution_domains(tokens: &[Token]) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Reject controls that can make source appear to contain different token
-/// boundaries or order. Inspect the original UTF-8 text before removing any
-/// comment content so no lexical entry point silently accepts them.
+/// Typed fail-closed admission shared with the .NET/JS source compiler gates.
+/// Source HTTP actors require request/mail ownership, state-loan, cancellation
+/// and physical shutdown lowering. An optional host HTTP server is not proof
+/// of an executable source actor. Only examine actual lexer tokens, not text
+/// inside comments; preserve normal user identifiers such as `http`.
+fn reject_http_actor_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind != Kind::Define {
+            continue;
+        }
+        let mut cursor = index + 1;
+        let mut http = false;
+        while let Some(next) = tokens.get(cursor) {
+            let modifier = match next.kind {
+                Kind::Pub => true,
+                Kind::Identifier => matches!(
+                    next.text.as_str(),
+                    "private"
+                        | "shared"
+                        | "untrusted"
+                        | "serial"
+                        | "http"
+                        | "tcp"
+                        | "websocket"
+                        | "ws"
+                        | "stream"
+                        | "unary"
+                        | "abstract"
+                ),
+                _ => false,
+            };
+            if !modifier {
+                break;
+            }
+            http |= next.text == "http";
+            cursor += 1;
+        }
+        if http {
+            if let Some(next) = tokens.get(cursor) {
+                if next.kind == Kind::Identifier
+                    && matches!(next.text.as_str(), "actor" | "isoactor")
+                {
+                    return Err(ParseError {
+                        offset: next.start,
+                        class: "http_actor_backend_unsupported",
+                        message: "HTTP_ACTOR_BACKEND_UNSUPPORTED: Rust scalar compiler cannot lower source HTTP actor request/mail lifetimes, guarded state, or physical shutdown".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// This scalar backend has no singleton identity or guarded shared-memory lowering.
+/// The word stays contextual for ordinary scalar identifiers.
+fn reject_singleton_declarations(tokens: &[Token]) -> Result<(), ParseError> {
+    for (i, token) in tokens.iter().enumerate() {
+        let after = match token.kind {
+            Kind::Define => {
+                if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Pub) {
+                    i + 2
+                } else {
+                    i + 1
+                }
+            }
+            Kind::Pub if tokens.get(i + 1).map(|t| t.kind) == Some(Kind::Define) => i + 2,
+            _ => continue,
+        };
+        if let Some(next) = tokens.get(after) {
+            if next.kind == Kind::Identifier && next.text == "singleton" {
+                return Err(ParseError {
+                    offset: next.start,
+                    class: "singleton_unsupported",
+                    message: "ORES-SINGLETON-UNSUPPORTED: singleton requires compiler-resolved application-domain identity, once-only immutable publication and owned shared-region RW lowering".into(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+
+/** Reject source controls with misleading visual token boundaries before preprocessing.
+ * Original UTF-8 byte offsets are preserved, including inside ignored comments.
+ */
 fn reject_visual_unicode_controls(source: &str) -> Result<(), ParseError> {
     for (offset, character) in source.char_indices() {
         let codepoint = character as u32;
-        let forbidden = matches!(codepoint,
-            0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029)
-            || (0x202a..=0x202e).contains(&codepoint)
+        let forbidden = matches!(
+            codepoint,
+            0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029
+        ) || (0x202a..=0x202e).contains(&codepoint)
             || (0x2066..=0x2069).contains(&codepoint);
         if forbidden {
             return Err(ParseError {
@@ -244,6 +390,16 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "Oreslang source exceeds 256 KiB prototype limit".into(),
         });
     }
+    // Reject raw NUL before preprocessing. Otherwise an ignored /* ... */
+    // or // comment could erase it and produce a valid executable AST.
+    // The source is already a valid UTF-8 &str; report its byte offset.
+    if let Some(offset) = source.bytes().position(|byte| byte == 0) {
+        return Err(ParseError {
+            offset,
+            class: "source_admission",
+            message: "source contains NUL byte".into(),
+        });
+    }
     reject_visual_unicode_controls(source)?;
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
@@ -262,6 +418,13 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             });
         }
         match kind {
+            Kind::RemovedModulo | Kind::RemovedCaret | Kind::RemovedDoubleCaret => {
+                return Err(ParseError {
+                    offset: range.start,
+                    class: "removed_operator",
+                    message: "operator is reserved; use named arithmetic functions".into(),
+                });
+            }
             Kind::LParen => {
                 paren_depth += 1;
                 if paren_depth > MAX_PAREN_NESTING {
@@ -283,15 +446,47 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             start: range.start,
         });
     }
+    reject_singleton_declarations(&tokens)?;
     reject_execution_domains(&tokens)?;
+    reject_http_actor_declarations(&tokens)?;
     let mut parser = Parser {
         tokens,
         cursor: 0,
         source_len: source.len(),
+        primary_depth: 0,
     };
     let mut functions = Vec::new();
+    let mut exports = Vec::new();
     while parser.peek().is_some() {
-        functions.push(parser.function()?);
+        if parser.peek() == Some(Kind::Export) {
+            exports.push(parser.export_decl()?);
+        } else {
+            functions.push(parser.function()?);
+        }
+    }
+    // Collect all symbols before resolving exports. A forward export and an
+    // identical bottom-of-file export have the same meaning.
+    let mut seen = std::collections::HashSet::new();
+    for e in &exports {
+        if !seen.insert(e.name.clone()) {
+            return Err(ParseError { offset: e.offset, class: "duplicate_export",
+                message: format!("duplicate export '{}'", e.name) });
+        }
+        if let Some(kind) = &e.kind {
+            if kind != "fnc" {
+                return Err(ParseError { offset: e.offset, class: "export_kind_mismatch",
+                    message: format!("'{}' is not an admitted scalar fnc", e.name) });
+            }
+        }
+        let Some(target) = functions.iter_mut().find(|f| f.name == e.name) else {
+            return Err(ParseError { offset: e.offset, class: "export_unresolved",
+                message: format!("unknown export '{}'", e.name) });
+        };
+        if e.scope == ExportScope::Package && target.exported {
+            return Err(ParseError { offset: e.offset, class: "export_visibility_conflict",
+                message: format!("'{}' is already public and cannot be package-only", e.name) });
+        }
+        if e.scope == ExportScope::Public { target.exported = true; }
     }
     if functions.is_empty() {
         return Err(ParseError {
@@ -300,12 +495,13 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "expected a function declaration".into(),
         });
     }
-    Ok(Program { functions })
+    Ok(Program { functions, exports })
 }
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     source_len: usize,
+    primary_depth: usize,
 }
 impl Parser {
     fn peek(&self) -> Option<Kind> {
@@ -327,6 +523,26 @@ impl Parser {
         let token = self.tokens[self.cursor].clone();
         self.cursor += 1;
         Ok(token)
+    }
+    fn export_decl(&mut self) -> Result<ExportDecl, ParseError> {
+        let offset = self.expect(Kind::Export)?.start;
+        self.expect(Kind::Pub)?;
+        let scope = if self.peek() == Some(Kind::LBracket) {
+            self.expect(Kind::LBracket)?;
+            let marker = self.expect(Kind::Identifier)?;
+            if marker.text != "pkg" {
+                return Err(ParseError { offset: marker.start, class: "export_visibility",
+                    message: "only pub[pkg] is supported".into() });
+            }
+            self.expect(Kind::RBracket)?;
+            ExportScope::Package
+        } else { ExportScope::Public };
+        let kind = if self.peek() == Some(Kind::Fnc) { self.expect(Kind::Fnc)?; Some("fnc".into()) }
+            else if self.peek() == Some(Kind::Class) { self.expect(Kind::Class)?; Some("class".into()) }
+            else { None };
+        let name = self.expect(Kind::Identifier)?.text;
+        self.expect(Kind::Semicolon)?;
+        Ok(ExportDecl { name, scope, kind, offset })
     }
     fn function(&mut self) -> Result<Function, ParseError> {
         // Canonical AttoLang permits both "define pub fnc" and
@@ -351,8 +567,18 @@ impl Parser {
         let mut params = Vec::new();
         if self.peek() != Some(Kind::RParen) {
             loop {
-                self.expect(Kind::Int)?;
-                params.push(self.expect(Kind::Identifier)?.text);
+                // Match Java/LLVM: a scalar parameter may be "int x" or
+                // "x: int". Neither syntax allows an untyped parameter.
+                let name = if self.peek() == Some(Kind::Int) {
+                    self.expect(Kind::Int)?;
+                    self.expect(Kind::Identifier)?.text
+                } else {
+                    let name = self.expect(Kind::Identifier)?.text;
+                    self.expect(Kind::Colon)?;
+                    self.expect(Kind::Int)?;
+                    name
+                };
+                params.push(name);
                 if self.peek() == Some(Kind::Comma) {
                     self.expect(Kind::Comma)?;
                 } else {
@@ -452,7 +678,18 @@ impl Parser {
     }
     fn expression(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.product()?;
+        let mut infix_count = 0_usize;
         loop {
+            if matches!(self.peek(), Some(Kind::Plus | Kind::Minus)) {
+                if infix_count >= MAX_INFIX_OPERATORS {
+                    return Err(ParseError {
+                        offset: self.pos(),
+                        class: "resource_limit",
+                        message: "additive expression exceeds scalar depth budget".into(),
+                    });
+                }
+                infix_count += 1;
+            }
             lhs = match self.peek() {
                 Some(Kind::Plus) => {
                     self.expect(Kind::Plus)?;
@@ -469,23 +706,49 @@ impl Parser {
     }
     fn product(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.primary()?;
+        let mut infix_count = 0_usize;
         while self.peek() == Some(Kind::Star) {
+            if infix_count >= MAX_INFIX_OPERATORS {
+                return Err(ParseError {
+                    offset: self.pos(),
+                    class: "resource_limit",
+                    message: "multiplicative expression exceeds scalar depth budget".into(),
+                });
+            }
+            infix_count += 1;
             self.expect(Kind::Star)?;
             lhs = Expr::Multiply(Box::new(lhs), Box::new(self.primary()?));
         }
         Ok(lhs)
     }
     fn primary(&mut self) -> Result<Expr, ParseError> {
+        // Unary chains recurse without parentheses and previously evaded the
+        // lexer parenthesis-depth cap. Fail closed before stack exhaustion.
+        if self.primary_depth >= MAX_PRIMARY_DEPTH {
+            return Err(ParseError {
+                offset: self.pos(),
+                class: "resource_limit",
+                message: "unary/call expression exceeds recursive parser budget".into(),
+            });
+        }
+        self.primary_depth += 1;
+        let parsed = self.primary_impl();
+        self.primary_depth -= 1;
+        parsed
+    }
+
+    fn primary_impl(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Some(Kind::Number) => {
                 let t = self.expect(Kind::Number)?;
-                let integer = normalized_integer_digits(&t)?
-                    .parse::<i64>()
-                    .map_err(|_| ParseError {
-                        offset: t.start,
-                        class: "integer_overflow",
-                        message: "i64 integer literal overflow".into(),
-                    })?;
+                let integer =
+                    normalized_integer_digits(&t)?
+                        .parse::<i64>()
+                        .map_err(|_| ParseError {
+                            offset: t.start,
+                            class: "integer_overflow",
+                            message: "i64 integer literal overflow".into(),
+                        })?;
                 Ok(Expr::Integer(integer))
             }
             Some(Kind::Identifier) => {
@@ -507,6 +770,12 @@ impl Parser {
                 }
                 self.expect(Kind::RParen)?;
                 Ok(Expr::Call { name, args })
+            }
+            Some(Kind::Plus) => {
+                // Unary plus is a typed i64 identity, not an arithmetic
+                // addition or coercion. Reuse the operand exactly once.
+                self.expect(Kind::Plus)?;
+                self.primary()
             }
             Some(Kind::Minus) => {
                 let minus = self.expect(Kind::Minus)?;
@@ -607,6 +876,36 @@ mod tests {
             parse("fnc owned(int owned): int { const local: int = owned; return local; }").unwrap();
         assert_eq!(ast.functions[0].locals.len(), 1);
     }
+    #[test]
+    fn raw_nul_is_denied_before_opaque_block_comment_preprocessing() {
+        let source = "/* hidden\0text */ pub fnc main(): int { return 42; }";
+        let error = parse(source).expect_err("a block comment must not conceal raw NUL");
+        assert_eq!(error.class, "source_admission");
+        assert_eq!(error.offset, source.find('\0').unwrap());
+        assert_eq!(error.message, "source contains NUL byte");
+    }
+
+    #[test]
+    fn raw_nul_is_denied_in_line_comments_and_between_tokens() {
+        for source in [
+            "// hidden\0text\npub fnc main(): int { return 42; }",
+            "pub fnc main(): int { return\0 42; }",
+        ] {
+            let error = parse(source).expect_err("raw NUL must fail closed");
+            assert_eq!(error.class, "source_admission");
+            assert_eq!(error.offset, source.find('\0').unwrap());
+        }
+    }
+
+    #[test]
+    fn valid_utf8_comments_continue_to_compile() {
+        let source = "/* café 😀 */ pub fnc main(): int { return 42; }";
+        assert_eq!(
+            parse(source).unwrap().functions[0].expression,
+            Expr::Integer(42)
+        );
+    }
+
     #[test]
     fn ignores_double_slash_comment() {
         assert!(parse("// first\npub fnc main(): int { return 40+2; }").is_ok());

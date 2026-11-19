@@ -75,6 +75,10 @@ pub fn tree_shake(mut module: Module) -> Result<Module, String> {
         .filter(|function| function.exported || function.symbol == "main")
         .map(|function| function.symbol.clone())
         .collect();
+    // A package-only export is not a public native symbol, but its body
+    // must survive release/strict-AOT tree shaking for package-level use.
+    // Keep every validated explicit export as an additional reachability root.
+    pending.extend(module.exports.iter().map(|export| export.name.clone()));
     if pending.is_empty() {
         return Err("release tree shaking requires main or at least one exported root".into());
     }
