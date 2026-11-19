@@ -3,7 +3,7 @@
 // >=0 one port. The caller must enforce port/VLAN membership on flood.
 
 pub fnc valid_mac(int mac): bool {
-  return mac >= 0 and mac <= 281474976710655;
+  return mac >= 0 && mac <= 281474976710655;
 }
 
 pub fnc mac_is_group(int mac): bool {
@@ -15,17 +15,17 @@ pub fnc mac_is_group(int mac): bool {
 }
 
 pub fnc valid_vlan(int vlan): bool {
-  return vlan >= 1 and vlan <= 4094;
+  return vlan >= 1 && vlan <= 4094;
 }
 
 pub fnc valid_port(int port, int port_count): bool {
-  return port_count >= 2 and port_count <= 4096 and
-         port >= 0 and port < port_count;
+  return port_count >= 2 && port_count <= 4096 &&
+         port >= 0 && port < port_count;
 }
 
 pub fnc can_learn_source(int source_mac, int ingress, int port_count, int vlan): bool {
-  return valid_mac(source_mac) and source_mac != 0 and
-         !mac_is_group(source_mac) and valid_port(ingress, port_count) and
+  return valid_mac(source_mac) && source_mac != 0 &&
+         !mac_is_group(source_mac) && valid_port(ingress, port_count) &&
          valid_vlan(vlan);
 }
 
@@ -37,19 +37,19 @@ pub fnc select_egress_port(
   int learned_mac, int learned_port, int learned_vlan,
   int age_seconds, int max_age_seconds
 ): int {
-  if !valid_mac(destination_mac) or !valid_port(ingress, port_count) or
+  if !valid_mac(destination_mac) || !valid_port(ingress, port_count) ||
      !valid_vlan(frame_vlan) then
     return -1;
   fi
   if mac_is_group(destination_mac) then
     return -2;
   fi
-  if destination_mac != learned_mac or frame_vlan != learned_vlan then
+  if destination_mac != learned_mac || frame_vlan != learned_vlan then
     return -2;
   fi
-  if !valid_port(learned_port, port_count) or
-     age_seconds < 0 or max_age_seconds < 1 or
-     max_age_seconds > 86400 or age_seconds > max_age_seconds then
+  if !valid_port(learned_port, port_count) ||
+     age_seconds < 0 || max_age_seconds < 1 ||
+     max_age_seconds > 86400 || age_seconds > max_age_seconds then
     return -2;
   fi
   if learned_port == ingress then
@@ -62,35 +62,35 @@ pub fnc flood_to_port(
   int ingress, int candidate, int port_count,
   int frame_vlan, int candidate_vlan, bool candidate_up
 ): bool {
-  return valid_port(ingress, port_count) and
-         valid_port(candidate, port_count) and
-         candidate != ingress and candidate_up and
-         valid_vlan(frame_vlan) and frame_vlan == candidate_vlan;
+  return valid_port(ingress, port_count) &&
+         valid_port(candidate, port_count) &&
+         candidate != ingress && candidate_up &&
+         valid_vlan(frame_vlan) && frame_vlan == candidate_vlan;
 }
 
 // Frame lengths exclude the four-byte Ethernet FCS. 802.1Q adds four bytes.
 // A virtual switch's access port maps untagged frames to a valid PVID.
 pub fnc valid_ethernet_frame(int bytes, int mtu, bool tagged): bool {
-  if mtu < 576 or mtu > 9216 then
+  if mtu < 576 || mtu > 9216 then
     return false;
   fi
   if tagged then
-    return bytes >= 64 and bytes <= mtu + 18;
+    return bytes >= 64 && bytes <= mtu + 18;
   fi
-  return bytes >= 60 and bytes <= mtu + 14;
+  return bytes >= 60 && bytes <= mtu + 14;
 }
 
 pub fnc can_admit_ingress_frame(
   int bytes, int mtu, int ingress, int port_count,
   int assigned_vlan, bool tagged, bool ingress_up
 ): bool {
-  return ingress_up and valid_port(ingress, port_count)
-    and valid_vlan(assigned_vlan) and valid_ethernet_frame(bytes, mtu, tagged);
+  return ingress_up && valid_port(ingress, port_count)
+    && valid_vlan(assigned_vlan) && valid_ethernet_frame(bytes, mtu, tagged);
 }
 
 // 00:00:00:00:00:00 is not a valid unicast destination for forwarding.
 pub fnc valid_unicast_destination_mac(int mac): bool {
-  return valid_mac(mac) and mac != 0 and !mac_is_group(mac);
+  return valid_mac(mac) && mac != 0 && !mac_is_group(mac);
 }
 
 // Egress codes remain -1 drop, -2 flood, >=0 a specific port.
@@ -100,7 +100,7 @@ pub fnc select_safe_egress_port(
   int learned_mac, int learned_port, int learned_vlan,
   int age_seconds, int max_age_seconds
 ): int {
-  if !valid_mac(destination_mac) or destination_mac == 0 then
+  if !valid_mac(destination_mac) || destination_mac == 0 then
     return -1;
   fi
   if mac_is_group(destination_mac) then

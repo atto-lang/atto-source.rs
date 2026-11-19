@@ -1,4 +1,4 @@
-//! Exact-source Atto virtualization fixtures compiled to WASM and actually executed.
+//! Exact-source Atto virtualization fixtures compiled to WASM && actually executed.
 //! Rust is the test runner only; device logic is 1:1 source from four PRs.
 //! Captured Git blob identities are checked by the companion workflow.
 use std::io::Write;
@@ -9,52 +9,52 @@ const ROUTER: &str = include_str!("virtual-hardware/router.atto");
 const SWITCH: &str = include_str!("virtual-hardware/switch.atto");
 const MODEM: &str = include_str!("virtual-hardware/modem.atto");
 
-// The Wasm guest must run every positive and adversarial predicate itself.
+// The Wasm guest must run every positive && adversarial predicate itself.
 // Do not substitute a Rust computation for any Atto function result.
 const NIC_MAIN: &str = r#"
-if guest_region_contains(64, 60, 124) and
-   !guest_region_contains(64, 60, 123) and
-   guest_address_aligned(64, 64) and
-   !guest_address_aligned(65, 64) and
-   can_receive_guest_frame(64, 60, 124, 64, 1500, 0, 8, true) and
+if guest_region_contains(64, 60, 124) &&
+   !guest_region_contains(64, 60, 123) &&
+   guest_address_aligned(64, 64) &&
+   !guest_address_aligned(65, 64) &&
+   can_receive_guest_frame(64, 60, 124, 64, 1500, 0, 8, true) &&
    !can_receive_guest_frame(64, 60, 123, 64, 1500, 0, 8, true) then
   return 41;
 fi
 return -1;
 "#;
 const ROUTER_MAIN: &str = r#"
-if canonical_ipv4_network(3232235776, 24) and
-   !canonical_ipv4_network(3232235777, 24) and
-   !canonical_ipv4_network(1, 0) and
-   may_forward_on_link(3232235777, 1500, 20, 2, 0, 1500, true) and
-   !may_forward_on_link(3232235777, 1501, 20, 2, 0, 1500, true) and
-   !may_forward_on_link(3758096385, 20, 20, 64, 0, 1500, true) and
+if canonical_ipv4_network(3232235776, 24) &&
+   !canonical_ipv4_network(3232235777, 24) &&
+   !canonical_ipv4_network(1, 0) &&
+   may_forward_on_link(3232235777, 1500, 20, 2, 0, 1500, true) &&
+   !may_forward_on_link(3232235777, 1501, 20, 2, 0, 1500, true) &&
+   !may_forward_on_link(3758096385, 20, 20, 64, 0, 1500, true) &&
    select_canonical_egress_port(3232235777, 0, 0, 1, 3232235776, 24, 3) == 3 then
   return 42;
 fi
 return -1;
 "#;
 const SWITCH_MAIN: &str = r#"
-if can_admit_ingress_frame(60, 1500, 0, 2, 1, false, true) and
-   !can_admit_ingress_frame(60, 1500, 0, 2, 1, true, true) and
-   !can_admit_ingress_frame(60, 1500, 0, 2, 4095, false, true) and
-   valid_unicast_destination_mac(2199023255553) and
-   !valid_unicast_destination_mac(0) and
-   select_safe_egress_port(0, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == -1 and
+if can_admit_ingress_frame(60, 1500, 0, 2, 1, false, true) &&
+   !can_admit_ingress_frame(60, 1500, 0, 2, 1, true, true) &&
+   !can_admit_ingress_frame(60, 1500, 0, 2, 4095, false, true) &&
+   valid_unicast_destination_mac(2199023255553) &&
+   !valid_unicast_destination_mac(0) &&
+   select_safe_egress_port(0, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == -1 &&
    select_safe_egress_port(2199023255553, 0, 2, 1, 2199023255553, 1, 1, 0, 300) == 1 then
   return 43;
 fi
 return -1;
 "#;
 const MODEM_MAIN: &str = r#"
-if valid_serial_config(115200, 8, 0, 1) and
-   !valid_serial_config(115201, 8, 0, 1) and
-   free_modem_fifo(0, 8) == 8 and
-   free_modem_fifo(8, 8) == 0 and
-   next_modem_fifo_slot(7, 8) == 0 and
-   can_transmit_octet(4, 255, 0, 8, true, true) and
-   !can_transmit_octet(4, 256, 0, 8, true, true) and
-   can_admit_at_command(1, 2, 0, 8, true, true) and
+if valid_serial_config(115200, 8, 0, 1) &&
+   !valid_serial_config(115201, 8, 0, 1) &&
+   free_modem_fifo(0, 8) == 8 &&
+   free_modem_fifo(8, 8) == 0 &&
+   next_modem_fifo_slot(7, 8) == 0 &&
+   can_transmit_octet(4, 255, 0, 8, true, true) &&
+   !can_transmit_octet(4, 256, 0, 8, true, true) &&
+   can_admit_at_command(1, 2, 0, 8, true, true) &&
    !can_admit_at_command(4, 2, 0, 8, true, true) then
   return 44;
 fi

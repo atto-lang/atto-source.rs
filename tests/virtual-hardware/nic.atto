@@ -3,7 +3,7 @@
 // Host byte transport, DMA and OS TAP attachment are deliberately out of scope.
 
 pub fnc valid_mac(int mac): bool {
-  return mac >= 0 and mac <= 281474976710655;
+  return mac >= 0 && mac <= 281474976710655;
 }
 
 pub fnc mac_is_group(int mac): bool {
@@ -15,25 +15,25 @@ pub fnc mac_is_group(int mac): bool {
 }
 
 pub fnc valid_vlan_id(int vlan): bool {
-  return vlan >= 1 and vlan <= 4094;
+  return vlan >= 1 && vlan <= 4094;
 }
 
 pub fnc valid_ethernet_frame(int bytes, int mtu): bool {
-  if mtu < 576 or mtu > 9216 then
+  if mtu < 576 || mtu > 9216 then
     return false;
   fi
-  return bytes >= 60 and bytes <= mtu + 14;
+  return bytes >= 60 && bytes <= mtu + 14;
 }
 
 pub fnc valid_descriptor_ring(int used, int capacity): bool {
-  return capacity >= 1 and capacity <= 4096 and used >= 0 and used <= capacity;
+  return capacity >= 1 && capacity <= 4096 && used >= 0 && used <= capacity;
 }
 
 pub fnc can_receive(int bytes, int mtu, int used, int capacity, bool link_up): bool {
-  if !link_up or !valid_ethernet_frame(bytes, mtu) then
+  if !link_up || !valid_ethernet_frame(bytes, mtu) then
     return false;
   fi
-  return valid_descriptor_ring(used, capacity) and used < capacity;
+  return valid_descriptor_ring(used, capacity) && used < capacity;
 }
 
 pub fnc can_transmit(int bytes, int mtu, int used, int capacity, bool link_up): bool {
@@ -41,7 +41,7 @@ pub fnc can_transmit(int bytes, int mtu, int used, int capacity, bool link_up): 
 }
 
 pub fnc next_ring_slot(int current, int capacity): int {
-  if capacity < 1 or capacity > 4096 or current < 0 or current >= capacity then
+  if capacity < 1 || capacity > 4096 || current < 0 || current >= capacity then
     return -1;
   fi
   if current + 1 == capacity then
@@ -60,15 +60,15 @@ pub fnc available_descriptors(int used, int capacity): int {
 // Guest aperture bounds: subtraction is performed only after offset validation
 // to avoid offset + length overflow. This does not pin host pages or map an IOMMU.
 pub fnc guest_region_contains(int offset, int bytes, int region_bytes): bool {
-  if offset < 0 or bytes < 0 or region_bytes < 0 then
+  if offset < 0 || bytes < 0 || region_bytes < 0 then
     return false;
   fi
-  return offset <= region_bytes and bytes <= region_bytes - offset;
+  return offset <= region_bytes && bytes <= region_bytes - offset;
 }
 
 // At most 12 recursion levels, restricted to power-of-two alignment <= 4096.
 pub fnc valid_guest_alignment(int alignment): bool {
-  if alignment < 1 or alignment > 4096 then
+  if alignment < 1 || alignment > 4096 then
     return false;
   fi
   if alignment == 1 then
@@ -81,7 +81,7 @@ pub fnc valid_guest_alignment(int alignment): bool {
 }
 
 pub fnc guest_address_aligned(int address, int alignment): bool {
-  if address < 0 or !valid_guest_alignment(alignment) then
+  if address < 0 || !valid_guest_alignment(alignment) then
     return false;
   fi
   return address == (address / alignment) * alignment;
@@ -92,6 +92,6 @@ pub fnc guest_address_aligned(int address, int alignment): bool {
 pub fnc can_receive_guest_frame(int offset, int bytes, int region_bytes,
     int alignment, int mtu, int used, int capacity, bool link_up): bool {
   return guest_region_contains(offset, bytes, region_bytes)
-    and guest_address_aligned(offset, alignment)
-    and can_receive(bytes, mtu, used, capacity, link_up);
+    && guest_address_aligned(offset, alignment)
+    && can_receive(bytes, mtu, used, capacity, link_up);
 }
