@@ -3,7 +3,7 @@
 use crate::ast::{ActorDecl, ClassDecl};
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
-use crate::parser::{is_reserved, Parser, MAX_FUNCS, MAX_PARAMS};
+use crate::parser::{is_reserved, is_unlowered_ownership_intrinsic, Parser, MAX_FUNCS, MAX_PARAMS};
 type R<T> = Result<T, Diagnostic>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,6 +152,10 @@ impl Cursor<'_> {
             Tok::Ident(s) => { self.next(); s }
             _ => return Err(self.err("E_SYNTAX", "expected a type name")),
         };
+        if is_unlowered_ownership_intrinsic(&name) {
+            return Err(self.err("E_UNSUPPORTED_TYPE",
+                format!("ownership or synchronization intrinsic '{name}' is not lowered")));
+        }
         if !self.take(&Tok::Lt) { return Ok(name); }
         let arity = match name.as_str() {
             "Option" | "Generator" | "ActorRef" => 1,
@@ -505,6 +509,10 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             }
             c.next();
             let name = c.ident()?;
+            if is_unlowered_ownership_intrinsic(&name) {
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    format!("nominal name '{name}' is reserved for an ownership or synchronization intrinsic")));
+            }
             if out.actors.contains(&name) || out.class_forwards.contains(&name) ||
                 out.struct_forwards.contains(&name) ||
                 (kind != "class" && out.classes.contains(&name)) ||

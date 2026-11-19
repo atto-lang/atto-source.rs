@@ -103,7 +103,7 @@ fn malformed_scopes_and_unsupported_member_kinds_fail_closed() {
 #[test]
 fn implicit_type_first_fields_are_let_and_explicit_val_remains_immutable() {
     let src = r#"
-        define class Box as
+        define class ParcelBox as
             int implicit_equals = 1;
             int implicit_colon: 2;
             val int explicit_val = 3;
@@ -130,11 +130,11 @@ fn implicit_type_first_fields_are_let_and_explicit_val_remains_immutable() {
 #[test]
 fn implicit_let_and_explicit_let_admit_constructor_assignment_but_val_rejects() {
     let source = r#"
-        define class Box as
+        define class ParcelBox as
             pub int count = 1;
             constructor() { self.count = 2; }
         end
-        pub fnc main(): int { return new Box().count; }
+        pub fnc main(): int { return new ParcelBox().count; }
     "#;
     compiled(source);
     compiled(&source.replace("pub int count = 1;", "pub let int count = 1;"));

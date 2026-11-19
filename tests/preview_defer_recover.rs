@@ -603,7 +603,7 @@ fn break_and_continue_cannot_bypass_handlers() {
 #[test]
 fn methods_and_generators_fail_closed() {
     reject("E_UNSUPPORTED", r#"
-        define class Box as
+        define class DeferredExample as
           pub get(): int { try { return 1; } finally { stdio.println("x"); } }
         end
         pub fnc main(): int { return 0; }"#);

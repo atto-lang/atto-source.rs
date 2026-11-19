@@ -1,7 +1,7 @@
 {
   "schema": "atto.compiler.playground-exact-source.v1",
   "site_repository": "atto-lang/atto-lang.github.io",
-  "site_commit": "c5ce2324d6277e91817ac2fb4b4e12f7b838afa7",
+  "site_commit": "f6cd896aa9cf6b0932dd3fb7fb9c04172c509799",
   "compiler_scope": "browser guest v2 subset, not Java/LLVM semantic parity",
   "cases": [
     {
@@ -39,7 +39,7 @@
     {
       "name": "classes",
       "path": "classes.atto",
-      "site_blob": "bfe87cd97e6b5d1354ccf2d5253e1ecd75c37623",
+      "site_blob": "077eb223fdb35255e274be88fc7ad41ee0ea02ba",
       "kind": "execute",
       "exit": "42",
       "stdout": "Account{id=7, balance=100}\n125\n"

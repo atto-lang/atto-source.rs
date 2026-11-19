@@ -199,6 +199,30 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "Pointer", // compiler-known builtin; this subset must never accept it as a user class
 ];
 
+// Compiler-owned ownership/synchronization intrinsics; not executable yet.
+// Cell and RefCell remain valid *user class names* in the existing language.
+// Their generic synchronization behavior is not granted by this policy.
+const UNLOWERED_OWNERSHIP_TYPES: &[&str] = &[
+    "Atomic", "AtomicRef", "AtomicBool", "AtomicInt", "AtomicLong",
+    "AtomicI8", "AtomicI16", "AtomicI32", "AtomicI64",
+    "AtomicU8", "AtomicU16", "AtomicU32", "AtomicU64",
+    "Arc", "Weak", "Box", "Rc",
+    "Mutex", "RwLock", "MutexGuard", "RwLockReadGuard", "RwLockWriteGuard",
+    "UnsafeCell",
+];
+
+pub fn is_unlowered_ownership_intrinsic(name: &str) -> bool {
+    UNLOWERED_OWNERSHIP_TYPES.contains(&name)
+}
+
+fn reject_intrinsic_type_name(name: &str, pos: Pos) -> R<()> {
+    if is_unlowered_ownership_intrinsic(name) {
+        return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+            format!("ownership or synchronization intrinsic '{name}' is not lowered by this compiler")));
+    }
+    Ok(())
+}
+
 pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
 }
@@ -412,7 +436,7 @@ impl Parser {
         matches!(
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
-        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || UNLOWERED_OWNERSHIP_TYPES.contains(&w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -422,6 +446,7 @@ impl Parser {
             _ => return Err(self.expected("a type")),
         };
         self.advance();
+        reject_intrinsic_type_name(&name, pos)?;
         let ty = match name.as_str() {
             "int" => Type::Int,
             "Array" => {
@@ -681,6 +706,7 @@ impl Parser {
     /// After `define class`: `Name as { class_member } end`.
     fn parse_class(&mut self, public: bool) -> R<ClassDecl> {
         let (name, pos) = self.ident("a class name")?;
+        reject_intrinsic_type_name(&name, pos)?;
         if name == "Pointer" {
             return Err(Diagnostic::new(
                 pos,
@@ -783,6 +809,7 @@ impl Parser {
     /// After `define actor` (`defined`) or a bare `actor`.
     fn parse_actor(&mut self, defined: bool, persistence: ActorPersistenceMode) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
+        reject_intrinsic_type_name(&name, pos)?;
         self.decl_head("actor")?;
         let close = if defined {
             self.expect_word("as")?;
@@ -826,6 +853,7 @@ impl Parser {
     /// After `define enum`: `Name as Variant { Variant } end`.
     fn parse_enum(&mut self) -> R<EnumDecl> {
         let (name, pos) = self.ident("an enum name")?;
+        reject_intrinsic_type_name(&name, pos)?;
         self.decl_head("enum")?;
         self.expect_word("as")?;
         let mut variants: Vec<(String, Pos)> = Vec::new();
