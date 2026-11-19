@@ -3589,7 +3589,11 @@ impl Parser {
                     }
                     self.advance();
                     let member = match self.peek().clone() {
-                        Tok::Ident(m) if !is_reserved(&m) => m,
+                        // `true` and `false` may name *qualified* module exports
+                        // (std.assert.true / std.assert.false), never bare variables.
+                        // The typed checker/module linker still authenticates the
+                        // receiver and rejects arbitrary runtime-object dispatch.
+                        Tok::Ident(m) if !is_reserved(&m) || matches!(m.as_str(), "true" | "false") => m,
                         _ => return Err(self.expected("a member name after '.'")),
                     };
                     self.advance();
