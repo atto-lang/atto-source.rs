@@ -1015,6 +1015,18 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     format!("'{owner}' already declares a field named '{}'", f.name),
                 ));
             }
+            // Defense in depth beyond the parser: only an ordinary
+            // class field with explicitly declared final binding/mode may
+            // omit its initializer. Future source rewrites, synthesized
+            // declarations, or actor lowering must never turn missing
+            // val/let/const/actor initializers into zero-filled storage.
+            // Validation precedes field_init(None) and allocation/codegen.
+            if f.init.is_none() &&
+                (actor || f.binding != FieldBinding::Final ||
+                 f.mode != FieldMode::Final) {
+                return Err(Diagnostic::new(f.pos, "E_INIT",
+                    format!("field '{owner}.{}' requires a declaration initializer; only an ordinary class final field may defer initialization to a checked constructor", f.name)));
+            }
             // A class 'const' is constexpr; it must not silently turn into
             // runtime initialization merely because Val/Final share a storage mode.
             // Non-const initializer effects are still intentionally unsupported
