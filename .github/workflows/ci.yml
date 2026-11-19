@@ -21,6 +21,12 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git rev-parse HEAD
           git rev-parse HEAD^{tree}
+      - name: Verify byte-identical canonical AOT copy admission source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object src/copy_graph_v1.rs)" = "3008a139cfba41131839de3567a263163152cf00"
+          echo "CANONICAL_COPY_GRAPH_SHA_VERIFIED=3008a139cfba41131839de3567a263163152cf00"
       - name: Install pinned Rust toolchain and Wasm target
         run: |
           rustup toolchain install 1.85.1 --profile minimal --target wasm32-unknown-unknown
@@ -50,6 +56,12 @@ jobs:
           ATTOC: target/release/attoc
         run: node tests/callable_guest_execution.mjs
 
+      - name: Compile and execute canonical copy!! scalar and flat-class Wasm guests
+        env:
+          ATTOC: target/release/attoc
+        run: |
+          node --check tests/copy_doublebang_guest.mjs
+          node tests/copy_doublebang_guest.mjs
       - name: Execute defer/recover/try/raise unwind guests against spec trace oracles
         env:
           ATTOC: target/release/attoc

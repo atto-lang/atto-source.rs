@@ -86,12 +86,16 @@ fn drop_does_not_return_a_value_or_accept_computed_temporaries() {
 }
 
 #[test]
-fn class_drop_and_copy_double_bang_do_not_fake_heap_reclamation_or_cloning() {
-    let class_prefix = "define class Data as let int value = 42; end ";
+fn class_drop_stays_gated_but_authenticated_flat_copy_is_independent() {
+    let class_prefix = "define class Data as pub let int value = 42; end ";
     error(&format!("{class_prefix}pub fnc main(): int {{ val x = new Data(); drop! x; return 0; }}"),
         "E_DROP_UNSUPPORTED");
-    error(&format!("{class_prefix}pub fnc main(): int {{ val x = new Data(); val y = copy!! x; return 0; }}"),
-        "E_DEEP_COPY_PROOF");
+    // The separate closed-world copy-plan verifier authenticates this flat
+    // concrete class: the compiler allocates an independent recipient root.
+    wasm_ok(&format!("{class_prefix}pub fnc main(): int {{ val x = new Data(); val y = copy!! x; return y.value; }}"));
+    // A user-defined method named copy_deep is not an AOT copy witness.
+    let custom = "define class Parcel as pub let int value = 42; copy_deep(): int { return 1; } end pub fnc main(): int { val x = new Parcel(); val y = copy!! x; return 0; }";
+    error(custom, "E_COPY_OVERRIDE");
 }
 
 #[test]

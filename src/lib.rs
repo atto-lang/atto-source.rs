@@ -7,6 +7,12 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
+/// Source Git blob 3008a139cfba41131839de3567a263163152cf00.
+// The canonical verifier is imported byte-identically from the independent
+// checker. Do not edit its SHA-pinned body for Clippy-only style changes.
+#[allow(clippy::needless_return)]
+pub mod copy_graph_v1;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;

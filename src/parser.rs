@@ -2801,19 +2801,23 @@ impl Parser {
                     "drop" => OwnershipOp::Drop,
                     _ => unreachable!(),
                 };
-                // Deliberately recognize the new forms at the syntax boundary;
-                // semantic admission is checked separately so unproven guest
-                // pointers/handles never reach a Wasm artifact.
-                // copy!! is a single graph-copy operation, not copy! applied
-                // to a negated expression. Both exclamation marks must touch.
-                // Ordinary 'copy! !x' remains a different token sequence.
-                let deep_copy = s == "copy" && *self.peek_at(2) == Tok::Bang
-                    && self.toks[self.i + 1].pos.line == self.toks[self.i + 2].pos.line
-                    && self.toks[self.i + 1].pos.col.checked_add(1) == Some(self.toks[self.i + 2].pos.col);
                 self.advance(); // name
-                self.advance(); // first !
-                if deep_copy { self.advance(); } // second !
-                let action = if deep_copy { OwnershipOp::DeepCopy } else { action };
+                let first_bang = self.advance(); // !
+                // 'copy!!' is a single canonical operator only when the word
+                // and both bangs are adjacent. 'copy! !x' stays a shallow copy
+                // of the logical negation, never a deep copy.
+                let copy_word_is_adjacent = first_bang.pos.line == pos.line
+                    && first_bang.pos.col == pos.col + 4;
+                let second_bang_is_adjacent = *self.peek() == Tok::Bang
+                    && self.pos().line == first_bang.pos.line
+                    && self.pos().col == first_bang.pos.col + 1;
+                let action = if action == OwnershipOp::Copy && copy_word_is_adjacent
+                    && second_bang_is_adjacent {
+                    self.advance();
+                    OwnershipOp::DeepCopy
+                } else {
+                    action
+                };
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
                 if action != OwnershipOp::Borrow && self.is_word("mut") {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
@@ -2824,8 +2828,7 @@ impl Parser {
             Tok::Ident(s) if matches!(s.as_str(), "lt" | "lifetime")
                 && *self.peek_at(1) == Tok::Bang =>
             {
-                // Lifetime binders are type-level; treating one as a value
-                // would silently erase a borrow-region constraint.
+                // Lifetime binders are type-level. Do not emit guest values.
                 return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
                     "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
             }

@@ -421,12 +421,10 @@ pub enum ExprKind {
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),
-    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, take! x,
-    /// copy!! x, share! x, freeze! x, weak! x, pin! x, drop! x.
-    /// Lifetime binders lt! a are declarations, not value operations.
-    /// Parentheses group expressions.
-    /// A parsed operation is NOT proof of backend support: unsupported ownership
-    /// rights must be rejected by the checker rather than treated as a no-op.
+    /// Prefix ownership: borrow! x, borrow! mut x, copy! x, copy!! x,
+    /// take! x, share! x, freeze! x, weak! x, pin! x, drop! x.
+    /// lt! a is a lifetime binder, never a runtime expression.
+    /// Syntax does not confer runtime rights: unproven operations fail closed.
     Ownership(OwnershipOp, bool, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),

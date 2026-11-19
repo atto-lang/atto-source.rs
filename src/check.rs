@@ -377,6 +377,9 @@ struct ClassInfo {
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
+    /// AOT-generated, private per-concrete-class copier, present only after
+    /// proving every stored field is a by-value/immutable scalar.
+    deep_copy_idx: Option<u32>,
     ctor_idx: Option<u32>,
     ctor_params: Vec<Type>,
 }
@@ -727,6 +730,55 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
     }
 }
 
+/// Gate every generated class copy against the **canonical** closed-world
+/// AOT descriptor checker, vendored byte-identically from the independently
+/// tested atto-borrow-checker.rs copy_graph_v1 module. No user annotations or
+/// method names can mint a witness, and this does not admit actor sends.
+fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()> {
+    use crate::copy_graph_v1::{
+        admit_copy, CopyMode, CopyRequest, Field as CopyField,
+        FieldKind as CopyFieldKind, TypeDescriptor,
+    };
+
+    let mut layouts = Vec::with_capacity(classes.len());
+    for (id, class) in classes.iter().enumerate() {
+        let fields = class.fields.iter().enumerate().map(|(i, f)| CopyField {
+            id: (i as u32) + 1,
+            kind: match f.ty {
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) =>
+                    CopyFieldKind::Scalar,
+                Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
+                _ => CopyFieldKind::Unresolved,
+            },
+        }).collect();
+        layouts.push(TypeDescriptor {
+            id: id as u32 + 1,
+            parent: None, // the browser compiler does not admit inheritance
+            fields,
+            deep_copy_witness: class.deep_copy_idx.is_some() && !class.state_container,
+            shallow_copy_witness: false, // a deep witness does not grant copy!
+            sendable: false, // actor Sendable is a separate, unimplemented proof
+        });
+    }
+    let requested = ci.checked_add(1).ok_or_else(|| Diagnostic::new(
+        pos, "E_COPY_AOT_WITNESS", "invalid concrete class identifier"))?;
+    let plan = admit_copy(&layouts, CopyRequest {
+        concrete_type: requested,
+        static_type: requested,
+        mode: CopyMode::Deep,
+        actor_send: false,
+    }).map_err(|err| Diagnostic::new(pos, err.0,
+        "class lacks a complete, concrete, closed-world compiler-generated deep copy witness"))?;
+    // The current AOT backend generates flat-object copies only. Do not
+    // broaden witness admission to transitive graphs until the generated
+    // copier has an identity memo and a rollback-safe graph allocation plan.
+    if plan.copied_type_ids != vec![requested] {
+        return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+            "nested mutable class graph requires a memoized AOT copy runtime"));
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
@@ -940,6 +992,15 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for m in &mut methods {
             m.idx = take();
         }
+        // This first AOT profile may copy only a flat class of verified
+        // identity-free slots. Class/actor/ADT handles require a graph memo,
+        // and protected actor-state objects cannot bypass their sealed leases.
+        // Custom copy_deep overrides need separate proof/hook chaining.
+        let can_generate_deep_copy = !c.state_container
+            && !c.methods.iter().any(|m| m.name == "copy_deep")
+            && fields.iter().all(|f| matches!(f.ty,
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)));
+        let deep_copy_idx = if can_generate_deep_copy { Some(take()) } else { None };
         let ctor_params = match &c.ctor {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
             None => Vec::new(),
@@ -950,6 +1011,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             fields,
             methods,
             new_idx,
+            deep_copy_idx,
             ctor_idx,
             ctor_params,
         });
@@ -1193,6 +1255,35 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             locals: vec![me],
             body,
         });
+        // Generated source-independent whole-concrete-type copy plan. The
+        // checker has proved that each slot can be copied by value; emitting
+        // an allocation plus typed field loads/stores creates a fresh object
+        // without invoking any initializer or user constructor a second time.
+        // The copy function is private and has no reflective field access.
+        if let Some(copy_idx) = info.deep_copy_idx {
+            authenticate_flat_copy_aot(&g.classes, ci as u32, c.pos)?;
+            let source = TE { e: TExpr::Local(0), ty: me };
+            let cloned = TE { e: TExpr::Local(1), ty: me };
+            let mut body = vec![TStmt::Set(1, TE {
+                e: TExpr::Alloc((info.fields.len() as u32 * FIELD_BYTES).max(FIELD_BYTES)),
+                ty: me,
+            })];
+            for field in &info.fields {
+                body.push(TStmt::FieldSet {
+                    obj: cloned.clone(),
+                    offset: field.slot,
+                    ty: field.ty,
+                    value: TE { e: TExpr::FieldGet {
+                        obj: Box::new(source.clone()), offset: field.slot,
+                    }, ty: field.ty },
+                });
+            }
+            body.push(TStmt::Return(Some(cloned)));
+            funcs[copy_idx as usize] = Some(TFunc {
+                name: format!("{}.copy_deep$generated", c.name),
+                params: vec![me], ret: me, locals: vec![me], body,
+            });
+        }
         for (m, mi) in c.methods.iter().zip(&info.methods) {
             let owner = Owner::Class {
                 c: ci as u32,
@@ -3000,25 +3091,46 @@ impl<'a> FnCx<'a> {
                 }
                 Ok(value)
             }
-            OwnershipOp::Copy | OwnershipOp::Share => {
+            OwnershipOp::Copy | OwnershipOp::DeepCopy | OwnershipOp::Share => {
+                // Identity-free admitted scalars have no mutable descendants:
+                // shallow and deep copies are the same guest value operation.
+                // Copy!! can also use a *compiler-emitted* AOT copier for an
+                // ordinary flat class whose full stored field layout was
+                // independently checked before this expression was lowered.
                 let value = self.value(inner)?;
+                if action == OwnershipOp::DeepCopy {
+                    if let Type::Class(ci) = value.ty {
+                        if let ExprKind::Var(name) = &inner.kind {
+                            if let Some(owner_slot) = self.lookup(name).map(|l| l.slot) {
+                                if self.loans.contains_key(&owner_slot)
+                                    || self.loans.values().any(|l| l.owner == owner_slot && l.mutable)
+                                {
+                                    return Err(Diagnostic::new(pos, "E_BORROW",
+                                        "copy!! cannot read a mutable/exclusive borrowed class owner"));
+                                }
+                            }
+                        }
+                        let class = &self.g.classes[ci as usize];
+                        if class.methods.iter().any(|m| m.name == "copy_deep") {
+                            return Err(Diagnostic::new(pos, "E_COPY_OVERRIDE",
+                                "custom copy_deep overrides need verified complete-plan/hook support"));
+                        }
+                        let Some(copy_idx) = class.deep_copy_idx else {
+                            return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+                                "copy!! class graph contains unproved mutable/reference slots or protected actor state"));
+                        };
+                        authenticate_flat_copy_aot(&self.g.classes, ci, pos)?;
+                        return Ok(TE { e: TExpr::Call(copy_idx, vec![value]), ty: Type::Class(ci) });
+                    }
+                }
                 if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    if action == OwnershipOp::DeepCopy {
+                        return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+                            "copy!! requires a verified concrete graph copier; class, actor, collection and resource handles are not yet admitted by the Rust/Wasm backend"));
+                    }
                     let name = if action == OwnershipOp::Copy { "copy!" } else { "share!" };
                     return Err(Diagnostic::new(pos, if action == OwnershipOp::Copy { "E_COPY" } else { "E_SHARE" },
                         format!("{name} requires a verified immutable copyable scalar; class, actor and generator handles are not shareable")));
-                }
-                Ok(value)
-            }
-            OwnershipOp::DeepCopy => {
-                // Primitive immutable values already have independent value
-                // semantics. Heap graphs, nested ADTs and actor handles MUST
-                // receive a graph clone with fresh identities, preserved
-                // internal cycles/aliasing and no external mutable aliases.
-                // Never fake copy!! by returning the same guest object pointer.
-                let value = self.value(inner)?;
-                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
-                    return Err(Diagnostic::new(pos, "E_DEEP_COPY_PROOF",
-                        "copy!! requires a verified independent object-graph clone; this Wasm subset only admits immutable primitives"));
                 }
                 Ok(value)
             }
