@@ -126,10 +126,22 @@ fn scan_methods(t: &[Token], kind: Kind) -> R<BTreeMap<String, Method>> {
             else if is(t, i, "private") { i += 1; false }
             else { matches!(kind, Kind::Trait | Kind::Interface) };
         if is(t, i, "fnc") || is(t, i, "method") { i += 1; }
-        // State fields, constructors, receive and other declarations cannot
-        // accidentally count as a contract method.
-        if is(t, i, "receive") || is(t, i, "constructor")
-            || !matches!(t.get(i + 1).map(|x| &x.tok), Some(Tok::LParen)) {
+        // A receive/constructor is not an ordinary method. Skip its entire
+        // body; a nested call such as self.ping(...) cannot manufacture a
+        // second method slot in the surrounding actor's declaration.
+        if is(t, i, "receive") || is(t, i, "constructor") {
+            if t.get(i + 1).map(|x| &x.tok) == Some(&Tok::LParen) {
+                let params_end = match_pair(t, i + 1, Tok::LParen, Tok::RParen)?;
+                let body = (params_end + 1..t.len())
+                    .find(|&j| t[j].tok == Tok::LBrace || t[j].tok == Tok::Semi)
+                    .ok_or_else(|| err(t[i].pos, "E_EOF", "unterminated receive or constructor"))?;
+                i = if t[body].tok == Tok::LBrace {
+                    match_pair(t, body, Tok::LBrace, Tok::RBrace)? + 1
+                } else { body + 1 };
+            } else { i = start + 1; }
+            continue;
+        }
+        if !matches!(t.get(i + 1).map(|x| &x.tok), Some(Tok::LParen)) {
             i = start + 1; continue;
         }
         let name = identifier(t, i)?;
@@ -191,6 +203,16 @@ fn scan_mtd(t: &[Token], i: usize) -> R<(String, String, Method, usize)> {
 /// A safe early rule for actor/struct implements, before the backend may
 /// accidentally interpret their methods as ordinary class methods.
 pub fn preflight(t: &[Token]) -> R<()> {
+    check(t, false)
+}
+
+/// Admit a restricted, actor-local receiver ABI only after all same-source
+/// interface/trait and nominal method obligations have been checked.
+pub(crate) fn validate_actor_lowering(t: &[Token]) -> R<()> {
+    check(t, true)
+}
+
+fn check(t: &[Token], actor_lowering: bool) -> R<()> {
     // Do not alter existing class-only receiver paths or ordinary programs:
     // the target admission pass is needed solely when an actor/struct header
     // actually declares an implements clause.
@@ -368,8 +390,28 @@ pub fn preflight(t: &[Token]) -> R<()> {
             }
         }
     }
-    // Full actor/struct guest storage, state, borrow and mailbox lowering has
-    // not been verified. Never hand accepted metadata to class-oriented emit.
+    if actor_lowering {
+        // This narrow path uses existing actor-local receive/method emission,
+        // never direct ActorRef dispatch or class-shaped struct storage.
+        // Trait defaults are not copied into actor methods in this milestone;
+        // reject their reliance rather than silently dropping a body.
+        for owner in all.values().filter(|o| o.kind == Kind::Actor && !o.contracts.is_empty()) {
+            for name in &owner.contracts {
+                let c = &all[name];
+                if c.kind == Kind::Trait && c.methods.values().any(|m| m.concrete) {
+                    return Err(err(owner.pos, "E_UNSUPPORTED",
+                        "trait default actor receiver bodies need checked actor-local lowering"));
+                }
+            }
+        }
+        if all.values().any(|o| o.kind == Kind::Struct && !o.contracts.is_empty()) {
+            return Err(err(t.first().map_or(Pos::default(), |x| x.pos), "E_UNSUPPORTED",
+                "struct value receiver ABI is not yet verified"));
+        }
+        return Ok(());
+    }
+    // Outside the explicitly validated actor-local profile, keep the original
+    // production gate closed for both actors and structs.
     Err(err(t.first().map_or(Pos::default(), |x| x.pos), "E_UNSUPPORTED",
         "actor/struct implements contracts validated for bounded signatures; guest lowering requires a verified actor/value ABI"))
 }
