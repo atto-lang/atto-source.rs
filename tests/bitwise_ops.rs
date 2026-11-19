@@ -51,6 +51,20 @@ fn triple_shift_tokens_cannot_be_mistaken_for_stream_io() {
 }
 
 #[test]
+fn binary_literals_match_signed_int_range_and_reject_malformed_prefixes() {
+    for literal in ["0b101100", "0b001100", "0B1011", "0b1_010"] {
+        compile(&source(literal)).unwrap_or_else(|e| panic!("{literal}: {e}"));
+    }
+    // This exact source is also compiled inside the wasm32 compiler by Node.
+    compile(include_str!("fixtures/pass/192-bitwise-playground.atto")).unwrap();
+    for literal in ["0b", "0B", "0b_", "0b2", "0b10foo", "0x10"] {
+        assert_eq!(lexer::lex(literal).unwrap_err().code, "E_INTEGER_LITERAL", "{literal}");
+    }
+    let overflow = format!("0b1{}", "0".repeat(64));
+    assert_eq!(lexer::lex(&overflow).unwrap_err().code, "E_INTEGER_RANGE");
+}
+
+#[test]
 fn existing_io_and_boolean_operators_are_unchanged() {
     compile("pub fnc main(): int { stdio.out << 42; return 0; }").unwrap();
     compile("pub fnc main(): int { if true | false then return 1; fi return 0; }").unwrap();
