@@ -35,7 +35,22 @@ fn main() -> ExitCode {
         Some(source_path.to_path_buf())
     };
     let result = match relative_path {
-        Some(ref name) => atto_compiler::compile_with_path(&source, name.as_path()),
+        Some(ref name) => {
+            // The native CLI is the only filesystem authority. The compiler
+            // accepts an injected loader and never reads host paths itself.
+            // Canonicalization rejects symlink escapes from this project root.
+            match std::env::current_dir().and_then(|p| p.canonicalize()) {
+                Ok(root) => atto_compiler::compile_with_imports(&source, name.as_path(), |path| {
+                    let resolved = root.join(path).canonicalize()?;
+                    if !resolved.starts_with(&root) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
+                            "import resolves outside project root"));
+                    }
+                    std::fs::read_to_string(resolved)
+                }),
+                Err(_) => atto_compiler::compile_with_path(&source, name.as_path()),
+            }
+        }
         None => atto_compiler::compile(&source),
     };
     match result {
