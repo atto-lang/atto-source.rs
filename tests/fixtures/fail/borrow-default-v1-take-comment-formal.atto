@@ -1,0 +1,6 @@
+// atto-ownership: borrow-default-v1
+// expect-error: E_SYNTAX
+// Comments stripped by the lexer must not fabricate token adjacency.
+define class Parcel as pub let int value = 42; end
+fnc consume(take/*not contiguous*/! Parcel p): int { return p.value; }
+pub fnc main(): int { return 42; }

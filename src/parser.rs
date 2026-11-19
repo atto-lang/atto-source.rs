@@ -277,6 +277,20 @@ impl Parser {
     fn pos(&self) -> Pos {
         self.toks[self.i].pos
     }
+    fn require_attached_take_bang(&self) -> R<()> {
+        // The lexer records Unicode-scalar source columns. When take is
+        // followed by Bang, that Bang must begin immediately after "take",
+        // not after whitespace, a newline or a stripped comment.
+        let pos = self.pos();
+        if self.is_word("take") && *self.peek_at(1) == Tok::Bang {
+            let bang = self.toks[self.i + 1].pos;
+            if bang.line != pos.line || bang.col != pos.col + 4 {
+                return Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "take! requires an immediately attached '!' marker"));
+            }
+        }
+        Ok(())
+    }
     fn advance(&mut self) -> Token {
         let t = self.toks[self.i].clone();
         if self.i < self.toks.len() - 1 {
@@ -1368,6 +1382,7 @@ impl Parser {
         // move. Bare Foo formals become readonly loans in that profile.
         let explicit_take = self.is_word("take") && *self.peek_at(1) == Tok::Bang;
         if explicit_take {
+            self.require_attached_take_bang()?;
             self.advance(); // take
             self.advance(); // !
         }
@@ -1383,6 +1398,7 @@ impl Parser {
             self.advance();
             let named_take = self.is_word("take") && *self.peek_at(1) == Tok::Bang;
             if named_take {
+                self.require_attached_take_bang()?;
                 if explicit_take {
                     return Err(Diagnostic::new(pos, "E_OWNERSHIP",
                         "take! cannot be declared twice on the same parameter"));
@@ -2852,6 +2868,9 @@ impl Parser {
                 };
                 // A separated "ref !x" does NOT mean "ref! x".
                 // The attached marker is required for checked handles.
+                if action == OwnershipOp::Take {
+                    self.require_attached_take_bang()?;
+                }
                 if matches!(action, OwnershipOp::Ref | OwnershipOp::Deref | OwnershipOp::Unref)
                     && (self.toks[self.i + 1].pos.line != pos.line
                         || self.toks[self.i + 1].pos.col != pos.col + s.len() as u32)
