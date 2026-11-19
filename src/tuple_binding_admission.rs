@@ -179,6 +179,37 @@ fn parse_one(toks: &[Token], start: usize, outer: Option<BindingMode>) -> R<(Tup
     Ok((TupleBinding { pos: toks[start].pos, members, alias, start_index: start, rhs_start_index: i + 1 }, i + 1))
 }
 
+/// Reject a parenthesized tuple LHS with no declaration qualifiers.
+/// Ordinary tuple-valued expressions and comparisons are untouched: only
+/// a comma-containing '(...)' immediately followed by '=' is diagnosed.
+fn bare_tuple_assignment(toks: &[Token], start: usize) -> bool {
+    if tok(toks, start) != Some(&Tok::LParen)
+        || !matches!(tok(toks, start + 1), Some(Tok::Ident(_)))
+        || mode(tok(toks, start + 1)).is_some()
+    {
+        return false;
+    }
+    let mut depth = 0usize;
+    let mut saw_separator = false;
+    // Bound lexical inspection by the existing binder source budget.
+    for i in start..toks.len().min(start.saturating_add(MAX_BINDERS * 4)) {
+        match tok(toks, i) {
+            Some(Tok::LParen) => depth += 1,
+            Some(Tok::RParen) => {
+                if depth == 1 {
+                    return saw_separator && tok(toks, i + 1) == Some(&Tok::Assign);
+                }
+                if depth == 0 { return false; }
+                depth -= 1;
+            }
+            Some(Tok::Comma) if depth == 1 => saw_separator = true,
+            Some(Tok::Eof) | None => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Inspect tuple destructuring headers anywhere in the token stream, ignoring
 /// strings/comments because lex() has already normalized them. No codegen.
 pub fn inspect(toks: &[Token]) -> R<Vec<TupleBinding>> {
@@ -192,6 +223,9 @@ pub fn inspect(toks: &[Token]) -> R<Vec<TupleBinding>> {
             let (binding, next) = parse_one(toks, i, if explicit_tuple { None } else { outer })?;
             found.push(binding);
             i = next;
+        } else if bare_tuple_assignment(toks, i) {
+            return Err(fail(toks, i, "E_SYNTAX",
+                "tuple binding requires an outer let/val/const or explicit element modes"));
         } else {
             i += 1;
         }
