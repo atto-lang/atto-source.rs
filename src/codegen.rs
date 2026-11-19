@@ -15,6 +15,16 @@ use std::collections::HashMap;
 
 // The baseline scalar compiler retains wrapping arithmetic until effect IR
 // can encode conditional integer-overflow failure edges.
+// FULL_GUEST_AOT_TODO (platform-conformance #321): This Cranelift object
+// emitter compiles its currently admitted scalar MIR, not arbitrary AttoLang
+// classes, actors, generic specializations or suspendable continuations.
+// Extend the typed closed-world graph before widening strict native AOT;
+// unknown dispatch and host runtime callbacks must reject, never interpret.
+// ZERO_TRACING_GC_TODO: No tracing collector is needed for this scalar slice,
+// but allocator-free functions are not proof of an entirely zero-GC process.
+// Future actor-owned heaps need compressed 32-bit region-relative handles,
+// identity/generation checks and deterministic unwind/cancellation/drop,
+// with linked native ABI/FFI and worker-host allocation evidence.
 pub fn emit_object(program: &Module) -> Result<Vec<u8>, String> {
     emit_object_with_arithmetic_mode(program, false)
 }
