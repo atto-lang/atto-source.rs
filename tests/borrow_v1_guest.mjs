@@ -76,6 +76,9 @@ const fail = [
   '09-consumed-owner-is-moved.atto',
   '10-take-formal-no-temporary.atto',
   '11-take-formal-no-readonly-borrow.atto',
+  '12-read-then-take-same-owner.atto',
+  '13-take-then-read-same-owner.atto',
+  '14-borrowed-formal-cannot-be-taken.atto',
 ];
 const positiveBytes = [];
 let decisions = 0;
