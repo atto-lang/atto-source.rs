@@ -74,6 +74,14 @@ This is the canonical [atto-source.rs](https://github.com/atto-lang/atto-source.
 
 The proposed `define value class` and visibility variants are recognized before product/nominal lowering and fail with `E_VALUE_UNSUPPORTED`, without guest Wasm output. The current compiler's class-backed struct/record profile is **not** an identity-free value representation. This is a safety gate only, not value construction, recursive equality, copying, inline layout or AOT performance support. See [atto-spec #60](https://github.com/atto-lang/atto-spec/pull/60) and [conformance #57](https://github.com/atto-lang/atto-platform-conformance/pull/57).
 
+## Out-of-line class constructors and guarded state proposal (PARTIAL)
+
+See [atto-spec PR #98](https://github.com/atto-lang/atto-spec/pull/98) for the target cross-backend class/struct receiver, `constructor (Type)(args): self`, and `define state on class Type as { ... }` contract.
+
+The browser compiler admits `declare class Name;` followed by exactly one local concrete `define class Name as ... end`; an out-of-line `constructor (Name)(args): self { ... }` is lowered into that class's existing checked constructor path. Existing **immutable class** `mtd` receiver methods remain executable only within their restricted supported subset. The new code has **not** yet received executed exact-head compiler/guest CI evidence, so it remains a draft implementation.
+
+Protected `define state on class` is recognized as a bounded nominal attachment but fails closed with `E_UNSUPPORTED`, because no per-instance guard runtime has been proven for this construct. Struct receiver methods/custom constructors are also rejected before the scalar-shape preview could represent them as identity-bearing classes. `declare struct` is a nominal forward marker, not an executable value layout. Actor constructors remain forbidden; this change does not introduce synchronous `ActorRef` method dispatch. No Java/LLVM/.NET/Forge parity is claimed.
+
 ## Namespace and out-of-line receiver syntax (parse-only)
 
 This frontend now has a bounded, parse-only grammar for the proposed use namespace
