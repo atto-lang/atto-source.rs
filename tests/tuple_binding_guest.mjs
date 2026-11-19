@@ -35,8 +35,8 @@ async function positive(input, expected, printed = []) {
   const { instance } = await WebAssembly.instantiate(bytes, {
     atto: { print_i64(value) { printCalls.push(value); } },
   });
-  assert.deepEqual(printCalls, printed, input + ': tuple initializer must evaluate exactly once');
   assert.equal(instance.exports.main(), BigInt(expected), input + ': guest exit value mismatch');
+  assert.deepEqual(printCalls, printed, input + ': tuple initializer must evaluate exactly once');
   const second = join(dir, input + '.second.wasm');
   const again = runCompiler(input, second);
   assert.equal(again.status, 0, input + ': repeat failed: ' + again.stderr);
