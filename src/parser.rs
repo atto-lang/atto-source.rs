@@ -53,6 +53,7 @@ const RESERVED: &[&str] = &[
     "yield",
     "nlex",
     "return",
+    "begin",
     "self",
     "super",
     "static",
@@ -1061,6 +1062,15 @@ impl Parser {
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
                 }
+                // No keyword: return-first class/actor method, e.g.
+                // int <- calculate(int x) { return x * 2; }
+                Some(_) if self.is_return_first_header() => {
+                    if visibility == FieldVisibility::Package {
+                        return Err(unsupported(mpos, "pub[pkg] on non-field class members"));
+                    }
+                    let method = self.parse_method(public, false)?;
+                    m.methods.push(method);
+                }
                 Some("susp" | "suspends") if actor => {
                     if public {
                         return Err(Diagnostic::new(mpos, "E_PERSIST_SIGNATURE",
@@ -1179,24 +1189,83 @@ impl Parser {
         })
     }
 
-    /// Method head after any `fnc`/`method`/`static fnc` keyword.
-    fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
-        let (name, pos) = self.ident("a method name")?;
+    /// A bounded lookahead recognizes a return-first type spelling without
+    /// ever treating '<-' as a general-purpose operator. It admits nested
+    /// parameterized result types (Option<int>, Result<int,string>, etc.) at
+    /// the declaration boundary; the real type parser must still validate
+    /// each type and resolve its ownership/ABI contract.
+    fn is_return_first_header(&self) -> bool {
+        if !matches!(self.peek(), Tok::Ident(_)) { return false; }
+        if *self.peek_at(1) == Tok::LeftArrow { return true; }
+        if *self.peek_at(1) != Tok::Lt { return false; }
+        let mut depth = 0usize;
+        for n in 1..=MAX_DEPTH as usize {
+            match self.peek_at(n) {
+                Tok::Lt => depth += 1,
+                Tok::Gt => {
+                    if depth == 0 { return false; }
+                    depth -= 1;
+                    if depth == 0 { return *self.peek_at(n + 1) == Tok::LeftArrow; }
+                }
+                Tok::Ident(_) | Tok::Comma | Tok::Dot => {}
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Normalize name-first and return-first headers to one callable signature.
+    /// The left arrow is a single lexical token and never a value operator.
+    fn parse_named_callable_header(
+        &mut self, what: &'static str,
+    ) -> R<(String, Pos, Vec<Param>, Type, bool, bool, bool, bool)> {
+        let return_first = self.is_return_first_header();
+        let prefixed_type = if return_first {
+            let annotation = if self.eat_word("infer") {
+                (Type::Void, true)
+            } else {
+                (self.parse_type()?, false)
+            };
+            self.expect(Tok::LeftArrow, "'<-' after return type")?;
+            Some(annotation)
+        } else {
+            None
+        };
+        let (name, pos) = self.ident(what)?;
         if *self.peek() == Tok::Lt {
-            return Err(unsupported(self.pos(), "generic methods"));
+            return Err(unsupported(self.pos(), "generic named callables"));
         }
         self.expect(Tok::LParen, "'('")?;
-        if self.is_word("self") {
+        if what == "a method name" && self.is_word("self") {
             return Err(unsupported(self.pos(), "explicit 'self' receivers"));
         }
         let params = self.parse_params()?;
-        if *self.peek() == Tok::LParen {
+        if what == "a method name" && *self.peek() == Tok::LParen {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
-        let arrow_type = *self.peek() == Tok::Arrow;
-        let colon_type = *self.peek() == Tok::Colon;
-        let ret = self.parse_return_spec(&params)?;
-        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
+        let arrow_type = !return_first && *self.peek() == Tok::Arrow;
+        let colon_type = !return_first && *self.peek() == Tok::Colon;
+        let (ret, infer) = if let Some(annotation) = prefixed_type {
+            if matches!(self.peek(), Tok::Colon | Tok::Arrow) {
+                return Err(Diagnostic::new(self.pos(), "E_RETURN_ANNOTATION",
+                    "a return-first callable cannot declare a second return type"));
+            }
+            annotation
+        } else {
+            self.parse_return_spec(&params)?
+        };
+        Ok((name, pos, params, ret, infer, arrow_type, colon_type, return_first))
+    }
+
+    /// Method head after any `fnc`/`method`/`static fnc` keyword.
+    fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
+        let (name, pos, params, ret, infer, arrow_type, colon_type, return_first) =
+            self.parse_named_callable_header("a method name")?;
+        // For an explicit inferred result, the comma/end body still has a
+        // checked tail return, never a silently discarded terminal expression.
+        let body = self.parse_callable_body(arrow_type, colon_type, return_first,
+            if infer { Type::Int } else { ret })?;
+        let ret = if infer { self.infer_callable_return(&body, &params)? } else { ret };
         Ok(Method {
             name,
             pos,
@@ -1240,46 +1309,150 @@ impl Parser {
             ));
         }
         self.expect(Tok::RParen, "')'")?;
-        if self.parse_return_spec(&[])? != Type::Void {
+        let (result, inferred) = self.parse_return_spec(&[])?;
+        if inferred || result != Type::Void {
             return Err(Diagnostic::new(
                 pos,
                 "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' must return void"),
+                format!("actor mailbox handler '{owner}.receive' must explicitly return void"),
             ));
         }
         let body = self.parse_block()?;
         Ok(Receive { pos, mail, payload, body })
     }
 
-    /// A static typeof query is resolved before producing the typed guest AST.
-    /// This browser/AOT slice permits only declared parameter bindings.
-    /// Other value queries and runtime-reflective expressions fail closed.
-    fn parse_return_spec(&mut self, params: &[Param]) -> R<Type> {
+    /// Named callables MUST spell their return, including void. The second
+    /// component records an explicit `infer` (never an omitted annotation).
+    fn parse_return_spec(&mut self, params: &[Param]) -> R<(Type, bool)> {
         if !(self.eat(&Tok::Colon) || self.eat(&Tok::Arrow)) {
-            return Ok(Type::Void);
+            return Err(Diagnostic::new(self.pos(), "E_RETURN_ANNOTATION",
+                "named callable requires an explicit return type: -> T, -> void or -> infer"));
         }
-        if !self.eat_word("typeof") {
-            return self.parse_type();
+        if self.eat_word("infer") {
+            return Ok((Type::Void, true));
         }
-        let pos = self.pos();
-        if self.eat(&Tok::Bang) {
-            return Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNSUPPORTED",
-                "typeof! is not a type operator; use typeof name"));
+        // Preserve the independent checked static typeof return contract from
+        // current main while enforcing mandatory explicit result annotations.
+        if self.eat_word("typeof") {
+            let pos = self.pos();
+            if self.eat(&Tok::Bang) {
+                return Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNSUPPORTED",
+                    "typeof! is not a type operator; use typeof name"));
+            }
+            let parenthesized = self.eat(&Tok::LParen);
+            let (name, _) = self.ident("a binding name after typeof")?;
+            if parenthesized {
+                self.expect(Tok::RParen, "')' after the typeof binding")?;
+            }
+            if name == "fnc" {
+                return Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNSUPPORTED",
+                    "typeof fnc(...) callable types are not yet implemented in this browser backend"));
+            }
+            return match params.iter().find(|p| p.name == name) {
+                Some(p) => Ok((p.ty, false)),
+                None => Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNBOUND",
+                    format!("typeof {name} must reference a declared parameter in this AOT profile"))),
+            };
         }
-        let parenthesized = self.eat(&Tok::LParen);
-        let (name, _) = self.ident("a binding name after typeof")?;
-        if parenthesized {
-            self.expect(Tok::RParen, "')' after the typeof binding")?;
+        Ok((self.parse_type()?, false))
+    }
+
+    /// Conservative, lexical return inference for the browser subset. Unlike
+    /// an implicit void fallback, unresolved calls / complex value expressions
+    /// must fail closed before typed IR or guest code generation.
+    fn infer_callable_return(&self, body: &[Stmt], params: &[Param]) -> R<Type> {
+        fn expr_type(expr: &Expr, params: &[Param]) -> R<Type> {
+            let fail = || Diagnostic::new(expr.pos, "E_RETURN_INFER",
+                "cannot prove inferred return type; declare a concrete result");
+            match &expr.kind {
+                ExprKind::Int(_) => Ok(Type::Int),
+                ExprKind::Bool(_) => Ok(Type::Bool),
+                ExprKind::Float(_) => Ok(Type::Float),
+                ExprKind::Str(_) => Ok(Type::Str),
+                ExprKind::Var(name) => params.iter().find(|p| p.name == *name)
+                    .map(|p| p.ty).ok_or_else(fail),
+                ExprKind::Unary(UnOp::Neg | UnOp::Plus, e) => {
+                    let t = expr_type(e, params)?;
+                    if matches!(t, Type::Int | Type::Float) { Ok(t) } else { Err(fail()) }
+                }
+                ExprKind::Unary(UnOp::Not, e) => {
+                    if expr_type(e, params)? == Type::Bool { Ok(Type::Bool) } else { Err(fail()) }
+                }
+                ExprKind::Binary(op, a, b) => {
+                    let l = expr_type(a, params)?;
+                    let r = expr_type(b, params)?;
+                    match op {
+                        BinOp::Add | BinOp::Sub | BinOp::Mul if l == r
+                            && matches!(l, Type::Int | Type::Float) => Ok(l),
+                        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
+                        BinOp::Gt | BinOp::Ge if l == r => Ok(Type::Bool),
+                        BinOp::And | BinOp::Or if l == Type::Bool && r == Type::Bool => Ok(Type::Bool),
+                        _ => Err(fail()),
+                    }
+                }
+                ExprKind::Ternary(_, yes, no) => {
+                    let a = expr_type(yes, params)?;
+                    let b = expr_type(no, params)?;
+                    if a == b { Ok(a) } else { Err(fail()) }
+                }
+                _ => Err(fail()),
+            }
         }
-        if name == "fnc" {
-            return Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNSUPPORTED",
-                "typeof fnc(...) callable types are not yet implemented in this browser backend"));
+        fn collect(stmt: &Stmt, params: &[Param], out: &mut Vec<(Type, Pos)>) -> R<()> {
+            match stmt {
+                Stmt::Return(value, pos) => {
+                    let ty = match value {
+                        Some(expr) => expr_type(expr, params)?,
+                        None => Type::Void,
+                    };
+                    out.push((ty, *pos));
+                }
+                Stmt::Block(body) | Stmt::StateWrite { body, .. } |
+                Stmt::Loop { body, .. } | Stmt::While { body, .. } |
+                Stmt::ForIn { body, .. } => {
+                    for stmt in body { collect(stmt, params, out)?; }
+                }
+                Stmt::If { arms, otherwise, .. } => {
+                    for (_, body) in arms {
+                        for stmt in body { collect(stmt, params, out)?; }
+                    }
+                    if let Some(body) = otherwise {
+                        for stmt in body { collect(stmt, params, out)?; }
+                    }
+                }
+                Stmt::For { init, update, body, .. } => {
+                    if let Some(s) = init { collect(s, params, out)?; }
+                    if let Some(s) = update { collect(s, params, out)?; }
+                    for stmt in body { collect(stmt, params, out)?; }
+                }
+                Stmt::Try { body, catch, finally, .. } => {
+                    for stmt in body { collect(stmt, params, out)?; }
+                    if let Some((_, body)) = catch {
+                        for stmt in body { collect(stmt, params, out)?; }
+                    }
+                    if let Some(body) = finally {
+                        for stmt in body { collect(stmt, params, out)?; }
+                    }
+                }
+                Stmt::Match { arms, .. } => {
+                    for arm in arms {
+                        for stmt in &arm.body { collect(stmt, params, out)?; }
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
         }
-        match params.iter().find(|p| p.name == name) {
-            Some(p) => Ok(p.ty),
-            None => Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNBOUND",
-                format!("typeof {name} must reference a declared parameter in this AOT profile"))),
+        let mut returns = Vec::new();
+        for stmt in body { collect(stmt, params, &mut returns)?; }
+        let Some((result, _)) = returns.first().copied() else { return Ok(Type::Void); };
+        for (candidate, pos) in returns.iter().copied().skip(1) {
+            if candidate != result {
+                return Err(Diagnostic::new(pos, "E_RETURN_INFER",
+                    "incompatible return types in an explicit infer callable"));
+            }
         }
+        Ok(result)
     }
 
     /// Parameters after `(` up to and including `)`.
@@ -1336,16 +1509,18 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        if !(self.eat_word("fnc") || self.eat_word("routine")) {
+        let has_keyword = self.eat_word("fnc") || self.eat_word("routine");
+        // The only permitted keyword-free top-level callable is the
+        // unambiguous, return-first T <- name(args) declaration.
+        if !has_keyword && !self.is_return_first_header() {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
                     return Err(unsupported(self.pos(), &format!("top-level '{w}'")));
                 }
             }
             return Err(Diagnostic::new(
-                self.pos(),
-                "E_TOPLEVEL",
-                format!("expected a 'fnc' declaration, found {}", describe(self.peek())),
+                self.pos(), "E_TOPLEVEL",
+                "expected fnc/routine or a return-first '<-' callable declaration",
             ));
         }
         let is_generator = if *self.peek() == Tok::Star {
@@ -1355,15 +1530,8 @@ impl Parser {
         } else {
             false
         };
-        let (name, pos) = self.ident("a function name")?;
-        if *self.peek() == Tok::Lt {
-            return Err(unsupported(self.pos(), "generic functions"));
-        }
-        self.expect(Tok::LParen, "'('")?;
-        let params = self.parse_params()?;
-        let arrow_type = *self.peek() == Tok::Arrow;
-        let colon_type = *self.peek() == Tok::Colon;
-        let ret = self.parse_return_spec(&params)?;
+        let (name, pos, params, ret, infer, arrow_type, colon_type, return_first) =
+            self.parse_named_callable_header("a function name")?;
         let declared_effects = self.parse_effect_clauses()?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
@@ -1374,8 +1542,10 @@ impl Parser {
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
         }
         self.in_generator = is_generator;
-        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
+        let body = self.parse_callable_body(arrow_type, colon_type, return_first,
+            if infer { Type::Int } else { ret })?;
         self.in_generator = false;
+        let ret = if infer { self.infer_callable_return(&body, &params)? } else { ret };
         let _ = start;
         Ok(Func {
             name,
@@ -1608,9 +1778,26 @@ impl Parser {
 
     // ----------------------------------------------------------- statements
 
-    /// C-style braces remain the default. The extra -> after : Type is an
-    /// explicit body marker; a -> Type header also admits comma/end bodies.
-    fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type) -> R<Vec<Stmt>> {
+    /// Braces, explicit begin/end and return-first bare statement/end use
+    /// ordinary statement semantics. Preserve legacy arrow-type comma/end
+    /// tail-expression behavior as a distinct, compatible body family.
+    fn parse_callable_body(
+        &mut self, arrow_type: bool, colon_type: bool,
+        return_first: bool, ret: Type,
+    ) -> R<Vec<Stmt>> {
+        // A literal begin keyword unambiguously selects statement/end for
+        // both name-first and return-first callable declarations.
+        if self.eat_word("begin") {
+            return self.parse_explicit_end_body_with_empty(true);
+        }
+        if return_first {
+            if *self.peek() == Tok::LBrace {
+                return self.parse_block();
+            }
+            // Return-first T <- name(params) statement; ... end is explicit
+            // statement syntax, never an Erlang implicit-tail return.
+            return self.parse_explicit_end_body_with_empty(true);
+        }
         if arrow_type {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
@@ -1656,6 +1843,10 @@ impl Parser {
     /// A callable's return and exhaustiveness obligations remain checked by
     /// the normal typed frontend, not guessed by the parser.
     fn parse_explicit_end_body(&mut self) -> R<Vec<Stmt>> {
+        self.parse_explicit_end_body_with_empty(false)
+    }
+
+    fn parse_explicit_end_body_with_empty(&mut self, allow_empty: bool) -> R<Vec<Stmt>> {
         if self.in_generator {
             return Err(unsupported(self.pos(), "explicit/end generator bodies"));
         }
@@ -1664,7 +1855,7 @@ impl Parser {
         self.erlang_body = false;
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut body = Vec::new();
-            if self.is_word("end") {
+            if self.is_word("end") && !allow_empty {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     "explicit/end callable bodies require a statement"));
             }
@@ -3511,6 +3702,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Colon => ":",
                 Tok::ColonColon => "::",
                 Tok::Arrow => "->",
+                Tok::LeftArrow => "<-",
                 Tok::FatArrow => "=>",
                 Tok::Dot => ".",
                 Tok::Assign => "=",

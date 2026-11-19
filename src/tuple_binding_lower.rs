@@ -264,7 +264,8 @@ fn as_code(tokens: &[Token]) -> R<String> {
             Tok::Le => "<=".to_string(), Tok::Ge => ">=".to_string(),
             Tok::PlusPlus => "++".to_string(), Tok::MinusMinus => "--".to_string(),
             Tok::PlusAssign => "+=".to_string(), Tok::ColonColon => "::".to_string(),
-            Tok::Arrow => "->".to_string(), Tok::FatArrow => "=>".to_string(),
+            Tok::Arrow => "->".to_string(), Tok::LeftArrow => "<-".to_string(),
+            Tok::FatArrow => "=>".to_string(),
             Tok::Pipe => "|".to_string(), Tok::PipeGt => "|>".to_string(),
             Tok::Amp => "&".to_string(), Tok::Bang => "!".to_string(),
             Tok::Question => "?".to_string(), Tok::At => "@".to_string(),
@@ -485,4 +486,22 @@ pub fn lower(mut tokens: Vec<Token>) -> R<Vec<Token>> {
         return Err(error(pos, "E_SOURCE_LIMIT", "tuple lowering exceeds token budget"));
     }
     Ok(prefix)
+}
+
+#[cfg(test)]
+mod return_first_token_regression {
+    use super::as_code;
+    use crate::lexer::lex;
+
+    #[test]
+    fn tuple_expression_roundtrip_preserves_left_arrow_as_single_token() {
+        // Tuple-source reconstruction must preserve the new declaration
+        // delimiter rather than splitting it into '<' and '-'.
+        let tokens = lex("int <- calculate(int x)").expect("valid return-first tokens");
+        let body = &tokens[..tokens.len() - 1];
+        let reconstructed = as_code(body).expect("complete Tok match");
+        let again = lex(&reconstructed).expect("roundtrip must lex");
+        assert!(again.iter().any(|t| matches!(t.tok, crate::lexer::Tok::LeftArrow)));
+        assert!(!reconstructed.contains("< -"), "left arrow was split");
+    }
 }

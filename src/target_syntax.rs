@@ -108,21 +108,68 @@ impl Cursor<'_> {
             _ => Err(self.err("E_SYNTAX", "expected an identifier")),
         }
     }
+    /// Bounded type-only lookahead for '<-' before a named callable.
+    /// No expression operators are accepted in this declaration position.
+    fn return_first_header(&self) -> bool {
+        if !matches!(self.tok(), Tok::Ident(_)) { return false; }
+        if self.toks.get(self.i + 1).is_some_and(|t| t.tok == Tok::LeftArrow) {
+            return true;
+        }
+        if !self.toks.get(self.i + 1).is_some_and(|t| t.tok == Tok::Lt) {
+            return false;
+        }
+        let mut depth = 0usize;
+        // Even malicious generic nesting cannot scan an unbounded source.
+        for off in 1..=128 {
+            let Some(token) = self.toks.get(self.i + off) else { return false };
+            match &token.tok {
+                Tok::Lt => depth += 1,
+                Tok::Gt => {
+                    if depth == 0 { return false; }
+                    depth -= 1;
+                    if depth == 0 {
+                        return self.toks.get(self.i + off + 1)
+                            .is_some_and(|t| t.tok == Tok::LeftArrow);
+                    }
+                }
+                Tok::Ident(_) | Tok::Comma | Tok::Dot => {}
+                _ => return false,
+            }
+        }
+        false
+    }
     fn type_name(&mut self) -> R<String> {
+        self.type_name_depth(0)
+    }
+    /// Parse a syntactic type name without accepting arbitrary run-time
+    /// expressions as type args. The production compiler still validates
+    /// supported ADT instantiations and enforces all ownership rules.
+    fn type_name_depth(&mut self, depth: usize) -> R<String> {
+        if depth >= 16 {
+            return Err(self.err("E_SOURCE_LIMIT", "nested generic return type exceeds 16 levels"));
+        }
         let name = match self.tok().clone() {
             Tok::Ident(s) => { self.next(); s }
             _ => return Err(self.err("E_SYNTAX", "expected a type name")),
         };
-        if self.take(&Tok::Lt) {
-            if name != "ActorRef" {
-                return Err(self.err("E_UNSUPPORTED_TYPE",
-                    "target receiver generics admit only ActorRef<Actor>"));
-            }
-            let actor = self.ident()?;
-            self.expect(&Tok::Gt, "expected '>' in ActorRef<Actor>")?;
-            return Ok(format!("ActorRef<{actor}>"));
+        if !self.take(&Tok::Lt) { return Ok(name); }
+        let arity = match name.as_str() {
+            "Option" | "Generator" | "ActorRef" => 1,
+            "Result" => 2,
+            _ => return Err(self.err("E_UNSUPPORTED_TYPE",
+                "target generic type must be Option, Result, Generator or ActorRef")),
+        };
+        let mut args = Vec::with_capacity(arity);
+        for i in 0..arity {
+            if i > 0 { self.expect(&Tok::Comma, "expected ',' in generic type")?; }
+            args.push(self.type_name_depth(depth + 1)?);
         }
-        Ok(name)
+        self.expect(&Tok::Gt, "expected '>' closing generic type")?;
+        if name == "ActorRef" && args[0].contains('<') {
+            return Err(self.err("E_UNSUPPORTED_TYPE",
+                "ActorRef parameter must be one nominal actor name"));
+        }
+        Ok(format!("{}<{}>", name, args.join(",")))
     }
     fn params(&mut self) -> R<Vec<ReceiverParam>> {
         self.expect(&Tok::LParen, "expected '(' before parameters")?;
@@ -146,11 +193,47 @@ impl Cursor<'_> {
             }
         }
     }
-    fn body(&mut self, arrow_type: bool, colon_type: bool) -> R<()> {
+    /// For explicit statement/end bodies, use a bounded delimiter scan.
+    /// This frontend is syntax-only; production parsing verifies statements
+    /// before any guest artifact is emitted.
+    fn explicit_end_body(&mut self) -> R<()> {
+        let (mut braces, mut conditional, mut nested_end) = (0u32, 0u32, 0u32);
+        loop {
+            match self.tok() {
+                Tok::Eof => return Err(self.err("E_EOF", "unclosed statement/end body")),
+                Tok::Ident(s) if s == "end" && braces == 0 && conditional == 0 => {
+                    if nested_end == 0 {
+                        self.next();
+                        return Ok(());
+                    }
+                    nested_end -= 1;
+                }
+                Tok::Ident(s) if s == "begin" && braces == 0 => nested_end += 1,
+                Tok::Ident(s) if s == "if" && braces == 0 => conditional += 1,
+                Tok::Ident(s) if s == "fi" && braces == 0 => {
+                    if conditional == 0 { return Err(self.err("E_SYNTAX", "unmatched fi")); }
+                    conditional -= 1;
+                }
+                Tok::LBrace => {
+                    braces += 1;
+                    if braces > 128 { return Err(self.err("E_NESTING", "body nesting limit")); }
+                }
+                Tok::RBrace => {
+                    if braces == 0 { return Err(self.err("E_SYNTAX", "unmatched '}'")); }
+                    braces -= 1;
+                }
+                _ => {}
+            }
+            self.next();
+        }
+    }
+
+    fn body(&mut self, arrow_type: bool, colon_type: bool, return_first: bool) -> R<()> {
         // Target-only receiver bodies are delimiter scans, not executable Wasm.
         if colon_type && self.take(&Tok::Arrow) && *self.tok() != Tok::LBrace {
             return Err(self.err("E_SYNTAX", "': Type ->' requires a braced body"));
         }
+        if self.take_word("begin") { return self.explicit_end_body(); }
         if self.take(&Tok::LBrace) {
             let mut depth = 1u32;
             while depth != 0 {
@@ -167,8 +250,9 @@ impl Cursor<'_> {
             }
             return Ok(());
         }
+        if return_first { return self.explicit_end_body(); }
         if !arrow_type {
-            return Err(self.err("E_SYNTAX", "expected '{' for a method body"));
+            return Err(self.err("E_SYNTAX", "expected '{' or begin/end for a method body"));
         }
         if self.take(&Tok::ColonColon) && *self.tok() == Tok::LBrace {
             return Err(self.err("E_SYNTAX", "'::' requires a comma/end body, not '{'"));
@@ -237,18 +321,31 @@ impl Cursor<'_> {
         };
         self.expect(&Tok::RParen, "expected ')' after receiver")?;
         let method_start = self.i;
+        let return_first = self.return_first_header();
+        let prefix_type = if return_first {
+            let t = self.type_name()?;
+            self.expect(&Tok::LeftArrow, "expected '<-' after return type")?;
+            Some(t)
+        } else { None };
         let name = self.ident()?;
         let params = self.params()?;
         let arity = params.len();
-        let arrow_type = *self.tok() == Tok::Arrow;
-        let colon_type = *self.tok() == Tok::Colon;
-        let return_type = if self.take(&Tok::Colon) || self.take(&Tok::Arrow) {
-            self.type_name()?
+        let arrow_type = !return_first && *self.tok() == Tok::Arrow;
+        let colon_type = !return_first && *self.tok() == Tok::Colon;
+        let return_type = if let Some(t) = prefix_type {
+            if matches!(self.tok(), Tok::Colon | Tok::Arrow) {
+                return Err(self.err("E_RETURN_ANNOTATION", "return type declared twice"));
+            }
+            t
         } else {
-            "void".to_owned()
+            if !(self.take(&Tok::Colon) || self.take(&Tok::Arrow)) {
+                return Err(self.err("E_RETURN_ANNOTATION",
+                    "out-of-line method requires -> T, -> void, -> infer or T <- name"));
+            }
+            self.type_name()?
         };
         let start = self.i;
-        self.body(arrow_type, colon_type)?;
+        self.body(arrow_type, colon_type, return_first)?;
         let end = self.i;
         Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end, method_start))
     }
@@ -269,7 +366,7 @@ impl Cursor<'_> {
         self.expect(&Tok::Colon, "out-of-line constructor requires ': self'")?;
         self.expect_word("self")?;
         let body_start = self.i;
-        self.body(false, true)?;
+        self.body(false, true, false)?;
         Ok(ConstructorSite { owner, pos, public, declaration_start,
             params_start, body_start, end: self.i })
     }
@@ -303,13 +400,26 @@ impl Cursor<'_> {
         Ok(decl)
     }
     fn function(&mut self) -> R<(usize, usize)> {
+        let return_first = self.return_first_header();
+        if return_first {
+            self.type_name()?;
+            self.expect(&Tok::LeftArrow, "expected '<-' after return type")?;
+        }
         self.ident()?;
         self.params()?;
-        let arrow_type = *self.tok() == Tok::Arrow;
-        let colon_type = *self.tok() == Tok::Colon;
-        if self.take(&Tok::Colon) || self.take(&Tok::Arrow) { self.type_name()?; }
+        let arrow_type = !return_first && *self.tok() == Tok::Arrow;
+        let colon_type = !return_first && *self.tok() == Tok::Colon;
+        if !return_first {
+            if !(self.take(&Tok::Colon) || self.take(&Tok::Arrow)) {
+                return Err(self.err("E_RETURN_ANNOTATION",
+                    "named function requires -> T, -> void, -> infer or T <- name"));
+            }
+            self.type_name()?;
+        } else if matches!(self.tok(), Tok::Colon | Tok::Arrow) {
+            return Err(self.err("E_RETURN_ANNOTATION", "return type declared twice"));
+        }
         let start = self.i;
-        self.body(arrow_type, colon_type)?;
+        self.body(arrow_type, colon_type, return_first)?;
         Ok((start, self.i))
     }
 }
@@ -434,6 +544,10 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                 }
                 out.constructors.push(site);
             } else if c.take_word("fnc") || c.take_word("routine") {
+                function_spans.push(c.function()?);
+            } else if c.return_first_header() {
+                // A keyword-free T <- name(...) callable is unambiguous in
+                // declaration scope, and has the same owner/name/arity identity.
                 function_spans.push(c.function()?);
             } else {
                 return Err(c.err("E_SYNTAX",

@@ -1,3 +1,9 @@
+## Named callable return annotations (strict target)
+
+Under the new strict named-callable rule, every function, routine, class/actor method (including static and out-of-line methods) and actor `receive` handler must explicitly specify a result. Write `-> int`, `-> void`, or opt into `-> infer`. The `: T` / `: infer` spelling is also legal; concrete types are preferred. Missing annotations produce `E_RETURN_ANNOTATION`, never a silently inferred `void`. Constructors and contextual lambdas are separate grammar categories.
+
+The browser compiler branch implements conservative return inference for simple literal, parameter and arithmetic returns, with `E_RETURN_INFER` on opaque or conflicting results. It does **not** provide complete typed whole-program inference. This is a source-breaking change: existing fixtures and examples that omit a return result need an individually checked migration. Do not blindly rewrite omissions to `void`. CI execution and native/other-backend parity are **not verified** by this README.
+
 ## Experimental source-compiled scalar collection guest (draft PR #320)
 
 A strictly bounded `define struct` + `Array<T, layout=aos|soa|aosoa(N)>`
