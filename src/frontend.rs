@@ -402,24 +402,31 @@ fn is_ownership_bang(source: &str, offset: usize) -> bool {
     true
 }
 
-/** Reject source controls with misleading visual token boundaries before preprocessing.
- * Original UTF-8 byte offsets are preserved, including inside ignored comments.
- */
-fn reject_visual_unicode_controls(source: &str) -> Result<(), ParseError> {
+/// Reject untrusted source control characters in source order, before any
+/// comment preprocessing, with the earliest UTF-8 byte offset. A separate
+/// raw-byte pass would misreport later NUL/ESC/DEL before earlier bidi controls.
+fn reject_source_controls(source: &str) -> Result<(), ParseError> {
     for (offset, character) in source.char_indices() {
         let codepoint = character as u32;
-        let forbidden = matches!(
-            codepoint,
-            0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029
-        ) || (0x202a..=0x202e).contains(&codepoint)
-            || (0x2066..=0x2069).contains(&codepoint);
-        if forbidden {
-            return Err(ParseError {
-                offset,
-                class: "source_unicode_control",
-                message: format!("forbidden source Unicode control U+{codepoint:04X}"),
-            });
-        }
+        let (class, message) = match character {
+            '\0' => ("source_admission", "source contains NUL byte".to_owned()),
+            '\u{001b}' | '\u{007f}' => {
+                ("source_admission", "source contains terminal control".to_owned())
+            }
+            _ if matches!(
+                codepoint,
+                0x0085 | 0x061c | 0x200e | 0x200f | 0x2028 | 0x2029
+            ) || (0x202a..=0x202e).contains(&codepoint)
+                || (0x2066..=0x2069).contains(&codepoint) =>
+            {
+                (
+                    "source_unicode_control",
+                    format!("forbidden source Unicode control U+{codepoint:04X}"),
+                )
+            }
+            _ => continue,
+        };
+        return Err(ParseError { offset, class, message });
     }
     Ok(())
 }
@@ -432,26 +439,9 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
             message: "Oreslang source exceeds 256 KiB prototype limit".into(),
         });
     }
-    // Reject the first forbidden raw byte before preprocessing. Comments and
-    // string-like text cannot conceal NUL or terminal controls from admission.
-    // Byte iteration preserves exact UTF-8 offsets and never echoes controls.
-    if let Some((offset, byte)) = source
-        .bytes()
-        .enumerate()
-        .find(|(_, byte)| matches!(*byte, 0 | 0x1b | 0x7f))
-    {
-        return Err(ParseError {
-            offset,
-            class: "source_admission",
-            message: if byte == 0 {
-                "source contains NUL byte"
-            } else {
-                "source contains terminal control"
-            }
-            .into(),
-        });
-    }
-    reject_visual_unicode_controls(source)?;
+    // All forbidden controls must be evaluated in one source-order pass,
+    // including comments; preserve the earliest offending UTF-8 byte offset.
+    reject_source_controls(source)?;
     let prepared = without_block_comments(source)?;
     let mut tokens = Vec::new();
     let mut paren_depth = 0_usize;
