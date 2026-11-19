@@ -873,9 +873,9 @@ pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
     // their class arguments while ordinary functions change to borrowing.
     for class in &p.classes {
         if class.ctor.as_ref().is_some_and(|ctor|
-            ctor.params.iter().any(|q| is_class_formal(q.ty)))
+            ctor.params.iter().any(|q| is_class_formal(q.ty) || q.consuming))
             || class.methods.iter().any(|method|
-                method.params.iter().any(|q| is_class_formal(q.ty)))
+                method.params.iter().any(|q| is_class_formal(q.ty) || q.consuming))
         {
             return Err(Diagnostic::new(class.pos, "E_UNSUPPORTED_TYPE",
                 "borrow-v1: class methods and constructors with class formals require verified receiver/parameter lifetimes"));
@@ -883,7 +883,7 @@ pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
     }
     for actor in &p.actors {
         if actor.methods.iter().any(|method|
-            method.params.iter().any(|q| is_class_formal(q.ty)))
+            method.params.iter().any(|q| is_class_formal(q.ty) || q.consuming))
         {
             return Err(Diagnostic::new(actor.pos, "E_UNSUPPORTED_TYPE",
                 "borrow-v1: actor methods with class formals require proven actor-domain lifetimes"));
