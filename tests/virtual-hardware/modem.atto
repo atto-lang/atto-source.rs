@@ -191,3 +191,28 @@ pub fnc can_ack_session_bytes(
     && acknowledged_bytes > 0 && acknowledged_bytes <= in_flight
     && in_flight >= 0 && in_flight <= 65536;
 }
+
+// Strict FIFO sequence-aware ACK validation. Unlike generation-only budget
+// admission, this also rejects a duplicate ACK in the same session.
+pub fnc can_ack_session_ticket(
+  int state, int in_flight, int acknowledged_bytes,
+  int expected_generation, int current_generation,
+  int expected_sequence, int oldest_sequence
+): bool {
+  return can_ack_session_bytes(state, in_flight, acknowledged_bytes,
+                               expected_generation, current_generation)
+    && expected_sequence >= 1 && expected_sequence <= 65535
+    && expected_sequence == oldest_sequence;
+}
+
+// Strict monotonic send tickets; the caller owns its authenticated sequence.
+pub fnc can_send_session_ticket(
+  int state, int payload_bytes, int in_flight, int capacity, int baud,
+  int expected_generation, int current_generation,
+  int expected_sequence, int next_sequence
+): bool {
+  return can_emit_data(state, baud, payload_bytes, in_flight, capacity,
+                       expected_generation, current_generation)
+    && expected_sequence >= 1 && expected_sequence <= 65535
+    && expected_sequence == next_sequence;
+}

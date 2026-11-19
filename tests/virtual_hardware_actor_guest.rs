@@ -98,8 +98,9 @@ console.log('VHW_ACTOR_EXECUTED '+lines.length+' lines panic=0 actors='+actors.l
 #[test]
 fn nic_actor_link_generation_rejects_stale_completion() {
     run_actor("nic", "VirtualNic", NIC,
-        &[60, -5, 65537, 60, -2, -3, 60, 65537, -4, 131073, -4],
-        &["1","1","0","1","-2","-3","1","-1","1","1","0","0","1"]);
+        &[60, -5, 65537, 60, 65537, 65538, 60, -2, -3,
+          60, 65539, -4, 131073, -4],
+        &["1","1","0","1","-1","0","1","-2","-3","1","-1","1","2","0","0","2"]);
 }
 #[test]
 fn router_actor_routes_and_rejects_special_destinations() {
@@ -117,6 +118,7 @@ fn switch_actor_traps_control_and_expires_learned_fdb() {
 #[test]
 fn modem_actor_rejects_old_epoch_ack_and_legacy_commands() {
     run_actor("modem", "VirtualModem", MODEM,
-        &[1,2,3,4,8,24,40,9,25,41,40,5,41,-2,-3],
-        &["1","2","3","4","-1","-1","64","-1","-1","0","64","1","-1","3","5"]);
+        &[1,2,3,4,8,1048600,2097176,9,1048601,2097177,
+          2097177,2097192,5,2097193,-2,-3],
+        &["1","2","3","4","-1","-1","64","-1","-1","0","-1","64","1","-1","3","6"]);
 }

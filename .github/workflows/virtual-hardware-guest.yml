@@ -28,14 +28,14 @@ jobs:
           test "$(git hash-object tests/virtual-hardware/nic.atto)" = "703d7a0ebe06901b97b9c5802bd115854b317c21"
           test "$(git hash-object tests/virtual-hardware/router.atto)" = "8cb7bfb98d99aa199e5625b77da82bc933cf578c"
           test "$(git hash-object tests/virtual-hardware/switch.atto)" = "4fff3d0beac96ba0057e065930d0686198536bc6"
-          test "$(git hash-object tests/virtual-hardware/modem.atto)" = "3623b81cb093d1954f77c5f0727d2493ee690487"
+          test "$(git hash-object tests/virtual-hardware/modem.atto)" = "57f929c9a6967862bfbfa7fc5134ac83f625062f"
       - name: Verify exact actor source Git blobs as well
         run: |
           set -euo pipefail
-          test "$(git hash-object tests/virtual-hardware/nic_actor.atto)" = "44433ab32179f1fd2551b1b1c66aaeb31b0ff1d4"
+          test "$(git hash-object tests/virtual-hardware/nic_actor.atto)" = "781d7769698d710fa4891ea2c619444549e824c0"
           test "$(git hash-object tests/virtual-hardware/router_actor.atto)" = "0e19ba399777b0bfcc27f414625f978bd1bf2e75"
           test "$(git hash-object tests/virtual-hardware/switch_actor.atto)" = "b4200bba81e0c76fb3a80190d82f71e9a9d77991"
-          test "$(git hash-object tests/virtual-hardware/modem_actor.atto)" = "fec24c9a974d7d0ba6a8da572045c5c94c98e5d3"
+          test "$(git hash-object tests/virtual-hardware/modem_actor.atto)" = "cfe9e1b9115960f3f91eb5e17ebd499ddae54f9d"
       - name: Install pinned compiler toolchain
         run: |
           rustup toolchain install 1.85.1 --profile minimal

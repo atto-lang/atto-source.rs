@@ -64,7 +64,11 @@ fi
 return -1;
 "#;
 const MODEM_MAIN: &str = r#"
-if session_matches(2, 2) &&
+if can_ack_session_ticket(4, 64, 64, 2, 2, 1, 1) &&
+   !can_ack_session_ticket(4, 64, 64, 2, 2, 1, 2) &&
+   can_send_session_ticket(4, 64, 0, 1024, 115200, 2, 2, 1, 1) &&
+   !can_send_session_ticket(4, 64, 0, 1024, 115200, 2, 2, 1, 2) &&
+   session_matches(2, 2) &&
    !session_matches(1, 2) &&
    can_transmit_session_octet(4, 255, 0, 8, true, true, 2, 2) &&
    !can_transmit_session_octet(4, 255, 0, 8, true, true, 1, 2) &&
