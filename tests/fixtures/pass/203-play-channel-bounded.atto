@@ -1,0 +1,33 @@
+// expect-exit: 6
+// expect-stdout: 6
+// Playground showcase: bounded producer backpressure and close after drain.
+suspends fnc produce(Channel<int> ch): void {
+  let i = 1;
+  while i <= 3 do
+    writech ch, i;
+    i += 1;
+  done
+  ch.close();
+}
+
+suspends fnc consume(Channel<int> ch): int {
+  let total = 0;
+  let i = 0;
+  while i < 3 do
+    total += readch ch;
+    i += 1;
+  done
+  return total;
+}
+
+pub suspends fnc main(): int {
+  val ch = Channel<int>.bounded(2);
+  val producer = task {
+    await produce(ch);
+    return 0;
+  };
+  val sum = await consume(ch);
+  await producer;
+  stdio.println(sum);
+  return sum;
+}
