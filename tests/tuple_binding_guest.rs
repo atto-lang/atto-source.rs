@@ -253,3 +253,18 @@ pub fnc main(): int {
     assert_eq!(compile(source).unwrap_err().code, "E_BORROW",
         "read through owner while an exclusive loan exists must fail");
 }
+
+#[test]
+fn less_than_in_tuple_producer_arguments_preserves_actual_arity() {
+    let source = r#"
+pub fnc make_pair(bool condition, int n): Tuple<int,int> {
+    return (1,n);
+}
+pub fnc main(): int {
+    let (a,b) as val pair = make_pair(1 < 2, 9);
+    return a+b;
+}
+"#;
+    assert!(compile(source).is_ok(),
+        "a comparison in call arguments must not be treated as a generic type delimiter");
+}
