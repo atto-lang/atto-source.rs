@@ -48,7 +48,9 @@ fn fully_explicit_tuple_binders_need_explicit_root_kind() {
     let b = parse("(let a, val r, let mut j) as const foo = (1,2,3);");
     assert_eq!(b[0].alias.as_ref().unwrap().mode, BindingMode::Const);
     reject("(let a, val r, let mut j) as foo = fixtures();", "E_SYNTAX");
-    reject("(a, r, mut j) = fixtures();", "E_SYNTAX");
+    // Without an outer mode or explicit per-element modes this is not a
+    // tuple binding header; the full compiler must reject it normally.
+    assert!(parse("(a, r, mut j) = fixtures();").is_empty());
 }
 
 #[test]
