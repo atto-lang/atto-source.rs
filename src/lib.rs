@@ -46,6 +46,17 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
+    // The canonical operator grammar removed '^^'. Reject its lexer token
+    // directly rather than allowing the legacy parser to misdiagnose a missing
+    // semicolon or the experimental backend to reinterpret the expression.
+    // Quoted strings and comments are unaffected because they are not tokens.
+    if let Some(token) = toks.iter().find(|t| matches!(t.tok, lexer::Tok::CaretCaret)) {
+        return Err(Diagnostic::new(
+            token.pos,
+            "E_UNSUPPORTED",
+            "the '^^' boolean XOR operator is not supported",
+        ));
+    }
     // Preserve the established compiler's fail-closed contract. Only programs
     // containing an explicitly declared suspending callable may enter the
     // provisional v2 backend. In every other case, the legacy rejection and
