@@ -1,0 +1,161 @@
+// Boolean composition uses the compiler-supported, short-circuit && / || operators.
+// AttoLang virtual serial modem decision core, not a real UART/TCP driver.
+// State: 0=off, 1=ready, 2=dialing, 3=training, 4=online.
+// Event: 1=power-on, 2=dial, 3=answer, 4=carrier-lock,
+//        5=hangup, 6=reset, 7=power-off.
+// Error -1 is a rejected transition, NOT a new modem state.
+// An actor-owned session generation fences stale events and payloads.
+
+pub fnc valid_modem_state(int state): bool {
+  return state >= 0 && state <= 4;
+}
+
+pub fnc valid_baud_rate(int baud): bool {
+  return baud == 300 || baud == 1200 || baud == 2400 ||
+         baud == 4800 || baud == 9600 || baud == 19200 ||
+         baud == 38400 || baud == 57600 || baud == 115200;
+}
+
+pub fnc valid_session_generation(int generation): bool {
+  return generation >= 1 && generation <= 2147483647;
+}
+
+// Never wrap an authoritative session generation (prevents ABA reuse).
+// The caller must refuse new sessions or recreate the owning device on -1.
+pub fnc next_session_generation(int current): int {
+  if current < 1 || current >= 2147483647 then
+    return -1;
+  fi
+  return current + 1;
+}
+
+// Generation values must be backed by the *same* authenticated
+// actor/device incarnation; this equality alone is not authentication.
+// Owner increments generation atomically at each new dial/reset/hangup,
+// and rejects any command carrying a previous generation.
+pub fnc next_modem_state(
+  int state, int event, int expected_generation, int current_generation
+): int {
+  if !valid_modem_state(state) ||
+     !valid_session_generation(expected_generation) ||
+     expected_generation != current_generation then
+    return -1;
+  fi
+  if event == 7 then
+    return 0;
+  fi
+  if state == 0 && event == 1 then
+    return 1;
+  fi
+  if state == 1 && event == 2 then
+    return 2;
+  fi
+  if state == 2 && event == 3 then
+    return 3;
+  fi
+  if state == 3 && event == 4 then
+    return 4;
+  fi
+  if state >= 1 && (event == 5 || event == 6) then
+    return 1;
+  fi
+  return -1;
+}
+
+pub fnc carrier_detected(int state): bool {
+  return state == 4;
+}
+
+// The session fence prevents a stale packet from a previous call
+// being admitted simply because a new call reached state=online.
+// Host adapter MUST still authenticate origin and own the byte budget.
+pub fnc can_emit_data(
+  int state, int baud, int payload_bytes, int in_flight, int capacity,
+  int expected_generation, int current_generation
+): bool {
+  if !valid_session_generation(expected_generation) ||
+     expected_generation != current_generation then
+    return false;
+  fi
+  if !carrier_detected(state) || !valid_baud_rate(baud) then
+    return false;
+  fi
+  if capacity < 1 || capacity > 65536 ||
+     in_flight < 0 || in_flight > capacity ||
+     payload_bytes < 1 || payload_bytes > 4096 then
+    return false;
+  fi
+  return payload_bytes <= capacity - in_flight;
+}
+
+// For diagnostics ONLY: wraps by design, NEVER an anti-replay number,
+// authentication nonce, or trusted sequence for device state.
+pub fnc next_frame_counter(int counter): int {
+  if counter < 0 || counter > 65535 then
+    return -1;
+  fi
+  if counter == 65535 then
+    return 0;
+  fi
+  return counter + 1;
+}
+
+// 0=none, 1=odd, 2=even parity. Data bits 5..8; stop bits 1..2.
+pub fnc valid_serial_config(int baud, int data_bits, int parity, int stop_bits): bool {
+  return valid_baud_rate(baud) && data_bits >= 5 && data_bits <= 8
+    && parity >= 0 && parity <= 2 && stop_bits >= 1 && stop_bits <= 2;
+}
+
+pub fnc valid_modem_fifo(int used, int capacity): bool {
+  return capacity >= 1 && capacity <= 4096 && used >= 0 && used <= capacity;
+}
+
+pub fnc free_modem_fifo(int used, int capacity): int {
+  if !valid_modem_fifo(used, capacity) then
+    return -1;
+  fi
+  return capacity - used;
+}
+
+pub fnc next_modem_fifo_slot(int current, int capacity): int {
+  if capacity < 1 || capacity > 4096 || current < 0 || current >= capacity then
+    return -1;
+  fi
+  if current + 1 == capacity then
+    return 0;
+  fi
+  return current + 1;
+}
+
+// Flow-control predicate only: an actor MUST separately authenticate its current session generation.
+// DTR and CTS are necessary to transmit in online/data mode.
+pub fnc can_transmit_octet(
+  int state, int octet, int used, int capacity, bool dtr, bool cts
+): bool {
+  return carrier_detected(state) && octet >= 0 && octet <= 255
+    && valid_modem_fifo(used, capacity) && used < capacity && dtr && cts;
+}
+
+// RTS expresses local receiver readiness; carrier must be established.
+// A caller must also fence this octet with the actor-owned session generation.
+pub fnc can_receive_octet(
+  int state, int octet, int used, int capacity, bool rts
+): bool {
+  return carrier_detected(state) && octet >= 0 && octet <= 255
+    && valid_modem_fifo(used, capacity) && used < capacity && rts;
+}
+
+// AT admission is command-mode only and must additionally authenticate current session.
+// This checks length, CR terminator,
+// carrier/handshake state and FIFO capacity; it does not parse AT commands.
+pub fnc can_admit_at_command(
+  int state, int bytes, int used, int capacity, bool dtr, bool terminated_cr
+): bool {
+  if state != 1 || !dtr || !terminated_cr then
+    return false;
+  fi
+  if bytes < 2 || bytes > 256 || !valid_modem_fifo(used, capacity) then
+    return false;
+  fi
+  return bytes <= capacity - used;
+}
