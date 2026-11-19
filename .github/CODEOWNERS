@@ -1,2 +1,4 @@
-# Require independently approved compiler/source/release changes after branch rules configured.
-* @oresoftware @the1mills
+# AttoLang Rust compiler requires independent source ownership review.
+# The PR author cannot approve their own PR. A different authorized maintainer
+# (ORESoftware or the1mills) may approve when the main ruleset is active.
+* @ORESoftware @the1mills
