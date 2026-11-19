@@ -487,3 +487,21 @@ pub fn lower(mut tokens: Vec<Token>) -> R<Vec<Token>> {
     }
     Ok(prefix)
 }
+
+#[cfg(test)]
+mod return_first_token_regression {
+    use super::as_code;
+    use crate::lexer::lex;
+
+    #[test]
+    fn tuple_expression_roundtrip_preserves_left_arrow_as_single_token() {
+        // Tuple-source reconstruction must preserve the new declaration
+        // delimiter rather than splitting it into '<' and '-'.
+        let tokens = lex("int <- calculate(int x)").expect("valid return-first tokens");
+        let body = &tokens[..tokens.len() - 1];
+        let reconstructed = as_code(body).expect("complete Tok match");
+        let again = lex(&reconstructed).expect("roundtrip must lex");
+        assert!(again.iter().any(|t| matches!(t.tok, crate::lexer::Tok::LeftArrow)));
+        assert!(!reconstructed.contains("< -"), "left arrow was split");
+    }
+}
