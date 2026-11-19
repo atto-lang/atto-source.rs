@@ -4,11 +4,16 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (input, output) = match args.as_slice() {
-        [i] => (i.clone(), None),
-        [i, o, out] if o == "-o" => (i.clone(), Some(out.clone())),
+    let (input, output, check_only) = match args.as_slice() {
+        [flag] if flag == "--help" || flag == "-h" => {
+            println!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --check <input.atto>");
+            return ExitCode::SUCCESS;
+        }
+        [flag, i] if flag == "--check" => (i.clone(), None, true),
+        [i] => (i.clone(), None, false),
+        [i, o, out] if o == "-o" => (i.clone(), Some(out.clone()), false),
         _ => {
-            eprintln!("usage: attoc <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc <input.atto> [-o out.wasm]\n       attoc --check <input.atto>");
             return ExitCode::from(2);
         }
     };
@@ -21,14 +26,20 @@ fn main() -> ExitCode {
     };
     match atto_compiler::compile(&source) {
         Ok(bytes) => {
+            if check_only {
+                return ExitCode::SUCCESS;
+            }
             if let Some(o) = output {
-                if std::fs::write(&o, &bytes).is_err() {
-                    eprintln!("{o}: cannot write");
+                if let Err(err) = std::fs::write(&o, &bytes) {
+                    eprintln!("{o}: cannot write: {err}");
                     return ExitCode::from(2);
                 }
             } else {
                 use std::io::Write;
-                std::io::stdout().write_all(&bytes).ok();
+                if let Err(err) = std::io::stdout().write_all(&bytes) {
+                    eprintln!("stdout: cannot write compiled Wasm: {err}");
+                    return ExitCode::from(2);
+                }
             }
             ExitCode::SUCCESS
         }

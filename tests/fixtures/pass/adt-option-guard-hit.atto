@@ -1,0 +1,10 @@
+// expect-exit: 21
+// Guard must observe the Some payload, not a zero-initialized local.
+fnc option(): Option<int> { return Some(21); }
+pub fnc main(): int {
+  match option() over
+    on Some(n) when n > 20 -> { return n; }
+    on Some(n) -> { return 1; }
+    on None -> { return 0; }
+  end
+}

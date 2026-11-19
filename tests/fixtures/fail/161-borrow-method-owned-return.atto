@@ -1,0 +1,13 @@
+// expect-error: E_BORROW
+// java: rejects
+// A borrowed class cannot return an untracked owned-handle result.
+define class Parcel as
+  pub let int value = 42;
+  pub make(): Parcel { return new Parcel(); }
+end
+pub fnc main(): int {
+  let parcel = new Parcel();
+  val reader = borrow! parcel;
+  val escaped = reader.make();
+  return escaped.value;
+}

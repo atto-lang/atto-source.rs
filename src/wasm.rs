@@ -5,7 +5,8 @@
 //! * export `panic_code: mut i32`, set before a language-level panic traps:
 //!   1 = integer overflow; 2 is reserved (division/remainder unsupported);
 //!   3 = object heap exhausted; 4 = invalid generator handle/state;
-//!   5 = generator per-pull dispatch budget exhausted
+//!   5 = generator per-pull dispatch budget exhausted;
+//!   6 = logical stack exhausted: a recursive call exceeded [`MAX_CALL_DEPTH`]
 //! * export `memory` when strings, classes, or actors exist;
 //!   actor-only modules receive one private 64 KiB page per instance;
 //!   with classes it is a fixed, non-growable [`HEAP_PAGES`]-page memory
@@ -36,6 +37,13 @@ pub const PANIC_HEAP: i32 = 3;
 pub const PANIC_GENERATOR: i32 = 4;
 /// Non-yielding generator exceeded its bounded per-pull dispatch budget.
 pub const PANIC_GENERATOR_BUDGET: i32 = 5;
+/// Logical stack exhausted (spec chapter 25): a call inside a recursive call
+/// cycle would exceed [`MAX_CALL_DEPTH`] live guest frames.
+pub const PANIC_STACK: i32 = 6;
+/// Live recursive guest frames per receive invocation (or `main`). Same
+/// default quota as the Java backend, so a program overflows at the same
+/// source depth in every browser instead of at each engine's native limit.
+pub const MAX_CALL_DEPTH: i32 = 1024;
 /// Fixed memory size, in 64 KiB pages, of a module that allocates objects.
 pub const HEAP_PAGES: u32 = 16;
 
@@ -85,9 +93,9 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::Class(_) | Type::Array(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
-        Type::Named(_) | Type::NamedRef(_) => unreachable!("types are resolved by the checker"),
+        Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
 }
 
@@ -136,6 +144,10 @@ struct Layout {
     /// Function index within source funcs+runtime helpers: first appended
     /// generator operation is new(); then checked_ptr, next, close.
     gen_first_func: u32,
+    /// Guest-global active-catch counter for two-phase recover dispatch.
+    catch_depth: Option<u32>,
+    /// Module-private escalated-failure tag (index 1) exists.
+    raise_tag: bool,
 }
 impl Layout {
     fn import(&self, i: Import) -> u32 {
@@ -174,6 +186,14 @@ enum Frame {
     Top,
     Continue,
     Other,
+    /// Normal function exit that still runs registered defers.
+    Ret,
+    /// Function exit after defers already ran (recovered result).
+    Done,
+    /// Landing block before a `finally` body on a pending return.
+    FinallyExit,
+    /// Terminal `c.next()` target: the next older recovery callback.
+    RecoverNext,
 }
 
 struct Emit<'a> {
@@ -186,6 +206,18 @@ struct Emit<'a> {
     /// Owned generator handles active in nested for-in loops. Function-level
     /// returns close these in reverse order before exiting.
     active_iterators: Vec<u32>,
+    /// Scratch i64 local for an opaque host-issued admission ticket.
+    state_ticket_slot: Option<u32>,
+    state_write_depth: u32,
+    /// Unwind slots of a try/defer/recover function: (ret, saved, msg, kind, pending).
+    uw: Option<(Option<u32>, u32, u32, u32, u32)>,
+    /// Emitting a recovery callback body: `return` exits after defers ran.
+    in_recover: bool,
+    /// Byte ranges `[start, end)` of user calls and their callee, for the
+    /// post-pass that bounds recursive calls with the call-depth quota.
+    calls: Vec<(usize, usize, u32)>,
+    /// Byte offsets right after each catch / catch_all opcode (landing pads).
+    landings: Vec<usize>,
 }
 
 impl Emit<'_> {
@@ -199,6 +231,10 @@ impl Emit<'_> {
     fn i32c(&mut self, v: i32) {
         self.op(0x41);
         sleb(&mut self.code, v as i64);
+    }
+    /// Mark an exception landing pad (just after `catch tag` / `catch_all`).
+    fn landing(&mut self) {
+        self.landings.push(self.code.len());
     }
     fn call(&mut self, idx: u32) {
         self.op(0x10);
@@ -259,6 +295,206 @@ impl Emit<'_> {
         panic(&mut self.code, PANIC_GENERATOR);
     }
 
+    fn depth_save(&mut self, slot: u32) {
+        if let Some(g) = self.l.catch_depth {
+            self.global_get(g);
+            self.set(slot);
+        }
+    }
+    fn depth_restore(&mut self, slot: u32) {
+        if let Some(g) = self.l.catch_depth {
+            self.get(slot);
+            self.global_set(g);
+        }
+    }
+    fn depth_add(&mut self, delta: i32) {
+        if let Some(g) = self.l.catch_depth {
+            self.global_get(g);
+            self.i32c(delta);
+            self.op(0x6A); // i32.add
+            self.global_set(g);
+        }
+    }
+
+    /// Leave the function after the return value was stored: a recovered
+    /// result skips defers (they already ran); otherwise run the innermost
+    /// pending `finally`, or the function's defers.
+    fn return_path(&mut self) {
+        if self.in_recover {
+            self.br_to(Frame::Done);
+        } else if self.frames.contains(&Frame::FinallyExit) {
+            self.i32c(1);
+            self.set(self.uw.expect("unwind slots").4);
+            self.br_to(Frame::FinallyExit);
+        } else {
+            self.br_to(Frame::Ret);
+        }
+    }
+
+    /// try / catch (Error) / finally on legacy Wasm EH.
+    ///
+    /// The catch matches only private tag 0 (ordinary throw). `finally`
+    /// runs once on fallthrough, on a pending return (via FinallyExit),
+    /// and on any escaping exception (catch_all + rethrow, preserving the
+    /// original tag and payload). Engine traps are never Wasm exceptions.
+    fn try_stmt(&mut self, saved: u32, body: &[TStmt], catch: Option<&[TStmt]>, finally: Option<&[TStmt]>) {
+        self.depth_save(saved);
+        if finally.is_some() {
+            self.open(0x02, 0x40, Frame::FinallyExit);
+            self.open(0x06, 0x40, Frame::Other);
+        }
+        if let Some(handler) = catch {
+            self.depth_add(1); // an active catch outranks every callee recover
+            self.open(0x06, 0x40, Frame::Other);
+            self.stmts(body);
+            self.op(0x07); // catch private ordinary-throw tag 0
+            uleb(&mut self.code, 0);
+            self.landing();
+            self.op(0x1A); // drop the i64 Error message
+            self.depth_restore(saved);
+            self.stmts(handler);
+            self.close();
+            self.depth_restore(saved);
+        } else {
+            self.stmts(body);
+        }
+        if let Some(cleanup) = finally {
+            self.op(0x19); // catch_all: raise, uncaught throw or rethrown failure
+            self.landing();
+            self.depth_restore(saved);
+            self.stmts(cleanup);
+            self.op(0x09); // rethrow the caught exception unchanged
+            uleb(&mut self.code, 0);
+            self.close(); // end try
+            self.close(); // end FinallyExit
+            self.depth_restore(saved);
+            self.stmts(cleanup);
+            let pending = self.uw.expect("unwind slots").4;
+            self.get(pending);
+            self.open(0x04, 0x40, Frame::Other);
+            self.return_path();
+            self.close();
+        }
+    }
+
+    fn run_defers(&mut self, defers: &[(u32, &[TStmt])]) {
+        for (flag, body) in defers.iter().rev() {
+            self.get(*flag);
+            self.open(0x04, 0x40, Frame::Other);
+            self.stmts(body);
+            self.close();
+        }
+    }
+
+    /// Function body with compiler-owned unwind metadata
+    /// (atto-spec language/defer-recover-unwind-v1.md):
+    ///
+    /// ```text
+    /// block $done
+    ///   block $ret
+    ///     try                       ;; only with defers or recovers
+    ///       body                    ;; return => ret := v; br $ret (or finally)
+    ///     catch 0 | catch 1         ;; msg/kind := pending failure
+    ///     end
+    ///     restore depth; defers LIFO
+    ///     throw && active outer catch => rethrow (caller catch has priority)
+    ///     recovers LIFO             ;; return => br $done, c.next() => next
+    ///     rethrow original failure
+    ///   end
+    ///   restore depth; defers LIFO
+    /// end
+    /// ```
+    fn unwind_body(&mut self, body: &[TStmt], is_void_main: bool, ret: Type) {
+        let (ret_slot, saved, msg, kind, _) = self.uw.expect("unwind slots");
+        let defers: Vec<(u32, &[TStmt])> = body.iter().filter_map(|s| match s {
+            TStmt::Defer { flag, body, .. } => Some((*flag, body.as_slice())),
+            _ => None,
+        }).collect();
+        let recovers: Vec<(u32, &[TStmt])> = body.iter().filter_map(|s| match s {
+            TStmt::Recover { flag, body, .. } => Some((*flag, body.as_slice())),
+            _ => None,
+        }).collect();
+        let boundary = !defers.is_empty() || !recovers.is_empty();
+        self.depth_save(saved);
+        self.open(0x02, 0x40, Frame::Done);
+        self.open(0x02, 0x40, Frame::Ret);
+        if boundary {
+            self.open(0x06, 0x40, Frame::Other);
+        }
+        self.stmts(body);
+        if ret == Type::Void {
+            self.br_to(Frame::Ret);
+        } else {
+            self.op(0x00); // definite-return analysis proved every path returns
+        }
+        if boundary {
+            self.op(0x07);
+            uleb(&mut self.code, 0);
+            self.landing();
+            self.set(msg);
+            self.i32c(0);
+            self.set(kind);
+            if self.l.raise_tag {
+                self.op(0x07);
+                uleb(&mut self.code, 1);
+                self.landing();
+                self.set(msg);
+                self.i32c(1);
+                self.set(kind);
+            }
+            self.close();
+            self.depth_restore(saved);
+            self.run_defers(&defers);
+            if !recovers.is_empty() {
+                let g = self.l.catch_depth.expect("recover implies a catch-depth global");
+                // Phase one: an ordinary throw with any active outer catch
+                // or trap is NOT ours; the caller's handler wins.
+                self.get(kind);
+                self.op(0x45); // i32.eqz: ordinary throw
+                self.global_get(g);
+                self.i32c(0);
+                self.op(0x4A); // i32.gt_s
+                self.op(0x71); // i32.and
+                self.open(0x04, 0x40, Frame::Other);
+                self.get(msg);
+                self.op(0x08);
+                uleb(&mut self.code, 0);
+                self.close();
+                // Phase two: newest registered callback first.
+                for (flag, handler) in recovers.iter().rev() {
+                    self.get(*flag);
+                    self.open(0x04, 0x40, Frame::Other);
+                    self.open(0x02, 0x40, Frame::RecoverNext);
+                    self.in_recover = true;
+                    self.stmts(handler);
+                    self.in_recover = false;
+                    self.close();
+                    self.close();
+                }
+            }
+            if self.l.raise_tag {
+                self.get(kind);
+                self.open(0x04, 0x40, Frame::Other);
+                self.get(msg);
+                self.op(0x08);
+                uleb(&mut self.code, 1);
+                self.close();
+            }
+            self.get(msg);
+            self.op(0x08);
+            uleb(&mut self.code, 0);
+        }
+        self.close(); // end $ret
+        self.depth_restore(saved);
+        self.run_defers(&defers);
+        self.close(); // end $done
+        if is_void_main {
+            self.i64c(0);
+        } else if let Some(slot) = ret_slot {
+            self.get(slot);
+        }
+    }
+
     fn stmts(&mut self, s: &[TStmt]) {
         for st in s {
             self.stmt(st);
@@ -272,11 +508,46 @@ impl Emit<'_> {
                 self.op(0x21);
                 uleb(&mut self.code, *slot as u64);
             }
+            TStmt::CollectionStore { array, offset, value } => {
+                // The checked collection planner supplies an in-bounds byte
+                // offset, and the value is always a scalar i64 in this slice.
+                self.expr(array);
+                self.expr(value);
+                field_op(&mut self.code, Type::Int, *offset, true);
+            }
             TStmt::FieldSet { obj, offset, ty, value } => {
                 self.expr(obj);
                 self.expr(value);
                 field_op(&mut self.code, *ty, *offset, true);
             }
+            TStmt::StateFieldWrite { obj, offset, ty, value } => {
+                assert!(self.state_write_depth > 0,
+                    "state field write missing typed exclusive scope");
+                self.expr(obj);
+                self.expr(value);
+                field_op(&mut self.code, *ty, *offset, true);
+            }
+            TStmt::StateCriticalWrite(body) => {
+                // Synchronous, never-park: the host authenticates this
+                // container/continuation and either grants immediately or
+                // fails closed. Yield/throw/defer in this lexical scope are
+                // rejected by the frontend's restricted state profile.
+                let slot = self.state_ticket_slot.expect("protected state uses a ticket local");
+                debug_assert_eq!(self.state_write_depth, 0);
+                self.get(0); // typed receiver: protected state self
+                self.i32c(1); // write mode
+                self.call(self.l.import(Import::StateEnter));
+                self.set(slot);
+                self.state_write_depth += 1;
+                self.stmts(body);
+                self.state_write_depth -= 1;
+                self.get(slot);
+                self.call(self.l.import(Import::StateLeave));
+            }
+            TStmt::StateRegister(obj) => {
+                self.expr(obj);
+                self.call(self.l.import(Import::StateRegister));
+            },
             TStmt::GlobalSet(g, v) => {
                 self.expr(v);
                 self.op(0x24);
@@ -296,6 +567,45 @@ impl Emit<'_> {
                 self.op(0x08); // throw tag 0
                 uleb(&mut self.code, 0);
             }
+            TStmt::Return(v) if self.uw.is_some() => {
+                // Snapshot the value before any finally/defer runs, then
+                // leave through the compiler-owned cleanup path.
+                if let Some(v) = v {
+                    self.expr(v);
+                    self.set(self.uw.unwrap().0.expect("non-void unwind function has a ret slot"));
+                }
+                for handle in self.active_iterators.clone().into_iter().rev() {
+                    self.get(handle);
+                    self.call(self.l.func(self.l.gen_first_func + 3));
+                }
+                self.return_path();
+            }
+            TStmt::Raise(message) => {
+                self.expr(message);
+                self.op(0x08); // throw escalated tag 1: never matched by catch/trap
+                uleb(&mut self.code, 1);
+            }
+            TStmt::UnwindFrame { .. } => {}
+            TStmt::Defer { flag, args, .. } => {
+                // All factory captures are computed before registering the
+                // cleanup; a failed argument cannot register half a defer.
+                for (slot, value) in args {
+                    self.expr(value);
+                    self.set(*slot);
+                }
+                self.i32c(1);
+                self.set(*flag);
+            }
+            TStmt::Recover { flag, args, .. } => {
+                for (slot, value) in args {
+                    self.expr(value);
+                    self.set(*slot);
+                }
+                self.i32c(1);
+                self.set(*flag);
+            }
+            TStmt::RecoverNext => self.br_to(Frame::RecoverNext),
+            TStmt::Try { saved, body, catch, finally, .. } => self.try_stmt(*saved, body, catch.as_deref(), finally.as_deref()),
             TStmt::Return(v) => {
                 if let Some(v) = v {
                     self.expr(v);
@@ -477,7 +787,9 @@ impl Emit<'_> {
                 for a in args {
                     self.expr(a);
                 }
+                let at = self.code.len();
                 self.call(self.l.func(*f));
+                self.calls.push((at, self.code.len(), *f));
             }
             TExpr::Builtin(b, x, y) => {
                 self.expr(x);
@@ -513,10 +825,14 @@ impl Emit<'_> {
                 // The only caught signal is our private ordinary-throw tag.
                 // WebAssembly engine traps, arithmetic panic, cancellation,
                 // host exceptions, and any other tag bypass this catch.
+                // A trap is an active ordinary-throw handler: a callee recover
+                // must defer to it (two-phase dispatch). No-op without recover.
+                self.depth_add(1);
                 self.open(0x06, I32, Frame::Other); // try (result i32)
                 self.expr(value); // evaluate once, before any Some allocation
                 self.op(0x21); // local.set value_tmp
                 uleb(&mut self.code, *value_tmp as u64);
+                self.depth_add(-1);
                 self.i32c(16);
                 self.call(self.l.helper(H_ALLOC));
                 self.op(0x21);
@@ -531,7 +847,9 @@ impl Emit<'_> {
 
                 self.op(0x07); // catch private tag 0
                 uleb(&mut self.code, 0);
+                self.landing();
                 self.op(0x1A); // drop i64 Error message (not a panic)
+                self.depth_add(-1);
                 self.i32c(16);
                 self.call(self.l.helper(H_ALLOC));
                 self.op(0x21); uleb(&mut self.code, *none_tmp as u64);
@@ -588,15 +906,39 @@ impl Emit<'_> {
                 uleb(&mut self.code, *tmp as u64);
                 field_op(&mut self.code, Type::Int, 8, false); // i64 Ok/Some payload
             },
+            TExpr::CollectionLoad { array, offset } => {
+                self.expr(array);
+                field_op(&mut self.code, Type::Int, *offset, false);
+            }
             TExpr::FieldGet { obj, offset } => {
                 self.expr(obj);
                 field_op(&mut self.code, v.ty, *offset, false);
+            }
+            TExpr::StateFieldRead { obj, offset } => {
+                if self.state_write_depth == 0 {
+                    // Read an immutable scalar by value. The host owns the
+                    // ticket, never the source code or the Wasm guest.
+                    let slot = self.state_ticket_slot.expect("protected read ticket local");
+                    self.get(0);
+                    self.i32c(0); // read mode
+                    self.call(self.l.import(Import::StateEnter));
+                    self.set(slot);
+                    self.expr(obj);
+                    field_op(&mut self.code, v.ty, *offset, false);
+                    // Result remains on Wasm stack while leave consumes the
+                    // ticket, guaranteeing leave before the value escapes.
+                    self.get(slot);
+                    self.call(self.l.import(Import::StateLeave));
+                } else {
+                    self.expr(obj);
+                    field_op(&mut self.code, v.ty, *offset, false);
+                }
             }
             TExpr::GlobalGet(g) => {
                 self.op(0x23);
                 uleb(&mut self.code, (self.l.state_base + g) as u64);
             }
-            TExpr::Alloc(n) => {
+            TExpr::CollectionAlloc(n) | TExpr::Alloc(n) => {
                 self.i32c(*n as i32);
                 self.call(self.l.helper(H_ALLOC));
             }
@@ -657,6 +999,119 @@ impl Emit<'_> {
     }
 }
 
+/// Emitted source function, kept for the recursive-call post-pass.
+struct FnMeta {
+    /// Index into `bodies`.
+    body: usize,
+    /// Byte length of the locals declaration prefix of that body.
+    decl_len: usize,
+    /// Declared locals after the parameters (including runtime scratch).
+    locals: Vec<Type>,
+    params: u32,
+    /// `[start, end)` byte ranges of user `call`s and their callee.
+    calls: Vec<(usize, usize, u32)>,
+    /// Exception landing pads (just after `catch` / `catch_all`).
+    landings: Vec<usize>,
+}
+
+/// Bound every call that lies on a recursive cycle of the source call graph
+/// with a guest call-depth counter (`global depth`), raising [`PANIC_STACK`]
+/// before [`MAX_CALL_DEPTH`] live recursive frames. Non-recursive calls are
+/// statically bounded and left untouched. Exception unwinding skips the
+/// decrement after a call, so a function with landing pads saves the depth at
+/// entry and restores it at each pad (the pad's live frames are exactly that
+/// function and its callers). Wasm control flow uses relative label depths,
+/// so splicing instructions into a body is position-independent. Returns
+/// whether the depth global is needed.
+fn bound_recursive_calls(bodies: &mut [Vec<u8>], meta: &[FnMeta], depth: u32) -> bool {
+    let n = meta.len();
+    let adj: Vec<Vec<usize>> = meta.iter().map(|m| {
+        let mut v: Vec<usize> = m.calls.iter().map(|c| c.2 as usize).filter(|&c| c < n).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }).collect();
+    // reach[s][t]: t is reachable from s by at least one call edge.
+    let reach: Vec<Vec<bool>> = (0..n).map(|s| {
+        let mut seen = vec![false; n];
+        let mut work = adj[s].clone();
+        while let Some(v) = work.pop() {
+            if !seen[v] {
+                seen[v] = true;
+                work.extend(adj[v].iter().copied());
+            }
+        }
+        seen
+    }).collect();
+    // Call u -> v recurses iff v can reach u again.
+    let recursive: Vec<Vec<bool>> = meta.iter().enumerate().map(|(u, m)| {
+        m.calls.iter().map(|c| (c.2 as usize) < n && reach[c.2 as usize][u]).collect()
+    }).collect();
+    if !recursive.iter().flatten().any(|&r| r) {
+        return false;
+    }
+
+    let get = |c: &mut Vec<u8>| { c.push(0x23); uleb(c, depth as u64); };
+    let set = |c: &mut Vec<u8>| { c.push(0x24); uleb(c, depth as u64); };
+    let mut prelude = Vec::new();
+    get(&mut prelude);
+    prelude.push(0x41);
+    sleb(&mut prelude, MAX_CALL_DEPTH as i64);
+    prelude.push(0x4F); // i32.ge_u
+    prelude.extend_from_slice(&[0x04, 0x40]);
+    panic(&mut prelude, PANIC_STACK);
+    prelude.push(0x0B);
+    get(&mut prelude);
+    prelude.extend_from_slice(&[0x41, 1, 0x6A]); // + 1
+    set(&mut prelude);
+    let mut postlude = Vec::new();
+    get(&mut postlude);
+    postlude.extend_from_slice(&[0x41, 1, 0x6B]); // - 1
+    set(&mut postlude);
+
+    for (m, rec) in meta.iter().zip(&recursive) {
+        let save_slot = m.params + m.locals.len() as u32;
+        let save = !m.landings.is_empty();
+        // Insertion order for equal offsets is the order below.
+        let mut ins: Vec<(usize, Vec<u8>)> = Vec::new();
+        if save {
+            let mut prologue = Vec::new();
+            get(&mut prologue);
+            prologue.push(0x21); // local.set
+            uleb(&mut prologue, save_slot as u64);
+            ins.push((m.decl_len, prologue));
+        }
+        for (&(start, end, _), &r) in m.calls.iter().zip(rec) {
+            if r {
+                ins.push((start, prelude.clone()));
+                ins.push((end, postlude.clone()));
+            }
+        }
+        if save {
+            for &pad in &m.landings {
+                let mut restore = vec![0x20]; // local.get
+                uleb(&mut restore, save_slot as u64);
+                set(&mut restore);
+                ins.push((pad, restore));
+            }
+        }
+        if ins.is_empty() {
+            continue;
+        }
+        ins.sort_by_key(|(at, _)| *at); // stable: keeps equal-offset order
+        let body = &mut bodies[m.body];
+        for (at, bytes) in ins.into_iter().rev() {
+            body.splice(at..at, bytes);
+        }
+        if save {
+            let mut locals = m.locals.clone();
+            locals.push(Type::Bool); // i32 saved call depth, after every existing local
+            body.splice(0..m.decl_len, locals_decl(&locals));
+        }
+    }
+    true
+}
+
 /// panic: `i32.const code; global.set $panic_code; unreachable`
 fn panic(c: &mut Vec<u8>, code: i32) {
     c.push(0x41);
@@ -715,15 +1170,23 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
 
 /// `alloc(size: i32) -> i32`: bump-allocate from `heap_ptr`; panic 3 when the
 /// fixed memory is exhausted. Objects are never freed (no GC in this subset).
+///
+/// Check size against the *remaining* capacity before computing `p + size`.
+/// A wrapped i32 sum could otherwise pass the old upper-bound comparison and
+/// rewind the bump pointer. Unsigned checks also reject negative i32 sizes.
 fn alloc_body(heap_global: u32) -> (Sig, Vec<u8>, Vec<u8>) {
     let limit = (HEAP_PAGES * 65536) as i64;
     let mut c = vec![0x23];
     uleb(&mut c, heap_global as u64);
-    c.extend_from_slice(&[0x21, 1, 0x20, 1, 0x20, 0, 0x6A, 0x41]); // p = heap; p + size
+    c.extend_from_slice(&[0x21, 1, 0x20, 1, 0x41]); // p = heap; p
     sleb(&mut c, limit);
-    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // if (p + size) >u limit
+    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // if p >u limit: fail closed
     panic(&mut c, PANIC_HEAP);
-    c.extend_from_slice(&[0x0B, 0x20, 1, 0x20, 0, 0x6A, 0x24]); // heap = p + size
+    c.extend_from_slice(&[0x0B, 0x20, 0x00, 0x41]); // size
+    sleb(&mut c, limit);
+    c.extend_from_slice(&[0x20, 0x01, 0x6B, 0x4B, 0x04, 0x40]); // if size >u (limit - p)
+    panic(&mut c, PANIC_HEAP);
+    c.extend_from_slice(&[0x0B, 0x20, 1, 0x20, 0, 0x6A, 0x24]); // heap = p + size (now safe)
     uleb(&mut c, heap_global as u64);
     c.extend_from_slice(&[0x20, 1, 0x0B]); // return p
     (Sig(vec![I32], vec![I32]), vec![1u8, 1, I32], c)
@@ -973,6 +1436,10 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             1 + u32::from(p.heap) + p.globals.len() as u32
         ),
         gen_first_func: p.funcs.len() as u32,
+        catch_depth: p.catch_depth.then_some(
+            1 + u32::from(p.heap) + p.globals.len() as u32 + u32::from(!p.generators.is_empty())
+        ),
+        raise_tag: p.raise_tag,
     };
     let mut types = Types(Vec::new());
 
@@ -987,6 +1454,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::PrintF64 => Sig(vec![F64], vec![]),
             Import::ActorSpawn => Sig(vec![I32], vec![I32]),
             Import::ActorSend => Sig(vec![I32, I64], vec![]),
+            Import::StateRegister => Sig(vec![I32], vec![]),
+            Import::StateEnter => Sig(vec![I32, I32], vec![I64]),
+            Import::StateLeave => Sig(vec![I64], vec![]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1011,17 +1481,29 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         bodies.push(b);
     }
     let main_void = p.funcs[p.main as usize].ret == Type::Void;
+    let mut fn_meta: Vec<FnMeta> = Vec::with_capacity(p.funcs.len());
     for (i, f) in p.funcs.iter().enumerate() {
         let params: Vec<u8> = f.params.iter().map(|t| vt(*t).unwrap()).collect();
         let is_void_main = i as u32 == p.main && main_void;
         let results: Vec<u8> = if is_void_main { vec![I64] } else { vt(f.ret).into_iter().collect() };
         func_types.push(types.idx(Sig(params, results)));
+        // Reserve one host-ticket local only in state-enabled modules.
+        // The ticket never reaches user source or escapes into other methods.
+        let state_hooks = p.imports.contains(&Import::StateEnter);
+        let mut locals = f.locals.clone();
+        if state_hooks { locals.push(Type::Int); }
         let mut e = Emit {
             l: &layout,
-            code: locals_decl(&f.locals),
+            code: locals_decl(&locals),
             frames: Vec::new(),
             void_main: is_void_main,
             active_iterators: Vec::new(),
+            state_ticket_slot: state_hooks.then_some((f.params.len()+f.locals.len()) as u32),
+            state_write_depth: 0,
+            uw: None,
+            in_recover: false,
+            calls: Vec::new(),
+            landings: Vec::new(),
         };
         if let Some(gen_id) = p.generators.iter().position(|g| g.function == i as u32) {
             // Creator is lazy: allocate a 56-byte checked continuation frame
@@ -1031,17 +1513,37 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             else { e.i64c(0); }
             e.call(layout.func(layout.gen_first_func));
             e.op(0x0F); // return the generation-fenced handle; never hit unreachable
+        } else if let Some(TStmt::UnwindFrame { ret, saved, msg, kind, pending }) = f.body.first() {
+            e.uw = Some((*ret, *saved, *msg, *kind, *pending));
+            e.unwind_body(&f.body, is_void_main, f.ret);
         } else {
             e.stmts(&f.body);
         }
-        if is_void_main {
+        if e.uw.is_some() {
+            // unwind_body left the snapshotted result on the stack
+        } else if is_void_main {
             e.i64c(0);
         } else if f.ret != Type::Void {
             e.op(0x00); // unreachable: definite-return analysis proved every path returns
         }
         e.op(0x0B);
+        fn_meta.push(FnMeta {
+            body: bodies.len(),
+            decl_len: locals_decl(&locals).len(),
+            locals: locals.clone(),
+            params: f.params.len() as u32,
+            calls: std::mem::take(&mut e.calls),
+            landings: std::mem::take(&mut e.landings),
+        });
         bodies.push(e.code);
     }
+
+    // Logical stack quota (spec chapter 25): only calls on a recursive cycle
+    // can grow the stack without a static bound, so only those are counted.
+    // Programs without recursion keep byte-identical output.
+    let depth_global = 1 + u32::from(p.heap) + p.globals.len() as u32
+        + u32::from(!p.generators.is_empty()) + u32::from(p.catch_depth);
+    let depth_used = bound_recursive_calls(&mut bodies, &fn_meta, depth_global);
 
     // Runtime ops after source functions preserve every existing index.
     if !p.generators.is_empty() {
@@ -1063,6 +1565,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             frames: Vec::new(),
             void_main: false,
             active_iterators: Vec::new(),
+            state_ticket_slot: None,
+            state_write_depth: 0,
+            uw: None,
+            in_recover: false,
+            calls: Vec::new(),
+            landings: Vec::new(),
         };
         for (ai, a) in p.actors.iter().enumerate() {
             e.code.extend_from_slice(&[0x20, 0]);
@@ -1081,6 +1589,11 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
 
         func_types.push(types.idx(Sig(vec![I32, I64, I64], vec![])));
         let mut c = vec![0];
+        if depth_used {
+            // Each receive invocation starts its own logical stack at depth 0.
+            c.extend_from_slice(&[0x41, 0, 0x24]);
+            uleb(&mut c, depth_global as u64);
+        }
         for (ai, a) in p.actors.iter().enumerate() {
             if let Some(r) = a.receive {
                 c.extend_from_slice(&[0x20, 0, 0x41]);
@@ -1135,15 +1648,22 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     if let Some(tag_ty) = guest_error_tag_type {
         // Legacy WebAssembly EH: section 13 is ordered between memory (5)
         // and globals (6). One private tag: (i64 error_message) -> ().
-        let mut tags = vec![1, 0]; // count=1, attribute=exception
-        uleb(&mut tags, tag_ty as u64);
+        // Tag 1 (same signature) is the escalated `raise` failure.
+        let count = 1 + u8::from(p.raise_tag);
+        let mut tags = vec![count];
+        for _ in 0..count {
+            tags.push(0); // attribute=exception
+            uleb(&mut tags, tag_ty as u64);
+        }
         section(&mut out, 13, tags);
     }
 
     // global 0: mut i32 panic_code = 0; then heap_ptr; then actor state
     let mut gsec = Vec::new();
     uleb(&mut gsec, 1 + u64::from(p.heap) + p.globals.len() as u64
-        + u64::from(!p.generators.is_empty()));
+        + u64::from(!p.generators.is_empty())
+        + u64::from(p.catch_depth)
+        + u64::from(depth_used));
     gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]);
     if p.heap {
         let heap_start = ((p.data.len() as i64 + 7) & !7)
@@ -1158,6 +1678,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     }
     if !p.generators.is_empty() {
         gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // frame freelist head
+    }
+    if p.catch_depth {
+        gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // active catch/trap depth
+    }
+    if depth_used {
+        gsec.extend_from_slice(&[I32, 0x01, 0x41, 0, 0x0B]); // live recursive call depth
     }
     section(&mut out, 6, gsec);
 
@@ -1257,4 +1783,39 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         section(&mut out, 0, a);
     }
     out
+}
+
+
+#[cfg(test)]
+mod allocator_safety_tests {
+    use super::{alloc_body, HEAP_PAGES};
+
+    #[test]
+    fn allocation_uses_unsigned_remaining_capacity_before_pointer_addition() {
+        let (_, _, body) = alloc_body(1);
+        // The first comparison validates p <= heap limit. The second is
+        // size >u (heap limit - p); only after both may addition occur.
+        let comparisons = body.iter().filter(|&&b| b == 0x4B).count();
+        assert_eq!(comparisons, 2, "allocator must check pointer and size separately");
+        let subtract_then_compare = body.windows(3)
+            .position(|bytes| bytes == [0x6B, 0x4B, 0x04])
+            .expect("remaining-capacity subtraction precedes unsigned check");
+        let pointer_add = body.windows(3)
+            .position(|bytes| bytes == [0x20, 0x00, 0x6A])
+            .expect("allocator must update bump pointer");
+        assert!(subtract_then_compare < pointer_add, "no unchecked wrapped addition");
+    }
+
+    #[test]
+    fn capacity_boundary_rejects_wrapping_negative_and_excessive_sizes() {
+        let limit = HEAP_PAGES * 65_536;
+        let admitted = |heap: u32, size: u32| heap <= limit && size <= limit - heap;
+        assert!(admitted(0, limit));
+        assert!(admitted(limit - 8, 8));
+        assert!(admitted(limit, 0));
+        assert!(!admitted(limit, 1));
+        assert!(!admitted(limit + 1, 0));
+        assert!(!admitted(256, u32::MAX)); // i32(-1) interpreted unsigned
+        assert!(!admitted(256, u32::MAX - 255)); // wrapped p + size
+    }
 }
