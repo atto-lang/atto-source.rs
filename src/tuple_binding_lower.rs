@@ -278,14 +278,20 @@ fn as_code(tokens: &[Token]) -> R<String> {
 /// class merely because it has similarly named fields.
 /// Count only source-level call/parameter commas; nested generic/function
 /// delimiters do not accidentally change overload resolution.
-fn argument_count(tokens: &[Token]) -> usize {
+fn argument_count(tokens: &[Token], type_parameters: bool) -> usize {
     if tokens.is_empty() { return 0; }
     let mut depth = 0usize;
     let mut count = 1usize;
     for t in tokens {
         match t.tok {
-            Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::Lt => depth += 1,
-            Tok::RParen | Tok::RBracket | Tok::RBrace | Tok::Gt if depth > 0 => depth -= 1,
+            Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+            Tok::RParen | Tok::RBracket | Tok::RBrace if depth > 0 => depth -= 1,
+            // In formal parameter TYPE annotations, angles delimit
+            // generic arguments. In actual CALL expressions, < and >
+            // are comparisons, not grouping. Counting '<' as nesting
+            // would silently misidentify a tuple-returning overload.
+            Tok::Lt if type_parameters => depth += 1,
+            Tok::Gt if type_parameters && depth > 0 => depth -= 1,
             Tok::Comma if depth == 0 => count += 1,
             _ => {}
         }
@@ -307,7 +313,7 @@ fn tuple_functions(tokens: &[Token], shapes: &[Shape]) -> BTreeMap<(String, usiz
         if let Some(n) = shapes.iter().enumerate().find_map(|(j,_)|
             (ctor_name(j) == ret).then_some(j))
         {
-            result.insert((name.to_string(), argument_count(&tokens[i+3..end])), n);
+            result.insert((name.to_string(), argument_count(&tokens[i+3..end], true)), n);
         }
     }
     result
@@ -317,7 +323,7 @@ fn tuple_call(rhs: &[Token], funcs: &BTreeMap<(String, usize), usize>) -> Option
     if rhs.len() < 3 || rhs[1].tok != Tok::LParen { return None; }
     let name = id(&rhs[0])?;
     if matching(rhs, 1, Tok::LParen, Tok::RParen) != Some(rhs.len()-1) { return None; }
-    funcs.get(&(name.to_string(), argument_count(&rhs[2..rhs.len()-1]))).copied()
+    funcs.get(&(name.to_string(), argument_count(&rhs[2..rhs.len()-1], false))).copied()
 }
 
 /// A tuple initializer must either be an explicit tuple constructor or a
