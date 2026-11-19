@@ -19,6 +19,8 @@ pub struct TupleMember {
     pub name: Option<String>, // None is the discard-only '_' wildcard
     pub mode: BindingMode,
     pub mutable_referent: bool,
+    /// Explicit primitive type annotation, preserved for typed lowering.
+    pub annotation: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,9 +105,8 @@ fn parse_one(toks: &[Token], start: usize, outer: Option<BindingMode>) -> R<(Tup
         }
         i += 1;
 
-        // Element type annotations are scanned without committing to a
-        // lowering grammar. The production parser will verify the type once
-        // tuple lowering is enabled; this profile emits E_UNSUPPORTED.
+        // Preserve annotations, never silently drop an explicit type.
+        let mut annotation = None;
         if tok(toks, i) == Some(&Tok::Colon) {
             i += 1;
             let begin = i;
@@ -123,9 +124,19 @@ fn parse_one(toks: &[Token], start: usize, outer: Option<BindingMode>) -> R<(Tup
             if i == begin || generics != 0 {
                 return Err(fail(toks, i, "E_SYNTAX", "invalid tuple binder type annotation"));
             }
+            if i != begin + 1 {
+                return Err(fail(toks, begin, "E_UNSUPPORTED_TYPE",
+                    "only primitive typed binders are executable in scalar tuple destructuring"));
+            }
+            annotation = match tok(toks, begin) {
+                Some(Tok::Ident(w)) if matches!(w.as_str(),
+                    "int" | "bool" | "float" | "f64" | "string" | "String") => Some(w.clone()),
+                _ => return Err(fail(toks, begin, "E_UNSUPPORTED_TYPE",
+                    "tuple binder annotation requires a scalar primitive type")),
+            };
         }
 
-        members.push(TupleMember { name, mode: inherited, mutable_referent });
+        members.push(TupleMember { name, mode: inherited, mutable_referent, annotation });
         if tok(toks, i) == Some(&Tok::Comma) {
             saw_comma = true;
             i += 1;
