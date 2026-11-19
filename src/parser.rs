@@ -1053,12 +1053,13 @@ impl Parser {
         let pos = self.pos();
         self.advance();
         self.expect(Tok::LParen, "'('")?;
-        let (mail, payload, envelope) = if self.is_word("ActorMail") {
+        let job = self.is_word("Job");
+        let (mail, payload, envelope) = if job || self.is_word("ActorMail") {
             self.advance();
             if *self.peek() != Tok::Lt {
                 return Err(Diagnostic::new(
                     self.pos(), "E_TYPE",
-                    "ActorMail requires an explicit payload type, for example ActorMail<int>",
+                    "Job/ActorMail requires an explicit payload type, for example Job<int>",
                 ));
             }
             self.advance();
@@ -1093,7 +1094,7 @@ impl Parser {
             ));
         }
         let body = self.parse_block()?;
-        Ok(Receive { pos, mail, payload, envelope, body })
+        Ok(Receive { pos, mail, payload, envelope, job, body })
     }
 
     /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.

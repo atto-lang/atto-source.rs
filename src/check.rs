@@ -48,6 +48,8 @@ pub enum Import {
     /// `actor_get_or_create(type:i32,namespace:i64,key:i64)->i32`.
     /// The host validates the packed UTF-8 strings before activation.
     ActorGetOrCreate,
+    /// Handler-scoped job ACK intent; host verifies active actor and exact job.
+    ActorJobAck,
     /// Private Worker-owned state-container creation/lexical admission hooks.
     StateRegister,
     StateEnter,
@@ -55,7 +57,7 @@ pub enum Import {
 }
 
 impl Import {
-    pub const ALL: [Import; 11] = [
+    pub const ALL: [Import; 12] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -64,6 +66,7 @@ impl Import {
         Import::ActorSpawn,
         Import::ActorSend,
         Import::ActorGetOrCreate,
+        Import::ActorJobAck,
         Import::StateRegister,
         Import::StateEnter,
         Import::StateLeave,
@@ -78,6 +81,7 @@ impl Import {
             Import::ActorSpawn => "actor_spawn",
             Import::ActorSend => "actor_send",
             Import::ActorGetOrCreate => "actor_get_or_create",
+            Import::ActorJobAck => "actor_job_ack",
             Import::StateRegister => "state_register",
             Import::StateEnter => "state_enter",
             Import::StateLeave => "state_leave",
@@ -185,6 +189,8 @@ pub enum TExpr {
     Spawn(u32),
     /// Resolve/create a keyed local actor through a trusted host registry.
     RegistryGet { actor: u32, namespace: Box<TE>, key: Box<TE> },
+    /// Verified job handler may request an ACK; no guest-visible authority token.
+    JobAck,
     /// enqueue `value` (int, or bool widened to i64) on an actor's mailbox
     Send {
         target: Box<TE>,
@@ -329,6 +335,8 @@ pub struct TActor {
     /// Verified inbound type. The Wasm guest must validate i64 wire values
     /// (not just trust a host-supplied ActorMail<bool> representation).
     pub payload: Type,
+    /// True only for a Job<int> receive handler, not ordinary ActorMail<T>.
+    pub job: bool,
     /// `(state global, initializer)` in declaration order.
     pub inits: Vec<(u32, TE)>,
     /// Function index of `receive(value: i64, sequence: i64)`.
@@ -436,6 +444,7 @@ struct Local {
     mutable: bool,
     /// `Some(payload)` for the `ActorMail<T>` parameter of receive
     mail: Option<Type>,
+    job: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -999,6 +1008,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                         ),
                     ));
                 }
+                if r.job && t != Type::Int {
+                    return Err(Diagnostic::new(r.pos, "E_UNSUPPORTED_TYPE",
+                        "Job<T> guest transport currently supports Job<int> only"));
+                }
                 if !r.envelope && t != Type::Int {
                     return Err(Diagnostic::new(r.pos, "E_UNSUPPORTED_TYPE",
                         "direct receive(msg: T) currently lowers int only; use ActorMail<bool> for bool, and wait for tagged message ABI for enums/objects"));
@@ -1247,15 +1260,20 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         if let (Some(r), Some(ridx)) = (&a.receive, info.receive_idx) {
             let label = format!("{}.receive", a.name);
             let named = if r.envelope {
+                // Job<int> carries immutable value, sequence, job ID, attempt,
+                // and correlation descriptor in five Wasm parameters.
                 [("$value", Type::Int, false), ("$sequence", Type::Int, false)]
             } else {
                 [(r.mail.as_str(), Type::Int, false), ("$sequence", Type::Int, false)]
             };
+            let job_named = [("$value", Type::Int, false), ("$sequence", Type::Int, false),
+                ("$job_id", Type::Str, false), ("$attempt", Type::Int, false),
+                ("$correlation_id", Type::Str, false)];
             let body = body_check(
                 &g,
                 owner,
-                &named,
-                if r.envelope { Some((r.mail.as_str(), info.payload)) } else { None },
+                if r.job { &job_named } else { &named },
+                if r.envelope { Some((r.mail.as_str(), info.payload, r.job)) } else { None },
                 Type::Void,
                 &r.body,
                 &label,
@@ -1265,7 +1283,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             )?;
             funcs[ridx as usize] = Some(TFunc {
                 name: label,
-                params: vec![Type::Int, Type::Int],
+                params: if r.job { vec![Type::Int,Type::Int,Type::Str,Type::Int,Type::Str] }
+                    else { vec![Type::Int,Type::Int] },
                 ret: Type::Void,
                 locals: body.1,
                 body: body.0,
@@ -1303,6 +1322,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             name: a.name.clone(),
             kind: a.kind,
             payload: info.payload,
+            job: a.receive.as_ref().is_some_and(|r| r.job),
             inits,
             receive: info.receive_idx,
         });
@@ -1407,7 +1427,7 @@ fn body_check(
     g: &Globals,
     owner: Owner,
     named: &[(&str, Type, bool)],
-    mail: Option<(&str, Type)>,
+    mail: Option<(&str, Type, bool)>,
     ret: Type,
     body: &[Stmt],
     label: &str,
@@ -1417,13 +1437,14 @@ fn body_check(
 ) -> R<(Vec<TStmt>, Vec<Type>)> {
     let mut cx = FnCx::new(g, owner, ret, imports, data);
     cx.nparams = named.len() as u32;
-    if let Some((mail_name, payload)) = mail {
+    if let Some((mail_name, payload, job)) = mail {
         cx.scopes[0].push(Local {
             name: mail_name.to_string(),
             slot: 0,
             ty: Type::Int,
             mutable: false,
             mail: Some(payload),
+            job,
         });
     } else {
         for (i, (n, t, m)) in named.iter().enumerate() {
@@ -1433,6 +1454,7 @@ fn body_check(
                 ty: *t,
                 mutable: *m,
                 mail: None,
+                job: false,
             });
         }
     }
@@ -1524,7 +1546,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
-        TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::RegistryGet { .. } | TExpr::Send { .. } |
+        TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::RegistryGet { .. } | TExpr::JobAck | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } => false,
     }
@@ -1782,6 +1804,7 @@ impl<'a> FnCx<'a> {
             ty,
             mutable,
             mail: None,
+            job: false,
         });
         Ok(slot)
     }
@@ -1995,7 +2018,7 @@ impl<'a> FnCx<'a> {
                     }
                     let slot = self.temp(ty, *ppos)?;
                     sets.push((slot, v));
-                    bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
+                    bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None, job: false });
                 }
                 let flag = self.temp(Type::Bool, *pos)?;
                 let body = self.isolated(bound, Some(cursor.clone()), body)?;
@@ -3356,7 +3379,12 @@ impl<'a> FnCx<'a> {
         if let ExprKind::Var(n) = &base.kind {
             if let Some(l) = self.lookup(n) {
                 if let Some(payload) = l.mail {
+                    let job = l.job;
                     return match name {
+                        "job_id" if job => Ok(TE { e: TExpr::Local(2), ty: Type::Str }),
+                        "attempt" if job => Ok(TE { e: TExpr::Local(3), ty: Type::Int }),
+                        "correlation_id" if job => Ok(TE { e: TExpr::Local(4), ty: Type::Str }),
+                        "payload" if job => Ok(TE { e: TExpr::Local(0), ty: payload }),
                         "value" if payload == Type::Bool => Ok(TE {
                             e: TExpr::Bin(
                                 BinOp::Ne,
@@ -3507,6 +3535,18 @@ impl<'a> FnCx<'a> {
     }
 
     fn method_call(&mut self, base: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        // Job.ack() is accepted only on the sealed Job<int> receive binder.
+        // Its host import has no guest-forgeable token: the host identifies
+        // the currently executing actor and pending mailbox claim.
+        if let ExprKind::Var(n) = &base.kind {
+            if self.lookup(n).is_some_and(|l| l.job) {
+                if name != "ack" { return Err(Diagnostic::new(pos, "E_UNBOUND",
+                    format!("Job has no method '{name}'"))); }
+                self.arity("Job.ack", 0, args.len(), pos)?;
+                self.imports.push(Import::ActorJobAck);
+                return Ok(TE { e: TExpr::JobAck, ty: Type::Void });
+            }
+        }
         // Class.static(args)
         if let ExprKind::Var(n) = &base.kind {
             if self.lookup(n).is_none() {
