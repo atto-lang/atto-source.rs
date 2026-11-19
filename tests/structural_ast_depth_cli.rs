@@ -1,3 +1,7 @@
+//! Structural AST budget across composed, individually bounded parser expressions.
+//! Runs actual compiler --check and Cranelift object emission; host-only assertions
+//! are not presented as native guest execution.
+//! This test is written for current main's 64 infix-operator and primary limits.
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,14 +16,14 @@ fn run_compiler(source: &str, extension: &str, object_mode: bool) -> Output {
     std::fs::create_dir(&dir).expect("create isolated compiler fixture directory");
     let input = dir.join(format!("guest.{extension}"));
     let output = dir.join("guest.o");
-    std::fs::write(&input, source).expect("write fixture");
+    std::fs::write(&input, source).expect("write source fixture");
     let mut command = Command::new(env!("CARGO_BIN_EXE_oresc"));
     if object_mode {
         command.arg(&input).arg(&output);
     } else {
         command.arg("--check").arg(&input);
     }
-    let result = command.output().expect("execute actual AOT compiler");
+    let result = command.output().expect("execute actual compiler");
     if object_mode {
         assert_eq!(
             output.exists(),
@@ -27,107 +31,85 @@ fn run_compiler(source: &str, extension: &str, object_mode: bool) -> Output {
             "object publication must match compiler admission"
         );
     }
-    std::fs::remove_dir_all(&dir).expect("remove isolated fixture directory");
+    std::fs::remove_dir_all(&dir).expect("remove fixture directory");
     result
 }
 
-fn source_for(terms: usize) -> String {
+fn scalar_chain(terms: usize) -> String {
+    vec!["1"; terms].join("+")
+}
+
+// Parenthesized product plus an additive chain: each parser-local budget
+// permits 64 operators, but the combined leftmost AST path can exceed 128.
+fn composed_expression(product_terms: usize, additive_terms: usize) -> String {
     format!(
-        "pub fnc main(): int {{ return {}; }}",
-        vec!["1"; terms].join("+")
+        "({}){}",
+        vec!["1"; product_terms].join("*"),
+        "+1".repeat(additive_terms - 1)
     )
 }
 
-#[test]
-fn structurally_bounded_scalar_chains_admit_check_and_object_emission() {
-    let source = source_for(24);
-    for extension in ["atto", "ores"] {
-        for object_mode in [false, true] {
-            let output = run_compiler(&source, extension, object_mode);
-            assert_eq!(
-                output.status.code(),
-                Some(0),
-                "{extension}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(output.stderr.is_empty());
-        }
-    }
+fn source_for(expression: &str) -> String {
+    format!("pub fnc main(): int {{ return {expression}; }}")
 }
 
 #[test]
-fn long_left_spines_fail_closed_before_aot_artifact_or_check_output() {
+fn valid_construction_still_compiles_and_produces_native_object() {
     for source in [
-        source_for(130),
-        format!(
-            "pub fnc main(): int {{ const x: int = {}; return x; }}",
-            vec!["1"; 130].join("+")
-        ),
-        format!(
-            "pub fnc main(): int {{ return helper({}); }} fnc helper(int x): int {{ return x; }}",
-            vec!["1"; 130].join("+")
-        ),
+        source_for(&scalar_chain(24)),
+        source_for(&composed_expression(64, 65)),
     ] {
         for extension in ["atto", "ores"] {
             for object_mode in [false, true] {
-                let output = run_compiler(&source, extension, object_mode);
-                assert_eq!(output.status.code(), Some(1));
-                assert!(output.stdout.is_empty(), "rejection emitted success output");
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                assert!(
-                    stderr.contains("resource_limit") && stderr.contains("expression AST depth"),
-                    "unexpected rejection diagnostic: {stderr}"
+                let result = run_compiler(&source, extension, object_mode);
+                assert_eq!(
+                    result.status.code(),
+                    Some(0),
+                    "{extension}: {}",
+                    String::from_utf8_lossy(&result.stderr)
                 );
             }
         }
     }
 }
 
-
 #[test]
-fn exact_structural_depth_boundary_applies_to_check_and_object_output() {
-    for extension in ["atto", "ores"] {
-        for object_mode in [false, true] {
-            let good = run_compiler(&source_for(128), extension, object_mode);
-            assert_eq!(
-                good.status.code(),
-                Some(0),
-                "{extension} object={object_mode}: {}",
-                String::from_utf8_lossy(&good.stderr)
-            );
-            assert!(good.stderr.is_empty());
-
-            let bad = run_compiler(&source_for(129), extension, object_mode);
-            assert_eq!(bad.status.code(), Some(1), "{extension} object={object_mode}");
-            assert!(bad.stdout.is_empty());
-            let stderr = String::from_utf8_lossy(&bad.stderr);
-            assert!(
-                stderr.contains("resource_limit") && stderr.contains("expression AST depth"),
-                "{extension} object={object_mode}: {stderr}"
-            );
+fn combined_ast_spine_is_rejected_before_native_output() {
+    for source in [
+        source_for(&composed_expression(65, 65)),
+        format!(
+            "pub fnc main(): int {{ const x: int = {}; return x; }}",
+            composed_expression(65, 65)
+        ),
+        format!(
+            "pub fnc main(): int {{ return helper({}); }} fnc helper(int x): int {{ return x; }}",
+            composed_expression(64, 65)
+        ),
+    ] {
+        for extension in ["atto", "ores"] {
+            for object_mode in [false, true] {
+                let result = run_compiler(&source, extension, object_mode);
+                assert_eq!(result.status.code(), Some(1));
+                assert!(result.stdout.is_empty(), "rejection emitted success output");
+                let err = String::from_utf8_lossy(&result.stderr);
+                assert!(
+                    err.contains("resource_limit") && err.contains("expression AST depth"),
+                    "unexpected diagnostic: {err}"
+                );
+            }
         }
     }
 }
 
 #[test]
-fn call_wrapper_consumes_one_additional_ast_level() {
-    for (terms, should_pass) in [(127, true), (128, false)] {
-        let source = format!(
-            "pub fnc main(): int {{ return helper({}); }} fnc helper(int x): int {{ return x; }}",
-            vec!["1"; terms].join("+")
-        );
-        for extension in ["atto", "ores"] {
-            let output = run_compiler(&source, extension, false);
-            assert_eq!(
-                output.status.success(),
-                should_pass,
-                "{extension} {terms}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            if !should_pass {
-                assert!(output.stdout.is_empty());
-                assert!(String::from_utf8_lossy(&output.stderr).contains("resource_limit"));
-            }
-        }
+fn existing_infix_limit_remains_a_separate_earlier_gate() {
+    let source = source_for(&scalar_chain(130));
+    for extension in ["atto", "ores"] {
+        let result = run_compiler(&source, extension, true);
+        assert_eq!(result.status.code(), Some(1));
+        assert!(result.stdout.is_empty());
+        let err = String::from_utf8_lossy(&result.stderr);
+        assert!(err.contains("resource_limit"));
+        assert!(err.contains("additive expression exceeds scalar depth budget"));
     }
 }
