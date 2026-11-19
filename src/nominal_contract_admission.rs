@@ -206,6 +206,13 @@ pub fn preflight(t: &[Token]) -> R<()> {
     let mut i = 0usize;
     let mut needs_check = false;
     while i < t.len() {
+        // A receiver only exists at file scope. A fake `mtd` inside a
+        // function, closure or another brace body must never satisfy a
+        // concrete owner's required interface/trait method.
+        if t[i].tok == Tok::LBrace {
+            i = match_pair(t, i, Tok::LBrace, Tok::RBrace)? + 1;
+            continue;
+        }
         let begin = i;
         let mut j = i;
         let public = is(t, j, "pub");
