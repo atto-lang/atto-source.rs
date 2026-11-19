@@ -277,6 +277,7 @@ fn as_code(tokens: &[Token]) -> R<String> {
             Tok::Arrow => "->".to_string(), Tok::LeftArrow => "<-".to_string(),
             Tok::FatArrow => "=>".to_string(),
             Tok::Pipe => "|".to_string(), Tok::PipeGt => "|>".to_string(),
+            Tok::PipeLt => "<|".to_string(),
             Tok::Amp => "&".to_string(), Tok::Bang => "!".to_string(),
             Tok::Question => "?".to_string(), Tok::At => "@".to_string(),
             Tok::Ellipsis => "...".to_string(), Tok::YieldStar => "yield*".to_string(),
