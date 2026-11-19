@@ -1,0 +1,22 @@
+// expect-exit: 42
+// java: rejects
+// i64 + f64 + immutable string slots are copied with their original types.
+define class Parcel as
+    pub let int number = 42;
+    pub float score: 1.5;
+    pub string label: "hello";
+end
+pub fnc main(): int {
+    let original = new Parcel();
+    let cloned = copy!! original;
+    block {
+        val writer = borrow! mut cloned;
+        writer.number = 7;
+    }
+    if cloned.score eq 1.5 then
+        if cloned.label eq "hello" then
+            return original.number;
+        fi
+    fi
+    return 0;
+}

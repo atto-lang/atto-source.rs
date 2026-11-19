@@ -1,0 +1,10 @@
+// expect-exit: 42
+// None has no payload; a guarded Some arm must not read its field.
+fnc value(): Option<int> { return None; }
+pub fnc main(): int {
+  match value() over
+    on Some(n) when n > 0 -> { return 1; }
+    on Some(n) -> { return 2; }
+    on None -> { return 42; }
+  end
+}
