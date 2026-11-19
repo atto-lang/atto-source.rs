@@ -108,6 +108,7 @@ fn scalar_for_initializers_are_not_explicit_tuple_declarations() {
         "pub fnc main(): int { for (let i = 0; i < 5; i++) do done return 42; }",
         "fnc *gen base(int limit): Generator<int> { for (let i = 1; i <= limit; i++) do yield i; done }",
         "pub fnc main(): int { for (const i = 0; i < 5; i++) do done return 42; }",
+        "pub fnc main(): int { for (const x of xs) do done return 42; }",
     ] {
         assert!(parse(source).is_empty(),
             "scalar for initializer must not be parsed as a tuple binding: {source}");
