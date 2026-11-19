@@ -22,6 +22,20 @@ pub const SOURCE_CAP: usize = 64 * 1024;
 pub const ABI_VERSION: u32 = 2;
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Opt in to the experimental async backend only for explicit effect-marked
+/// callables. A blanket fallback on *any* legacy error made formerly invalid
+/// programs executable (including invalid ADTs, actor access and bindings).
+/// A token pattern, not a source substring, ignores comments and string literals.
+fn has_explicit_async_frontend(toks: &[lexer::Token]) -> bool {
+    toks.windows(2).any(|pair| {
+        matches!(
+            (&pair[0].tok, &pair[1].tok),
+            (lexer::Tok::Ident(effect), lexer::Tok::Ident(kind))
+                if effect == "suspends" && (kind == "fnc" || kind == "routine")
+        )
+    })
+}
+
 /// Compile one `.atto` source file to a guest WebAssembly module.
 pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     if source.len() > SOURCE_CAP {
@@ -32,23 +46,29 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let toks = lexer::lex(source)?;
-    // The legacy narrow-profile pipeline keeps compiling everything it
-    // already accepts, byte for byte. A program it rejects is offered to the
-    // general pipeline; when both reject, the diagnostic of the pipeline
-    // that understood more of the source (the later position) is reported.
+    // Preserve the established compiler's fail-closed contract. Only programs
+    // containing an explicitly declared suspending callable may enter the
+    // provisional v2 backend. In every other case, the legacy rejection and
+    // its exact diagnostic remain authoritative.
+    let async_opt_in = has_explicit_async_frontend(&toks);
     let legacy = parser::Parser::new(toks.clone())
         .parse_program()
         .and_then(|program| check::check(&program))
         .map(|typed| wasm::emit(&typed));
     let bytes = match legacy {
         Ok(bytes) => bytes,
-        Err(first) => match v2::compile(toks) {
+        Err(first) => {
+            if !async_opt_in {
+                return Err(first);
+            }
+            match v2::compile(toks) {
             Ok(bytes) => bytes,
             Err(second) => {
                 let later = (second.pos.line, second.pos.col) > (first.pos.line, first.pos.col);
                 return Err(if later { second } else { first });
             }
-        },
+            }
+        }
     };
     if bytes.len() > wasm::MAX_OUTPUT {
         return Err(Diagnostic::new(
