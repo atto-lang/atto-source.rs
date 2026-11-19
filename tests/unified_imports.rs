@@ -24,6 +24,32 @@ fn static_namespace_imports_accept_files_and_packages() {
 }
 
 #[test]
+fn namespace_is_optional_unique_and_before_every_import() {
+    let with_namespace = parse(r#"
+        // License header and comments may precede the namespace.
+        use namespace storefront;
+        import module math from "./math.atto";
+        import span, foo as bar from pkg "core.telemetry";
+        pub fnc main(): int { return 0; }
+    "#);
+    assert_eq!(with_namespace.namespace.as_deref(), Some("storefront"));
+    assert_eq!(with_namespace.imports, ["math", "span", "bar"]);
+
+    let without_namespace = parse("import sleep from pkg \"std.time\";");
+    assert_eq!(without_namespace.namespace, None);
+    assert_eq!(without_namespace.imports, ["sleep"]);
+
+    for (src, code) in [
+        ("import module math from \"./math.atto\"; use namespace storefront;", "E_SYNTAX"),
+        ("use namespace storefront; import span from pkg \"core.telemetry\"; use namespace second;", "E_DUPLICATE"),
+        ("use namespace storefront; use namespace storefront;", "E_DUPLICATE"),
+        ("pub fnc main(): int { return 0; } use namespace storefront;", "E_SYNTAX"),
+    ] {
+        reject(src, code);
+    }
+}
+
+#[test]
 fn comma_separated_imports_support_names_and_aliases() {
     let headers = parse(r#"
         import span, foo from pkg "core.telemetry";
