@@ -644,7 +644,7 @@ impl Parser {
                         return Err(Diagnostic::new(self.pos(), "E_STATE",
                             "protected state fields must start with let, as in Java"));
                     }
-                    let parsed = self.parse_type_first_field(false, FieldMode::ActorState, FieldBinding::ActorState, false)?;
+                    let parsed = self.parse_type_first_field(FieldVisibility::Private, FieldMode::ActorState, FieldBinding::ActorState, false)?;
                     if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
                         return Err(Diagnostic::new(parsed.field.pos, "E_UNSUPPORTED_TYPE",
                             "Worker-local state container admits only owned int/bool fields"));
@@ -798,13 +798,30 @@ impl Parser {
                 return Err(unsupported(self.pos(), "annotations"));
             }
             let mpos = self.pos();
-            let public = if self.eat_word("pub") {
-                true
-            } else {
-                self.eat_word("private");
-                false
-            };
+            let visibility = if self.eat_word("pub") {
+                if self.eat(&Tok::LBracket) {
+                    if !self.eat_word("pkg") || !self.eat(&Tok::RBracket) {
+                        return Err(Diagnostic::new(mpos, "E_SYNTAX",
+                            "class field visibility accepts only pub[pkg]"));
+                    }
+                    if actor { return Err(unsupported(mpos, "pub[pkg] actor members")); }
+                    FieldVisibility::Package
+                } else { FieldVisibility::Public }
+            } else if self.eat_word("private") {
+                if *self.peek() == Tok::LBracket {
+                    return Err(Diagnostic::new(mpos, "E_SYNTAX",
+                        "private is unqualified; use private or pub[pkg]"));
+                }
+                FieldVisibility::Private
+            } else { FieldVisibility::Private };
+            let public = visibility == FieldVisibility::Public;
             let word = self.word_at(0).map(str::to_owned);
+            if visibility == FieldVisibility::Package
+                && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "method" | "receive"))
+                    || *self.peek_at(1) == Tok::LParen)
+            {
+                return Err(unsupported(mpos, "pub[pkg] on non-field class members"));
+            }
             match word.as_deref() {
                 Some("static") => {
                     if actor {
@@ -842,19 +859,19 @@ impl Parser {
                 Some("final") => {
                     self.advance();
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                        let f = self.parse_named_field(public, actor)?;
+                        let f = self.parse_named_field(visibility, actor)?;
                         m.fields.push(f);
                     } else if actor {
                         return Err(self.expected("'name: type' after 'final' in an actor"));
                     } else {
                         let referent_mutable = self.eat_word("mut");
-                        let f = self.parse_type_first_field(public, FieldMode::Final, FieldBinding::Final, referent_mutable)?;
+                        let f = self.parse_type_first_field(visibility, FieldMode::Final, FieldBinding::Final, referent_mutable)?;
                         m.fields.push(f.field);
                     }
                 }
                 Some("mut") if !actor => {
                     self.advance();
-                    let f = self.parse_type_first_field(public, FieldMode::Constructor, FieldBinding::Let, true)?;
+                    let f = self.parse_type_first_field(visibility, FieldMode::Constructor, FieldBinding::Let, true)?;
                     m.fields.push(f.field);
                 }
                 Some(w @ ("let" | "val" | "const")) => {
@@ -877,7 +894,7 @@ impl Parser {
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                         return Err(self.expected("a field type before the field name"));
                     }
-                    let f = self.parse_type_first_field(public, mode, binding, referent_mutable)?;
+                    let f = self.parse_type_first_field(visibility, mode, binding, referent_mutable)?;
                     if f.init_was_colon {
                         return Err(Diagnostic::new(
                             f.field.init.pos,
@@ -918,7 +935,7 @@ impl Parser {
                     m.methods.push(method);
                 }
                 Some(_) if *self.peek_at(1) == Tok::Colon && !actor => {
-                    let f = self.parse_named_field(public, actor)?;
+                    let f = self.parse_named_field(visibility, actor)?;
                     m.fields.push(f);
                 }
                 Some(_) if matches!(self.peek_at(1), Tok::Ident(_)) && !actor => {
@@ -928,7 +945,7 @@ impl Parser {
                     // Do not apply this to locals: bare type-first locals are const.
                     // FieldMode::Constructor is the currently implemented subset;
                     // verified post-construction mutable self support is pending.
-                    let f = self.parse_type_first_field(public, FieldMode::Constructor, FieldBinding::Let, false)?;
+                    let f = self.parse_type_first_field(visibility, FieldMode::Constructor, FieldBinding::Let, false)?;
                     m.fields.push(f.field);
                 }
                 _ => {
@@ -944,7 +961,7 @@ impl Parser {
     }
 
     /// `name: type [= expr]` (immutable field).
-    fn parse_named_field(&mut self, public: bool, _actor: bool) -> R<Field> {
+    fn parse_named_field(&mut self, visibility: FieldVisibility, _actor: bool) -> R<Field> {
         let (name, pos) = self.ident("a field name")?;
         self.expect(Tok::Colon, "':'")?;
         let ty = self.parse_type()?;
@@ -957,7 +974,7 @@ impl Parser {
             name,
             pos,
             ty,
-            public,
+            visibility,
             mode: FieldMode::Final,
             binding: FieldBinding::Final,
             referent_mutable: false,
@@ -967,7 +984,7 @@ impl Parser {
 
     /// `type name (":" | "=") expr`.
     fn parse_type_first_field(
-        &mut self, public: bool, mode: FieldMode,
+        &mut self, visibility: FieldVisibility, mode: FieldMode,
         binding: FieldBinding, referent_mutable: bool,
     ) -> R<TypeFirstField> {
         let ty = self.parse_type()?;
@@ -986,7 +1003,7 @@ impl Parser {
                 name,
                 pos,
                 ty,
-                public,
+                visibility,
                 mode,
                 binding,
                 referent_mutable,
