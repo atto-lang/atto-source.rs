@@ -124,6 +124,19 @@ fn tuple_annotation_type_is_not_discarded() {
 }
 
 #[test]
+fn tuple_return_overloads_are_resolved_by_arity() {
+    let bad = r#"
+pub fnc fixtures(): Tuple<int,int> { return (1,2); }
+pub fnc fixtures(int n): int { return n; }
+pub fnc main(): int {
+    let (a,b) as foo = fixtures(42);
+    return a+b;
+}
+"#;
+    assert_eq!(compile(bad).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
 fn raw_scalar_tuple_tokens_have_deterministic_lowering() {
     let a = lex("pub fnc main(): int { let (a,b) as foo = (5,6); return a+b; }").unwrap();
     let first = lower(a.clone()).unwrap();
