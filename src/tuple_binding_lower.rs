@@ -14,6 +14,7 @@ use crate::tuple_binding_admission::{self, BindingMode};
 type R<T> = Result<T, Diagnostic>;
 const PREFIX: &str = "__atto_tuple_private_";
 const LIMIT: usize = 16;
+const MAX_SHAPES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Shape(Vec<String>);
@@ -66,6 +67,9 @@ fn shape_for(parts: Vec<String>, shapes: &mut Vec<Shape>, pos: Pos) -> R<String>
     if let Some(idx) = shapes.iter().position(|x| *x == target) {
         Ok(ctor_name(idx))
     } else {
+        if shapes.len() >= MAX_SHAPES {
+            return Err(error(pos, "E_SOURCE_LIMIT", "too many distinct scalar tuple shapes (64 maximum)"));
+        }
         let idx = shapes.len();
         shapes.push(target);
         Ok(ctor_name(idx))
@@ -361,7 +365,14 @@ fn rewrite_literal_tuples(tokens: &mut Vec<Token>, shapes: &mut Vec<Shape>) -> R
             }
             ctor_name(candidates[0])
         };
-        let inner = as_code(&tokens[i+1..close])?;
+        // A source tuple permits '(x,)' and '(x,y,)', but the
+        // production class constructor parser requires exactly N arguments.
+        // Reconstruct from the checked item slices, omitting trailing
+        // tuple-only separators while retaining nested call delimiters.
+        let inner = items.iter()
+            .map(|item| as_code(item))
+            .collect::<R<Vec<_>>>()?
+            .join(", ");
         let expression = format!("new {shape_name}({inner})");
         let replacement = synthetic(&expression, tokens[i].pos)?;
         let next = i + replacement.len();
