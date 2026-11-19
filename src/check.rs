@@ -469,6 +469,11 @@ struct FnCx<'a> {
     moved: BTreeSet<u32>,
     /// Borrowed class locals keyed by their own slot.
     loans: BTreeMap<u32, ScopedLoan>,
+    /// Lexical safety guards for owner operations not yet certified for
+    /// NLL-based early release (deep-copy, drop, rebinding, field reads).
+    /// The alias -> owner relation survives NLL retirement, but expires at
+    /// the alias's *lexical* scope exit; it never grants ownership.
+    lexical_loan_guards: BTreeMap<u32, ScopedLoan>,
     /// Stable provenance: ending an NLL loan never grants ownership of its
     /// alias. Cleared only when the alias's declaring scope exits.
     borrowed_slots: BTreeSet<u32>,
@@ -2442,6 +2447,7 @@ impl<'a> FnCx<'a> {
             loop_floors: Vec::new(),
             moved: BTreeSet::new(),
             loans: BTreeMap::new(),
+            lexical_loan_guards: BTreeMap::new(),
             borrowed_slots: BTreeSet::new(),
             nll_fuel: NLL_WORK_BUDGET,
             state_write_scope: false,
@@ -2526,6 +2532,7 @@ impl<'a> FnCx<'a> {
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
         let loans = std::mem::take(&mut self.loans);
+        let lexical_loan_guards = std::mem::take(&mut self.lexical_loan_guards);
         let borrowed_slots = std::mem::take(&mut self.borrowed_slots);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         let prev_error = std::mem::replace(&mut self.recover_error, error);
@@ -2535,6 +2542,7 @@ impl<'a> FnCx<'a> {
         self.recover_cursor = prev_cursor;
         self.recover_error = prev_error;
         self.loans = loans;
+        self.lexical_loan_guards = lexical_loan_guards;
         self.borrowed_slots = borrowed_slots;
         self.moved = moved;
         self.loops = loops;
@@ -2645,6 +2653,7 @@ impl<'a> FnCx<'a> {
         if let Some(ended) = self.scopes.pop() {
             for l in ended {
                 self.loans.remove(&l.slot);
+                self.lexical_loan_guards.remove(&l.slot);
                 self.borrowed_slots.remove(&l.slot);
                 self.moved.remove(&l.slot);
             }
@@ -2778,7 +2787,10 @@ impl<'a> FnCx<'a> {
                         format!("cannot reassign val binding '{name}'"),
                     ));
                 }
-                if self.borrowed_slots.contains(&slot) || self.loans.values().any(|loan| loan.owner == slot) {
+                if self.borrowed_slots.contains(&slot)
+                    || self.loans.values().any(|loan| loan.owner == slot)
+                    || self.lexical_loan_guards.values().any(|loan| loan.owner == slot)
+                {
                     return Err(Diagnostic::new(*pos, "E_BORROW", "cannot reassign a borrowed alias or owner while a loan is live"));
                 }
                 let v = self.consume_expected(value, ty)?;
@@ -2886,7 +2898,9 @@ impl<'a> FnCx<'a> {
                             "cannot drop an already moved or dropped owner"));
                     }
                     if self.loans.contains_key(&slot)
-                        || self.loans.values().any(|loan| loan.owner == slot) {
+                        || self.loans.values().any(|loan| loan.owner == slot)
+                        || self.lexical_loan_guards.values().any(|loan| loan.owner == slot)
+                    {
                         return Err(Diagnostic::new(e.pos, "E_BORROW",
                             "cannot drop an owner while an active loan exists"));
                     }
@@ -3643,6 +3657,7 @@ impl<'a> FnCx<'a> {
         }
         let slot = self.declare(name, value.ty, false, pos)?;
         self.loans.insert(slot, ScopedLoan { owner, mutable });
+        self.lexical_loan_guards.insert(slot, ScopedLoan { owner, mutable });
         self.borrowed_slots.insert(slot);
         Ok(TStmt::ClassBorrow { alias: slot, owner, mutable, value })
     }
@@ -3690,6 +3705,7 @@ impl<'a> FnCx<'a> {
                             if let Some(owner_slot) = self.lookup(name).map(|l| l.slot) {
                                 if self.loans.contains_key(&owner_slot)
                                     || self.loans.values().any(|l| l.owner == owner_slot && l.mutable)
+                                    || self.lexical_loan_guards.values().any(|l| l.owner == owner_slot && l.mutable)
                                 {
                                     return Err(Diagnostic::new(pos, "E_BORROW",
                                         "copy!! cannot read a mutable/exclusive borrowed class owner"));
@@ -4582,7 +4598,8 @@ impl<'a> FnCx<'a> {
         // This is particularly important for compiler-generated tuple roots:
         // their scalar projections must not bypass an existing mutable loan.
         if matches!(&obj.e, TExpr::Local(slot) if
-            self.loans.values().any(|loan| loan.owner == *slot && loan.mutable))
+            (self.loans.values().any(|loan| loan.owner == *slot && loan.mutable)
+                || self.lexical_loan_guards.values().any(|loan| loan.owner == *slot && loan.mutable)))
         {
             return Err(Diagnostic::new(pos, "E_BORROW",
                 "cannot read owner fields while an exclusive mutable loan is live"));
