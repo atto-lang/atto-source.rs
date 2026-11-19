@@ -183,7 +183,11 @@ fn as_code(tokens: &[Token]) -> R<String> {
             Tok::Ident(s) => s.clone(),
             Tok::Int(Some(v)) => v.to_string(),
             Tok::Int(None) => "9223372036854775808".to_string(),
-            Tok::Float(bits) => f64::from_bits(*bits).to_string(),
+            Tok::Float(bits) => {
+                let mut n = f64::from_bits(*bits).to_string();
+                if !n.contains('.') && !n.contains('e') && !n.contains('E') { n.push_str(".0"); }
+                n
+            },
             Tok::Str(s) => format!("{s:?}"),
             Tok::LParen => "(".to_string(), Tok::RParen => ")".to_string(),
             Tok::LBrace => "{".to_string(), Tok::RBrace => "}".to_string(),
@@ -249,7 +253,7 @@ fn checked_rhs(rhs: &[Token], functions: &BTreeMap<String, usize>, pos: Pos) -> 
         "tuple destructuring requires a scalar tuple literal or a function returning Tuple<...>"))
 }
 
-fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<String, usize>) -> R<()> {
+fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<String, usize>, shapes: &[Shape]) -> R<()> {
     let bindings = tuple_binding_admission::inspect(tokens)?;
     for (i, b) in bindings.iter().enumerate().rev() {
         let mut end = b.rhs_start_index;
@@ -269,6 +273,24 @@ fn lower_bindings(tokens: &mut Vec<Token>, functions: &BTreeMap<String, usize>) 
         }
         let rhs = &tokens[b.rhs_start_index..end];
         checked_rhs(rhs, functions, b.pos)?;
+        let actual_arity = if let Some(items) = tuple_items(rhs) {
+            items.len()
+        } else {
+            let callee = id(&rhs[0]).unwrap_or_default();
+            let index = *functions.get(callee).ok_or_else(|| error(b.pos,
+                "E_UNSUPPORTED", "tuple-returning callable is not statically known"))?;
+            shapes[index].0.len()
+        };
+        if actual_arity != b.members.len() {
+            return Err(error(b.pos, "E_ARITY",
+                "tuple destructuring binder count must equal initializer tuple arity"));
+        }
+        if b.members.iter().any(|m| m.name.is_some()
+            && m.mode == BindingMode::Const && m.mutable_referent)
+        {
+            return Err(error(b.pos, "E_CONST_MUT_TARGET",
+                "const mut on a Copy-scalar tuple element is not meaningful"));
+        }
         let want_const = b.alias.as_ref().is_some_and(|a| a.mode == BindingMode::Const)
             || b.members.iter().any(|m| m.name.is_some() && m.mode == BindingMode::Const);
         if want_const && !constant_tuple(rhs) {
@@ -341,7 +363,7 @@ pub fn lower(mut tokens: Vec<Token>) -> R<Vec<Token>> {
     let mut shapes = Vec::new();
     rewrite_types(&mut tokens, &mut shapes)?;
     let functions = tuple_functions(&tokens, &shapes);
-    lower_bindings(&mut tokens, &functions)?;
+    lower_bindings(&mut tokens, &functions, &shapes)?;
     rewrite_literal_tuples(&mut tokens, &mut shapes)?;
     if shapes.is_empty() { return Ok(tokens); }
     let pos = tokens.first().map_or(Pos::default(), |t| t.pos);
