@@ -644,7 +644,7 @@ impl Parser {
                         return Err(Diagnostic::new(self.pos(), "E_STATE",
                             "protected state fields must start with let, as in Java"));
                     }
-                    let parsed = self.parse_type_first_field(false, FieldMode::ActorState)?;
+                    let parsed = self.parse_type_first_field(false, FieldMode::ActorState, FieldBinding::ActorState, false)?;
                     if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
                         return Err(Diagnostic::new(parsed.field.pos, "E_UNSUPPORTED_TYPE",
                             "Worker-local state container admits only owned int/bool fields"));
@@ -847,14 +847,14 @@ impl Parser {
                     } else if actor {
                         return Err(self.expected("'name: type' after 'final' in an actor"));
                     } else {
-                        self.eat_word("mut");
-                        let f = self.parse_type_first_field(public, FieldMode::Final)?;
+                        let referent_mutable = self.eat_word("mut");
+                        let f = self.parse_type_first_field(public, FieldMode::Final, FieldBinding::Final, referent_mutable)?;
                         m.fields.push(f.field);
                     }
                 }
                 Some("mut") if !actor => {
                     self.advance();
-                    let f = self.parse_type_first_field(public, FieldMode::Constructor)?;
+                    let f = self.parse_type_first_field(public, FieldMode::Constructor, FieldBinding::Let, true)?;
                     m.fields.push(f.field);
                 }
                 Some(w @ ("let" | "val" | "const")) => {
@@ -863,14 +863,21 @@ impl Parser {
                         ("let", false) => FieldMode::Constructor,
                         _ => FieldMode::Final,
                     };
+                    let binding = match (w, actor) {
+                        ("let", true) => FieldBinding::ActorState,
+                        ("let", false) => FieldBinding::Let,
+                        ("val", _) => FieldBinding::Val,
+                        ("const", _) => FieldBinding::Const,
+                        _ => unreachable!("exhaustive field keyword"),
+                    };
                     self.advance();
-                    if self.is_word("mut") && w != "val" {
-                        self.advance();
-                    }
+                    // In 'val mut T x', val still forbids name rebinding while
+                    // mut requests separately checked writes through the object.
+                    let referent_mutable = self.eat_word("mut");
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                         return Err(self.expected("a field type before the field name"));
                     }
-                    let f = self.parse_type_first_field(public, mode)?;
+                    let f = self.parse_type_first_field(public, mode, binding, referent_mutable)?;
                     if f.init_was_colon {
                         return Err(Diagnostic::new(
                             f.field.init.pos,
@@ -921,7 +928,7 @@ impl Parser {
                     // Do not apply this to locals: bare type-first locals are const.
                     // FieldMode::Constructor is the currently implemented subset;
                     // verified post-construction mutable self support is pending.
-                    let f = self.parse_type_first_field(public, FieldMode::Constructor)?;
+                    let f = self.parse_type_first_field(public, FieldMode::Constructor, FieldBinding::Let, false)?;
                     m.fields.push(f.field);
                 }
                 _ => {
@@ -952,12 +959,17 @@ impl Parser {
             ty,
             public,
             mode: FieldMode::Final,
+            binding: FieldBinding::Final,
+            referent_mutable: false,
             init,
         })
     }
 
     /// `type name (":" | "=") expr`.
-    fn parse_type_first_field(&mut self, public: bool, mode: FieldMode) -> R<TypeFirstField> {
+    fn parse_type_first_field(
+        &mut self, public: bool, mode: FieldMode,
+        binding: FieldBinding, referent_mutable: bool,
+    ) -> R<TypeFirstField> {
         let ty = self.parse_type()?;
         let (name, pos) = self.ident("a field name")?;
         let init_was_colon = if self.eat(&Tok::Colon) {
@@ -976,6 +988,8 @@ impl Parser {
                 ty,
                 public,
                 mode,
+                binding,
+                referent_mutable,
                 init,
             },
             init_was_colon,
