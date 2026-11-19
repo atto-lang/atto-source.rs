@@ -249,6 +249,8 @@ fn programmatic_receive_payload_and_target_interface_fail_closed() {
         p.actors.push(ActorDecl {
             name: "Worker".to_string(),
             pos,
+            persistence: atto_compiler::ast::ActorPersistenceMode::Volatile,
+            persistence_hooks: Vec::new(),
             fields: Vec::new(),
             methods: Vec::new(),
             receive: Some(Receive {

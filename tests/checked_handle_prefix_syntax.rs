@@ -148,6 +148,8 @@ fn checked_handle_gate_checks_all_declaration_containers() {
     program.classes.clear();
     program.actors.push(ActorDecl {
         name: "Worker".into(), pos,
+        persistence: atto_compiler::ast::ActorPersistenceMode::Volatile,
+        persistence_hooks: Vec::new(),
         fields: vec![make_field()], receive: None, methods: Vec::new(),
     });
     assert_eq!(check::check(&program).unwrap_err().code, "E_UNSUPPORTED_HANDLE");
@@ -176,6 +178,7 @@ fn checked_handle_preflight_has_finite_depth_for_untrusted_ast_builders() {
     let mut program = Program::default();
     program.funcs.push(Func {
         name: "main".into(), pos, is_generator: false, is_pure: false,
+        declared_effects: None,
         params: Vec::new(), ret: Type::Int,
         body: vec![Stmt::Return(Some(value), pos)],
     });
