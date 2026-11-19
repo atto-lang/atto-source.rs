@@ -309,3 +309,21 @@ fn decoded_string_byte_quota_cannot_be_bypassed_by_escapes() {
     assert_eq!(error.code, "E_SOURCE_LIMIT",
         "decoded string escapes must obey MAX_STRING_BYTES");
 }
+
+#[test]
+fn private_tuple_storage_has_explicit_constructor_write_authority() {
+    let source = "pub fnc main(): int {
+        let (a,b) as val root = (11, 12);
+        return a+b;
+    }";
+    let tokens = lower(lex(source).unwrap()).unwrap();
+    assert!(tokens.windows(4).any(|slice| matches!(
+        (&slice[0].tok, &slice[1].tok, &slice[2].tok, &slice[3].tok),
+        (atto_compiler::lexer::Tok::Ident(pub_kw),
+         atto_compiler::lexer::Tok::Ident(let_kw),
+         atto_compiler::lexer::Tok::Ident(ty),
+         atto_compiler::lexer::Tok::Ident(field))
+         if pub_kw == "pub" && let_kw == "let" && ty == "int" && field == "e0"
+    )), "internal constructor-initialized fields must be 'pub let' under default-val class semantics");
+    assert!(compile(source).is_ok(), "constructor must initialize private tuple fields");
+}
