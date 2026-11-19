@@ -9,6 +9,9 @@
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
+/// Host-only stage/replay gate; not an authenticated wire or compiled Atto guest ABI.
+pub mod proxy_receipt_gate_v1;
+
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
 pub mod collection_layout;
 /// Target-ABI-agnostic checked scalar layout planning; no guest allocation.
