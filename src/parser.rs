@@ -3344,11 +3344,13 @@ impl Parser {
                     "unref" => OwnershipOp::Unref,
                     _ => unreachable!(),
                 };
+                // End the peek() lexical borrow before mutating token cursor.
+                let action_word_len = s.len() as u32;
                 self.advance(); // name
                 let first_bang = self.advance(); // !
                 if matches!(action, OwnershipOp::Ref | OwnershipOp::Deref | OwnershipOp::Unref)
                     && (first_bang.pos.line != pos.line
-                        || first_bang.pos.col != pos.col + s.len() as u32)
+                        || first_bang.pos.col != pos.col + action_word_len)
                 {
                     return Err(Diagnostic::new(pos, "E_SYNTAX",
                         "ref!, deref! and unref! require an attached '!' marker"));

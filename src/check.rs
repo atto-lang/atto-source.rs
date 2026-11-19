@@ -1845,9 +1845,11 @@ fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffe
         let next = match stmt {
             TStmt::Set(_, value) | TStmt::GlobalSet(_, value)
             | TStmt::Expr(value) | TStmt::StateRegister(value)
-            | TStmt::Return(Some(value)) =>
+            | TStmt::Return(Some(value))
+            | TStmt::ClassBorrow { value, .. } =>
                 expr_escape_effects(value, effects),
             TStmt::Return(None) | TStmt::UnwindFrame { .. }
+            | TStmt::ClassLoanEnd { .. }
             | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
             | TStmt::Unreachable => EscapeEffects::default(),
             TStmt::Throw(value) => expr_escape_effects(value, effects)
