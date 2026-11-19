@@ -210,6 +210,10 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    /// Checked nonowning class-loan typed IR marker. Never grants owner retirement rights.
+    ClassBorrow { alias: u32, owner: u32, mutable: bool, value: TE },
+    /// Static end of a loan interval; not deallocation or owner promotion.
+    ClassLoanEnd { alias: u32, owner: u32, mutable: bool },
     /// Compiler-planned scalar i64 cell store inside an owned Array allocation.
     /// Its offset is checked against the resolved nominal layout/length.
     CollectionStore { array: TE, offset: u32, value: TE },
@@ -811,12 +815,266 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
     Ok(())
 }
 
+/// Check the opt-in, versioned read-only borrowing default for top-level
+/// nonprimitive class formals. Ordinary `fnc inspect(Foo foo)` is checked as
+/// `fnc inspect(Borrow<Foo> foo)` without requiring the latter source spelling.
+///
+/// IMPORTANT: this is deliberately a *bounded migration mode*, not a global
+/// change to existing compiled programs. Reuse the same checker-owned class
+/// loan facts, checked argument provenance and borrowed formal identity as
+/// explicit `Borrow<Foo>`, without generating any phantom owned locals.
+///
+/// Unsupported method/constructor/actor class parameters are rejected rather
+/// than quietly retaining the legacy implicit-move semantics in this mode.
+/// Mutable loans, returned reference lifetimes and generics still require
+/// separate typed proof before enabling this mode as the language default.
+pub fn check_borrow_v1(p: &Program) -> R<TProgram> {
+    // This is a public compiler API, including direct (non-parser) callers.
+    // Apply the source parser's cardinality limits *before* cloning the AST,
+    // and before any allocation proportional to arbitrary caller-controlled
+    // declarations. Limits cover declarations and their immediate members;
+    // deep AST trees still rely on the parser's nesting/source admission.
+    let invalid_shape = p.funcs.len() > crate::parser::MAX_FUNCS
+        || p.classes.len() > crate::parser::MAX_FUNCS
+        || p.actors.len() > crate::parser::MAX_FUNCS
+        || p.enums.len() > crate::parser::MAX_FUNCS
+        || p.funcs.iter().any(|f| f.params.len() > crate::parser::MAX_PARAMS)
+        || p.classes.iter().any(|c| {
+            c.fields.len().saturating_add(c.methods.len())
+                .saturating_add(usize::from(c.ctor.is_some())) > crate::parser::MAX_MEMBERS
+                || c.ctor.as_ref().is_some_and(|ctor| ctor.params.len() > crate::parser::MAX_PARAMS)
+                || c.methods.iter().any(|m| m.params.len() > crate::parser::MAX_PARAMS)
+        })
+        || p.actors.iter().any(|a| {
+            a.fields.len().saturating_add(a.methods.len())
+                .saturating_add(usize::from(a.receive.is_some())) > crate::parser::MAX_MEMBERS
+                || a.methods.iter().any(|m| m.params.len() > crate::parser::MAX_PARAMS)
+        })
+        || p.enums.iter().any(|e| e.variants.len() > crate::parser::MAX_MEMBERS);
+    if invalid_shape {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_SOURCE_LIMIT",
+            "borrow-v1: programmatic AST exceeds parser declaration or parameter limits"));
+    }
+    // Target-only actor interfaces have no verified executable ownership or
+    // borrow ABI; a direct caller must not bypass the source-only admission
+    // gate and let their signatures silently disappear during codegen.
+    if p.actor_interface.is_some() {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_UNSUPPORTED_TYPE",
+            "borrow-v1: actor interfaces need an executable lifetime/receiver ABI"));
+    }
+
+    // The API also accepts programmatically constructed/rewritten ASTs.
+    // Reject forged or stale indices *before* any resolve() indexing,
+    // desugaring, typed checking, or code generation. Returning a diagnostic
+    // instead of panicking is part of the versioned borrow-mode boundary.
+    let validate_decl_type = |ty: Type, pos: Pos| -> R<()> {
+        let valid = match ty {
+            Type::Named(i) | Type::BorrowNamed(i) | Type::NamedRef(i) |
+            Type::Callable(i) => p.type_names.get(i as usize).is_some(),
+            Type::Class(i) | Type::BorrowClass(i) =>
+                p.classes.get(i as usize).is_some(),
+            Type::Enum(i) => p.enums.get(i as usize).is_some(),
+            Type::ActorRef(i) => p.actors.get(i as usize).is_some(),
+            _ => true,
+        };
+        if !valid {
+            return Err(Diagnostic::new(pos, "E_UNKNOWN_TYPE",
+                "borrow-v1: invalid or stale declaration type index"));
+        }
+        Ok(())
+    };
+    for f in &p.funcs {
+        validate_decl_type(f.ret, f.pos)?;
+        for param in &f.params {
+            validate_decl_type(param.ty, param.pos)?;
+        }
+    }
+    for c in &p.classes {
+        for field in &c.fields {
+            validate_decl_type(field.ty, field.pos)?;
+        }
+        if let Some(ctor) = &c.ctor {
+            for param in &ctor.params {
+                validate_decl_type(param.ty, param.pos)?;
+            }
+        }
+        for method in &c.methods {
+            validate_decl_type(method.ret, method.pos)?;
+            for param in &method.params {
+                validate_decl_type(param.ty, param.pos)?;
+            }
+        }
+    }
+    for actor in &p.actors {
+        for field in &actor.fields {
+            validate_decl_type(field.ty, field.pos)?;
+        }
+        // ActorMail<T> is a separate transport capability, not a class
+        // loan. Check even when the source parser would not emit this type:
+        // direct AST callers must never smuggle a forged receive payload
+        // into isolate/mailbox codegen.
+        if let Some(receive) = &actor.receive {
+            validate_decl_type(receive.payload, receive.pos)?;
+        }
+        for method in &actor.methods {
+            validate_decl_type(method.ret, method.pos)?;
+            for param in &method.params {
+                validate_decl_type(param.ty, param.pos)?;
+            }
+        }
+    }
+
+    let mut migrated = p.clone();
+    let class_names: BTreeSet<&str> = p.classes.iter().map(|c| c.name.as_str()).collect();
+    let is_class_formal = |ty: Type| match ty {
+        Type::Named(i) => p.type_names.get(i as usize)
+            .is_some_and(|(name, _)| class_names.contains(name.as_str())),
+        // Some compiler frontends synthesize already-resolved program ASTs.
+        // They must not bypass the versioned non-owning mode through Class.
+        Type::Class(_) | Type::BorrowClass(_) | Type::BorrowNamed(_) => true,
+        _ => false,
+    };
+
+    // A versioned mode must have one predictable ownership interpretation.
+    // This backend only proves top-level synchronous borrowed class formals.
+    // Class/actor methods and constructors must not silently continue moving
+    // their class arguments while ordinary functions change to borrowing.
+    for class in &p.classes {
+        if class.ctor.as_ref().is_some_and(|ctor|
+            ctor.params.iter().any(|q| is_class_formal(q.ty) || q.consuming))
+            || class.methods.iter().any(|method|
+                method.params.iter().any(|q| is_class_formal(q.ty) || q.consuming))
+        {
+            return Err(Diagnostic::new(class.pos, "E_UNSUPPORTED_TYPE",
+                "borrow-v1: class methods and constructors with class formals require verified receiver/parameter lifetimes"));
+        }
+    }
+    for actor in &p.actors {
+        if actor.methods.iter().any(|method|
+            method.params.iter().any(|q| is_class_formal(q.ty) || q.consuming))
+        {
+            return Err(Diagnostic::new(actor.pos, "E_UNSUPPORTED_TYPE",
+                "borrow-v1: actor methods with class formals require proven actor-domain lifetimes"));
+        }
+    }
+
+    let mut rewrites = 0usize;
+    for func in &mut migrated.funcs {
+        for formal in &mut func.params {
+            if formal.consuming {
+                if !is_class_formal(formal.ty) || formal.mutable
+                    || matches!(formal.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)) {
+                    return Err(Diagnostic::new(formal.pos, "E_UNSUPPORTED_TYPE",
+                        "borrow-v1: take! consuming formal requires an owned class, not a borrow or scalar"));
+                }
+                // Keep this formal owned. Its specific call-site marker is
+                // retained in Globals::sigs and checked before consumption.
+                continue;
+            }
+            if is_class_formal(formal.ty) && formal.mutable {
+                // A mutable formal is an explicit effect request. This mode
+                // cannot verify an exclusive caller loan or exported write
+                // contract yet. It must not quietly erase the mut permission.
+                return Err(Diagnostic::new(formal.pos, "E_UNSUPPORTED_TYPE",
+                    "borrow-v1: mutable class formals require verified exclusive argument loans"));
+            }
+            match formal.ty {
+                Type::Named(i) if p.type_names.get(i as usize)
+                    .is_some_and(|(name, _)| class_names.contains(name.as_str())) =>
+                {
+                    // Reuse exact source type index and position for
+                    // BorrowNamed resolution and checked call-loan emission.
+                    formal.ty = Type::BorrowNamed(i);
+                    rewrites += 1;
+                }
+                Type::Class(i) => {
+                    // An already-resolved compiler-generated class formal
+                    // must not evade the checked non-owning default. Verify
+                    // its type index before letting typed MIR see a reference.
+                    if p.classes.get(i as usize).is_none() {
+                        return Err(Diagnostic::new(formal.pos, "E_UNKNOWN_TYPE",
+                            "borrow-v1: invalid resolved class formal index"));
+                    }
+                    formal.ty = Type::BorrowClass(i);
+                    rewrites += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    // No source rewriting/token guessing and no unchecked ABI conversion.
+    // Even programs with zero class formals follow the same safety gates.
+    debug_assert!(rewrites <= p.funcs.iter().map(|f| f.params.len()).sum::<usize>());
+    if migrated.funcs.iter().any(|f| f.params.iter().any(|q| q.consuming)) {
+        // Checked-handle screening must still run on the complete original
+        // AST. Lambda lowering does not yet preserve consuming effects, so
+        // this versioned subset uses exact top-level checking instead.
+        checked_handle_gate::validate(&migrated)?;
+        return check_lowered(&migrated);
+    }
+    check(&migrated)
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
+    // An unversioned compile must never reinterpret a consuming-formal
+    // declaration as the old implicit-move ABI. Only --borrow-v1 registers
+    // and verifies these explicit transfer effects.
+    if p.funcs.iter().any(|f| f.params.iter().any(|q| q.consuming))
+        || p.classes.iter().any(|c| c.ctor.as_ref().is_some_and(|k|
+            k.params.iter().any(|q| q.consuming))
+            || c.methods.iter().any(|m| m.params.iter().any(|q| q.consuming)))
+        || p.actors.iter().any(|a| a.methods.iter().any(|m|
+            m.params.iter().any(|q| q.consuming))) {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 }, "E_UNSUPPORTED_TYPE",
+            "take! consuming formals require the versioned borrow-v1 profile"));
+    }
+    // The browser backend cannot execute checked handles. Validate the
+    // complete source AST *before* lambda lifting or generator CFG lowering:
+    // otherwise an unreachable branch, nested callback or declaration
+    // initializer might be rewritten away without proving handle safety.
+    checked_handle_gate::validate(p)?;
+    // Lambda lifting does not yet preserve borrowed-parameter provenance.
+    // Fail closed rather than producing lifted owned class captures.
+    if p.funcs.iter().any(|f| f.params.iter().any(|p|
+        matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)))) {
+        return check_lowered(p);
+    }
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
 
 fn check_lowered(p: &Program) -> R<TProgram> {
+    // For this bounded ABI, only top-level non-generator function formals
+    // can borrow classes. Lifetime-bearing returns/receivers/actors must not
+    // silently lower as ordinary owned handles.
+    for f in &p.funcs {
+        if matches!(f.ret, Type::BorrowNamed(_) | Type::BorrowClass(_))
+            || f.is_generator && f.params.iter().any(|p|
+                matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_))) {
+            return Err(Diagnostic::new(f.pos, "E_UNSUPPORTED_TYPE",
+                "Borrow<T> returns/generator parameters need lifetime-aware lowering"));
+        }
+    }
+    for c in &p.classes {
+        if c.ctor.as_ref().is_some_and(|ctor| ctor.params.iter().any(|p|
+            matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_))))
+            || c.methods.iter().any(|m|
+                matches!(m.ret, Type::BorrowNamed(_) | Type::BorrowClass(_))
+                || m.params.iter().any(|p|
+                    matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)))) {
+            return Err(Diagnostic::new(c.pos, "E_UNSUPPORTED_TYPE",
+                "Borrow<T> class method and constructor parameters require receiver lifetime proof"));
+        }
+    }
+    for a in &p.actors {
+        if a.methods.iter().any(|m|
+            matches!(m.ret, Type::BorrowNamed(_) | Type::BorrowClass(_))
+            || m.params.iter().any(|p|
+                matches!(p.ty, Type::BorrowNamed(_) | Type::BorrowClass(_)))) {
+            return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
+                "Borrow<T> actor methods require actor isolation/lifetime proof"));
+        }
+    }
     // Validate the bounded CFG and integer-only suspension/lifetime profile
     // before registering signatures. Reject unsupported generator effects
     // before emission; never substitute eager iterator materialization.
@@ -2086,6 +2344,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
     body.iter().any(|s| match s {
         TStmt::Set(_, e) | TStmt::GlobalSet(_, e) | TStmt::Expr(e) |
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
+        TStmt::ClassBorrow { value, .. } => any_in(value, f),
+        TStmt::ClassLoanEnd { .. } => false,
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
         TStmt::CollectionStore { array, value, .. } =>
@@ -2264,6 +2524,7 @@ impl<'a> FnCx<'a> {
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
         let loans = std::mem::take(&mut self.loans);
+        let borrowed_slots = std::mem::take(&mut self.borrowed_slots);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
         let prev_error = std::mem::replace(&mut self.recover_error, error);
         self.cleanup_depth += 1;
@@ -2272,6 +2533,7 @@ impl<'a> FnCx<'a> {
         self.recover_cursor = prev_cursor;
         self.recover_error = prev_error;
         self.loans = loans;
+        self.borrowed_slots = borrowed_slots;
         self.moved = moved;
         self.loops = loops;
         self.scopes = scopes;
