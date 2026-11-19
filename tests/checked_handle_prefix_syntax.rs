@@ -126,8 +126,12 @@ fn checked_handle_gate_checks_all_declaration_containers() {
         })),
     };
     let make_field = || Field {
-        name: "slot".into(), pos, ty: Type::Int, public: false,
-        mode: FieldMode::Final, init: make_handle(),
+        name: "slot".into(), pos, ty: Type::Int,
+        visibility: atto_compiler::ast::FieldVisibility::Private,
+        mode: FieldMode::Final,
+        binding: atto_compiler::ast::FieldBinding::Final,
+        referent_mutable: false,
+        init: make_handle(),
     };
     let make_method = || Method {
         name: "get".into(), pos, public: false, is_static: false,
@@ -238,7 +242,8 @@ fn synthetic_binary_spine_still_has_an_explicit_security_bound() {
     let mut program = Program::default();
     program.funcs.push(Func {
         name: "main".into(), pos,
-        is_generator: false, is_pure: false, params: Vec::new(),
+        is_generator: false, is_pure: false, declared_effects: None,
+        params: Vec::new(),
         ret: Type::Int, body: vec![Stmt::Return(Some(current), pos)]
     });
     assert_eq!(check::check(&program).unwrap_err().code, "E_NESTING");
