@@ -45,6 +45,8 @@ pub mod value_class_admission;
 pub mod nominal_lower;
 /// Source-located actor/struct conformance admission; never an executable ABI.
 pub mod nominal_contract_admission;
+/// Checked actor-local interface receiver lowering; never external ActorRef dispatch.
+pub mod actor_implements_lower;
 /// Explicitly unlinked foreign prototypes and source-only exports.
 pub mod visibility_lower;
 /// Direct routine-only and statically specialized named callbacks.
@@ -76,17 +78,22 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    let source_tokens = lexer::lex(source)?;
-    // Parse unlowered type headers precisely rather than treating them as values.
-    // A passing syntax check is never mistaken for runnable Wasm support.
-    if type_declarations::contains_type_declaration(&source_tokens) {
-        type_declarations::parse_tokens(&source_tokens)?;
-        return Err(Diagnostic::new(source_tokens[0].pos, "E_UNSUPPORTED",
+    let original_tokens = lexer::lex(source)?;
+    // A type-declaration syntax preflight must not publish a fake guest artifact.
+    if type_declarations::contains_type_declaration(&original_tokens) {
+        type_declarations::parse_tokens(&original_tokens)?;
+        return Err(Diagnostic::new(original_tokens[0].pos, "E_UNSUPPORTED",
             "type declarations require verified union layout and nominal linking before browser Wasm emission"));
     }
-    // Verify actor/struct implementation obligations before any specialized
-    // compilation path can short-circuit into emitting a guest artifact.
-    nominal_contract_admission::preflight(&source_tokens)?;
+    // Only fully validated actor-local interface methods are attached to
+    // an existing actor receive. No generic ActorRef or struct shortcut.
+    let source_tokens = if let Some(lowered) =
+        actor_implements_lower::lower(&original_tokens)? {
+        lowered
+    } else {
+        nominal_contract_admission::preflight(&original_tokens)?;
+        original_tokens
+    };
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
