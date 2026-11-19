@@ -1696,6 +1696,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             name(&mut job, "atto.job.abi");
             job.extend_from_slice(&[1,0]); // revision 1, reserved byte 0
             section(&mut out, 0, job);
+            // Per-actor route bit. Mixed guest modules preserve legacy
+            // actor_receive for their ordinary ActorMail/plain handlers.
+            let mut routes = Vec::new();
+            name(&mut routes, "atto.job.actors");
+            routes.extend(p.actors.iter().map(|a| u8::from(a.job)));
+            section(&mut out, 0, routes);
         }
     }
     out
