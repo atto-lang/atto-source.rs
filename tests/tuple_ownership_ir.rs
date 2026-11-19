@@ -195,3 +195,30 @@ fn scope_end_cannot_release_another_scope_loan() {
     assert!(o.borrow_field(0, LoanKind::Exclusive, 3, pos()).is_ok());
     assert_eq!(code(o.borrow_field(2, LoanKind::Shared, 3, pos())), "E_BORROW");
 }
+
+#[test]
+fn duplicate_field_names_never_leak_half_acquired_loans() {
+    let mut o = owner(BindingMode::Let);
+    let failed = o.project(&[
+        binding("same", BindingMode::Let, false),
+        discarded(),
+        binding("same", BindingMode::Let, false),
+    ], 9, pos());
+    assert_eq!(code(failed), "E_DUPLICATE");
+    assert_eq!(o.active_loans(), 0);
+}
+#[test]
+fn rebinding_invalidates_prior_const_provenance_even_with_same_shape() {
+    let ty = shape(vec![scalar(Scalar::Int)]);
+    let mut o = TupleOwner::new(ty.clone(), BindingMode::Let, true, pos()).unwrap();
+    assert!(o.project(&[binding("x", BindingMode::Const, false)], 1, pos()).is_ok());
+    o.rebind_root(&ty, pos()).unwrap();
+    assert_eq!(code(o.project(&[binding("y", BindingMode::Const, false)], 2, pos())), "E_CONST");
+}
+#[test]
+fn const_root_cannot_acquire_mutable_whole_tuple_loan() {
+    let ty = shape(vec![scalar(Scalar::Int)]);
+    let mut o = TupleOwner::new(ty, BindingMode::Const, true, pos()).unwrap();
+    assert_eq!(code(o.borrow_root(LoanKind::Exclusive, 1, pos())), "E_CONST_MUT_TARGET");
+    assert!(o.borrow_root(LoanKind::Shared, 1, pos()).is_ok());
+}
