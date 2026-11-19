@@ -86,6 +86,15 @@ fn explicit_dotted_and_folder_derived_namespace_headers_link() {
 }
 
 #[test]
+fn standalone_use_identifier_does_not_become_a_namespace_header() {
+    // "use namespace" is a source header, but "use" alone is not reserved.
+    // A valid local name inside main must not be rejected by header scanning.
+    let with_use = ENTRY.replace("return 0;", "let int use = 0; return use;");
+    let linked = compile(&with_use, MATH);
+    assert!(linked.is_ok(), "local identifier named use must link: {linked:?}");
+}
+
+#[test]
 fn missing_default_namespace_depth_and_misplaced_headers_fail_closed() {
     let too_deep = ENTRY.replace("use namespace storefront;", "use default namespace(2);");
     let diagnostic = compile(&too_deep, MATH).expect_err("src/main.atto has only one parent folder");
