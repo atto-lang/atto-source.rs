@@ -49,7 +49,7 @@ pub struct ConstructorSite {
 #[derive(Clone, Debug, Default)]
 pub struct TargetHeaders {
     pub namespace: Option<String>,
-    /// Imported module aliases. Imports are not resolved or linked here.
+    /// Local names of static imports. Export paths are not resolved or linked here.
     pub imports: Vec<String>,
     pub actors: Vec<String>,
     /// Non-instantiating class forward declarations.
@@ -107,6 +107,39 @@ impl Cursor<'_> {
             }
             _ => Err(self.err("E_SYNTAX", "expected an identifier")),
         }
+    }
+    /// Statically select exported names. This parse-only stage collects local
+    /// bindings; export visibility and nested-module resolution need a linker.
+    fn import_members(&mut self, locals: &mut Vec<String>, depth: usize) -> R<()> {
+        if depth >= 8 {
+            return Err(self.err("E_SOURCE_LIMIT", "import selector nesting exceeds 8 levels"));
+        }
+        self.expect(&Tok::LBrace, "expected '{' for named imports")?;
+        if self.take(&Tok::RBrace) {
+            return Err(self.err("E_SYNTAX", "empty import selection"));
+        }
+        loop {
+            if locals.len() >= 256 {
+                return Err(self.err("E_SOURCE_LIMIT", "too many imported bindings"));
+            }
+            let exported = self.ident()?;
+            if self.take(&Tok::Colon) {
+                self.import_members(locals, depth + 1)?;
+            } else {
+                let local = if self.take_word("as") { self.ident()? } else { exported };
+                if locals.contains(&local) {
+                    return Err(self.err("E_DUPLICATE", format!("duplicate import binding '{local}'")));
+                }
+                locals.push(local);
+            }
+            if self.take(&Tok::Comma) {
+                if self.take(&Tok::RBrace) { break; }
+            } else {
+                self.expect(&Tok::RBrace, "expected '}' after import selection")?;
+                break;
+            }
+        }
+        Ok(())
     }
     /// Bounded type-only lookahead for '<-' before a named callable.
     /// No expression operators are accepted in this declaration position.
@@ -456,18 +489,43 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
                !out.constructors.is_empty() || !out.receivers.is_empty() {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
             }
-            c.expect_word("module")?;
-            let alias = c.ident()?;
-            if out.imports.contains(&alias) {
-                return Err(c.err("E_DUPLICATE", format!("duplicate module import '{alias}'")));
-            }
+            let mut bindings = Vec::new();
+            let legacy_pkg = if c.take_word("module") {
+                // Legacy import module name from "./file.atto" syntax.
+                bindings.push(c.ident()?);
+                false
+            } else if c.take_word("pkg") {
+                // Legacy import pkg name from "+/package" syntax.
+                bindings.push(c.ident()?);
+                true
+            } else if c.take(&Tok::Star) {
+                c.expect_word("as")?;
+                bindings.push(c.ident()?);
+                false
+            } else if *c.tok() == Tok::LBrace {
+                c.import_members(&mut bindings, 0)?;
+                false
+            } else {
+                return Err(c.err("E_SYNTAX", "expected '* as name' or '{ exported }' in import"));
+            };
             c.expect_word("from")?;
-            match c.tok() {
-                Tok::Str(_) => c.next(),
-                _ => return Err(c.err("E_SYNTAX", "expected a quoted module import path")),
+            let package = legacy_pkg || c.take_word("pkg");
+            match c.tok().clone() {
+                Tok::Str(path) if !path.is_empty() => {
+                    if package && (path.starts_with("./") || path.starts_with("../")) {
+                        return Err(c.err("E_SYNTAX", "package imports cannot use relative file paths"));
+                    }
+                    c.next();
+                }
+                _ => return Err(c.err("E_SYNTAX", "expected a nonempty quoted import path")),
             }
-            c.expect(&Tok::Semi, "expected ';' after module import")?;
-            out.imports.push(alias);
+            c.expect(&Tok::Semi, "expected ';' after import")?;
+            for alias in bindings {
+                if out.imports.contains(&alias) {
+                    return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
+                }
+                out.imports.push(alias);
+            }
         } else if c.take_word("define") {
             if c.take_word("state") {
                 let owner = c.state_attachment()?;
