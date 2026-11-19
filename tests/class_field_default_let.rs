@@ -1,7 +1,7 @@
 //! Class-field default binding mode regression: this is parser/compiler-subset
 //! evidence, NOT proof of mutable receiver, val mut, const evaluation or AOT parity.
 use atto_compiler::{compile, lexer::lex, parser::Parser};
-use atto_compiler::ast::FieldMode;
+use atto_compiler::ast::{FieldBinding, FieldMode};
 
 #[test]
 fn bare_class_fields_are_let_for_scalar_string_and_class_types() {
@@ -26,11 +26,20 @@ fn bare_class_fields_are_let_for_scalar_string_and_class_types() {
         let field = holder.fields.iter().find(|f| f.name == field_name).unwrap();
         assert_eq!(field.mode, FieldMode::Constructor,
             "implicit class-field mode must be independent of primitive or object type: {field_name}");
+        assert_eq!(field.binding, FieldBinding::Let, "{field_name} must be let");
+        assert!(!field.referent_mutable, "{field_name} must not imply mut");
     }
     for field_name in ["stable", "fixed", "limit"] {
         let field = holder.fields.iter().find(|f| f.name == field_name).unwrap();
         assert_eq!(field.mode, FieldMode::Final,
-            "existing Rust parser treats val/final/const as immutable: {field_name}");
+            "existing storage mode treats val/final/const as immutable: {field_name}");
+        let expected = match field_name {
+            "stable" => FieldBinding::Val,
+            "fixed" => FieldBinding::Final,
+            "limit" => FieldBinding::Const,
+            _ => unreachable!(),
+        };
+        assert_eq!(field.binding, expected, "source modifier must survive parsing");
     }
 }
 
@@ -79,4 +88,52 @@ fn let_default_does_not_grant_mutable_readonly_receiver() {
     "#;
     let diagnostic = compile(source).unwrap_err();
     assert_eq!(diagnostic.code, "E_OWNERSHIP", "{diagnostic}");
+}
+
+#[test]
+fn val_mut_and_let_mut_retain_separate_binding_and_referent_flags() {
+    let src = r#"
+        define class Cell as
+          pub val mut int anchored = 7;
+          pub let mut int replaceable = 8;
+          pub mut int short_let = 9;
+          pub int default_let = 10;
+          pub const int fixed = 11;
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let p = Parser::new(lex(src).unwrap()).parse_program().unwrap();
+    let f = &p.classes[0].fields;
+    assert_eq!(f.len(), 5);
+    assert_eq!((f[0].binding, f[0].referent_mutable), (FieldBinding::Val, true));
+    assert_eq!((f[1].binding, f[1].referent_mutable), (FieldBinding::Let, true));
+    assert_eq!((f[2].binding, f[2].referent_mutable), (FieldBinding::Let, true));
+    assert_eq!((f[3].binding, f[3].referent_mutable), (FieldBinding::Let, false));
+    assert_eq!((f[4].binding, f[4].referent_mutable), (FieldBinding::Const, false));
+}
+
+#[test]
+fn class_const_rejects_runtime_initializer_with_distinct_diagnostic() {
+    let src = r#"
+        fnc runtime_number(): int { return 5; }
+        define class Invalid as
+          pub const int limit = runtime_number();
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let d = compile(src).unwrap_err();
+    assert_eq!(d.code, "E_CONST", "{d}");
+}
+
+#[test]
+fn val_mut_binding_cannot_be_reassigned_in_constructor() {
+    let src = r#"
+        define class Cell as
+          pub val mut int anchored = 7;
+          constructor() { self.anchored = 8; }
+        end
+        pub fnc main(): int { return 0; }
+    "#;
+    let d = compile(src).unwrap_err();
+    assert_eq!(d.code, "E_IMMUTABLE", "{d}");
 }
