@@ -1,5 +1,5 @@
 // expect-exit: 42
-// Compiled guest oracle: package-visible immutable field and explicit constructor let.
+// Compiled guest oracle: package-visible implicit-let field and explicit constructor let.
 define class Vault as
     private val int secret = 99;
     pub[pkg] int id = 10;
