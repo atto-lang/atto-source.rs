@@ -3095,6 +3095,29 @@ impl Parser {
             c = Expr { kind: ExprKind::Call(name, args), pos };
         }
         self.height -= links;
+        // Right-associative application: f <| g <| x == f(g(x)).
+        // Lower only ordinary named calls; reject computed, receiver, actor
+        // and dynamic callees rather than generating an unverified ABI.
+        if *self.peek() == Tok::PipeLt {
+            let pos = self.pos();
+            let (name, mut args) = match c.kind {
+                ExprKind::Var(name) => (name, Vec::new()),
+                ExprKind::Call(name, args) if links == 0 => (name, args),
+                _ => return Err(unsupported(pos, "reverse-pipeline callee other than an ordinary named function")),
+            };
+            if args.len() >= MAX_PARAMS {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "pipeline exceeds the call argument limit"));
+            }
+            self.advance();
+            self.enter()?;
+            let argument = self.parse_ternary();
+            self.leave();
+            let argument = argument?;
+            self.grow(1)?;
+            args.insert(0, argument);
+            c = Expr { kind: ExprKind::Call(name, args), pos };
+            self.height -= 1;
+        }
         match self.peek() {
             Tok::Pipe => {
                 return Err(Diagnostic::new(
@@ -3813,6 +3836,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Question => "?",
                 Tok::Pipe => "|",
                 Tok::PipeGt => "|>",
+                Tok::PipeLt => "<|",
                 Tok::Amp => "&",
                 Tok::At => "@",
                 _ => "?",
