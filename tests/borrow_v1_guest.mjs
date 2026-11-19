@@ -61,6 +61,8 @@ const pass = [
   '02-explicit-implicit-equivalence.atto',
   '03-two-readers-one-call.atto',
   '04-legacy-scalar-unchanged.atto',
+  '05-explicit-owned-transfer.atto',
+  '06-consuming-name-colon-syntax.atto',
 ];
 const fail = [
   '01-borrowed-parameter-not-owned.atto',
@@ -70,6 +72,10 @@ const fail = [
   '05-returned-loan-not-implemented.atto',
   '06-method-class-formal-not-admitted.atto',
   '07-mutable-class-formal-needs-exclusive-abi.atto',
+  '08-take-formal-requires-take-call.atto',
+  '09-consumed-owner-is-moved.atto',
+  '10-take-formal-no-temporary.atto',
+  '11-take-formal-no-readonly-borrow.atto',
 ];
 const positiveBytes = [];
 let decisions = 0;

@@ -1,0 +1,9 @@
+// expect-exit: 42
+// Explicit take! formal is an owned handle and can return ownership.
+define class Person as pub let int age = 21; end
+fnc transfer(take! Person p): Person { return p; }
+pub fnc main(): int {
+    let p = new Person();
+    let recovered = transfer(take! p);
+    return recovered.age + 21;
+}

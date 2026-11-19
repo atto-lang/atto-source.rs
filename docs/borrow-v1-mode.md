@@ -14,6 +14,22 @@ Rust callers can use `compile_with_mode(source, OwnershipMode::BorrowV1)`. The s
 
 In this versioned mode a top-level synchronous `fnc inspect(Person p)` plain class formal is internally normalized to the **same verified `Borrow<Person>`** typed signature as its explicit long-form spelling. It is a *read-only, nonescaping* loan with permanent borrowed provenance even after NLL loan retirement. The original owner remains in the caller; `inspect(person)` and `inspect(borrow! person)` perform the same guest instructions, not clone, `share!`, refcount or take. Primitive `int`/`bool`/`float`/enum arguments and owned results are unchanged.
 
+### Explicit consuming formals (opt-in only)
+
+The versioned profile now admits `fnc transfer(take! Person owner)` and
+`fnc transfer(owner: take! Person)`. These bind an **owned** class parameter,
+in contrast to a plain `Person` read-only formal. Their caller must explicitly
+write `transfer(take! owner)` where `owner` is a live named owning local.
+The ordinary `transfer(owner)` form fails with `E_OWNERSHIP`; a second
+transfer or later owner use fails with `E_MOVED`. Passing `borrow! owner`,
+a temporary, or an alias is not accepted as a transfer. This is a compiler
+ownership effect, **not a new runtime ABI type**.
+
+Existing unversioned `compile(source)` and `attoc input.atto` reject
+declarations using consuming-formal syntax rather than silently mapping them
+to legacy implicit moves. Mutable, scalar, method, constructor and actor-domain
+consuming formals remain outside this bounded profile.
+
 ### Fail-closed boundaries
 
 - `fnc steal(Person p): Person { return p; }` rejects: a borrowed formal cannot be returned as owned.
