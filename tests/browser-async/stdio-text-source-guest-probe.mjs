@@ -126,10 +126,50 @@ self.onmessage=async()=>{
         patternExecutions.push({pattern:name,case:caseName,exit:result.exit});
       }
     }
+    // Execute the *string-returning* nested match requested by the user;
+    // main is necessarily int/void in this compiler, so a suspends wrapper
+    // awaits the string-producing callable and performs a checked write.
+    const fallbackSource=`
+pub suspends fnc next_text(): string using io, suspend {
+  val input = stdio.in;
+  val output = stdio.out;
+  val prompt = writech output, "prompt";
+  return match prompt over
+    on is Ok<_> -> match << input over
+      on is Ok<line> -> match line over
+        on is Some<item> -> item,
+        on None -> "",
+      end,
+      on is Err<error> -> "",
+    end,
+    on is Err<error> -> "",
+  end;
+}
+pub suspends fnc main(): int using io, suspend {
+  val item = await next_text();
+  val receipt = writech stdio.out, item;
+  return match receipt over
+    on is Ok<_> -> 0,
+    on is Err<error> -> 12,
+  end;
+}
+`;
+    const fallbackModule=compile(fallbackSource);
+    const fallbackCases=[];
+    for(const [name,parts,expected,grant] of [
+      ['LF value',[encoder.encode('hello\n')],{exit:0,stdout:'prompthello',stderr:''},{}],
+      ['None EOF',[],{exit:0,stdout:'prompt',stderr:''},{}],
+      ['Err UTF-8',[new Uint8Array([0xc3,0x28,10])],{exit:0,stdout:'prompt',stderr:''},{}],
+      ['Err denied stdin',[encoder.encode('secret\n')],{exit:0,stdout:'prompt',stderr:''},{allowStdin:false}],
+      ['Err denied stdout',[encoder.encode('hello\n')],{exit:12,stdout:'',stderr:''},{allowStdout:false}],
+    ]) {
+      const result=await run('exact-string-fallback '+name,parts,expected,grant,fallbackModule);
+      fallbackCases.push({name,exit:result.exit});
+    }
     self.postMessage({ok:true,compiledAtto:true,checkedStdio:true,
       directReadchAbiEquivalent:true,nominalIsAdtGuest:true,
       patternVariants:compiledVariants.map(([name])=>name),
-      patternExecutions,cases});
+      patternExecutions,stringFallbackGuest:true,fallbackCases,cases});
   } catch(e) {
     self.postMessage({ok:false,error:String(e?.stack||e)});
   }
