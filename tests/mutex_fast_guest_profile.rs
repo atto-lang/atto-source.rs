@@ -96,6 +96,30 @@ fn static_overflow_is_prohibited_before_guest_artifact() {
 }
 
 #[test]
+fn bare_mutex_resource_constructors_fail_even_without_any_lock_async_call() {
+    let invalid = [
+        "pub fnc main(): int { val counter = Mutex<int>(0); return 0; }",
+        "pub fnc main(): int { val counter = Mutex<Result<int,string>>(0); return 0; }",
+        "pub fnc main(): int { val counter = Mutex<List<Map<int,bool>>>(0); return 0; }",
+    ];
+    for source in invalid {
+        assert_eq!(compile(source).unwrap_err().code, "E_NEW_REQUIRED", "{source}");
+    }
+    // The absence of a scoped lock is not permission to emit a nominal
+    // Mutex guest without a scheduler. Ordinary typed class creation stays
+    // fail-closed outside the explicit closed-world ready-path profile.
+    assert!(compile(
+        "pub fnc main(): int { val counter = new Mutex<int>(0); return 0; }"
+    ).is_err());
+}
+
+#[test]
+fn mutex_type_references_are_not_misdiagnosed_as_bare_constructors() {
+    let source = "pub fnc main(Mutex<int> counter): int { return 0; }";
+    assert_ne!(compile(source).unwrap_err().code, "E_NEW_REQUIRED");
+}
+
+#[test]
 fn unrelated_ownership_generics_remain_fail_closed() {
     let other="pub fnc main(): int { val counter = new Mutex<float>(1); return 0; }";
     let err=compile(other).expect_err("unsupported generic has no guest allocation");
