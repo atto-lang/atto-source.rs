@@ -17,6 +17,8 @@ pub mod collection_layout_plan;
 pub mod collection_layout_storage;
 /// Narrow genuine source-compiled scalar collection guest profile; all else fails closed.
 pub mod collection_layout_guest;
+/// Restricted source-compiled List<int> match guest profile.
+pub mod list_pattern_guest;
 /// Shared canonical generic binding for production and guest collection parsers.
 pub mod collection_layout_type;
 /// Pinned canonical typed AOT copy-plan admission (borrow-checker.rs PR #32).
@@ -136,6 +138,16 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
     // Bounded, source-compiled scalar layout specialization: complete grammar
     // and checked nominal field offsets are required before any Wasm bytes.
     if let Some(program) = collection_layout_guest::try_lower(&source_tokens)? {
+        let bytes = wasm::emit(&program);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+                "E_OUTPUT_LIMIT", "generated module exceeds 1 MiB"));
+        }
+        return Ok(bytes);
+    }
+    // Restricted List<int> structural patterns use the same checked heap
+    // IR and production Wasm emitter as the existing nominal Array guest.
+    if let Some(program) = list_pattern_guest::try_lower(&source_tokens)? {
         let bytes = wasm::emit(&program);
         if bytes.len() > wasm::MAX_OUTPUT {
             return Err(Diagnostic::new(Pos { line: 1, col: 1 },
