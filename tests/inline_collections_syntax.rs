@@ -283,3 +283,56 @@ fn entry_literal_alone_cannot_bypass_guest_type_and_ownership_checks() {
     let diag = compile(src).expect_err("nominal Entry guest lowering not yet implemented");
     assert_eq!(diag.code, "E_UNSUPPORTED");
 }
+
+#[test]
+fn both_whole_entry_ascriptions_have_identical_nominal_ast() {
+    let first = parse_binding(
+        r#"let entry1 = ("foo" => 5) as Entry<string, int>;"#
+    ).expect("grouped Entry ascription");
+    let second = parse_binding(
+        r#"let entry1 = "foo" => 5 (as Entry<string, int>);"#
+    ).expect("trailing Entry ascription");
+    fn signature(p: &Program) -> (String, String, usize) {
+        match init_kind(p) {
+            ExprKind::Call(name, args) if args.len() == 1 => {
+                match &args[0].kind {
+                    ExprKind::Call(inner, parts) if inner == "@builtin/Entry.of" => {
+                        assert!(matches!(&parts[0].kind, ExprKind::Str(s) if s == "foo"));
+                        assert!(matches!(&parts[1].kind, ExprKind::Int(Some(5))));
+                        (name.clone(), inner.clone(), parts.len())
+                    },
+                    _ => panic!("cast must wrap an immutable Entry factory"),
+                }
+            }
+            _ => panic!("whole-entry ascription must use canonical typed AST"),
+        }
+    }
+    let one = signature(&first);
+    let two = signature(&second);
+    assert_eq!(one, two);
+    assert_eq!(one.0, "@builtin/Entry.ascribe<@builtin/Entry<string,int>>");
+}
+
+#[test]
+fn entry_type_ascriptions_reject_non_entry_casts_and_malformed_syntax() {
+    for src in [
+        r#"let e = ("foo" => 5) as Map<string,int>;"#,
+        r#"let e = "foo" => 5 (as Map<string,int>);"#,
+        r#"let e = 5 as Entry<string,int>;"#,
+    ] {
+        let e = parse_binding(src).expect_err(src);
+        assert_eq!(e.code, "E_TYPE", "{src}: {e}");
+    }
+    for src in [
+        r#"let e = ("foo" => 5) as Entry<string>;"#,
+        r#"let e = "foo" => 5 (as Entry<string>);"#,
+    ] {
+        assert_eq!(parse_binding(src).unwrap_err().code, "E_TYPE_ARITY", "{src}");
+    }
+    for src in [
+        r#"let e = "foo" => 5 (as Entry<string,int>;"#,
+        r#"let e = "foo" => 5 (as Entry<string,int>,);"#,
+    ] {
+        assert!(parse_binding(src).is_err(), "{src}");
+    }
+}
