@@ -58,10 +58,12 @@ fn ordinary_arithmetic_stays_checked_at_runtime_not_rejected_early() {
 
 #[test]
 fn class_const_is_distinct_from_final_and_val_fields() {
-    let class = |modifier: &str| format!(
-        "define class Limits as pub {modifier} int maximum = 9223372036854775807 + 1; end \
+    let class = |modifier: &str| {
+        format!(
+            "define class Limits as pub {modifier} int maximum = 9223372036854775807 + 1; end \
          pub fnc main(): int {{ return 0; }}"
-    );
+        )
+    };
     assert_const_overflow(&class("const"));
     // The non-const initializer remains emitted to the checked guest path
     // instead of being rejected as if it were a compile-time constant.
@@ -74,9 +76,7 @@ fn constant_conditionals_evaluate_only_the_selected_arm() {
         "const flag = false; const value = flag ? 9223372036854775807 + 1 : 42; \
          return value;",
     ));
-    assert_compiles(&guest(
-        "const value = true ? 42 : 3037000500 * 3037000500; return value;",
-    ));
+    assert_compiles(&guest("const value = true ? 42 : 3037000500 * 3037000500; return value;"));
 }
 
 #[test]
