@@ -186,3 +186,37 @@ fn struct_conflicts_duplicates_and_unsafe_field_types_reject() {
         return 0;
     }"#, "E_TYPE");
 }
+
+
+#[test]
+fn infer_struct_uses_field_types_as_well_as_names() {
+    admitted(r#"define struct Count as int value; end
+    define struct Toggle as bool value; end
+    pub fnc main(): int {
+        val c = infer struct{value: 42};
+        val t = infer struct{value: true};
+        return t.value ? c.value : 0;
+    }"#);
+    rejected(r#"define struct Count as int value; end
+    define struct Toggle as bool value; end
+    pub fnc main(): int {
+        val x = infer struct{value: "wrong"};
+        return 0;
+    }"#, "E_TYPE");
+    rejected(r#"define struct First as int value; end
+    define struct Second as int value; end
+    pub fnc main(): int {
+        val x = infer struct{value: 42};
+        return 0;
+    }"#, "E_AMBIGUOUS_MEMBER");
+}
+
+#[test]
+fn structurally_equal_record_cannot_erase_nominal_struct_type() {
+    rejected(r#"define struct Point as int x; int y; end
+    pub fnc main(): int {
+        val Record r = (x=40,y=2);
+        val Point p = r;
+        return p.x;
+    }"#, "E_TYPE");
+}
