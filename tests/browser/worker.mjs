@@ -49,7 +49,14 @@ self.onmessage=async ({data})=>{
     // Root slots 7/8 are internal v2 guest instrumentation, not host-side
     // lifecycle simulation. They remain zero for legacy guests.
     const spanCounts=()=>{
-      const mem=new DataView(instance.exports.memory.buffer);
+      // The *legacy scalar* guest emitter intentionally omits its memory
+      // export when there are no heap, strings or actors. That is not a
+      // runtime failure and cannot contain scoped-span instrumentation.
+      // The v2 async guest always exports private memory with these slots.
+      const memory=instance.exports.memory;
+      if(!memory)return {spanOpens:0,spanCloses:0};
+      const mem=new DataView(memory.buffer);
+      if(mem.byteLength<72)throw new Error('guest telemetry memory shorter than root slots');
       return {spanOpens:Number(mem.getBigInt64(56,true)),spanCloses:Number(mem.getBigInt64(64,true))};
     };
     let value;
