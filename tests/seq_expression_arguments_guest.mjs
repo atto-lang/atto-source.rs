@@ -72,6 +72,16 @@ const fixtures = [
   ['nested_bare_call', 'fnc add(int a,int b): int { return a+b; } fnc id(int v): int { return v; } pub fnc main(): int { return id(seq 1, add(2, 40)); }', 42],
   ['mutation_stdout_order', 'pub fnc main(): int { let int z = 0; return seq(stdio.println(11), z += 20, stdio.println(z), z + 22); }', 42, ['11', 'newline', '20', 'newline']],
   ['once_only_print', 'pub fnc main(): int { return seq(stdio.println(10), stdio.println(20), 42); }', 42, ['10', 'newline', '20', 'newline']],
+  ['singleton', 'pub fnc main(): int { return seq(42); }', 42],
+  ['expression_precedence', 'pub fnc main(): int { return seq(1, 2) + 40; }', 42],
+  ['nested_tail', 'pub fnc main(): int { return seq(1, seq(2, 42)); }', 42],
+  ['shadowing', 'pub fnc main(): int { let int n = 9; return seq(let int n = 41, n + 1); }', 42],
+  ['string_comma_lexing', 'pub fnc main(): int { return seq("a,b", 42); }', 42],
+  ['comments_delimiters', 'pub fnc main(): int { return seq(/* before */ 1 /* after */, 42); }', 42],
+  ['nested_mutation', 'pub fnc main(): int { let int x = 0; return seq(x += 1, seq(x += 1, x * 21)); }', 42],
+  ['independent_scopes', 'pub fnc main(): int { const int a = seq(let int x = 20, x + 1); const int b = seq(let int x = 19, x + 2); return a + b; }', 42],
+  ['stmt_discards_without_return', 'pub fnc main(): int { seq 10, 11; return 42; }', 42],
+  ['nested_effect_order', 'pub fnc main(): int { return seq(stdio.println(7), seq(stdio.println(8), 42)); }', 42, ['7', 'newline', '8', 'newline']],
 ];
 const work = await mkdtemp(join(tmpdir(), 'atto-seq-guest-'));
 let passed = 0;
