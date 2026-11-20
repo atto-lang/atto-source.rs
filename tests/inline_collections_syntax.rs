@@ -223,7 +223,7 @@ fn quoted_record_key_duplicates_reject_after_string_decoding() {
     }
     let program = parse_binding("let Record x = {\"\": 1, \"content-type\": 2};").unwrap();
     assert!(matches!(init_kind(&program), ExprKind::Record(entries)
-        if entries[0].0 == "" && entries[1].0 == "content-type"));
+        if entries[0].0.is_empty() && entries[1].0 == "content-type"));
 }
 
 #[test]
