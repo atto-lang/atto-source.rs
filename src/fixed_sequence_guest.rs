@@ -228,7 +228,8 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
     for binding in checked {
         if matches!(
             &binding.value.ty,
-            LiteralType::Tuple(_) | LiteralType::Array(_) | LiteralType::List(_)
+            LiteralType::Tuple(_) | LiteralType::Array(_) | LiteralType::List(_) |
+                LiteralType::Pair(_,_) | LiteralType::Entry(_,_)
         ) {
             let key = (
                 binding.value.pos.line,
@@ -266,8 +267,10 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 continue;
             };
             let raw_items = match &init.kind {
-                ExprKind::Tuple(_) => true,
-                ExprKind::Call(factory, _) if matches!(factory.as_str(), "@builtin/Array.of" | "@builtin/List.of") => true,
+                ExprKind::Tuple(_) | ExprKind::Array(_) => true,
+                ExprKind::Call(factory, _) if matches!(factory.as_str(),
+                    "@builtin/Array.of" | "@builtin/List.of" |
+                    "@builtin/Pair.of" | "@builtin/Entry.of") => true,
                 _ => false,
             };
             if !raw_items {
@@ -294,18 +297,27 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             let types = match &typed.value.ty {
                 LiteralType::Tuple(items) => items.clone(),
                 LiteralType::Array(element) | LiteralType::List(element) => {
+                    // [] is admitted only with a concrete contextual element.
+                    if typed.value.children.is_empty() && matches!(element.as_ref(), LiteralType::Bottom) {
+                        return Err(error(init.pos, "E_TYPE_INFERENCE",
+                            "empty List/Array needs a concrete element type"));
+                    }
                     vec![element.as_ref().clone(); typed.value.children.len()]
                 }
-                _ => return Err(error(init.pos, "E_SHAPE", "Array/List/Tuple type identity lost")),
+                LiteralType::Pair(a,b) | LiteralType::Entry(a,b) =>
+                    vec![a.as_ref().clone(), b.as_ref().clone()],
+                _ => return Err(error(init.pos, "E_SHAPE", "collection type identity lost")),
             };
-            if types.is_empty()
+            let empty_sequence = types.is_empty()
+                && matches!(&typed.value.ty, LiteralType::Array(_) | LiteralType::List(_));
+            if (types.is_empty() && !empty_sequence)
                 || types.len() > MAX_EXECUTABLE_ITEMS
                 || ordinal >= MAX_EXECUTABLE_BINDINGS
             {
                 return Err(error(
                     init.pos,
                     "E_UNSUPPORTED",
-                    "executable Array.of/List.of/Tuple.of requires 1..=8 scalar items and <=32 bindings",
+                    "executable Tuple/Array/List/Pair/Entry permits 1..=8 scalar items (or typed empty arrays/lists) and <=32 bindings",
                 ));
             }
             if kind == BindKind::Const {
@@ -322,9 +334,16 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                     "typed sequence length differs from source",
                 ));
             }
+            let product_labels: Option<[&str; 2]> = match &typed.value.ty {
+                LiteralType::Pair(_,_) => Some(["first","second"]),
+                LiteralType::Entry(_,_) => Some(["key","value"]),
+                _ => None,
+            };
             let values = match init.kind {
-                ExprKind::Tuple(items) => items,
-                ExprKind::Call(factory, items) if matches!(factory.as_str(), "@builtin/Array.of" | "@builtin/List.of") => items,
+                ExprKind::Tuple(items) | ExprKind::Array(items) => items,
+                ExprKind::Call(factory, items) if matches!(factory.as_str(),
+                    "@builtin/Array.of" | "@builtin/List.of" |
+                    "@builtin/Pair.of" | "@builtin/Entry.of") => items,
                 _ => unreachable!("raw_items checked factory AST"),
             };
             let mut arguments = Vec::with_capacity(values.len());
@@ -360,9 +379,34 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             let class_name = format!("{PRIVATE_PREFIX}shape_{ordinal}");
             let type_index = program.type_names.len() as u32;
             program.type_names.push((class_name.clone(), init.pos));
-            emitted.push(generated_class(class_name.clone(), &types, init.pos)?);
+            // Allocate a real 8-byte guest sentinel for typed empties, not
+            // a zero-byte bump allocation or null pointer. The sentinel is
+            // not an accessible collection element: length remains zero.
+            let mut class = if empty_sequence {
+                arguments.push(Expr {kind: ExprKind::Int(Some(0)), pos: init.pos});
+                generated_class(class_name.clone(), &[LiteralType::Int], init.pos)?
+            } else {
+                generated_class(class_name.clone(), &types, init.pos)?
+            };
+            if let Some(labels) = product_labels {
+                for (field, label) in class.fields.iter_mut().zip(labels) {
+                    field.name = label.to_string();
+                }
+                if let Some(ctor) = &mut class.ctor {
+                    for (stmt,label) in ctor.body.iter_mut().zip(labels) {
+                        if let Stmt::FieldAssign { field, .. } = stmt {
+                            *field = label.to_string();
+                        }
+                    }
+                }
+            }
+            emitted.push(class);
             ordinal += 1;
-            locals.insert(name.clone(), types.len());
+            // Pair/Entry use named projections, not positional collection
+            // indexing; do not accidentally expose their synthetic slots.
+            if product_labels.is_none() {
+                locals.insert(name.clone(), types.len());
+            }
             body.push(Stmt::Bind {
                 kind,
                 name,
