@@ -305,11 +305,13 @@ mod tests {
     }
     #[test] fn closed_receiver_and_pre_restart_capabilities_cannot_dequeue() {
         let mut m = Admission::<i64>::new(actor(), 1, 1);
-        m.stop();
+        let closed = m.stop();
+        assert!(closed.recovered.is_empty() && closed.abandoned.is_empty());
         assert!(matches!(m.deliver(actor(), 1, true), Err(AdmissionError::Closed)));
         let mut next = actor();
         next.incarnation += 1;
-        m.restart(next, 2);
+        let restarted = m.restart(next, 2);
+        assert!(restarted.recovered.is_empty() && restarted.abandoned.is_empty());
         assert!(matches!(m.deliver(actor(), 1, true), Err(AdmissionError::Stale)));
         assert!(m.deliver(next, 2, true).unwrap().is_none());
     }
