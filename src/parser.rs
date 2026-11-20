@@ -2629,6 +2629,10 @@ impl Parser {
         let begins_bracket = *self.peek() == Tok::LBracket;
         let result = (|| {
             let left = self.parse_ternary()?;
+            if *self.peek() == Tok::ColonColon {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "'::' is a callable-header separator, not a RecordEntry operator"));
+            }
             if !self.eat(&Tok::FatArrow) {
                 return Ok(left);
             }
