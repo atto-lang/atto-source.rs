@@ -213,7 +213,7 @@ fn check_type_test(
 }
 
 fn parse_atom(source: &str, expected: ElementType) -> R<Atom> {
-    if source.contains(" as ") {
+    if !source.starts_with('"') && source.contains(" as ") {
         return Err(error("E_PATTERN_BINDING", "bindings belong outside pattern text"));
     }
     if source == "..." { return Ok(Atom::Rest); }
