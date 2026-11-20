@@ -1648,13 +1648,15 @@ fn int_parse_body(l: &Layout) -> (Sig, Vec<u8>, Vec<u8>) {
     e.op(0x0F); // return Ok(pointer)
     e.close(); // error target
 
+    // Error ABI: reserved 8-byte object header; immutable message at +8.
+    // Match TExpr::ErrorNew exactly or Error.message identity reads corrupt.
     // Return Err(original Error object). Never manufacture a throw or None.
-    e.i32c(8);
+    e.i32c(16);
     e.call(l.helper(H_ALLOC));
     e.set(ERR);
     e.get(ERR);
     e.get(1); // immutable packed "invalid integer" message view
-    e.store_i64(0);
+    e.store_i64(8);
     e.i32c(16);
     e.call(l.helper(H_ALLOC));
     e.set(REC);
@@ -1693,7 +1695,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
         imports: p.imports.clone(),
-        helpers: str_base + if p.strings { STRING_HELPERS } else { 0 } + u32::from(p.parse_int),
+        helpers: str_base + (if p.strings { STRING_HELPERS } else { 0 }) + u32::from(p.parse_int),
         str_base,
         parse_int_base: str_base + if p.strings { STRING_HELPERS } else { 0 },
         state_base: 1 + u32::from(p.heap),
