@@ -459,6 +459,7 @@ impl Parser {
                 self.expect(Tok::Gt, "'>' after Option payload")?;
                 match inner {
                     Type::Int => Type::OptionInt,
+                    Type::Str => Type::OptionStr,
                     Type::ResultIntStr => Type::OptionResultIntStr,
                     _ => return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "browser ADT admits only Option<int> and Option<Result<int,string>>")),
@@ -468,11 +469,22 @@ impl Parser {
                 self.expect(Tok::Lt, "'<' after Channel")?;
                 let item=self.parse_type()?;
                 self.expect(Tok::Gt, "'>' after Channel item")?;
-                if item!=Type::Int {
-                    return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
-                        "browser channel ABI v1 admits only Channel<int>"));
+                match item {
+                    Type::Int => Type::ChannelInt,
+                    Type::Str => Type::ChannelStr,
+                    _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
+                        "browser channel ABI admits only Channel<int> or stdin Channel<string>")),
                 }
-                Type::ChannelInt
+            }
+            "Writable" => {
+                self.expect(Tok::Lt, "'<' after Writable")?;
+                let item = self.parse_type()?;
+                self.expect(Tok::Gt, "'>' after Writable item")?;
+                if item != Type::Str {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                        "browser checked Writable profile admits only string"));
+                }
+                Type::WritableStr
             }
             "Future" => {
                 self.expect(Tok::Lt, "'<' after Future")?;
@@ -504,6 +516,7 @@ impl Parser {
                 match (good,bad) {
                     (Type::Int,Type::Str) => Type::ResultIntStr,
                     (Type::OptionInt,Type::IoError) => Type::ResultOptionIntIoError,
+                    (Type::OptionStr,Type::IoError) => Type::ResultOptionStrIoError,
                     (Type::ChannelInt,Type::IoError) => Type::ResultChannelIntIoError,
                     (Type::Void,Type::IoError) => Type::ResultVoidIoError,
                     _ => return Err(Diagnostic::new(pos,"E_UNSUPPORTED_TYPE",
@@ -1213,6 +1226,24 @@ impl Parser {
         let arrow_type = *self.peek() == Tok::Arrow;
         let colon_type = *self.peek() == Tok::Colon;
         let ret = self.parse_return_spec()?;
+        // Type/effect obligations are NOT ambient host capability grants.
+        // The trusted Worker broker still authenticates each I/O import.
+        if self.eat_word("using") {
+            let mut seen_io = false;
+            let mut seen_suspend = false;
+            loop {
+                let (effect, at) = self.ident("an I/O effect")?;
+                match effect.as_str() {
+                    "io" if !seen_io => seen_io = true,
+                    "suspend" if suspends && !seen_suspend => seen_suspend = true,
+                    "suspend" if !suspends => return Err(Diagnostic::new(at, "E_SUSPENDS_REQUIRED",
+                        "using suspend requires susp/suspends fnc")),
+                    _ => return Err(Diagnostic::new(at, "E_EFFECT",
+                        format!("unsupported or duplicate effect '{effect}'"))),
+                }
+                if !self.eat(&Tok::Comma) { break; }
+            }
+        }
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -3027,6 +3058,13 @@ impl Parser {
             let readable = self.parse_unary()?;
             return Ok(Expr { kind: ExprKind::PrefixRead(Box::new(readable)), pos });
         }
+        if self.eat_word("writech") {
+            let sink = self.parse_postfix()?;
+            self.expect(Tok::Comma, "',' after writable endpoint")?;
+            let value = self.parse_expr()?;
+            return Ok(Expr { kind: ExprKind::Call(
+                "$atto_writech".to_owned(), vec![sink, value]), pos });
+        }
         // Two contiguous '<' tokens at prefix position are one value-producing
         // channel read. Parse into the production AST; do not reinterpret a
         // binary shift/write or spaced comparisons as a receive.
@@ -3197,8 +3235,21 @@ impl Parser {
                         }
                         return Err(unsupported(dot, "runtime members other than sleep/barrier"));
                     }
-                    if matches!(&e.kind, ExprKind::Var(b) if b == "stdio") {
-                        return Err(unsupported(dot, "stdio members other than print and println"));
+                    if let ExprKind::Var(base) = &e.kind {
+                        let endpoint = match (base.as_str(), self.word_at(1)) {
+                            ("stdio", Some("in")) | ("process", Some("stdin")) => Some("stdio.in"),
+                            ("stdio", Some("out")) | ("process", Some("stdout")) => Some("stdio.out"),
+                            ("stdio", Some("err")) | ("process", Some("stderr")) => Some("stdio.err"),
+                            _ => None,
+                        };
+                        if let Some(endpoint) = endpoint {
+                            self.advance(); self.advance();
+                            e = Expr {kind: ExprKind::Var(endpoint.to_owned()),pos};
+                            continue;
+                        }
+                        if matches!(base.as_str(), "stdio" | "process") {
+                            return Err(unsupported(dot, "unknown process stdio endpoint"));
+                        }
                     }
                     self.advance();
                     let member = match self.peek().clone() {
@@ -3258,7 +3309,8 @@ impl Parser {
             }
         }
         if let ExprKind::Var(n) = &e.kind {
-            if n.contains('.') {
+            if n.contains('.') && !matches!(n.as_str(),
+                "stdio.in" | "stdio.out" | "stdio.err") {
                 return Err(self.expected("'('"));
             }
         }
