@@ -111,15 +111,14 @@ fn already_declared_nominal_struct_remains_separate_and_executable() {
 }
 
 #[test]
-fn maps_open_records_and_computed_indexing_still_fail_closed() {
-    invalid(
+fn statically_keyed_maps_execute_but_computed_record_indexing_fails_closed() {
+    wasm(
         r#"
         pub fnc main(): int {
             let Map<string,int> m = {"x" => 42};
             return m["x"];
         }
     "#,
-        "E_UNSUPPORTED",
     );
     invalid(
         r#"
