@@ -44,7 +44,23 @@ try {
     assert.equal(instance.exports.main(), expected, expression);
     assert.equal(instance.exports.panic_code.value, 0, expression);
   }
-  console.log('PASS', i, 'bitwise Wasm guest execution cases');
+  // Source programs using the retired spelling must fail compilation
+  // without leaving even an empty guest artifact.
+  for (const [index, body] of [
+    'return 12 ^ 10;',
+    'return 12 ^ ^ 10;',
+    'let x: int = 12; x ^= 3; return x;',
+  ].entries()) {
+    const src = join(tmp, `reject-${index}.atto`);
+    const bin = join(tmp, `reject-${index}.wasm`);
+    await writeFile(src, `pub fnc main(): int { ${body} }\n`);
+    const result = spawnSync(attoc, [src, '-o', bin],
+      { encoding: 'utf8', timeout: 30000 });
+    assert.notEqual(result.status, 0, 'deprecated caret syntax compiled unexpectedly');
+    await assert.rejects(readFile(bin), { code: 'ENOENT' },
+      'rejected syntax may not leave any guest artifact');
+  }
+  console.log('PASS', i, 'bitwise Wasm guests; 3 retired-caret no-artifact checks');
 } finally {
   await rm(tmp, { recursive: true, force: true });
 }
