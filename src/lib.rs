@@ -7,6 +7,8 @@
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
 pub mod ast;
+/// Bounded UTF-8 DATA frame candidate; NOT connected to the actor Wasm guest ABI.
+pub mod actor_string_mail;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
