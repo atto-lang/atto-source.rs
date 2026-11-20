@@ -96,6 +96,63 @@ rustc --edition=2021 --test -D warnings src/actor_string_mail.rs -o /tmp/atto-ac
 **Evidence status: NOT_EXECUTED** until a trusted stepful runner produces
 an exact-commit test receipt. Host codec tests do not prove guest transport.
 
+
+## Host-side cross-memory DATA transport experiment
+
+The accompanying `tests/browser/actor-string-bridge.mjs` implements a
+**trusted-host** candidate bridge for the current Wasm
+`actor_send(ref: i32, value: i64)` / `actor_receive(type: i32, value: i64,
+sequence: i64)` calling convention. Packed string references are
+`offset:u32 << 32 | length:u32` as an i64 and **may not cross memories
+unchanged**. The bridge takes a byte-copy snapshot at admission, applies the
+strict ATAM DATA frame, verifies same-tenant and minted actor capabilities,
+enforces bounded FIFO/bytes, and copies only into a compiler-attested,
+nonoverlapping receiver memory reservation. A return from the handler is
+distinguished from admission, and a trap makes the receiver terminal.
+
+Its API is intentionally **not wired to ordinary guest actor imports**.
+The compiler currently has no certified allocation of the reserved receiver
+window, no per-actor protocol metadata in its emitted ABI that a host can
+authenticate, and no source-level ActorMail<string> lowering. The
+`guestDataEnd` / `reservation` parameters in the standalone host tests
+simulate a compiler-sealed memory layout; they are NOT a trustworthy
+manifest for an actual untrusted guest. The host must not enable this bridge
+for untrusted TenantVMs merely because a caller provided these values.
+
+Run the host-level tests:
+
+```sh
+node --test tests/browser/actor-string-bridge.test.mjs
+```
+
+The tests use real WebAssembly.Memory objects and an independently assembled
+Wasm export for the i64 pointer/length smoke test. The Wasm export is **not an
+Atto-compiled guest**. Local Node 22.16.0 executed **12/12** tests on the
+candidate host module; exact-source GitHub Actions for this revision still
+require a nonzero-step, trusted run. Rust codec tests, compiled positive
+ActorMail<string> guest execution, main-to-actor sends, actor-originated fanout
+and authenticated supervisor CONTROL remain independently unverified.
+
+### Required compiler/runtime integration before enabling strings
+
+1. Change the compiler only after allocating an actor-owned string mailbox
+   region disjoint from read-only source data, checked heap and state. An
+   untrusted guest must never be able to declare the host's reservation.
+2. Publish a versioned actor payload-type/region manifest validated against
+   actual Wasm sections, import/export signatures, memory limits, tenant
+   ownership and the exact compiled artifact digest. Reject mismatches.
+3. Type-check `ActorMail<string>` and `mail.value: string` in typed IR;
+   preserve the existing destination's `receives` type and sender's
+   `sends` effect. Preserve fail-closed behavior for unsupported unions.
+4. Bind the host bridge solely inside the trusted actor supervisor's
+   admission code, with real generation-fenced ActorRef capabilities and
+   separate authenticated CONTROL. Never expose the bridge to guest JS.
+5. Execute the exact source fixture from conformance #33 through compiled
+   Atto -> real Wasm -> independent receiver memory, plus negative
+   compile/no-artifact tests and stale-generation, full-mailbox, trap and
+   cross-tenant denial receipts. Only then promote this backend.
+
+
 ## Verification gates
 
 - A real pinned Rust compiler must build and compile the new positive fixture.
