@@ -198,6 +198,8 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
         "List" | "list" => Some("List"),
         "Array" | "array" => Some("Array"),
         "Tuple" | "tuple" => Some("Tuple"),
+        "Pair" | "pair" => Some("Pair"),
+        "Entry" | "entry" => Some("Entry"),
         _ => None,
     }
 }
@@ -446,7 +448,12 @@ impl Parser {
                 let builtin = collection_type_name(n).expect("guarded builtin");
                 // Parse complete nested type arguments even in the syntax-only
                 // browser profile; never misread '<' as an expression comparison.
-                let generic = self.eat(&Tok::Lt);
+                // Bracketed positional tuple type arguments are an accepted
+                // spelling; the formatter should canonicalize Tuple[...] to
+                // Tuple<...>. Brackets do not change runtime type identity.
+                let bracket_tuple = builtin == "Tuple" && self.eat(&Tok::LBracket);
+                let generic = bracket_tuple || self.eat(&Tok::Lt);
+                let closing = if bracket_tuple { Tok::RBracket } else { Tok::Gt };
                 let mut args = Vec::new();
                 // A closed Record's sole generic argument is a *type-level row*,
                 // not a list of homogeneous value parameters. Serialize labels
@@ -500,7 +507,7 @@ impl Parser {
                     }).collect::<Vec<_>>().join(",");
                     closed_row = Some(format!("{{{row}}}"));
                 } else if generic {
-                    if *self.peek() == Tok::Gt {
+                    if *self.peek() == closing {
                         return Err(Diagnostic::new(self.pos(), "E_TYPE_ARITY",
                             format!("{builtin} does not accept an empty generic argument list")));
                     }
@@ -518,13 +525,14 @@ impl Parser {
                         args.push(spelling);
                         if !self.eat(&Tok::Comma) { break; }
                     }
-                    self.expect(Tok::Gt, "'>' to close collection type arguments")?;
+                    self.expect(closing.clone(), "closing delimiter for collection type arguments")?;
                 }
                 let correct_arity = match builtin {
                     "Record" => !generic || closed_row.is_some(),
                     "Array" | "List" => !generic || args.len() == 1,
                     "Map" => !generic || args.len() == 2,
                     "Tuple" => !generic || !args.is_empty(),
+                    "Pair" | "Entry" => generic && args.len() == 2,
                     _ => unreachable!(),
                 };
                 if !correct_arity {
@@ -651,8 +659,31 @@ impl Parser {
             // A class or enum name; the checker resolves it.
             n => Type::Named(self.type_name(n.to_string(), pos)),
         };
+        // T? is shorthand for Option<T>. Only Option<int> currently
+        // has a concrete scalar ADT guest ABI; Option<string>/Option<bool>
+        // remain static types and fail closed at executable guest lowering.
+        let ty = if self.eat(&Tok::Question) {
+            match ty {
+                Type::Int => Type::OptionInt,
+                Type::Void => return Err(Diagnostic::new(pos, "E_TYPE",
+                    "void? is not a valid value type")),
+                other => {
+                    let element = match other {
+                        Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) =>
+                            self.type_names[i as usize].0.clone(),
+                        _ => other.name().to_string(),
+                    };
+                    let spelling = format!("@builtin/Option<{element}>");
+                    let index = match self.type_names.iter().position(|(name,_)| name == &spelling) {
+                        Some(i) => i as u32,
+                        None => self.type_name(spelling, pos),
+                    };
+                    Type::Named(index)
+                }
+            }
+        } else { ty };
         if matches!(self.peek(), Tok::Lt | Tok::LBracket | Tok::Question | Tok::Pipe) {
-            return Err(unsupported(self.pos(), "generic, optional, union and sequence types"));
+            return Err(unsupported(self.pos(), "generic and union types"));
         }
         self.leave();
         Ok(ty)
@@ -2141,7 +2172,7 @@ impl Parser {
             && (matches!(self.peek_at(1), Tok::Ident(_))
                 || ((matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
                     || self.word_at(0).is_some_and(|w| collection_type_name(w).is_some()))
-                    && *self.peek_at(1) == Tok::Lt))
+                    && matches!(self.peek_at(1), Tok::Lt | Tok::LBracket)))
         {
             // Recognize generic type-first bindings without treating
             // 'Option' as a variable name and '<' as a comparison.
@@ -2167,7 +2198,27 @@ impl Parser {
             ));
         }
         self.advance();
-        let init = self.parse_expr()?;
+        let mut init = self.parse_expr()?;
+        // In an explicitly typed Pair/Entry binding, K => V is the
+        // contextual, arity-two constructor shorthand. Do not reinterpret
+        // a map entry, lambda arrow, or unrelated expression as a pair.
+        if self.eat(&Tok::FatArrow) {
+            let is_product = ty.and_then(|type_| match type_ {
+                Type::Named(i) => self.type_names.get(i as usize).map(|(name,_)| name.as_str()),
+                _ => None,
+            }).and_then(|name| {
+                if name.starts_with("@builtin/Pair<") { Some("Pair") }
+                else if name.starts_with("@builtin/Entry<") { Some("Entry") }
+                else { None }
+            });
+            let Some(product) = is_product else {
+                return Err(Diagnostic::new(pos, "E_TYPE",
+                    "'=>' creates a Pair or Entry only with an explicit Pair<K,V>/Entry<K,V> context"));
+            };
+            let rhs = self.parse_expr()?;
+            init = Expr {pos: init.pos,
+                kind: ExprKind::Call(format!("@builtin/{product}.of"), vec![init,rhs])};
+        }
         Ok(Stmt::Bind { kind, name, ty, init, pos })
     }
 
@@ -3096,7 +3147,7 @@ impl Parser {
                         Tok::Ident(m) if !is_reserved(&m) ||
                             (m == "of" && *self.peek_at(1) == Tok::LParen &&
                                 matches!(&e.kind, ExprKind::Var(base) if
-                                    matches!(base.as_str(), "Record" | "Map" | "Tuple" | "Array" | "List"))) => m,
+                                    matches!(base.as_str(), "Record" | "Map" | "Tuple" | "Array" | "List" | "Pair" | "Entry"))) => m,
                         _ => return Err(self.expected("a member name after '.'")),
                     };
                     self.advance();
@@ -3105,7 +3156,7 @@ impl Parser {
                     if *self.peek() == Tok::LParen {
                         let builtin = match &e.kind {
                             ExprKind::Var(base) if member == "of"
-                                && matches!(base.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List") =>
+                                && matches!(base.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List" | "Pair" | "Entry") =>
                                 Some(base.clone()),
                             _ => None,
                         };
@@ -3116,6 +3167,7 @@ impl Parser {
                                 "Tuple" => ExprKind::Tuple(self.parse_args()?),
                                 "Array" => ExprKind::Call("@builtin/Array.of".into(), self.parse_args()?),
                                 "List" => ExprKind::Call("@builtin/List.of".into(), self.parse_args()?),
+                                "Pair" | "Entry" => ExprKind::Call(format!("@builtin/{name}.of"), self.parse_args()?),
                                 _ => unreachable!(),
                             };
                             let symbol = match name.as_str() {
@@ -3124,6 +3176,8 @@ impl Parser {
                                 "Tuple" => "Tuple",
                                 "Array" => "Array",
                                 "List" => "List",
+                                "Pair" => "Pair",
+                                "Entry" => "Entry",
                                 _ => unreachable!(),
                             };
                             if !self.factories_seen.contains(&symbol) {
@@ -3413,6 +3467,39 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
+                // Parenthesized named fields form a closed Record, distinct
+                // from positional tuples and grouping. '=' is field syntax
+                // here, never an assignment expression.
+                if matches!(self.peek(), Tok::Ident(_) | Tok::Str(_))
+                    && *self.peek_at(1) == Tok::Assign
+                {
+                    let mut fields: Vec<(String, Expr)> = Vec::new();
+                    loop {
+                        if fields.len() >= 1024 {
+                            return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                                "named Record tuple exceeds 1024 fields"));
+                        }
+                        let at = self.pos();
+                        let label = match self.advance().tok {
+                            Tok::Ident(label) | Tok::Str(label) => label,
+                            _ => return Err(self.expected("a static Record field label")),
+                        };
+                        self.expect(Tok::Assign, "'=' after named Record tuple field")?;
+                        if fields.iter().any(|(known,_)| *known == label) {
+                            return Err(Diagnostic::new(at, "E_DUPLICATE",
+                                "duplicate named Record tuple field"));
+                        }
+                        let value = self.parse_expr()?;
+                        fields.push((label, value));
+                        if self.eat(&Tok::Comma) {
+                            if self.eat(&Tok::RParen) { break; }
+                        } else {
+                            self.expect(Tok::RParen, "')' after named Record tuple")?;
+                            break;
+                        }
+                    }
+                    return Ok(Expr {kind: ExprKind::Record(fields), pos});
+                }
                 if self.eat(&Tok::RParen) {
                     return Ok(Expr { kind: ExprKind::Tuple(Vec::new()), pos });
                 }
