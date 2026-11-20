@@ -4,8 +4,8 @@
 //! with a letter or `_`, `//` line comments, nesting `/* */` block comments,
 //! decimal integers with `_` separators, `"..."`/`'...'` strings,
 //! and literal backtick-delimited strings (no template interpolation).
-//! Floats, imaginary literals and Symbols are recognised so that
-//! they can be rejected with a precise diagnostic instead of a generic error.
+//! Symbol literals are lexed as distinct typed nodes. Floats and imaginary
+//! unsupported profiles retain precise diagnostics rather than fallback text.
 
 use crate::diag::{Diagnostic, Pos};
 
@@ -18,6 +18,8 @@ pub enum Tok {
     /// Float literal, stored as `f64::to_bits` so `Tok` stays `Eq`.
     Float(u64),
     Str(String),
+    /// Atto Symbol literal, never a quoted string or executable capability.
+    Symbol(String),
     LParen,
     RParen,
     LBrace,
@@ -121,6 +123,26 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         }
         if out.len() >= MAX_TOKENS {
             return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "too many tokens"));
+        }
+        if c == '#' {
+            // #identifier denotes a Symbol identity in this source module.
+            // No implicit conversion to a string/permission/capability exists.
+            bump!();
+            if i >= chars.len() || !(chars[i].is_alphabetic() || chars[i] == '_') {
+                return Err(Diagnostic::new(pos, "E_SYMBOL",
+                    "symbol literals require an identifier immediately after '#'"));
+            }
+            let mut name = String::new();
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                name.push(chars[i]);
+                if name.len() > MAX_STRING_BYTES {
+                    return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                        "Symbol name exceeds 4096 decoded UTF-8 bytes"));
+                }
+                bump!();
+            }
+            out.push(Token { tok: Tok::Symbol(name), pos });
+            continue;
         }
         if c.is_alphabetic() || c == '_' {
             let mut s = String::new();
@@ -366,13 +388,6 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             ('|', _) => (Tok::Pipe, 1),
             ('&', _) => (Tok::Amp, 1),
             ('@', _) => (Tok::At, 1),
-            ('#', _) => {
-                return Err(Diagnostic::new(
-                    pos,
-                    "E_UNSUPPORTED",
-                    "Symbols are not supported by the browser compiler yet",
-                ))
-            }
             _ => return Err(Diagnostic::new(pos, "E_TOKEN", "unexpected character")),
         };
         for _ in 0..len {
