@@ -1,0 +1,6 @@
+// A lock/lease cannot be laundered into an actor message envelope.
+// expect-error: E_UNSUPPORTED_TYPE
+define actor Worker receives Mutex<int> as
+  receive(ActorMail<Mutex<int>> mail): void { return; }
+end
+pub fnc main(): int { return 0; }
