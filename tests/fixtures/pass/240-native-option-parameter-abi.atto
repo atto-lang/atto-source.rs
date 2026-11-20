@@ -1,0 +1,11 @@
+// expect-exit: 42
+// The two-slot tagged value must pass unaltered through a native function ABI.
+fnc unwrap_or_zero(Option<int> input): int {
+  return match input over
+    on Some(n) -> n,
+    on None -> 0
+  end;
+}
+pub fnc main(): int {
+  return unwrap_or_zero(Some(42));
+}
