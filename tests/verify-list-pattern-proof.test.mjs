@@ -75,6 +75,40 @@ test('exact-head and whole-tree mirror provenance fail closed', () => {
     writeFileSync(join(checkout, 'ignored-build/fake-config.toml'), 'injected=true');
     assert.equal(git(checkout, 'rev-parse', 'HEAD^{tree}'), originalTree);
     check({ ATTO_VERIFY_MODE: 'mirror', ATTO_EXPECT_TREE: originalTree }, 2, /SOURCE_EXTRA_IGNORED_PATHS/);
+    rmSync(join(checkout, 'ignored-build'), { recursive: true, force: true });
+
+    // A failed Git query may not be interpreted as an empty/clean result.
+    // Replace only Git in the restricted PATH; no compiler tool is introduced.
+    const gitProgram = which('git');
+    const gitShim = join(bin, 'git');
+    const failGitOperation = (operation, output = '', exitCode = 76) => {
+      rmSync(gitShim);
+      writeFileSync(gitShim,
+        '#!/bin/sh\\nif [ "$1" = "' + operation + '" ]; then\\n' +
+        (output ? '  printf "%s\\n" "' + output + '"\\n' : '') +
+        '  exit ' + exitCode + '\\nfi\\nexec "' + gitProgram + '" "$@"\\n',
+        { mode: 0o755 });
+    };
+    const restoreGit = () => {
+      rmSync(gitShim);
+      symlinkSync(gitProgram, gitShim);
+    };
+    const mirrorEnv = { ATTO_VERIFY_MODE: 'mirror', ATTO_EXPECT_TREE: originalTree };
+    failGitOperation('status');
+    check(mirrorEnv, 2, /SOURCE_STATUS_CHECK_FAILED/);
+    restoreGit();
+    failGitOperation('clean');
+    check(mirrorEnv, 2, /SOURCE_CLEAN_CHECK_FAILED/);
+    restoreGit();
+    failGitOperation('ls-tree');
+    check(mirrorEnv, 2, /SOURCE_GITLINK_CHECK_FAILED/);
+    restoreGit();
+
+    // An unverified gitlink must be rejected even if the source tree matches.
+    failGitOperation('ls-tree', '160000 commit ' + originalHead + '   submodule', 0);
+    check(mirrorEnv, 2, /SOURCE_SUBMODULE_UNVERIFIED/);
+    restoreGit();
+    check(mirrorEnv, 3, /MISSING_CARGO/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
