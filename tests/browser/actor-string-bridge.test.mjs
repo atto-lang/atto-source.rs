@@ -189,3 +189,31 @@ test('actual Wasm exported function reads owned string copied into isolated memo
   assert.equal(bridge.receiveNext(receiver,guest.exports.actor_receive).status,'HANDLER_RETURNED');
   assert.equal(new Uint8Array(guest.exports.memory.buffer)[0],104); // 'h'
 });
+
+
+test('two independent destination memories receive identical fanout without aliasing',()=>{
+  const {bridge,from,sender,receiver}=mk();
+  const to2=memory(2);
+  const second=bridge.register({tenant:'tenant-A',actorId:'receiver2',generation:1,
+    memory:to2,receives:'string',sends:[],guestDataEnd:1000,
+    reservation:{offset:65536,capacity:65536},actorType:1});
+  const ptr=encode(from,512,'fanout');
+  assert.equal(bridge.sendPacked(sender,receiver,ptr).sequence,0);
+  assert.equal(bridge.sendPacked(sender,second,ptr).sequence,0);
+  const first=bridge.receiveNext(receiver,()=>{});
+  assert.equal(first.status,'HANDLER_RETURNED');
+  assert.equal(bridge.receiveNext(second,(type,packed)=>{
+    assert.equal(type,1);
+    assert.equal(unpackGuestString(packed).length,6);
+    assert.equal(new TextDecoder().decode(new Uint8Array(to2.buffer,65536,6)),'fanout');
+  }).status,'HANDLER_RETURNED');
+});
+
+test('wire golden ATAM string hello is canonical and never CONTROL',()=>{
+  const golden=Uint8Array.from([65,84,65,77,1,1,5,0,0,0,104,101,108,108,111]);
+  assert.deepEqual(Array.from(decodeStringDataFrame(golden)),Array.from(golden));
+  const {bridge,from,sender,receiver}=mk();
+  const ptr=encode(from,0,'hello');
+  bridge.sendPacked(sender,receiver,ptr);
+  assert.equal(bridge.receiveNext(receiver,()=>{}).status,'HANDLER_RETURNED');
+});
