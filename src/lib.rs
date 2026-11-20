@@ -76,6 +76,9 @@ pub(crate) mod mutex_lease_hir_v1;
 /// connected to guest Wasm imports, task admission, or the active scheduler.
 /// Do not expose this to untrusted guest source; unverified task+mutex still
 /// fails closed until physical quiescence and actor/TenantVM ABI are proved.
+// Browser compiler instances cannot host the privileged TenantVM scheduler.
+// Never make a std::sync host-arbiter part of the wasm32 compiler artifact.
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 mod mutex_wait_queue_v1;
 /// File-scoped namespace headers derived from a package-relative source path.
