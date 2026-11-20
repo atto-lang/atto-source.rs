@@ -98,7 +98,21 @@ try{
    'unimplemented async HTTP/FS must not produce a success exit code');
  assert.equal(realIo.stdout.length,0,
    'unimplemented async HTTP/FS unexpectedly produced executable Wasm');
- console.log('PASS compiled Atto sealed std HTTP/FS pure-policy imports: exit 42, zero host imports, five negative cases plus rejected async HTTP/FS');
+ // Independent Rust/Wasm guest gate for the same canonical 56 signed-i64
+ // vectors exercised by LLVM native AOT and .NET CoreCLR/NativeAOT.
+ const vectorBytes=readFileSync(new URL('fixtures/hosted_policy_56_sealed_imports.atto',import.meta.url));
+ assert.equal(blobSha(vectorBytes),'f1df2fd99010cc0f14c0e031c522f89631f048e2',
+   '56-vector Atto guest source changed without conformance update');
+ const vectors=compile(vectorBytes.toString('utf8'));
+ assert.equal(vectors.error,undefined,vectors.error?.message);
+ assert.equal(vectors.status,0,vectors.stderr?.toString()||'56-vector compile rejected');
+ assert.ok(WebAssembly.validate(vectors.stdout),'56-vector guest is not valid Wasm');
+ const vectorModule=new WebAssembly.Module(vectors.stdout);
+ assert.deepEqual(WebAssembly.Module.imports(vectorModule),[],
+   'pure policy vectors must not acquire HTTP/FS host capabilities');
+ assert.equal(new WebAssembly.Instance(vectorModule,{}).exports.main(),42n,
+   'compiled sealed-import guest disagreed with 56 canonical policy vectors');
+ console.log('PASS compiled Atto sealed std HTTP/FS pure-policy imports: exit 42, zero host imports, 56 source vectors, five negatives and rejected async HTTP/FS');
 } finally {
  rmSync(dir,{recursive:true,force:true});
 }
