@@ -119,3 +119,37 @@ pub fnc main(): int {
     let wasm = compile(source).expect("repeated sealed import should de-duplicate identical unit");
     assert!(wasm.starts_with(b"\0asm"));
 }
+
+
+#[test]
+fn namespace_first_std_imports_compile_and_bad_headers_fail_closed() {
+    let source = r#"
+use namespace storefront;
+import * as http from pkg "std.http";
+import * as fs from pkg "std.fs";
+pub fnc main(): int {
+    if http.http_status_valid(200) == false then return 1; fi
+    if fs.fs_text_size_admissible(3, 3, 3) == false then return 2; fi
+    return 42;
+}"#;
+    let bytes = compile(source).expect("namespace-first sealed std imports");
+    assert!(bytes.starts_with(b"\0asm"));
+    assert_eq!(bytes, compile(source).unwrap(), "deterministic namespace-first compilation");
+
+    let derived = source.replace("use namespace storefront;", "use default namespace;");
+    let bytes = atto_compiler::compile_with_path(
+        &derived, Path::new("storefront/main.atto"))
+        .expect("default namespace from logical package source path");
+    assert!(bytes.starts_with(b"\0asm"));
+
+    for (bad, expected) in [
+        ("use namespace storefront; use namespace other;", "E_DUPLICATE"),
+        ("use namespace storefront; import * as http from pkg \"std.http\"; use namespace other;", "E_DUPLICATE"),
+        ("use default namespace(2); import * as http from pkg \"std.http\"; pub fnc main(): int {return 42;}", "E_NAMESPACE_DEPTH"),
+    ] {
+        let attempt = format!("{bad}\npub fnc main(): int {{ return 42; }}");
+        let err = atto_compiler::compile_with_path(&attempt, Path::new("storefront/main.atto"))
+            .expect_err("invalid namespace metadata may not create executable Wasm");
+        assert_eq!(err.code, expected, "{bad}: {err}");
+    }
+}
