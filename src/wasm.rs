@@ -183,6 +183,8 @@ fn field_op(code: &mut Vec<u8>, t: Type, offset: u32, store: bool) {
 #[derive(Clone, Copy, PartialEq)]
 enum Frame {
     Break,
+    /// Exit innermost caller-local inline task without returning from its function.
+    InlineTask,
     Top,
     Continue,
     Other,
@@ -567,6 +569,13 @@ impl Emit<'_> {
                 self.op(0x08); // throw tag 0
                 uleb(&mut self.code, 0);
             }
+            TStmt::InlineReturn { value, result_slot } => {
+                if let Some(v) = value {
+                    self.expr(v);
+                    self.set(result_slot.expect("inline non-void return requires typed slot"));
+                }
+                self.br_to(Frame::InlineTask);
+            }
             TStmt::Return(v) if self.uw.is_some() => {
                 // Snapshot the value before any finally/defer runs, then
                 // leave through the compiler-owned cleanup path.
@@ -726,9 +735,14 @@ impl Emit<'_> {
                 }
             }
             TExpr::Bool(b) => self.i32c(*b as i32),
-            TExpr::InlineTask(body) => {
-                // This is caller-local evaluation, not task spawn or join.
-                if let Some(v) = body { self.expr(v); }
+            TExpr::InlineTask { body, result_slot } => {
+                // Caller-local lexical scope, not a scheduled Task/Future.
+                // Every InlineReturn branches to this block's end; it MUST
+                // NOT return from the enclosing function or skip its cleanup.
+                self.open(0x02, 0x40, Frame::InlineTask);
+                self.stmts(body);
+                self.close();
+                if let Some(slot) = result_slot { self.get(*slot); }
             }
             TExpr::Local(slot) => {
                 self.op(0x20);

@@ -3789,8 +3789,9 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
-    /// Executable subset: an empty lexical body or one scalar return.
-    /// More complex bodies need lexical resource and suspension lowering.
+    /// Lexical inline task. Parsing is not permission to execute effects:
+    /// the checker separately allowlists primitive bindings, assignment,
+    /// branches and task-local return. All other statements fail closed.
     fn parse_inline_task(&mut self, discard: bool) -> R<ExprKind> {
         let pos = self.pos();
         self.expect_word("sync")?;
@@ -3804,27 +3805,8 @@ impl Parser {
             return Err(Diagnostic::new(pos, "E_TASK_RETURN_TYPE",
                 "'do sync task' permits only <void>; non-void inline results must be used in an expression"));
         }
-        self.expect(Tok::LBrace, "'{' after sync task")?;
-        let value = if self.eat(&Tok::RBrace) {
-            None
-        } else if self.eat_word("return") {
-            if self.eat(&Tok::Semi) {
-                self.expect(Tok::RBrace, "'}' after sync task")?;
-                None
-            } else {
-                let v = self.parse_expr()?;
-                self.terminator()?;
-                self.expect(Tok::RBrace, "'}' after sync task")?;
-                Some(Box::new(v))
-            }
-        } else {
-            return Err(unsupported(pos, "sync task statements requiring cleanup or suspension"));
-        };
-        if discard && value.is_some() {
-            return Err(Diagnostic::new(pos, "E_TASK_RETURN_TYPE",
-                "'do sync task' requires a void body: use 'return;' or no return value"));
-        }
-        Ok(ExprKind::InlineTask { declared_type, value })
+        let body = self.parse_block()?;
+        Ok(ExprKind::InlineTask { declared_type, body, discard })
     }
 
     fn parse_primary(&mut self) -> R<Expr> {
