@@ -758,6 +758,19 @@ for (const [name, sha, expected, kind] of [
   });
 }
 
+// Functional operators must not grant callable identity to actor/effect and
+// task control keywords. These are reserved even in the scalar subset.
+check('pipe/authority-and-task-keywords-are-not-function-names',()=>{
+  for (const keyword of ['unsafe','sync','task','pipe','rpipe']) {
+    const source='fnc '+keyword+'(int x): int -> x;\n'
+      +'pub fnc main(): int -> 42 |> '+keyword+';';
+    const result=compile(source);
+    assert.equal(result.ok,false,keyword+': admitted a reserved function name');
+    assert.equal('wasm' in result,false,keyword+': leaked compiled guest artifact');
+    assert.match(result.code,/^E_[A-Z_]+$/,keyword+': missing compiler diagnostic');
+  }
+});
+
 // Exact current site preview corpus. Rejections never count as executing a
 // feature; the report explicitly separates admitted, unsupported and guests.
 try {
