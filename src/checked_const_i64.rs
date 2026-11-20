@@ -86,23 +86,15 @@ pub(crate) fn evaluate(
             _ => None, // Unproven selector: runtime checked traps stay in guest.
         },
         TExpr::Builtin(kind, lhs, rhs) => {
+            // Named And/Or/Xor are eager function-style builtins: the guest
+            // evaluates BOTH arguments before applying the operator. Never
+            // hide a known overflow in RHS merely because LHS decides truth.
             let left = evaluate(lhs, known, pos)?;
-            match (kind, left) {
-                (Builtin::And, Some(Bool(false))) => Some(Bool(false)),
-                (Builtin::Or, Some(Bool(true))) => Some(Bool(true)),
-                (Builtin::And, Some(Bool(true))) => match evaluate(rhs, known, pos)? {
-                    Some(Bool(b)) => Some(Bool(b)),
-                    _ => None,
-                },
-                (Builtin::Or, Some(Bool(false))) => match evaluate(rhs, known, pos)? {
-                    Some(Bool(b)) => Some(Bool(b)),
-                    _ => None,
-                },
-                (Builtin::Xor, Some(Bool(a))) => match evaluate(rhs, known, pos)? {
-                    Some(Bool(b)) => Some(Bool(a ^ b)),
-                    _ => None,
-                },
-                // Unknown short-circuit input cannot prove whether RHS runs.
+            let right = evaluate(rhs, known, pos)?;
+            match (kind, left, right) {
+                (Builtin::And, Some(Bool(a)), Some(Bool(b))) => Some(Bool(a && b)),
+                (Builtin::Or, Some(Bool(a)), Some(Bool(b))) => Some(Bool(a || b)),
+                (Builtin::Xor, Some(Bool(a)), Some(Bool(b))) => Some(Bool(a ^ b)),
                 _ => None,
             }
         }
