@@ -22,6 +22,7 @@ const cases=[
   ['panic/214-v2-pipe-closed-channel.atto',true],
   ['panic/215-v2-pipe-stopped-consumer.atto',true],
   ['panic/216-v2-pipe-stopped-actor-sink.atto',true],
+  ['conformance/pipe-rpipe-v1/actor-duplicate-direction.atto',true],
 ];
 try {
   for (const [suffix,mustPanic] of cases) {
