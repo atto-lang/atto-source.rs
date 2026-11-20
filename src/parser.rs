@@ -403,7 +403,7 @@ impl Parser {
         let pos = self.pos();
         match self.peek().clone() {
             Tok::Ident(s) => {
-                if matches!(s.as_str(), "Record" | "Tuple" | "Map") {
+                if matches!(s.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List") {
                     self.factory_shadowing.push((s.clone(), pos));
                 }
                 if is_reserved(&s) {
@@ -3049,7 +3049,7 @@ impl Parser {
                     if *self.peek() == Tok::LParen {
                         let builtin = match &e.kind {
                             ExprKind::Var(base) if member == "of"
-                                && matches!(base.as_str(), "Record" | "Tuple" | "Map") =>
+                                && matches!(base.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List") =>
                                 Some(base.clone()),
                             _ => None,
                         };
@@ -3058,12 +3058,16 @@ impl Parser {
                                 "Record" => ExprKind::Record(self.parse_record_of_args()?),
                                 "Map" => ExprKind::Map(self.parse_map_of_args()?),
                                 "Tuple" => ExprKind::Tuple(self.parse_args()?),
+                                "Array" => ExprKind::Call("@builtin/Array.of".into(), self.parse_args()?),
+                                "List" => ExprKind::Call("@builtin/List.of".into(), self.parse_args()?),
                                 _ => unreachable!(),
                             };
                             let symbol = match name.as_str() {
                                 "Record" => "Record",
                                 "Map" => "Map",
                                 "Tuple" => "Tuple",
+                                "Array" => "Array",
+                                "List" => "List",
                                 _ => unreachable!(),
                             };
                             if !self.factories_seen.contains(&symbol) {
