@@ -830,4 +830,171 @@ mod tests {
         assert!(!scope.all_local_locks_released());
     }
 
+
+    fn scoped() -> TaskScopeLockCoordinator {
+        let mut scope = TaskScopeLockCoordinator::new(d());
+        scope.add_lock(1, queue(8)).unwrap();
+        scope.add_lock(2, queue(8)).unwrap();
+        scope
+    }
+
+    #[test]
+    fn task_scope_cancel_keeps_active_guard_until_guest_exit() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        scope.register(c(2), Some(c(1))).unwrap();
+        scope.register(c(3), None).unwrap();
+
+        let held = owned(scope.acquire(c(2), 1).unwrap());
+        scope.enter(c(2), 1, held).unwrap();
+        let next = pending(scope.acquire(c(3), 1).unwrap());
+        scope.cancel_tree(c(1)).unwrap();
+        assert!(scope.locks[&1].has_active_lease());
+        assert_eq!(scope.locks.get_mut(&1).unwrap().take_wakeup(), None);
+
+        // Parent exits first. Returning from its body does NOT certify DONE
+        // while a child is executing or holding a critical lease.
+        assert!(scope.guest_exited_at_safe_point(c(1)).unwrap().is_empty());
+        scope.notification_drain_ack(c(1)).unwrap();
+        assert_eq!(scope.certify_physical_retirement(c(1)), Err(Error::NotQuiescent));
+
+        assert_eq!(scope.guest_exited_at_safe_point(c(2)).unwrap(), vec![1]);
+        assert_eq!(scope.locks.get_mut(&1).unwrap().take_wakeup(), Some(next));
+        // The successor may enter after release, independent of the parent's
+        // and child's later callback-drain/physical-retire acknowledgments.
+        scope.enter(c(3), 1, next).unwrap();
+        assert_eq!(scope.certify_physical_retirement(c(2)), Err(Error::NotQuiescent));
+        scope.notification_drain_ack(c(2)).unwrap();
+        scope.certify_physical_retirement(c(2)).unwrap();
+        scope.certify_physical_retirement(c(1)).unwrap();
+
+        assert_eq!(scope.guest_exited_at_safe_point(c(3)).unwrap(), vec![1]);
+        scope.notification_drain_ack(c(3)).unwrap();
+        scope.certify_physical_retirement(c(3)).unwrap();
+    }
+
+    #[test]
+    fn task_scope_cancel_pending_waiter_never_unlocks_owner() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        scope.register(c(2), None).unwrap();
+        let first = owned(scope.acquire(c(1), 1).unwrap());
+        scope.enter(c(1), 1, first).unwrap();
+        let waiter = pending(scope.acquire(c(2), 1).unwrap());
+        scope.cancel_tree(c(2)).unwrap();
+        assert!(scope.locks[&1].has_active_lease());
+        assert_eq!(scope.enter(c(2), 1, waiter), Err(Error::CancellationPending));
+        assert!(scope.guest_exited_at_safe_point(c(2)).unwrap().is_empty());
+        scope.notification_drain_ack(c(2)).unwrap();
+        scope.certify_physical_retirement(c(2)).unwrap();
+        assert_eq!(scope.guest_exited_at_safe_point(c(1)).unwrap(), vec![1]);
+        assert_eq!(scope.locks.get_mut(&1).unwrap().take_wakeup(), None);
+        scope.notification_drain_ack(c(1)).unwrap();
+        scope.certify_physical_retirement(c(1)).unwrap();
+    }
+
+    #[test]
+    fn task_scope_cancel_granted_unclaimed_handoff_fences_stale_wake() {
+        let mut scope = scoped();
+        for id in [1_u64, 2, 3] { scope.register(c(id), None).unwrap(); }
+        let a = owned(scope.acquire(c(1), 1).unwrap());
+        scope.enter(c(1), 1, a).unwrap();
+        let b = pending(scope.acquire(c(2), 1).unwrap());
+        let successor = pending(scope.acquire(c(3), 1).unwrap());
+        assert_eq!(scope.guest_exited_at_safe_point(c(1)).unwrap(), vec![1]);
+        // B owns a granted handoff but has not entered the critical section.
+        scope.cancel_tree(c(2)).unwrap();
+        assert_eq!(scope.enter(c(2), 1, b), Err(Error::CancellationPending));
+        assert_eq!(scope.locks.get_mut(&1).unwrap().take_wakeup(), Some(successor));
+        scope.enter(c(3), 1, successor).unwrap();
+        assert!(scope.guest_exited_at_safe_point(c(2)).unwrap().is_empty());
+        scope.notification_drain_ack(c(2)).unwrap();
+        scope.certify_physical_retirement(c(2)).unwrap();
+        assert_eq!(scope.guest_exited_at_safe_point(c(3)).unwrap(), vec![1]);
+        scope.notification_drain_ack(c(1)).unwrap();
+        scope.notification_drain_ack(c(3)).unwrap();
+        scope.certify_physical_retirement(c(1)).unwrap();
+        scope.certify_physical_retirement(c(3)).unwrap();
+        assert!(!scope.locks[&1].has_outstanding_grant());
+    }
+
+    #[test]
+    fn task_scope_cancel_is_idempotent_and_unwinds_nested_guards_lifo() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        let a = owned(scope.acquire(c(1), 1).unwrap());
+        scope.enter(c(1), 1, a).unwrap();
+        let b = owned(scope.acquire(c(1), 2).unwrap());
+        scope.enter(c(1), 2, b).unwrap();
+        scope.cancel_tree(c(1)).unwrap();
+        scope.cancel_tree(c(1)).unwrap();
+        assert!(scope.locks[&1].has_active_lease());
+        assert!(scope.locks[&2].has_active_lease());
+        assert_eq!(scope.guest_exited_at_safe_point(c(1)).unwrap(), vec![2, 1]);
+        assert_eq!(scope.guest_exited_at_safe_point(c(1)), Err(Error::AlreadyClaimed));
+        scope.notification_drain_ack(c(1)).unwrap();
+        scope.certify_physical_retirement(c(1)).unwrap();
+        scope.certify_physical_retirement(c(1)).unwrap();
+        assert!(!scope.locks[&1].has_outstanding_grant());
+        assert!(!scope.locks[&2].has_outstanding_grant());
+    }
+
+    #[test]
+    fn task_scope_cleanup_failure_withholds_retirement_and_attempts_other_guards() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        for id in [1_u64, 2] {
+            let token = owned(scope.acquire(c(1), id).unwrap());
+            scope.enter(c(1), id, token).unwrap();
+        }
+        scope.locks.remove(&2); // fault inject an unavailable cleanup dependency
+        assert_eq!(scope.cancel_tree(c(1)), Err(Error::StaleTicket));
+        assert_eq!(scope.guest_exited_at_safe_point(c(1)), Err(Error::StaleTicket));
+        scope.notification_drain_ack(c(1)).unwrap();
+        assert_eq!(scope.certify_physical_retirement(c(1)), Err(Error::CleanupFailed));
+        assert!(!scope.locks[&1].has_outstanding_grant());
+        assert!(!scope.tasks[&1].guards.all_local_locks_released());
+    }
+
+    #[test]
+    fn task_scope_parent_guard_unwinds_before_child_retirement_join() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        scope.register(c(2), Some(c(1))).unwrap();
+        let parent_lease = owned(scope.acquire(c(1), 1).unwrap());
+        scope.enter(c(1), 1, parent_lease).unwrap();
+        let child_waiter = pending(scope.acquire(c(2), 1).unwrap());
+
+        scope.cancel_tree(c(1)).unwrap();
+        assert_eq!(scope.enter(c(2), 1, child_waiter), Err(Error::CancellationPending));
+        assert_eq!(scope.certify_physical_retirement(c(1)), Err(Error::NotQuiescent));
+        assert_eq!(scope.guest_exited_at_safe_point(c(1)).unwrap(), vec![1]);
+        scope.notification_drain_ack(c(1)).unwrap();
+        // Parent lock is already released, but scope must still await child.
+        assert_eq!(scope.certify_physical_retirement(c(1)), Err(Error::NotQuiescent));
+        assert!(scope.guest_exited_at_safe_point(c(2)).unwrap().is_empty());
+        scope.notification_drain_ack(c(2)).unwrap();
+        scope.certify_physical_retirement(c(2)).unwrap();
+        scope.certify_physical_retirement(c(1)).unwrap();
+        assert!(!scope.locks[&1].has_outstanding_grant());
+    }
+
+    #[test]
+    fn task_scope_rejects_child_after_cancel_and_foreign_tenant_segments() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        scope.cancel_tree(c(1)).unwrap();
+        assert_eq!(scope.register(c(2), Some(c(1))), Err(Error::CancellationPending));
+        assert_eq!(scope.acquire(c(1), 1), Err(Error::CancellationPending));
+        let forged = Continuation {
+            domain: Domain { tenant: 99, ..d() },
+            logical_task: 1, segment: 1,
+        };
+        assert_eq!(scope.cancel_tree(forged), Err(Error::ForeignDomain));
+        assert_eq!(scope.notification_drain_ack(forged), Err(Error::ForeignDomain));
+        assert_eq!(scope.enter(forged, 1, Ticket {
+            generation: 7, sequence: 1, continuation: forged,
+        }), Err(Error::ForeignDomain));
+    }
+
 }
