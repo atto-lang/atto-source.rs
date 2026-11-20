@@ -1,3 +1,4 @@
+// expect-panic: 10
 // Browser-v2 LEGACY runtime regression: two identical actor pipe attempts
 // must not create a Consumer -> Consumer cycle. This is NOT the final
 // declared-emits / checked PipeHandle contract; see atto-spec #45.
