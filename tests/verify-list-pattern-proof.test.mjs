@@ -68,6 +68,13 @@ test('exact-head and whole-tree mirror provenance fail closed', () => {
 
     writeFileSync(join(checkout, 'untracked.txt'), 'dirty');
     check({ ATTO_VERIFY_MODE: 'mirror', ATTO_EXPECT_TREE: originalTree }, 2, /SOURCE_TREE_DIRTY/);
+    rmSync(join(checkout, 'untracked.txt'));
+    // Git status alone omits ignored files. They must not affect Cargo/guest proofs.
+    writeFileSync(join(checkout, '.git/info/exclude'), '\nignored-build/\n', { flag: 'a' });
+    mkdirSync(join(checkout, 'ignored-build'));
+    writeFileSync(join(checkout, 'ignored-build/fake-config.toml'), 'injected=true');
+    assert.equal(git(checkout, 'rev-parse', 'HEAD^{tree}'), originalTree);
+    check({ ATTO_VERIFY_MODE: 'mirror', ATTO_EXPECT_TREE: originalTree }, 2, /SOURCE_EXTRA_IGNORED_PATHS/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
