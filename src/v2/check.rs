@@ -2283,6 +2283,18 @@ impl<'a> Checker<'a> {
         let (recv, ty) = self.value(base, None)?;
         let recv = self.spill(recv);
         match &ty {
+            Ty::PipeSetupError => {
+                // A nominal error object, represented as a versioned v2
+                // integer code inside Result's Err payload. It grants no
+                // I/O or capability access and cannot be forged from int.
+                if name == "code" {
+                    self.plain_args(name, args, 0, pos)?;
+                    return Ok((recv, Ty::Int, false));
+                }
+                Err(type_err(pos, "PipeSetupError only supports code()"))
+            }
+            Ty::PipeHandle => Err(err(pos, "E_UNSUPPORTED",
+                "PipeHandle methods are gated until cancellation, borrow release and TenantVM lifecycle admission are verified")),
             Ty::Channel(item) => match name {
                 "close" => {
                     self.plain_args(name, args, 0, pos)?;
