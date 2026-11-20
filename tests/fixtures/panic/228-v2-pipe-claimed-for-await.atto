@@ -1,0 +1,29 @@
+// expect-panic: 10
+// Public channel readers MUST NOT steal DATA from an owned actor pipeline.
+// Real compiled Wasm guest test; stdout must remain empty.
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val channel = Channel<int>.bounded(1);
+  val Result<PipeHandle, PipeSetupError> connection =
+      producer pipe channel pipe consumer;
+  val int accepted = match connection over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if accepted != 1 then return 99; fi
+  for await item in channel do
+    stdio.println(item);
+  done
+  return 0;
+}
