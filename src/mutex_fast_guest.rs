@@ -484,7 +484,9 @@ pub susp fnc main(): int {
         let extra = format!("{} pub fnc other(): int {{return 1;}}",SOURCE);
         assert_eq!(parse(&extra).unwrap_err().code,"E_LOCK_UNSUPPORTED");
         let invalid = SOURCE.replace("return lease.value;", "return lease;");
-        assert_eq!(parse(&invalid).unwrap_err().code,"E_LOCK_UNSUPPORTED");
+        // A lease escaping its lexical scope is a precise ownership error,
+        // not an unsupported-profile fallback. It must never emit guest Wasm.
+        assert_eq!(parse(&invalid).unwrap_err().code,"E_GUARD_ESCAPE");
     }
     #[test]
     fn ready_await_inside_lease_is_a_compile_error() {
