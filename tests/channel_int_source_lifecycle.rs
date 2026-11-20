@@ -117,3 +117,22 @@ fn channel_shorthand_write_must_not_silently_become_nonparking_try_send() {
     assert!(compile(source).is_err(),
         "an unmarked non-suspending caller cannot use a potentially blocking channel write; it must not be silently lowered to try_send");
 }
+
+#[test]
+fn standalone_fallible_channel_operations_cannot_discard_result() {
+    for expression in [
+        "readch seed",
+        "<< seed",
+        "seed.try_send(42)",
+        "seed.close()",
+        "seed.release()",
+        "Channel<int>.bounded(2)",
+        "new Channel<int>(2)",
+    ] {
+        let body=format!("{expression}; return Err(0);");
+        let err=compile(&src(&body))
+            .expect_err("a standalone checked outcome must not be dropped");
+        assert_eq!(err.code,"E_IO_DISCARD",
+            "standalone checked channel expression {expression}: {err}");
+    }
+}
