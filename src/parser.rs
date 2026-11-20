@@ -3301,6 +3301,12 @@ impl Parser {
                 {
                     return self.parse_named_record_parens(pos);
                 }
+                if matches!(self.peek(), Tok::Str(_))
+                    && *self.peek_at(1) == Tok::Assign
+                {
+                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                        "quoted Record field names require brace syntax: {\"label\": value}"));
+                }
                 let first = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
                 if self.eat(&Tok::Comma) {
                     let mut items = vec![first];
