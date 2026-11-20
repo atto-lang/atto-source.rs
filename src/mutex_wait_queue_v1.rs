@@ -1477,4 +1477,42 @@ mod tests {
         assert!(kernel.take_grant_wake_hints().unwrap().is_empty());
     }
 
+
+    #[test]
+    fn scope_exit_auto_cancels_unfinished_descendants_without_clobbering_success() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        scope.register(c(2), Some(c(1))).unwrap();
+        scope.register(c(3), Some(c(2))).unwrap();
+        scope.register(c(4), None).unwrap();
+
+        // Parent owns a guard; child waits for that mutex. Successful
+        // parent return must cancel every unfinished descendant first.
+        let owner = owned(scope.acquire(c(1), 1).unwrap());
+        scope.enter(c(1), 1, owner).unwrap();
+        let waiting = pending(scope.acquire(c(2), 1).unwrap());
+        assert_eq!(scope.guest_exited_at_safe_point(c(1)).unwrap(), vec![1]);
+        assert_eq!(scope.exit_kind(c(1)).unwrap(), Some(TaskExitKind::Succeeded));
+        assert!(scope.tasks[&2].cancel_requested);
+        assert!(scope.tasks[&3].cancel_requested);
+        assert!(!scope.tasks[&4].cancel_requested);
+        assert_eq!(scope.enter(c(2), 1, waiting), Err(Error::CancellationPending));
+        assert!(!scope.locks[&1].has_outstanding_grant());
+        scope.notification_drain_ack(c(1)).unwrap();
+        assert_eq!(scope.certify_physical_retirement(c(1)), Err(Error::NotQuiescent));
+
+        for child in [3_u64, 2] {
+            assert!(scope.guest_exited_at_safe_point(c(child)).unwrap().is_empty());
+            scope.notification_drain_ack(c(child)).unwrap();
+            scope.certify_physical_retirement(c(child)).unwrap();
+        }
+        scope.certify_physical_retirement(c(1)).unwrap();
+        assert!(scope.guest_exited_at_safe_point(c(4)).unwrap().is_empty());
+        scope.notification_drain_ack(c(4)).unwrap();
+        scope.certify_physical_retirement(c(4)).unwrap();
+        assert_eq!(scope.exit_kind(c(2)).unwrap(), Some(TaskExitKind::Cancelled));
+        assert_eq!(scope.exit_kind(c(3)).unwrap(), Some(TaskExitKind::Cancelled));
+        assert_eq!(scope.exit_kind(c(4)).unwrap(), Some(TaskExitKind::Succeeded));
+    }
+
 }
