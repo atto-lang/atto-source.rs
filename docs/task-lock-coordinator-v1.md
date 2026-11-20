@@ -52,3 +52,12 @@ References: atto-spec PRs #125/#129, atto-source.rs issue #428 and PR #416, atto
 - A new private [scintilla-run admission probe PR #6](https://github.com/scintilla-run/atto-ci/pull/6), [run #44681240718](https://github.com/scintilla-run/atto-ci/actions/runs/44681240718), also failed with zero executed steps. No source was copied to this second carrier.
 - Recent Actions checks in several additional Atto private carriers likewise recorded no executed steps. Do not treat a workflow's failure status as a compiler/test failure, or any authored test as a pass.
 - Next verification must execute cargo test and clippy on the exact source head and run real compiler-to-Wasm guest tests before guest support or parity claims.
+
+## 2026-11-20 additional hardening
+
+- The native-only private host kernel now includes a nonparking `HostTaskLockKernel` wrapper using `Mutex::try_lock`. If the serialized arbiter is busy, return `AdmissionBusy` rather than parking a scheduler carrier. This is internal host metadata locking, **not** a guest `Mutex<T>` implementation.
+- Tenant STOP is a trusted operation that cancels all registered waiters and TaskScopes first, and then closes queues. It never unlocks an active lease until trusted safe-point cleanup; it does not certify retirement.
+- TaskScope and mutex grant generations are unique per kernel and per lock. A valid grant for mutex A is rejected when presented for mutex B; duplicate generations are rejected during lock registration.
+- `WaitQueue::release` now requires a **claimed active guard**. A granted-but-unclaimed ticket cannot be passed through active-guard release; it must be revoked through cancellation. Existing host queue tests were adjusted to claim their grants before releasing them.
+- `src/lib.rs` includes the private kernel only for **native host compilation** via `cfg(not(target_arch = "wasm32"))`, excluding the host synchronization structures from the browser compiler target. The kernel remains **unreachable from guest code**, and there is no scheduler callback providing authenticated guest-exit or notification-drain receipts.
+- The model currently contains **35 authored Rust unit tests**. Rust and compiled guest verification remain `NOT_EXECUTED` because checked GitHub Actions jobs have zero recorded steps. The compiler's existing guest fast-path does not admit general task cancellation, contention, RwLock or actor critical-state guard paths.
