@@ -699,6 +699,31 @@ impl HostTaskLockKernel {
     fn terminal(&self, who: Continuation) -> Result<Option<TaskExitKind>, Error> {
         self.try_with_core(|core| core.exit_kind(who))
     }
+    /// Level-triggered cancellation wake hints. The caller may schedule any
+    /// listed continuation again until its trusted guest-exit receipt arrives.
+    /// Repeated polling is safe: a cancellation wake is not physical retirement.
+    /// This does NOT run callbacks or unlock a claimed guard.
+    fn cancelled_continuation_wake_hints(&self) -> Result<Vec<Continuation>, Error> {
+        self.try_with_core(|core| Ok(core.tasks.values()
+            .filter(|task| task.cancel_requested && !task.guest_exited)
+            .map(|task| task.continuation)
+            .collect()))
+    }
+    /// Edge-triggered *grant hints* from the serialized lock arbiter. Taking
+    /// a hint does NOT claim the lease. The scheduler must pass the exact
+    /// ticket back through claim() to revalidate generation, owner and cancel
+    /// state before any guest code accesses protected memory.
+    fn take_grant_wake_hints(&self) -> Result<Vec<(u64, Ticket)>, Error> {
+        self.try_with_core(|core| {
+            let mut out = Vec::with_capacity(core.locks.len());
+            for (&lock_id, lock) in &mut core.locks {
+                if let Some(ticket) = lock.take_wakeup() {
+                    out.push((lock_id, ticket));
+                }
+            }
+            Ok(out)
+        })
+    }
 }
 
 #[cfg(test)]
