@@ -2131,9 +2131,9 @@ impl Parser {
             self.terminator()?;
             return Ok(Stmt::YieldFrom(source, pos));
         }
-        // In statement position a lone caret is the lexical return alias.
-        // Do not change expression-position '^': parse_bitwise_xor() still
-        // handles integer XOR, and '^=' remains a distinct assignment.
+        // In statement position a single caret is return, never binary XOR.
+        // Only contiguous '^^' is the typed integer bitwise XOR operator.
+        // The old single-caret infix and '^=' spellings are invalid.
         // Reuse the return-match branch below for guard and control-flow proof.
         let word = if *self.peek() == Tok::Caret {
             Some("return".to_owned())
@@ -2344,9 +2344,6 @@ impl Parser {
                     } else if *self.peek_at(1) == Tok::Pipe
                         && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
                         Some((BinOp::BitOr, 2))
-                    } else if *self.peek_at(1) == Tok::Caret
-                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
-                        Some((BinOp::BitXor, 2))
                     } else if self.triple_at(1, &Tok::Lt) && *self.peek_at(4) == Tok::Assign
                         && self.joined_at(3) {
                         Some((BinOp::Shl, 4))
@@ -3244,8 +3241,12 @@ impl Parser {
     fn parse_bitwise_xor(&mut self) -> R<Expr> {
         let mut left = self.parse_bitwise_and()?;
         let mut links = 0;
-        while *self.peek() == Tok::Caret {
+        // The lexer retains single-caret return tokens; only a contiguous
+        // pair is a binary XOR operator. Whitespace between carets is invalid.
+        while *self.peek() == Tok::Caret && *self.peek_at(1) == Tok::Caret
+            && self.joined_at(0) {
             let pos = self.pos();
+            self.advance();
             self.advance();
             self.grow(1)?;
             links += 1;
