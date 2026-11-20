@@ -6,6 +6,20 @@ Under the new strict named-callable rule, every function, routine, class/actor m
 
 The browser compiler branch implements conservative return inference for simple literal, parameter and arithmetic returns, with `E_RETURN_INFER` on opaque or conflicting results. It does **not** provide complete typed whole-program inference. This is a source-breaking change: existing fixtures and examples that omit a return result need an individually checked migration. Do not blindly rewrite omissions to `void`. CI execution and native/other-backend parity are **not verified** by this README.
 
+## Restricted source-compiled List<int> pattern guest candidate (draft PR #415)
+
+This deliberately restricted Rust/Wasm backend profile compiles one immutable, locally declared fixed-size List<int> literal into an owned **guest heap allocation** with a checked length header and i64 cells. A single return match<int> on that local List supports leading/trailing bare rests, exact integer literals, underscores, immutable typed integer captures, a simple scalar capture guard, and an int addition result with required wildcard fallback. The checker enumerates no more than 32 statically bounded candidate starts; generated Wasm performs the actual comparisons and element loads. First matching witness is leftmost-shortest. A failed guard does not retry a later witness.
+
+This is a **separate List<int> guest ABI** from draft immutable Array<int> work in Rust #111/#178. They must be reconciled before promoting general collections. No dynamic List, arbitrary iterator, mutation, actor transfer, borrow-view lifetime, pattern.of<T> compiler intrinsic, counted repetition, multiple internal rest wildcards, custom extractor, runtime interpreter, or library integration is implied. The standalone typed template parser remains **host reference only**; imported std.pattern templates still fail closed. This profile permits only a single source-local main with literal data and no user-defined List declarations/imports.
+
+Proposed exact-head validation commands:
+- cargo test --locked --test list_pattern_guest --test typed_seq_fragment_admission --test sequence_v2_fail_closed
+- cargo build --locked --release --bin attoc
+- ATTOC=target/release/attoc node tests/list-pattern-guest-execution.mjs
+- cargo clippy --locked --all-targets -- -D warnings
+
+Four guest fixtures require actual Wasm execution with exit values 60, 0, 30, and 7; seven rejected sources must produce no artifact. The Node suite also verifies imports=0 and an actual contiguous list header/cell payload in guest memory. **Tests are authored, but were NOT EXECUTED or verified on the exact current branch head at documentation time.** Source Actions and checked alternate carriers previously had zero-step runner failures; no PASS can be inferred. Only source-compiled, independently executed guests justify enabling the profile in release builds.
+
 ## Experimental source-compiled scalar collection guest (draft PR #320)
 
 A strictly bounded `define struct` + `Array<T, layout=aos|soa|aosoa(N)>`
