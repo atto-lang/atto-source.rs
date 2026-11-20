@@ -370,13 +370,39 @@ fnc __mail_send(int a, int v): void {
   __set_rt(4, 1);
 }
 
-// Append `b` to the end of `a`'s pipeline; the pipeline value is its head.
+// Provisional guest actor-only chain; not a structured PipeHandle.
+// Check both chains BEFORE publishing a link. Reattaching a node (including
+// spelling the same edge with 'pipe' and 'rpipe') must not make an actor
+// point to itself or another member of its own pipeline. The browser
+// prototype has a strict 16-actor budget; production needs checked Result
+// admission, bounded cooperative mailboxes and tenant capability fencing.
 fnc __actor_link(int a, int b): int {
+  if a == 0 then __panic(10); fi
+  if b == 0 then __panic(10); fi
   let t = a;
-  while __load(t, 8) != 0 do
-    t = __load(t, 8);
+  let count = 0;
+  loop do
+    if count >= 16 then __panic(10); fi
+    let q = b;
+    let tail_size = 0;
+    loop do
+      if tail_size >= 16 then __panic(10); fi
+      if t == q then __panic(10); fi
+      tail_size = tail_size + 1;
+      val next_b = __load(q, 8);
+      if next_b == 0 then break; fi
+      q = next_b;
+    done
+    count = count + 1;
+    val next_a = __load(t, 8);
+    if next_a == 0 then
+      if count + tail_size > 16 then __panic(10); fi
+      // Single publication point; all validation above has succeeded.
+      __store(t, 8, b);
+      return a;
+    fi
+    t = next_a;
   done
-  __store(t, 8, b);
   return a;
 }
 
