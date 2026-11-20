@@ -121,7 +121,8 @@ try{
     eof:true,invalidHandle:'Err',zeroSome:true,cooperativeYields:3,
     declarationFirstSome:42,declarationFirstYields:1,
     explicitReadchSome:43,directionalSome:44,
-    sourceLifecycleSome:45,sourceLifecycleYields:1,sourceLifecycleReleased:true});
+    sourceLifecycleSome:45,sourceLifecycleYields:1,sourceLifecycleReleased:true,
+    checkedSendSome:42,sendBackpressure:true,zeroCapacityRendezvous:true,sendReadYields:3});
   console.log('PASS compiled Atto source: checked Channel<int>.bounded -> try_send -> readch -> close -> release');
   // Compile the canonical checked echo with the actual wasm32 Rust compiler
   // and run that source-generated guest in a real Chromium JSPI Worker. This
