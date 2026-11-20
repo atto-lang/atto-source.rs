@@ -225,8 +225,8 @@ fn named_actor_references_preserve_directional_wiring() {
             other => panic!("expected named ActorRef endpoint, got {other:?}"),
         }).collect()
     };
-    assert_eq!(names(forward_stages), ["producer", "consumer"]);
-    assert_eq!(names(reverse_stages), ["consumer", "producer"]);
+    assert_eq!(names(forward_stages), vec!["producer".to_string(), "consumer".to_string()]);
+    assert_eq!(names(reverse_stages), vec!["consumer".to_string(), "producer".to_string()]);
     for statement in [
         "val forward = producer pipe consumer;",
         "val reverse = consumer rpipe producer;",
@@ -276,4 +276,22 @@ fn two_spelling_variants_do_not_claim_a_duplex_connection() {
     // Duplicate edge admission requires a runtime fan-out/ownership policy;
     // no unsupported graph may be emitted as an executable Wasm artifact.
     assert_eq!(compile(&source).unwrap_err().code, "E_UNSUPPORTED");
+}
+
+#[test]
+fn statement_only_actor_pipe_example_still_checks_declared_output_roles() {
+    let statements = "producer pipe consumer;\n    consumer rpipe producer;";
+    let source = named_actor_program(statements, false);
+    let program = Parser::new(lexer::lex(&source).unwrap()).parse_program().unwrap();
+    let main = program.funcs.iter().find(|f| f.name == "main").unwrap();
+    assert!(matches!(&main.body[2],
+        Stmt::Expr(atto_compiler::ast::Expr { kind: ExprKind::MixedPipeline(_), .. })));
+    assert!(matches!(&main.body[3],
+        Stmt::Expr(atto_compiler::ast::Expr {
+            kind: ExprKind::DirectedPipeline(_, PipeDirection::RightToLeft), ..
+        })));
+    // Receiving a message is not a declared pipeline emission. The first
+    // direction must fail on missing emits before a guest graph is emitted.
+    let diagnostic = compile(&source).expect_err("cannot pipe a receives-only producer");
+    assert_eq!(diagnostic.code, "E_TYPE");
 }
