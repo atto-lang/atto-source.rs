@@ -51,3 +51,35 @@ assert.equal(a.panic_code.value,7);
 assert.equal(a.release_count(),3,'closed method must not leak/double release');
 assert.equal(a.acquire_count(),3);
 console.log('PASS real compiled stateful Counter.increment: native/wasm32 parity, source initial 17, checked write 42, overflow rollback, cancel, instance isolation and closed generation');
+
+const attachedFile=new URL('./fixtures/stateful/counter-attached.atto',import.meta.url);
+const attachedSource=readFileSync(attachedFile,'utf8');
+const attachedNative=spawnSync(process.env.ATTOC||'target/release/attoc',
+  ['--stateful-method-preview',attachedFile.pathname],{encoding:null});
+assert.equal(attachedNative.status,0,String(attachedNative.stderr));
+const attachedBytes=Uint8Array.from(attachedNative.stdout);
+assert.ok(WebAssembly.validate(attachedBytes),'attached actor must compile to genuine Wasm');
+assert.deepEqual([...attachedBytes],[...bytes],
+  'same nominal sealed Counter field and callback must emit byte-identical Wasm');
+
+const attachedData=new TextEncoder().encode(attachedSource);
+new Uint8Array(compiler.memory.buffer,compiler.input_ptr(),attachedData.length).set(attachedData);
+assert.equal(compiler.compile_stateful_method_preview(attachedData.length),0);
+const attachedBrowser=Uint8Array.from(new Uint8Array(compiler.memory.buffer,
+  compiler.result_ptr(),compiler.result_length()));
+assert.deepEqual([...attachedBrowser],[...attachedBytes],
+  'wasm32 compiler must match native compiled attached actor state');
+const attachedGuest=new WebAssembly.Instance(new WebAssembly.Module(attachedBytes),{}).exports;
+assert.equal(attachedGuest['atto.state.Counter.count'](),17n);
+assert.equal(attachedGuest['atto.state.Counter.increment.1'](25n,0),42n);
+assert.equal(attachedGuest['atto.state.Counter.count'](),42n);
+assert.equal(attachedGuest.acquire_count(),1);
+assert.equal(attachedGuest.release_count(),1);
+assert.equal(attachedGuest.lease_active(),0);
+assert.throws(()=>attachedGuest['atto.state.Counter.increment.1'](
+  9223372036854775807n,0),WebAssembly.RuntimeError);
+assert.equal(attachedGuest['atto.state.Counter.count'](),42n);
+assert.equal(attachedGuest.acquire_count(),2);
+assert.equal(attachedGuest.release_count(),2);
+assert.equal(attachedGuest.lease_active(),0);
+console.log('PASS attached state source compiled to real Wasm: native/wasm32 bytes equal, checked write/rollback and release attested');
