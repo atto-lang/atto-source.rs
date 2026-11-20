@@ -104,7 +104,9 @@ fn reverse_wiring_rejects_missing_capabilities_and_mismatches() {
         ("Stream.port<bool>(1).sink() rpipe spawn Producer()","E_TYPE"),
         ("spawn Producer() pipe (let results: Stream<bool> = Stream.buffered<bool>(1))","E_TYPE"),
         ("(let results: Stream<bool> = Stream.buffered<bool>(1)) rpipe spawn Producer()","E_TYPE"),
-        ("(let results: Stream<int> = Stream.buffered<int>(1)) pipe spawn Consumer()","E_TYPE"),
+        // An inline capture in source position violates terminal-capture shape,
+        // which is E_PIPE_CONTRACT, not a nominal source/sink E_TYPE mismatch.
+        ("(let results: Stream<int> = Stream.buffered<int>(1)) pipe spawn Consumer()","E_PIPE_CONTRACT"),
         ("spawn Producer() rpipe (let results: Stream<int> = Stream.buffered<int>(1))","E_PIPE_CONTRACT"),
     ] {
         assert_eq!(error(graph),expected,"{graph}");
