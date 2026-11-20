@@ -61,3 +61,16 @@ References: atto-spec PRs #125/#129, atto-source.rs issue #428 and PR #416, atto
 - `WaitQueue::release` now requires a **claimed active guard**. A granted-but-unclaimed ticket cannot be passed through active-guard release; it must be revoked through cancellation. Existing host queue tests were adjusted to claim their grants before releasing them.
 - `src/lib.rs` includes the private kernel only for **native host compilation** via `cfg(not(target_arch = "wasm32"))`, excluding the host synchronization structures from the browser compiler target. The kernel remains **unreachable from guest code**, and there is no scheduler callback providing authenticated guest-exit or notification-drain receipts.
 - The model currently contains **35 authored Rust unit tests**. Rust and compiled guest verification remain `NOT_EXECUTED` because checked GitHub Actions jobs have zero recorded steps. The compiler's existing guest fast-path does not admit general task cancellation, contention, RwLock or actor critical-state guard paths.
+
+
+## Scheduler wake notification hardening (2026-11-20)
+
+Host-only kernel `HostTaskLockKernel` now exposes separate bounded wake-hint operations:
+- `cancelled_continuation_wake_hints()` is **level-triggered** until an authenticated task-exit event, so a waiting task cancelled while its mutex was held can be rescheduled without unlocking the holder.
+- `pending_grant_wake_hints()` is **level-triggered**, not destructive; a failed scheduler ready-queue enqueue must not lose the lock grant notification.
+- `acknowledge_grant_wake_hint(lock_id,ticket)` clears only the exact current grant notification after trusted scheduler ready-queue admission. Stale acknowledgments cannot clear a successor's notification. Actual lease entry always revalidates generation, ownership and cancellation via `claim()`.
+- Wake-query calls use `try_lock`, returning `AdmissionBusy` instead of blocking an OS/scheduler carrier. They never publish Task DONE or release a guarded lease.
+
+The unit-test source contains 40 `#[test]` cases at the latest update, including three new wake-notification regressions (queued cancellation, cancel-after-grant stale wake, and nonparking query contention). **These tests are authored, not yet executed on the current source head.**
+
+CI carrier `benefactor-cc/atto-ci#6` has an exact mirrored Rust blob and pinned workflow. Its initial [Actions run #44682496723](https://github.com/benefactor-cc/atto-ci/actions/runs/44682496723) failed with **no job steps**; no compiler or host test result exists. Keep guest admission and all ten backend release flags disabled until proven.
