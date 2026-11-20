@@ -1,0 +1,11 @@
+// expect-exit: 7
+fnc parse_id(string text): Result<int,Error> {
+  val n: int = int.parse(text)?;
+  return Ok(n);
+}
+pub fnc main(): int {
+  return match parse_id(" 42") over
+    on Ok(_) -> 0,
+    on Err() -> 7
+  end;
+}

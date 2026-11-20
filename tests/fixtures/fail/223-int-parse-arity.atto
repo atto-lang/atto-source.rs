@@ -1,0 +1,5 @@
+// expect-error: E_ARITY
+pub fnc main(): int {
+  val result = int.parse();
+  return 0;
+}

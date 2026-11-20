@@ -161,6 +161,10 @@ pub enum TExpr {
         none_tmp: u32,
         error_tmp: u32,
     },
+    /// Checked signed decimal parser. The operand is evaluated once and
+    /// the resulting tagged Result<int,Error> is created inside guest Wasm.
+    /// Error text is an immutable module string, not a host exception.
+    IntParse { value: Box<TE>, error_offset: u32, error_len: u32 },
     /// Compare the discriminant with a known variant tag.
     AdtIs { obj: Box<TE>, tag: u32 },
     /// Payload read, admissible only inside the tag-matched arm.
@@ -350,6 +354,9 @@ pub struct TProgram {
     pub guest_eh: bool,
     /// A second private tag for `raise` (escalated failure).
     pub raise_tag: bool,
+    /// A runtime checked int.parse operation is present. Its Wasm helper is
+    /// emitted only for modules that actually use this builtin.
+    pub parse_int: bool,
     /// A guest-global active-catch counter exists because some `recover`
     /// must defer to an outer caller's catch or trap (two-phase dispatch).
     pub catch_depth: bool,
@@ -1317,8 +1324,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
     audit_cleanup_call_effects(&funcs, &p.funcs)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
+    let parse_int = funcs.iter().any(|f| any_in_stmts(&f.body,
+        &|e| matches!(e.e, TExpr::IntParse { .. })));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
-        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ErrorNew { .. })));
+        &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } |
+            TExpr::ErrorNew { .. } | TExpr::IntParse { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let raise_tag = funcs.iter().any(|f| stmt_exists(&f.body, &|s| matches!(s, TStmt::Raise(_))));
@@ -1336,6 +1346,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         guest_eh,
         raise_tag,
         catch_depth,
+        parse_int,
     })
 }
 
@@ -1375,7 +1386,8 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
         | TExpr::FieldGet { obj: v, .. }
         | TExpr::StateFieldRead { obj: v, .. }
-        | TExpr::PrintObj { obj: v, .. } =>
+        | TExpr::PrintObj { obj: v, .. }
+        | TExpr::IntParse { value: v, .. } =>
             expr_escape_effects(v, effects),
         TExpr::Trap { value: v, .. } =>
             expr_escape_effects(v, effects).without_throw(),
@@ -1747,7 +1759,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ErrorNew { .. } |
-        TExpr::AdtPropagate { .. } => false,
+        TExpr::AdtPropagate { .. } | TExpr::IntParse { .. } => false,
     }
 }
 
@@ -1818,6 +1830,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::AdtNew { payload, .. } => payload.as_ref().is_some_and(|p| any_in(p, f)),
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::AdtPropagate { source, .. } => any_in(source, f),
+        TExpr::IntParse { value, .. } => any_in(value, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
@@ -1843,7 +1856,8 @@ fn guest_eh_in_stmts(body: &[TStmt]) -> bool {
 
 fn uses_str(e: &TE) -> bool {
     e.ty == Type::Str
-        || matches!(e.e, TExpr::Str(..) | TExpr::StrConst(..) | TExpr::PrintStrVal { .. })
+        || matches!(e.e, TExpr::Str(..) | TExpr::StrConst(..) |
+            TExpr::PrintStrVal { .. } | TExpr::IntParse { .. })
         || matches!(&e.e, TExpr::PrintObj { pieces, .. } if pieces.iter().any(|p| matches!(p, PrintPiece::Field(_, Type::Str))))
 }
 
@@ -3825,6 +3839,31 @@ impl<'a> FnCx<'a> {
     }
 
     fn method_call(&mut self, base: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        // Intrinsic type namespace: int.parse(string) -> Result<int,Error>.
+        // Reject shadowing rather than bypassing the local receiver or invoking
+        // an unverified host parser. No actor/class admission until the
+        // corresponding isolation/effect contract is executed.
+        if let ExprKind::Var(n) = &base.kind {
+            if n == "int" && name == "parse" && self.lookup(n).is_none() {
+                if self.owner != Owner::TopLevel {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "int.parse outside top-level functions needs an audited actor/class profile"));
+                }
+                self.arity("int.parse", 1, args.len(), pos)?;
+                let input = self.value(&args[0])?;
+                if input.ty != Type::Str {
+                    return Err(type_err(args[0].pos, format!(
+                        "int.parse requires string, found {}", self.tn(input.ty))));
+                }
+                let (error_offset, error_len) = self.string("invalid integer", pos)?;
+                return Ok(TE {
+                    e: TExpr::IntParse {
+                        value: Box::new(input), error_offset, error_len,
+                    },
+                    ty: Type::ResultIntError,
+                });
+            }
+        }
         // Class.static(args)
         if let ExprKind::Var(n) = &base.kind {
             if self.lookup(n).is_none() {

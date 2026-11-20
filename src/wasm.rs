@@ -138,6 +138,8 @@ struct Layout {
     helpers: u32,
     /// helper index of `S_BYTES_EQ`
     str_base: u32,
+    /// Index of the optional checked decimal-to-Result compiler builtin.
+    parse_int_base: u32,
     /// global index of actor-state global 0
     state_base: u32,
     /// Per-instance free-list for 32-byte generator continuation frames.
@@ -163,6 +165,9 @@ impl Layout {
     }
     fn str_helper(&self, s: u32) -> u32 {
         self.helper(self.str_base + s)
+    }
+    fn parse_int_helper(&self) -> u32 {
+        self.helper(self.parse_int_base)
     }
 }
 
@@ -903,6 +908,11 @@ impl Emit<'_> {
                 uleb(&mut self.code, 0);
                 self.close(); // end try: one i32 Result record on the stack
             }
+            TExpr::IntParse { value, error_offset, error_len } => {
+                self.expr(value);
+                self.i64c(((*error_offset as i64) << 32) | *error_len as i64);
+                self.call(self.l.parse_int_helper());
+            }
             TExpr::AdtNew { tag, payload, tmp } => {
                 self.i32c(16); // 8-aligned, fixed immutable tagged record
                 self.call(self.l.helper(H_ALLOC));
@@ -1464,6 +1474,202 @@ fn string_helpers(base: u32, alloc: Option<u32>) -> Vec<(Sig, Vec<u8>, Vec<u8>)>
     v
 }
 
+
+/// Checked in-guest signed decimal conversion. Param 0 is the packed UTF-8
+/// string (offset<<32 | length); param 1 is the immutable Error.message view.
+/// Returns a 16-byte tagged Result<int,Error> pointer, never a host exception.
+/// The parser accepts optional leading +/- followed by 1+ ASCII digits,
+/// rejects whitespace, non-ASCII digits, embedded NUL and signed-i64 overflow.
+/// It accumulates negatively so -9223372036854775808 remains representable.
+fn int_parse_body(l: &Layout) -> (Sig, Vec<u8>, Vec<u8>) {
+    const PTR: u32 = 2;
+    const LEN: u32 = 3;
+    const IDX: u32 = 4;
+    const DIGIT: u32 = 5;
+    const NEG: u32 = 6;
+    const ACC: u32 = 7;
+    const LIMIT: u32 = 8;
+    const REC: u32 = 9;
+    const ERR: u32 = 10;
+    fn br_if_to(e: &mut Emit<'_>, frame: Frame) {
+        let at = e.frames.iter().rposition(|f| *f == frame).expect("int.parse branch target");
+        e.op(0x0D);
+        uleb(&mut e.code, (e.frames.len() - 1 - at) as u64);
+    }
+    fn byte_at_ptr(e: &mut Emit<'_>, ptr: u32, index: u32) {
+        e.get(ptr);
+        e.get(index);
+        e.op(0x6A); // i32.add
+        e.code.extend_from_slice(&[0x2D, 0, 0]); // i32.load8_u, align=0, offset=0
+    }
+    let mut e = Emit {
+        l,
+        code: Vec::new(),
+        frames: Vec::new(),
+        void_main: false,
+        active_iterators: Vec::new(),
+        state_ticket_slot: None,
+        state_write_depth: 0,
+        uw: None,
+        in_recover: false,
+        active_traps: 0,
+        calls: Vec::new(),
+        landings: Vec::new(),
+    };
+    // Decoded locals: ptr/len/index/digit/negative:i32,
+    // accumulator/limit:i64, Result pointer/Error pointer:i32.
+    let locals = vec![3, 5, I32, 2, I64, 2, I32];
+    str_parts(&mut e.code, 0);
+    e.set(LEN);
+    e.set(PTR);
+
+    // Any malformed or overflow case branches out to the Error constructor.
+    e.open(0x02, 0x40, Frame::Break);
+    e.get(LEN);
+    e.op(0x45); // i32.eqz
+    br_if_to(&mut e, Frame::Break);
+    // Check the bounded guest string view before loading a byte. No overflow
+    // or out-of-bounds host trap from an invalid/forged (ptr,len) pair.
+    e.get(PTR);
+    e.i32c((HEAP_PAGES * 65536) as i32);
+    e.op(0x4B); // i32.gt_u
+    br_if_to(&mut e, Frame::Break);
+    e.get(LEN);
+    e.i32c((HEAP_PAGES * 65536) as i32);
+    e.get(PTR);
+    e.op(0x6B); // i32.sub (the ptr is already bounded)
+    e.op(0x4B); // i32.gt_u
+    br_if_to(&mut e, Frame::Break);
+
+    // First byte is present and bounded. A leading sign is optional.
+    e.get(PTR);
+    e.code.extend_from_slice(&[0x2D, 0, 0]); // i32.load8_u
+    e.set(DIGIT);
+    e.get(DIGIT);
+    e.i32c(45); // '-'
+    e.op(0x46);
+    e.open(0x04, 0x40, Frame::Other);
+    e.i32c(1);
+    e.set(NEG);
+    e.i32c(1);
+    e.set(IDX);
+    e.op(0x05); // else
+    e.get(DIGIT);
+    e.i32c(43); // '+'
+    e.op(0x46);
+    e.open(0x04, 0x40, Frame::Other);
+    e.i32c(1);
+    e.set(IDX);
+    e.close();
+    e.close();
+    e.get(IDX);
+    e.get(LEN);
+    e.op(0x4F); // i32.ge_u: bare sign is invalid
+    br_if_to(&mut e, Frame::Break);
+
+    e.get(NEG);
+    e.open(0x04, I64, Frame::Other); // if negative: lower bound is MIN
+    e.i64c(i64::MIN);
+    e.op(0x05);
+    e.i64c(-i64::MAX);
+    e.close();
+    e.set(LIMIT);
+    e.i64c(0);
+    e.set(ACC);
+
+    e.open(0x02, 0x40, Frame::Top);
+    e.open(0x03, 0x40, Frame::Continue);
+    e.get(IDX);
+    e.get(LEN);
+    e.op(0x4F); // i >= len
+    br_if_to(&mut e, Frame::Top);
+
+    byte_at_ptr(&mut e, PTR, IDX);
+    e.set(DIGIT);
+    e.get(DIGIT);
+    e.i32c(48); // '0'
+    e.op(0x49); // i32.lt_u
+    br_if_to(&mut e, Frame::Break);
+    e.get(DIGIT);
+    e.i32c(57); // '9'
+    e.op(0x4B); // i32.gt_u
+    br_if_to(&mut e, Frame::Break);
+    e.get(DIGIT);
+    e.i32c(48);
+    e.op(0x6B);
+    e.set(DIGIT);
+
+    // Negative accumulation avoids trapping/overflowing at i64::MIN.
+    e.get(ACC);
+    e.i64c(-922337203685477580); // min/10, truncated toward zero
+    e.op(0x53); // i64.lt_s
+    br_if_to(&mut e, Frame::Break);
+    e.get(ACC);
+    e.i64c(10);
+    e.op(0x7E); // i64.mul; safe after cutoff
+    e.set(ACC);
+    e.get(ACC);
+    e.get(LIMIT);
+    e.get(DIGIT);
+    e.op(0xAD); // i64.extend_i32_u
+    e.op(0x7C); // i64.add
+    e.op(0x53); // i64.lt_s
+    br_if_to(&mut e, Frame::Break);
+    e.get(ACC);
+    e.get(DIGIT);
+    e.op(0xAD);
+    e.op(0x7D); // i64.sub
+    e.set(ACC);
+    e.get(IDX);
+    e.i32c(1);
+    e.op(0x6A);
+    e.set(IDX);
+    e.br_to(Frame::Continue);
+    e.close(); // loop
+    e.close(); // success block
+
+    e.i32c(16);
+    e.call(l.helper(H_ALLOC));
+    e.set(REC);
+    e.get(REC);
+    e.i32c(0); // Ok tag
+    e.store_i32(0);
+    e.get(REC);
+    e.get(NEG);
+    e.open(0x04, I64, Frame::Other);
+    e.get(ACC); // negative includes MIN
+    e.op(0x05);
+    e.i64c(0);
+    e.get(ACC);
+    e.op(0x7D); // positive is -negative_acc, now in range
+    e.close();
+    e.store_i64(8);
+    e.get(REC);
+    e.op(0x0F); // return Ok(pointer)
+    e.close(); // error target
+
+    // Return Err(original Error object). Never manufacture a throw or None.
+    e.i32c(8);
+    e.call(l.helper(H_ALLOC));
+    e.set(ERR);
+    e.get(ERR);
+    e.get(1); // immutable packed "invalid integer" message view
+    e.store_i64(0);
+    e.i32c(16);
+    e.call(l.helper(H_ALLOC));
+    e.set(REC);
+    e.get(REC);
+    e.i32c(1); // Err tag
+    e.store_i32(0);
+    e.get(REC);
+    e.get(ERR);
+    e.op(0xAD); // retain the Error object's address as i64 payload
+    e.store_i64(8);
+    e.get(REC);
+    e.op(0x0B);
+    (Sig(vec![I64, I64], vec![I32]), locals, e.code)
+}
+
 fn locals_decl(types: &[Type]) -> Vec<u8> {
     let mut groups: Vec<(u32, u8)> = Vec::new();
     for t in types {
@@ -1487,8 +1693,9 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     let str_base = if p.heap { H_ALLOC + 1 } else { H_ALLOC };
     let layout = Layout {
         imports: p.imports.clone(),
-        helpers: str_base + if p.strings { STRING_HELPERS } else { 0 },
+        helpers: str_base + if p.strings { STRING_HELPERS } else { 0 } + u32::from(p.parse_int),
         str_base,
+        parse_int_base: str_base + if p.strings { STRING_HELPERS } else { 0 },
         state_base: 1 + u32::from(p.heap),
         gen_free_global: (!p.generators.is_empty()).then_some(
             1 + u32::from(p.heap) + p.globals.len() as u32
@@ -1531,6 +1738,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     if p.strings {
         let alloc = p.heap.then(|| layout.helper(H_ALLOC));
         helpers.extend(string_helpers(layout.str_helper(S_BYTES_EQ), alloc));
+    }
+    if p.parse_int {
+        // Checked guest parser needs both the string memory and the bounded
+        // allocator to build a tagged Result and an owned Error on failure.
+        assert!(p.strings && p.heap);
+        helpers.push(int_parse_body(&layout));
     }
     for (sig, locals, code) in helpers {
         func_types.push(types.idx(sig));
