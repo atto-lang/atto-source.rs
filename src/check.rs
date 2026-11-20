@@ -1176,10 +1176,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
         }
         if let Some(declared) = a.sends {
-            // Type::Void is internal to the sends header: after the parser
-            // rejected "sends void", it represents "sends never". The later
-            // typed-IR effect audit rejects every outbound Send<T> against it.
-            let _outbound = res(declared)?;
+            // Defense in depth: a forged/lowered AST must not introduce
+            // Payload(void), even though the parser rejects "sends void".
+            if let ActorSendEffect::Payload(payload_type) = declared {
+                if res(payload_type)? == Type::Void {
+                    return Err(Diagnostic::new(a.pos, "E_ACTOR_SEND_CONTRACT",
+                        "an actor's outbound DATA payload may not be void"));
+                }
+            }
         }
         actors.push(ActorInfo {
             name: a.name.clone(),
