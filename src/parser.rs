@@ -3156,10 +3156,27 @@ impl Parser {
                 return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT", "pipeline exceeds the call argument limit"));
             }
             self.advance();
+            let rhs_start = self.i;
             self.enter()?;
             let argument = self.parse_ternary();
             self.leave();
             let argument = argument?;
+            // A reverse right operand may contain a grouped forward pipe,
+            // but an unparenthesized mixed chain has no defined ordering.
+            let mut group_depth = 0usize;
+            for token in &self.toks[rhs_start..self.i] {
+                match token.tok {
+                    Tok::LParen | Tok::LBracket | Tok::LBrace => group_depth += 1,
+                    Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                        group_depth = group_depth.saturating_sub(1);
+                    }
+                    Tok::PipeGt if group_depth == 0 => return Err(Diagnostic::new(
+                        token.pos, "E_SYNTAX",
+                        "mixed '<|' and '|>' chains require explicit parentheses",
+                    )),
+                    _ => {}
+                }
+            }
             self.grow(1)?;
             args.insert(0, argument);
             c = Expr { kind: ExprKind::Call(name, args), pos };
