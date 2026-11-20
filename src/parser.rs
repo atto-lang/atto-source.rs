@@ -3072,6 +3072,89 @@ impl Parser {
         Ok(entries)
     }
 
+    /// Map.of_entries takes Entry<K,V> operands. Within the argument
+    /// delimiters, `key => value` is a statically typed Entry shorthand,
+    /// *not* the general Map.of alternating-arguments API. A standalone
+    /// Entry variable needs an owned product-read ABI and fails closed.
+    ///
+    /// Return flattened K,V operands in source order to the existing,
+    /// checked Map guest allocation. The syntax-only Entry wrapper is never
+    /// allocated and then silently discarded.
+    fn parse_map_of_entries_args(&mut self) -> R<Vec<Expr>> {
+        self.expect(Tok::LParen, "'(' after Map.of_entries")?;
+        let mut pairs = Vec::new();
+        if self.eat(&Tok::RParen) { return Ok(pairs); }
+        loop {
+            if pairs.len() >= MAX_PARAMS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "Map.of_entries exceeds the checked entry argument budget"));
+            }
+            let first = self.parse_expr()?;
+            let (key, value) = if self.eat(&Tok::FatArrow) {
+                (first, self.parse_expr()?)
+            } else {
+                match first {
+                    Expr {kind: ExprKind::Call(name, mut args), pos}
+                        if name == "@builtin/Entry.of" => {
+                        if args.len() != 2 {
+                            return Err(Diagnostic::new(pos, "E_FACTORY_ARITY",
+                                "Entry.of within Map.of_entries must have exactly K,V"));
+                        }
+                        let value = args.pop().expect("length checked");
+                        let key = args.pop().expect("length checked");
+                        (key,value)
+                    },
+                    Expr {kind: ExprKind::Call(name, _), pos}
+                        if name == "@builtin/Pair.of" =>
+                        return Err(Diagnostic::new(pos, "E_TYPE",
+                            "Pair<K,V> is distinct from Entry<K,V> and cannot be used in Map.of_entries")),
+                    other => return Err(Diagnostic::new(other.pos, "E_UNSUPPORTED",
+                        "Map.of_entries expects Entry<K,V> values: k => v or Entry.of(k,v); extracting a variable Entry awaits owned product access")),
+                }
+            };
+            if let Some(candidate) = constant_map_key(&key) {
+                if pairs.iter().step_by(2).any(|previous|
+                    constant_map_key(previous).as_deref() == Some(candidate.as_str())) {
+                    return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
+                        "duplicate static Map.of_entries key"));
+                }
+            }
+            pairs.push(key);
+            pairs.push(value);
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RParen) { break; }
+            } else {
+                self.expect(Tok::RParen, "')' after Map.of_entries Entry values")?;
+                break;
+            }
+        }
+        Ok(pairs)
+    }
+
+    /// Explicit type arguments are stored in a compiler-only factory name.
+    /// This preserves the K,V witness even for an expression without a
+    /// variable annotation. No user expression can forge this symbol.
+    fn parse_map_of_entries_factory(&mut self) -> R<ExprKind> {
+        let mut factory = String::from("@builtin/Map.of_entries");
+        if self.eat(&Tok::Lt) {
+            let k = self.parse_type()?;
+            self.expect(Tok::Comma, "',' between Map.of_entries<K,V> types")?;
+            let v = self.parse_type()?;
+            self.expect(Tok::Gt, "'>' after Map.of_entries<K,V>")?;
+            let spell = |ty: Type, names: &Vec<(String,Pos)>| {
+                match ty {
+                    Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) =>
+                        names[i as usize].0.clone(),
+                    other => other.name().to_owned(),
+                }
+            };
+            factory = format!("{}<{},{}>", factory,
+                spell(k,&self.type_names),spell(v,&self.type_names));
+        }
+        let args = self.parse_map_of_entries_args()?;
+        Ok(ExprKind::Call(factory,args))
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
         let mut chain = 0u32;
         let r = self.parse_postfix_chain(&mut chain);
@@ -3153,6 +3236,14 @@ impl Parser {
                     self.advance();
                     self.grow(1)?;
                     *chain += 1;
+                    if member == "of_entries" && matches!(&e.kind, ExprKind::Var(base) if base == "Map") {
+                        let kind = self.parse_map_of_entries_factory()?;
+                        if !self.factories_seen.contains(&"Map") {
+                            self.factories_seen.push("Map");
+                        }
+                        e = Expr {kind,pos:dot};
+                        continue;
+                    }
                     if *self.peek() == Tok::LParen {
                         let builtin = match &e.kind {
                             ExprKind::Var(base) if member == "of"

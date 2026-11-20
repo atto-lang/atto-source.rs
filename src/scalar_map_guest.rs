@@ -176,6 +176,21 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             };
             let parsed_map = match &init.kind {
                 ExprKind::Map(entries) => Some(entries.clone()),
+                // of_entries has already been parsed as checked Entry
+                // operands and typechecked using the canonical Map type
+                // inventory. Flatten only those operand pairs, never a
+                // dynamic Entry object or host-owned array.
+                ExprKind::Call(factory,args) if
+                    factory == "@builtin/Map.of_entries" ||
+                    (factory.starts_with("@builtin/Map.of_entries<") &&
+                        factory.ends_with('>')) => {
+                    if args.len() % 2 != 0 {
+                        return Err(error(init.pos, "E_FACTORY_ARITY",
+                            "Map.of_entries requires complete Entry<K,V> pairs"));
+                    }
+                    Some(args.chunks_exact(2).map(|p|
+                        (p[0].clone(),p[1].clone())).collect())
+                }
                 ExprKind::EmptyBraces => {
                     // {} can become a Map only when the checked type
                     // inventory supplies a concrete Map<K,V> context.

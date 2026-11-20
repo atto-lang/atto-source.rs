@@ -399,6 +399,45 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             Record(typed_fields)
         }
+        // Explicit Map.of_entries<K,V> provides a trusted K,V witness
+        // independent of any receiving variable. The parser admits only
+        // Entry.of(k,v) or k=>v and retains each pair in source order as
+        // two expressions. Infer using the *existing* Map literal rules:
+        // there is no second hash/ownership type system or host fallback.
+        ExprKind::Call(factory,args)
+            if factory == "@builtin/Map.of_entries"
+                || (factory.starts_with("@builtin/Map.of_entries<")
+                    && factory.ends_with('>')) => {
+            if args.len() % 2 != 0 {
+                return Err(diag(e.pos, "E_FACTORY_ARITY",
+                    "Map.of_entries requires complete Entry<K,V> pairs"));
+            }
+            let witnessed = if let Some(inner) = factory.strip_prefix("@builtin/Map.of_entries<") {
+                let Some(inner) = inner.strip_suffix('>') else {
+                    return Err(diag(e.pos, "E_TYPE",
+                        "malformed Map.of_entries type witness"));
+                };
+                let ty = canonical_type(&format!("Map<{inner}>"), e.pos, depth+1)?;
+                match ty {
+                    Map(_,_) => ty,
+                    _ => return Err(diag(e.pos, "E_TYPE_ARITY",
+                        "Map.of_entries requires exactly two type parameters")),
+                }
+            } else {
+                expected.cloned().unwrap_or(Map(Box::new(Bottom),Box::new(Bottom)))
+            };
+            if !matches!(witnessed, Map(_, _)) {
+                return Err(diag(e.pos, "E_TYPE",
+                    "Map.of_entries cannot produce a non-Map type"));
+            }
+            let entries: Vec<(Expr,Expr)> = args.chunks_exact(2)
+                .map(|pair| (pair[0].clone(),pair[1].clone()))
+                .collect();
+            let equivalent = Expr {pos:e.pos,kind:ExprKind::Map(entries)};
+            let typed = inferred(&equivalent,Some(&witnessed),depth+1)?;
+            matches_expected(&typed.ty,expected,e.pos)?;
+            return Ok(TypedLiteral {pos:e.pos,..typed});
+        }
         ExprKind::Map(entries) => {
             let (wanted_k, wanted_v) = match expected {
                 Some(Map(k,v)) => (k.as_ref().clone(), v.as_ref().clone()),
@@ -478,7 +517,8 @@ fn starts_literal(e: &Expr) -> bool {
         ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_)) ||
         matches!(&e.kind, ExprKind::Call(name, _) if
             matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of" |
-                "@builtin/Pair.of" | "@builtin/Entry.of"))
+                "@builtin/Pair.of" | "@builtin/Entry.of" | "@builtin/Map.of_entries") ||
+            (name.starts_with("@builtin/Map.of_entries<") && name.ends_with('>')))
 }
 
 /// Staged semantic preflight: checked declarations are *not* yet executable.
