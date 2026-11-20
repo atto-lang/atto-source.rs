@@ -33,6 +33,8 @@ fn type_tests_are_explicit_and_not_implicit_wildcard_casts() {
     rejected("is bool",T::Int,"E_PATTERN_TYPE");
     rejected("is !int",T::Int,"E_PATTERN_TYPE");
     rejected("is NonReifiable<T>",T::Any,"E_PATTERN_TYPE");
+    rejected("is int as val x",T::Any,"E_PATTERN_BINDING");
+    rejected("-0",T::Int,"E_PATTERN_SOURCE");
     rejected("7",T::String,"E_PATTERN_TYPE");
     rejected("true",T::Int,"E_PATTERN_TYPE");
     assert_eq!(parse("true",T::Any).atoms,vec![Atom::Bool(true)]);
