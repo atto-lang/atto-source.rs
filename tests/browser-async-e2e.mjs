@@ -162,6 +162,10 @@ try{
     ['LF value',0],['None EOF',0],['Err UTF-8',0],
     ['Err denied stdin',0],['Err denied stdout',12],
   ]);
+  assert.equal(textEcho.repeatScratchGuest,true,
+    'repeated checked reads must execute in source-generated JSPI guest');
+  assert.equal(textEcho.repeatedReads,41,
+    'repeated text read fixture must exceed the old 16-page heap lifetime');
   assert.ok(textEcho.cases.every(x=>x.cooperates>0));
   console.log('PASS source-compiled checked UTF-8 stdin echo: LF/CRLF/NUL, EOF, typed errors and per-port permissions');
 
