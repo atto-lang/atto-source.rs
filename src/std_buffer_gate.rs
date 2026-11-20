@@ -187,7 +187,16 @@ pub fnc main(): int { return 1; }"#;
 
     #[test]
     fn original_canonical_source_bytes_are_accepted_only_for_identity_admission() {
-        assert!(verify_candidate_sources(authentic_sources()).is_ok());
+        let approved = verify_candidate_sources(authentic_sources()).unwrap();
+        // The normal Rust lexer must at least recognize the real source
+        // bytes. This is NOT full class grammar/typechecking or guest linking.
+        for (path, _) in authentic_sources() {
+            let body = approved.source(path).expect("pinned module path");
+            let tokens = crate::lexer::lex(body)
+                .expect("canonical library source must be lexically accepted");
+            assert!(tokens.len() > 2);
+            assert!(matches!(tokens.last().map(|t| &t.tok), Some(Tok::Eof)));
+        }
         // Even after verifying all four sources, the compiler may not emit
         // a guest until it actually parses and links the canonical class.
         assert_eq!(crate::compile(EXAMPLE).unwrap_err().code, "E_STDLIB_UNLINKED");
