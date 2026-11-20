@@ -21,6 +21,11 @@ pub enum Ty {
     /// `Future<T>` and `Task<T>`
     Future(Box<Ty>),
     Channel(Box<Ty>),
+    /// Provisional single-tenant, compiler-issued checked DATA graph handle.
+    /// No user constructor; cancellation/lifetime methods are not yet shipped.
+    PipeHandle,
+    /// Nominal setup error code returned on checked three-stage admission.
+    PipeSetupError,
     AsyncGen(Box<Ty>),
     Fn(Vec<Ty>, Box<Ty>),
     /// reference to an actor of `objects[i]` (also the head of a pipeline)
