@@ -36,11 +36,11 @@ fn require_do_and_void_only_for_discarded_inline_tasks() {
     reject("pub fnc main(): int { sync task<int> { return 42; }; return 0; }", "E_SYNTAX");
     // The 'do' form cannot have a value-producing type parameter or body,
     // even when the caller would otherwise discard the result.
-    reject("pub fnc main(): int { do sync task<int> { return 7; }; return 42; }", "E_TYPE");
-    reject("pub fnc main(): int { do sync task<int> {}; return 42; }", "E_TYPE");
-    reject("pub fnc main(): int { do sync task<bool> {}; return 42; }", "E_TYPE");
-    reject("pub fnc main(): int { do sync task { return 7; }; return 42; }", "E_TYPE");
-    reject("pub fnc main(): int { do sync task<void> { return 7; }; return 42; }", "E_TYPE");
+    reject("pub fnc main(): int { do sync task<int> { return 7; }; return 42; }", "E_TASK_RETURN_TYPE");
+    reject("pub fnc main(): int { do sync task<int> {}; return 42; }", "E_TASK_RETURN_TYPE");
+    reject("pub fnc main(): int { do sync task<bool> {}; return 42; }", "E_TASK_RETURN_TYPE");
+    reject("pub fnc main(): int { do sync task { return 7; }; return 42; }", "E_TASK_RETURN_TYPE");
+    reject("pub fnc main(): int { do sync task<void> { return 7; }; return 42; }", "E_TASK_RETURN_TYPE");
 }
 
 #[test]

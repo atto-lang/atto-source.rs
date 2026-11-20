@@ -2259,7 +2259,7 @@ impl Parser {
                 // 'do' does not silently discard a non-void result. Both the
                 // explicit generic and any inferred return must be void.
                 if declared_type.is_some_and(|ty| ty != Type::Void) || value.is_some() {
-                    return Err(Diagnostic::new(pos, "E_TYPE",
+                    return Err(Diagnostic::new(pos, "E_TASK_RETURN_TYPE",
                         "'do sync task' requires a void body and only permits <void> as its type argument"));
                 }
                 self.terminator()?;
