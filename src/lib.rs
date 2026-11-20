@@ -70,6 +70,8 @@ pub mod tuple_binding_lower;
 /// Static, fail-closed typed tuple element loans; no object guest ABI yet.
 pub mod tuple_ownership_ir;
 pub mod target_typed;
+/// Compile-time-only typed std.pattern fragment AST; guest List lowering not yet admitted.
+pub mod sequence_pattern_fragments;
 /// Parse and reject unsupported top-level type declaration contracts before guest emission.
 pub mod type_declarations;
 pub mod wasm;
