@@ -638,8 +638,9 @@ check('pipe-left/right-associative-call-order-and-negative-admission', () => {
 // Single-expression callable bodies and both functional pipeline directions
 // must execute as compiled Wasm guests; host-only simulation is insufficient.
 const arrowPipePath = join(here, 'fixtures', 'pass', 'functional-pipelines-arrow.atto');
-check('pipe/inline-arrow-bodies-with-reverse-and-forward-real-guest', async () => {
-  const source = await readFile(arrowPipePath, 'utf8');
+const arrowPipeSource = await readFile(arrowPipePath, 'utf8');
+check('pipe/inline-arrow-bodies-with-reverse-and-forward-real-guest', () => {
+  const source = arrowPipeSource;
   const compiled = compile(source);
   assert.equal(compiled.ok, true, compiled.message);
   assert.ok(WebAssembly.validate(compiled.wasm));
