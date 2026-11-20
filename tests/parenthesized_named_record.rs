@@ -152,8 +152,6 @@ fn duplicate_checkers_agree_across_parens_braces_and_constant_maps() {
     for literal in [
         "(foo=1,foo=2)",
         "(café=1,café=2)",
-        "{foo:1,\"foo\":2}",
-        "{\"foo\":1,foo:2}",
         "{\"foo\" => 1,\"foo\" => 2}",
         "{1 => true,1 => false}",
     ] {
@@ -161,6 +159,14 @@ fn duplicate_checkers_agree_across_parens_braces_and_constant_maps() {
             &format!("pub fnc main():int {{let value={literal};return 0;}}"),
             "E_DUPLICATE",
         );
+    }
+    for literal in [
+        "{foo:1,\"foo\":2}",
+        "{\"foo\":1,foo:2}",
+        "{foo:1,'foo' => 2}",
+    ] {
+        rejected(&format!("pub fnc main():int {{let value={literal};return 0;}}"),
+                 "E_LITERAL_KIND");
     }
     // Identifier equality is exact and case sensitive: neither runtime nor
     // compiler may normalize or fold distinct names into one slot.
