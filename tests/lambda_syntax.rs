@@ -80,3 +80,37 @@ fn parsed_but_unlowered_lambda_fails_closed() {
     assert_eq!(err.code, "E_UNSUPPORTED");
     assert!(err.message.contains("lambdas"), "{err}");
 }
+
+#[test]
+fn lambda_expression_heads_must_be_pipe_delimited() {
+    // This is parser-only evidence; closure execution is checked separately.
+    // Keep valid explicit parameter pipes while rejecting all bare heads.
+    for (expr, count) in [
+        ("|_| : int -> 5", 1usize),
+        ("|| : int -> 5", 0usize),
+        ("|x| : int -> x + 5", 1usize),
+        ("|x| -> x + 5", 1usize),
+    ] {
+        let p = parse(&main_with(expr));
+        let Stmt::Bind { init, .. } = &p.funcs[0].body[1] else {
+            panic!("expected lambda binding: {expr}");
+        };
+        let ExprKind::Lambda { params, .. } = &init.kind else {
+            panic!("expected lambda AST: {expr}");
+        };
+        assert_eq!(params.len(), count, "{expr}");
+    }
+
+    for expr in [
+        "_ : int -> 5",
+        "_ -> 5",
+        "x : int -> x + 5",
+        "x -> x + 5",
+        "values.map(_ : int -> 5)",
+        "values.map(_ -> 5)",
+    ] {
+        let src = main_with(expr);
+        let parsed = Parser::new(lexer::lex(&src).unwrap()).parse_program();
+        assert!(parsed.is_err(), "bare lambda head was accepted: {expr}");
+    }
+}
