@@ -1593,9 +1593,9 @@ impl<'a> Checker<'a> {
                 // head ActorRef, not a graph head+tail). Do not route through
                 // the wrong actor or skip typed checks when a graph is nested.
                 let nested_actor = matches!(&l.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
-                    && matches!(left_ty, Ty::Actor(_))
+                    && matches!(&left_ty, Ty::Actor(_))
                     || matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
-                        && matches!(right_ty, Ty::Actor(_));
+                        && matches!(&right_ty, Ty::Actor(_));
                 if nested_actor {
                     return Err(err(pos, "E_UNSUPPORTED",
                         "nested actor-only graph needs explicit typed head/tail PipeHandle lowering"));
