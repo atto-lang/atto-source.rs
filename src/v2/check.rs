@@ -229,6 +229,32 @@ impl<'a> Checker<'a> {
             let void = FnSig { params: Vec::new(), ret: Ty::Void, suspends: false, async_gen: None };
             self.objs[i].ctor = self.reserve(void.clone());
             self.objs[i].dispose = self.reserve(void.clone());
+            // Resolve canonical actor port types from the AST before lowering
+            // any receive body. A declared emits type is the authority for
+            // every emit(value), rather than only the first observed value.
+            if let Some(declared) = &o.declared_emits {
+                let port = self.resolve(declared, false)?;
+                if matches!(port, Ty::Void | Ty::Infer | Ty::Never | Ty::Raw) {
+                    return Err(type_err(declared.pos(), "an emits port needs a concrete value type"));
+                }
+                self.objs[i].emit = Some(port);
+            }
+            if let Some(declared) = &o.declared_receives {
+                let want = self.resolve(declared, false)?;
+                if matches!(want, Ty::Void | Ty::Infer | Ty::Never | Ty::Raw) {
+                    return Err(type_err(declared.pos(), "a receives port needs a concrete value type"));
+                }
+                let Some(r) = &o.receive else {
+                    return Err(type_err(o.pos,
+                        "an actor declaring 'receives T' must define receive(ActorMail<T>)"));
+                };
+                let actual = self.resolve(&r.payload, false)?;
+                if want != actual {
+                    return Err(type_err(r.pos,
+                        format!("declared receives {} differs from ActorMail<{}>",
+                            self.tn(&want), self.tn(&actual))));
+                }
+            }
             if let Some(r) = &o.receive {
                 self.objs[i].mail = self.resolve(&r.payload, false)?;
                 self.objs[i].receive = Some(self.reserve(FnSig { suspends: true, ..void.clone() }));
