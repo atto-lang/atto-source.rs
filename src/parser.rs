@@ -184,6 +184,7 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "FixedArray",
     "FixedList",
     "Map",
+    "Entry",
     "Set",
     "char",
     "byte",
@@ -194,6 +195,7 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
     match name {
         "Record" | "record" => Some("Record"),
         "Map" | "map" => Some("Map"),
+        "Entry" => Some("Entry"),
         "List" | "list" => Some("List"),
         "Array" | "array" => Some("Array"),
         "Tuple" | "tuple" => Some("Tuple"),
@@ -464,7 +466,7 @@ impl Parser {
                 let correct_arity = match builtin {
                     "Record" => !generic,
                     "Array" | "List" => !generic || args.len() == 1,
-                    "Map" => !generic || args.len() == 2,
+                    "Map" | "Entry" => !generic || args.len() == 2,
                     "Tuple" => !generic || !args.is_empty(),
                     _ => unreachable!(),
                 };
@@ -2577,10 +2579,37 @@ impl Parser {
     }
 
     pub fn parse_expr(&mut self) -> R<Expr> {
+        self.parse_expr_allow_entry(true)
+    }
+
+    /// Brace-map keys stop before their delimiter, without disabling
+    /// parenthesized standalone Entry expressions.
+    fn parse_map_key(&mut self) -> R<Expr> {
+        self.parse_expr_allow_entry(false)
+    }
+
+    fn parse_expr_allow_entry(&mut self, allow_entry: bool) -> R<Expr> {
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
-        let r = self.parse_ternary();
+        let r = (|| {
+            let lhs = self.parse_ternary()?;
+            if !allow_entry || !self.eat(&Tok::FatArrow) {
+                return Ok(lhs);
+            }
+            let pos = lhs.pos;
+            // Synthetic unspellable callee: no guest Entry is emitted without
+            // explicit nominal-type, ownership and lowering implementation.
+            let rhs = self.parse_ternary()?;
+            if *self.peek() == Tok::FatArrow {
+                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                    "Entry => is non-associative; use parentheses to group"));
+            }
+            Ok(Expr {
+                kind: ExprKind::Call("@builtin/Entry.of".into(), vec![lhs, rhs]),
+                pos,
+            })
+        })();
         self.cond = saved;
         self.leave();
         r
@@ -3180,7 +3209,7 @@ impl Parser {
                         "cannot mix record ':' entries and map '=>' entries"));
                 }
                 record_mode = Some(false);
-                let key = self.parse_expr()?;
+                let key = self.parse_map_key()?;
                 if !self.eat(&Tok::FatArrow) {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
                         "expected ':' for a record field or '=>' for a map entry"));
