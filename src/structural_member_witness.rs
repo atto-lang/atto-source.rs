@@ -95,6 +95,8 @@ pub struct SourceMembers {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MethodWitness {
     pub name: String,
+    /// Keep the overloaded required callable signature; name alone is insufficient.
+    pub required_signature: MethodContract,
     pub source_nominal_id: u32,
     pub dispatch_slot: u32,
 }
@@ -197,10 +199,11 @@ fn check_declarations(
     }
     // Duplicated required signatures would force an ambiguous member set.
     // Same name with distinct parameter types is an admissible overload.
-    let mut signatures = BTreeSet::new();
-    for m in &required.methods {
-        let key = format!("{}:{:?}:{:?}", m.name, m.params, m.parameter_passing);
-        if !signatures.insert(key) {
+    for (i, method) in required.methods.iter().enumerate() {
+        if required.methods[..i].iter().any(|previous| {
+            previous.name == method.name && previous.params == method.params
+                && previous.parameter_passing == method.parameter_passing
+        }) {
             return Err(MemberError::InvalidDeclaration);
         }
     }
@@ -301,11 +304,13 @@ pub fn prove_structural_members(
         let slot = applicable[0].dispatch_slot.ok_or(MemberError::UnverifiedDispatch)?;
         witnesses.push(MethodWitness {
             name: target.name.clone(),
+            required_signature: target.clone(),
             source_nominal_id: actual.shape.source_nominal_id,
             dispatch_slot: slot,
         });
     }
-    witnesses.sort_by(|a,b| a.name.cmp(&b.name).then(a.dispatch_slot.cmp(&b.dispatch_slot)));
+    witnesses.sort_by(|a,b| a.name.cmp(&b.name)
+        .then(a.dispatch_slot.cmp(&b.dispatch_slot)));
     Ok(StructuralMemberWitness {
         source_nominal_id: actual.shape.source_nominal_id,
         layout_epoch: actual.shape.layout_epoch,
