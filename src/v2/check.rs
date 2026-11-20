@@ -1670,9 +1670,24 @@ impl<'a> Checker<'a> {
                             } else {
                                 (first_ir, last_ir)
                             };
-                            return Ok((self.rt("__actor_channel_actor_atomic",
-                                vec![source_ir, middle_ir, sink_ir]),
-                                Ty::Channel(item.clone())));
+                            // A declaration explicitly expecting the nominal
+                            // checked graph contract opts into non-trapping
+                            // setup. Untyped legacy pipelines still return
+                            // their Channel<T> for backward-compatible
+                            // experimental guest fixtures.
+                            let checked = matches!(want,
+                                Some(Ty::Result(ok, bad))
+                                if **ok == Ty::PipeHandle && **bad == Ty::PipeSetupError);
+                            let (helper, result_ty) = if checked {
+                                ("__actor_channel_actor_try",
+                                 Ty::Result(Box::new(Ty::PipeHandle),
+                                            Box::new(Ty::PipeSetupError)))
+                            } else {
+                                ("__actor_channel_actor_atomic",
+                                 Ty::Channel(item.clone()))
+                            };
+                            return Ok((self.rt(helper,
+                                vec![source_ir, middle_ir, sink_ir]), result_ty));
                         }
                         return Err(err(pos, "E_UNSUPPORTED",
                             "nested continuous pipe graphs need an owned typed PipeHandle; only the bounded actor-channel-actor triple has atomic guest admission"));
