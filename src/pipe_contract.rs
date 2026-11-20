@@ -33,6 +33,38 @@ pub enum PipeContractError {
     },
 }
 
+/// A direction-normalized topology uses lexical indices rather than moving
+/// endpoint expressions. The compiler must evaluate constructors in written
+/// order exactly once; only DATA edge order is reversed for `rpipe`.
+///
+/// This is a statically derived plan, never a guest runtime connection,
+/// authorization token or PipeHandle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectedPipeTopology {
+    /// Lexical source indices in actual source-to-sink DATA order.
+    pub flow_indices: Vec<usize>,
+    /// Edges refer to the original lexical stages; never to actor CONTROL.
+    pub edges: Vec<(usize, usize)>,
+}
+
+/// Derive a fixed topology without evaluating or cloning endpoint expressions.
+/// The browser profile permits up to 16 stages; the actual runtime must
+/// independently validate tenant, ownership and source/sink capabilities.
+pub fn directed_topology(
+    stage_count: usize,
+    direction: crate::ast::PipeDirection,
+) -> Option<DirectedPipeTopology> {
+    if !(2..=16).contains(&stage_count) {
+        return None;
+    }
+    let mut flow_indices: Vec<usize> = (0..stage_count).collect();
+    if direction == crate::ast::PipeDirection::RightToLeft {
+        flow_indices.reverse();
+    }
+    let edges = flow_indices.windows(2).map(|p| (p[0], p[1])).collect();
+    Some(DirectedPipeTopology { flow_indices, edges })
+}
+
 /// Check each stage's input/output role and all fully-known adjacent edges.
 /// An unknown stage defers its own edges but must never authorize guest code.
 pub fn validate_known_edges(stages: &[StageContract]) -> Result<(), PipeContractError> {
