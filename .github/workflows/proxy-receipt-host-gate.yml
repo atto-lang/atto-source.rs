@@ -1,9 +1,9 @@
 name: Rust proxy ACK host-only receipt gate
 on:
   pull_request:
-    paths: [ 'src/proxy_receipt_gate_v1.rs', 'tests/proxy_receipt_gate_v1.rs', 'src/lib.rs', '.github/workflows/proxy-receipt-host-gate.yml' ]
+    paths: [ 'src/proxy_receipt_gate_v1.rs', 'tests/proxy_receipt_gate_v1.rs', 'src/proxy_mailbox_ticket_v1.rs', 'tests/proxy_mailbox_ticket_v1.rs', 'src/lib.rs', '.github/workflows/proxy-receipt-host-gate.yml' ]
   push:
-    paths: [ 'src/proxy_receipt_gate_v1.rs', 'tests/proxy_receipt_gate_v1.rs', 'src/lib.rs', '.github/workflows/proxy-receipt-host-gate.yml' ]
+    paths: [ 'src/proxy_receipt_gate_v1.rs', 'tests/proxy_receipt_gate_v1.rs', 'src/proxy_mailbox_ticket_v1.rs', 'tests/proxy_mailbox_ticket_v1.rs', 'src/lib.rs', '.github/workflows/proxy-receipt-host-gate.yml' ]
 permissions:
   contents: read
 jobs:
@@ -22,4 +22,5 @@ jobs:
           rustup toolchain install 1.85.1 --profile minimal
           rustup default 1.85.1
           cargo test --locked --test proxy_receipt_gate_v1
+          cargo test --locked --test proxy_mailbox_ticket_v1
       - run: echo 'HOST_MODEL_ONLY; no authenticated IPC or compiled .atto guest evidence'
