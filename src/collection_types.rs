@@ -213,7 +213,8 @@ fn matches_expected(actual: &LiteralType, expected: Option<&LiteralType>, at: Po
     Ok(())
 }
 
-fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
+fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize,
+    known_consts: &BTreeMap<String, LiteralType>)
     -> Result<TypedLiteral, Diagnostic>
 {
     use LiteralType::*;
@@ -230,6 +231,9 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
         ExprKind::Symbol(_) => Symbol,
+        ExprKind::Var(name) => known_consts.get(name).cloned().ok_or_else(||
+            diag(e.pos, "E_UNSUPPORTED",
+                "computed Entry/Map keys require a previously checked immutable scalar const binding"))?,
         ExprKind::Unary(UnOp::Neg, v) if matches!(&v.kind, ExprKind::Int(_)) => {
             // The exact signed-minimum literal is represented as i64::MAX+1.
             if let ExprKind::Int(Some(n)) = &v.kind {
@@ -240,7 +244,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             Int
         }
         ExprKind::Unary(UnOp::Plus, v) if matches!(v.kind, ExprKind::Int(_)) =>
-            inferred(v, Some(&Int), depth + 1)?.ty,
+            inferred(v, Some(&Int), depth + 1,known_consts)?.ty,
         ExprKind::Array(items) => {
             let (kind, element) = match expected {
                 Some(Array(element)) => (true, element.as_ref().clone()),
@@ -251,7 +255,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             let mut found = Bottom;
             for item in items {
                 let child = inferred(item,
-                    if element == Bottom { None } else { Some(&element) }, depth + 1)?;
+                    if element == Bottom { None } else { Some(&element) }, depth + 1,known_consts)?;
                 found = common(found, child.ty.clone(), item.pos)?;
                 children.push(child);
             }
@@ -264,7 +268,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             let mut typed_fields = Vec::new();
             for (field, value) in fields {
-                let child = inferred(value, None, depth + 1)?;
+                let child = inferred(value, None, depth + 1,known_consts)?;
                 typed_fields.push((field.clone(), child.ty.clone()));
                 children.push(child);
             }
@@ -291,9 +295,9 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
                     "Entry<K,V> cannot be coerced into a Map, Record or Tuple")),
             };
             let key_node = inferred(key,
-                if wanted_k == Bottom {None} else {Some(&wanted_k)}, depth+1)?;
+                if wanted_k == Bottom {None} else {Some(&wanted_k)}, depth+1,known_consts)?;
             let value_node = inferred(value,
-                if wanted_v == Bottom {None} else {Some(&wanted_v)}, depth+1)?;
+                if wanted_v == Bottom {None} else {Some(&wanted_v)}, depth+1,known_consts)?;
             let key_ty = if wanted_k == Bottom {key_node.ty.clone()} else {wanted_k};
             let value_ty = if wanted_v == Bottom {value_node.ty.clone()} else {wanted_v};
             if !matches!(key_ty, Int | Bool | String | Symbol) {
@@ -312,8 +316,8 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             };
             let (mut keys, mut vals) = (Bottom, Bottom);
             for (key,value) in entries {
-                let key_node = inferred(key, if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1)?;
-                let value_node = inferred(value, if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1)?;
+                let key_node = inferred(key, if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1,known_consts)?;
+                let value_node = inferred(value, if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1,known_consts)?;
                 keys = common(keys,key_node.ty.clone(),key.pos)?;
                 vals = common(vals,value_node.ty.clone(),value.pos)?;
                 children.push(key_node);
@@ -348,7 +352,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             };
             let mut tys = Vec::new();
             for (i,item) in items.iter().enumerate() {
-                let child = inferred(item,slots.map(|s| &s[i]),depth + 1)?;
+                let child = inferred(item,slots.map(|s| &s[i]),depth + 1,known_consts)?;
                 tys.push(child.ty.clone());
                 children.push(child);
             }
