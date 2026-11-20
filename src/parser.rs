@@ -1651,9 +1651,10 @@ impl Parser {
                 Some("panics") => "panics",
                 _ => return Ok(any.then_some(declared)),
             };
-            if *self.peek_at(1) != Tok::LParen {
-                // Keep unsupported free-form Java-style headers in the
-                // existing parser error path rather than consuming body text.
+            // Accept both canonical `throws Error` and established
+            // `throws(Error)` spellings; they carry the same typed effect.
+            let grouped = *self.peek_at(1) == Tok::LParen;
+            if !grouped && !matches!(self.peek_at(1), Tok::Ident(_)) {
                 return Ok(any.then_some(declared));
             }
             let pos = self.pos();
@@ -1674,22 +1675,24 @@ impl Parser {
                 _ => unreachable!(),
             }
             any = true;
-            self.advance();
-            self.advance();
+            self.advance(); // throws/raises/panics
+            if grouped { self.advance(); } // opening '('
             let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
             if ty != "Error" {
                 return Err(Diagnostic::new(ty_pos, "E_TYPE",
                     format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
             }
-            if self.eat(&Tok::Comma) {
-                return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
-                    format!("duplicate Error type in '{kind}' effect clause")));
+            if grouped {
+                if self.eat(&Tok::Comma) {
+                    return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
+                        format!("duplicate Error type in '{kind}' effect clause")));
+                }
+                self.expect(Tok::RParen, "')' to close the effect clause")?;
             }
-            self.expect(Tok::RParen, "')' to close the effect clause")?;
-            // `throws(Error), raises(Error)`: a comma may separate clauses.
+            // A comma may separate typed effect clauses in either spelling.
             if *self.peek() == Tok::Comma
                 && matches!(self.word_at(1), Some("throws" | "raises" | "panics"))
-                && *self.peek_at(2) == Tok::LParen
+                && matches!(self.peek_at(2), Tok::LParen | Tok::Ident(_))
             {
                 self.advance();
             }
@@ -2565,17 +2568,13 @@ impl Parser {
         } else {
             return Err(self.expected("'val', 'const' or 'let'"));
         };
-        // Java Parser.parseReferentMutability: `const mut` / `let mut` request a
-        // mutable referent (no effect on scalar values); `val` already means
-        // `const mut`, so `val mut` is a duplicate qualifier.
+        // `val mut` is the explicit canonical spelling of an immutable
+        // owner binding with mutable referent. In this scalar-only parser
+        // stage Val already carries that mutable-referent eligibility; the
+        // ownership checker, NOT the parser, decides whether a particular
+        // guest method receives an exclusive loan. Never turn this spelling
+        // into permission for an unchecked host byte buffer.
         if self.is_word("mut") {
-            if kind == BindKind::Val {
-                return Err(Diagnostic::new(
-                    self.pos(),
-                    "E_SYNTAX",
-                    "'val' already means 'const mut'; 'val mut' is a duplicate mutability qualifier",
-                ));
-            }
             self.advance();
         }
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
