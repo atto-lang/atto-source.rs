@@ -5,6 +5,8 @@
 
 const FORWARD: &str = include_str!("fixtures/pass/208-v2-actor-channel-actor-pipe.atto");
 const REVERSE: &str = include_str!("fixtures/pass/209-v2-actor-channel-actor-rpipe.atto");
+const DECLARED_FORWARD: &str = include_str!("fixtures/pass/217-v2-declared-port-pipe.atto");
+const DECLARED_REVERSE: &str = include_str!("fixtures/pass/218-v2-declared-port-rpipe.atto");
 const DOUBLE: &str = include_str!("fixtures/panic/210-v2-pipe-double-attach.atto");
 const RENDEZVOUS: &str = include_str!("fixtures/panic/211-v2-pipe-rendezvous-denial.atto");
 const INPUT_OCCUPIED: &str = include_str!("fixtures/panic/212-v2-pipe-duplicate-consumer.atto");
