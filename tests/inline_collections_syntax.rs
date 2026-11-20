@@ -232,3 +232,54 @@ fn indexing_is_never_emitted_as_unverified_guest_wasm() {
     let diagnostic = compile(source).expect_err("no checked runtime indexing");
     assert_eq!(diagnostic.code, "E_UNSUPPORTED");
 }
+
+#[test]
+fn nominal_entry_fat_arrow_parses_without_changing_map_items() {
+    // Entry literal: deliberately synthetic nominal factory AST, never Tuple
+    // or Record. This is a parse-only gate, not executable guest support.
+    let p = parse_binding("let Entry<string, int> entry = \"foo\" => 5;")
+        .expect("typed nominal Entry literal syntax");
+    match init_kind(&p) {
+        ExprKind::Call(name, args) => {
+            assert_eq!(name, "@builtin/Entry.of");
+            assert_eq!(args.len(), 2);
+            assert!(matches!(&args[0].kind, ExprKind::Str(s) if s == "foo"));
+            assert!(matches!(&args[1].kind, ExprKind::Int(Some(5))));
+        }
+        _ => panic!("standalone => must represent an Entry, not Map/Tuple/Record"),
+    }
+    let p = parse_binding(
+        "let Map<string,int> x = {\"foo\" => 5, \"bar\" => 7};"
+    ).expect("map braces still own their => delimiters");
+    assert!(matches!(init_kind(&p), ExprKind::Map(m) if m.len() == 2));
+    let p = parse_binding(
+        "let Map<string,Entry<string,int>> x = {\"foo\" => (\"bar\" => 7)};"
+    ).expect("a grouped nominal Entry is a Map value");
+    assert!(matches!(init_kind(&p), ExprKind::Map(m) if matches!(&m[0].1.kind,
+        ExprKind::Call(name, args) if name == "@builtin/Entry.of" && args.len() == 2)));
+}
+
+#[test]
+fn nominal_entry_syntax_rejects_ambiguous_arrow_chains_and_generic_arity() {
+    let bad = parse_binding("let Entry<string,int> e = \"a\" => 1 => 2;")
+        .expect_err("unparenthesized chained arrows are ambiguous");
+    assert_eq!(bad.code, "E_SYNTAX");
+    assert_eq!(
+        parse_binding("let Entry<int> e = 1 => 2;")
+            .expect_err("Entry requires exactly K and V").code,
+        "E_TYPE_ARITY"
+    );
+    // The module/tenant-level let binding and actual mutable Map guest
+    // operations require their own verified compiler/runtime implementation.
+    // This parser test intentionally does not pretend to execute either.
+}
+
+#[test]
+fn entry_literal_alone_cannot_bypass_guest_type_and_ownership_checks() {
+    let src = "fnc main(): int {
+        let Entry<string,int> e = \"foo\" => 5;
+        return 0;
+    }";
+    let diag = compile(src).expect_err("nominal Entry guest lowering not yet implemented");
+    assert_eq!(diag.code, "E_UNSUPPORTED");
+}
