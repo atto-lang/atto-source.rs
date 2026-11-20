@@ -298,6 +298,7 @@ self.onmessage=async()=>{
       invalidHandle:'Err',zeroSome:true,cooperativeYields,
       declarationFirstSome:42,declarationFirstYields:declYields,
       explicitReadchSome:aliasResults[0],directionalSome:aliasResults[1],
-      sourceLifecycleSome:45,sourceLifecycleYields:lifecycleYields,sourceLifecycleReleased:true,\n      checkedSendSome:42,sendBackpressure:true,zeroCapacityRendezvous:true,sendReadYields:writeYields});
+      sourceLifecycleSome:45,sourceLifecycleYields:lifecycleYields,sourceLifecycleReleased:true,
+      checkedSendSome:42,sendBackpressure:true,zeroCapacityRendezvous:true,sendReadYields:writeYields});
   }catch(e){self.postMessage({ok:false,error:String(e?.stack||e)})}
 };
