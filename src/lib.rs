@@ -23,6 +23,8 @@ pub mod any_type_lower;
 pub mod shape_lower;
 /// Compiler-only, non-emitting read-only projection witness preparation.
 pub mod shape_witness;
+/// Non-emitting all-member structural witness, including checked method signatures.
+pub mod structural_member_witness;
 /// Checked source-local trait and class composition.
 pub mod nominal_lower;
 /// Explicitly unlinked foreign prototypes and source-only exports.
