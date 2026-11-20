@@ -154,3 +154,32 @@ fn four_requested_void_lambda_headers_parse_to_identical_formals() {
         assert!(matches!(statements.as_slice(), [Stmt::Return(None, _)]), "{header}");
     }
 }
+
+#[test]
+fn all_four_void_lambda_styles_lower_through_the_direct_call_profile() {
+    // This verifies compile-time Wasm generation and determinism. A separate
+    // executed guest oracle must prove actual return behavior at exact HEAD.
+    for body in [
+        "|int foo, string x| -> { return; };",
+        "|foo: int, x: string| -> { return; }",
+        "|foo: int, x: string| -> void { return; }",
+        "|foo: int, x: string| : void -> { return; }",
+    ] {
+        let source = format!(
+            "pub fnc main(): int {{\n const v = {body}\n v(5, \"ok\");\n return 42;\n}}"
+        );
+        ok(&source);
+    }
+}
+
+#[test]
+fn explicit_void_lambda_rejects_value_return_and_void_formal() {
+    bad(
+        "pub fnc main(): int { const v = |foo: int| : void -> { return 7; }; v(5); return 42; }",
+        "E_TYPE",
+    );
+    bad(
+        "pub fnc main(): int { const v = |void foo| : void -> { return; }; v(5); return 42; }",
+        "E_TYPE",
+    );
+}
