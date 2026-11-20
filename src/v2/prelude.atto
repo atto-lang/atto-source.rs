@@ -434,7 +434,8 @@ fnc __actor_link(int a, int b): int {
 // This is *not* yet a production lifecycle-capability implementation: no
 // task-cancellation guarantees or TenantVM generations exist in v2.
 // Error codes: 1 invalid/null alias, 2 invalid capacity, 3 closed port,
-// 4 source occupied, 5 sink occupied, 6 channel occupied, 7 sink has output.
+// 4 source occupied, 5 sink occupied, 6 channel occupied, 7 sink has output,
+// 8 pending queued DATA or waiting readers (channel not quiescent).
 // All failure branches are BEFORE any DATA edge publication or bridge spawn.
 fnc __actor_channel_actor_try(int src, int ch, int dst): int {
   if src == 0 then return __box(1, 1); fi
@@ -454,6 +455,12 @@ fnc __actor_channel_actor_try(int src, int ch, int dst): int {
   if __load(ch, 56) != 0 then return __box(1, 6); fi
   if __load(ch, 64) != 0 then return __box(1, 6); fi
   if __load(dst, 8) != 0 then return __box(1, 7); fi
+  // A channel with queued pre-attachment DATA or pending nb-read futures
+  // has already admitted other parties. Do not silently redirect existing
+  // messages or race waiting readers into a newly owned pipeline. Neither
+  // condition claims the producer/channel/consumer on rejection.
+  if __load(ch, 8) != 0 then return __box(1, 8); fi
+  if __load(ch, 40) != 0 then return __box(1, 8); fi
 
   // Reserve owner state and construct a non-forgeable handle before the
   // scheduler is permitted to run the bridge. Each handle is a guest
