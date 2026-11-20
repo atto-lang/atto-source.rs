@@ -749,7 +749,7 @@ impl TaskScopeLockCoordinator {
         }
         // Check capacity BEFORE modifying either the ready ledger or a grant.
         if self.ready.len().checked_add(additions.len())
-            .map_or(true, |n| n > Self::MAX_TASKS) {
+            .is_none_or(|n| n > Self::MAX_TASKS) {
             return Err(Error::Exhausted);
         }
         let admitted = additions.len();
