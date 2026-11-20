@@ -1,0 +1,1 @@
+fnc mul(int a,int b): int { return a*b; } pub fnc main(): int { return mul(3037000500,3037000500); }

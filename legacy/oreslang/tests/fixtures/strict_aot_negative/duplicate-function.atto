@@ -1,0 +1,2 @@
+pub fnc main(): int { return 1; }
+fnc main(): int { return 2; }
