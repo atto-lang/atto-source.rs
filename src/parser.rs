@@ -8,6 +8,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use std::fmt::Write as _;
 
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
@@ -490,8 +491,11 @@ impl Parser {
                     self.expect(Tok::Gt, "'>' after closed Record type")?;
                     fields.sort_by(|a, b| a.0.cmp(&b.0));
                     let row = fields.into_iter().map(|(label, ty)| {
-                        let hex = label.as_bytes().iter()
-                            .map(|byte| format!("{byte:02x}")).collect::<String>();
+                        let mut hex = String::with_capacity(label.len() * 2);
+                        for byte in label.as_bytes() {
+                            write!(&mut hex, "{byte:02x}")
+                                .expect("writing to a String cannot fail");
+                        }
                         format!("{hex}:{ty}")
                     }).collect::<Vec<_>>().join(",");
                     closed_row = Some(format!("{{{row}}}"));

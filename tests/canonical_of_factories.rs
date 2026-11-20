@@ -156,7 +156,6 @@ fn empty_record_factory_is_static_but_not_a_guest_allocation_profile() {
     );
 }
 
-
 #[test]
 fn explicit_closed_record_row_annotations_compile_with_canonical_field_slots() {
     let source = r#"
