@@ -188,54 +188,84 @@ fn explicit_row_annotations_preserve_quoted_utf8_field_names() {
     let p = parsed(source);
     let checked = collection_types::analyze(&p).expect("quoted UTF-8 row type");
     assert_eq!(checked[0].value.source_to_record_slot, vec![2, 0, 1]);
-    assert!(compile(source).expect("quoted closed row guest").starts_with(b"\0asm"));
+    assert!(compile(source)
+        .expect("quoted closed row guest")
+        .starts_with(b"\0asm"));
 }
 
 #[test]
 fn explicit_row_types_use_contextual_inference_but_nested_values_fail_closed() {
-    let p = parsed(r#"
+    let p = parsed(
+        r#"
         pub fnc main(): int {
           val Record<{items: Array<int>}> r = Record.of(items=Array.of());
           return 0;
         }
-    "#);
-    let checked = collection_types::analyze(&p).expect("array element inferred from row field type");
-    assert_eq!(checked[0].value.ty, LiteralType::Record(vec![(
-        "items".into(), LiteralType::Array(Box::new(LiteralType::Int))
-    )]));
+    "#,
+    );
+    let checked =
+        collection_types::analyze(&p).expect("array element inferred from row field type");
+    assert_eq!(
+        checked[0].value.ty,
+        LiteralType::Record(vec![(
+            "items".into(),
+            LiteralType::Array(Box::new(LiteralType::Int))
+        )])
+    );
     // Nested arrays are not yet a verified guest Record ABI.
-    rejected(r#"
+    rejected(
+        r#"
         pub fnc main(): int {
           val Record<{items: Array<int>}> r = Record.of(items=Array.of());
           return 0;
         }
-    "#, "E_UNSUPPORTED");
+    "#,
+        "E_UNSUPPORTED",
+    );
 }
 
 #[test]
 fn explicit_record_row_shape_errors_never_emit_guest_code() {
-    rejected(r#"pub fnc main(): int {
+    rejected(
+        r#"pub fnc main(): int {
         val Record<{a: int, b: bool}> r = Record.of(a=42);
         return r.a;
-    }"#, "E_NO_FIELD");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_NO_FIELD",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         val Record<{a: int}> r = Record.of(a=42, extra=true);
         return r.a;
-    }"#, "E_NO_FIELD");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_NO_FIELD",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         val Record<{a: string}> r = Record.of(a=42);
         return 0;
-    }"#, "E_TYPE");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_TYPE",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         val Record<{a: int, "a": int}> r = Record.of(a=42);
         return 0;
-    }"#, "E_DUPLICATE");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_DUPLICATE",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         val Record<{name: string, ...}> r = Record.of(name="Atto");
         return 0;
-    }"#, "E_TYPE");
-    rejected(r#"pub fnc main(): int {
+    }"#,
+        "E_TYPE",
+    );
+    rejected(
+        r#"pub fnc main(): int {
         val Record<int> r = Record.of(value=1);
         return 0;
-    }"#, "E_TYPE_ARITY");
+    }"#,
+        "E_TYPE_ARITY",
+    );
 }
