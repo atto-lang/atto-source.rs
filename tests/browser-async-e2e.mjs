@@ -156,6 +156,12 @@ try{
     ['unterminated final',0],['clean EOF',11],['bad UTF-8',14],
     ['stdin denied',14],['stdout denied',10],['stderr denied',13],
   ]);
+  assert.equal(textEcho.stringFallbackGuest,true,
+    'the exact nested Result<Option<string>> string-returning callable must execute');
+  assert.deepEqual(textEcho.fallbackCases.map(x=>[x.name,x.exit]),[
+    ['LF value',0],['None EOF',0],['Err UTF-8',0],
+    ['Err denied stdin',0],['Err denied stdout',12],
+  ]);
   assert.ok(textEcho.cases.every(x=>x.cooperates>0));
   console.log('PASS source-compiled checked UTF-8 stdin echo: LF/CRLF/NUL, EOF, typed errors and per-port permissions');
 
