@@ -19,6 +19,11 @@ const cases=[
   ['list-pattern-full-width-1.atto',1n,[3n,10n,20n,30n]],
   ['list-pattern-leftmost-3.atto',3n,[3n,1n,2n,3n]],
   ['list-pattern-max-length-32.atto',32n,[32n,1n,2n,3n,4n,5n,6n,7n,8n,9n,10n,11n,12n,13n,14n,15n,16n,17n,18n,19n,20n,21n,22n,23n,24n,25n,26n,27n,28n,29n,30n,31n,32n]],
+  ['list-pattern-standalone-rest-11.atto',11n,[32n,1n,2n,3n,4n,5n,6n,7n,8n,9n,10n,11n,12n,13n,14n,15n,16n,17n,18n,19n,20n,21n,22n,23n,24n,25n,26n,27n,28n,29n,30n,31n,32n]],
+  // Empty List allocations carry only a zero length header, which cannot
+  // uniquely identify an object by scanning otherwise zeroed linear memory.
+  ['list-pattern-empty-list-9.atto',9n,[0n]],
+  ['list-pattern-empty-rest-13.atto',13n,[0n]],
 ];
 const sha=buf=>createHash('sha256').update(buf).digest('hex');
 const compile=(input,output)=>spawnSync(compiler,[input,'-o',output],{
@@ -46,12 +51,19 @@ try {
     for(let i=0;i+words.length*8<=view.byteLength;i+=8){
       if(words.every((value,j)=>view.getBigInt64(i+j*8,true)===value))found++;
     }
-    assert.equal(found,1,file+': guest heap must contain one contiguous List header and elements');
+    if(words.length===1 && words[0]===0n){
+      // There is no unique byte-pattern witness for a zero-element List.
+      // This proves the guest has memory but not an unambiguous heap object.
+      assert.ok(found>0,file+': empty heap must have a zero length word');
+    }else{
+      assert.equal(found,1,file+': guest heap must contain one contiguous List header and elements');
+    }
     console.log(JSON.stringify({
       kind:'SOURCE_COMPILED_WASM_GUEST',
       source:file,source_sha256:sha(readFileSync(path)),guest_sha256:sha(bytes),
       expected_exit:String(expected),actual_exit:String(expected),imports:0,
-      guest_heap_words:words.map(String),panic_code:0
+      guest_heap_words:words.map(String),
+      heap_witness:words.length===1 && words[0]===0n ? 'nonunique_empty' : 'unique_payload',panic_code:0
     }));
   }
   // Runtime checked overflow must trap from real generated guest Wasm.
@@ -112,5 +124,5 @@ try {
     assert.deepEqual(readFileSync(output),sentinel,
       'failed compilation must preserve an existing user file unchanged');
   }
-  console.log('LIST_PATTERN_COMPILED_GUEST=PASS positives=7 overflow_panics=1 negatives=10');
+  console.log('LIST_PATTERN_COMPILED_GUEST=PASS positives=10 overflow_panics=1 negatives=10');
 }finally {rmSync(root,{recursive:true,force:true});}
