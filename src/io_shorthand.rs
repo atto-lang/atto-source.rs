@@ -417,7 +417,7 @@ fn unary_read_start(tokens: &[Token], i: usize) -> bool {
         Tok::Semi | Tok::LBrace => true,
         Tok::Ident(s) if matches!(s.as_str(),
             "return" | "trap" | "await" | "throw" | "raise" | "panic" |
-            "then" | "else") => true,
+            "then" | "else" | "match") => true,
         _ => false,
     }
 }
