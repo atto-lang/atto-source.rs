@@ -72,7 +72,7 @@ test('guest-owned memory boundaries, UTF-8 validation and quotas fail closed',as
 });
 
 test('overlapping result and input buffers are rejected before consuming stdin',async()=>{
-  const f=fixture({stdin:input('not-lost\\n')});
+  const f=fixture({stdin:input('not-lost\n')});
   // A result slot overlapping the guest-owned byte destination would
   // overwrite the read payload when the JSPI import commits its tag.
   assert.equal(await f.bridge.imports.stdio_text_read_v1(0,64,128,64),E.InvalidPointer);
