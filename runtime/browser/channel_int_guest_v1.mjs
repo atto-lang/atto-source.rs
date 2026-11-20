@@ -38,6 +38,7 @@ export const CHANNEL_INT_V1_TAGS = Object.freeze({
 export const CHANNEL_INT_V1_IMPORTS = Object.freeze([
   'channel_int_open_v1',
   'channel_int_send_v1',
+  'channel_int_send_async_v1',
   'channel_int_nb_read_v1',
   'channel_int_await_read_v1',
   'channel_int_cancel_v1',
@@ -49,6 +50,7 @@ const TAG = CHANNEL_INT_V1_TAGS;
 const types = Object.freeze({
   channel_int_open_v1: {params: [0x7f,0x7f], results:[0x7f]},
   channel_int_send_v1: {params: [0x7f,0x7e], results:[0x7f]},
+  channel_int_send_async_v1: {params: [0x7f,0x7e], results:[0x7f]},
   channel_int_nb_read_v1: {params: [0x7f,0x7f], results:[0x7f]},
   channel_int_await_read_v1: {params: [0x7f,0x7f], results:[0x7f]},
   channel_int_cancel_v1: {params: [0x7f], results:[0x7f]},
@@ -99,6 +101,12 @@ export function createChannelIntGuestV1({getMemory,host=new ChannelIntHostV1()}=
     },
     channel_int_send_v1(channel,value) {
       return status(host.send(channel,value));
+    },
+    async channel_int_send_async_v1(channel,value) {
+      // JSPI wraps this Promise as WebAssembly.Suspending. No guest memory
+      // pointers cross suspension; the host atomically admits one i64 or
+      // returns checked Closed/Cancelled/Quota/InvalidHandle status.
+      return status(await host.send_async(channel,value));
     },
     channel_int_nb_read_v1(channel,out) {
       const slot=view(out,4,4);
