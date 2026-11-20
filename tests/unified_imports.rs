@@ -159,3 +159,59 @@ fn import_names_may_coexist_with_unrelated_methods_and_local_names() {
     assert_eq!(headers.imports, ["foo"]);
     assert_eq!(headers.receivers.len(), 1);
 }
+
+
+#[test]
+fn canonical_package_shorthand_records_static_local_bindings_only() {
+    let headers = parse(r#"
+        use namespace storefront;
+        import pkg 'z';
+        import pkg 'core.telemetry' as tracer;
+        import pkg '@scope/math' as math;
+        import pkg '+/utils' as utils;
+        import * as local from './helpers.atto';
+        pub fnc main(): int { return 0; }
+    "#);
+    assert_eq!(headers.namespace.as_deref(), Some("storefront"));
+    assert_eq!(headers.imports, ["z", "tracer", "math", "utils", "local"]);
+}
+
+#[test]
+fn canonical_package_imports_reject_implicit_bad_names_and_collisions() {
+    for src in [
+        "import pkg 'my-lib';",
+        "import pkg '@scope/math';",
+        "import pkg '+/utils';",
+        "import pkg 'core.class';",
+        "import pkg '';",
+        "import pkg 'core..math' as math;",
+        "import pkg 'z' as class;",
+        "import pkg z;",
+        "import pkg 'z' as;",
+        "import pkg 'z'",
+        "import pkg './local' as local;",
+    ] {
+        reject(src, "E_SYNTAX");
+    }
+    for src in [
+        "import pkg 'z'; import pkg 'other' as z;",
+        "import pkg 'z'; import * as z from './local.atto';",
+    ] {
+        reject(src, "E_DUPLICATE");
+    }
+}
+
+#[test]
+fn canonical_pkg_imports_remain_unlinked_in_executable_relative_file_compiler() {
+    use atto_compiler::compile_with_imports;
+    use std::{io, path::Path};
+    for src in [
+        "import pkg 'z'; pub fnc main():int{return 0;}",
+        "import pkg 'z' as zed; pub fnc main():int{return 0;}",
+    ] {
+        let failure = compile_with_imports(src, Path::new("project/main.atto"), |_path| {
+            Err(io::Error::new(io::ErrorKind::NotFound, "no package imports"))
+        }).expect_err("unverified package source must not produce Wasm");
+        assert_eq!(failure.code, "E_UNSUPPORTED", "{failure}");
+    }
+}
