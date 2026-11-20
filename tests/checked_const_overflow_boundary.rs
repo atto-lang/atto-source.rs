@@ -27,6 +27,9 @@ fn explicit_const_overflow_is_compile_time_error() {
         "const value: int = 3037000500 * 3037000500; return 0;",
         // Evaluating a parent must never suppress an overflowing child.
         "const value = (9223372036854775807 + 1) * 0; return 0;",
+        // Named Boolean builtins evaluate both arguments, unlike ternary.
+        "const value = And(false, 9223372036854775807 + 1 eq 0); return 0;",
+        "const value = Or(true, 9223372036854775807 + 1 eq 0); return 0;",
         "const max = 9223372036854775807; const value = max + 1; return 0;",
         "const min = -9223372036854775808; const value = -min; return 0;",
         "const flag = true; const value = flag ? 9223372036854775807 + 1 : 0; return 0;",
