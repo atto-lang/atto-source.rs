@@ -518,39 +518,75 @@ fn parse_target_declarations_normalized(toks: &[Token]) -> R<TargetHeaders> {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
             }
             let mut bindings = Vec::new();
-            let legacy_pkg = if c.take_word("module") {
-                // Legacy import module name from "./file.atto" syntax.
-                bindings.push(c.ident()?);
-                false
-            } else if c.take_word("pkg") {
-                // Legacy import pkg name from "+/package" syntax.
-                bindings.push(c.ident()?);
-                true
-            } else if c.take(&Tok::Star) {
-                c.expect_word("as")?;
-                bindings.push(c.ident()?);
-                false
-            } else if matches!(c.tok(), Tok::Ident(_)) {
-                c.import_names(&mut bindings)?;
-                false
-            } else {
-                return Err(c.err("E_SYNTAX", "expected '* as name' or comma-separated import names"));
-            };
-            c.expect_word("from")?;
-            let package = legacy_pkg || c.take_word("pkg");
-            match c.tok().clone() {
-                Tok::Str(path) if !path.is_empty() => {
-                    if package && (path.starts_with("./") || path.starts_with("../")) {
-                        return Err(c.err("E_SYNTAX", "package imports cannot use relative file paths"));
-                    }
-                    if !package && !path.starts_with("./") && !path.starts_with("../") {
-                        return Err(c.err("E_SYNTAX", "file imports require a quoted relative path"));
-                    }
-                    c.next();
+            // Canonical shorthand is a compile-time package namespace binding.
+            // Parse-only headers have no authority to resolve the package or
+            // allow guest I/O. The executable import linker rejects packages.
+            let package_shorthand = c.word() == Some("pkg")
+                && c.toks.get(c.i + 1)
+                    .is_some_and(|t| matches!(&t.tok, Tok::Str(_)));
+            if package_shorthand {
+                c.next(); // pkg
+                let Tok::Str(identity) = c.tok().clone() else { unreachable!() };
+                if identity.is_empty() || identity.len() > 4096
+                    || identity.contains("..") || identity.ends_with('.')
+                    || identity.contains('\\') || identity.starts_with("./")
+                    || identity.starts_with('/')
+                    || identity.contains("//")
+                    || identity.chars().any(|ch| ch.is_control()) {
+                    return Err(c.err("E_SYNTAX", "invalid package identity"));
                 }
-                _ => return Err(c.err("E_SYNTAX", "expected a nonempty quoted import path")),
+                c.next();
+                let binding = if c.take_word("as") {
+                    c.ident()?
+                } else {
+                    let inferred = identity.rsplit('.').next().unwrap_or("");
+                    let first = inferred.chars().next();
+                    if !first.is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+                        || !inferred.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                        || is_reserved(inferred)
+                        || matches!(inferred, "declare" | "mtd" | "use" | "pub" | "pkg") {
+                        return Err(c.err("E_SYNTAX",
+                            "package namespace requires an explicit as alias"));
+                    }
+                    inferred.to_owned()
+                };
+                bindings.push(binding);
+                c.expect(&Tok::Semi, "expected ';' after package import")?;
+            } else {
+                let legacy_pkg = if c.take_word("module") {
+                    // Legacy import module name from "./file.atto" syntax.
+                    bindings.push(c.ident()?);
+                    false
+                } else if c.take_word("pkg") {
+                    // Legacy import pkg name from "+/package" syntax.
+                    bindings.push(c.ident()?);
+                    true
+                } else if c.take(&Tok::Star) {
+                    c.expect_word("as")?;
+                    bindings.push(c.ident()?);
+                    false
+                } else if matches!(c.tok(), Tok::Ident(_)) {
+                    c.import_names(&mut bindings)?;
+                    false
+                } else {
+                    return Err(c.err("E_SYNTAX", "expected '* as name' or comma-separated import names"));
+                };
+                c.expect_word("from")?;
+                let package = legacy_pkg || c.take_word("pkg");
+                match c.tok().clone() {
+                    Tok::Str(path) if !path.is_empty() => {
+                        if package && (path.starts_with("./") || path.starts_with("../")) {
+                            return Err(c.err("E_SYNTAX", "package imports cannot use relative file paths"));
+                        }
+                        if !package && !path.starts_with("./") && !path.starts_with("../") {
+                            return Err(c.err("E_SYNTAX", "file imports require a quoted relative path"));
+                        }
+                        c.next();
+                    }
+                    _ => return Err(c.err("E_SYNTAX", "expected a nonempty quoted import path")),
+                }
+                c.expect(&Tok::Semi, "expected ';' after import")?;
             }
-            c.expect(&Tok::Semi, "expected ';' after import")?;
             for alias in bindings {
                 if out.imports.contains(&alias) {
                     return Err(c.err("E_DUPLICATE", format!("duplicate import binding '{alias}'")));
