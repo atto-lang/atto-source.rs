@@ -209,15 +209,15 @@ mod tests {
         let mut q = queue(4);
         let a = owned(q.acquire(c(1)).unwrap());
         let b = pending(q.acquire(c(2)).unwrap());
-        let c = pending(q.acquire(c(3)).unwrap());
+        let queued_c = pending(q.acquire(c(3)).unwrap());
         assert_eq!(q.cancel(b), Ok(Cancellation::Queued));
         q.release(a).unwrap();
-        assert_eq!(q.take_wakeup(), Some(c));
+        assert_eq!(q.take_wakeup(), Some(queued_c));
         assert_eq!(q.claim(b), Err(Error::StaleTicket));
-        assert_eq!(q.cancel(c), Ok(Cancellation::GrantedAndRevoked));
+        assert_eq!(q.cancel(queued_c), Ok(Cancellation::GrantedAndRevoked));
         assert_eq!(q.take_wakeup(), None);
-        assert_eq!(q.claim(c), Err(Error::StaleTicket));
-        assert_eq!(q.release(c), Err(Error::StaleTicket));
+        assert_eq!(q.claim(queued_c), Err(Error::StaleTicket));
+        assert_eq!(q.release(queued_c), Err(Error::StaleTicket));
         assert!(matches!(q.acquire(c(4)), Ok(Admission::Granted(_))));
     }
 
