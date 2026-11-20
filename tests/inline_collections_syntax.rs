@@ -336,3 +336,43 @@ fn entry_type_ascriptions_reject_non_entry_casts_and_malformed_syntax() {
         assert!(parse_binding(src).is_err(), "{src}");
     }
 }
+
+#[test]
+fn bracket_lvalues_preserve_exact_index_target_without_guessing_record_or_map() {
+    let cases = [
+        r#"let mut Map<string,int> x = {"foo" => 5}; x["foo"] = 3;"#,
+        r#"let mut Record x = {foo: 5}; x["foo"] = 3;"#,
+        r#"let x = new Point(); x["foo"] = 3;"#,
+    ];
+    for case in cases {
+        let p = parse_binding(case).unwrap_or_else(|e| panic!("{case}: {e}"));
+        match &p.funcs[0].body[1] {
+            Stmt::Expr(e) => match &e.kind {
+                ExprKind::Call(name, args) if name == "@builtin/checked-index-write" => {
+                    assert_eq!(args.len(), 2);
+                    assert!(matches!(&args[1].kind, ExprKind::Int(Some(3))));
+                    match &args[0].kind {
+                        ExprKind::Index(receiver, key) => {
+                            assert!(matches!(&receiver.kind, ExprKind::Var(n) if n == "x"));
+                            assert!(matches!(&key.kind, ExprKind::Str(s) if s == "foo"));
+                        }
+                        _ => panic!("must keep unlowered Index lvalue to resolve after typing"),
+                    }
+                }
+                _ => panic!("synthetic index write must be a checked, unspellable intrinsic"),
+            }
+            _ => panic!("expected a single checked index assignment statement"),
+        }
+    }
+}
+
+#[test]
+fn unchecked_index_assignment_never_emits_guest_code() {
+    let invalid = r#"fnc main(): int {
+        let int x = 1;
+        x["foo"] = 3;
+        return x;
+    }"#;
+    let err = compile(invalid).expect_err("no unproven index writer should execute");
+    assert_eq!(err.code, "E_UNSUPPORTED");
+}
