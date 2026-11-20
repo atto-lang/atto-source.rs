@@ -35,7 +35,7 @@ pub susp fnc main(): int {
 fn both_proven_single_task_await_spellings_emit_real_guest() {
     let implicit = compile(IMPLICIT).expect("admitted single-task fast path");
     let explicit = compile(EXPLICIT).expect("same semantics for explicit await");
-    assert!(implicit.starts_with(b"\\0asm"));
+    assert!(implicit.starts_with(b"\0asm"));
     assert_eq!(implicit, explicit, "contextual await must lower identically");
 }
 
