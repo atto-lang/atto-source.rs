@@ -1,0 +1,3 @@
+// expect-error: E_SEMICOLON
+// A separated caret pair is not the contiguous ^^ operator.
+pub fnc main(): int { return 12 ^ ^ 10; }
