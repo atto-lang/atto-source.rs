@@ -63,6 +63,8 @@ pub mod routine_lower;
 /// Bounded reference scheduler gate; not yet wired to guest Wasm execution.
 pub mod state_admission;
 pub mod target_syntax;
+/// Fail-closed scoped Mutex admission until verified lease/await guest lowering.
+pub mod mutex_using_preview_gate;
 /// File-scoped namespace headers derived from a package-relative source path.
 pub mod namespace;
 pub mod tuple_binding_admission;
@@ -116,6 +118,9 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    // A lexical admission fence, not a replacement for typed Mutex ownership.
+    // Never emit guest Wasm for a lock scope until scheduler/lease lowering exists.
+    mutex_using_preview_gate::reject_unimplemented(&original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
