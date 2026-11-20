@@ -1,0 +1,6 @@
+// Arc<T> alone cannot prove transitive Shareable or runtime isolation.
+// expect-error: E_UNSUPPORTED_TYPE
+define actor Worker receives Arc<int> as
+  receive(ActorMail<Arc<int>> mail): void { return; }
+end
+pub fnc main(): int { return 0; }
