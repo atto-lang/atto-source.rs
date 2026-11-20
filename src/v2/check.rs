@@ -1571,18 +1571,41 @@ impl<'a> Checker<'a> {
                 self.c().pre.push(IrStmt::If(run, then, Vec::new()));
                 Ok((Ir::Local(t), Ty::Bool))
             }
-            BinOp::Pipe => {
+            BinOp::Pipe | BinOp::Rpipe => {
+                // Evaluate expressions once in the WRITTEN order (left, right).
+                // rpipe changes only which endpoint is upstream in DATA flow.
+                let reverse = op == BinOp::Rpipe;
                 let vals = self.operands(&[(l, None), (r, None)])?;
-                let (Ty::Actor(a), Ty::Actor(_)) = (&vals[0].1, &vals[1].1) else {
-                    return Err(type_err(
-                        pos,
-                        "'|' and 'pipe' link actor references; use '||' for boolean OR and '|>' for function pipelines",
-                    ));
+                let (Ty::Actor(a), Ty::Actor(b)) = (&vals[0].1, &vals[1].1) else {
+                    return Err(type_err(pos,
+                        "'pipe' and 'rpipe' require typed actor references, not functional values"));
                 };
-                let head = *a;
+                let (source, sink) = if reverse { (*b, *a) } else { (*a, *b) };
+                // In the legacy v2 actor-only subset, receive handlers establish
+                // a statically observed emit type. This is NOT the new declarative
+                // 'emits T' contract in atto-spec #45. Only direct two-actor
+                // edges can be checked here: nested graphs need a typed graph IR
+                // that tracks BOTH the graph head and tail before admission.
+                let is_nested = matches!(&l.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
+                    || matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _));
+                if !is_nested {
+                    let from = &self.objs[source];
+                    let to = &self.objs[sink];
+                    let emitted = from.emit.as_ref().ok_or_else(|| type_err(pos,
+                        format!("actor '{}' has no observed emit(T) source; pipe requires an output port", from.name)))?;
+                    if to.receive.is_none() || !fits(emitted, &to.mail) {
+                        return Err(type_err(pos,
+                            format!("actor '{}' emits {}, cannot pipe into '{}' receiving {}",
+                                from.name, self.tn(emitted), to.name, self.tn(&to.mail))));
+                    }
+                }
                 let mut it = vals.into_iter();
                 let (a_ir, b_ir) = (it.next().unwrap().0, it.next().unwrap().0);
-                Ok((self.rt("__actor_link", vec![a_ir, b_ir]), Ty::Actor(head)))
+                if reverse {
+                    Ok((self.rt("__actor_link", vec![b_ir, a_ir]), Ty::Actor(source)))
+                } else {
+                    Ok((self.rt("__actor_link", vec![a_ir, b_ir]), Ty::Actor(source)))
+                }
             }
             _ => {
                 let vals = self.operands(&[(l, None), (r, None)])?;
