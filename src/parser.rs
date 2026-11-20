@@ -270,6 +270,38 @@ impl Parser {
             _ => None,
         }
     }
+    // The bang is a contextual spelling of an existing pipeline operator,
+    // never a new general-purpose postfix operator or identifier rewrite.
+    // Lexer tokens carry positions, so "pipe!"/"rpipe!" must be contiguous
+    // and the bang must end at a token boundary (reject pipe!suffix).
+    fn consume_pipeline_operator(&mut self, word: &str) -> bool {
+        if !self.is_word(word) {
+            return false;
+        }
+        let keyword = self.toks[self.i].pos;
+        let next = self.toks.get(self.i + 1);
+        let has_bang = next.is_some_and(|next| {
+            next.tok == Tok::Bang
+                && next.pos.line == keyword.line
+                && next.pos.col == keyword.col + word.len() as u32
+        });
+        if has_bang {
+            // No implicit alias for pipe!name or pipe!!name.
+            if let Some(after) = self.toks.get(self.i + 2) {
+                if after.pos.line == keyword.line
+                    && after.pos.col == keyword.col + word.len() as u32 + 1
+                    && matches!(after.tok, Tok::Ident(_) | Tok::Bang)
+                {
+                    return false;
+                }
+            }
+        }
+        self.advance();
+        if has_bang {
+            self.advance();
+        }
+        true
+    }
     fn eat(&mut self, t: &Tok) -> bool {
         if self.peek() == t {
             self.advance();
@@ -1797,7 +1829,13 @@ impl Parser {
                 || (!reversed && all_actors && *self.peek() == Tok::Pipe) {
                 let operator = self.pos();
                 let legacy_actor_bar = *self.peek() == Tok::Pipe;
-                self.advance();
+                if legacy_actor_bar {
+                    self.advance();
+                } else if reversed {
+                    assert!(self.consume_pipeline_operator("rpipe"));
+                } else {
+                    assert!(self.consume_pipeline_operator("pipe"));
+                }
                 let stage = self.parse_postfix()?;
                 let next = match &stage.kind {
                     ExprKind::Spawn(actor) => PipeStage::Actor(actor.clone()),
