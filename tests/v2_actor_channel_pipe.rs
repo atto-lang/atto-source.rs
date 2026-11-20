@@ -14,6 +14,8 @@ const STOPPED_PRODUCER: &str = include_str!("fixtures/panic/213-v2-pipe-stopped-
 const CLOSED_CHANNEL: &str = include_str!("fixtures/panic/214-v2-pipe-closed-channel.atto");
 const STOPPED_CONSUMER: &str = include_str!("fixtures/panic/215-v2-pipe-stopped-consumer.atto");
 const STOPPED_ACTOR_SINK: &str = include_str!("fixtures/panic/216-v2-pipe-stopped-actor-sink.atto");
+const CLAIMED_ITER: &str = include_str!("fixtures/panic/228-v2-pipe-claimed-for-await.atto");
+const CLAIMED_RX: &str = include_str!("fixtures/panic/229-v2-pipe-claimed-rx-poll.atto");
 
 #[test]
 fn real_compiler_emits_independent_wasm_guests_for_both_directional_graphs() {
@@ -114,6 +116,8 @@ fn executable_negative_fixtures_also_compile_to_guests_that_must_trap() {
         ("closed_channel", CLOSED_CHANNEL),
         ("stopped_consumer", STOPPED_CONSUMER),
         ("stopped_actor_sink", STOPPED_ACTOR_SINK),
+        ("claimed_for_await", CLAIMED_ITER),
+        ("claimed_rx_poll", CLAIMED_RX),
     ] {
         let guest = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("{name} must reach runtime: {e}"));
