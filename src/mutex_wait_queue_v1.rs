@@ -1581,6 +1581,7 @@ mod tests {
         let claimed = owned(kernel.acquire(owner, mutex).unwrap());
         kernel.claim(owner, mutex, claimed).unwrap();
         let queued = pending(kernel.acquire(waiter, mutex).unwrap());
+        kernel.park_lock_wait(waiter, mutex, queued).unwrap();
         assert!(kernel.cancelled_continuation_wake_hints().unwrap().is_empty());
         kernel.cancel(waiter).unwrap();
 
@@ -1611,7 +1612,9 @@ mod tests {
         let active = owned(kernel.acquire(owner, mutex).unwrap());
         kernel.claim(owner, mutex, active).unwrap();
         let stale = pending(kernel.acquire(cancelled, mutex).unwrap());
+        kernel.park_lock_wait(cancelled, mutex, stale).unwrap();
         let next = pending(kernel.acquire(successor, mutex).unwrap());
+        kernel.park_lock_wait(successor, mutex, next).unwrap();
 
         assert_eq!(kernel.trusted_exit(owner).unwrap(), vec![mutex]);
         // Delivery is only a wake *hint*, not a grant claim or permission.
@@ -1690,6 +1693,7 @@ mod tests {
         let grant = owned(kernel.acquire(active, mutex).unwrap());
         kernel.claim(active, mutex, grant).unwrap();
         let waiter = pending(kernel.acquire(queued, mutex).unwrap());
+        kernel.park_lock_wait(queued, mutex, waiter).unwrap();
 
         kernel.cancel(active).unwrap();
         // Cancellation is a safe-point flag for the already running holder,
