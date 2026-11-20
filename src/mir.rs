@@ -3,7 +3,7 @@ use crate::{
     frontend::{Expr, Program},
     ref_layout::ManagedRefLayout,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Clone, Debug)]
@@ -36,23 +36,19 @@ fn failure(class: &'static str, message: impl Into<String>) -> SemanticError {
         message: message.into(),
     }
 }
+// A value is known only when every executed input to the expression is a
+// statically known i64. This is a sound, intentionally incomplete admission
+// check, NOT a substitute for checked runtime code generation.
 fn validate_expr(
     expr: &Expr,
-    variables: &HashSet<String>,
+    variables: &HashMap<String, Option<i64>>,
     signatures: &HashMap<String, usize>,
-) -> Result<(), SemanticError> {
+) -> Result<Option<i64>, SemanticError> {
     match expr {
-        Expr::Integer(_) => Ok(()),
-        Expr::Name(name) => {
-            if variables.contains(name) {
-                Ok(())
-            } else {
-                Err(failure(
-                    "unknown_name",
-                    format!("undeclared scalar '{name}'"),
-                ))
-            }
-        }
+        Expr::Integer(value) => Ok(Some(*value)),
+        Expr::Name(name) => variables.get(name).copied().ok_or_else(|| {
+            failure("unknown_name", format!("undeclared scalar '{name}'"))
+        }),
         Expr::Call { name, args } => {
             let Some(expected) = signatures.get(name) else {
                 return Err(failure(
@@ -69,16 +65,51 @@ fn validate_expr(
                     ),
                 ));
             }
+            // Evaluate/validate ALL arguments even if the callee would ignore
+            // them. Never treat a call as a compile-time pure constant.
             for arg in args {
                 validate_expr(arg, variables, signatures)?;
             }
-            Ok(())
+            Ok(None)
         }
-        Expr::Add(a, b) | Expr::Subtract(a, b) | Expr::Multiply(a, b) => {
-            validate_expr(a, variables, signatures)?;
-            validate_expr(b, variables, signatures)
+        Expr::Add(a, b) => {
+            checked_binary(a, b, variables, signatures, "addition", i64::checked_add)
         }
-        Expr::Negate(expr) => validate_expr(expr, variables, signatures),
+        Expr::Subtract(a, b) => {
+            checked_binary(a, b, variables, signatures, "subtraction", i64::checked_sub)
+        }
+        Expr::Multiply(a, b) => {
+            checked_binary(a, b, variables, signatures, "multiplication", i64::checked_mul)
+        }
+        Expr::Negate(expr) => match validate_expr(expr, variables, signatures)? {
+            Some(value) => value.checked_neg().map(Some).ok_or_else(|| {
+                failure("checked_overflow", "statically proven signed i64 negation overflow")
+            }),
+            None => Ok(None),
+        },
+    }
+}
+
+fn checked_binary(
+    a: &Expr,
+    b: &Expr,
+    variables: &HashMap<String, Option<i64>>,
+    signatures: &HashMap<String, usize>,
+    operator: &'static str,
+    operation: fn(i64, i64) -> Option<i64>,
+) -> Result<Option<i64>, SemanticError> {
+    // Validate each subtree BEFORE discarding a dynamic result: a nested
+    // provable overflow is never made safe by a later multiplication by zero.
+    let lhs = validate_expr(a, variables, signatures)?;
+    let rhs = validate_expr(b, variables, signatures)?;
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) => operation(lhs, rhs).map(Some).ok_or_else(|| {
+            failure(
+                "checked_overflow",
+                format!("statically proven signed i64 {operator} overflow"),
+            )
+        }),
+        _ => Ok(None),
     }
 }
 pub fn lower(program: Program) -> Result<Module, SemanticError> {
@@ -103,9 +134,9 @@ pub fn lower_with_ref_layout(
     }
     let mut functions = Vec::with_capacity(program.functions.len());
     for function in program.functions {
-        let mut vars = HashSet::new();
+        let mut vars: HashMap<String, Option<i64>> = HashMap::new();
         for param in &function.params {
-            if !vars.insert(param.clone()) {
+            if vars.insert(param.clone(), None).is_some() {
                 return Err(failure(
                     "duplicate_declaration",
                     format!("duplicate parameter '{param}'"),
@@ -114,8 +145,8 @@ pub fn lower_with_ref_layout(
         }
         let mut locals = Vec::new();
         for local in function.locals {
-            validate_expr(&local.value, &vars, &signatures)?;
-            if !vars.insert(local.name.clone()) {
+            let constant = validate_expr(&local.value, &vars, &signatures)?;
+            if vars.insert(local.name.clone(), constant).is_some() {
                 return Err(failure(
                     "duplicate_declaration",
                     format!("duplicate local '{}'", local.name),

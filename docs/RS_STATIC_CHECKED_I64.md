@@ -1,0 +1,13 @@
+# Rust statically provable checked i64 admission (P1 draft)
+
+This is a **bounded, source-owned and unexecuted** Rust/Cranelift MIR increment, stacked on Rust scalar integration PR #35 at exact parent `32ab006013ada619307c5429fd79880b00ebecae`, tree `bf5ba9e49a29555366bc2bfde92fa3b6aa73e433`.
+
+## Canonical evidence and precise scope
+
+Java Atto canonical source: `ores-truffle-oreslang/oreslang-source.java` at `c39100b400c4dc1475dd25f5946b136b7032d5f6`, `contracts/atto-scalar-v1/cases.json`, evidence status `NOT_EXECUTED`. Four copied negative files are byte-identical to that Java revision. Its diagnostic family is `checked-overflow`; Rust emits semantic class `checked_overflow` (hyphen/underscore normalized equivalently). LLVM scalar candidate contract `contracts/oresllm-parity/v1/scalar.json`, source commit `15bdd5cc48cf64387aee7e19f2926c253eb10e08`, also lists checked add/sub/multiply/negate/eager nested overflow *without* native execution certification.
+
+This patch changes **only scalar MIR validation**. For each expression, it tracks `Some(i64)` when the entire expression is statically computable, and `None` for runtime-dependent inputs, including parameters and function calls. Every subtree and argument is visited, preserving eager error detection even if an enclosing result is dynamic or later multiplied by zero. Ordered local aliases and explicit mutable SSA versions carry constant values; signed +, -, *, unary negation use Rust `checked_*` only when all inputs are provably known. A statically overflowing expression reports `checked_overflow` before Cranelift object, paired effect IR, or CLI artifact publication can occur.
+
+**Not implemented or certified:** checked overflow for runtime-dependent operands, a runtime trapping ABI, Java/LLVM native execution equivalence, general `bool`, CFG, actors, borrow/move/share, per-actor heaps/stacks, and hard-RT proofs. Existing raw Cranelift arithmetic still has no proven dynamic checked-overflow behavior, so **do not promote general checked i64 parity** on the strength of this pass. Parent integration #35 and this PR must remain drafts until a source-owned runner executes nonempty CI steps, `cargo fmt --all -- --check`, `cargo test --locked --all-targets`, `cargo clippy --locked --all-targets -- -D warnings`, real Linux linked guest tests and independent review.
+
+The four canonical negative fixtures under `tests/fixtures/atto_scalar_checked_v1/` and `tests/static_checked_i64.rs` cover direct arithmetic overflow, eager unused initializers, constant aliases, SSA rebinding, call-argument validation, dynamic-parent nested overflow, safe signed boundaries and real compiled guest execution. Do not mirror private source to alternate organizations.
