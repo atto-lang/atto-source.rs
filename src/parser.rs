@@ -406,7 +406,7 @@ impl Parser {
         let pos = self.pos();
         match self.peek().clone() {
             Tok::Ident(s) => {
-                if matches!(s.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List") {
+                if matches!(s.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List" | "Pair" | "Entry") {
                     self.factory_shadowing.push((s.clone(), pos));
                 }
                 if is_reserved(&s) {
