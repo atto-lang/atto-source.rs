@@ -459,7 +459,7 @@ impl Parser {
                         args.push(spelling);
                         if !self.eat(&Tok::Comma) { break; }
                     }
-                    self.expect(Tok::Gt, "'>' to close collection type arguments")?;
+                    self.expect_type_close("'>' to close collection type arguments")?;
                 }
                 let correct_arity = match builtin {
                     "Record" => !generic,
@@ -533,7 +533,7 @@ impl Parser {
             "Option" => {
                 self.expect(Tok::Lt, "'<' after Option")?;
                 let inner = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Option payload")?;
+                self.expect_type_close("'>' after Option payload")?;
                 match inner {
                     Type::Int => Type::OptionInt,
                     Type::ResultIntStr => Type::OptionResultIntStr,
@@ -544,7 +544,7 @@ impl Parser {
             "Generator" => {
                 self.expect(Tok::Lt, "'<' after Generator")?;
                 let inner = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Generator item type")?;
+                self.expect_type_close("'>' after Generator item type")?;
                 if inner != Type::Int {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "the browser generator frontend currently recognizes only Generator<int>"));
@@ -556,7 +556,7 @@ impl Parser {
                 let good = self.parse_type()?;
                 self.expect(Tok::Comma, "',' between Result type arguments")?;
                 let bad = self.parse_type()?;
-                self.expect(Tok::Gt, "'>' after Result types")?;
+                self.expect_type_close("'>' after Result types")?;
                 if good != Type::Int || bad != Type::Str {
                     return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
                         "browser ADT v1 admits only Result<int,string>"));
@@ -577,7 +577,7 @@ impl Parser {
             "ActorRef" => {
                 self.expect(Tok::Lt, "'<' after ActorRef")?;
                 let (actor, apos) = self.ident("an actor name")?;
-                self.expect(Tok::Gt, "'>'")?;
+                self.expect_type_close("'>'")?;
                 Type::NamedRef(self.type_name(actor, apos))
             }
             "ActorMail" => {
@@ -596,6 +596,22 @@ impl Parser {
         }
         self.leave();
         Ok(ty)
+    }
+
+    /// In a type annotation the lexical '>=' may terminate generic args
+    /// immediately before a binding initializer: `Map<K,V>={}`.
+    /// Split only in type position; ordinary expression '>=' remains Ge.
+    /// Preserve '=' as the next token at its own source column, rather than
+    /// skipping an initializer or inventing a general '<' comparison parse.
+    fn expect_type_close(&mut self, description: &str) -> R<()> {
+        if *self.peek() == Tok::Ge {
+            let next = &mut self.toks[self.i];
+            next.tok = Tok::Assign;
+            next.pos.col = next.pos.col.saturating_add(1);
+            Ok(())
+        } else {
+            self.expect(Tok::Gt, description)
+        }
     }
 
     fn type_name(&mut self, name: String, pos: Pos) -> u32 {
@@ -1120,7 +1136,7 @@ impl Parser {
         }
         self.advance();
         let payload = self.parse_type()?;
-        self.expect(Tok::Gt, "'>'")?;
+        self.expect_type_close("'>'")?;
         let (mail, _) = self.ident("a mail parameter name")?;
         if *self.peek() == Tok::Comma {
             return Err(Diagnostic::new(
