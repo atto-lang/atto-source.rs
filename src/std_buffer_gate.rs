@@ -27,6 +27,7 @@ fn diagnostic(pos: Pos, code: &'static str, message: &'static str) -> Diagnostic
 /// check/use race between source verification and future class linking.
 /// Construction is private, so safe guest code cannot forge a "verified"
 /// package by supplying an arbitrary module with the same name.
+#[derive(Debug)]
 pub struct VerifiedStdBufferCandidate {
     sources: BTreeMap<String, String>,
 }
