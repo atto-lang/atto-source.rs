@@ -4100,6 +4100,7 @@ impl<'a> FnCx<'a> {
             }
         }
         Ok(match &e.kind {
+            ExprKind::InlineTask { .. } => return self.expr(e),
             ExprKind::Int(Some(v)) => TE {
                 e: TExpr::I64(*v as i64),
                 ty: Type::Int,
