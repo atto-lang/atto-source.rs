@@ -112,8 +112,8 @@ fn syntax(pos: Pos, message: &str) -> Diagnostic {
 fn end_at(tokens: &[Token], start: usize, context: Context) -> Option<usize> {
     let mut parens = 0u16;
     let mut brackets = 0u16;
-    for i in start..tokens.len() {
-        match &tokens[i].tok {
+    for (i, token) in tokens.iter().enumerate().skip(start) {
+        match &token.tok {
             Tok::LParen => parens = parens.checked_add(1)?,
             Tok::RParen => parens = parens.checked_sub(1)?,
             Tok::LBracket => brackets = brackets.checked_add(1)?,

@@ -12,7 +12,7 @@ use crate::diag::{Diagnostic, Pos};
 pub const MAX_LITERAL_DEPTH: usize = 128;
 
 /// Distinct type constructors, not string aliases for guest heap pointers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LiteralType {
     Int,
     Bool,
@@ -41,6 +41,11 @@ pub struct TypedLiteral {
     pub ty: LiteralType,
     /// Evaluation order, including map keys before corresponding values.
     pub children: Vec<TypedLiteral>,
+    /// For a closed Record only: each source-evaluated child maps to its
+    /// canonical, name-sorted field slot. Never evaluate child expressions
+    /// in this canonical slot order; their order is always source order.
+    /// Empty for non-Record literals (and the zero-field Record).
+    pub source_to_record_slot: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +64,7 @@ fn builtin_name(name: &str) -> bool {
 }
 
 /// Split only on top-level commas. Generic nesting is bounded independently.
-fn type_args<'a>(input: &'a str, at: Pos, depth: usize) -> Result<Vec<&'a str>, Diagnostic> {
+fn type_args(input: &str, at: Pos, depth: usize) -> Result<Vec<&str>, Diagnostic> {
     if depth >= MAX_LITERAL_DEPTH {
         return Err(diag(at, "E_NESTING", "collection type nesting exceeds the limit"));
     }
@@ -213,6 +218,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         return Err(diag(e.pos, "E_NESTING", "literal expression nesting exceeds the limit"));
     }
     let mut children = Vec::new();
+    let mut source_to_record_slot = Vec::new();
     let ty = match &e.kind {
         ExprKind::Int(Some(n)) if *n <= i64::MAX as u64 => Int,
         ExprKind::Int(_) => return Err(diag(e.pos, "E_INTEGER_RANGE",
@@ -292,11 +298,19 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
                 typed_fields.push((field.clone(), child.ty.clone()));
                 children.push(child);
             }
-            // A Record is structurally keyed by its field-name/type set,
-            // not by the textual order of entries. Preserve *evaluation*
-            // order independently in `children`, but canonicalize the type
-            // shape for deterministic identity and AOT shape interning.
-            typed_fields.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+            // Canonical structural identity is independent of source field
+            // order. Evaluate values in the original source order, then place
+            // each result into the corresponding canonical slot. A shared
+            // shape descriptor must NEVER reorder the initializer effects.
+            typed_fields.sort_by(|a,b| a.0.cmp(&b.0));
+            if typed_fields.windows(2).any(|w| w[0].0 == w[1].0) {
+                return Err(diag(e.pos,"E_DUPLICATE","duplicate static record field"));
+            }
+            for (name, _) in fields {
+                let slot = typed_fields.binary_search_by(|(field,_)| field.cmp(name))
+                    .expect("record field was inserted above");
+                source_to_record_slot.push(slot);
+            }
             Record(typed_fields)
         }
         ExprKind::Map(entries) => {
@@ -353,12 +367,11 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             "nonliteral collection elements require ownership-aware expression type checking")),
     };
     matches_expected(&ty,expected,e.pos)?;
-    Ok(TypedLiteral { pos: e.pos,ty,children })
+    Ok(TypedLiteral { pos: e.pos,ty,children,source_to_record_slot })
 }
 
-/// Static typed-record field lookup, separate from eventual guest indexing.
-/// Closed records reject a missing name; bare open Record needs a proven
-/// presence/type guard. This helper does not certify guest field access.
+/// Static type-only lookup. Guest field projection is separately checked
+/// by the typed compiler and never inferred from an unproved open Record.
 pub fn static_record_field_type(
     ty: &LiteralType, field: &str, at: Pos
 ) -> Result<LiteralType, Diagnostic> {

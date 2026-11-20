@@ -36,14 +36,14 @@ fn fail(pos: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic 
 }
 fn balanced(t: &[Token], start: usize, open: Tok, close: Tok) -> R<usize> {
     let mut level = 0;
-    for i in start..t.len() {
-        if t[i].tok == open { level += 1; }
-        if t[i].tok == close {
-            if level == 0 { return Err(fail(t[i].pos, "E_SYNTAX", "unexpected closing delimiter")); }
+    for (i, token) in t.iter().enumerate().skip(start) {
+        if token.tok == open { level += 1; }
+        if token.tok == close {
+            if level == 0 { return Err(fail(token.pos, "E_SYNTAX", "unexpected closing delimiter")); }
             level -= 1;
             if level == 0 { return Ok(i); }
         }
-        if level > 128 { return Err(fail(t[i].pos, "E_NESTING", "callback nesting exceeds 128")); }
+        if level > 128 { return Err(fail(token.pos, "E_NESTING", "callback nesting exceeds 128")); }
     }
     Err(fail(t[start].pos, "E_EOF", "unclosed callable signature or body"))
 }
@@ -253,7 +253,7 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
     if eof.tok != Tok::Eof { return Err(fail(eof.pos, "E_SYNTAX", "missing source end token")); }
     for callback in callbacks {
         for j in tpl.func.start..tpl.func.end {
-            if j >= tpl.func.args_start + 1 && j < tpl.first_arg_end { continue; }
+            if j > tpl.func.args_start && j < tpl.first_arg_end { continue; }
             let mut token = t[j].clone();
             if j == tpl.func.start + 1 {
                 token.tok = Tok::Ident(generated(&tpl.func.name, &callback));
