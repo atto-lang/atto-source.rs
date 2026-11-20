@@ -1,6 +1,7 @@
 //! Executable source-compiler regression for the empty actor DATA effect.
 //! This validates real compiler output, not mailbox guest execution.
 use atto_compiler::compile;
+use atto_compiler::{ast::{Type, ActorSendEffect}, check, lexer, parser::Parser};
 
 const BASE: &str = r#"define actor Worker receives int as
     receive(ActorMail<int> mail): void { return; }
@@ -51,4 +52,15 @@ fn canonical_bool_never_fixture_compiles_to_wasm() {
     let source = include_str!("fixtures/pass/actor-bool-never-parity-v1.atto");
     let wasm = compile(source).expect("bool inbox and empty outbound effect must compile");
     assert!(wasm.starts_with(b"\0asm"));
+}
+
+#[test]
+fn never_is_distinct_from_void_and_forged_void_payload_fails_in_checker() {
+    let source = BASE.replace("receives int as", "receives int sends never as");
+    let mut parser = Parser::new(lexer::lex(&source).unwrap());
+    let parsed = parser.parse_program().unwrap();
+    assert_eq!(parsed.actors[0].sends, Some(ActorSendEffect::Never));
+    let mut corrupted = parsed.clone();
+    corrupted.actors[0].sends = Some(ActorSendEffect::Payload(Type::Void));
+    assert_eq!(check::check(&corrupted).unwrap_err().code, "E_ACTOR_SEND_CONTRACT");
 }
