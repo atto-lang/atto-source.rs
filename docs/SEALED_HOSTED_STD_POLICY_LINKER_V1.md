@@ -42,8 +42,11 @@ Rust, and JavaScript candidate PR branches, and on atto-common-source #29.
 - **Native attoc --package-root:** uses a separate graph linker
   (package_resolver/linker.rs), and is **not** included in this first sealed
   std module profile.
-- Namespace-first (`use namespace ...;`) entries are outside this
-  initial import_link profile; do not represent them as supported yet.
+- Namespace-first `use namespace storefront;` and logical-path-derived
+  `use default namespace;` are admitted for this **restricted pure-policy
+  function import profile**, with the canonical namespace declaration
+  validator. This is not general package namespace export/re-export support:
+  the separate `--package-root` linker still requires its own integration.
 
 This reuses the existing typed module flattening and preserves its namespace
 shadowing, private member, duplicate binding, malformed source and no-artifact
