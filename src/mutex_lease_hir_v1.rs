@@ -24,13 +24,24 @@ pub(crate) struct LeaseReleased;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AffineLeaseInt<State> {
     state: std::marker::PhantomData<State>,
+    // PhantomData<Rc<()>> is a ZERO-ALLOCATION auto-trait fence: even
+    // an affine ZST lease must not automatically implement Send or Sync.
+    // The actual guest lease will also need independently checked
+    // TenantVM/actor-domain provenance in the production type checker.
+    not_send_or_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl AffineLeaseInt<LeaseActive> {
     fn acquire_ready() -> Self {
-        Self { state: std::marker::PhantomData }
+        Self {
+            state: std::marker::PhantomData,
+            not_send_or_sync: std::marker::PhantomData,
+        }
     }
     fn release(self) -> AffineLeaseInt<LeaseReleased> {
-        AffineLeaseInt { state: std::marker::PhantomData }
+        AffineLeaseInt {
+            state: std::marker::PhantomData,
+            not_send_or_sync: std::marker::PhantomData,
+        }
     }
 }
 impl AffineLeaseInt<LeaseReleased> {
@@ -114,6 +125,10 @@ mod tests {
         let lease = AffineLeaseInt::<LeaseActive>::acquire_ready();
         let done: AffineLeaseInt<LeaseReleased> = lease.release();
         assert!(done.is_released());
+        assert_eq!(std::mem::size_of::<AffineLeaseInt<LeaseActive>>(), 0);
+        assert_eq!(std::mem::size_of::<AffineLeaseInt<LeaseReleased>>(), 0);
+        // The Rc phantom marker makes both states !Send and !Sync at compile
+        // time without allocating or holding a real Rc reference.
         // No release method exists on LeaseReleased and the original
         // LeaseActive value was consumed; duplicate release does not typecheck.
     }
