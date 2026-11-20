@@ -47,6 +47,7 @@ pub(crate) enum Error {
     AdmissionBusy,
     UnclaimedGrant,
     GuardOrder,
+    GuardSuspend,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cancellation {
@@ -332,6 +333,9 @@ struct ScopeTask {
     /// Only cancellation of a *suspended lock waiter* needs a scheduler
     /// wake hint. An active critical holder must not be reentered.
     lock_wait_cancel_wake: bool,
+    /// This is set only by a trusted scheduler AFTER it decides to suspend
+    /// the continuation; a queued ticket alone does not prove suspension.
+    parked_lock: Option<(u64, Ticket)>,
     guest_exited: bool,
     notifications_drained: bool,
     physically_retired: bool,
@@ -403,7 +407,7 @@ impl TaskScopeLockCoordinator {
             guards: TaskLeaseStack::new(who),
             waiting: Vec::new(), unclaimed: Vec::new(),
             cancel_requested: false, lock_wait_cancel_wake: false,
-            guest_exited: false,
+            parked_lock: None, guest_exited: false,
             notifications_drained: false, physically_retired: false,
             cleanup_failed: false, exit_kind: None,
         });
@@ -438,6 +442,38 @@ impl TaskScopeLockCoordinator {
         task.guards.enter(lock_id, queue, token)?;
         if let Some(i) = granted { task.unclaimed.swap_remove(i); }
         if let Some(i) = queued { task.waiting.swap_remove(i); }
+        if task.parked_lock == Some((lock_id, token)) {
+            task.parked_lock = None;
+            task.lock_wait_cancel_wake = false;
+        }
+        Ok(())
+    }
+    /// Trusted scheduler-only park handshake. The caller has already
+    /// suspended guest execution; a queue ticket by itself MUST NOT cause
+    /// cancellation to wake a still-running continuation. This transition
+    /// serializes with cancellation and with queue grant/handoff.
+    fn park_lock_wait(&mut self, who: Continuation, lock_id: u64, ticket: Ticket)
+        -> Result<(), Error> {
+        let task = self.registered(who)?;
+        if task.cancel_requested || task.guest_exited || task.physically_retired {
+            return Err(Error::CancellationPending);
+        }
+        if !task.guards.all_local_locks_released() {
+            return Err(Error::GuardSuspend);
+        }
+        if task.parked_lock.is_some() {
+            return Err(Error::AlreadyClaimed);
+        }
+        if !task.waiting.iter().any(|(id, t)| *id == lock_id && *t == ticket) {
+            return Err(Error::StaleTicket);
+        }
+        let queue = self.locks.get(&lock_id).ok_or(Error::StaleTicket)?;
+        if !queue.waiting.contains(&ticket) {
+            // The grant already won the race; do not park on a runnable task.
+            return Err(Error::StaleTicket);
+        }
+        let task = self.tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
+        task.parked_lock = Some((lock_id, ticket));
         Ok(())
     }
     fn cancel_one(&mut self, id: u64) -> Result<(), Error> {
@@ -448,7 +484,7 @@ impl TaskScopeLockCoordinator {
         // Wake only a task parked on lock acquisition. Running critical
         // holders observe cancellation at safe points, never by duplicate
         // runnable admission. Channel/timer waits have separate registrars.
-        if !task.waiting.is_empty() || !task.unclaimed.is_empty() {
+        if task.parked_lock.is_some() {
             task.lock_wait_cancel_wake = true;
         }
         let mut failure = None;
@@ -550,6 +586,10 @@ impl TaskScopeLockCoordinator {
             TaskExitKind::Succeeded
         });
         task.guest_exited = true;
+        // Physical guest exit consumes any parked-on-lock continuation state.
+        // Cancellation notification is a scheduler hint, not a live guard.
+        task.parked_lock = None;
+        task.lock_wait_cancel_wake = false;
         // Lexical TaskScope exit MUST cancel unfinished descendants, even
         // when the parent itself returned successfully. Otherwise discarded
         // children continue running after their scope and may strand locks.
@@ -634,7 +674,8 @@ impl TaskScopeLockCoordinator {
         if task.cleanup_failed { return Err(Error::CleanupFailed); }
         if !task.guest_exited || !task.notifications_drained
             || !task.guards.all_local_locks_released()
-            || !task.waiting.is_empty() || !task.unclaimed.is_empty() {
+            || !task.waiting.is_empty() || !task.unclaimed.is_empty()
+            || task.parked_lock.is_some() {
             return Err(Error::NotQuiescent);
         }
         if self.tasks.values().any(|child|
@@ -729,6 +770,13 @@ impl HostTaskLockKernel {
         -> Result<(), Error> {
         self.try_with_core(|core| core.enter(who, lock_id, ticket))
     }
+    /// After acquiring a Waiting ticket, the trusted scheduler may make a
+    /// synchronous park decision. A cancellation/grant that wins first must
+    /// make this fail so the continuation stays running and rechecks state.
+    fn park_lock_wait(&self, who: Continuation, lock_id: u64, ticket: Ticket)
+        -> Result<(), Error> {
+        self.try_with_core(|core| core.park_lock_wait(who, lock_id, ticket))
+    }
     /// Called exclusively after trusted compiler/runtime guard-scope end.
     /// This is deliberately not an import available to untrusted guest code.
     fn trusted_guard_scope_exit(&self, who: Continuation, lock_id: u64) -> Result<(), Error> {
@@ -791,6 +839,18 @@ impl HostTaskLockKernel {
         self.try_with_core(|core| {
             let lock = core.locks.get_mut(&lock_id).ok_or(Error::StaleTicket)?;
             if lock.wakeup != Some(ticket) { return Err(Error::StaleTicket); }
+            let task = core.tasks.get_mut(&ticket.continuation.logical_task)
+                .ok_or(Error::UnknownTask)?;
+            if task.continuation != ticket.continuation
+                || task.parked_lock != Some((lock_id, ticket))
+                || task.cancel_requested || task.guest_exited {
+                return Err(Error::StaleTicket);
+            }
+            // Only the trusted scheduler calls this AFTER it has admitted
+            // the exact task to its runnable queue. An unacknowledged hint
+            // survives retries; stale acks cannot erase successor wakeups.
+            task.parked_lock = None;
+            task.lock_wait_cancel_wake = false;
             lock.wakeup = None;
             Ok(())
         })
