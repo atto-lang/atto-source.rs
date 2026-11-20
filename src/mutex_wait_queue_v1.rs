@@ -286,6 +286,235 @@ impl TaskLeaseStack {
     pub(crate) fn all_local_locks_released(&self) -> bool { self.held.is_empty() }
 }
 
+
+/// TaskScope-to-mutex integration reference. It owns the per-task waiter and
+/// claimed-guard reverse indexes, not just a standalone mutex wait queue.
+/// IMPORTANT: this file is #[cfg(test)] in lib.rs. It is NOT a guest scheduler,
+/// a signed physical-quiescence witness, or a production Atto capability API.
+/// The trusted scheduler must replace the modeled guest-exit/callback receipts
+/// with authenticated, separately ordered runtime facts before guest admission.
+struct ScopeTask {
+    continuation: Continuation,
+    parent: Option<u64>,
+    guards: TaskLeaseStack,
+    waiting: Vec<(u64, Ticket)>,
+    unclaimed: Vec<(u64, Ticket)>,
+    cancel_requested: bool,
+    guest_exited: bool,
+    notifications_drained: bool,
+    physically_retired: bool,
+    cleanup_failed: bool,
+}
+
+/// Serial arbiter: each mutation (grant, cancellation, claim, cleanup) is
+/// linearized before a different logical task may observe the lock state.
+/// No OS thread ID, ambient socket access, guest pointer, or blocking wait.
+struct TaskScopeLockCoordinator {
+    domain: Domain,
+    tasks: BTreeMap<u64, ScopeTask>,
+    locks: BTreeMap<u64, WaitQueue>,
+}
+impl TaskScopeLockCoordinator {
+    const MAX_TASKS: usize = 1024;
+    const MAX_LOCKS: usize = 256;
+    const MAX_TASK_PERMITS: usize = 256;
+
+    fn new(domain: Domain) -> Self {
+        Self { domain, tasks: BTreeMap::new(), locks: BTreeMap::new() }
+    }
+    fn add_lock(&mut self, id: u64, queue: WaitQueue) -> Result<(), Error> {
+        if id == 0 || queue.domain != self.domain || self.locks.contains_key(&id) {
+            return Err(Error::ForeignDomain);
+        }
+        if self.locks.len() >= Self::MAX_LOCKS { return Err(Error::Exhausted); }
+        self.locks.insert(id, queue);
+        Ok(())
+    }
+    fn registered(&self, who: Continuation) -> Result<&ScopeTask, Error> {
+        let task = self.tasks.get(&who.logical_task).ok_or(Error::UnknownTask)?;
+        if who.domain != self.domain || task.continuation != who {
+            return Err(Error::ForeignDomain);
+        }
+        Ok(task)
+    }
+    fn register(&mut self, who: Continuation, parent: Option<Continuation>) -> Result<(), Error> {
+        if who.domain != self.domain || who.logical_task == 0 || who.segment == 0 {
+            return Err(Error::ForeignDomain);
+        }
+        if self.tasks.contains_key(&who.logical_task) {
+            return Err(Error::DuplicateTask);
+        }
+        if self.tasks.len() >= Self::MAX_TASKS { return Err(Error::Exhausted); }
+        let parent_id = if let Some(p) = parent {
+            let owner = self.registered(p)?;
+            if owner.cancel_requested || owner.guest_exited || owner.physically_retired {
+                return Err(Error::CancellationPending);
+            }
+            Some(p.logical_task)
+        } else { None };
+        self.tasks.insert(who.logical_task, ScopeTask {
+            continuation: who,
+            parent: parent_id,
+            guards: TaskLeaseStack::new(who),
+            waiting: Vec::new(), unclaimed: Vec::new(),
+            cancel_requested: false, guest_exited: false,
+            notifications_drained: false, physically_retired: false,
+            cleanup_failed: false,
+        });
+        Ok(())
+    }
+    fn acquire(&mut self, who: Continuation, lock_id: u64) -> Result<Admission, Error> {
+        let task = self.registered(who)?;
+        if task.cancel_requested || task.guest_exited { return Err(Error::CancellationPending); }
+        let permits = task.waiting.len() + task.unclaimed.len() + task.guards.held.len();
+        if permits >= Self::MAX_TASK_PERMITS { return Err(Error::Exhausted); }
+        let admission = self.locks.get_mut(&lock_id).ok_or(Error::StaleTicket)?.acquire(who)?;
+        let task = self.tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
+        match admission {
+            Admission::Waiting(ticket) => task.waiting.push((lock_id, ticket)),
+            Admission::Granted(ticket) => task.unclaimed.push((lock_id, ticket)),
+        }
+        Ok(admission)
+    }
+    /// A wakeup does not confer ownership: the exact token must be revalidated
+    /// against the trusted queue and the owning task's unclaimed/wait ledger.
+    fn enter(&mut self, who: Continuation, lock_id: u64, token: Ticket)
+        -> Result<(), Error> {
+        self.registered(who)?;
+        let (tasks, locks) = (&mut self.tasks, &mut self.locks);
+        let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
+        if task.cancel_requested || task.guest_exited { return Err(Error::CancellationPending); }
+        let granted = task.unclaimed.iter().position(|(id, t)| *id == lock_id && *t == token);
+        let queued = task.waiting.iter().position(|(id, t)| *id == lock_id && *t == token);
+        if granted.is_none() && queued.is_none() { return Err(Error::StaleTicket); }
+        let queue = locks.get_mut(&lock_id).ok_or(Error::StaleTicket)?;
+        // Enter before consuming ledger entry: failure leaves it cancellable.
+        task.guards.enter(lock_id, queue, token)?;
+        if let Some(i) = granted { task.unclaimed.swap_remove(i); }
+        if let Some(i) = queued { task.waiting.swap_remove(i); }
+        Ok(())
+    }
+    fn cancel_one(&mut self, id: u64) -> Result<(), Error> {
+        let (tasks, locks) = (&mut self.tasks, &mut self.locks);
+        let task = tasks.get_mut(&id).ok_or(Error::UnknownTask)?;
+        if task.physically_retired || task.guest_exited { return Ok(()); }
+        task.cancel_requested = true; // prevents new claims before any release
+        let mut failure = None;
+        let pending = std::mem::take(&mut task.waiting);
+        for (lock_id, ticket) in pending {
+            let result = locks.get_mut(&lock_id).ok_or(Error::StaleTicket)
+                .and_then(|queue| queue.cancel(ticket));
+            if !matches!(result, Ok(Cancellation::Queued | Cancellation::GrantedAndRevoked)) {
+                failure.get_or_insert(result.err().unwrap_or(Error::StaleTicket));
+                task.waiting.push((lock_id, ticket));
+            }
+        }
+        let unclaimed = std::mem::take(&mut task.unclaimed);
+        for (lock_id, ticket) in unclaimed {
+            let result = locks.get_mut(&lock_id).ok_or(Error::StaleTicket)
+                .and_then(|queue| queue.cancel(ticket));
+            if !matches!(result, Ok(Cancellation::GrantedAndRevoked)) {
+                failure.get_or_insert(result.err().unwrap_or(Error::StaleTicket));
+                task.unclaimed.push((lock_id, ticket));
+            }
+        }
+        if let Err(err) = task.guards.request_cancel(locks) {
+            failure.get_or_insert(err);
+        }
+        if failure.is_some() { task.cleanup_failed = true; }
+        failure.map_or(Ok(()), Err)
+    }
+    /// Requests cancellation for target and all descendants, without joining
+    /// or releasing an active guard. The bounded iteration avoids recursion
+    /// from untrusted task nesting. Siblings outside the target remain alive.
+    fn cancel_tree(&mut self, target: Continuation) -> Result<(), Error> {
+        self.registered(target)?;
+        let mut ids = vec![target.logical_task];
+        let mut index = 0;
+        while index < ids.len() {
+            let parent = ids[index];
+            for (id, task) in &self.tasks {
+                if task.parent == Some(parent) && !task.physically_retired {
+                    ids.push(*id);
+                }
+            }
+            index += 1;
+        }
+        // First fence new claims for the entire subtree.
+        for id in &ids {
+            let task = self.tasks.get_mut(id).ok_or(Error::UnknownTask)?;
+            if !task.guest_exited { task.cancel_requested = true; }
+        }
+        let mut first_failure = None;
+        for id in ids {
+            if let Err(err) = self.cancel_one(id) {
+                first_failure.get_or_insert(err);
+            }
+        }
+        first_failure.map_or(Ok(()), Err)
+    }
+    /// Called ONLY after a trusted scheduler proves that this guest task has
+    /// stopped executing protected code. Do not call this at cancel request.
+    /// Normal return, exceptional unwind and cancellation share this path.
+    fn guest_exited_at_safe_point(&mut self, who: Continuation) -> Result<Vec<u64>, Error> {
+        self.registered(who)?;
+        let (tasks, locks) = (&mut self.tasks, &mut self.locks);
+        let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
+        if task.guest_exited { return Err(Error::AlreadyClaimed); }
+        task.guest_exited = true;
+        let mut failure = None;
+        for (lock_id, ticket) in std::mem::take(&mut task.waiting) {
+            let r = locks.get_mut(&lock_id).ok_or(Error::StaleTicket)
+                .and_then(|queue| queue.cancel(ticket));
+            if !matches!(r, Ok(Cancellation::Queued | Cancellation::GrantedAndRevoked)) {
+                failure.get_or_insert(r.err().unwrap_or(Error::StaleTicket));
+                task.waiting.push((lock_id, ticket));
+            }
+        }
+        for (lock_id, ticket) in std::mem::take(&mut task.unclaimed) {
+            let r = locks.get_mut(&lock_id).ok_or(Error::StaleTicket)
+                .and_then(|queue| queue.cancel(ticket));
+            if !matches!(r, Ok(Cancellation::GrantedAndRevoked)) {
+                failure.get_or_insert(r.err().unwrap_or(Error::StaleTicket));
+                task.unclaimed.push((lock_id, ticket));
+            }
+        }
+        let released = match task.guards.unwind_after_safe_point(locks) {
+            Ok(ids) => ids,
+            Err(err) => { failure.get_or_insert(err); Vec::new() }
+        };
+        if failure.is_some() { task.cleanup_failed = true; }
+        match failure { None => Ok(released), Some(err) => Err(err) }
+    }
+    fn notification_drain_ack(&mut self, who: Continuation) -> Result<(), Error> {
+        let task = self.registered(who)?;
+        if !task.guest_exited { return Err(Error::NotQuiescent); }
+        self.tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?
+            .notifications_drained = true;
+        Ok(())
+    }
+    /// Public Task DONE cannot be published from just a cancellation flag or
+    /// guest-return bit. All active guards, waiters, descendants and callbacks
+    /// must have settled; any cleanup failure retains the Task/tenant fence.
+    fn certify_physical_retirement(&mut self, who: Continuation) -> Result<(), Error> {
+        let task = self.registered(who)?;
+        if task.physically_retired { return Ok(()); }
+        if task.cleanup_failed { return Err(Error::CleanupFailed); }
+        if !task.guest_exited || !task.notifications_drained
+            || !task.guards.all_local_locks_released()
+            || !task.waiting.is_empty() || !task.unclaimed.is_empty() {
+            return Err(Error::NotQuiescent);
+        }
+        if self.tasks.values().any(|child|
+            child.parent == Some(who.logical_task) && !child.physically_retired) {
+            return Err(Error::NotQuiescent);
+        }
+        self.tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?
+            .physically_retired = true;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
