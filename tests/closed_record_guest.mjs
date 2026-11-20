@@ -66,8 +66,7 @@ const positives=[
  ['pub fnc main(): int {val m=Map.of("a"=>40,"b"=>2);return m["b"]+m["a"];}',42n,''],
  ['pub fnc main(): int {val m=Map.of(true,40,false,2);return m[true]+m[false];}',42n,''],
  ['pub fnc main(): int {let Map<string,int> m={"x"=>42};return m["x"];}',42n,''],
- ['pub fnc main(): int {val pair=Tuple.of(10,20);val values=Array.of(1,2,3);val names=List.of("Atto","Lima");val scores=Map.of("a",10,"b",20);val item=Record.of(name="Atto",count=3);return values[0]+pair[1];}',21n,'']
-,
+ ['pub fnc main(): int {val pair=Tuple.of(10,20);val values=Array.of(1,2,3);val names=List.of("Atto","Lima");val scores=Map.of("a",10,"b",20);val item=Record.of(name="Atto",count=3);return values[0]+pair[1];}',21n,''],
  ['pub fnc main(): int {val List<int> xs=[];val Map<int,string> m={};return 42;}',42n,''],
  ['pub fnc main(): int {val Array<string> xs=[];return 42;}',42n,''],
  ['pub fnc main(): int {val Record r=(abc="foo",xyz=true,foo=5);return r.foo;}',5n,''],
@@ -95,8 +94,7 @@ const negatives=[
  ['pub fnc main(): int {val l=List.of(10,20);val writer=borrow! mut l;return 0;}','E_BORROW'],
  ['pub fnc main(): int {val m=Map.of("a",1);return m["missing"];}', 'E_UNSUPPORTED'],
  ['pub fnc main(): int {val m=Map.of("a",1);val writer=borrow! mut m;return 0;}', 'E_BORROW'],
- ['pub fnc main(): int {val m=Map.of(0,1,-0,2);return 0;}', 'E_DUPLICATE']
-,
+ ['pub fnc main(): int {val m=Map.of(0,1,-0,2);return 0;}', 'E_DUPLICATE'],
  ['pub fnc main(): int {val Tuple[int?,string?,bool?] xs=(None,None,None);return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val Pair<int,bool> p=Entry.of(5,true);return 0;}','E_TYPE'],
  ['pub fnc main(): int {val Entry<int,bool> e=Pair.of(5,true);return 0;}','E_TYPE'],
