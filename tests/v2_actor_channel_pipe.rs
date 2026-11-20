@@ -252,3 +252,21 @@ fn unverified_pipe_handle_cancel_is_rejected_before_wasm_emission() {
         .expect_err("guest must not cancel a PipeHandle without scheduler cleanup support");
     assert_eq!(e.code, "E_UNSUPPORTED", "{e}");
 }
+
+
+#[test]
+fn checked_pipe_channel_denies_ambient_public_io_after_claim() {
+    // Actual isolation enforcement must occur in the emitted v2 guest.
+    // This test proves only that each denial can reach Wasm; the Node and
+    // Chromium guest harnesses must assert panic_code=10 and no DATA.
+    for (label, source) in [
+        ("claimed_send", include_str!("fixtures/panic/225-v2-pipe-claimed-channel-send.atto")),
+        ("claimed_receive", include_str!("fixtures/panic/226-v2-pipe-claimed-channel-receive.atto")),
+        ("claimed_close", include_str!("fixtures/panic/227-v2-pipe-claimed-channel-close.atto")),
+    ] {
+        let guest = atto_compiler::compile(source)
+            .unwrap_or_else(|e| panic!("{label}: failed to compile guest: {e}"));
+        assert!(guest.starts_with(b"\0asm\x01\0\0\0"),
+            "{label}: emitted output must be WebAssembly");
+    }
+}
