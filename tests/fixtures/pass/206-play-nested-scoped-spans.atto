@@ -1,3 +1,5 @@
+// expect-exit: 0
+// expect-stdout: both spans alive
 import span from pkg "core.telemetry";
 import sleep from pkg "std.time";
 
