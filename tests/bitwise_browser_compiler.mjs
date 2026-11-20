@@ -75,6 +75,7 @@ try {
 for (const [src, expected] of [
   ['pub fnc main(): int { return 0b2; }', 'E_INTEGER_LITERAL'],
   ['pub fnc main(): int { return 1 ^^ true; }', 'E_TYPE'],
+  ['pub fnc main(): int { return 1 ^ 2; }', 'E_SEMICOLON'],
   ['pub fnc main(): int { return 0b; }', 'E_INTEGER_LITERAL'],
 ]) {
   const failure = compile(src);
