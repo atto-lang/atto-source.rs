@@ -1614,6 +1614,57 @@ impl<'a> Checker<'a> {
                 // order. Reverse only source-to-sink DATA orientation for
                 // rpipe; neither form permits an implicit reverse/CONTROL edge.
                 let reverse = op == BinOp::Rpipe;
+                // The bounded actor -> Channel<T> -> actor graph is a single
+                // connection. Lower all three lexical operands before calling
+                // one guest admission helper; the former left-associative
+                // lowering published actor->channel before validating the
+                // final sink, leaving a partially attached graph on failure.
+                // This is still a legacy trap-based guest prototype, NOT
+                // the checked Result<PipeHandle, PipeSetupError> ABI.
+                if let Ex::Binary(inner_op, first, middle) = &l.kind {
+                    if *inner_op == op {
+                        let vals = self.operands(&[(first, None), (middle, None), (r, None)])?;
+                        let (src_ty, channel_ty, sink_ty) = if reverse {
+                            (&vals[2].1, &vals[1].1, &vals[0].1)
+                        } else {
+                            (&vals[0].1, &vals[1].1, &vals[2].1)
+                        };
+                        if let (Ty::Actor(a), Ty::Channel(item), Ty::Actor(b)) =
+                            (src_ty, channel_ty, sink_ty)
+                        {
+                            let from = &self.objs[*a];
+                            let to = &self.objs[*b];
+                            if !from.emits_declared {
+                                return Err(type_err(pos,
+                                    "pipeline actor source requires an explicit 'emits T' declaration"));
+                            }
+                            if !to.receives_declared {
+                                return Err(type_err(pos,
+                                    "pipeline actor sink requires an explicit 'receives T' declaration"));
+                            }
+                            let emitted = from.emit.as_ref().ok_or_else(|| type_err(pos,
+                                format!("actor '{}' has no declared emission type", from.name)))?;
+                            if **item != *emitted || to.receive.is_none() || **item != to.mail {
+                                return Err(type_err(pos,
+                                    "actor-channel-actor triple needs matching nominal DATA ports"));
+                            }
+                            let mut it = vals.into_iter();
+                            let (first_ir, _) = it.next().unwrap();
+                            let (middle_ir, _) = it.next().unwrap();
+                            let (last_ir, _) = it.next().unwrap();
+                            let (source_ir, sink_ir) = if reverse {
+                                (last_ir, first_ir)
+                            } else {
+                                (first_ir, last_ir)
+                            };
+                            return Ok((self.rt("__actor_channel_actor_atomic",
+                                vec![source_ir, middle_ir, sink_ir]),
+                                Ty::Channel(item.clone())));
+                        }
+                        return Err(err(pos, "E_UNSUPPORTED",
+                            "nested continuous pipe graphs need an owned typed PipeHandle; only the bounded actor-channel-actor triple has atomic guest admission"));
+                    }
+                }
                 let vals = self.operands(&[(l, None), (r, None)])?;
                 let (left_ty, right_ty) = (vals[0].1.clone(), vals[1].1.clone());
                 let (upstream, downstream) = if reverse {
