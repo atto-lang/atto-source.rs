@@ -1623,6 +1623,15 @@ impl<'a> Checker<'a> {
                 // the checked Result<PipeHandle, PipeSetupError> ABI.
                 if let Ex::Binary(inner_op, first, middle) = &l.kind {
                     if *inner_op == op {
+                        // Four-stage and nested graph operands require a full
+                        // owned graph IR. Do NOT recursively lower a prefix:
+                        // that would activate it before validating all edges.
+                        let nested = |e: &Expr| matches!(&e.kind,
+                            Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _));
+                        if nested(first) || nested(middle) || nested(r) {
+                            return Err(err(pos, "E_UNSUPPORTED",
+                                "long or nested continuous graph needs atomic PipeHandle lowering"));
+                        }
                         let vals = self.operands(&[(first, None), (middle, None), (r, None)])?;
                         let (src_ty, channel_ty, sink_ty) = if reverse {
                             (&vals[2].1, &vals[1].1, &vals[0].1)
@@ -1664,6 +1673,12 @@ impl<'a> Checker<'a> {
                         return Err(err(pos, "E_UNSUPPORTED",
                             "nested continuous pipe graphs need an owned typed PipeHandle; only the bounded actor-channel-actor triple has atomic guest admission"));
                     }
+                }
+                // Parenthesized continuous graphs are not ordinary endpoint
+                // expressions. Reject before recursively publishing any edge.
+                if matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _)) {
+                    return Err(err(pos, "E_UNSUPPORTED",
+                        "nested continuous graph needs atomic PipeHandle lowering"));
                 }
                 let vals = self.operands(&[(l, None), (r, None)])?;
                 let (left_ty, right_ty) = (vals[0].1.clone(), vals[1].1.clone());
