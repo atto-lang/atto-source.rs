@@ -65,6 +65,7 @@ const positives=[
  ['pub fnc main(): int {val m=Map.of("a",40,"b",2);return m["a"]+m["b"];}',42n,''],
  ['pub fnc main(): int {val m=Map.of("a"=>40,"b"=>2);return m["b"]+m["a"];}',42n,''],
  ['pub fnc main(): int {val m=Map.of(true,40,false,2);return m[true]+m[false];}',42n,''],
+ ['pub fnc main(): int {let Map<string,int> m={"x"=>42};return m["x"];}',42n,''],
  ['pub fnc main(): int {val pair=Tuple.of(10,20);val values=Array.of(1,2,3);val names=List.of("Atto","Lima");val scores=Map.of("a",10,"b",20);val item=Record.of(name="Atto",count=3);return values[0]+pair[1];}',21n,'']
 ];
 const negatives=[
@@ -74,7 +75,6 @@ const negatives=[
  ['pub fnc main(): int {val Record<{items:Array<int>}> x=Record.of(items=Array.of());return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:42}; let string key="x"; return r[key];}','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:42}; return r["missing"]; }','E_NO_FIELD'],
- ['pub fnc main(): int {let Map<string,int> m={"x"=>42}; return m["x"]; }','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:1,"x":2}; return 0; }','E_DUPLICATE'],
  ['pub fnc main(): int {const Record r={x:42}; return r.x;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val r=Record.of(name=1,"name":2);return 0;}','E_DUPLICATE'],
