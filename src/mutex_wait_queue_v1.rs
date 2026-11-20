@@ -1641,6 +1641,9 @@ mod tests {
         assert_eq!(kernel.acknowledge_grant_wake_hint(mutex, stale), Err(Error::StaleTicket));
         assert_eq!(kernel.claim(cancelled, mutex, stale), Err(Error::CancellationPending));
         assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, next)]);
+        // A granted ticket cannot resume a truly parked guest before the
+        // scheduler has admitted its continuation to the ready queue.
+        assert_eq!(kernel.claim(successor, mutex, next), Err(Error::NotQuiescent));
         kernel.acknowledge_grant_wake_hint(mutex, next).unwrap();
         assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
         kernel.claim(successor, mutex, next).unwrap();
