@@ -1446,7 +1446,7 @@ impl Parser {
         let (mut parens, mut brackets, mut braces) = (0u32, 0u32, 0u32);
         let mut nested_end: Vec<&'static str> = Vec::new();
         let mut return_sequence = false;
-        for token in self.toks.iter().skip(self.i) {
+        for (offset, token) in self.toks.iter().skip(self.i).enumerate() {
             match &token.tok {
                 Tok::LParen | Tok::SequenceOpen => parens += 1,
                 Tok::RParen => parens = parens.saturating_sub(1),
@@ -1472,7 +1472,13 @@ impl Parser {
                         break;
                     }
                 }
-                Tok::Ident(word) if (word == "return" || word == "seq")
+                Tok::Ident(word) if (word == "return"
+                    || (word == "seq"
+                        // seq(...) is a delimited expression: its FOLLOWING outer
+                        // comma may select a v1 implicit-tail body or require ::
+                        // under strict v2. Only bare seq claims commas until ';'.
+                        && !self.toks.get(self.i + offset + 1)
+                            .is_some_and(|next| next.tok == Tok::LParen)))
                     && nested_end.is_empty() =>
                 {
                     // Prefix seq/return expressions own their commas until
