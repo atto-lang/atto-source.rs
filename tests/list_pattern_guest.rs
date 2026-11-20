@@ -162,6 +162,6 @@ fn lone_rest_matches_nonempty_and_empty_without_branch_budget_exhaustion() {
             .unwrap().expect("single rest should be accepted in checked IR");
         assert!(checked.heap);
         assert_eq!(checked.funcs.len(), 1);
-        assert!(compile(source).unwrap().starts_with(b"\\0asm"));
+        assert!(compile(source).unwrap().starts_with(b"\0asm"));
     }
 }
