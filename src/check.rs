@@ -3212,6 +3212,18 @@ impl<'a> FnCx<'a> {
                 // an arbitrary method named read(). The operand is evaluated
                 // exactly once and the result is always the *checked* ADT.
                 let channel = self.value(source)?;
+                if channel.ty == Type::ChannelStr {
+                    let bytes = self.temp(Type::ChannelStr, pos)?;
+                    let outcome = self.temp(Type::ResultOptionStrIoError, pos)?;
+                    let result = self.temp(Type::ResultOptionStrIoError, pos)?;
+                    let option = self.temp(Type::OptionStr, pos)?;
+                    let status = self.temp(Type::IoError, pos)?;
+                    self.imports.push(Import::StdioRead);
+                    self.imports.push(Import::Cooperate);
+                    return Ok(TE {e: TExpr::StdioRead {
+                        channel: Box::new(channel), bytes, outcome, result, option, status,
+                    }, ty: Type::ResultOptionStrIoError});
+                }
                 if channel.ty != Type::ChannelInt {
                     return Err(Diagnostic::new(pos, "E_IO_READABLE",
                         "unary << requires a statically readable Channel<int> in the browser subset"));
