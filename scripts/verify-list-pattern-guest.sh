@@ -41,6 +41,19 @@ if [[ -n "$(git status --porcelain)" ]]; then
   echo 'SOURCE_TREE_DIRTY: verification requires a clean checkout' >&2
   exit 2
 fi
+# Ignored in-tree inputs are invisible to git status but could influence a
+# Cargo build (e.g. an ignored .cargo/config.toml, generated source, or target/).
+# Require a genuinely fresh checkout for an admissible executable proof.
+if [[ -n "$(git clean -ndx)" ]]; then
+  echo 'SOURCE_EXTRA_IGNORED_PATHS: fresh checkout required (git clean -ndx lists extra files)' >&2
+  exit 2
+fi
+# Git-tree object identity does not attest to unmaterialized gitlink contents.
+# This narrow proof path does not fetch/validate submodule repositories.
+if git ls-tree -r HEAD | grep -qE '^160000 commit '; then
+  echo 'SOURCE_SUBMODULE_UNVERIFIED: gitlinks require a separate pinned proof' >&2
+  exit 2
+fi
 
 printf 'VERIFY_MODE=%s\nEXPECTED_SOURCE_HEAD=%s\nCHECKOUT_HEAD=%s\nSOURCE_TREE=%s\n' \
   "$mode" "$ATTO_EXPECT_HEAD" "$actual_head" "$actual_tree"
