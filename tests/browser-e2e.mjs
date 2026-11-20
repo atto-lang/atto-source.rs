@@ -217,6 +217,10 @@ try{
     '210-v2-pipe-double-attach.atto',
     '211-v2-pipe-rendezvous-denial.atto',
     '212-v2-pipe-duplicate-consumer.atto',
+    '213-v2-pipe-stopped-producer.atto',
+    '214-v2-pipe-closed-channel.atto',
+    '215-v2-pipe-stopped-consumer.atto',
+    '216-v2-pipe-stopped-actor-sink.atto',
   ]) {
     const guest = await readFile(new URL('./fixtures/panic/' + filename, import.meta.url), 'utf8');
     assert.match(await run(guest, 'E_PANIC'), /^E_PANIC:/);
