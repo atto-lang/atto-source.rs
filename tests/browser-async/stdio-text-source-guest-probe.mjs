@@ -35,12 +35,29 @@ self.onmessage=async()=>{
         throw Error('compiled echo lacks authenticated checked stdio marker');
       return mod;
     }
-    const module=compile(echoSource);
-    const alternate=compile(echoSource.replace('match << input over','match readch input over'));
-    if(WebAssembly.Module.imports(module).map(x=>x.name).join(',')!==
-       WebAssembly.Module.imports(alternate).map(x=>x.name).join(','))
-      throw Error('readch and unary << produced different import lists');
-    async function run(label,inputParts,expected,grantOverride={}) {
+    const isSource=echoSource
+      .replaceAll('on Err(_)', 'on is Err<error>')
+      .replaceAll('on Ok(_)', 'on is Ok<_>')
+      .replaceAll('on Ok(line)', 'on is Ok<line>')
+      .replaceAll('on Some(item)', 'on is Some<item>')
+      .replaceAll('on None', 'on is None');
+    if(!isSource.includes('on is Ok<_> -> match << input over') ||
+       !isSource.includes('on is Ok<line> -> match line over') ||
+       !isSource.includes('on is Some<item>'))
+      throw Error('nominal is-ADT fixture rewrite lost the requested nested match');
+    const variants=[
+      ['parenthesized+unary',echoSource],
+      ['parenthesized+readch',echoSource.replace('match << input over','match readch input over')],
+      ['on-is+unary',isSource],
+      ['on-is+readch',isSource.replace('match << input over','match readch input over')],
+    ];
+    const compiledVariants=variants.map(([label,source])=>[label,compile(source)]);
+    const importsExpected=JSON.stringify(WebAssembly.Module.imports(compiledVariants[0][1]));
+    for(const [name,guest] of compiledVariants) {
+      if(JSON.stringify(WebAssembly.Module.imports(guest))!==importsExpected)
+        throw Error('read/ADT variants disagree on checked guest import signatures: '+name);
+    }
+    async function run(label,inputParts,expected,grantOverride={},guestModule=compiledVariants[0][1]) {
       const stdout=[],stderr=[];
       const stdin=(async function*() {for(const part of inputParts)yield part})();
       const host=new StdioTextHostV1({
@@ -58,7 +75,7 @@ self.onmessage=async()=>{
         stdio_text_write_v1:new WebAssembly.Suspending(adapter.imports.stdio_text_write_v1),
         cooperate:new WebAssembly.Suspending(async()=>{await pause();cooperates++}),
       };
-      instance=new WebAssembly.Instance(module,{atto:imports});
+      instance=new WebAssembly.Instance(guestModule,{atto:imports});
       const exit=Number(await WebAssembly.promising(instance.exports.main)());
       const observed={exit,stdout:stdout.join(''),stderr:stderr.join('')};
       for(const [key,value] of Object.entries(expected))
@@ -88,8 +105,28 @@ self.onmessage=async()=>{
       {exit:10,stdout:'',stderr:''},{allowStdout:false}));
     cases.push(await run('stderr denied',[encoder.encode('hello\n')],
       {exit:13,stdout:prompt+'hello',stderr:''},{allowStderr:false}));
+    // All four source combinations must execute inside the actual guest
+    // runtime: old/new ADT constructors x unary/explicit checked read.
+    // Host-only adapter tests are insufficient for on-is pattern parity.
+    const proofCases=[
+      ['LF echo',[encoder.encode('hello\\n')],{exit:0,stdout:prompt+'hello',stderr:'echo complete'},{}],
+      ['empty record',[encoder.encode('\\n')],{exit:0,stdout:prompt,stderr:'echo complete'},{}],
+      ['clean EOF',[],{exit:11,stdout:prompt,stderr:''},{}],
+      ['bad UTF-8',[new Uint8Array([0xc3,0x28,10])],{exit:14,stdout:prompt,stderr:''},{}],
+      ['stdin denied',[encoder.encode('secret\\n')],{exit:14,stdout:prompt,stderr:''},{allowStdin:false}],
+      ['stdout denied',[encoder.encode('unused\\n')],{exit:10,stdout:'',stderr:''},{allowStdout:false}],
+    ];
+    const patternExecutions=[];
+    for(const [name,guest] of compiledVariants) {
+      for(const [caseName,parts,expected,grants] of proofCases) {
+        const result=await run(name+' '+caseName,parts,expected,grants,guest);
+        patternExecutions.push({pattern:name,case:caseName,exit:result.exit});
+      }
+    }
     self.postMessage({ok:true,compiledAtto:true,checkedStdio:true,
-      directReadchAbiEquivalent:true,cases});
+      directReadchAbiEquivalent:true,nominalIsAdtGuest:true,
+      patternVariants:compiledVariants.map(([name])=>name),
+      patternExecutions,cases});
   } catch(e) {
     self.postMessage({ok:false,error:String(e?.stack||e)});
   }
