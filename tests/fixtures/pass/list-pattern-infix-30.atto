@@ -1,0 +1,8 @@
+// Search for first literal 20, then borrow the following i64 cell by value.
+pub fnc main(): int {
+  val items: List<int> = List.of(10, 20, 30, 40, 50);
+  return match<int> items over
+    on List.of(..., 20, is int as val b, ...) -> b,
+    on _ -> 0
+  end;
+}
