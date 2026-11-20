@@ -2131,7 +2131,15 @@ impl Parser {
             self.terminator()?;
             return Ok(Stmt::YieldFrom(source, pos));
         }
-        let word = self.word_at(0).map(str::to_owned);
+        // In statement position a lone caret is the lexical return alias.
+        // Do not change expression-position '^': parse_bitwise_xor() still
+        // handles integer XOR, and '^=' remains a distinct assignment.
+        // Reuse the return-match branch below for guard and control-flow proof.
+        let word = if *self.peek() == Tok::Caret {
+            Some("return".to_owned())
+        } else {
+            self.word_at(0).map(str::to_owned)
+        };
         match word.as_deref() {
             Some("handle_state") if self.state_method && *self.peek_at(1) == Tok::LParen =>
                 self.parse_state_critical_stmt(),
