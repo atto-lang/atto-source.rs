@@ -1,0 +1,21 @@
+[package]
+name = "atto-llvm-rust-bootstrap"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Experimental Rust-hosted LLVM AOT emitter reusing the canonical Atto Rust frontend"
+
+# The compiler frontend is the single crate at the root of atto-source.rs.
+# Do not duplicate its parser, type checker, lexer, or Wasm generator here.
+[dependencies]
+atto-compiler-browser = { path = "../.." }
+
+[[bin]]
+name = "atto-llvm"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"
