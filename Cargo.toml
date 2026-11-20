@@ -1,4 +1,7 @@
 [package]
+# Keep this browser/compiler package restricted to its declared attoc CLI.
+# Legacy Rust entrypoints co-located under src/ belong to a separate crate.
+autobins = false
 name = "atto-compiler-browser"
 version = "0.2.0"
 edition = "2021"
