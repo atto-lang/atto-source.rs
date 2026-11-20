@@ -1777,4 +1777,92 @@ mod tests {
         kernel.try_retire(task).unwrap();
     }
 
+    #[test]
+    fn host_kernel_lock_wait_requires_trusted_park_before_cancellation_wake() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let holder = kernel.issue(None).unwrap();
+        let waiter = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(4).unwrap();
+        let holding = owned(kernel.acquire(holder, mutex).unwrap());
+        kernel.claim(holder, mutex, holding).unwrap();
+        let pending = pending(kernel.acquire(waiter, mutex).unwrap());
+
+        // A ticket is not a physical suspension receipt. Cancellation before
+        // scheduler park must be observed by the still-running guest, not a
+        // duplicate ready-queue dispatch.
+        kernel.cancel(waiter).unwrap();
+        assert!(kernel.cancelled_continuation_wake_hints().unwrap().is_empty());
+        assert_eq!(kernel.park_lock_wait(waiter, mutex, pending),
+            Err(Error::CancellationPending));
+        assert_eq!(kernel.claim(waiter, mutex, pending),
+            Err(Error::CancellationPending));
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
+        kernel.trusted_exit(waiter).unwrap();
+        kernel.trusted_notifications_drained(waiter).unwrap();
+        kernel.try_retire(waiter).unwrap();
+        assert_eq!(kernel.trusted_exit(holder).unwrap(), vec![mutex]);
+        kernel.trusted_notifications_drained(holder).unwrap();
+        kernel.try_retire(holder).unwrap();
+    }
+
+    #[test]
+    fn host_kernel_park_requires_exact_waiter_identity_and_no_live_guard() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let holder = kernel.issue(None).unwrap();
+        let waiter = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(4).unwrap();
+        let held_by_waiter = kernel.add_mutex(4).unwrap();
+        let holding = owned(kernel.acquire(holder, mutex).unwrap());
+        kernel.claim(holder, mutex, holding).unwrap();
+        let other = owned(kernel.acquire(waiter, held_by_waiter).unwrap());
+        kernel.claim(waiter, held_by_waiter, other).unwrap();
+        let pending = pending(kernel.acquire(waiter, mutex).unwrap());
+        assert_eq!(kernel.park_lock_wait(waiter, mutex, pending), Err(Error::GuardSuspend));
+        assert_eq!(kernel.park_lock_wait(holder, mutex, pending), Err(Error::GuardSuspend));
+        assert!(kernel.cancelled_continuation_wake_hints().unwrap().is_empty());
+        // Lexical using cleanup must occur first; no await under a live guard.
+        kernel.trusted_guard_scope_exit(waiter, held_by_waiter).unwrap();
+        assert_eq!(kernel.park_lock_wait(waiter, held_by_waiter, pending),
+            Err(Error::StaleTicket));
+        kernel.park_lock_wait(waiter, mutex, pending).unwrap();
+        assert_eq!(kernel.park_lock_wait(waiter, mutex, pending), Err(Error::AlreadyClaimed));
+        kernel.cancel(waiter).unwrap();
+        assert_eq!(kernel.cancelled_continuation_wake_hints().unwrap(), vec![waiter]);
+        kernel.trusted_exit(waiter).unwrap();
+        kernel.trusted_exit(holder).unwrap();
+        for task in [holder, waiter] {
+            kernel.trusted_notifications_drained(task).unwrap();
+            kernel.try_retire(task).unwrap();
+        }
+    }
+
+    #[test]
+    fn host_kernel_wake_ack_without_park_cannot_consume_a_grant() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let holder = kernel.issue(None).unwrap();
+        let waiter = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(4).unwrap();
+        let first = owned(kernel.acquire(holder, mutex).unwrap());
+        kernel.claim(holder, mutex, first).unwrap();
+        let second = pending(kernel.acquire(waiter, mutex).unwrap());
+        // A scheduler that has not parked the task cannot acknowledge its
+        // lock notification, even if the queue has a valid generation.
+        kernel.trusted_guard_scope_exit(holder, mutex).unwrap();
+        assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, second)]);
+        assert_eq!(kernel.acknowledge_grant_wake_hint(mutex, second),
+            Err(Error::StaleTicket));
+        assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, second)]);
+        assert_eq!(kernel.park_lock_wait(waiter, mutex, second),
+            Err(Error::StaleTicket)); // Already granted: cannot park.
+        // The still-running continuation can claim the grant directly.
+        kernel.claim(waiter, mutex, second).unwrap();
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
+        kernel.trusted_exit(holder).unwrap();
+        kernel.trusted_exit(waiter).unwrap();
+        for task in [holder, waiter] {
+            kernel.trusted_notifications_drained(task).unwrap();
+            kernel.try_retire(task).unwrap();
+        }
+    }
+
 }
