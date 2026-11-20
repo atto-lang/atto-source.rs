@@ -1,0 +1,8 @@
+// A guarded binding does not prove exhaustiveness.
+// expect-error: E_MATCH
+fnc classify(int value): int {
+  return match value over
+    on n when n > 1 -> 2,
+  end
+}
+pub fnc main(): int { return classify(7); }
