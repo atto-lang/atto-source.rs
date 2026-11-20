@@ -65,6 +65,10 @@ pub mod state_admission;
 pub mod target_syntax;
 /// Fail-closed scoped Mutex admission until verified lease/await guest lowering.
 pub mod mutex_using_preview_gate;
+/// Host-reference waiter/cancellation model, compiled only in Rust unit tests;
+/// NOT an Atto guest mutex runtime or an admitted compiler intrinsic.
+#[cfg(test)]
+mod mutex_wait_queue_v1;
 /// File-scoped namespace headers derived from a package-relative source path.
 pub mod namespace;
 pub mod tuple_binding_admission;
