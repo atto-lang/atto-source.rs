@@ -73,6 +73,8 @@ export class ChannelIntHostV1 {
   // Abort is optional for owner-controlled cancellation and is never a guest
   // capability token. Quotas bound all outstanding writer registrations.
   send_async(handle, value, {signal}={}) {
+    // Cancellation observed before the linearization point admits nothing.
+    if (signal?.aborted) return Promise.resolve(err('Cancelled'));
     const immediate=this.send(handle,value);
     if (immediate.ok || immediate.error.kind!=='Full')
       return Promise.resolve(immediate);
