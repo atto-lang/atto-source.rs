@@ -55,9 +55,33 @@ fn canonical_factories_preserve_typed_aggregate_nodes_and_source_order() {
 }
 
 #[test]
+fn array_and_list_of_keep_distinct_inferred_types() {
+    let p = parsed(r#"
+        pub fnc main(): int {
+          val a = Array.of(1, 2, 3);
+          val l = List.of("Atto", "Lima");
+          return 0;
+        }
+    "#);
+    let t = collection_types::analyze(&p).expect("distinct factory type inference");
+    assert_eq!(t[0].value.ty, LiteralType::Array(Box::new(LiteralType::Int)));
+    assert_eq!(t[1].value.ty, LiteralType::List(Box::new(LiteralType::String)));
+}
+
+#[test]
 fn array_list_and_map_guest_execution_do_not_acquire_a_host_fallback() {
     rejected(r#"pub fnc main(): int { val m = Map.of("a",1); return 0; }"#,
         "E_UNSUPPORTED");
+    rejected(r#"pub fnc main(): int { val a = Array.of(1,2,3); return 0; }"#,
+        "E_UNSUPPORTED");
+    rejected(r#"pub fnc main(): int { val l = List.of("a","b"); return 0; }"#,
+        "E_UNSUPPORTED");
+    rejected(r#"pub fnc main(): int { val x = Array.of(); return 0; }"#,
+        "E_TYPE_INFERENCE");
+    rejected(r#"pub fnc main(): int { val x = List.of(); return 0; }"#,
+        "E_TYPE_INFERENCE");
+    rejected(r#"pub fnc main(): int { val x = Array.of(1,"two"); return 0; }"#,
+        "E_TYPE_INFERENCE");
 }
 
 #[test]
