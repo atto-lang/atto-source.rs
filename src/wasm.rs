@@ -85,10 +85,12 @@ fn vt(t: Type) -> Option<u8> {
         Type::Void => None,
         Type::Float => Some(F64),
         Type::Str => Some(I64),
-        Type::FutureInt | Type::ChannelInt | Type::IoError |
-        Type::FutureReadInt | Type::ResultOptionIntIoError |
-        Type::ResultChannelIntIoError | Type::ResultVoidIoError => Some(I32),
-        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
+        Type::FutureInt | Type::ChannelInt | Type::ChannelStr | Type::WritableStr |
+        Type::IoError | Type::FutureReadInt | Type::ResultOptionIntIoError |
+        Type::ResultOptionStrIoError | Type::ResultChannelIntIoError |
+        Type::ResultVoidIoError => Some(I32),
+        Type::Class(_) | Type::Enum(_) | Type::ActorRef(_) | Type::OptionInt |
+        Type::OptionStr | Type::ResultIntStr | Type::OptionResultIntStr => Some(I32),
         Type::GeneratorInt => Some(I64),
         Type::Named(_) | Type::NamedRef(_) | Type::Callable(_) => unreachable!("types are resolved or rejected by the checker"),
     }
@@ -1183,6 +1185,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::ChannelOpen => Sig(vec![I32, I32], vec![I32]),
             Import::ChannelSend => Sig(vec![I32, I64], vec![I32]),
             Import::ChannelClose | Import::ChannelRelease => Sig(vec![I32], vec![I32]),
+            Import::StdioRead => Sig(vec![I32, I32, I32, I32], vec![I32]),
+            Import::StdioWrite => Sig(vec![I32, I32, I32], vec![I32]),
         };
         name(&mut import_sec, "atto");
         name(&mut import_sec, imp.name());
@@ -1504,7 +1508,8 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     // Deliberately versioned and opt-in: the public guest.v2 contract
     // remains unchanged for programs without actual async imports.
     if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate |
-        Import::ChannelOpen | Import::ChannelSend | Import::ChannelClose | Import::ChannelRelease)) {
+        Import::ChannelOpen | Import::ChannelSend | Import::ChannelClose | Import::ChannelRelease |
+        Import::StdioRead | Import::StdioWrite)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.async");
         marker.push(2); // JSPI + mandatory cooperative yield; old v1 guests must fail closed
@@ -1515,6 +1520,12 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         let mut marker = Vec::new();
         name(&mut marker, "atto.channel_int");
         marker.push(1);
+        section(&mut out, 0, marker);
+    }
+    if p.imports.iter().any(|i| matches!(i, Import::StdioRead | Import::StdioWrite)) {
+        let mut marker = Vec::new();
+        name(&mut marker, "atto.stdio_text");
+        marker.push(1); // authenticated, checked UTF-8 guest I/O
         section(&mut out, 0, marker);
     }
     out
