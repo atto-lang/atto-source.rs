@@ -3031,7 +3031,7 @@ impl Parser {
     }
 
     /// Map.of supports either Entry-arrow or alternating key/value arguments.
-    /// Guest Map allocation remains explicitly unsupported until implemented.
+    /// General-purpose runtime Map allocation and hashing are still restricted.
     fn parse_map_of_args(&mut self) -> R<Vec<(Expr, Expr)>> {
         self.expect(Tok::LParen, "'(' after Map.of")?;
         let mut entries: Vec<(Expr, Expr)> = Vec::new();
@@ -3070,6 +3070,56 @@ impl Parser {
             }
         }
         Ok(entries)
+    }
+
+    /// Map.of_entries<K,V>(k => v, ...) only accepts Entry syntax, never
+    /// alternating flat Map.of(k,v,...) or an implicit Pair. The explicit
+    /// scalar K/V witness is retained in the compiler-owned call identity.
+    /// No runtime Entry object is fabricated merely for this constructor.
+    fn parse_map_of_entries_args(&mut self) -> R<Vec<(Expr, Expr)>> {
+        self.expect(Tok::LParen, "'(' after Map.of_entries<K,V>")?;
+        let mut pairs = Vec::new();
+        if self.eat(&Tok::RParen) { return Ok(pairs); }
+        loop {
+            if pairs.len() >= MAX_PARAMS / 2 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "Map.of_entries entry count exceeds source budget"));
+            }
+            let left = self.parse_expr()?;
+            let (key, value) = if self.eat(&Tok::FatArrow) {
+                let value = self.parse_expr()?;
+                (left, value)
+            } else {
+                match left {
+                    Expr {kind: ExprKind::Call(factory, args), pos}
+                        if factory == "@builtin/Entry.of" && args.len() == 2 => {
+                            let mut args = args.into_iter();
+                            (args.next().expect("checked Entry arity"), args.next().expect("checked Entry arity"))
+                        }
+                    Expr {kind: ExprKind::Call(factory, _), pos} if factory == "@builtin/Pair.of" => {
+                        return Err(Diagnostic::new(pos, "E_TYPE",
+                            "Map.of_entries accepts Entry<K,V>, not Pair<K,V>"));
+                    }
+                    other => return Err(Diagnostic::new(other.pos, "E_FACTORY_ARITY",
+                        "Map.of_entries expects key => value or Entry.of(key,value)")),
+                }
+            };
+            if let Some(key_id) = constant_map_key(&key) {
+                if pairs.iter().any(|(earlier, _)| constant_map_key(earlier).as_deref() ==
+                    Some(key_id.as_str())) {
+                    return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
+                        "duplicate Map.of_entries constant key"));
+                }
+            }
+            pairs.push((key,value));
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RParen) { break; }
+            } else {
+                self.expect(Tok::RParen, "')' after Map.of_entries elements")?;
+                break;
+            }
+        }
+        Ok(pairs)
     }
 
     fn parse_postfix(&mut self) -> R<Expr> {
@@ -3153,7 +3203,44 @@ impl Parser {
                     self.advance();
                     self.grow(1)?;
                     *chain += 1;
-                    if *self.peek() == Tok::LParen {
+                    if member == "of_entries"
+                        && matches!(&e.kind, ExprKind::Var(base) if base == "Map")
+                    {
+                        // Unlike Map.of, this factory REQUIRES an explicit
+                        // typed Entry<K,V> witness at the call site.
+                        self.expect(Tok::Lt, "'<' after Map.of_entries")?;
+                        let key_pos = self.pos();
+                        let key_type = self.parse_type()?;
+                        self.expect(Tok::Comma, "',' between Map.of_entries key and value types")?;
+                        let value_pos = self.pos();
+                        let value_type = self.parse_type()?;
+                        self.expect(Tok::Gt, "'>' after Map.of_entries types")?;
+                        let key = match key_type {
+                            Type::Int => "int",
+                            Type::Bool => "bool",
+                            Type::Str => "string",
+                            _ => return Err(Diagnostic::new(key_pos, "E_MAP_KEY",
+                                "Map.of_entries keys require int, bool or string type")),
+                        };
+                        let value = match value_type {
+                            Type::Int => "int",
+                            Type::Bool => "bool",
+                            Type::Str => "string",
+                            Type::Float => "float",
+                            _ => return Err(Diagnostic::new(value_pos, "E_UNSUPPORTED_TYPE",
+                                "bounded Map.of_entries values require scalar int, bool, string or float type")),
+                        };
+                        let entries = self.parse_map_of_entries_args()?;
+                        let mut args = Vec::with_capacity(entries.len().saturating_mul(2));
+                        for (k,v) in entries { args.push(k); args.push(v); }
+                        if !self.factories_seen.contains(&"Map") {
+                            self.factories_seen.push("Map");
+                        }
+                        e = Expr {
+                            kind: ExprKind::Call(format!("@builtin/Map.of_entries<{key},{value}>"), args),
+                            pos: dot,
+                        };
+                    } else if *self.peek() == Tok::LParen {
                         let builtin = match &e.kind {
                             ExprKind::Var(base) if member == "of"
                                 && matches!(base.as_str(), "Record" | "Tuple" | "Map" | "Array" | "List" | "Pair" | "Entry") =>
