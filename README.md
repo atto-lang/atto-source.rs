@@ -18,7 +18,7 @@ Proposed exact-head validation commands:
 - ATTOC=target/release/attoc node tests/list-pattern-guest-execution.mjs
 - cargo clippy --locked --all-targets -- -D warnings
 
-Four guest fixtures require actual Wasm execution with exit values 60, 0, 30, and 7; one additional guest must trap on checked i64 overflow (panic_code=1). Seven rejected sources must produce no artifact. The Node suite also verifies imports=0 and an actual contiguous list header/cell payload in guest memory. **Tests are authored, but were NOT EXECUTED or verified on the exact current branch head at documentation time.** Source Actions and checked alternate carriers previously had zero-step runner failures; no PASS can be inferred. Only source-compiled, independently executed guests justify enabling the profile in release builds.
+Four guest fixtures require actual Wasm execution with exit values 60, 0, 30, and 7; one additional guest must trap on checked i64 overflow (panic_code=1). Seven rejected sources must create no **new** artifact at an absent output path. The CLI preserves an existing caller-owned output file unchanged on a failed compilation, so the harness separately asserts that preservation rather than incorrectly demanding deletion. The Node suite also verifies imports=0 and an actual contiguous list header/cell payload in guest memory. **Tests are authored, but were NOT EXECUTED or verified on the exact current branch head at documentation time.** Source Actions and checked alternate carriers previously had zero-step runner failures; no PASS can be inferred. Only source-compiled, independently executed guests justify enabling the profile in release builds.
 
 ## Experimental source-compiled scalar collection guest (draft PR #320)
 
