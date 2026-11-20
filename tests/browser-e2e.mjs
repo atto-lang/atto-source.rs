@@ -212,6 +212,8 @@ try{
     '220-v2-checked-actor-channel-actor-rpipe.atto',
     '221-v2-checked-setup-rollback.atto',
     '222-v2-checked-setup-output-occupied.atto',
+    '222-v2-checked-output-occupied-rollback.atto',
+    '223-v2-checked-input-occupied-rollback.atto',
   ]) {
     const guest = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const observed = await run(guest, 'main() -> 42');
