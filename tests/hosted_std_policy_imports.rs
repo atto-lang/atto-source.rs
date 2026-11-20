@@ -85,3 +85,37 @@ pub fnc main(): int { return other.http_status_valid(200); }"#;
     let err: Diagnostic = compile(source).expect_err("browser must have no file read");
     assert_eq!(err.code, "E_IMPORT");
 }
+
+
+#[test]
+fn local_file_with_same_virtual_path_cannot_alias_sealed_std_package() {
+    let source = r#"
+import * as http from pkg "std.http";
+import * as local from "./stdlib/std/http_response_policy.atto";
+pub fnc main(): int {
+    if http.http_status_valid(200) == false then return 1; fi
+    return local.answer();
+}"#;
+    let mut read_count = 0usize;
+    let wasm = compile_with_imports(source, Path::new("main.atto"), |path| {
+        assert_eq!(path, Path::new("stdlib/std/http_response_policy.atto"));
+        read_count += 1;
+        Ok("pub fnc answer(): int { return 42; }".to_owned())
+    }).expect("local import and sealed std must be distinct source identities");
+    assert_eq!(read_count, 1);
+    assert!(wasm.starts_with(b"\0asm"));
+}
+
+#[test]
+fn same_sealed_package_bound_to_two_aliases_reuses_one_source_without_collisions() {
+    let source = r#"
+import * as a from pkg "std.http";
+import * as b from pkg "std.http";
+pub fnc main(): int {
+    if a.http_status_valid(200) == false then return 1; fi
+    if b.http_status_valid(600) then return 2; fi
+    return 42;
+}"#;
+    let wasm = compile(source).expect("repeated sealed import should de-duplicate identical unit");
+    assert!(wasm.starts_with(b"\0asm"));
+}
