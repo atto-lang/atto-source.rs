@@ -25,6 +25,8 @@ pub enum LiteralType {
     /// Preserved concrete field-name -> field-type structure.
     Record(Vec<(String, LiteralType)>),
     Map(Box<LiteralType>, Box<LiteralType>),
+    /// Immutable nominal key/value Entry, distinct from a two-tuple or Record.
+    Entry(Box<LiteralType>, Box<LiteralType>),
     List(Box<LiteralType>),
     Array(Box<LiteralType>),
     /// Unparameterized Tuple accepts any arity; not the same as ().
@@ -121,6 +123,8 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
                 ("List", [item]) => LiteralType::List(Box::new(item.clone())),
                 ("Map", [key, value]) =>
                     LiteralType::Map(Box::new(key.clone()), Box::new(value.clone())),
+                ("Entry", [key, value]) =>
+                    LiteralType::Entry(Box::new(key.clone()), Box::new(value.clone())),
                 ("Tuple", values) if !values.is_empty() => LiteralType::Tuple(values.to_vec()),
                 _ => return Err(diag(pos, "E_TYPE_ARITY",
                     format!("unsupported collection constructor/arity in '{name}'"))),
@@ -158,7 +162,8 @@ fn compatible(actual: &LiteralType, expected: &LiteralType) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|((na,ta),(nb,tb))|
                 na == nb && compatible(ta,tb)),
         (Array(a), Array(b)) | (List(a), List(b)) => compatible(a,b),
-        (Map(ka, va), Map(kb, vb)) => compatible(ka,kb) && compatible(va,vb),
+        (Map(ka, va), Map(kb, vb)) | (Entry(ka, va), Entry(kb, vb)) =>
+            compatible(ka,kb) && compatible(va,vb),
         (Tuple(_), AnyTuple) => true,
         (Tuple(a), Tuple(b)) =>
             a.len() == b.len() && a.iter().zip(b).all(|(x,y)| compatible(x,y)),
@@ -177,6 +182,8 @@ fn common(a: LiteralType, b: LiteralType, at: Pos) -> Result<LiteralType, Diagno
         (List(a), List(b)) => Ok(List(Box::new(common(*a, *b, at)?))),
         (Array(a), Array(b)) => Ok(Array(Box::new(common(*a, *b, at)?))),
         (Map(ka,va), Map(kb,vb)) => Ok(Map(
+            Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
+        (Entry(ka,va), Entry(kb,vb)) => Ok(Entry(
             Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
         (Tuple(a), Tuple(b)) if a.len() == b.len() =>
             Ok(Tuple(a.into_iter().zip(b).map(|(x,y)| common(x,y,at))
@@ -213,6 +220,40 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
+        ExprKind::Call(name, args) if name == "@builtin/Entry.of" && args.len() == 2 => {
+            let (wanted_k, wanted_v) = match expected {
+                Some(Entry(k,v)) => (k.as_ref().clone(), v.as_ref().clone()),
+                None => (Bottom, Bottom),
+                _ => return Err(diag(e.pos, "E_TYPE",
+                    "nominal Entry expression requires Entry<K,V> context")),
+            };
+            let key = inferred(&args[0],
+                if wanted_k == Bottom { None } else { Some(&wanted_k) }, depth + 1)?;
+            let val = inferred(&args[1],
+                if wanted_v == Bottom { None } else { Some(&wanted_v) }, depth + 1)?;
+            let key_ty = if wanted_k == Bottom { key.ty.clone() } else { wanted_k };
+            let val_ty = if wanted_v == Bottom { val.ty.clone() } else { wanted_v };
+            if key_ty == Bottom || val_ty == Bottom {
+                return Err(diag(e.pos, "E_INFER",
+                    "Entry<K,V> requires concrete key and value types"));
+            }
+            children.push(key);
+            children.push(val);
+            Entry(Box::new(key_ty), Box::new(val_ty))
+        }
+        ExprKind::Call(name, args) if name.starts_with("@builtin/Entry.ascribe<")
+            && name.ends_with('>') && args.len() == 1 =>
+        {
+            let target_name = &name["@builtin/Entry.ascribe<".len()..name.len()-1];
+            let target = canonical_type(target_name,e.pos,depth + 1)?;
+            if !matches!(target, Entry(_, _)) {
+                return Err(diag(e.pos, "E_TYPE",
+                    "Entry type ascription must use nominal Entry<K,V>"));
+            }
+            let payload = inferred(&args[0],Some(&target),depth + 1)?;
+            children.push(payload);
+            target
+        }
         ExprKind::Unary(UnOp::Neg, v) if matches!(&v.kind, ExprKind::Int(_)) => {
             // The exact signed-minimum literal is represented as i64::MAX+1.
             if let ExprKind::Int(Some(n)) = &v.kind {
@@ -336,6 +377,8 @@ pub fn static_record_field_type(
 fn starts_literal(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
         ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
+        || matches!(&e.kind, ExprKind::Call(name,_) if name == "@builtin/Entry.of"
+            || name.starts_with("@builtin/Entry.ascribe<"))
 }
 
 /// Staged semantic preflight: checked declarations are *not* yet executable.
@@ -349,7 +392,8 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
                 let wanted = ty.map(|t| annotation(t,program,*pos)).transpose()?.flatten();
                 if wanted.as_ref().is_some_and(|t| matches!(t, LiteralType::Array(_) |
                     LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::OpenRecord |
-                    LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
+                    LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple |
+                    LiteralType::Entry(_,_)))
                     || starts_literal(init)
                 {
                     let value = inferred(init,wanted.as_ref(),0)?;
