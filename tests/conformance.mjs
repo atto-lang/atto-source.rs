@@ -663,7 +663,7 @@ check('pipe/inline-arrow-bodies-with-reverse-and-forward-real-guest', () => {
     'fnc twice(int x): int -> x * 2;',
     'fnc next(int x): int -> x + 1;',
     'pub fnc main(): int -> twice <| (20 |> next);',
-  ].join('\\n'));
+  ].join('\n'));
   assert.equal(grouped.ok, true, grouped.message);
   assert.equal(runGuest(grouped.wasm).value, 42n);
 });
