@@ -295,3 +295,33 @@ fn statement_only_actor_pipe_example_still_checks_declared_output_roles() {
     let diagnostic = compile(&source).expect_err("cannot pipe a receives-only producer");
     assert_eq!(diagnostic.code, "E_TYPE");
 }
+
+#[test]
+fn named_actor_channel_and_stream_edges_typecheck_in_both_directions_before_runtime_gate() {
+    for graph in [
+        "producer pipe Channel<int>.bounded(1) pipe consumer",
+        "consumer rpipe Channel<int>.bounded(1) rpipe producer",
+        "producer pipe Stream.buffered<int>(2) pipe consumer",
+        "consumer rpipe Stream.buffered<int>(2) rpipe producer",
+        "producer pipe Stream.port<int>(1).sink()",
+        "Stream.port<int>(1).sink() rpipe producer",
+    ] {
+        let source = named_actor_program(&format!("val link = {graph};"), true);
+        let diagnostic = compile(&source).expect_err("bounded runtime ABI is not implemented");
+        assert_eq!(diagnostic.code, "E_UNSUPPORTED", "{graph}: {diagnostic}");
+    }
+}
+
+#[test]
+fn named_actor_pipe_ports_reject_wrong_types_and_read_only_sinks() {
+    for graph in [
+        "producer pipe Channel<bool>.bounded(1) pipe consumer",
+        "consumer rpipe Channel<bool>.bounded(1) rpipe producer",
+        "producer pipe Stream.port<int>(1).stream()",
+        "Stream.port<int>(1).stream() rpipe producer",
+    ] {
+        let source = named_actor_program(&format!("val link = {graph};"), true);
+        let diagnostic = compile(&source).expect_err("bad type or port direction");
+        assert_eq!(diagnostic.code, "E_TYPE", "{graph}: {diagnostic}");
+    }
+}
