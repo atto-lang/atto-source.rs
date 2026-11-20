@@ -1,0 +1,13 @@
+// Confirm contextual caret return and expression-position integer XOR coexist.
+// expect-exit: 2
+// java: rejects
+fnc classify(int value): int {
+  ^ match value over
+    on 0 -> 0,
+    on n when n > 1 -> n ^ 5,
+    on _ -> -1,
+  end
+}
+pub fnc main(): int {
+  return classify(7);
+}
