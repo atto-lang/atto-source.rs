@@ -539,35 +539,53 @@ impl Emit<'_> {
         self.get(result); self.i32c(1); self.store_i32(0);
         self.get(result); self.get(outcome); self.load_i32(4); self.store_i32(8);
         self.op(0x05);
-        // None remains distinct from Some(""); do not copy or allocate
-        // string data for clean EOF.
-        self.get(option);
-        self.get(outcome); self.load_i32(0); self.op(0x45);
-        self.store_i32(0);
-        self.get(outcome); self.load_i32(0); self.op(0x45);
+        // The host's Some/None tags are already validated by the trusted
+        // JSPI bridge. Keep EOF as None, even when a successful record
+        // contains zero bytes: Some("") must retain tag=1.
+        self.get(outcome); self.load_i32(0); self.op(0x45); // tag == Some
         self.open(0x04, 0x40, Frame::Other);
-        // Allocate only the used bytes, rounded up for subsequent ADT and
-        // 64-bit field alignment. Host already bounded length to 64 KiB.
+        // Save the rounded length in the otherwise unused status local.
+        // The heap is bounded below the exclusive last-page scratch region.
         self.get(outcome); self.load_i32(8);
         self.i32c(7); self.op(0x6A); // len + 7
         self.i32c(-8); self.op(0x71); // & !7
-        self.call(alloc); self.set(bytes);
+        self.set(status);
+        // Avoid trapping while still owning the scratch lease when the
+        // object heap is full. Report a typed Quota error and always release
+        // the lease; a permanently busy stdin port is not an acceptable
+        // consequence of exhausting the guest's owned-memory budget.
+        self.get(status);
+        self.i32c(STDIO_SCRATCH_START as i32);
+        self.global_get(1); // heap pointer
+        self.op(0x6B); // exclusive heap limit - current heap pointer
+        self.op(0x4B); // required bytes >u remaining
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(result); self.i32c(1); self.store_i32(0); // Err
+        self.get(result); self.i32c(2); self.store_i32(8); // IoError.Quota
+        self.op(0x05);
+        self.get(status); self.call(alloc); self.set(bytes);
         // memory.copy owned_ptr, shared_scratch_ptr, exact_byte_length.
         self.get(bytes);
         self.i32c(STDIO_SCRATCH_START as i32);
         self.get(outcome); self.load_i32(8);
         self.op(0xFC); uleb(&mut self.code, 10); // memory.copy
         uleb(&mut self.code, 0); uleb(&mut self.code, 0);
+        self.get(option); self.i32c(1); self.store_i32(0); // Some
         self.get(option);
         self.get(bytes); self.op(0xAD); // i64.extend_i32_u
         self.i64c(32); self.op(0x86); // i64.shl
         self.get(outcome); self.load_i32(8); self.op(0xAD);
         self.op(0x84); // i64.or, packed owned UTF-8 pointer/length
         self.store_i64(8);
-        self.close();
-        self.get(result); self.i32c(0); self.store_i32(0);
+        self.get(result); self.i32c(0); self.store_i32(0); // Ok
         self.get(result); self.get(option); self.store_i32(8);
-        self.close(); // checked guest result
+        self.close(); // enough heap memory for immutable string
+        self.op(0x05);
+        self.get(option); self.i32c(0); self.store_i32(0); // None, no byte allocation
+        self.get(result); self.i32c(0); self.store_i32(0); // Ok
+        self.get(result); self.get(option); self.store_i32(8);
+        self.close(); // Some/None
+        self.close(); // checked guest Result / host status branch
         self.close(); // host status
         self.i32c(0); self.global_set(lease);
         self.close(); // scratch was already held by another read or released
