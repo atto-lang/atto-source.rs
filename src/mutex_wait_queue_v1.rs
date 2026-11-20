@@ -577,6 +577,13 @@ impl TaskScopeLockCoordinator {
         let (tasks, locks) = (&mut self.tasks, &mut self.locks);
         let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
         if task.guest_exited { return Err(Error::AlreadyClaimed); }
+        // A task physically suspended on a lock cannot have independently
+        // completed successful guest execution. The trusted runtime must
+        // first cancel it, or deliver/claim its wake and resume it. Treat
+        // any other claimed success as an inconsistent scheduler receipt.
+        if task.parked_lock.is_some() && !task.cancel_requested {
+            return Err(Error::NotQuiescent);
+        }
         // This safe-point transition wins the modeled success/cancel race.
         // A real runtime must derive the winner from an atomic scheduler
         // terminal claim, not from a guest-writable or callback-owned flag.
