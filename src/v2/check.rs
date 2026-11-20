@@ -2174,6 +2174,20 @@ impl<'a> Checker<'a> {
                 _ => Err(type_err(pos, format!("a channel has close(), send(v) and receive(), not '{name}'"))),
             },
             Ty::Actor(i) => {
+                // Experimental single-tenant guest lifetime controls. A real
+                // ActorRef needs separate lifecycle capabilities and an
+                // acknowledged Result<T,E> send contract.
+                if name == "stop" {
+                    self.plain_args(name, args, 0, pos)?;
+                    let call = self.rt("__actor_stop", vec![recv]);
+                    self.c().pre.push(IrStmt::Expr(call));
+                    return Ok((Ir::Const(0), Ty::Void, false));
+                }
+                if name == "get_done" {
+                    self.plain_args(name, args, 0, pos)?;
+                    return Ok((self.rt("__actor_done", vec![recv]),
+                        Ty::Future(Box::new(Ty::Void)), false));
+                }
                 if name == "send" {
                     let mail = self.objs[*i].mail.clone();
                     if mail == Ty::Void {
@@ -2185,7 +2199,7 @@ impl<'a> Checker<'a> {
                     self.c().pre.push(IrStmt::Expr(call));
                     return Ok((Ir::Const(0), Ty::Void, false));
                 }
-                Err(err(pos, "E_ACTOR", "an actor reference only accepts send(value); actor methods are private"))
+                Err(err(pos, "E_ACTOR", "an actor reference only accepts send(value), stop() and get_done(); actor methods are private"))
             }
             Ty::Object(i) => match self.objs[*i].methods.iter().find(|(n, _)| n == name) {
                 Some(&(_, id)) => self.invoke(name, id, Some(recv), args, pos, awaited),
