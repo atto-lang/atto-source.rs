@@ -50,7 +50,7 @@ if [[ -n "$(git clean -ndx)" ]]; then
 fi
 # Git-tree object identity does not attest to unmaterialized gitlink contents.
 # This narrow proof path does not fetch/validate submodule repositories.
-if git ls-tree -r HEAD | grep -qE '^160000 commit '; then
+if git ls-tree -r HEAD | grep -E '^160000 commit ' >/dev/null; then
   echo 'SOURCE_SUBMODULE_UNVERIFIED: gitlinks require a separate pinned proof' >&2
   exit 2
 fi
