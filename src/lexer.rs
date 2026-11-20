@@ -178,10 +178,48 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 });
                 continue;
             }
+            // Canonical ByteBuffer fixtures use hexadecimal constants. Treat
+            // them as the SAME signed i64 literal type as decimal/binary; do
+            // not reinterpret high bits as a native unsigned host pointer.
+            // Underscores may only separate actual digits.
+            if digits == "0" && chars.get(i).is_some_and(|c| *c == 'x' || *c == 'X') {
+                bump!(); // consume x/X
+                let mut hex = String::new();
+                let mut previous_digit = false;
+                while i < chars.len() &&
+                    (chars[i].is_ascii_hexdigit() || chars[i] == '_') {
+                    if chars[i] == '_' {
+                        if !previous_digit ||
+                            !chars.get(i + 1).is_some_and(|c| c.is_ascii_hexdigit()) {
+                            return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL",
+                                "hexadecimal underscores must separate digits"));
+                        }
+                        previous_digit = false;
+                    } else {
+                        hex.push(chars[i]);
+                        previous_digit = true;
+                    }
+                    bump!();
+                }
+                if hex.is_empty() || i < chars.len() &&
+                    (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    return Err(Diagnostic::new(pos, "E_INTEGER_LITERAL",
+                        "malformed hexadecimal integer literal"));
+                }
+                let value = u64::from_str_radix(&hex, 16).ok()
+                    .filter(|v| *v <= (1_u64 << 63))
+                    .ok_or_else(|| Diagnostic::new(pos, "E_INTEGER_RANGE",
+                        "hexadecimal literal exceeds signed 64-bit int"))?;
+                out.push(Token {
+                    tok: Tok::Int(if value == (1_u64 << 63) { None } else { Some(value) }),
+                    pos,
+                });
+                continue;
+            }
             if i < chars.len() && matches!(chars[i], 'x' | 'X' | 'b' | 'B' | 'o' | 'O') && digits == "0" {
                 return Err(Diagnostic::new(
                     pos, "E_INTEGER_LITERAL",
-                    "only decimal and binary integer literals are supported",
+                    "only decimal, hexadecimal and binary integer literals are supported",
                 ));
             }
             // Float literals follow the Java lexer exactly: digits '.' digits,
