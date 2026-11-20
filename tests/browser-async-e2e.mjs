@@ -17,6 +17,8 @@ const files=new Map([
   ['/runtime/browser/channel_int_guest_v1.mjs',[new URL('../runtime/browser/channel_int_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/stdio-text-host-probe.mjs',[new URL('./browser-async/stdio-text-host-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/stdio-text-source-guest-probe.mjs',[new URL('./browser-async/stdio-text-source-guest-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/stdio_text_guest_v1.mjs',[new URL('../runtime/browser/stdio_text_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/stdio_text_host_v1.mjs',[new URL('../runtime/browser/stdio_text_host_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
@@ -121,6 +123,27 @@ try{
     explicitReadchSome:43,directionalSome:44,
     sourceLifecycleSome:45,sourceLifecycleYields:1,sourceLifecycleReleased:true});
   console.log('PASS compiled Atto source: checked Channel<int>.bounded -> try_send -> readch -> close -> release');
+  // Compile the canonical checked echo with the actual wasm32 Rust compiler
+  // and run that source-generated guest in a real Chromium JSPI Worker. This
+  // does NOT use the legacy scalar stdio.print host import.
+  const textEcho=await evaluate("new Promise((resolve,reject)=>{"+
+    "const w=new Worker('/stdio-text-source-guest-probe.mjs',{type:'module'});"+
+    "const t=setTimeout(()=>{w.terminate();reject(Error('checked stdin echo guest timeout'))},15000);"+
+    "w.onmessage=e=>{clearTimeout(t);w.terminate();resolve(e.data)};"+
+    "w.onerror=e=>{clearTimeout(t);w.terminate();reject(Error('checked stdin echo Worker error'))};"+
+    "w.postMessage({});})");
+  assert.equal(textEcho.ok,true,textEcho.error||'source-compiled stdio guest');
+  assert.equal(textEcho.compiledAtto,true);
+  assert.equal(textEcho.checkedStdio,true);
+  assert.equal(textEcho.directReadchAbiEquivalent,true);
+  assert.deepEqual(textEcho.cases.map(x=>[x.label,x.exit]),[
+    ['LF echo',0],['CRLF + NUL',0],['empty record',0],
+    ['unterminated final',0],['clean EOF',11],['bad UTF-8',14],
+    ['stdin denied',14],['stdout denied',10],['stderr denied',13],
+  ]);
+  assert.ok(textEcho.cases.every(x=>x.cooperates>0));
+  console.log('PASS source-compiled checked UTF-8 stdin echo: LF/CRLF/NUL, EOF, typed errors and per-port permissions');
+
 
 
 
