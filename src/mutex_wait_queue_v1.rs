@@ -2215,4 +2215,68 @@ mod tests {
         scope.certify_physical_retirement(c(1)).unwrap();
     }
 
+
+    #[test]
+    fn park_rejects_unclaimed_other_mutex_grant_without_losing_it() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        scope.register(c(2), None).unwrap();
+        let held = owned(scope.acquire(c(1), 1).unwrap());
+        scope.enter(c(1), 1, held).unwrap();
+
+        // B has an unclaimed grant to lock 2, while waiting on lock 1.
+        // It cannot physically park and strand the reservation to lock 2.
+        let reserved = owned(scope.acquire(c(2), 2).unwrap());
+        let waiting = pending(scope.acquire(c(2), 1).unwrap());
+        assert_eq!(scope.park_lock_wait(c(2), 1, waiting), Err(Error::UnclaimedGrant));
+        assert!(scope.locks[&2].has_outstanding_grant());
+        assert!(!scope.locks[&2].has_active_lease());
+        scope.enter(c(2), 2, reserved).unwrap();
+        assert_eq!(scope.park_lock_wait(c(2), 1, waiting), Err(Error::GuardSuspend));
+        scope.guard_scope_exit(c(2), 2).unwrap();
+        scope.park_lock_wait(c(2), 1, waiting).unwrap();
+
+        scope.cancel_tree(c(2)).unwrap();
+        assert_eq!(scope.admit_parked_wakes_to_ready(), Ok(1));
+        assert_eq!(scope.pop_ready(), Some(c(2)));
+        assert!(scope.guest_exited_at_safe_point(c(2)).unwrap().is_empty());
+        scope.notification_drain_ack(c(2)).unwrap();
+        scope.certify_physical_retirement(c(2)).unwrap();
+        assert_eq!(scope.guest_exited_at_safe_point(c(1)).unwrap(), vec![1]);
+        scope.notification_drain_ack(c(1)).unwrap();
+        scope.certify_physical_retirement(c(1)).unwrap();
+    }
+
+    #[test]
+    fn park_rejects_ambiguous_multiple_lock_waiters_without_forging_wake() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        scope.register(c(2), None).unwrap();
+        scope.register(c(3), None).unwrap();
+        let a = owned(scope.acquire(c(1), 1).unwrap());
+        scope.enter(c(1), 1, a).unwrap();
+        let b = owned(scope.acquire(c(3), 2).unwrap());
+        scope.enter(c(3), 2, b).unwrap();
+        let ticket_one = pending(scope.acquire(c(2), 1).unwrap());
+        let _ticket_two = pending(scope.acquire(c(2), 2).unwrap());
+
+        // Without an explicit typed select/race, one parked continuation
+        // cannot have two pending independent lock grants.
+        assert_eq!(scope.park_lock_wait(c(2), 1, ticket_one), Err(Error::NotQuiescent));
+        assert!(scope.tasks[&2].parked_lock.is_none());
+        assert!(scope.ready.is_empty());
+        scope.cancel_tree(c(2)).unwrap();
+        assert!(scope.tasks[&2].waiting.is_empty());
+        assert!(!scope.tasks[&2].lock_wait_cancel_wake);
+        assert!(scope.guest_exited_at_safe_point(c(2)).unwrap().is_empty());
+        scope.notification_drain_ack(c(2)).unwrap();
+        scope.certify_physical_retirement(c(2)).unwrap();
+        assert_eq!(scope.guest_exited_at_safe_point(c(1)).unwrap(), vec![1]);
+        assert_eq!(scope.guest_exited_at_safe_point(c(3)).unwrap(), vec![2]);
+        for id in [1_u64, 3] {
+            scope.notification_drain_ack(c(id)).unwrap();
+            scope.certify_physical_retirement(c(id)).unwrap();
+        }
+    }
+
 }
