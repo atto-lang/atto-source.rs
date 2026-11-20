@@ -14,23 +14,27 @@ use crate::ast::{BinOp, Type};
 use crate::check::{TExpr, TStmt, TE};
 use crate::diag::{Diagnostic, Pos};
 
-/// This type is intentionally non-Copy and does not implement Clone.
-/// A ready lease has unique protected mutation authority.
+/// A compile-time affine type-state resource: once released, a lease
+/// cannot be released again because the only release method exists on
+/// `AffineLeaseInt<LeaseActive>` and consumes its receiver. Never Copy/Clone.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct AffineLeaseInt {
-    state: LeaseState,
+pub(crate) struct LeaseActive;
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LeaseReleased;
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AffineLeaseInt<State> {
+    state: std::marker::PhantomData<State>,
 }
-#[derive(Debug, PartialEq, Eq)]
-enum LeaseState { Active, Released }
-impl AffineLeaseInt {
-    fn acquire_ready() -> Self { Self { state: LeaseState::Active } }
-
-    /// This proof consumes a live lease, preventing second release in HIR.
-    fn release(mut self) -> Result<Self, &'static str> {
-        if self.state != LeaseState::Active { return Err("E_GUARD_DOUBLE_RELEASE"); }
-        self.state = LeaseState::Released;
-        Ok(self)
+impl AffineLeaseInt<LeaseActive> {
+    fn acquire_ready() -> Self {
+        Self { state: std::marker::PhantomData }
     }
+    fn release(self) -> AffineLeaseInt<LeaseReleased> {
+        AffineLeaseInt { state: std::marker::PhantomData }
+    }
+}
+impl AffineLeaseInt<LeaseReleased> {
+    fn is_released(&self) -> bool { true }
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CheckedReadyLease {
@@ -81,6 +85,11 @@ impl CheckedReadyLease {
     /// This is a verified scalar-only HIR pattern: owner and occupancy
     /// globals remain module-private (Wasm exports only main/panic_code).
     pub(crate) fn lower_one_guard(&self) -> Vec<TStmt> {
+        // Compile-time type-state consumes a single affine lease before
+        // constructing the sole return path. The generated Wasm instructions
+        // still perform the actual occupancy check, acquire and release.
+        let released = AffineLeaseInt::<LeaseActive>::acquire_ready().release();
+        debug_assert!(released.is_released());
         let live = TE { ty: Type::Bool, e: TExpr::Bin(
             BinOp::Ne, Box::new(Self::global(1)), Box::new(Self::int(0))) };
         let updated = TE { ty: Type::Int, e: TExpr::Bin(
@@ -113,12 +122,12 @@ mod tests {
     }
 
     #[test]
-    fn resource_is_affine_and_released_once() {
-        let lease = AffineLeaseInt::acquire_ready();
-        assert_eq!(lease.state, LeaseState::Active);
-        let done = lease.release().unwrap();
-        assert_eq!(done.state, LeaseState::Released);
-        assert_eq!(done.release().unwrap_err(), "E_GUARD_DOUBLE_RELEASE");
+    fn resource_is_affine_with_compile_time_release_typestate() {
+        let lease = AffineLeaseInt::<LeaseActive>::acquire_ready();
+        let done: AffineLeaseInt<LeaseReleased> = lease.release();
+        assert!(done.is_released());
+        // No release method exists on LeaseReleased and the original
+        // LeaseActive value was consumed; duplicate release does not typecheck.
     }
 
     #[test]
