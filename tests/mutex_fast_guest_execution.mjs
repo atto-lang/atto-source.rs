@@ -66,6 +66,8 @@ function compile(id,expectError) {
 try {
   const one=compile('return-one');
   assert.deepEqual([one.exit,one.stdout],[1,'']);
+  const twice=compile('return-twice');
+  assert.deepEqual([twice.exit,twice.stdout],[2,'']);
   const forty=compile('return-forty');
   assert.deepEqual([forty.exit,forty.stdout],[40,'']);
   assert.notEqual(one.wasm_sha256,forty.wasm_sha256,
@@ -86,7 +88,7 @@ try {
 }
 const receipt={schema:'atto.mutex-fast-guest.v1',profile:'single_task_uncontended_only',
   compiler_source_head:sha,compiler_binary_sha256:binarySha,
-  cases:results,pass:results.length===8&&results.every(x=>x.status==='PASS'),
+  cases:results,pass:results.length===9&&results.every(x=>x.status==='PASS'),
   excluded:['contended_async','tenant_isolation','general_task_runtime','exceptional_guard_cleanup']};
 if(process.env.ATTO_RECEIPT_PATH){
   const {writeFileSync}=await import('node:fs');
