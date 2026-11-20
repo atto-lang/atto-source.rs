@@ -101,6 +101,10 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    if source.len() > SOURCE_CAP {
+        return Err(Diagnostic::new(Pos { line: 1, col: 1 },
+            "E_SOURCE_LIMIT", "import entry exceeds browser compiler source budget"));
+    }
     // Reject unlinked std.buffer before the relative-file loader can reject
     // its package syntax ambiguously; this must never ask for a host fallback.
     let source_tokens = lexer::lex(source)?;
