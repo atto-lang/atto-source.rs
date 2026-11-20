@@ -228,22 +228,6 @@ fn constant_map_key(value: &Expr) -> Option<String> {
     }
 }
 
-/// A top-level single bracket around a Map/Entry key denotes evaluation
-/// of that expression, not an Array/List allocation. Ordinary [x] still
-/// constructs a List/Array outside key-arrow context. Group ([x]) when an
-/// actual Array/List value is intended as a key (subject to Hash/Eq checks).
-fn computed_entry_key(key: Expr, begins_bracket: bool) -> R<Expr> {
-    if !begins_bracket {
-        return Ok(key);
-    }
-    let at = key.pos;
-    match key.kind {
-        ExprKind::Array(mut items) if items.len() == 1 => Ok(items.pop().unwrap()),
-        _ => Err(Diagnostic::new(at, "E_MAP_KEY",
-            "computed Map/Entry key uses exactly one [expression], not an Array/List")),
-    }
-}
-
 pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
 }
@@ -2626,7 +2610,6 @@ impl Parser {
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
-        let begins_bracket = *self.peek() == Tok::LBracket;
         let result = (|| {
             let left = self.parse_ternary()?;
             if *self.peek() == Tok::ColonColon {
@@ -2636,10 +2619,11 @@ impl Parser {
             if !self.eat(&Tok::FatArrow) {
                 return Ok(left);
             }
-            // Outside brace-map key position, => constructs one nominal Entry.
-            // A directly bracketed single expression is an explicit computed
-            // key, not a one-element List or Array.
-            let key = computed_entry_key(left, begins_bracket)?;
+            // Outside brace-map key position, => constructs a nominal Entry.
+            // Bracket literals ALWAYS retain Array/List meaning, including
+            // the case where the array/list is the Map/Entry key.
+            // The checked Hash/Eq gate rejects unsupported key collections.
+            let key = left;
             self.grow(1)?;
             let val = self.parse_ternary()?;
             self.height -= 1;
@@ -3271,13 +3255,12 @@ impl Parser {
                     self.expect(Tok::Colon, "':' after quoted Map key")?;
                     Expr { kind: ExprKind::Str(decoded), pos: key_pos }
                 } else {
-                    let begins_bracket = *self.peek() == Tok::LBracket;
                     let key = self.parse_ternary()?;
                     if !self.eat(&Tok::FatArrow) {
                         return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
                             "expected '=>' for expression Map key"));
                     }
-                    computed_entry_key(key, begins_bracket)?
+                    key
                 };
                 let value = self.parse_expr()?;
                 // Constant duplicate keys are definite mistakes. Dynamically
