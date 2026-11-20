@@ -1300,4 +1300,36 @@ mod tests {
         assert_eq!(kernel.terminal(queued).unwrap(), Some(TaskExitKind::Cancelled));
     }
 
+
+    #[test]
+    fn host_kernel_cross_lock_ticket_replay_is_denied() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let task = kernel.issue(None).unwrap();
+        let lock_a = kernel.add_mutex(2).unwrap();
+        let lock_b = kernel.add_mutex(2).unwrap();
+        let grant_a = owned(kernel.acquire(task, lock_a).unwrap());
+        let grant_b = owned(kernel.acquire(task, lock_b).unwrap());
+        assert_ne!(grant_a, grant_b, "each lock needs an independent grant epoch");
+
+        // An attacker who obtains one valid ticket must not claim another lock
+        // even when the logical task and per-lock sequence are identical.
+        assert_eq!(kernel.claim(task, lock_b, grant_a), Err(Error::StaleTicket));
+        assert_eq!(kernel.claim(task, lock_a, grant_b), Err(Error::StaleTicket));
+        kernel.claim(task, lock_a, grant_a).unwrap();
+        kernel.claim(task, lock_b, grant_b).unwrap();
+        assert_eq!(kernel.trusted_exit(task).unwrap(), vec![lock_b, lock_a]);
+        kernel.trusted_notifications_drained(task).unwrap();
+        kernel.try_retire(task).unwrap();
+    }
+
+    #[test]
+    fn task_scope_rejects_duplicate_generations_on_distinct_locks() {
+        let mut scope = TaskScopeLockCoordinator::new(d());
+        scope.add_lock(1, queue(2)).unwrap();
+        assert_eq!(scope.add_lock(2, queue(2)), Err(Error::StaleTicket));
+        assert_eq!(scope.locks.len(), 1);
+        scope.add_lock(2, WaitQueue::new(d(), 8, 2).unwrap()).unwrap();
+        assert_eq!(scope.locks.len(), 2);
+    }
+
 }
