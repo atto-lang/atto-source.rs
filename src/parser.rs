@@ -853,20 +853,18 @@ impl Parser {
         } else {
             None
         };
-        // An explicit "sends never" is a closed empty application effect.
-        // Preserve the distinction from "sends void", which is invalid.
-        // Type::Void is a private IR sentinel only in the sends header:
-        // ordinary type positions must not acquire a universal Never type.
+        // Never is a distinct application-DATA effect, NOT Type::Void.
+        // An omitted clause still means inferred effect, not Any.
         let sends = if self.eat_word("sends") {
             if self.eat_word("never") {
-                Some(Type::Void)
+                Some(ActorSendEffect::Never)
             } else {
                 let ty = self.parse_type()?;
                 if ty == Type::Void {
                     return Err(Diagnostic::new(self.pos(), "E_ACTOR_SEND_CONTRACT",
                         "sends void is invalid; use sends never for an empty application effect"));
                 }
-                Some(ty)
+                Some(ActorSendEffect::Payload(ty))
             }
         } else {
             None
