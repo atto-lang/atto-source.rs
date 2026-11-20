@@ -1147,6 +1147,27 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
             None => Type::Void,
         };
+        if let Some(declared) = a.receives {
+            let expected = res(declared)?;
+            if a.receive.is_none() {
+                return Err(Diagnostic::new(a.pos, "E_ACTOR_RECEIVES",
+                    format!("actor '{}' declares receives but has no receive handler", a.name)));
+            }
+            if expected != payload {
+                return Err(Diagnostic::new(a.pos, "E_ACTOR_RECEIVES",
+                    format!("actor '{}' declares receives {} but its ActorMail handler expects {}",
+                        a.name,
+                        tn_plain(expected, tn, &class_names, &p.enums, &actor_names),
+                        tn_plain(payload, tn, &class_names, &p.enums, &actor_names))));
+            }
+        }
+        if let Some(declared) = a.sends {
+            let output = res(declared)?;
+            if output == Type::Void {
+                return Err(Diagnostic::new(a.pos, "E_ACTOR_SEND_CONTRACT",
+                    "'sends void' is not an application payload contract"));
+            }
+        }
         actors.push(ActorInfo {
             name: a.name.clone(),
             fields,
@@ -1497,6 +1518,60 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         if f.is_generator || !pure_stmts(&funcs[idx].body, &pure_indices) {
             return Err(Diagnostic::new(f.pos, "E_PURE",
                 format!("pure fnc '{}' cannot perform I/O, use shared state, or call an impure function", f.name)));
+        }
+    }
+    // An explicit sends clause is an upper bound on ALL reachable actor
+    // application-send operations, including calls through actor methods and
+    // ordinary helpers. Inspect typed IR, not source-token string matching.
+    // There are no dynamic call targets in this browser subset; unknown
+    // indices fail closed instead of silently skipping an effect.
+    let send_graph: Vec<(Vec<Type>, Vec<u32>)> = funcs.iter().map(|f| {
+        let sends = std::cell::RefCell::new(Vec::<Type>::new());
+        let calls = std::cell::RefCell::new(Vec::<u32>::new());
+        let _ = any_in_stmts(&f.body, &|e| {
+            match &e.e {
+                TExpr::Send { value, .. } => sends.borrow_mut().push(value.ty),
+                TExpr::Call(target, _) => calls.borrow_mut().push(*target),
+                _ => {}
+            }
+            false
+        });
+        (sends.into_inner(), calls.into_inner())
+    }).collect();
+    for (ai, actor) in p.actors.iter().enumerate() {
+        let Some(contract) = actor.sends else { continue };
+        let allowed = res(contract)?;
+        let info = &g.actors[ai];
+        let mut pending = Vec::<u32>::new();
+        if let Some(entry) = info.receive_idx { pending.push(entry); }
+        pending.extend(info.methods.iter().map(|m| m.idx));
+        let mut visited = vec![false; funcs.len()];
+        while let Some(index) = pending.pop() {
+            let Some(used) = visited.get_mut(index as usize) else {
+                return Err(Diagnostic::new(actor.pos, "E_ACTOR_SEND_CONTRACT",
+                    "actor call graph contains an unresolved send-effect target"));
+            };
+            if *used { continue }
+            *used = true;
+            let (outbound, calls) = &send_graph[index as usize];
+            if outbound.iter().any(|ty| *ty != allowed) {
+                return Err(Diagnostic::new(actor.pos, "E_ACTOR_SEND_CONTRACT",
+                    format!("actor '{}' sends a payload outside its declared sends {} effect",
+                        actor.name, tn_plain(allowed, tn, &class_names, &p.enums, &actor_names))));
+            }
+            pending.extend(calls.iter().copied());
+        }
+        // Field initialization belongs to the actor's application effect as
+        // well, even when a later backend admits non-constant initializers.
+        for (_, init) in &tactors[ai].inits {
+            if any_in(init, &|e| match &e.e {
+                TExpr::Send { value, .. } => value.ty != allowed,
+                _ => false,
+            }) {
+                return Err(Diagnostic::new(actor.pos, "E_ACTOR_SEND_CONTRACT",
+                    format!("actor '{}' emits an invalid application payload during initialization",
+                        actor.name)));
+            }
         }
     }
     let strings = funcs
