@@ -26,7 +26,7 @@ fn inline_empty_and_scalar_return_profiles() {
     admit("pub fnc main(): int { block { do sync task {}; } return 42; }");
     admit("pub fnc main(): int { val x = sync task<int> { return 40 + 2; }; return x; }");
     admit("pub fnc main(): int { val x = sync task<int> { val a = 40; let b = a + 1; b = b + 1; return b; }; return x; }");
-    admit("pub fnc main(): int { val x = sync task<int> { val a = 40; if a == 40 { return a + 2; } else { return 7; } }; return x; }");
+    admit("pub fnc main(): int { val x = sync task<int> { val a = 40; if a == 40 { return a + 2; } else { return 7; } fi }; return x; }");
     admit("pub fnc main(): int { val x = sync task<int> { block { val y = 42; return y; } }; return x; }");
     admit("pub fnc main(): int { let x = 40; do sync task { x = x + 2; return; }; return x; }");
     admit("pub fnc main(): int { val x = sync task { return 42; }; return x; }");
@@ -62,9 +62,9 @@ fn fail_closed_type_effect_and_cleanup_boundaries() {
     reject("pub fnc main(): int { val x = sync task<void> {}; return 42; }", "E_TYPE");
     reject("pub fnc main(): int { let x = sync task {}; return 42; }", "E_TYPE");
     reject("pub fnc main(): int { val x = sync task<int> { val y = 41; }; return x; }", "E_RETURN");
-    reject("pub fnc main(): int { val x = sync task<int> { if true { return 42; } }; return x; }", "E_RETURN");
-    reject("pub fnc main(): int { val x = sync task<int> { if true { return 42; } else { return false; } }; return x; }", "E_TYPE");
-    reject("pub fnc main(): int { do sync task<void> { if true { return 42; } }; return 0; }", "E_TASK_RETURN_TYPE");
+    reject("pub fnc main(): int { val x = sync task<int> { if true { return 42; } fi }; return x; }", "E_RETURN");
+    reject("pub fnc main(): int { val x = sync task<int> { if true { return 42; } else { return false; } fi }; return x; }", "E_TYPE");
+    reject("pub fnc main(): int { do sync task<void> { if true { return 42; } fi }; return 0; }", "E_TASK_RETURN_TYPE");
     reject("pub fnc main(): int { val x = sync task<int> { val a = 1; block { val b = 2; } return b; }; return x; }", "E_UNBOUND");
     reject("pub fnc main(): int { val x = sync task<int> { return stdio.println(42); }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return await task<int> { return 42; }; }; return x; }", "E_UNSUPPORTED");

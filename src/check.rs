@@ -3943,6 +3943,13 @@ impl<'a> FnCx<'a> {
                 let checked = self.inline_task_scoped(
                     body, declared, *discard, &mut inferred, &mut result_slot)?;
                 let actual = inferred.unwrap_or(Type::Void);
+                if actual != Type::Void && body.is_empty() {
+                    // Preserve the established diagnostic: an explicitly
+                    // non-void empty task produces void, not a missing
+                    // branch return (there are no branches to analyze).
+                    return Err(type_err(e.pos, format!(
+                        "sync task declares {} but empty body returns void", self.tn(actual))));
+                }
                 if actual != Type::Void && !inline_task_returns(&checked) {
                     return Err(Diagnostic::new(e.pos, "E_RETURN",
                         "non-void inline task must return on every lexical path"));
