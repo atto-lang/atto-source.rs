@@ -472,6 +472,10 @@ impl TaskScopeLockCoordinator {
         if task.cancel_requested || task.guest_exited || task.physically_retired {
             return Err(Error::CancellationPending);
         }
+        // A ready task has not been dispatched, and cannot park again.
+        if self.ready_ids.contains_key(&who.logical_task) {
+            return Err(Error::NotQuiescent);
+        }
         if !task.guards.all_local_locks_released() {
             return Err(Error::GuardSuspend);
         }
@@ -721,7 +725,7 @@ impl TaskScopeLockCoordinator {
         }
         // Check capacity BEFORE modifying either the ready ledger or a grant.
         if self.ready.len().checked_add(additions.len())
-            .is_none_or(|n| n > Self::MAX_TASKS) {
+            .map_or(true, |n| n > Self::MAX_TASKS) {
             return Err(Error::Exhausted);
         }
         let admitted = additions.len();
