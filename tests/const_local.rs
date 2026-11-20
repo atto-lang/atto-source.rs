@@ -49,6 +49,19 @@ fn checked_i64_constant_folding_rejects_overflow() {
 }
 
 #[test]
+fn eager_named_boolean_constants_do_not_hide_checked_overflow() {
+    rejects(
+        "pub fnc main(): int { const x = And(false, 9223372036854775807 + 1 eq 0); return 0; }",
+        "E_CONST_OVERFLOW",
+    );
+    rejects(
+        "pub fnc main(): int { const x = Or(true, 9223372036854775807 + 1 eq 0); return 0; }",
+        "E_CONST_OVERFLOW",
+    );
+    valid("pub fnc main(): int { const x = Xor(true, false); if x then return 42; fi return 0; }");
+}
+
+#[test]
 fn negative_i64_min_and_bounded_arithmetic_are_constant() {
     valid("pub fnc main(): int { const int min = -9223372036854775808; const int seven = 2 + 5; return seven; }");
     valid("pub fnc main(): int { const x = 100 - 99; const y = x * 7; return y; }");
