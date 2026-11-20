@@ -11,7 +11,7 @@ fn read_u32(bytes: &[u8], cursor: &mut usize) -> u32 {
     panic!("invalid wasm LEB")
 }
 
-fn section<'a>(wasm: &'a [u8], wanted: u8) -> Option<&'a [u8]> {
+fn section(wasm: &[u8], wanted: u8) -> Option<&[u8]> {
     assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
     let mut pos = 8;
     while pos < wasm.len() {

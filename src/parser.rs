@@ -43,6 +43,7 @@ const RESERVED: &[&str] = &[
     "import",
     "from",
     "as",
+    "using",
     "fnc",
     "routine",
     "pure",
@@ -52,6 +53,7 @@ const RESERVED: &[&str] = &[
     "yield",
     "nlex",
     "return",
+    "begin",
     "self",
     "super",
     "static",
@@ -80,6 +82,7 @@ const RESERVED: &[&str] = &[
     "continue",
     "switch",
     "match",
+    "maybe",
     "matches",
     "over",
     "default",
@@ -93,6 +96,8 @@ const RESERVED: &[&str] = &[
     "trap",
     "defer",
     "actor",
+    "persistent",
+    "durable",
     "isoactor",
     "serial",
     "shared",
@@ -124,6 +129,8 @@ const RESERVED: &[&str] = &[
 /// Statement-leading keywords that name real AttoLang features this compiler
 /// does not lower yet. They are rejected, never approximated.
 const UNSUPPORTED_STMT: &[&str] = &[
+    "using",
+    "maybe",
     "switch",
     "try",
     "select",
@@ -136,6 +143,8 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "spawn",
     "await",
     "actor",
+    "persistent",
+    "durable",
     "isoactor",
     "serial",
     "shared",
@@ -191,7 +200,32 @@ const UNSUPPORTED_TYPES: &[&str] = &[
     "Set",
     "char",
     "byte",
+    "Pointer", // compiler-known builtin; this subset must never accept it as a user class
 ];
+
+// Compiler-owned ownership/synchronization intrinsics; not executable yet.
+// Cell and RefCell remain valid *user class names* in the existing language.
+// Their generic synchronization behavior is not granted by this policy.
+const UNLOWERED_OWNERSHIP_TYPES: &[&str] = &[
+    "Atomic", "AtomicRef", "AtomicBool", "AtomicInt", "AtomicLong",
+    "AtomicI8", "AtomicI16", "AtomicI32", "AtomicI64",
+    "AtomicU8", "AtomicU16", "AtomicU32", "AtomicU64",
+    "Arc", "Weak", "Box", "Rc",
+    "Mutex", "RwLock", "MutexGuard", "RwLockReadGuard", "RwLockWriteGuard",
+    "UnsafeCell",
+];
+
+pub fn is_unlowered_ownership_intrinsic(name: &str) -> bool {
+    UNLOWERED_OWNERSHIP_TYPES.contains(&name)
+}
+
+fn reject_intrinsic_type_name(name: &str, pos: Pos) -> R<()> {
+    if is_unlowered_ownership_intrinsic(name) {
+        return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+            format!("ownership or synchronization intrinsic '{name}' is not lowered by this compiler")));
+    }
+    Ok(())
+}
 
 pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
@@ -209,6 +243,8 @@ pub struct Parser {
     cond: u32,
     /// Spellings of user type references, see `Type::Named`.
     type_names: Vec<(String, Pos)>,
+    /// Canonically interned nominal Array<T, layout=...> type parameters.
+    array_types: Vec<ArrayType>,
     /// Scope of an explicit generator function body.
     in_generator: bool,
     /// Only the outer Erlang-style callable sequence accepts commas as
@@ -224,6 +260,20 @@ struct TypeFirstField {
     init_was_colon: bool,
 }
 
+/// Canonical name/return spelling after parsing any callable header.
+/// Keep result inference and body-style markers explicit instead of an
+/// eight-tuple that can be destructured in the wrong order.
+struct CallableHeader {
+    name: String,
+    pos: Pos,
+    params: Vec<Param>,
+    ret: Type,
+    infer: bool,
+    arrow_type: bool,
+    colon_type: bool,
+    return_first: bool,
+}
+
 /// Members collected from a class or actor body.
 #[derive(Default)]
 struct Members {
@@ -231,6 +281,7 @@ struct Members {
     ctor: Option<Constructor>,
     methods: Vec<Method>,
     receive: Option<Receive>,
+    persistence_hooks: Vec<ActorPersistenceHook>,
 }
 
 type R<T> = Result<T, Diagnostic>;
@@ -265,6 +316,7 @@ impl Parser {
             height: 0,
             cond: 0,
             type_names: Vec::new(),
+            array_types: Vec::new(),
             in_generator: false,
             erlang_body: false,
             state_method: false,
@@ -388,7 +440,7 @@ impl Parser {
         matches!(
             self.word_at(n),
             Some("int" | "bool" | "boolean" | "void" | "float" | "f64" | "string" | "String" | "fnc")
-        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w))
+        ) || self.word_at(n).is_some_and(|w| UNSUPPORTED_TYPES.contains(&w) || UNLOWERED_OWNERSHIP_TYPES.contains(&w))
     }
 
     fn parse_type(&mut self) -> R<Type> {
@@ -398,8 +450,26 @@ impl Parser {
             _ => return Err(self.expected("a type")),
         };
         self.advance();
+        reject_intrinsic_type_name(&name, pos)?;
         let ty = match name.as_str() {
             "int" => Type::Int,
+            "Array" => {
+                // Reuse the exact same generic binder used by the already
+                // executable, bounded scalar-collection guest profile.
+                let (specialization, next) = crate::collection_layout_type::parse(&self.toks, self.i - 1)?;
+                self.i = next;
+                let idx = self.array_types.iter().position(|t|
+                    t.element == specialization.element && t.layout == specialization.layout);
+                let idx = match idx {
+                    Some(existing) => existing as u32,
+                    None => {
+                        let idx = self.array_types.len() as u32;
+                        self.array_types.push(specialization);
+                        idx
+                    }
+                };
+                Type::Array(idx)
+            },
             "fnc" => {
                 // Canonical source type form: fnc(int, bool) -> float.
                 // The first profile admits scalar callback contracts only,
@@ -479,6 +549,16 @@ impl Parser {
             "void" => Type::Void,
             "float" | "f64" => Type::Float,
             "string" | "String" => Type::Str,
+            "Pointer" => {
+                // Fail closed until typed ownership, provenance and actual
+                // compiled Wasm/AOT lowering exist. Never resolve Pointer<T>
+                // as an ordinary user class or silently erase its generic T.
+                return Err(Diagnostic::new(
+                    pos,
+                    "E_UNSUPPORTED_TYPE",
+                    "Pointer<T> needs checked ownership, provenance and AOT lowering; this compiler does not implement it",
+                ))
+            }
             n if UNSUPPORTED_TYPES.contains(&n) => {
                 return Err(Diagnostic::new(
                     pos,
@@ -531,7 +611,7 @@ impl Parser {
         p.i = offset;
         p.expect_word("define")?;
         p.expect_word("actor")?;
-        let decl = p.parse_actor(true, ActorKind::Default)?;
+        let decl = p.parse_actor(true, ActorPersistenceMode::Volatile, ActorKind::Default)?;
         Ok((decl, p.i))
     }
 
@@ -552,6 +632,31 @@ impl Parser {
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
+            // Canonical 'define [pub] (persistent | durable) actor'.
+            // Also retain legacy 'pub define ...' visibility placement.
+            // Never downgrade a qualified actor to ordinary volatile state.
+            if self.word_at(at) == Some("define") {
+                let mut qualifier = at + 1;
+                if self.word_at(qualifier) == Some("pub") {
+                    qualifier += 1;
+                }
+                let mode = match self.word_at(qualifier) {
+                    Some("persistent") => Some(ActorPersistenceMode::Persistent),
+                    Some("durable") => Some(ActorPersistenceMode::Durable),
+                    _ => None,
+                };
+                if let Some(mode) = mode {
+                    if self.word_at(qualifier + 1) != Some("actor") {
+                        return Err(Diagnostic::new(
+                            start, "E_ACTOR_PERSISTENCE_MODIFIER",
+                            "persistent/durable must occur once before 'actor'; not a class modifier",
+                        ));
+                    }
+                    self.i += qualifier + 2;
+                    prog.actors.push(self.parse_actor(true, mode, ActorKind::Default)?);
+                    continue;
+                }
+            }
             match (self.word_at(at), self.word_at(at + 1)) {
                 (Some("define"), Some("class")) => {
                     self.i += at + 2;
@@ -566,8 +671,12 @@ impl Parser {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += 2;
-                    prog.actors.push(self.parse_actor(true, ActorKind::Default)?);
+                    let decl = self.parse_actor(true, ActorPersistenceMode::Volatile, ActorKind::Default)?;
+                    prog.actors.push(decl);
                 }
+                // Actor kind is an explicit scheduling/isolation contract.
+                // The checker rejects unavailable isolation modes; syntax must
+                // never silently downgrade a declared untrusted actor.
                 (Some("define"), Some("serial" | "shared" | "untrusted")) => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
@@ -579,21 +688,14 @@ impl Parser {
                     };
                     self.i += at + 2;
                     self.expect_word("actor")?;
-                    prog.actors.push(self.parse_actor(true, kind)?);
+                    prog.actors.push(self.parse_actor(true, ActorPersistenceMode::Volatile, kind)?);
                 }
                 (Some("define"), Some("isoactor")) => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += at + 2;
-                    prog.actors.push(self.parse_actor(true, ActorKind::Isolated)?);
-                }
-                (Some("actor"), Some(w)) if w != "fnc" => {
-                    if public {
-                        return Err(unsupported(start, "'pub' actors"));
-                    }
-                    self.i += 1;
-                    prog.actors.push(self.parse_actor(false, ActorKind::Default)?);
+                    prog.actors.push(self.parse_actor(true, ActorPersistenceMode::Volatile, ActorKind::Isolated)?);
                 }
                 (Some("serial" | "shared" | "untrusted"), Some("actor")) => {
                     if public {
@@ -605,14 +707,22 @@ impl Parser {
                         _ => ActorKind::Untrusted,
                     };
                     self.i += at + 2;
-                    prog.actors.push(self.parse_actor(false, kind)?);
+                    prog.actors.push(self.parse_actor(false, ActorPersistenceMode::Volatile, kind)?);
                 }
                 (Some("isoactor"), Some(w)) if w != "fnc" => {
                     if public {
                         return Err(unsupported(start, "'pub' actors"));
                     }
                     self.i += at + 1;
-                    prog.actors.push(self.parse_actor(false, ActorKind::Isolated)?);
+                    prog.actors.push(self.parse_actor(false, ActorPersistenceMode::Volatile, ActorKind::Isolated)?);
+                }
+                (Some("actor"), Some(w)) if w != "fnc" => {
+                    if public {
+                        return Err(unsupported(start, "'pub' actors"));
+                    }
+                    self.i += 1;
+                    let decl = self.parse_actor(false, ActorPersistenceMode::Volatile, ActorKind::Default)?;
+                    prog.actors.push(decl);
                 }
                 (Some("define"), Some("enum")) => {
                     if public {
@@ -635,12 +745,21 @@ impl Parser {
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
+        prog.array_types = std::mem::take(&mut self.array_types);
         Ok(prog)
     }
 
     /// After `define class`: `Name as { class_member } end`.
     fn parse_class(&mut self, public: bool) -> R<ClassDecl> {
         let (name, pos) = self.ident("a class name")?;
+        reject_intrinsic_type_name(&name, pos)?;
+        if name == "Pointer" {
+            return Err(Diagnostic::new(
+                pos,
+                "E_RESERVED_TYPE",
+                "Pointer is a compiler-known builtin and may not be defined as a user class",
+            ));
+        }
         self.decl_head("class")?;
         self.expect_word("as")?;
         let m = self.parse_members(&name, false, "end")?;
@@ -685,7 +804,7 @@ impl Parser {
                         return Err(Diagnostic::new(self.pos(), "E_STATE",
                             "protected state fields must start with let, as in Java"));
                     }
-                    let parsed = self.parse_type_first_field(false, FieldMode::ActorState)?;
+                    let parsed = self.parse_type_first_field(FieldVisibility::Private, FieldMode::ActorState, FieldBinding::ActorState, false)?;
                     if !matches!(parsed.field.ty, Type::Int | Type::Bool) {
                         return Err(Diagnostic::new(parsed.field.pos, "E_UNSUPPORTED_TYPE",
                             "Worker-local state container admits only owned int/bool fields"));
@@ -734,8 +853,9 @@ impl Parser {
     }
 
     /// After `define actor` (`defined`) or a bare `actor`.
-    fn parse_actor(&mut self, defined: bool, kind: ActorKind) -> R<ActorDecl> {
+    fn parse_actor(&mut self, defined: bool, persistence: ActorPersistenceMode, kind: ActorKind) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
+        reject_intrinsic_type_name(&name, pos)?;
         self.decl_head("actor")?;
         let close = if defined {
             self.expect_word("as")?;
@@ -746,10 +866,20 @@ impl Parser {
             "end"
         };
         let m = self.parse_members(&name, true, close)?;
+        if persistence == ActorPersistenceMode::Volatile && !m.persistence_hooks.is_empty() {
+            return Err(Diagnostic::new(pos, "E_PERSIST_SIGNATURE",
+                "persistence hooks require a persistent actor"));
+        }
+        if persistence == ActorPersistenceMode::Durable && !m.persistence_hooks.is_empty() {
+            return Err(Diagnostic::new(pos, "E_DURABLE_HOOK_OVERRIDE",
+                "durable actor persistence is runtime-managed, not overridden by hooks"));
+        }
         Ok(ActorDecl {
             name,
             pos,
             kind,
+            persistence,
+            persistence_hooks: m.persistence_hooks,
             fields: m.fields,
             receive: m.receive,
             methods: m.methods,
@@ -770,6 +900,7 @@ impl Parser {
     /// After `define enum`: `Name as Variant { Variant } end`.
     fn parse_enum(&mut self) -> R<EnumDecl> {
         let (name, pos) = self.ident("an enum name")?;
+        reject_intrinsic_type_name(&name, pos)?;
         self.decl_head("enum")?;
         self.expect_word("as")?;
         let mut variants: Vec<(String, Pos)> = Vec::new();
@@ -815,6 +946,87 @@ impl Parser {
         }
     }
 
+
+    /// A deliberately non-executable syntax gate for persistent actor hooks.
+    /// The full nested Result/Option/ActorStateSnapshot type shape is checked
+    /// exactly here; this browser compiler lacks generic suspended codegen.
+    /// The body is only brace-balanced and cannot reach the Wasm emitter.
+    fn parse_persistence_hook(&mut self, owner: &str) -> R<ActorPersistenceHook> {
+        let pos = self.pos();
+        let parse = (|| -> R<ActorPersistenceHook> {
+            if !self.eat_word("susp") && !self.eat_word("suspends") {
+                return Err(self.expected("'susp' persistence hook"));
+            }
+            self.expect_word("fnc")?;
+            let (name, _) = self.ident("persistence hook name")?;
+            let is_load = match name.as_str() {
+                "load_state" => true,
+                "save_state" => false,
+                _ => return Err(self.expected("load_state or save_state")),
+            };
+            self.expect(Tok::LParen, "'(' after hook name")?;
+            self.expect_word("ctx")?;
+            self.expect(Tok::Colon, "':' after ctx")?;
+            self.expect_word("PersistenceContext")?;
+            if !is_load {
+                self.expect(Tok::Comma, "',' after PersistenceContext")?;
+                self.expect_word("snapshot")?;
+                self.expect(Tok::Colon, "':' after snapshot")?;
+                self.expect_word("ActorStateSnapshot")?;
+                self.expect(Tok::Lt, "'<' in ActorStateSnapshot")?;
+                if !self.is_word(owner) && !self.is_word("State") {
+                    return Err(self.expected("the actor state type or State"));
+                }
+                self.advance();
+                self.expect(Tok::Gt, "'>' in ActorStateSnapshot")?;
+            }
+            self.expect(Tok::RParen, "')' after hook parameters")?;
+            self.expect(Tok::Colon, "':' before hook result")?;
+            self.expect_word("Result")?;
+            self.expect(Tok::Lt, "'<' after Result")?;
+            if is_load {
+                self.expect_word("Option")?;
+                self.expect(Tok::Lt, "'<' after Option")?;
+                self.expect_word("ActorStateSnapshot")?;
+                self.expect(Tok::Lt, "'<' after ActorStateSnapshot")?;
+                if !self.is_word(owner) && !self.is_word("State") {
+                    return Err(self.expected("the actor state type or State"));
+                }
+                self.advance();
+                self.expect(Tok::Gt, "'>' after actor state")?;
+                self.expect(Tok::Gt, "'>' after Option")?;
+            } else {
+                self.expect_word("CheckpointReceipt")?;
+            }
+            self.expect(Tok::Comma, "',' before PersistenceError")?;
+            self.expect_word("PersistenceError")?;
+            self.expect(Tok::Gt, "'>' after Result")?;
+            let body_provided = if self.eat(&Tok::Semi) {
+                false
+            } else if self.eat(&Tok::LBrace) {
+                let mut depth: usize = 1;
+                let mut count: usize = 0;
+                while depth > 0 {
+                    if *self.peek() == Tok::Eof || count >= 32768 {
+                        return Err(self.expected("complete persistence hook body"));
+                    }
+                    match self.advance().tok {
+                        Tok::LBrace => depth += 1,
+                        Tok::RBrace => depth -= 1,
+                        _ => {},
+                    }
+                    count += 1;
+                }
+                true
+            } else {
+                return Err(self.expected("';' or a braced persistence hook body"));
+            };
+            Ok(ActorPersistenceHook { name, pos, body_provided })
+        })();
+        parse.map_err(|e| Diagnostic::new(e.pos, "E_PERSIST_SIGNATURE",
+            format!("invalid persistent actor hook signature: {}", e.message)))
+    }
+
     /// Class or actor members up to and including `close` (`end` or `}`).
     fn parse_members(&mut self, owner: &str, actor: bool, close: &str) -> R<Members> {
         let kind = if actor { "actor" } else { "class" };
@@ -840,13 +1052,30 @@ impl Parser {
                 return Err(unsupported(self.pos(), "annotations"));
             }
             let mpos = self.pos();
-            let public = if self.eat_word("pub") {
-                true
-            } else {
-                self.eat_word("private");
-                false
-            };
+            let visibility = if self.eat_word("pub") {
+                if self.eat(&Tok::LBracket) {
+                    if !self.eat_word("pkg") || !self.eat(&Tok::RBracket) {
+                        return Err(Diagnostic::new(mpos, "E_SYNTAX",
+                            "class field visibility accepts only pub[pkg]"));
+                    }
+                    if actor { return Err(unsupported(mpos, "pub[pkg] actor members")); }
+                    FieldVisibility::Package
+                } else { FieldVisibility::Public }
+            } else if self.eat_word("private") {
+                if *self.peek() == Tok::LBracket {
+                    return Err(Diagnostic::new(mpos, "E_SYNTAX",
+                        "private is unqualified; use private or pub[pkg]"));
+                }
+                FieldVisibility::Private
+            } else { FieldVisibility::Private };
+            let public = visibility == FieldVisibility::Public;
             let word = self.word_at(0).map(str::to_owned);
+            if visibility == FieldVisibility::Package
+                && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "method" | "receive"))
+                    || *self.peek_at(1) == Tok::LParen)
+            {
+                return Err(unsupported(mpos, "pub[pkg] on non-field class members"));
+            }
             match word.as_deref() {
                 Some("static") => {
                     if actor {
@@ -881,22 +1110,30 @@ impl Parser {
                     let body = self.parse_block()?;
                     m.ctor = Some(Constructor { pos: mpos, params, body });
                 }
+                Some("state") if actor => {
+                    self.advance();
+                    // Explicit actor-owned sealed state with a typed initializer.
+                    // The browser profile currently admits only int/bool.
+                    let mut f = self.parse_named_field(visibility, true)?;
+                    f.mode = FieldMode::ActorState;
+                    m.fields.push(f);
+                }
                 Some("final") => {
                     self.advance();
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                        let f = self.parse_named_field(public, actor)?;
+                        let f = self.parse_named_field(visibility, actor)?;
                         m.fields.push(f);
                     } else if actor {
                         return Err(self.expected("'name: type' after 'final' in an actor"));
                     } else {
-                        self.eat_word("mut");
-                        let f = self.parse_type_first_field(public, FieldMode::Final)?;
+                        let referent_mutable = self.eat_word("mut");
+                        let f = self.parse_type_first_field(visibility, FieldMode::Final, FieldBinding::Final, referent_mutable)?;
                         m.fields.push(f.field);
                     }
                 }
                 Some("mut") if !actor => {
                     self.advance();
-                    let f = self.parse_type_first_field(public, FieldMode::Constructor)?;
+                    let f = self.parse_type_first_field(visibility, FieldMode::Constructor, FieldBinding::Let, true)?;
                     m.fields.push(f.field);
                 }
                 Some(w @ ("let" | "val" | "const")) => {
@@ -905,17 +1142,24 @@ impl Parser {
                         ("let", false) => FieldMode::Constructor,
                         _ => FieldMode::Final,
                     };
+                    let binding = match (w, actor) {
+                        ("let", true) => FieldBinding::ActorState,
+                        ("let", false) => FieldBinding::Let,
+                        ("val", _) => FieldBinding::Val,
+                        ("const", _) => FieldBinding::Const,
+                        _ => unreachable!("exhaustive field keyword"),
+                    };
                     self.advance();
-                    if self.is_word("mut") && w != "val" {
-                        self.advance();
-                    }
+                    // In 'val mut T x', val still forbids name rebinding while
+                    // mut requests separately checked writes through the object.
+                    let referent_mutable = self.eat_word("mut");
                     if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
                         return Err(self.expected("a field type before the field name"));
                     }
-                    let f = self.parse_type_first_field(public, mode)?;
+                    let f = self.parse_type_first_field(visibility, mode, binding, referent_mutable)?;
                     if f.init_was_colon {
                         return Err(Diagnostic::new(
-                            f.field.init.pos,
+                            f.field.pos,
                             "E_SYNTAX",
                             "a 'let'/'val'/'const' field initializer uses '='",
                         ));
@@ -926,6 +1170,28 @@ impl Parser {
                     self.advance();
                     let method = self.parse_method(public, false)?;
                     m.methods.push(method);
+                }
+                // No keyword: return-first class/actor method, e.g.
+                // int <- calculate(int x) { return x * 2; }
+                Some(_) if self.is_return_first_header() => {
+                    if visibility == FieldVisibility::Package {
+                        return Err(unsupported(mpos, "pub[pkg] on non-field class members"));
+                    }
+                    let method = self.parse_method(public, false)?;
+                    m.methods.push(method);
+                }
+                Some("susp" | "suspends") if actor => {
+                    if public {
+                        return Err(Diagnostic::new(mpos, "E_PERSIST_SIGNATURE",
+                            "persistence hooks are actor-private lifecycle methods"));
+                    }
+                    let hook = self.parse_persistence_hook(owner)?;
+                    if m.persistence_hooks.iter().any(|existing: &ActorPersistenceHook| existing.name == hook.name)
+                        || m.methods.iter().any(|other| other.name == hook.name) {
+                        return Err(Diagnostic::new(hook.pos, "E_DUPLICATE",
+                            "duplicate persistence hook or conflicting actor method"));
+                    }
+                    m.persistence_hooks.push(hook);
                 }
                 Some(w @ ("async" | "suspend" | "suspends" | "structural" | "abstract" | "nlex" | "shared")) => {
                     return Err(unsupported(self.pos(), &format!("'{w}' members")));
@@ -953,11 +1219,18 @@ impl Parser {
                     m.methods.push(method);
                 }
                 Some(_) if *self.peek_at(1) == Tok::Colon && !actor => {
-                    let f = self.parse_named_field(public, actor)?;
+                    let f = self.parse_named_field(visibility, actor)?;
                     m.fields.push(f);
                 }
                 Some(_) if matches!(self.peek_at(1), Tok::Ident(_)) && !actor => {
-                    let f = self.parse_type_first_field(public, FieldMode::Constructor)?;
+                    // Bare type-first class fields default to 'let' for every
+                    // type, per accepted atto-spec class-field-binding-defaults-v1.
+                    // Field binding does not grant mutable receiver authority;
+                    // explicit val/final/const remain non-rebindable and
+                    // separate referent 'mut' never bypasses loan checks.
+                    let f = self.parse_type_first_field(
+                        visibility, FieldMode::Constructor, FieldBinding::Let, false
+                    )?;
                     m.fields.push(f.field);
                 }
                 _ => {
@@ -973,7 +1246,7 @@ impl Parser {
     }
 
     /// `name: type [= expr]` (immutable field).
-    fn parse_named_field(&mut self, public: bool, _actor: bool) -> R<Field> {
+    fn parse_named_field(&mut self, visibility: FieldVisibility, _actor: bool) -> R<Field> {
         let (name, pos) = self.ident("a field name")?;
         self.expect(Tok::Colon, "':'")?;
         let ty = self.parse_type()?;
@@ -986,56 +1259,137 @@ impl Parser {
             name,
             pos,
             ty,
-            public,
+            visibility,
             mode: FieldMode::Final,
-            init,
+            binding: FieldBinding::Final,
+            referent_mutable: false,
+            init: Some(init),
         })
     }
 
-    /// `type name (":" | "=") expr`.
-    fn parse_type_first_field(&mut self, public: bool, mode: FieldMode) -> R<TypeFirstField> {
+    /// `type name (":" | "=") expr` or deferred `final T name;`.
+    fn parse_type_first_field(
+        &mut self, visibility: FieldVisibility, mode: FieldMode,
+        binding: FieldBinding, referent_mutable: bool,
+    ) -> R<TypeFirstField> {
         let ty = self.parse_type()?;
         let (name, pos) = self.ident("a field name")?;
         let init_was_colon = if self.eat(&Tok::Colon) {
             true
         } else if self.eat(&Tok::Assign) {
             false
+        } else if binding == FieldBinding::Final {
+            // No runtime fallback value is synthesized: this is an explicit
+            // constructor-owned, exactly-once initialization obligation.
+            self.terminator()?;
+            return Ok(TypeFirstField {
+                field: Field {
+                    name, pos, ty, visibility, mode, binding,
+                    referent_mutable, init: None,
+                },
+                init_was_colon: false,
+            });
         } else {
-            return Err(unsupported(self.pos(), "fields without an initializer"));
+            return Err(unsupported(self.pos(),
+                "fields without an initializer (only 'final' supports checked deferred assignment)"));
         };
-        let init = self.parse_expr()?;
+        let init = Some(self.parse_expr()?);
         self.terminator()?;
         Ok(TypeFirstField {
             field: Field {
                 name,
                 pos,
                 ty,
-                public,
+                visibility,
                 mode,
+                binding,
+                referent_mutable,
                 init,
             },
             init_was_colon,
         })
     }
 
-    /// Method head after any `fnc`/`method`/`static fnc` keyword.
-    fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
-        let (name, pos) = self.ident("a method name")?;
+    /// A bounded lookahead recognizes a return-first type spelling without
+    /// ever treating '<-' as a general-purpose operator. It admits nested
+    /// parameterized result types (Option<int>, Result<int,string>, etc.) at
+    /// the declaration boundary; the real type parser must still validate
+    /// each type and resolve its ownership/ABI contract.
+    fn is_return_first_header(&self) -> bool {
+        if !matches!(self.peek(), Tok::Ident(_)) { return false; }
+        if *self.peek_at(1) == Tok::LeftArrow { return true; }
+        if *self.peek_at(1) != Tok::Lt { return false; }
+        let mut depth = 0usize;
+        for n in 1..=MAX_DEPTH as usize {
+            match self.peek_at(n) {
+                Tok::Lt => depth += 1,
+                Tok::Gt => {
+                    if depth == 0 { return false; }
+                    depth -= 1;
+                    if depth == 0 { return *self.peek_at(n + 1) == Tok::LeftArrow; }
+                }
+                Tok::Ident(_) | Tok::Comma | Tok::Dot => {}
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Normalize name-first and return-first headers to one callable signature.
+    /// The left arrow is a single lexical token and never a value operator.
+    fn parse_named_callable_header(
+        &mut self, what: &'static str,
+    ) -> R<CallableHeader> {
+        let return_first = self.is_return_first_header();
+        let prefixed_type = if return_first {
+            let annotation = if self.eat_word("infer") {
+                (Type::Void, true)
+            } else {
+                (self.parse_type()?, false)
+            };
+            self.expect(Tok::LeftArrow, "'<-' after return type")?;
+            Some(annotation)
+        } else {
+            None
+        };
+        let (name, pos) = self.ident(what)?;
         if *self.peek() == Tok::Lt {
-            return Err(unsupported(self.pos(), "generic methods"));
+            return Err(unsupported(self.pos(), "generic named callables"));
         }
         self.expect(Tok::LParen, "'('")?;
-        if self.is_word("self") {
+        if what == "a method name" && self.is_word("self") {
             return Err(unsupported(self.pos(), "explicit 'self' receivers"));
         }
         let params = self.parse_params()?;
-        if *self.peek() == Tok::LParen {
+        if what == "a method name" && *self.peek() == Tok::LParen {
             return Err(unsupported(self.pos(), "curried method parameter lists"));
         }
-        let arrow_type = *self.peek() == Tok::Arrow;
-        let colon_type = *self.peek() == Tok::Colon;
-        let ret = self.parse_return_spec()?;
-        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
+        let arrow_type = !return_first && *self.peek() == Tok::Arrow;
+        let colon_type = !return_first && *self.peek() == Tok::Colon;
+        let (ret, infer) = if let Some(annotation) = prefixed_type {
+            if matches!(self.peek(), Tok::Colon | Tok::Arrow) {
+                return Err(Diagnostic::new(self.pos(), "E_RETURN_ANNOTATION",
+                    "a return-first callable cannot declare a second return type"));
+            }
+            annotation
+        } else {
+            self.parse_return_spec(&params)?
+        };
+        Ok(CallableHeader {
+            name, pos, params, ret, infer, arrow_type, colon_type, return_first,
+        })
+    }
+
+    /// Method head after any `fnc`/`method`/`static fnc` keyword.
+    fn parse_method(&mut self, public: bool, is_static: bool) -> R<Method> {
+        let CallableHeader {
+            name, pos, params, ret, infer, arrow_type, colon_type, return_first,
+        } = self.parse_named_callable_header("a method name")?;
+        // For an explicit inferred result, the comma/end body still has a
+        // checked tail return, never a silently discarded terminal expression.
+        let body = self.parse_callable_body(arrow_type, colon_type, return_first,
+            if infer { Type::Int } else { ret })?;
+        let ret = if infer { self.infer_callable_return(&body, &params)? } else { ret };
         Ok(Method {
             name,
             pos,
@@ -1047,8 +1401,8 @@ impl Parser {
         })
     }
 
-    /// `receive(msg: T)` or legacy `receive(ActorMail<T> mail)`.
-    /// Both are single sealed entrypoints, never public actor methods.
+    /// Receive exactly one typed message or an explicit ActorMail envelope.
+    /// The envelope is the only spelling that exposes sequence metadata.
     fn parse_receive(&mut self, owner: &str) -> R<Receive> {
         let pos = self.pos();
         self.advance();
@@ -1078,31 +1432,151 @@ impl Parser {
             ));
         };
         if *self.peek() == Tok::Comma {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' takes exactly one typed message parameter"),
-            ));
+            return Err(Diagnostic::new(self.pos(), "E_TYPE",
+                format!("actor mailbox handler '{owner}.receive' takes exactly one typed message parameter")));
         }
         self.expect(Tok::RParen, "')'")?;
-        if self.parse_return_spec()? != Type::Void {
-            return Err(Diagnostic::new(
-                pos,
-                "E_TYPE",
-                format!("actor mailbox handler '{owner}.receive' must return void"),
-            ));
+        let (result, inferred) = self.parse_return_spec(&[])?;
+        if inferred || result != Type::Void {
+            return Err(Diagnostic::new(pos, "E_TYPE",
+                format!("actor mailbox handler '{owner}.receive' must explicitly return void")));
         }
         let body = self.parse_block()?;
         Ok(Receive { pos, mail, payload, envelope, body })
     }
 
-    /// grammar.ebnf: `return_spec = [ ( ":" | "->" ) type_ref ]`.
-    fn parse_return_spec(&mut self) -> R<Type> {
-        if self.eat(&Tok::Colon) || self.eat(&Tok::Arrow) {
-            self.parse_type()
-        } else {
-            Ok(Type::Void)
+    /// Named callables MUST spell their return, including void. The second
+    /// component records an explicit `infer` (never an omitted annotation).
+    fn parse_return_spec(&mut self, params: &[Param]) -> R<(Type, bool)> {
+        if !(self.eat(&Tok::Colon) || self.eat(&Tok::Arrow)) {
+            return Err(Diagnostic::new(self.pos(), "E_RETURN_ANNOTATION",
+                "named callable requires an explicit return type: -> T, -> void or -> infer"));
         }
+        if self.eat_word("infer") {
+            return Ok((Type::Void, true));
+        }
+        // Preserve the independent checked static typeof return contract from
+        // current main while enforcing mandatory explicit result annotations.
+        if self.eat_word("typeof") {
+            let pos = self.pos();
+            if self.eat(&Tok::Bang) {
+                return Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNSUPPORTED",
+                    "typeof! is not a type operator; use typeof name"));
+            }
+            let parenthesized = self.eat(&Tok::LParen);
+            let (name, _) = self.ident("a binding name after typeof")?;
+            if parenthesized {
+                self.expect(Tok::RParen, "')' after the typeof binding")?;
+            }
+            if name == "fnc" {
+                return Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNSUPPORTED",
+                    "typeof fnc(...) callable types are not yet implemented in this browser backend"));
+            }
+            return match params.iter().find(|p| p.name == name) {
+                Some(p) => Ok((p.ty, false)),
+                None => Err(Diagnostic::new(pos, "E_TYPE_QUERY_UNBOUND",
+                    format!("typeof {name} must reference a declared parameter in this AOT profile"))),
+            };
+        }
+        Ok((self.parse_type()?, false))
+    }
+
+    /// Conservative, lexical return inference for the browser subset. Unlike
+    /// an implicit void fallback, unresolved calls / complex value expressions
+    /// must fail closed before typed IR or guest code generation.
+    fn infer_callable_return(&self, body: &[Stmt], params: &[Param]) -> R<Type> {
+        fn expr_type(expr: &Expr, params: &[Param]) -> R<Type> {
+            let fail = || Diagnostic::new(expr.pos, "E_RETURN_INFER",
+                "cannot prove inferred return type; declare a concrete result");
+            match &expr.kind {
+                ExprKind::Int(_) => Ok(Type::Int),
+                ExprKind::Bool(_) => Ok(Type::Bool),
+                ExprKind::Float(_) => Ok(Type::Float),
+                ExprKind::Str(_) => Ok(Type::Str),
+                ExprKind::Var(name) => params.iter().find(|p| p.name == *name)
+                    .map(|p| p.ty).ok_or_else(fail),
+                ExprKind::Unary(UnOp::Neg | UnOp::Plus, e) => {
+                    let t = expr_type(e, params)?;
+                    if matches!(t, Type::Int | Type::Float) { Ok(t) } else { Err(fail()) }
+                }
+                ExprKind::Unary(UnOp::Not, e) => {
+                    if expr_type(e, params)? == Type::Bool { Ok(Type::Bool) } else { Err(fail()) }
+                }
+                ExprKind::Binary(op, a, b) => {
+                    let l = expr_type(a, params)?;
+                    let r = expr_type(b, params)?;
+                    match op {
+                        BinOp::Add | BinOp::Sub | BinOp::Mul if l == r
+                            && matches!(l, Type::Int | Type::Float) => Ok(l),
+                        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
+                        BinOp::Gt | BinOp::Ge if l == r => Ok(Type::Bool),
+                        BinOp::And | BinOp::Or if l == Type::Bool && r == Type::Bool => Ok(Type::Bool),
+                        _ => Err(fail()),
+                    }
+                }
+                ExprKind::Ternary(_, yes, no) => {
+                    let a = expr_type(yes, params)?;
+                    let b = expr_type(no, params)?;
+                    if a == b { Ok(a) } else { Err(fail()) }
+                }
+                _ => Err(fail()),
+            }
+        }
+        fn collect(stmt: &Stmt, params: &[Param], out: &mut Vec<(Type, Pos)>) -> R<()> {
+            match stmt {
+                Stmt::Return(value, pos) => {
+                    let ty = match value {
+                        Some(expr) => expr_type(expr, params)?,
+                        None => Type::Void,
+                    };
+                    out.push((ty, *pos));
+                }
+                Stmt::Block(body) | Stmt::StateWrite { body, .. } |
+                Stmt::Loop { body, .. } | Stmt::While { body, .. } |
+                Stmt::ForIn { body, .. } => {
+                    for stmt in body { collect(stmt, params, out)?; }
+                }
+                Stmt::If { arms, otherwise, .. } => {
+                    for (_, body) in arms {
+                        for stmt in body { collect(stmt, params, out)?; }
+                    }
+                    if let Some(body) = otherwise {
+                        for stmt in body { collect(stmt, params, out)?; }
+                    }
+                }
+                Stmt::For { init, update, body, .. } => {
+                    if let Some(s) = init { collect(s, params, out)?; }
+                    if let Some(s) = update { collect(s, params, out)?; }
+                    for stmt in body { collect(stmt, params, out)?; }
+                }
+                Stmt::Try { body, catch, finally, .. } => {
+                    for stmt in body { collect(stmt, params, out)?; }
+                    if let Some((_, body)) = catch {
+                        for stmt in body { collect(stmt, params, out)?; }
+                    }
+                    if let Some(body) = finally {
+                        for stmt in body { collect(stmt, params, out)?; }
+                    }
+                }
+                Stmt::Match { arms, .. } => {
+                    for arm in arms {
+                        for stmt in &arm.body { collect(stmt, params, out)?; }
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        let mut returns = Vec::new();
+        for stmt in body { collect(stmt, params, &mut returns)?; }
+        let Some((result, _)) = returns.first().copied() else { return Ok(Type::Void); };
+        for (candidate, pos) in returns.iter().copied().skip(1) {
+            if candidate != result {
+                return Err(Diagnostic::new(pos, "E_RETURN_INFER",
+                    "incompatible return types in an explicit infer callable"));
+            }
+        }
+        Ok(result)
     }
 
     /// Parameters after `(` up to and including `)`.
@@ -1159,16 +1633,18 @@ impl Parser {
                 return Err(unsupported(self.pos(), &format!("'{m}' callables")));
             }
         }
-        if !(self.eat_word("fnc") || self.eat_word("routine")) {
+        let has_keyword = self.eat_word("fnc") || self.eat_word("routine");
+        // The only permitted keyword-free top-level callable is the
+        // unambiguous, return-first T <- name(args) declaration.
+        if !has_keyword && !self.is_return_first_header() {
             if let Some(w) = self.word_at(0) {
                 if UNSUPPORTED_STMT.contains(&w) || matches!(w, "val" | "let" | "const") {
                     return Err(unsupported(self.pos(), &format!("top-level '{w}'")));
                 }
             }
             return Err(Diagnostic::new(
-                self.pos(),
-                "E_TOPLEVEL",
-                format!("expected a 'fnc' declaration, found {}", describe(self.peek())),
+                self.pos(), "E_TOPLEVEL",
+                "expected fnc/routine or a return-first '<-' callable declaration",
             ));
         }
         let is_generator = if *self.peek() == Tok::Star {
@@ -1178,16 +1654,10 @@ impl Parser {
         } else {
             false
         };
-        let (name, pos) = self.ident("a function name")?;
-        if *self.peek() == Tok::Lt {
-            return Err(unsupported(self.pos(), "generic functions"));
-        }
-        self.expect(Tok::LParen, "'('")?;
-        let params = self.parse_params()?;
-        let arrow_type = *self.peek() == Tok::Arrow;
-        let colon_type = *self.peek() == Tok::Colon;
-        let ret = self.parse_return_spec()?;
-        self.parse_effect_clauses()?;
+        let CallableHeader {
+            name, pos, params, ret, infer, arrow_type, colon_type, return_first,
+        } = self.parse_named_callable_header("a function name")?;
+        let declared_effects = self.parse_effect_clauses()?;
         if is_pure && is_generator {
             return Err(Diagnostic::new(pos, "E_PURE",
                 "pure generator effects require verified continuation semantics"));
@@ -1197,51 +1667,70 @@ impl Parser {
                 "a 'fnc *gen' declaration must return Generator<int> in this frontend stage"));
         }
         self.in_generator = is_generator;
-        let body = self.parse_callable_body(arrow_type, colon_type, ret)?;
+        let body = self.parse_callable_body(arrow_type, colon_type, return_first,
+            if infer { Type::Int } else { ret })?;
         self.in_generator = false;
+        let ret = if infer { self.infer_callable_return(&body, &params)? } else { ret };
         let _ = start;
         Ok(Func {
             name,
             pos,
             is_generator,
             is_pure,
+            declared_effects,
             params,
             ret,
             body,
         })
     }
 
-    /// Proposed exceptional effect clauses after the result type:
-    /// `throws(Error)`, `raises(Error)`, `panics(Error)`. This browser slice
-    /// validates the syntax and admits only the built-in `Error`. The clause
-    /// is a declared upper bound; it is not yet transitively effect-checked
-    /// and never grants or suppresses any failure path.
-    fn parse_effect_clauses(&mut self) -> R<()> {
-        let mut seen: Vec<&'static str> = Vec::new();
+    /// Explicit exceptional-effect clauses are a *checked upper bound*
+    /// for ordinary throw and raise. A completely unannotated function
+    /// keeps inferred legacy behavior. The panic channel is parsed and
+    /// retained, but fatal-trap analysis is not yet certified.
+    fn parse_effect_clauses(&mut self) -> R<Option<DeclaredEffects>> {
+        let mut declared = DeclaredEffects::default();
+        let mut any = false;
         loop {
             let kind = match self.word_at(0) {
                 Some("throws") => "throws",
                 Some("raises") => "raises",
                 Some("panics") => "panics",
-                _ => return Ok(()),
+                _ => return Ok(any.then_some(declared)),
             };
             if *self.peek_at(1) != Tok::LParen {
-                return Ok(());
+                // Keep unsupported free-form Java-style headers in the
+                // existing parser error path rather than consuming body text.
+                return Ok(any.then_some(declared));
             }
             let pos = self.pos();
-            if seen.contains(&kind) {
-                return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate '{kind}' effect clause")));
+            let seen = match kind {
+                "throws" => declared.throws,
+                "raises" => declared.raises,
+                "panics" => declared.panics,
+                _ => unreachable!(),
+            };
+            if seen {
+                return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                    format!("duplicate '{kind}' effect clause")));
             }
-            seen.push(kind);
+            match kind {
+                "throws" => declared.throws = true,
+                "raises" => declared.raises = true,
+                "panics" => declared.panics = true,
+                _ => unreachable!(),
+            }
+            any = true;
             self.advance();
             self.advance();
-            loop {
-                let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
-                if ty != "Error" {
-                    return Err(Diagnostic::new(ty_pos, "E_TYPE",
-                        format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
-                }
-                if !self.eat(&Tok::Comma) { break; }
+            let (ty, ty_pos) = self.ident("an Error type in the effect clause")?;
+            if ty != "Error" {
+                return Err(Diagnostic::new(ty_pos, "E_TYPE",
+                    format!("'{kind}' admits only the built-in Error in this browser slice, found '{ty}'")));
+            }
+            if self.eat(&Tok::Comma) {
+                return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
+                    format!("duplicate Error type in '{kind}' effect clause")));
             }
             self.expect(Tok::RParen, "')' to close the effect clause")?;
             // `throws(Error), raises(Error)`: a comma may separate clauses.
@@ -1281,46 +1770,104 @@ impl Parser {
         Ok(Stmt::Try { body, catch, finally, pos })
     }
 
-    /// `recover (|T a, ...| -> |err, c| -> { body })(args);`
-    fn parse_recover(&mut self, pos: Pos) -> R<Stmt> {
-        self.advance();
-        self.expect(Tok::LParen, "'(' after 'recover'")?;
-        self.expect(Tok::Pipe, "'|' to open the recovery factory parameters")?;
+    /// Shared registration factory header: \`|T first, T second|\`.
+    /// These are explicit values evaluated at registration, not lexical captures.
+    fn parse_cleanup_factory_params(&mut self) -> R<Vec<(String, Type, Pos)>> {
+        self.expect(Tok::Pipe, "'|' to open the factory parameters")?;
         let mut params: Vec<(String, Type, Pos)> = Vec::new();
         if !self.eat(&Tok::Pipe) {
             loop {
                 if params.len() >= MAX_PARAMS {
-                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT", "too many recovery factory parameters"));
+                    return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                        "too many cleanup factory parameters"));
                 }
                 let ty = self.parse_type()?;
-                let (name, p) = self.ident("a recovery factory parameter name")?;
-                if params.iter().any(|(n, ..)| *n == name) {
-                    return Err(Diagnostic::new(p, "E_DUPLICATE", format!("duplicate parameter '{name}'")));
+                let (name, p) = self.ident("a cleanup factory parameter")?;
+                if name == "_" || params.iter().any(|(n, ..)| *n == name) {
+                    return Err(Diagnostic::new(p, "E_DUPLICATE",
+                        format!("duplicate or reserved factory parameter '{name}'")));
                 }
                 params.push((name, ty, p));
                 if self.eat(&Tok::Pipe) { break; }
                 self.expect(Tok::Comma, "',' or '|' after a factory parameter")?;
             }
         }
-        self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
-        self.expect(Tok::Pipe, "'|err, c|' recovery handler parameters")?;
-        let (err, _) = self.ident("the recovery error parameter")?;
-        self.expect(Tok::Comma, "',' between the error and cursor parameters")?;
-        let (cursor, cursor_pos) = self.ident("the recovery cursor parameter")?;
-        if cursor == err || params.iter().any(|(n, ..)| *n == err || *n == cursor) {
-            return Err(Diagnostic::new(cursor_pos, "E_DUPLICATE", "recovery parameter names must be distinct"));
+        Ok(params)
+    }
+
+    /// A deferred cleanup can be a block, a zero-argument lambda, or a
+    /// factory with explicit, single-evaluation captures.
+    fn parse_defer(&mut self, pos: Pos) -> R<Stmt> {
+        self.advance();
+        let (params, body, args) = if *self.peek() == Tok::LBrace {
+            (Vec::new(), self.parse_block()?, Vec::new())
+        } else if self.eat_word("_") {
+            self.expect(Tok::Arrow, "'->' after 'defer _'")?;
+            (Vec::new(), self.parse_block()?, Vec::new())
+        } else if self.eat(&Tok::Pipe) {
+            self.expect(Tok::Pipe, "empty '||' lambda after 'defer'")?;
+            self.expect(Tok::Arrow, "'->' after 'defer ||'")?;
+            (Vec::new(), self.parse_block()?, Vec::new())
+        } else if self.eat(&Tok::LParen) {
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the defer factory parameters")?;
+            if !self.eat_word("_") {
+                return Err(self.expected("'_' for the zero-argument deferred cleanup"));
+            }
+            self.expect(Tok::Arrow, "'->' before the deferred cleanup body")?;
+            let body = self.parse_block()?;
+            self.expect(Tok::RParen, "')' after the defer factory")?;
+            let args = self.parse_args()?;
+            (params, body, args)
+        } else {
+            return Err(self.expected("'{' or '_ ->' or '|| ->' or a defer factory"));
+        };
+        self.terminator()?;
+        Ok(Stmt::Defer { params, body, args, pos })
+    }
+
+    /// Recovery handlers receive a lexical, non-escaping ErrorView and a
+    /// one-shot cursor; either binder may carry its explicit special type.
+    fn parse_recovery_handler(&mut self, params: &[(String, Type, Pos)])
+        -> R<(String, String, Vec<Stmt>)>
+    {
+        self.expect(Tok::Pipe, "'|' to open the recovery handler")?;
+        if self.word_at(0) == Some("ErrorView") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            self.advance();
+        }
+        let (err, err_pos) = self.ident("the recovery error handle")?;
+        self.expect(Tok::Comma, "',' after the recovery error handle")?;
+        if self.word_at(0) == Some("RecoveryCursor") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            self.advance();
+        }
+        let (cursor, cursor_pos) = self.ident("the recovery cursor")?;
+        if err == cursor || err == "_" || cursor == "_" ||
+            params.iter().any(|(n, ..)| *n == err || *n == cursor)
+        {
+            return Err(Diagnostic::new(if err == "_" { err_pos } else { cursor_pos },
+                "E_DUPLICATE", "recovery bindings must be distinct and cannot be '_'"));
         }
         self.expect(Tok::Pipe, "'|' after the recovery cursor")?;
         self.expect(Tok::Arrow, "'->' before the recovery handler body")?;
-        if *self.peek() != Tok::LBrace {
-            return Err(self.expected("'{' to open the recovery handler body"));
-        }
         let body = self.parse_block()?;
-        self.expect(Tok::RParen, "')' to close the recovery factory")?;
-        if *self.peek() != Tok::LParen {
-            return Err(self.expected("'(' with the recovery factory arguments"));
-        }
-        let args = self.parse_args()?;
+        Ok((err, cursor, body))
+    }
+
+    /// Canonical \`recover |err, cursor| -> { ... };\` and compatible
+    /// \`recover (|T v| -> |err, cursor| -> { ... })(value);\`.
+    fn parse_recover(&mut self, pos: Pos) -> R<Stmt> {
+        self.advance();
+        let (params, err, cursor, body, args) = if self.eat(&Tok::LParen) {
+            let params = self.parse_cleanup_factory_params()?;
+            self.expect(Tok::Arrow, "'->' after the recovery factory parameters")?;
+            let (err, cursor, body) = self.parse_recovery_handler(&params)?;
+            self.expect(Tok::RParen, "')' to close the recovery factory")?;
+            let args = self.parse_args()?;
+            (params, err, cursor, body, args)
+        } else {
+            let (err, cursor, body) = self.parse_recovery_handler(&[])?;
+            (Vec::new(), err, cursor, body, Vec::new())
+        };
         self.terminator()?;
         Ok(Stmt::Recover { params, err, cursor, body, args, pos })
     }
@@ -1356,9 +1903,26 @@ impl Parser {
 
     // ----------------------------------------------------------- statements
 
-    /// C-style braces remain the default. The extra -> after : Type is an
-    /// explicit body marker; a -> Type header also admits comma/end bodies.
-    fn parse_callable_body(&mut self, arrow_type: bool, colon_type: bool, ret: Type) -> R<Vec<Stmt>> {
+    /// Braces, explicit begin/end and return-first bare statement/end use
+    /// ordinary statement semantics. Preserve legacy arrow-type comma/end
+    /// tail-expression behavior as a distinct, compatible body family.
+    fn parse_callable_body(
+        &mut self, arrow_type: bool, colon_type: bool,
+        return_first: bool, ret: Type,
+    ) -> R<Vec<Stmt>> {
+        // A literal begin keyword unambiguously selects statement/end for
+        // both name-first and return-first callable declarations.
+        if self.eat_word("begin") {
+            return self.parse_explicit_end_body_with_empty(true);
+        }
+        if return_first {
+            if *self.peek() == Tok::LBrace {
+                return self.parse_block();
+            }
+            // Return-first T <- name(params) statement; ... end is explicit
+            // statement syntax, never an Erlang implicit-tail return.
+            return self.parse_explicit_end_body_with_empty(true);
+        }
         if arrow_type {
             if *self.peek() == Tok::LBrace {
                 return self.parse_block();
@@ -1404,6 +1968,10 @@ impl Parser {
     /// A callable's return and exhaustiveness obligations remain checked by
     /// the normal typed frontend, not guessed by the parser.
     fn parse_explicit_end_body(&mut self) -> R<Vec<Stmt>> {
+        self.parse_explicit_end_body_with_empty(false)
+    }
+
+    fn parse_explicit_end_body_with_empty(&mut self, allow_empty: bool) -> R<Vec<Stmt>> {
         if self.in_generator {
             return Err(unsupported(self.pos(), "explicit/end generator bodies"));
         }
@@ -1412,7 +1980,7 @@ impl Parser {
         self.erlang_body = false;
         let parsed = (|| -> R<Vec<Stmt>> {
             let mut body = Vec::new();
-            if self.is_word("end") {
+            if self.is_word("end") && !allow_empty {
                 return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
                     "explicit/end callable bodies require a statement"));
             }
@@ -1648,6 +2216,13 @@ impl Parser {
                         "'yield' is only valid inside a 'fnc *gen' generator"));
                 }
                 self.advance();
+                // A separated 'yield *' is never the delegation token 'yield*'.
+                // Reject it as malformed generator syntax before the unary
+                // pointer gate can reinterpret '*' as a dereference.
+                if *self.peek() == Tok::Star {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX",
+                        "yield* delegation requires a contiguous token"));
+                }
                 let value = self.parse_expr()?;
                 self.terminator()?;
                 Ok(Stmt::Yield(value, pos))
@@ -1688,19 +2263,8 @@ impl Parser {
                 Ok(Stmt::Raise(error, pos))
             }
             Some("try") if *self.peek_at(1) == Tok::LBrace => self.parse_try(pos),
-            Some("defer") if *self.peek_at(1) == Tok::Pipe && *self.peek_at(2) == Tok::Pipe => {
-                self.advance();
-                self.advance();
-                self.advance();
-                self.expect(Tok::Arrow, "'->' after 'defer ||'")?;
-                if *self.peek() != Tok::LBrace {
-                    return Err(self.expected("'{' to open the deferred cleanup body"));
-                }
-                let body = self.parse_block()?;
-                self.terminator()?;
-                Ok(Stmt::Defer { body, pos })
-            }
-            Some("recover") if *self.peek_at(1) == Tok::LParen => self.parse_recover(pos),
+            Some("defer") => self.parse_defer(pos),
+            Some("recover") => self.parse_recover(pos),
             Some("if") => self.parse_if(),
             Some("guard") => self.parse_guard(),
             Some("while") => {
@@ -1810,6 +2374,45 @@ impl Parser {
             Some(w) if UNSUPPORTED_STMT.contains(&w) => Err(unsupported(pos, &format!("'{w}'"))),
             Some("fnc" | "routine") => Err(unsupported(pos, "nested functions")),
             _ => {
+                // Integer-only compound bitwise assignment. Require a simple
+                // mutable local so the target is evaluated exactly once.
+                if let Tok::Ident(name) = self.peek().clone() {
+                    let candidate = if *self.peek_at(1) == Tok::Amp
+                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
+                        Some((BinOp::BitAnd, 2))
+                    } else if *self.peek_at(1) == Tok::Pipe
+                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
+                        Some((BinOp::BitOr, 2))
+                    } else if *self.peek_at(1) == Tok::Caret
+                        && *self.peek_at(2) == Tok::Assign && self.joined_at(1) {
+                        Some((BinOp::BitXor, 2))
+                    } else if self.triple_at(1, &Tok::Lt) && *self.peek_at(4) == Tok::Assign
+                        && self.joined_at(3) {
+                        Some((BinOp::Shl, 4))
+                    } else if self.triple_at(1, &Tok::Gt) && *self.peek_at(4) == Tok::Assign
+                        && self.joined_at(3) {
+                        Some((BinOp::LShr, 4))
+                    } else if self.word_at(1) == Some("ashr") && *self.peek_at(2) == Tok::Assign {
+                        Some((BinOp::AShr, 2))
+                    } else { None };
+                    if let Some((op, count)) = candidate {
+                        let at = self.toks[self.i + 1].pos;
+                        self.advance(); // lhs
+                        for _ in 0..count { self.advance(); }
+                        let value = self.parse_expr()?;
+                        self.terminator()?;
+                        return Ok(Stmt::Assign {
+                            name: name.clone(),
+                            value: Expr {
+                                kind: ExprKind::Binary(op,
+                                    Box::new(Expr { kind: ExprKind::Var(name), pos }),
+                                    Box::new(value)),
+                                pos: at,
+                            },
+                            pos,
+                        });
+                    }
+                }
                 let e = self.parse_expr()?;
                 // Compound addition uses the existing checked binary addition.
                 // Restrict it to locals: field/index targets need once-only lvalue lowering.
@@ -2028,7 +2631,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -2329,6 +2932,10 @@ impl Parser {
             )),
             Tok::Float(_) => Err(unsupported(pos, "float literal patterns")),
             Tok::Str(_) => Err(unsupported(pos, "string literal patterns")),
+            // V2 rests and counted groups have a dedicated token. Reject
+            // them deliberately until checked sequence AST and runtime
+            // lowering exist; never reinterpret as a binding or an enum.
+            Tok::Ellipsis => Err(unsupported(pos, "sequence rest/count patterns")),
             Tok::LParen => Err(unsupported(pos, "tuple patterns")),
             Tok::LBracket => Err(Diagnostic::new(
                 pos,
@@ -2364,6 +2971,15 @@ impl Parser {
                     self.advance();
                     if *self.peek() == Tok::Dot {
                         self.advance();
+                        // `of` is reserved, so this check must run BEFORE
+                        // ident("an enum variant") performs reserved-word
+                        // validation. The v2 collection forms are not enum
+                        // variants and may not create a guest artifact yet.
+                        if matches!(w.as_str(), "List" | "Array" | "Tuple")
+                            && self.is_word("of") && *self.peek_at(1) == Tok::LParen
+                        {
+                            return Err(unsupported(pos, "structural sequence patterns"));
+                        }
                         let (variant, _) = self.ident("an enum variant")?;
                         if self.is_word("as") || *self.peek() == Tok::Dot {
                             return Err(unsupported(self.pos(), "variant payload patterns"));
@@ -2622,7 +3238,7 @@ impl Parser {
     /// evaluates a exactly once and b only when a is true. No eager builtin
     /// and no changed meaning for unary & (reserved ownership/borrow form).
     fn parse_logical_and(&mut self) -> R<Expr> {
-        let mut left = self.parse_equality()?;
+        let mut left = self.parse_bitwise_or()?;
         let mut links = 0;
         while *self.peek() == Tok::Amp && *self.peek_at(1) == Tok::Amp {
             let pos = self.pos();
@@ -2630,7 +3246,7 @@ impl Parser {
             self.advance();
             self.grow(1)?;
             links += 1;
-            let right = self.parse_equality()?;
+            let right = self.parse_bitwise_or()?;
             left = Expr {
                 kind: ExprKind::Ternary(
                     Box::new(left),
@@ -2639,6 +3255,56 @@ impl Parser {
                 ),
                 pos,
             };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    // A single '|' in an unparenthesized if/while condition is the legacy
+    // boolean OR separator. Parentheses reset that condition context, so
+    // (flags | mask) eq expected compiles as integer bitwise OR followed by
+    // equality, per atto-spec/language/bitwise-and-stream-operators-v1.md.
+    // Do not reinterpret an unparenthesized conditional '|' as bitwise OR.
+    fn parse_bitwise_or(&mut self) -> R<Expr> {
+        let mut left = self.parse_bitwise_xor()?;
+        let mut links = 0;
+        while self.cond == 0 && *self.peek() == Tok::Pipe && *self.peek_at(1) != Tok::Pipe {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_bitwise_xor()?;
+            left = Expr { kind: ExprKind::Binary(BinOp::BitOr, Box::new(left), Box::new(right)), pos };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> R<Expr> {
+        let mut left = self.parse_bitwise_and()?;
+        let mut links = 0;
+        while *self.peek() == Tok::Caret {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_bitwise_and()?;
+            left = Expr { kind: ExprKind::Binary(BinOp::BitXor, Box::new(left), Box::new(right)), pos };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    fn parse_bitwise_and(&mut self) -> R<Expr> {
+        let mut left = self.parse_equality()?;
+        let mut links = 0;
+        while *self.peek() == Tok::Amp && *self.peek_at(1) != Tok::Amp {
+            let pos = self.pos();
+            self.advance();
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_equality()?;
+            left = Expr { kind: ExprKind::Binary(BinOp::BitAnd, Box::new(left), Box::new(right)), pos };
         }
         self.height -= links;
         Ok(left)
@@ -2658,7 +3324,7 @@ impl Parser {
                     self.advance();
                     BinOp::Ne
                 }
-                Tok::Ident(s) if s == "is" => return Err(unsupported(pos, "the identity operator 'is'")),
+                Tok::Ident(s) if s == "is" => return Err(unsupported(pos, "a type test using 'is' (requires a statically proven type tag in this backend)")),
                 _ => break,
             };
             self.advance();
@@ -2676,7 +3342,7 @@ impl Parser {
 
     fn parse_comparison(&mut self) -> R<Expr> {
         let mut links = 0;
-        let mut left = self.parse_additive()?;
+        let mut left = self.parse_shift()?;
         loop {
             let pos = self.pos();
             let op = match self.peek() {
@@ -2690,11 +3356,48 @@ impl Parser {
             self.advance();
             self.grow(1)?;
             links += 1;
-            let right = self.parse_additive()?;
+            let right = self.parse_shift()?;
             left = Expr {
                 kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
                 pos,
             };
+        }
+        self.height -= links;
+        Ok(left)
+    }
+
+    // Keep angle brackets as individual tokens for nested generic types
+    // and legacy I/O '<<' / '>>'. Only THREE contiguous brackets are shifts.
+    fn joined_at(&self, offset: usize) -> bool {
+        let Some(a) = self.toks.get(self.i + offset) else { return false; };
+        let Some(b) = self.toks.get(self.i + offset + 1) else { return false; };
+        a.pos.line == b.pos.line && a.pos.col.checked_add(1) == Some(b.pos.col)
+    }
+
+    fn triple_at(&self, offset: usize, kind: &Tok) -> bool {
+        (0..3).all(|n| self.peek_at(offset + n) == kind)
+            && self.joined_at(offset) && self.joined_at(offset + 1)
+    }
+
+    fn parse_shift(&mut self) -> R<Expr> {
+        let mut left = self.parse_additive()?;
+        let mut links = 0;
+        loop {
+            let pos = self.pos();
+            let (op, width) = if self.triple_at(0, &Tok::Lt) {
+                (BinOp::Shl, 3)
+            } else if self.triple_at(0, &Tok::Gt) {
+                (BinOp::LShr, 3)
+            } else if self.is_word("ashr") {
+                (BinOp::AShr, 1)
+            } else {
+                break;
+            };
+            for _ in 0..width { self.advance(); }
+            self.grow(1)?;
+            links += 1;
+            let right = self.parse_additive()?;
+            left = Expr { kind: ExprKind::Binary(op, Box::new(left), Box::new(right)), pos };
         }
         self.height -= links;
         Ok(left)
@@ -2759,7 +3462,12 @@ impl Parser {
             Tok::Minus => UnOp::Neg,
             Tok::Plus => UnOp::Plus,
             Tok::Bang => UnOp::Not,
-            Tok::Amp => return Err(unsupported(pos, "borrow expressions")),
+            Tok::Tilde => UnOp::BitNot,
+            Tok::Amp | Tok::Star => return Err(Diagnostic::new(
+                pos,
+                "E_POINTER_SYNTAX",
+                "pointer address-of and dereference cannot use unary '&' or '*'; use checked Pointer<T> methods and ownership operations",
+            )),
             Tok::PlusPlus | Tok::MinusMinus => {
                 return Err(Diagnostic::new(
                     pos,
@@ -2771,7 +3479,7 @@ impl Parser {
             // Ownership is a prefix unary expression, like trap. Its operand
             // may be a name, postfix chain, or a grouped expression; the
             // canonical spelling never requires parentheses around a name.
-            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share")
+            Tok::Ident(s) if matches!(s.as_str(), "borrow" | "copy" | "take" | "share" | "freeze" | "weak" | "pin" | "drop")
                 && *self.peek_at(1) == Tok::Bang =>
             {
                 let action = match s.as_str() {
@@ -2779,10 +3487,29 @@ impl Parser {
                     "copy" => OwnershipOp::Copy,
                     "take" => OwnershipOp::Take,
                     "share" => OwnershipOp::Share,
+                    "freeze" => OwnershipOp::Freeze,
+                    "weak" => OwnershipOp::Weak,
+                    "pin" => OwnershipOp::Pin,
+                    "drop" => OwnershipOp::Drop,
                     _ => unreachable!(),
                 };
                 self.advance(); // name
-                self.advance(); // !
+                let first_bang = self.advance(); // !
+                // 'copy!!' is a single canonical operator only when the word
+                // and both bangs are adjacent. 'copy! !x' stays a shallow copy
+                // of the logical negation, never a deep copy.
+                let copy_word_is_adjacent = first_bang.pos.line == pos.line
+                    && first_bang.pos.col == pos.col + 4;
+                let second_bang_is_adjacent = *self.peek() == Tok::Bang
+                    && self.pos().line == first_bang.pos.line
+                    && self.pos().col == first_bang.pos.col + 1;
+                let action = if action == OwnershipOp::Copy && copy_word_is_adjacent
+                    && second_bang_is_adjacent {
+                    self.advance();
+                    OwnershipOp::DeepCopy
+                } else {
+                    action
+                };
                 let mutable = action == OwnershipOp::Borrow && self.eat_word("mut");
                 if action != OwnershipOp::Borrow && self.is_word("mut") {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only borrow! permits a mut qualifier"));
@@ -2790,6 +3517,13 @@ impl Parser {
                 let inner = self.parse_unary()?;
                 return Ok(Expr { kind: ExprKind::Ownership(action, mutable, Box::new(inner)), pos });
             },
+            Tok::Ident(s) if matches!(s.as_str(), "lt" | "lifetime")
+                && *self.peek_at(1) == Tok::Bang =>
+            {
+                // Lifetime binders are type-level. Do not emit guest values.
+                return Err(Diagnostic::new(pos, "E_LIFETIME_CONTEXT",
+                    "lt! a / lifetime! a binds a lifetime, not an expression; lifetime generic lowering is unavailable in this browser subset"));
+            }
             Tok::Ident(s) if s == "trap" => {
                 self.advance();
                 let inner = self.parse_unary()?;
@@ -3096,7 +3830,10 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
-                let inner = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
+                // Parenthesized *value* expressions reset the condition
+                // grammar, distinguishing (flags | mask) eq expected from the
+                // legacy unparenthesized condition separator: a | b.
+                let inner = self.parse_expr()?;
                 if *self.peek() == Tok::Comma {
                     return Err(unsupported(self.pos(), "tuples"));
                 }
@@ -3153,7 +3890,7 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "nb" | "super" | "match" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
@@ -3231,6 +3968,7 @@ fn describe(t: &Tok) -> String {
                 Tok::Colon => ":",
                 Tok::ColonColon => "::",
                 Tok::Arrow => "->",
+                Tok::LeftArrow => "<-",
                 Tok::FatArrow => "=>",
                 Tok::Dot => ".",
                 Tok::Assign => "=",
@@ -3253,6 +3991,8 @@ fn describe(t: &Tok) -> String {
                 Tok::Pipe => "|",
                 Tok::PipeGt => "|>",
                 Tok::Amp => "&",
+                Tok::Caret => "^",
+                Tok::Tilde => "~",
                 Tok::At => "@",
                 _ => "?",
             };

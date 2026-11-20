@@ -26,6 +26,16 @@ pub const MAX_LOCALS: usize = 1024;
 pub const GENERATOR_MAX_LIVE_I64_LOCALS: usize = 16;
 pub const MAX_STRING_DATA: usize = 32 * 1024;
 
+// Canonical collection and loan identities are reserved before guest lowering.
+// This is a name-spoofing guard, not a runtime implementation.
+const RESERVED_COLLECTION_AND_LOAN_NAMES: &[&str] = &[
+    "Option", "Result", "Array", "FixedArray", "List", "FixedList",
+    "Vector", "Slice", "Tuple", "Map", "Set", "ReadLoan", "WriteLoan",
+];
+fn is_reserved_collection_or_loan_name(name: &str) -> bool {
+    RESERVED_COLLECTION_AND_LOAN_NAMES.contains(&name)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
     And,
@@ -161,6 +171,11 @@ pub enum TExpr {
     /// Evaluate a tagged ADT once. On failure return its original handle from
     /// the enclosing function; on success leave the i64 payload on the stack.
     AdtPropagate { source: Box<TE>, tmp: u32, success_tag: u32 },
+    /// Checked physical-array cell load at a compiler-planned in-bounds
+    /// byte offset. Never represented as a class field or untrusted pointer.
+    CollectionLoad { array: Box<TE>, offset: u32 },
+    /// Bounded source-compiled Array allocation in guest linear memory.
+    CollectionAlloc(u32),
     /// ordinary class field read
     FieldGet {
         obj: Box<TE>,
@@ -201,6 +216,9 @@ pub struct TE {
 #[derive(Clone, Debug)]
 pub enum TStmt {
     Set(u32, TE),
+    /// Compiler-planned scalar i64 cell store inside an owned Array allocation.
+    /// Its offset is checked against the resolved nominal layout/length.
+    CollectionStore { array: TE, offset: u32, value: TE },
     /// ordinary class field initialization / assignment
     FieldSet {
         obj: TE,
@@ -239,13 +257,14 @@ pub enum TStmt {
         body: Vec<TStmt>,
         catch: Option<Vec<TStmt>>,
         finally: Option<Vec<TStmt>>,
+        pos: Pos,
     },
     /// Registration point of a top-level `defer`: sets `flag`. The body
     /// runs LIFO at every function exit after registration.
-    Defer { flag: u32, body: Vec<TStmt> },
+    Defer { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt>, pos: Pos },
     /// Registration of a recovery callback: evaluates factory arguments into
     /// `args` slots once, sets `flag`. The body runs only while unwinding.
-    Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt> },
+    Recover { flag: u32, args: Vec<(u32, TE)>, body: Vec<TStmt>, pos: Pos },
     /// Terminal `c.next()`: delegate the unchanged failure to the next
     /// older recovery callback or the outer boundary.
     RecoverNext,
@@ -319,8 +338,7 @@ pub struct TGenerator {
 pub struct TActor {
     pub name: String,
     pub kind: ActorKind,
-    /// Verified inbound type. The Wasm guest must validate i64 wire values
-    /// (not just trust a host-supplied ActorMail<bool> representation).
+    /// Verified ingress wire type, never inferred from host-supplied payload.
     pub payload: Type,
     /// `(state global, initializer)` in declaration order.
     pub inits: Vec<(u32, TE)>,
@@ -357,8 +375,16 @@ pub const FIELD_BYTES: u32 = 8;
 struct FieldInfo {
     name: String,
     ty: Type,
-    public: bool,
+    visibility: FieldVisibility,
     mode: FieldMode,
+    /// Do not conflate Val, Final and Const with the browser storage mode.
+    binding: FieldBinding,
+    /// Only final fields with no declaration initializer may be written
+    /// exactly once during construction; the CFG gate proves assignment.
+    deferred_final: bool,
+    /// Future referent-write authorization is independent of rebinding.
+    #[allow(dead_code)]
+    referent_mutable: bool,
     /// byte offset (classes) or state global (actors)
     slot: u32,
 }
@@ -380,6 +406,9 @@ struct ClassInfo {
     fields: Vec<FieldInfo>,
     methods: Vec<MethodInfo>,
     new_idx: u32,
+    /// AOT-generated, private per-concrete-class copier, present only after
+    /// proving every stored field is a by-value/immutable scalar.
+    deep_copy_idx: Option<u32>,
     ctor_idx: Option<u32>,
     ctor_params: Vec<Type>,
 }
@@ -459,9 +488,14 @@ struct FnCx<'a> {
     cleanup_depth: u32,
     /// Cursor binder of the recovery callback being checked.
     recover_cursor: Option<String>,
+    /// Non-escaping error-view binder; only explicitly admitted read-only
+    /// properties may be lowered from the compiler-owned unwind slots.
+    recover_error: Option<String>,
 }
 
 type R<T> = Result<T, Diagnostic>;
+/// Compiler-owned slots and isolated bindings for one cleanup factory.
+type CleanupCaptured = (Vec<(u32, TE)>, Vec<Local>);
 
 fn string_member_err(name: &str, pos: Pos) -> Diagnostic {
     match name {
@@ -725,6 +759,55 @@ fn generator_arg(f: &Func, target: &Func, args: &[Expr]) -> Option<TGenArg> {
     }
 }
 
+/// Gate every generated class copy against the **canonical** closed-world
+/// AOT descriptor checker, vendored byte-identically from the independently
+/// tested atto-borrow-checker.rs copy_graph_v1 module. No user annotations or
+/// method names can mint a witness, and this does not admit actor sends.
+fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()> {
+    use crate::copy_graph_v1::{
+        admit_copy, CopyMode, CopyRequest, Field as CopyField,
+        FieldKind as CopyFieldKind, TypeDescriptor,
+    };
+
+    let mut layouts = Vec::with_capacity(classes.len());
+    for (id, class) in classes.iter().enumerate() {
+        let fields = class.fields.iter().enumerate().map(|(i, f)| CopyField {
+            id: (i as u32) + 1,
+            kind: match f.ty {
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_) =>
+                    CopyFieldKind::Scalar,
+                Type::Class(child) => CopyFieldKind::OwnedMutable(child + 1),
+                _ => CopyFieldKind::Unresolved,
+            },
+        }).collect();
+        layouts.push(TypeDescriptor {
+            id: id as u32 + 1,
+            parent: None, // the browser compiler does not admit inheritance
+            fields,
+            deep_copy_witness: class.deep_copy_idx.is_some() && !class.state_container,
+            shallow_copy_witness: false, // a deep witness does not grant copy!
+            sendable: false, // actor Sendable is a separate, unimplemented proof
+        });
+    }
+    let requested = ci.checked_add(1).ok_or_else(|| Diagnostic::new(
+        pos, "E_COPY_AOT_WITNESS", "invalid concrete class identifier"))?;
+    let plan = admit_copy(&layouts, CopyRequest {
+        concrete_type: requested,
+        static_type: requested,
+        mode: CopyMode::Deep,
+        actor_send: false,
+    }).map_err(|err| Diagnostic::new(pos, err.0,
+        "class lacks a complete, concrete, closed-world compiler-generated deep copy witness"))?;
+    // The current AOT backend generates flat-object copies only. Do not
+    // broaden witness admission to transitive graphs until the generated
+    // copier has an identity memo and a rollback-safe graph allocation plan.
+    if plan.copied_type_ids != vec![requested] {
+        return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+            "nested mutable class graph requires a memoized AOT copy runtime"));
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
@@ -734,6 +817,19 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // Validate the bounded CFG and integer-only suspension/lifetime profile
     // before registering signatures. Reject unsupported generator effects
     // before emission; never substitute eager iterator materialization.
+    for spec in &p.array_types {
+        // Nominal resolution is performed by the same production type checker
+        // that validates functions/classes, not by token-level generic guesses.
+        if !p.classes.iter().any(|c| c.name == spec.element) {
+            return Err(Diagnostic::new(spec.pos, "E_UNKNOWN_TYPE",
+                format!("Array element '{}' requires a declared nominal class type", spec.element)));
+        }
+    }
+    if let Some(spec) = p.array_types.first() {
+        return Err(Diagnostic::new(spec.pos, "E_UNSUPPORTED",
+            format!("Array<{}, layout={:?}> is a checked nominal generic specialization, but general-purpose Array storage and borrow lowering are not yet enabled outside the bounded compiled guest profile",
+                spec.element, spec.layout)));
+    }
     for f in &p.funcs {
         if f.is_generator {
             precheck_generator_body(&f.body, &p.funcs)?;
@@ -787,6 +883,39 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
     }
     for a in &p.actors {
+        if a.persistence != ActorPersistenceMode::Volatile {
+            // Validate an AOT-friendly scalar snapshot schema first. No guest
+            // emission may silently treat durable/persistent as volatile.
+            let _schema = crate::actor_persistence::ActorStateSchema::for_actor(a)?;
+            let legacy_load = a.methods.iter().find(|m| m.name == "load_state");
+            let legacy_save = a.methods.iter().find(|m| m.name == "save_state");
+            let has_load = a.persistence_hooks.iter().any(|h| h.name == "load_state");
+            let has_save = a.persistence_hooks.iter().any(|h| h.name == "save_state");
+            match a.persistence {
+                ActorPersistenceMode::Persistent => {
+                    if legacy_load.is_some() || legacy_save.is_some() {
+                        return Err(Diagnostic::new(a.pos, "E_PERSIST_SIGNATURE",
+                            "persistent actor hooks must use susp fnc and exact Result types"));
+                    }
+                    if !has_load || !has_save ||
+                        a.persistence_hooks.iter().any(|h| !h.body_provided) {
+                        return Err(Diagnostic::new(a.pos, "E_PERSIST_HOOKS",
+                            "persistent actors require implemented load_state and save_state hooks"));
+                    }
+                    return Err(Diagnostic::new(a.pos, "E_PERSIST_RUNTIME_UNAVAILABLE",
+                        "hook signatures validated, but suspended storage bodies and recovery are not yet executable"));
+                }
+                ActorPersistenceMode::Durable => {
+                    if has_load || has_save || legacy_load.is_some() || legacy_save.is_some() {
+                        return Err(Diagnostic::new(a.pos, "E_DURABLE_HOOK_OVERRIDE",
+                            "durable actor storage is runtime-owned; user load/save hooks cannot override it"));
+                    }
+                    return Err(Diagnostic::new(a.pos, "E_DURABLE_RUNTIME_UNAVAILABLE",
+                        "automatic durable disk commits and revival are not implemented by this browser backend"));
+                }
+                ActorPersistenceMode::Volatile => unreachable!(),
+            }
+        }
         if a.methods.iter().any(|m| m.ret == Type::GeneratorInt
             || m.params.iter().any(|p| p.ty == Type::GeneratorInt)) {
             return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED_TYPE",
@@ -806,7 +935,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         if matches!(
             name,
             "And" | "Or" | "Xor" | "stdio" | "ActorRef" | "ActorMail" | "int" | "bool" | "boolean"
-        ) {
+        ) || is_reserved_collection_or_loan_name(name) {
             return Err(Diagnostic::new(
                 pos,
                 "E_DUPLICATE",
@@ -838,7 +967,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let mut sigs = BTreeMap::new();
     let mut names: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, f) in p.funcs.iter().enumerate() {
-        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None") {
+        if matches!(f.name.as_str(), "And" | "Or" | "Xor" | "stdio" | "Ok" | "Err" | "Some" | "None")
+            || is_reserved_collection_or_loan_name(&f.name) {
             return Err(Diagnostic::new(
                 f.pos,
                 "E_DUPLICATE",
@@ -899,6 +1029,27 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                     format!("'{owner}' already declares a field named '{}'", f.name),
                 ));
             }
+            // Defense in depth beyond the parser: only an ordinary
+            // class field with explicitly declared final binding/mode may
+            // omit its initializer. Future source rewrites, synthesized
+            // declarations, or actor lowering must never turn missing
+            // val/let/const/actor initializers into zero-filled storage.
+            // Validation precedes field_init(None) and allocation/codegen.
+            if f.init.is_none() &&
+                (actor || f.binding != FieldBinding::Final ||
+                 f.mode != FieldMode::Final) {
+                return Err(Diagnostic::new(f.pos, "E_INIT",
+                    format!("field '{owner}.{}' requires a declaration initializer; only an ordinary class final field may defer initialization to a checked constructor", f.name)));
+            }
+            // A class 'const' is constexpr; it must not silently turn into
+            // runtime initialization merely because Val/Final share a storage mode.
+            // Non-const initializer effects are still intentionally unsupported
+            // by the current restricted browser field-initialization backend.
+            if !actor && f.binding == FieldBinding::Const &&
+                !f.init.as_ref().is_some_and(const_init) {
+                return Err(Diagnostic::new(f.pos, "E_CONST",
+                    format!("class constant '{}.{}' requires a compile-time initializer", owner, f.name)));
+            }
             let ty = res(f.ty)?;
             let ok = match ty {
                 Type::Int | Type::Bool => true,
@@ -921,8 +1072,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             out.push(FieldInfo {
                 name: f.name.clone(),
                 ty,
-                public: f.public,
+                visibility: f.visibility,
                 mode: f.mode,
+                binding: f.binding,
+                deferred_final: f.binding == FieldBinding::Final && f.init.is_none(),
+                referent_mutable: f.referent_mutable,
                 slot: if actor { global_base + i as u32 } else { i as u32 * FIELD_BYTES },
             });
         }
@@ -938,6 +1092,15 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         for m in &mut methods {
             m.idx = take();
         }
+        // This first AOT profile may copy only a flat class of verified
+        // identity-free slots. Class/actor/ADT handles require a graph memo,
+        // and protected actor-state objects cannot bypass their sealed leases.
+        // Custom copy_deep overrides need separate proof/hook chaining.
+        let can_generate_deep_copy = !c.state_container
+            && !c.methods.iter().any(|m| m.name == "copy_deep")
+            && fields.iter().all(|f| matches!(f.ty,
+                Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)));
+        let deep_copy_idx = if can_generate_deep_copy { Some(take()) } else { None };
         let ctor_params = match &c.ctor {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
             None => Vec::new(),
@@ -948,6 +1111,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             fields,
             methods,
             new_idx,
+            deep_copy_idx,
             ctor_idx,
             ctor_params,
         });
@@ -959,7 +1123,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             ActorKind::Default | ActorKind::Serial => {}
             ActorKind::Isolated | ActorKind::Shared | ActorKind::Untrusted =>
                 return Err(Diagnostic::new(a.pos, "E_UNSUPPORTED",
-                    "isolated/shared/untrusted actor scheduling and security profiles are not implemented by this browser runtime")),
+                    "isolated/shared/untrusted scheduling and TenantVM confinement are not yet proven")),
         }
         if a.receive.is_none() {
             return Err(Diagnostic::new(a.pos, "E_TYPE",
@@ -972,7 +1136,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             return Err(Diagnostic::new(
                 m.pos,
                 "E_TYPE",
-                format!("actor mailbox handler '{}.receive' must use the single sealed typed receive entrypoint", a.name),
+                format!("actor mailbox handler '{}.receive' must use the sealed typed receive entrypoint", a.name),
             ));
         }
         let receive_idx = a.receive.as_ref().map(|_| take());
@@ -994,7 +1158,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 }
                 if !r.envelope && t != Type::Int {
                     return Err(Diagnostic::new(r.pos, "E_UNSUPPORTED_TYPE",
-                        "direct receive(msg: T) currently lowers int only; use ActorMail<bool> for bool, and wait for tagged message ABI for enums/objects"));
+                        "direct receive(msg: T) currently lowers only int; use ActorMail<bool> for bool"));
                 }
                 t
             }
@@ -1099,15 +1263,11 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             .collect();
         let body = body_check(
             &g,
-            Owner::TopLevel,
-            &named,
-            None,
-            ret,
-            &f.body,
-            &f.name,
-            f.pos,
-            &mut imports,
-            &mut data,
+            BodyCheckInput {
+                owner: Owner::TopLevel, named: &named, mail: None,
+                ret, body: &f.body, label: &f.name, pos: f.pos,
+            },
+            &mut imports, &mut data,
         )?;
         funcs[i] = Some(TFunc {
             name: f.name.clone(),
@@ -1124,8 +1284,13 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let me = Type::Class(ci as u32);
         let mut field_inits = Vec::new();
         for (f, fi) in c.fields.iter().zip(&info.fields) {
-            let v = field_init(&g, f, fi.ty, &c.name, false, &mut imports, &mut data)?;
-            field_inits.push((fi.slot, fi.ty, v));
+            if let Some(v) = field_init(&g, f, fi.ty, &c.name, false, &mut imports, &mut data)? {
+                field_inits.push((fi.slot, fi.ty, v));
+            }
+        }
+        if c.ctor.is_none() && info.fields.iter().any(|f| f.deferred_final) {
+            return Err(Diagnostic::new(c.pos, "E_INIT",
+                format!("class '{}' has deferred final fields but no constructor", c.name)));
         }
         if let (Some(k), Some(kidx)) = (&c.ctor, info.ctor_idx) {
             let mut named = vec![("self", me, false)];
@@ -1140,17 +1305,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 ctor: true,
                 is_static: false,
             };
+            constructor_definite_init(&k.body, &info.fields, k.pos)?;
             let body = body_check(
                 &g,
-                owner,
-                &named,
-                None,
-                Type::Void,
-                &k.body,
-                "constructor",
-                k.pos,
-                &mut imports,
-                &mut data,
+                BodyCheckInput {
+                    owner, named: &named, mail: None, ret: Type::Void,
+                    body: &k.body, label: "constructor", pos: k.pos,
+                },
+                &mut imports, &mut data,
             )?;
             let mut params = vec![me];
             params.extend(info.ctor_params.iter().copied());
@@ -1205,6 +1367,35 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             locals: vec![me],
             body,
         });
+        // Generated source-independent whole-concrete-type copy plan. The
+        // checker has proved that each slot can be copied by value; emitting
+        // an allocation plus typed field loads/stores creates a fresh object
+        // without invoking any initializer or user constructor a second time.
+        // The copy function is private and has no reflective field access.
+        if let Some(copy_idx) = info.deep_copy_idx {
+            authenticate_flat_copy_aot(&g.classes, ci as u32, c.pos)?;
+            let source = TE { e: TExpr::Local(0), ty: me };
+            let cloned = TE { e: TExpr::Local(1), ty: me };
+            let mut body = vec![TStmt::Set(1, TE {
+                e: TExpr::Alloc((info.fields.len() as u32 * FIELD_BYTES).max(FIELD_BYTES)),
+                ty: me,
+            })];
+            for field in &info.fields {
+                body.push(TStmt::FieldSet {
+                    obj: cloned.clone(),
+                    offset: field.slot,
+                    ty: field.ty,
+                    value: TE { e: TExpr::FieldGet {
+                        obj: Box::new(source.clone()), offset: field.slot,
+                    }, ty: field.ty },
+                });
+            }
+            body.push(TStmt::Return(Some(cloned)));
+            funcs[copy_idx as usize] = Some(TFunc {
+                name: format!("{}.copy_deep$generated", c.name),
+                params: vec![me], ret: me, locals: vec![me], body,
+            });
+        }
         for (m, mi) in c.methods.iter().zip(&info.methods) {
             let owner = Owner::Class {
                 c: ci as u32,
@@ -1217,7 +1408,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
             named.extend(m.params.iter().zip(&mi.params).map(|(q, t)| (q.name.as_str(), *t, q.mutable)));
             let label = format!("{}.{}", c.name, m.name);
-            let body = body_check(&g, owner, &named, None, mi.ret, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            let body = body_check(
+                &g,
+                BodyCheckInput {
+                    owner, named: &named, mail: None, ret: mi.ret,
+                    body: &m.body, label: &label, pos: m.pos,
+                },
+                &mut imports, &mut data,
+            )?;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: named.iter().map(|x| x.1).collect(),
@@ -1235,7 +1433,8 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let owner = Owner::Actor { a: ai as u32 };
         let mut inits = Vec::new();
         for (f, fi) in a.fields.iter().zip(&info.fields) {
-            inits.push((fi.slot, field_init(&g, f, fi.ty, &a.name, true, &mut imports, &mut data)?));
+            inits.push((fi.slot, field_init(&g, f, fi.ty, &a.name, true, &mut imports, &mut data)?
+                .ok_or_else(|| Diagnostic::new(f.pos, "E_INIT", "actor fields require initializers"))?));
         }
         if let (Some(r), Some(ridx)) = (&a.receive, info.receive_idx) {
             let label = format!("{}.receive", a.name);
@@ -1246,15 +1445,12 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             };
             let body = body_check(
                 &g,
-                owner,
-                &named,
-                if r.envelope { Some((r.mail.as_str(), info.payload)) } else { None },
-                Type::Void,
-                &r.body,
-                &label,
-                r.pos,
-                &mut imports,
-                &mut data,
+                BodyCheckInput {
+                    owner, named: &named,
+                    mail: if r.envelope { Some((r.mail.as_str(), info.payload)) } else { None },
+                    ret: Type::Void, body: &r.body, label: &label, pos: r.pos,
+                },
+                &mut imports, &mut data,
             )?;
             funcs[ridx as usize] = Some(TFunc {
                 name: label,
@@ -1283,7 +1479,14 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 .map(|(q, t)| (q.name.as_str(), *t, q.mutable))
                 .collect();
             let label = format!("{}.{}", a.name, m.name);
-            let body = body_check(&g, owner, &named, None, mi.ret, &m.body, &label, m.pos, &mut imports, &mut data)?;
+            let body = body_check(
+                &g,
+                BodyCheckInput {
+                    owner, named: &named, mail: None, ret: mi.ret,
+                    body: &m.body, label: &label, pos: m.pos,
+                },
+                &mut imports, &mut data,
+            )?;
             funcs[mi.idx as usize] = Some(TFunc {
                 name: label,
                 params: mi.params.clone(),
@@ -1324,6 +1527,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         .iter()
         .any(|f| f.params.contains(&Type::Str) || f.ret == Type::Str || f.locals.contains(&Type::Str) || any_in_stmts(&f.body, &uses_str))
         || tactors.iter().any(|a| a.inits.iter().any(|(_, e)| any_in(e, &uses_str)));
+    audit_cleanup_call_effects(&funcs, &p.funcs)?;
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. })));
@@ -1347,6 +1551,234 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     })
 }
 
+/// The source guest exception channels. Panic/trap is deliberately absent:
+/// it is a fatal runtime outcome, not a catchable or locally recoverable
+/// \`Error\`. These two bits are propagated through the typed call graph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EscapeEffects { throws: bool, raises: bool }
+
+impl EscapeEffects {
+    fn union(self, other: Self) -> Self {
+        Self { throws: self.throws || other.throws, raises: self.raises || other.raises }
+    }
+    fn without_throw(self) -> Self {
+        Self { throws: false, raises: self.raises }
+    }
+    fn any(self) -> bool { self.throws || self.raises }
+}
+
+/// Infer *escaping* effects of a typed expression. A trap discharges only
+/// ordinary throw; it cannot intercept raise or a fatal runtime panic.
+/// Evaluation of arguments occurs outside the called function's handler,
+/// so argument effects must also be included in the result.
+fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
+    fn combine<'a>(values: impl IntoIterator<Item=&'a TE>, effects: &[EscapeEffects]) -> EscapeEffects {
+        values.into_iter().fold(EscapeEffects::default(),
+            |acc, v| acc.union(expr_escape_effects(v, effects)))
+    }
+    match &value.e {
+        TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_)
+        | TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::PrintStr { .. }
+        | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
+        | TExpr::CollectionAlloc(_)
+        | TExpr::Spawn(_) => EscapeEffects::default(),
+        TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
+        | TExpr::Not(v) | TExpr::Print { value: v, .. }
+        | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
+        | TExpr::AdtPayload(v) | TExpr::AdtPropagate { source: v, .. }
+        | TExpr::FieldGet { obj: v, .. }
+        | TExpr::CollectionLoad { array: v, .. }
+        | TExpr::StateFieldRead { obj: v, .. }
+        | TExpr::PrintObj { obj: v, .. } =>
+            expr_escape_effects(v, effects),
+        TExpr::Trap { value: v, .. } =>
+            expr_escape_effects(v, effects).without_throw(),
+        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b)
+        | TExpr::Send { target: a, value: b } =>
+            combine([a.as_ref(), b.as_ref()], effects),
+        TExpr::Ternary(cond, yes, no) =>
+            combine([cond.as_ref(), yes.as_ref(), no.as_ref()], effects),
+        TExpr::Str(_, receiver, arg) =>
+            expr_escape_effects(receiver, effects)
+                .union(arg.as_ref().map_or(EscapeEffects::default(),
+                    |v| expr_escape_effects(v, effects))),
+        TExpr::AdtNew { payload, .. } =>
+            payload.as_ref().map_or(EscapeEffects::default(),
+                |v| expr_escape_effects(v, effects)),
+        TExpr::Call(target, args) => {
+            let callee = effects.get(*target as usize).copied().unwrap_or(
+                // Unknown typed call targets must fail closed, not be assumed pure.
+                EscapeEffects { throws: true, raises: true });
+            combine(args.iter(), effects).union(callee)
+        }
+    }
+}
+
+/// Compute escaping effects through typed blocks. An ordinary catch handles
+/// the entire ordinary-throw effect of its protected body, including calls,
+/// nested handlers and error-producing arguments; a raise always bypasses it.
+/// The catch body is analyzed independently because it may itself escape.
+fn stmts_escape_effects(body: &[TStmt], effects: &[EscapeEffects]) -> EscapeEffects {
+    let mut all = EscapeEffects::default();
+    for stmt in body {
+        let next = match stmt {
+            TStmt::Set(_, value) | TStmt::GlobalSet(_, value)
+            | TStmt::Expr(value) | TStmt::StateRegister(value)
+            | TStmt::Return(Some(value)) =>
+                expr_escape_effects(value, effects),
+            TStmt::Return(None) | TStmt::UnwindFrame { .. }
+            | TStmt::RecoverNext | TStmt::Break | TStmt::Continue
+            | TStmt::Unreachable => EscapeEffects::default(),
+            TStmt::Throw(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: true, raises: false }),
+            TStmt::Raise(value) => expr_escape_effects(value, effects)
+                .union(EscapeEffects { throws: false, raises: true }),
+            TStmt::CollectionStore { array: obj, value, .. } |
+            TStmt::FieldSet { obj, value, .. } |
+            TStmt::StateFieldWrite { obj, value, .. } =>
+                expr_escape_effects(obj, effects)
+                    .union(expr_escape_effects(value, effects)),
+            TStmt::StateCriticalWrite(inner) | TStmt::Block(inner) =>
+                stmts_escape_effects(inner, effects),
+            TStmt::If(arms, other) => {
+                let mut result = other.as_ref().map_or(EscapeEffects::default(),
+                    |b| stmts_escape_effects(b, effects));
+                for (cond, arm) in arms {
+                    result = result.union(expr_escape_effects(cond, effects))
+                        .union(stmts_escape_effects(arm, effects));
+                }
+                result
+            }
+            TStmt::Loop { cond, body, update } =>
+                cond.as_ref().map_or(EscapeEffects::default(),
+                    |v| expr_escape_effects(v, effects))
+                    .union(stmts_escape_effects(body, effects))
+                    .union(stmts_escape_effects(update, effects)),
+            TStmt::ForIn { source, body, .. } =>
+                expr_escape_effects(source, effects)
+                    .union(stmts_escape_effects(body, effects)),
+            TStmt::Try { body, catch, finally, .. } => {
+                let protected = stmts_escape_effects(body, effects);
+                let handled = if catch.is_some() {
+                    protected.without_throw()
+                } else { protected };
+                // An ordinary Error handler cannot execute when the
+                // protected region cannot emit an ordinary Error. Ignore
+                // unreachable handler effects, without discharging raises.
+                let caught = if protected.throws {
+                    catch.as_ref().map_or(EscapeEffects::default(),
+                        |b| stmts_escape_effects(b, effects))
+                } else { EscapeEffects::default() };
+                let cleanup = finally.as_ref().map_or(EscapeEffects::default(),
+                    |b| stmts_escape_effects(b, effects));
+                handled.union(caught).union(cleanup)
+            }
+            // Registration expressions run immediately; callbacks run
+            // only on exit/failure. Including them remains conservative.
+            // In particular, we NEVER assume recover handles the current
+            // function's own errors: caller catches outrank callee recover.
+            TStmt::Defer { args, body, .. } |
+            TStmt::Recover { args, body, .. } => {
+                let captures = args.iter().fold(EscapeEffects::default(),
+                    |acc, (_, arg)| acc.union(expr_escape_effects(arg, effects)));
+                captures.union(stmts_escape_effects(body, effects))
+            }
+        };
+        all = all.union(next);
+        // The same structural definite-exit analysis used for guest
+        // emission also establishes that later statements cannot execute.
+        // Never infer an outgoing effect from dead code after return/raise.
+        if returns(std::slice::from_ref(stmt)) { break; }
+    }
+    all
+}
+
+/// Infer escaping effects by monotone fixed point, so recursion and
+/// mutually recursive call groups converge without unsound assumptions.
+/// Validate each cleanup body with those exact effects. A callee that
+/// catches its own throw, or a call wrapped in \`trap\`, can now be used
+/// safely within cleanup; an escaping raise can never be suppressed by
+/// an ordinary catch/trap. Unreachable-code precision remains deliberately
+/// conservative until the CFG effect solver is complete.
+fn audit_cleanup_call_effects(funcs: &[TFunc], declared: &[Func]) -> R<()> {
+    let mut effects = vec![EscapeEffects::default(); funcs.len()];
+    loop {
+        let mut changed = false;
+        for (index, f) in funcs.iter().enumerate() {
+            let next = stmts_escape_effects(&f.body, &effects);
+            if next != effects[index] {
+                effects[index] = effects[index].union(next);
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+    // A clause list asserts an upper bound on the ordinary exceptional
+    // channels, not merely an annotation for documentation. Omission of a
+    // clause inside an explicit list means that effect cannot escape.
+    // Fully unannotated legacy functions remain inference-only.
+    for (index, f) in declared.iter().enumerate() {
+        let Some(contract) = f.declared_effects else { continue; };
+        let actual = effects[index];
+        if (actual.throws && !contract.throws) || (actual.raises && !contract.raises) {
+            let missing = match (actual.throws && !contract.throws, actual.raises && !contract.raises) {
+                (true, true) => "throws(Error), raises(Error)",
+                (true, false) => "throws(Error)",
+                (false, true) => "raises(Error)",
+                (false, false) => unreachable!(),
+            };
+            return Err(Diagnostic::new(f.pos, "E_EFFECT",
+                format!("function '{}' declares an incomplete exceptional-effect upper bound: escaping {missing}", f.name)));
+        }
+    }
+
+    // Only registration is limited to the top-level browser profile:
+    // try/finally and branch nesting can already be arbitrary.
+    fn verify_scopes(body: &[TStmt], effects: &[EscapeEffects]) -> R<()> {
+        for stmt in body {
+            match stmt {
+                TStmt::Defer { body: cleanup, pos, .. } |
+                TStmt::Recover { body: cleanup, pos, .. } => {
+                    if stmts_escape_effects(cleanup, effects).any() {
+                        return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
+                            "cleanup/recovery callback has a provably escaping throw or raise"));
+                    }
+                }
+                TStmt::Try { body: inner, catch, finally, pos, .. } => {
+                    if finally.as_ref().is_some_and(|b|
+                        stmts_escape_effects(b, effects).any())
+                    {
+                        return Err(Diagnostic::new(*pos, "E_UNWIND_EFFECT",
+                            "finally has an escaping throw or raise"));
+                    }
+                    verify_scopes(inner, effects)?;
+                    if let Some(handler) = catch {
+                        verify_scopes(handler, effects)?;
+                    }
+                    if let Some(cleanup) = finally {
+                        verify_scopes(cleanup, effects)?;
+                    }
+                }
+                TStmt::If(arms, other) => {
+                    for (_, inner) in arms { verify_scopes(inner, effects)?; }
+                    if let Some(inner) = other { verify_scopes(inner, effects)?; }
+                }
+                TStmt::Loop { body: inner, update, .. } => {
+                    verify_scopes(inner, effects)?;
+                    verify_scopes(update, effects)?;
+                }
+                TStmt::ForIn { body: inner, .. } |
+                TStmt::Block(inner) | TStmt::StateCriticalWrite(inner) =>
+                    verify_scopes(inner, effects)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    for f in funcs { verify_scopes(&f.body, &effects)?; }
+    Ok(())
+}
+
 fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl], actors: &[String]) -> String {
     match t {
         Type::Class(i) => classes[i as usize].clone(),
@@ -1367,10 +1799,15 @@ fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
     }
 }
 
-fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, imports: &mut Vec<Import>, data: &mut Vec<u8>) -> R<TE> {
-    if !const_init(&f.init) {
+fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, imports: &mut Vec<Import>, data: &mut Vec<u8>) -> R<Option<TE>> {
+    let Some(init) = f.init.as_ref() else {
+        // Incomplete final storage is never read before a proven constructor
+        // assignment. No synthetic initializer or implicit default is emitted.
+        return Ok(None);
+    };
+    if !const_init(init) {
         return Err(Diagnostic::new(
-            f.init.pos,
+            init.pos,
             "E_UNSUPPORTED",
             format!(
                 "field initializer '{owner}.{}' must be a constant expression; initialize computed values in the constructor",
@@ -1379,10 +1816,10 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
         ));
     }
     let mut cx = FnCx::new(g, Owner::FieldInit { actor }, Type::Void, imports, data);
-    let v = cx.value(&f.init)?;
+    let v = cx.value(init)?;
     if v.ty != ty {
         return Err(type_err(
-            f.init.pos,
+            init.pos,
             format!(
                 "field '{owner}.{}' has type {} but its initializer has type {}",
                 f.name,
@@ -1391,23 +1828,391 @@ fn field_init(g: &Globals, f: &Field, ty: Type, owner: &str, actor: bool, import
             ),
         ));
     }
-    Ok(v)
+    Ok(Some(v))
 }
 
 /// Check one callable body. `named` are the wasm parameters in order.
 #[allow(clippy::too_many_arguments)]
+
+#[derive(Clone)]
+struct ConstructorInitFlow {
+    /// Every currently reachable path has assigned the field.
+    definite: BTreeSet<String>,
+    /// At least one reachable path has assigned the field. A subsequent
+    /// write would violate exactly-once final semantics on that path.
+    possible: BTreeSet<String>,
+}
+
+fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) -> R<()> {
+    match &e.kind {
+        ExprKind::Member(base, name) if matches!(base.kind, ExprKind::SelfRef) => {
+            if fields.iter().any(|f| f.deferred_final && f.name == *name)
+                && !flow.definite.contains(name) {
+                return Err(Diagnostic::new(e.pos, "E_INIT_READ",
+                    format!("read of deferred final field '{name}' before definite initialization")));
+            }
+            Ok(())
+        }
+        ExprKind::Member(base, _) => ctor_init_expr(base, flow, fields),
+        ExprKind::MethodCall(base, _, args) => {
+            ctor_init_expr(base, flow, fields)?;
+            for arg in args { ctor_init_expr(arg, flow, fields)?; }
+            Ok(())
+        }
+        ExprKind::Unary(_, v) | ExprKind::Trap(v) | ExprKind::Propagate(v)
+        | ExprKind::Ownership(_, _, v) => ctor_init_expr(v, flow, fields),
+        ExprKind::Binary(_, a, b) => {
+            ctor_init_expr(a, flow, fields)?;
+            ctor_init_expr(b, flow, fields)
+        }
+        ExprKind::Ternary(cond, yes, no) => {
+            ctor_init_expr(cond, flow, fields)?;
+            ctor_init_expr(yes, flow, fields)?;
+            ctor_init_expr(no, flow, fields)
+        }
+        ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) => {
+            for arg in args { ctor_init_expr(arg, flow, fields)?; }
+            Ok(())
+        }
+        ExprKind::Lambda { body, .. } => {
+            // No constructor state can escape into closures: the companion
+            // shared self-ownership admission rejects those captures. Here
+            // check reads conservatively without granting a write afterward.
+            let mut nested = flow.clone();
+            match body {
+                LambdaBody::Expression(e) => ctor_init_expr(e, &nested, fields),
+                LambdaBody::Statement(s) =>
+                    ctor_init_stmts(std::slice::from_ref(s.as_ref()),
+                        &mut nested, fields, true).map(|_| ()),
+                LambdaBody::Block(stmts) =>
+                    ctor_init_stmts(stmts, &mut nested, fields, true).map(|_| ()),
+            }
+        }
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) |
+        ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef |
+        ExprKind::StateRead(_) | ExprKind::Spawn(_) => Ok(()),
+    }
+}
+
+fn ctor_require_initialized(flow: &ConstructorInitFlow, fields: &[FieldInfo], pos: Pos) -> R<()> {
+    for field in fields {
+        if field.deferred_final && !flow.definite.contains(&field.name) {
+            return Err(Diagnostic::new(pos, "E_INIT",
+                format!("constructor may complete without initializing final field '{}'", field.name)));
+        }
+    }
+    Ok(())
+}
+
+/// Returns true if execution can still reach the next statement normally.
+/// Exceptional paths need no successful object publication. The analysis
+/// never relies on Wasm's zero-initialized allocation as a semantic default.
+fn ctor_init_stmts(
+    body: &[Stmt], flow: &mut ConstructorInitFlow,
+    fields: &[FieldInfo], ambiguous: bool,
+) -> R<bool> {
+    for stmt in body {
+        let live = match stmt {
+            Stmt::Bind { init, .. } => {
+                ctor_init_expr(init, flow, fields)?; true
+            }
+            Stmt::Assign { value, .. } => {
+                ctor_init_expr(value, flow, fields)?; true
+            }
+            Stmt::FieldAssign { target, field, value, pos } => {
+                if !matches!(target.kind, ExprKind::SelfRef) {
+                    ctor_init_expr(target, flow, fields)?;
+                }
+                // Evaluate the RHS *before* assignment. self.f = self.f
+                // cannot manufacture initialization out of a prior read.
+                ctor_init_expr(value, flow, fields)?;
+                if fields.iter().any(|f| f.deferred_final && f.name == *field)
+                    && matches!(target.kind, ExprKind::SelfRef) {
+                    if ambiguous {
+                        return Err(Diagnostic::new(*pos, "E_INIT_FLOW",
+                            "deferred final write inside a loop, deferred callback, match or exceptional region is not yet proven exactly once"));
+                    }
+                    if !flow.possible.insert(field.clone()) {
+                        return Err(Diagnostic::new(*pos, "E_INIT_ONCE",
+                            format!("final field '{field}' might be initialized more than once")));
+                    }
+                    flow.definite.insert(field.clone());
+                }
+                true
+            }
+            Stmt::Expr(e) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) => {
+                ctor_init_expr(e, flow, fields)?; true
+            }
+            Stmt::Return(expr, pos) => {
+                if let Some(e) = expr { ctor_init_expr(e, flow, fields)?; }
+                ctor_require_initialized(flow, fields, *pos)?;
+                false
+            }
+            Stmt::Throw(e, _) | Stmt::Raise(e, _) => {
+                ctor_init_expr(e, flow, fields)?; false
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => false,
+            Stmt::Block(stmts) | Stmt::StateWrite { body: stmts, .. } =>
+                ctor_init_stmts(stmts, flow, fields, ambiguous)?,
+            Stmt::If { arms, otherwise, .. } => {
+                // Condition effects do not initialize fields. Merge all
+                // normal exits: intersection for definite, union for possible.
+                let before = flow.clone();
+                let mut survivors = Vec::new();
+                for (condition, arm) in arms {
+                    ctor_init_expr(condition, &before, fields)?;
+                    let mut branch = before.clone();
+                    if ctor_init_stmts(arm, &mut branch, fields, ambiguous)? {
+                        survivors.push(branch);
+                    }
+                }
+                if let Some(other) = otherwise {
+                    let mut branch = before.clone();
+                    if ctor_init_stmts(other, &mut branch, fields, ambiguous)? {
+                        survivors.push(branch);
+                    }
+                } else {
+                    survivors.push(before);
+                }
+                if survivors.is_empty() {
+                    false
+                } else {
+                    let mut merged = survivors[0].clone();
+                    for branch in survivors.iter().skip(1) {
+                        merged.definite.retain(|name| branch.definite.contains(name));
+                        merged.possible.extend(branch.possible.iter().cloned());
+                    }
+                    *flow = merged;
+                    true
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                ctor_init_expr(cond, flow, fields)?;
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
+            Stmt::Loop { body, .. } => {
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
+            Stmt::For { init, cond, update, body, .. } => {
+                if let Some(init) = init {
+                    if !ctor_init_stmts(std::slice::from_ref(init.as_ref()),
+                        flow, fields, ambiguous)? { return Ok(false); }
+                }
+                if let Some(cond) = cond { ctor_init_expr(cond, flow, fields)?; }
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                if let Some(update) = update {
+                    ctor_init_stmts(std::slice::from_ref(update.as_ref()),
+                        &mut nested, fields, true)?;
+                }
+                true
+            }
+            Stmt::ForIn { source, body, .. } => {
+                ctor_init_expr(source, flow, fields)?;
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
+            Stmt::Try { body, catch, finally, .. } => {
+                // Exception edges / cleanup order are not yet part of the
+                // constructor CFG. Inspect all reads but do not allow
+                // deferred-final assignments in these ambiguous regions.
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                if let Some((_, handler)) = catch {
+                    let mut nested = flow.clone();
+                    ctor_init_stmts(handler, &mut nested, fields, true)?;
+                }
+                if let Some(cleanup) = finally {
+                    let mut nested = flow.clone();
+                    ctor_init_stmts(cleanup, &mut nested, fields, true)?;
+                }
+                true
+            }
+            Stmt::Defer { args, body, .. } | Stmt::Recover { args, body, .. } => {
+                for arg in args { ctor_init_expr(arg, flow, fields)?; }
+                let mut nested = flow.clone();
+                ctor_init_stmts(body, &mut nested, fields, true)?;
+                true
+            }
+            Stmt::Match { subject, arms, .. } => {
+                ctor_init_expr(subject, flow, fields)?;
+                for arm in arms {
+                    if let Some(guard) = &arm.guard { ctor_init_expr(guard, flow, fields)?; }
+                    let mut nested = flow.clone();
+                    ctor_init_stmts(&arm.body, &mut nested, fields, true)?;
+                }
+                true
+            }
+        };
+        if !live { return Ok(false); }
+    }
+    Ok(true)
+}
+
+fn constructor_definite_init(body: &[Stmt], fields: &[FieldInfo], pos: Pos) -> R<()> {
+    let initial: BTreeSet<String> = fields.iter()
+        .filter(|f| !f.deferred_final).map(|f| f.name.clone()).collect();
+    let mut flow = ConstructorInitFlow {
+        definite: initial.clone(),
+        possible: initial,
+    };
+    if ctor_init_stmts(body, &mut flow, fields, false)? {
+        ctor_require_initialized(&flow, fields, pos)?;
+    }
+    Ok(())
+}
+
+/// A constructor receiver is a temporary initialization capability, not a
+/// publishable reference. This admission pass operates on the *parsed AST*,
+/// so both inline and out-of-line constructors have exactly the same rule.
+/// Only direct field projection/assignment is allowed before publication.
+/// Nested callbacks/closures cannot capture even a direct field projection.
+fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
+    let denied = || Diagnostic::new(e.pos, "E_OWNERSHIP",
+        "under-construction self cannot escape, be captured or dispatch methods");
+    match &e.kind {
+        ExprKind::SelfRef => Err(denied()),
+        ExprKind::Member(base, _) if matches!(base.kind, ExprKind::SelfRef) => {
+            if captured { Err(denied()) } else { Ok(()) }
+        }
+        ExprKind::Member(base, _) => constructor_self_expr(base, captured),
+        ExprKind::MethodCall(base, _, args) => {
+            // An arbitrary method can publish its receiver, even if it
+            // returns an innocent scalar. Never dispatch on construction self.
+            constructor_self_expr(base, true)?;
+            for arg in args { constructor_self_expr(arg, captured)?; }
+            Ok(())
+        }
+        ExprKind::Unary(_, inner) | ExprKind::Trap(inner)
+        | ExprKind::Ownership(_, _, inner) | ExprKind::Propagate(inner) =>
+            constructor_self_expr(inner, captured),
+        ExprKind::Binary(_, left, right) => {
+            constructor_self_expr(left, captured)?;
+            constructor_self_expr(right, captured)
+        }
+        ExprKind::Ternary(cond, yes, no) => {
+            constructor_self_expr(cond, captured)?;
+            constructor_self_expr(yes, captured)?;
+            constructor_self_expr(no, captured)
+        }
+        ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) => {
+            for arg in args { constructor_self_expr(arg, captured)?; }
+            Ok(())
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expression(expr) => constructor_self_expr(expr, true),
+            LambdaBody::Statement(stmt) =>
+                constructor_self_stmts(std::slice::from_ref(stmt.as_ref()), true),
+            LambdaBody::Block(stmts) => constructor_self_stmts(stmts, true),
+        },
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_)
+        | ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::StateRead(_)
+        | ExprKind::Spawn(_) => Ok(()),
+    }
+}
+
+fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
+    for stmt in body {
+        match stmt {
+            Stmt::Bind { init, .. } => constructor_self_expr(init, captured)?,
+            Stmt::Assign { value, .. } => constructor_self_expr(value, captured)?,
+            Stmt::FieldAssign { target, value, .. } => {
+                if !matches!(target.kind, ExprKind::SelfRef) || captured {
+                    constructor_self_expr(target, captured)?;
+                }
+                constructor_self_expr(value, captured)?;
+            }
+            Stmt::Expr(expr) | Stmt::Throw(expr, _) | Stmt::Raise(expr, _)
+            | Stmt::Yield(expr, _) | Stmt::YieldFrom(expr, _) =>
+                constructor_self_expr(expr, captured)?,
+            Stmt::Return(Some(expr), _) => constructor_self_expr(expr, captured)?,
+            Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
+            Stmt::StateWrite { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::Block(body) => constructor_self_stmts(body, captured)?,
+            Stmt::Try { body, catch, finally, .. } => {
+                constructor_self_stmts(body, captured)?;
+                if let Some((_, handler)) = catch {
+                    constructor_self_stmts(handler, captured)?;
+                }
+                if let Some(cleanup) = finally {
+                    constructor_self_stmts(cleanup, captured)?;
+                }
+            }
+            Stmt::Defer { args, body, .. } | Stmt::Recover { args, body, .. } => {
+                for arg in args { constructor_self_expr(arg, captured)?; }
+                constructor_self_stmts(body, true)?;
+            }
+            Stmt::If { arms, otherwise, .. } => {
+                for (cond, body) in arms {
+                    constructor_self_expr(cond, captured)?;
+                    constructor_self_stmts(body, captured)?;
+                }
+                if let Some(other) = otherwise {
+                    constructor_self_stmts(other, captured)?;
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                constructor_self_expr(cond, captured)?;
+                constructor_self_stmts(body, captured)?;
+            }
+            Stmt::For { init, cond, update, body, .. } => {
+                if let Some(initializer) = init {
+                    constructor_self_stmts(std::slice::from_ref(initializer.as_ref()), captured)?;
+                }
+                if let Some(cond) = cond { constructor_self_expr(cond, captured)?; }
+                if let Some(update) = update {
+                    constructor_self_stmts(std::slice::from_ref(update.as_ref()), captured)?;
+                }
+                constructor_self_stmts(body, captured)?;
+            }
+            Stmt::ForIn { source, body, .. } => {
+                constructor_self_expr(source, captured)?;
+                constructor_self_stmts(body, captured)?;
+            }
+            Stmt::Match { subject, arms, .. } => {
+                constructor_self_expr(subject, captured)?;
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        constructor_self_expr(guard, captured)?;
+                    }
+                    constructor_self_stmts(&arm.body, captured)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Verified callable signature and its source body. Grouping this
+/// context avoids long positional argument lists where receiver/return
+/// authority could accidentally be swapped between checker call sites.
+struct BodyCheckInput<'a> {
+    owner: Owner,
+    named: &'a [(&'a str, Type, bool)],
+    mail: Option<(&'a str, Type)>,
+    ret: Type,
+    body: &'a [Stmt],
+    label: &'a str,
+    pos: Pos,
+}
+
 fn body_check(
     g: &Globals,
-    owner: Owner,
-    named: &[(&str, Type, bool)],
-    mail: Option<(&str, Type)>,
-    ret: Type,
-    body: &[Stmt],
-    label: &str,
-    pos: Pos,
+    input: BodyCheckInput<'_>,
     imports: &mut Vec<Import>,
     data: &mut Vec<u8>,
 ) -> R<(Vec<TStmt>, Vec<Type>)> {
+    let BodyCheckInput { owner, named, mail, ret, body, label, pos } = input;
+    // This is shared by inline class constructors and out-of-line headers
+    // after they are lowered to the same production ClassDecl AST.
+    if matches!(owner, Owner::Class { ctor: true, .. }) {
+        constructor_self_stmts(body, false)?;
+    }
     let mut cx = FnCx::new(g, owner, ret, imports, data);
     cx.nparams = named.len() as u32;
     if let Some((mail_name, payload)) = mail {
@@ -1483,7 +2288,9 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
             let read_only = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div |
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
-                BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or => true,
+                BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or |
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                BinOp::Shl | BinOp::LShr | BinOp::AShr => true,
             };
             read_only && pure_expr(a, pure_indices) && pure_expr(b, pure_indices)
         }
@@ -1517,6 +2324,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::Print { .. } | TExpr::PrintStr { .. } |
         TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
         TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } | TExpr::GlobalGet(_) |
+        TExpr::CollectionLoad { .. } | TExpr::CollectionAlloc(_) |
         TExpr::Alloc(_) | TExpr::Spawn(_) | TExpr::Send { .. } |
         TExpr::AdtNew { .. } | TExpr::Trap { .. } |
         TExpr::AdtPropagate { .. } => false,
@@ -1538,7 +2346,7 @@ fn pure_stmts(body: &[TStmt], pure_indices: &BTreeSet<u32>) -> bool {
             pure_stmts(body, pure_indices) && pure_stmts(update, pure_indices),
         TStmt::Block(body) => pure_stmts(body, pure_indices),
         TStmt::Break | TStmt::Continue | TStmt::Unreachable => true,
-        TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
+        TStmt::CollectionStore { .. } | TStmt::FieldSet { .. } | TStmt::StateFieldWrite { .. } |
         TStmt::StateCriticalWrite(_) | TStmt::StateRegister(_) |
         TStmt::GlobalSet(_, _) |
         TStmt::Throw(_) | TStmt::ForIn { .. } => false,
@@ -1554,6 +2362,8 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::StateRegister(e) | TStmt::Throw(e) | TStmt::Return(Some(e)) => any_in(e, f),
         TStmt::FieldSet { obj, value, .. } | TStmt::StateFieldWrite { obj, value, .. } =>
             any_in(obj, f) || any_in(value, f),
+        TStmt::CollectionStore { array, value, .. } =>
+            any_in(array, f) || any_in(value, f),
         TStmt::If(arms, other) => {
             arms.iter().any(|(c, b)| any_in(c, f) || any_in_stmts(b, f)) || other.as_ref().is_some_and(|b| any_in_stmts(b, f))
         }
@@ -1565,7 +2375,7 @@ fn any_in_stmts(body: &[TStmt], f: &dyn Fn(&TE) -> bool) -> bool {
         TStmt::Try { body, catch, finally, .. } => any_in_stmts(body, f)
             || catch.as_ref().is_some_and(|b| any_in_stmts(b, f))
             || finally.as_ref().is_some_and(|b| any_in_stmts(b, f)),
-        TStmt::Defer { body, .. } => any_in_stmts(body, f),
+        TStmt::Defer { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
         TStmt::Recover { args, body, .. } => args.iter().any(|(_, e)| any_in(e, f)) || any_in_stmts(body, f),
         TStmt::UnwindFrame { .. } | TStmt::RecoverNext => false,
         TStmt::Block(b) | TStmt::StateCriticalWrite(b) => any_in_stmts(b, f),
@@ -1590,6 +2400,7 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
+        TExpr::CollectionLoad { array, .. } => any_in(array, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
         _ => false,
     }
@@ -1650,6 +2461,7 @@ impl<'a> FnCx<'a> {
             unwind: None,
             cleanup_depth: 0,
             recover_cursor: None,
+            recover_error: None,
         }
     }
 
@@ -1684,19 +2496,53 @@ impl<'a> FnCx<'a> {
         Ok(())
     }
 
+    /// Evaluate explicitly captured scalar/string arguments exactly once at
+    /// registration. The resulting compiler-owned slots outlive the failed
+    /// scope and are read by the deferred/recovery body on its owning task.
+    fn cleanup_factory_args(&mut self, params: &[(String, Type, Pos)],
+                            args: &[Expr], pos: Pos, kind: &str)
+        -> R<CleanupCaptured>
+    {
+        if params.len() != args.len() {
+            return Err(Diagnostic::new(pos, "E_ARITY", format!(
+                "{kind} factory expects {} argument(s), found {}", params.len(), args.len())));
+        }
+        let mut sets = Vec::new();
+        let mut bound = Vec::new();
+        for ((name, ty, ppos), arg) in params.iter().zip(args) {
+            let ty = self.resolve(*ty, *ppos)?;
+            if !matches!(ty, Type::Int | Type::Bool | Type::Str | Type::Float) {
+                return Err(Diagnostic::new(*ppos, "E_UNSUPPORTED_TYPE",
+                    "cleanup factory parameters are restricted to scalar and string values"));
+            }
+            let v = self.consume_expected(arg, ty)?;
+            if v.ty != ty {
+                return Err(type_err(arg.pos, format!(
+                    "{kind} factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty))));
+            }
+            let slot = self.temp(ty, *ppos)?;
+            sets.push((slot, v));
+            bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
+        }
+        Ok((sets, bound))
+    }
+
     /// Check a cleanup/recovery body in an isolated scope: it cannot see the
     /// enclosing locals (no by-reference capture lifetime is verified), only
     /// the explicit factory parameters in `bound`.
-    fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
+    fn isolated(&mut self, bound: Vec<Local>, cursor: Option<String>,
+                error: Option<String>, body: &[Stmt]) -> R<Vec<TStmt>> {
         let scopes = std::mem::replace(&mut self.scopes, vec![bound, Vec::new()]);
         let loops = std::mem::replace(&mut self.loops, 0);
         let moved = std::mem::take(&mut self.moved);
         let loans = std::mem::take(&mut self.loans);
         let prev_cursor = std::mem::replace(&mut self.recover_cursor, cursor);
+        let prev_error = std::mem::replace(&mut self.recover_error, error);
         self.cleanup_depth += 1;
         let r = self.stmts(body);
         self.cleanup_depth -= 1;
         self.recover_cursor = prev_cursor;
+        self.recover_error = prev_error;
         self.loans = loans;
         self.moved = moved;
         self.loops = loops;
@@ -1766,6 +2612,17 @@ impl<'a> FnCx<'a> {
         }
         if name == "self" {
             return Err(Diagnostic::new(pos, "E_RESERVED", "'self' cannot be rebound"));
+        }
+        // An ErrorView and RecoveryCursor are compiler-issued capabilities, not
+        // ordinary locals. Shadowing either binder would make an ordinary
+        // expression such as err.message or cursor.next() resolve to the
+        // wrong object and could counterfeit terminal recovery control flow.
+        if self.cleanup_depth > 0 &&
+            (self.recover_error.as_deref() == Some(name)
+                || self.recover_cursor.as_deref() == Some(name))
+        {
+            return Err(Diagnostic::new(pos, "E_RESERVED",
+                format!("recovery capability '{name}' cannot be shadowed")));
         }
         let slot = self.temp(ty, pos)?;
         self.scopes.last_mut().unwrap().push(Local {
@@ -1953,51 +2810,68 @@ impl<'a> FnCx<'a> {
                         }
                         None => None,
                     };
-                    Ok(TStmt::Try { saved, body, catch, finally })
+                    Ok(TStmt::Try { saved, body, catch, finally, pos: *pos })
                 })();
                 self.loops = loops;
                 checked?
             }
-            Stmt::Defer { body, pos } => {
+            Stmt::Defer { params, body, args, pos } => {
                 self.top_registration(*pos, "defer")?;
                 self.unwind_frame(*pos, "defer")?;
+                let (sets, bound) = self.cleanup_factory_args(params, args, *pos, "defer")?;
                 let flag = self.temp(Type::Bool, *pos)?;
-                let body = self.isolated(Vec::new(), None, body)?;
-                TStmt::Defer { flag, body }
+                let body = self.isolated(bound, None, None, body)?;
+                TStmt::Defer { flag, args: sets, body, pos: *pos }
             }
-            Stmt::Recover { params, err: _, cursor, body, args, pos } => {
+            Stmt::Recover { params, err, cursor, body, args, pos } => {
                 self.top_registration(*pos, "recover")?;
                 self.unwind_frame(*pos, "recover")?;
-                if params.len() != args.len() {
-                    return Err(Diagnostic::new(*pos, "E_ARITY", format!(
-                        "recovery factory expects {} argument(s), found {}", params.len(), args.len())));
-                }
-                let mut sets = Vec::new();
-                let mut bound = Vec::new();
-                for ((name, ty, ppos), arg) in params.iter().zip(args) {
-                    let ty = self.resolve(*ty, *ppos)?;
-                    if !matches!(ty, Type::Int | Type::Bool | Type::Str | Type::Float) {
-                        return Err(Diagnostic::new(*ppos, "E_UNSUPPORTED_TYPE",
-                            "recovery factory parameters are restricted to scalar and string values"));
-                    }
-                    let v = self.consume_expected(arg, ty)?;
-                    if v.ty != ty {
-                        return Err(type_err(arg.pos, format!(
-                            "recovery factory argument has type {} but expected {}", self.tn(v.ty), self.tn(ty))));
-                    }
-                    let slot = self.temp(ty, *ppos)?;
-                    sets.push((slot, v));
-                    bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
-                }
+                let (sets, bound) = self.cleanup_factory_args(params, args, *pos, "recover")?;
                 let flag = self.temp(Type::Bool, *pos)?;
-                let body = self.isolated(bound, Some(cursor.clone()), body)?;
+                let body = self.isolated(bound, Some(cursor.clone()), Some(err.clone()), body)?;
                 if !returns(&body) {
                     return Err(Diagnostic::new(*pos, "E_RETURN",
                         "a recovery handler must return a value or call the cursor's next() on every path"));
                 }
-                TStmt::Recover { flag, args: sets, body }
+                TStmt::Recover { flag, args: sets, body, pos: *pos }
             }
             Stmt::Expr(e) => {
+                if let ExprKind::Ownership(OwnershipOp::Drop, _, inner) = &e.kind {
+                    // drop! is a consuming, standalone statement. No stored
+                    // owner/borrow may remain usable afterward. The browser
+                    // backend does not yet implement deterministic heap object
+                    // destructors, so only resource-free primitives are legal.
+                    let ExprKind::Var(name) = &inner.kind else {
+                        return Err(Diagnostic::new(e.pos, "E_DROP_CONTEXT",
+                            "drop! requires a named owned local, not a computed value"));
+                    };
+                    let (slot, ty) = match self.lookup(name) {
+                        Some(l) => (l.slot, l.ty),
+                        None => return Err(Diagnostic::new(inner.pos, "E_UNBOUND",
+                            format!("unknown name '{name}'"))),
+                    };
+                    if self.moved.contains(&slot) {
+                        return Err(Diagnostic::new(e.pos, "E_MOVED",
+                            "cannot drop an already moved or dropped owner"));
+                    }
+                    if self.loans.contains_key(&slot)
+                        || self.loans.values().any(|loan| loan.owner == slot) {
+                        return Err(Diagnostic::new(e.pos, "E_BORROW",
+                            "cannot drop an owner while an active loan exists"));
+                    }
+                    if self.loop_floors.last().is_some_and(|floor| slot < *floor) {
+                        return Err(Diagnostic::new(e.pos, "E_MOVED",
+                            "cannot drop a local declared outside a repeated loop"));
+                    }
+                    if !matches!(ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                        return Err(Diagnostic::new(e.pos, "E_DROP_UNSUPPORTED",
+                            "dropping resource-owning values requires verified destructor and reclamation lowering"));
+                    }
+                    let last_value = self.value(inner)?;
+                    self.moved.insert(slot);
+                    // Evaluate the final primitive read once (no destructor).
+                    return Ok(TStmt::Expr(last_value));
+                }
                 let v = self.expr(e)?;
                 if v.ty == Type::GeneratorInt {
                     return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
@@ -2377,6 +3251,10 @@ impl<'a> FnCx<'a> {
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let mut covered = false;
         let mut out = Vec::new();
+        // Guards run in the If condition, before their arm body. Stage each
+        // guarded binding beforehand, but read tagged payloads ONLY after
+        // confirming the corresponding variant discriminant.
+        let mut match_setup = vec![TStmt::Set(tmp, subj)];
         let mut after: BTreeSet<u32> = BTreeSet::new();
         for (i, arm) in arms.iter().enumerate() {
             if covered {
@@ -2425,7 +3303,22 @@ impl<'a> FnCx<'a> {
                     } else {
                         TE { e: TExpr::AdtPayload(Box::new(get())), ty }
                     };
-                    body.push(TStmt::Set(slot, value));
+                    let assignment = TStmt::Set(slot, value);
+                    if arm.guard.is_some() {
+                        if let Some(tag_test) = test.as_ref() {
+                            // Reading Some/Ok/Err payload before checking its
+                            // tag would be unsound (and can read uninitialized
+                            // storage for the opposite variant).
+                            match_setup.push(TStmt::If(
+                                vec![(tag_test.clone(), vec![assignment])], None,
+                            ));
+                        } else {
+                            // A whole-value binding is always safe to copy.
+                            match_setup.push(assignment);
+                        }
+                    } else {
+                        body.push(assignment);
+                    }
                 }
                 let guard = match &arm.guard {
                     Some(g) => Some(self.cond(g, "match guard")?),
@@ -2470,10 +3363,8 @@ impl<'a> FnCx<'a> {
                 format!("non-exhaustive match for {}; cover both variants or use on _", self.tn(sty))));
         }
         self.moved = after;
-        Ok(TStmt::Block(vec![
-            TStmt::Set(tmp, subj),
-            TStmt::If(out, Some(vec![TStmt::Unreachable])),
-        ]))
+        match_setup.push(TStmt::If(out, Some(vec![TStmt::Unreachable])));
+        Ok(TStmt::Block(match_setup))
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
@@ -2485,13 +3376,25 @@ impl<'a> FnCx<'a> {
                     }
                     let Type::Class(c) = local.ty else { unreachable!("tracked loans must be class typed") };
                     let class = &self.g.classes[c as usize];
+                    if class.name.starts_with("__atto_tuple_private_") {
+                        return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                            "tuple root elements cannot be mutated through a class loan"));
+                    }
                     let f = class.fields.iter().find(|f| f.name == field).ok_or_else(||
                         Diagnostic::new(pos, "E_UNBOUND", format!("class '{}' has no field '{field}'", class.name)))?;
-                    if !f.public && self.inside_class() != Some(c) {
+                    if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
                         return Err(Diagnostic::new(pos, "E_PRIVATE", "cannot mutate private field outside its class"));
                     }
-                    if f.mode == FieldMode::Final {
-                        return Err(Diagnostic::new(pos, "E_IMMUTABLE", "cannot mutate final field through borrow! mut"));
+                    // A borrowed ordinary class handle is not a checked
+                    // state-container lease: never lower protected state as
+                    // an unrestricted FieldSet from this alternate path.
+                    if f.mode == FieldMode::ActorState {
+                        return Err(Diagnostic::new(pos, "E_STATE_BORROW",
+                            "protected state requires the checked critical-write lease"));
+                    }
+                    if !f.binding.rebindable() {
+                        return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                            "cannot reassign val/final/const field through borrow! mut"));
                     }
                     let (slot, offset, fty) = (local.slot, f.slot, f.ty);
                     // A class-valued field write would install an untracked owned
@@ -2531,7 +3434,11 @@ impl<'a> FnCx<'a> {
                     }
                 };
                 let (offset, fty, mode) = (f.slot, f.ty, f.mode);
-                if mode == FieldMode::Final {
+                // Deferred final fields are the sole immutable exception:
+                // the separate flow-sensitive AST gate proved exactly one
+                // constructor write on all successful paths. Initialized
+                // final/val/const fields remain non-rebindable.
+                if !(f.binding.rebindable() || ctor && f.deferred_final) {
                     return Err(Diagnostic::new(
                         pos,
                         "E_IMMUTABLE",
@@ -2682,6 +3589,18 @@ impl<'a> FnCx<'a> {
                 return Err(type_err(pos, format!("borrowed binding '{name}' expects {}, found {}", self.tn(expected), self.tn(value.ty))));
             }
         }
+        // Tuple roots are value-aggregate anchors. Their non-Copy storage
+        // is a private implementation detail, not a writable user class.
+        // Mutable loans could bypass as-val/as-const guarantees and mutate
+        // projected fields behind independently copied element binders.
+        if mutable {
+            if let Type::Class(c) = owner_ty {
+                if self.g.classes[c as usize].name.starts_with("__atto_tuple_private_") {
+                    return Err(Diagnostic::new(pos, "E_BORROW",
+                        "mutable borrowing of a tuple root is not supported; use explicit element binding modes"));
+                }
+            }
+        }
         if !matches!(owner_ty, Type::Class(_)) {
             if mutable {
                 return Err(Diagnostic::new(pos, "E_BORROW", "mutable scalar loans require reference storage lowering; not yet supported"));
@@ -2712,14 +3631,75 @@ impl<'a> FnCx<'a> {
                 }
                 Ok(value)
             }
-            OwnershipOp::Copy | OwnershipOp::Share => {
+            OwnershipOp::Copy | OwnershipOp::DeepCopy | OwnershipOp::Share => {
+                // Identity-free admitted scalars have no mutable descendants:
+                // shallow and deep copies are the same guest value operation.
+                // Copy!! can also use a *compiler-emitted* AOT copier for an
+                // ordinary flat class whose full stored field layout was
+                // independently checked before this expression was lowered.
                 let value = self.value(inner)?;
+                if action == OwnershipOp::DeepCopy {
+                    if let Type::Class(ci) = value.ty {
+                        if let ExprKind::Var(name) = &inner.kind {
+                            if let Some(owner_slot) = self.lookup(name).map(|l| l.slot) {
+                                if self.loans.contains_key(&owner_slot)
+                                    || self.loans.values().any(|l| l.owner == owner_slot && l.mutable)
+                                {
+                                    return Err(Diagnostic::new(pos, "E_BORROW",
+                                        "copy!! cannot read a mutable/exclusive borrowed class owner"));
+                                }
+                            }
+                        }
+                        let class = &self.g.classes[ci as usize];
+                        if class.methods.iter().any(|m| m.name == "copy_deep") {
+                            return Err(Diagnostic::new(pos, "E_COPY_OVERRIDE",
+                                "custom copy_deep overrides need verified complete-plan/hook support"));
+                        }
+                        let Some(copy_idx) = class.deep_copy_idx else {
+                            return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+                                "copy!! class graph contains unproved mutable/reference slots or protected actor state"));
+                        };
+                        authenticate_flat_copy_aot(&self.g.classes, ci, pos)?;
+                        return Ok(TE { e: TExpr::Call(copy_idx, vec![value]), ty: Type::Class(ci) });
+                    }
+                }
                 if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
+                    if action == OwnershipOp::DeepCopy {
+                        return Err(Diagnostic::new(pos, "E_COPY_DEEP_UNSUPPORTED",
+                            "copy!! requires a verified concrete graph copier; class, actor, collection and resource handles are not yet admitted by the Rust/Wasm backend"));
+                    }
                     let name = if action == OwnershipOp::Copy { "copy!" } else { "share!" };
                     return Err(Diagnostic::new(pos, if action == OwnershipOp::Copy { "E_COPY" } else { "E_SHARE" },
                         format!("{name} requires a verified immutable copyable scalar; class, actor and generator handles are not shareable")));
                 }
                 Ok(value)
+            }
+            OwnershipOp::Drop => Err(Diagnostic::new(pos, "E_DROP_CONTEXT",
+                "drop! must be a standalone statement with a named owned local")),
+            OwnershipOp::Freeze => {
+                // Immutable primitive values have no mutable reachable object graph:
+                // freeze! is observationally the identity for this *proven*
+                // subset. Never extend this rule to class/actor/generator handles
+                // without a transitive freeze witness and alias invalidation.
+                let value = self.value(inner)?;
+                if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    return Err(Diagnostic::new(pos, "E_FREEZE_PROOF",
+                        "freeze! requires verified deep immutability; this Wasm subset only admits immutable scalars"));
+                }
+                Ok(value)
+            }
+            OwnershipOp::Weak => {
+                // A weak handle requires generation-fenced allocation identity,
+                // a nullable upgrade result, and ownership-neutral cleanup.
+                // Returning the source value would silently create a strong alias.
+                Err(Diagnostic::new(pos, "E_WEAK_UNSUPPORTED",
+                    "weak! requires a generation-checked weak handle and Option<Shared<T>> upgrade; not lowered by this Wasm backend"))
+            }
+            OwnershipOp::Pin => {
+                // Pinning is stable *pointee storage*, not an OS-thread affinity
+                // hint. Ordinary guest locals/handles cannot promise it yet.
+                Err(Diagnostic::new(pos, "E_PIN_UNSUPPORTED",
+                    "pin! requires stable-address storage and verified cleanup; not lowered by this Wasm backend"))
             }
             OwnershipOp::Take => {
                 let ExprKind::Var(name) = &inner.kind else {
@@ -2869,6 +3849,16 @@ impl<'a> FnCx<'a> {
                         }
                     }
                 }
+                UnOp::BitNot => {
+                    if v.ty != Type::Int {
+                        return Err(type_err(pos, format!("'~' needs an int operand, found {}", self.tn(v.ty))));
+                    }
+                    TE {
+                        e: TExpr::Bin(BinOp::BitXor, Box::new(v),
+                            Box::new(TE { e: TExpr::I64(-1), ty: Type::Int })),
+                        ty: Type::Int,
+                    }
+                }
                 UnOp::Not => {
                     if v.ty != Type::Bool {
                         return Err(type_err(pos, format!("'!' needs a bool operand, found {}", self.tn(v.ty))));
@@ -2888,6 +3878,18 @@ impl<'a> FnCx<'a> {
         Ok({
             let a = self.value(l)?;
             let b = self.value(r)?;
+            if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                BinOp::Shl | BinOp::LShr | BinOp::AShr) {
+                if a.ty != Type::Int || b.ty != Type::Int {
+                    return Err(type_err(pos, format!(
+                        "bitwise operator '{}' requires two int operands, found {} and {}",
+                        op.symbol(), self.tn(a.ty), self.tn(b.ty))));
+                }
+                return Ok(TE {
+                    e: TExpr::Bin(*op, Box::new(a), Box::new(b)),
+                    ty: Type::Int,
+                });
+            }
             if (a.ty == Type::Str || b.ty == Type::Str) && !matches!(op, BinOp::Eq | BinOp::Ne) {
                 let both = a.ty == Type::Str && b.ty == Type::Str;
                 return match op {
@@ -2972,6 +3974,9 @@ impl<'a> FnCx<'a> {
             let ty = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul => Type::Int,
                 BinOp::Div => unreachable!("int / int rejected above"),
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                BinOp::Shl | BinOp::LShr | BinOp::AShr =>
+                    unreachable!("bitwise operations handled before numeric promotion"),
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Type::Bool,
                 BinOp::Eq | BinOp::Ne => {
                     if a.ty != b.ty {
@@ -3312,6 +4317,17 @@ impl<'a> FnCx<'a> {
 
     fn member(&mut self, base: &Expr, name: &str, pos: Pos) -> R<TE> {
         if let ExprKind::Var(n) = &base.kind {
+            if self.recover_error.as_deref() == Some(n) {
+                let (_, _, msg, kind, _) = self.unwind.expect("recovery needs unwind slots");
+                // ErrorView is an ephemeral compiler-issued view, never a
+                // first-class object or a transferable/returnable handle.
+                return match name {
+                    "message" => Ok(TE { e: TExpr::Local(msg), ty: Type::Str }),
+                    "is_raise" => Ok(TE { e: TExpr::Local(kind), ty: Type::Bool }),
+                    _ => Err(Diagnostic::new(pos, "E_UNBOUND",
+                        format!("unknown ErrorView property '{name}'"))),
+                };
+            }
             if let Some(l) = self.lookup(n) {
                 if let Some(payload) = l.mail {
                     return match name {
@@ -3423,7 +4439,7 @@ impl<'a> FnCx<'a> {
                 return Err(Diagnostic::new(pos, "E_UNBOUND", what));
             }
         };
-        if !f.public && self.inside_class() != Some(c) {
+        if f.visibility == FieldVisibility::Private && self.inside_class() != Some(c) {
             return Err(Diagnostic::new(
                 pos,
                 "E_PRIVATE",
@@ -3432,6 +4448,16 @@ impl<'a> FnCx<'a> {
                     class.name, class.name
                 ),
             ));
+        }
+        // An exclusive loan of an owner prohibits reading even a scalar
+        // field through the original owner's name until that loan ends.
+        // This is particularly important for compiler-generated tuple roots:
+        // their scalar projections must not bypass an existing mutable loan.
+        if matches!(&obj.e, TExpr::Local(slot) if
+            self.loans.values().any(|loan| loan.owner == *slot && loan.mutable))
+        {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "cannot read owner fields while an exclusive mutable loan is live"));
         }
         // A borrowed aggregate cannot yield an independently owned handle.
         // Without a nested-loan provenance IR, such a field could escape

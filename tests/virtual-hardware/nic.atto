@@ -1,0 +1,201 @@
+// Boolean composition uses the compiler-supported, short-circuit && / || operators.
+// AttoLang virtual Ethernet NIC *decision primitives*, not a TAP/PCI device.
+// Frame lengths include Ethernet headers and padding, but exclude the 4-byte FCS.
+// The host/driver must validate actual byte buffers before calling these APIs.
+
+pub fnc valid_mac(int mac): bool {
+  return mac >= 0 && mac <= 281474976710655;
+}
+
+pub fnc mac_is_group(int mac): bool {
+  if !valid_mac(mac) then
+    return false;
+  fi
+  // Isolate MAC bit 40 using bounded subtraction (no unresolved int division).
+  let int remaining = mac;
+  if remaining >= 140737488355328 then
+    remaining = remaining - 140737488355328;
+  fi
+  if remaining >= 70368744177664 then
+    remaining = remaining - 70368744177664;
+  fi
+  if remaining >= 35184372088832 then
+    remaining = remaining - 35184372088832;
+  fi
+  if remaining >= 17592186044416 then
+    remaining = remaining - 17592186044416;
+  fi
+  if remaining >= 8796093022208 then
+    remaining = remaining - 8796093022208;
+  fi
+  if remaining >= 4398046511104 then
+    remaining = remaining - 4398046511104;
+  fi
+  if remaining >= 2199023255552 then
+    remaining = remaining - 2199023255552;
+  fi
+  return remaining >= 1099511627776;
+}
+
+pub fnc valid_source_mac(int mac): bool {
+  return valid_mac(mac) && mac != 0 && !mac_is_group(mac);
+}
+
+pub fnc valid_vlan_id(int vlan): bool {
+  return vlan >= 1 && vlan <= 4094;
+}
+
+// 'tagged' means one 802.1Q header (18-byte Ethernet header).
+// vlan=0 is the explicit untagged sentinel, never a valid tagged VLAN.
+// Admission is byte-count only: the actual frame and FCS must be validated
+// by the caller, including the TPID/TCI rather than trusting these arguments.
+pub fnc valid_ethernet_frame_with_vlan(
+  int bytes, int mtu, bool tagged, int vlan
+): bool {
+  if mtu < 576 || mtu > 9216 then
+    return false;
+  fi
+  if tagged && !valid_vlan_id(vlan) then
+    return false;
+  fi
+  if !tagged && vlan != 0 then
+    return false;
+  fi
+  let int header_bytes = 14;
+  if tagged then
+    header_bytes = 18;
+  fi
+  // A single 802.1Q tag increases the minimum frame to 64 bytes (FCS excluded).
+  if tagged && bytes < 64 then
+    return false;
+  fi
+  return bytes >= 60 && bytes <= mtu + header_bytes;
+}
+
+// Strictly untagged compatibility entry point: never reinterpret tagged
+// frames as untagged to bypass a VLAN or frame-size check.
+pub fnc valid_ethernet_frame(int bytes, int mtu): bool {
+  return valid_ethernet_frame_with_vlan(bytes, mtu, false, 0);
+}
+
+pub fnc valid_descriptor_ring(int used, int capacity): bool {
+  return capacity >= 1 && capacity <= 4096 &&
+         used >= 0 && used <= capacity;
+}
+
+pub fnc can_receive(int bytes, int mtu, int used, int capacity, bool link_up): bool {
+  if !link_up || !valid_ethernet_frame(bytes, mtu) then
+    return false;
+  fi
+  return valid_descriptor_ring(used, capacity) && used < capacity;
+}
+
+pub fnc can_transmit(int bytes, int mtu, int used, int capacity, bool link_up): bool {
+  return can_receive(bytes, mtu, used, capacity, link_up);
+}
+
+pub fnc can_receive_tagged(
+  int bytes, int mtu, bool tagged, int vlan,
+  int used, int capacity, bool link_up
+): bool {
+  if !link_up || !valid_ethernet_frame_with_vlan(bytes, mtu, tagged, vlan) then
+    return false;
+  fi
+  return valid_descriptor_ring(used, capacity) && used < capacity;
+}
+
+pub fnc can_transmit_tagged(
+  int bytes, int mtu, bool tagged, int vlan,
+  int used, int capacity, bool link_up
+): bool {
+  return can_receive_tagged(bytes, mtu, tagged, vlan, used, capacity, link_up);
+}
+
+pub fnc next_ring_slot(int current, int capacity): int {
+  if capacity < 1 || capacity > 4096 || current < 0 || current >= capacity then
+    return -1;
+  fi
+  if current + 1 == capacity then
+    return 0;
+  fi
+  return current + 1;
+}
+
+pub fnc available_descriptors(int used, int capacity): int {
+  if !valid_descriptor_ring(used, capacity) then
+    return -1;
+  fi
+  return capacity - used;
+}
+
+// Exact nonnegative quotient while int / int result semantics remain undecided.
+// Greedy doubling stays within signed 64-bit bounds; invalid input returns -1.
+// This reference path is not constant-time or suitable for a hot data plane.
+pub fnc quotient_nonnegative(int dividend, int divisor): int {
+  if dividend < 0 || divisor <= 0 then
+    return -1;
+  fi
+  let int remaining = dividend;
+  let int quotient = 0;
+  while remaining >= divisor do
+    let int chunk = divisor;
+    let int multiple = 1;
+    while chunk <= remaining - chunk do
+      chunk = chunk * 2;
+      multiple = multiple * 2;
+    done
+    remaining = remaining - chunk;
+    quotient = quotient + multiple;
+  done
+  return quotient;
+}
+
+// Guest aperture bounds: subtraction is performed only after offset validation
+// to avoid offset + length overflow. This does not pin host pages or map an IOMMU.
+pub fnc guest_region_contains(int offset, int bytes, int region_bytes): bool {
+  if offset < 0 || bytes < 0 || region_bytes < 0 then
+    return false;
+  fi
+  return offset <= region_bytes && bytes <= region_bytes - offset;
+}
+
+// At most 12 recursion levels, restricted to power-of-two alignment <= 4096.
+pub fnc valid_guest_alignment(int alignment): bool {
+  if alignment < 1 || alignment > 4096 then
+    return false;
+  fi
+  if alignment == 1 then
+    return true;
+  fi
+  if alignment != (quotient_nonnegative(alignment, 2)) * 2 then
+    return false;
+  fi
+  return valid_guest_alignment(quotient_nonnegative(alignment, 2));
+}
+
+pub fnc guest_address_aligned(int address, int alignment): bool {
+  if address < 0 || !valid_guest_alignment(alignment) then
+    return false;
+  fi
+  return address == (quotient_nonnegative(address, alignment)) * alignment;
+}
+
+// A descriptor cannot authorize access outside its guest-owned aperture.
+// The caller must separately validate device ownership and host mappings.
+pub fnc can_receive_guest_frame(int offset, int bytes, int region_bytes,
+    int alignment, int mtu, int used, int capacity, bool link_up): bool {
+  return guest_region_contains(offset, bytes, region_bytes)
+    && guest_address_aligned(offset, alignment)
+    && can_receive(bytes, mtu, used, capacity, link_up);
+}
+
+// The same guest aperture, ring and link checks also apply to tagged frames.
+// A caller must parse and authenticate the actual VLAN TPID/TCI from memory.
+pub fnc can_receive_guest_frame_tagged(
+  int offset, int bytes, int region_bytes, int alignment,
+  int mtu, bool tagged, int vlan, int used, int capacity, bool link_up
+): bool {
+  return guest_region_contains(offset, bytes, region_bytes)
+    && guest_address_aligned(offset, alignment)
+    && can_receive_tagged(bytes, mtu, tagged, vlan, used, capacity, link_up);
+}

@@ -1,0 +1,10 @@
+// expect-exit: 42
+define class Label as
+    pub final string value;
+    constructor(string initial) { self.value = initial; }
+end
+pub fnc main(): int {
+    val label = new Label("ready");
+    if label.value eq "ready" then return 42; fi
+    return 0;
+}

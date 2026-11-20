@@ -1,0 +1,29 @@
+name: Tuple binding scalar guest conformance
+on:
+  pull_request:
+    paths:
+      - 'src/tuple_binding_*.rs'
+      - 'src/lib.rs'
+      - 'tests/tuple_binding*'
+      - 'tests/fixtures/tuple_binding/**'
+      - '.github/workflows/tuple-binding-guest.yml'
+  workflow_dispatch:
+jobs:
+  tuple-guest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Rust build and compiler tests
+        run: |
+          set -euo pipefail
+          cargo test --offline --test tuple_binding_admission --test tuple_binding_guest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Execute real Wasm guest and negative diagnostic contracts
+        run: node tests/tuple_binding_guest.mjs

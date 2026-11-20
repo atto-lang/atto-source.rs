@@ -1,0 +1,10 @@
+// expect-exit: 42
+define class Ratio as
+    pub final float value;
+    constructor(float initial) { self.value = initial; }
+end
+pub fnc main(): int {
+    val ratio = new Ratio(1.5);
+    if ratio.value eq 1.5 then return 42; fi
+    return 0;
+}

@@ -1,0 +1,6 @@
+// expect-error: E_PRIVATE
+// Even another class in the same source package cannot inspect a private field.
+define class Vault as
+    private int secret = 42;
+end
+pub fnc main(): int { return new Vault().secret; }

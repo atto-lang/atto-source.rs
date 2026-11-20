@@ -204,6 +204,7 @@ pub fn lower(input: &Program) -> R<Program> {
                 pos: d.lambda.pos,
                 is_generator: false,
                 is_pure: true,
+                declared_effects: None,
                 params: d.params.into_iter().chain(
                     d.captures.into_iter().map(|c| c.source)
                 ).zip(all_types).map(|(name, ty)| Param {
@@ -266,9 +267,13 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             if let Some(cleanup) = finally { rewrite_statements(cleanup, d)?; }
             Ok(())
         }
-        // Cleanup/recovery bodies are checked in an isolated scope that cannot
-        // see enclosing locals, so a direct lambda never reaches them.
-        Stmt::Defer { .. } => Ok(()),
+        // Cleanup/recovery bodies are checked in an isolated scope, but
+        // their factory argument expressions execute at registration and must
+        // undergo the same checked direct-call rewriting as ordinary calls.
+        Stmt::Defer { args, .. } => {
+            for arg in args { rewrite_expr(arg, d)?; }
+            Ok(())
+        },
         Stmt::Recover { args, .. } => {
             for arg in args { rewrite_expr(arg, d)?; }
             Ok(())

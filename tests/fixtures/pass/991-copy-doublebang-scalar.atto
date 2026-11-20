@@ -1,0 +1,10 @@
+// expect-exit: 42
+// java: rejects
+// This compiler executes copy!! only for identity-free scalar values.
+pub fnc main(): int {
+  val base = 39;
+  val deep = copy!! base;
+  val shallow_of_not = copy! !false;
+  val normalized = shallow_of_not ? 1 : 0;
+  return deep + normalized + 2;
+}

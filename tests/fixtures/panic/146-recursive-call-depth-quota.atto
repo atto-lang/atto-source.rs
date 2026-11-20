@@ -1,0 +1,9 @@
+// spec 25 / 18 rule 5: unbounded recursion exhausts the logical stack
+// deterministically (panic 6 at 1024 recursive frames), never the engine stack.
+// expect-panic: 6
+// expect-stdout: start
+fnc dive(int n): int { return dive(n + 1) + 1; }
+pub fnc main(): int {
+    stdio.println("start");
+    return dive(0);
+}
