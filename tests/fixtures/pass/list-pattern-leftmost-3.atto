@@ -1,0 +1,8 @@
+// Leftmost-shortest witness captures 1 and 2 (NOT 2 and 3).
+pub fnc main(): int {
+  val items: List<int> = List.of(1, 2, 3);
+  return match<int> items over
+    on List.of(..., is int as val a, is int as val b, ...) -> a + b,
+    on _ -> 0
+  end;
+}
