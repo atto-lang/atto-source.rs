@@ -201,4 +201,15 @@ mod tests {
             assert_eq!(encode_string(&decode_string(&b).unwrap()), Ok(b));
         }
     }
+
+    #[test]
+    fn canonical_atam_hello_frame_matches_host_wasm_wire_golden() {
+        let expected: [u8; 15] = [
+            b'A', b'T', b'A', b'M', 1, 1, 5, 0, 0, 0,
+            b'h', b'e', b'l', b'l', b'o',
+        ];
+        assert_eq!(encode_string("hello"), Ok(expected.to_vec()));
+        assert_eq!(decode_string(&expected), Ok("hello".to_owned()));
+    }
+
 }
