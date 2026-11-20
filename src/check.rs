@@ -3806,7 +3806,13 @@ impl<'a> FnCx<'a> {
             }
             let value = self.value(&args[1])?;
             if value.ty != Type::Str {
-                return Err(type_err(args[1].pos, "checked process writech accepts string"));
+                let code = if value.ty == Type::ResultOptionStrIoError {
+                    "E_IO_PAYLOAD_TYPE"
+                } else {
+                    "E_TYPE"
+                };
+                return Err(Diagnostic::new(args[1].pos, code,
+                    "checked process writech accepts a string, not a raw Result/Option outcome"));
             }
             let text = self.temp(Type::Str, pos)?;
             let result = self.temp(Type::ResultVoidIoError, pos)?;
