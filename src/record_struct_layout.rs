@@ -274,12 +274,12 @@ fn validate_resolved_type(root: &LiteralType) -> Result<(), Error> {
                 }
             }
             LiteralType::Array(t) | LiteralType::List(t) => pending.push(t),
-            LiteralType::Map(k, v) => {
+            LiteralType::Map(k, v) | LiteralType::Entry(k, v) => {
                 pending.push(k);
                 pending.push(v);
             }
             LiteralType::Tuple(items) => pending.extend(items),
-            LiteralType::Int | LiteralType::Bool | LiteralType::Float | LiteralType::String => {}
+            LiteralType::Int | LiteralType::Bool | LiteralType::Float | LiteralType::String | LiteralType::Symbol => {}
         }
     }
     Ok(())
