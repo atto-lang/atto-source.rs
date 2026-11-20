@@ -7,6 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 const attoc=process.env.ATTOC || 'target/release/attoc';
 const tmp=await mkdtemp(join(tmpdir(),'atto-stdlib-gate-'));
@@ -58,7 +59,7 @@ try {
     Buffer.from('blob '+exact.byteLength+'\0'),exact])).digest('hex');
   assert.equal(hash,'7d83aa7d8a6000875fb4c73a36493053170b9932');
   const output=join(tmp,'bb001.wasm');
-  const result=run(new URL(fixture).pathname,output);
+  const result=run(fileURLToPath(fixture),output);
   assert.notEqual(result.status,0,'canonical stdlib guest must not be replaced by a host stub');
   assert.match(result.stderr,/E_STDLIB_UNLINKED/);
   await assert.rejects(stat(output),{code:'ENOENT'});
