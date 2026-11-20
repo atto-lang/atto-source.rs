@@ -204,3 +204,12 @@ multi-backend parity.
   and the existing attached-receive
   [#216](https://github.com/atto-lang/atto-source.rs/pull/216)
   before merging.
+
+
+## Actor isolation witness name hardening (source-only; no guest claim)
+
+This branch now reserves `Sendable`, `Shareable` and `Serializable` as compiler-owned witness names in `src/parser.rs`. A guest's nominal class, actor or enum declaration cannot impersonate a transfer, freeze or format-specific wire proof. The restricted Rust/browser compiler rejects the unlowered names with `E_UNSUPPORTED_TYPE`, rather than minting an authority witness or implicitly assuming trusted codec support.
+
+The new negative source cases `actor-isolation-pointer-mail-v1.atto`, `actor-isolation-arc-mail-v1.atto`, `actor-isolation-mutex-mail-v1.atto`, `actor-isolation-nominal-mail-v1.atto` and three `*-spoof-v1.atto` cases target a compile-error/no-emitted-artifact gate. The independent frontend still has a bounded int/bool actor-mail type subset. This change does **not** implement `Sendable<T>` MIR derivation, frozen `Arc<T>` runtime ownership, brokered cross-TenantVM transport or any new executable carrier. The general behavior is specified as a **proposal** in [atto-spec #27](https://github.com/atto-lang/atto-spec/pull/27) and staged as 36 unexecuted policy cases in [atto-platform-conformance #33](https://github.com/atto-lang/atto-platform-conformance/pull/33).
+
+The conformance contract's separate **12/12 Rust source-only oracle** pass on the [private exact two-blob carrier](https://github.com/usa-acc/atto-ci/actions/runs/44662076919) is **not** evidence that this compiler branch, its seven new negative fixtures or Atto guest isolation passed. This branch requires its own exact-tree compiler build and checked negative diagnostics before Ready/merge.
