@@ -1342,4 +1342,23 @@ mod tests {
         assert_eq!(scope.locks.len(), 2);
     }
 
+
+    #[test]
+    fn unclaimed_grant_cannot_be_released_or_used_as_held_guard() {
+        let mut q = queue(2);
+        let never_entered = owned(q.acquire(c(1)).unwrap());
+        let waiting = pending(q.acquire(c(2)).unwrap());
+        assert_eq!(q.release(never_entered), Err(Error::UnclaimedGrant));
+        assert!(q.has_outstanding_grant());
+        assert!(!q.has_active_lease());
+        assert_eq!(q.take_wakeup(), None);
+        assert_eq!(q.cancel(never_entered), Ok(Cancellation::GrantedAndRevoked));
+        assert_eq!(q.take_wakeup(), Some(waiting));
+        assert_eq!(q.claim(never_entered), Err(Error::StaleTicket));
+        assert_eq!(q.release(never_entered), Err(Error::StaleTicket));
+        q.claim(waiting).unwrap();
+        q.release(waiting).unwrap();
+        assert!(!q.has_outstanding_grant());
+    }
+
 }
