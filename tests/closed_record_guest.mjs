@@ -198,6 +198,90 @@ negatives.push([
  'E_UNSUPPORTED'
 ]);
 
+// Named parenthesized Records MUST lower through the same checked scalar
+// shape ABI as braced Records, not a Tuple, Map, or unverified guest object.
+positives.push([
+ 'pub fnc main(): int { let y=(foo="star",abc=5); return y.abc; }',
+ 5n,''
+]);
+positives.push([
+ 'pub fnc main(): int { let y=(abc=5,foo="star"); return y.abc; }',
+ 5n,''
+]);
+positives.push([
+ 'pub fnc main(): int { let y=(foo=42); return y.foo; }',
+ 42n,''
+]);
+positives.push([
+ 'pub fnc main(): int { let y=(foo=42,); return y["foo"]; }',
+ 42n,''
+]);
+positives.push([
+ 'pub fnc main(): int { let y=(foo=40,bar=2); return y.foo+y.bar; }',
+ 42n,''
+]);
+positives.push([
+ 'pub fnc main(): int { let y=(bar=2,foo=40,); return y["foo"]+y.bar; }',
+ 42n,''
+]);
+positives.push([
+ 'pub fnc main(): int { let mut r=(foo=1,bar=2); r["foo"]=40; return r.foo+r.bar; }',
+ 42n,''
+]);
+positives.push([
+ 'pub fnc main(): int { let r=(foo=1,bar=2); let z={bar:2,foo:1}; return r.foo+z.foo+40; }',
+ 42n,''
+]);
+positives.push([
+ 'pub fnc main(): int { val mut Record r=(foo=2); r.foo=42; return r["foo"]; }',
+ 42n,''
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(foo=1,foo=2); return 0; }', 'E_DUPLICATE'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(foo=1,2); return 0; }', 'E_LITERAL_KIND'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(foo=1,bar:2); return 0; }', 'E_LITERAL_KIND'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(foo=1,"bar"=2); return 0; }', 'E_LITERAL_KIND'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=("foo"=1); return 0; }', 'E_LITERAL_KIND'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(foo=1,,bar=2); return 0; }', 'E_LITERAL_KIND'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(foo=(bar=1)); return 0; }', 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(foo=1,bar=[1,2]); return 0; }', 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y:Map<string,int>=(foo=1); return 0; }', 'E_TYPE'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(foo=1); y["foo"]=42; return 0; }', 'E_IMMUTABLE'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(foo=1); return y["missing"]; }', 'E_NO_FIELD'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y={}; return 0; }', 'E_INFER'
+]);
+negatives.push([
+ 'pub fnc main(): int { let y=(); return 0; }', 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'fnc f(int foo):int {return foo;} pub fnc main(): int {return f(foo=1);}', 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'fnc f(int foo):int {return foo;} pub fnc main(): int {let r=(foo=1);return f(...r);}', 'E_UNSUPPORTED'
+]);
+
 // Exhaustive guest execution: four independent scalar fields, 24 source orders.
 // Both compilers must produce byte-identical Wasm; every module must return 42.
 function visit_record_orders(items, start, visit) {
