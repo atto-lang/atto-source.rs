@@ -108,8 +108,8 @@ fn match_pattern(p: &mut Cursor<'_>) -> R<(bool,bool,Vec<Fixed>)> {
             }
         }
     }
-    let leading = matches!(seq.first(),Some(None));
-    let trailing = seq.len()>1 && matches!(seq.last(),Some(None));
+    let leading = seq.first().is_some_and(Option::is_none);
+    let trailing = seq.len()>1 && seq.last().is_some_and(Option::is_none);
     let rests = seq.iter().filter(|x| x.is_none()).count();
     if rests > usize::from(leading) + usize::from(trailing) ||
         (rests == 2 && seq.len() == 2) {
