@@ -198,7 +198,7 @@ fn annotated_pipe_handle_result_compiles_both_directions_and_failed_setup_rollba
     ] {
         let guest = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("{name}: checked graph failed compiler: {e}"));
-        assert!(guest.starts_with(b"\\0asm\\x01\\0\\0\\0"),
+        assert!(guest.starts_with(b"\0asm\x01\0\0\0"),
             "{name}: checked graph did not emit Wasm");
     }
 }
