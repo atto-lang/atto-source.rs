@@ -1,0 +1,30 @@
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+// EXPERIMENTAL v2 GUEST ONLY: this is observed emit(T) inference, NOT
+// the canonical explicit 'emits int' source contract from atto-spec #45.
+// Main waits for both actor completion futures; no timer or sleep proof.
+define actor Producer as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+
+define actor Consumer as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val channel = Channel<int>.bounded(1);
+  val connection = consumer rpipe channel rpipe producer;
+
+  producer.send(40);
+  producer.send(2);
+  producer.stop();
+  await producer.get_done();
+  await consumer.get_done();
+  return 42;
+}
