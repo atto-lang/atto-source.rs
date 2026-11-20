@@ -78,7 +78,7 @@ fn duplicate_keys_type_mismatches_and_unsupported_key_forms_reject() {
     rejected(r#"pub fnc main(): int {val m=Map.of("a",1,2,3);return 0;}"#, "E_TYPE");
     rejected(r#"pub fnc main(): int {val m=Map.of("a",1,"b");return 0;}"#, "E_FACTORY_ARITY");
     rejected(r#"pub fnc main(): int {val m=Map.of("a"=>1,"b",2);return 0;}"#, "E_FACTORY_ARITY");
-    rejected(r#"pub fnc main(): int {val m=Map.of();return 0;}"#, "E_UNSUPPORTED");
+    rejected(r#"pub fnc main(): int {val m=Map.of();return 0;}"#, "E_TYPE_INFERENCE");
 }
 
 #[test]
