@@ -1,0 +1,28 @@
+// Caret is a statement-position alias for return, not a value operator.
+// expect-exit: 0
+// expect-stdout: 2
+// expect-stdout: 2
+// java: rejects
+fnc classify(int value): int {
+  ^ match value over
+    on 0 -> { return 0; }
+    on 1 -> { return 1; }
+    on n when n > 1 -> { return 2; }
+    on _ -> { return -1; }
+  end
+}
+
+fnc xyx(int value): int {
+  ^ match value over
+    on 0 -> 0,
+    on 1 -> 1,
+    on n when n > 1 -> 2,
+    on _ -> -1,
+  end
+}
+
+pub fnc main(): int {
+  stdio.println(classify(7));
+  stdio.println(xyx(7));
+  return 0;
+}
