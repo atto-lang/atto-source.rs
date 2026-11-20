@@ -1999,4 +1999,126 @@ mod tests {
         kernel.try_retire(owner).unwrap();
     }
 
+
+    #[test]
+    fn host_ready_queue_atomic_grant_admission_and_resume() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let holder = kernel.issue(None).unwrap();
+        let waiter = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(3).unwrap();
+        let first = owned(kernel.acquire(holder, mutex).unwrap());
+        kernel.claim(holder, mutex, first).unwrap();
+        let second = pending(kernel.acquire(waiter, mutex).unwrap());
+        kernel.park_lock_wait(waiter, mutex, second).unwrap();
+        kernel.trusted_guard_scope_exit(holder, mutex).unwrap();
+
+        // Enqueue and acknowledge are one serialized transition. A second
+        // pump cannot silently duplicate the now-runnable continuation.
+        assert_eq!(kernel.pump_ready(), Ok(1));
+        assert_eq!(kernel.pump_ready(), Ok(0));
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
+        assert_eq!(kernel.claim(waiter, mutex, second), Err(Error::NotQuiescent));
+        assert_eq!(kernel.park_lock_wait(waiter, mutex, second), Err(Error::NotQuiescent));
+        assert_eq!(kernel.trusted_exit(waiter), Err(Error::NotQuiescent));
+
+        assert_eq!(kernel.next_ready(), Ok(Some(waiter)));
+        assert_eq!(kernel.next_ready(), Ok(None));
+        kernel.claim(waiter, mutex, second).unwrap();
+        assert_eq!(kernel.trusted_exit(waiter), Ok(vec![mutex]));
+        assert_eq!(kernel.trusted_exit(holder), Ok(vec![]));
+        for task in [holder, waiter] {
+            kernel.trusted_notifications_drained(task).unwrap();
+            kernel.try_retire(task).unwrap();
+        }
+    }
+
+    #[test]
+    fn host_ready_queue_cancelled_waiter_never_releases_another_active_guard() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let holder = kernel.issue(None).unwrap();
+        let cancelled = kernel.issue(None).unwrap();
+        let successor = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(4).unwrap();
+        let owner = owned(kernel.acquire(holder, mutex).unwrap());
+        kernel.claim(holder, mutex, owner).unwrap();
+        let a = pending(kernel.acquire(cancelled, mutex).unwrap());
+        kernel.park_lock_wait(cancelled, mutex, a).unwrap();
+        let b = pending(kernel.acquire(successor, mutex).unwrap());
+        kernel.park_lock_wait(successor, mutex, b).unwrap();
+
+        kernel.cancel(cancelled).unwrap();
+        assert_eq!(kernel.pump_ready(), Ok(1));
+        assert_eq!(kernel.pump_ready(), Ok(0));
+        assert_eq!(kernel.next_ready(), Ok(Some(cancelled)));
+        assert_eq!(kernel.claim(cancelled, mutex, a), Err(Error::CancellationPending));
+        assert_eq!(kernel.trusted_exit(cancelled), Ok(vec![]));
+        assert_eq!(kernel.terminal(cancelled), Ok(Some(TaskExitKind::Cancelled)));
+        kernel.trusted_notifications_drained(cancelled).unwrap();
+        kernel.try_retire(cancelled).unwrap();
+
+        // No successor is runnable while the original owner still holds
+        // its active guard. Only legal lexical scope exit grants the lock.
+        assert_eq!(kernel.pump_ready(), Ok(0));
+        kernel.trusted_guard_scope_exit(holder, mutex).unwrap();
+        assert_eq!(kernel.pump_ready(), Ok(1));
+        assert_eq!(kernel.next_ready(), Ok(Some(successor)));
+        kernel.claim(successor, mutex, b).unwrap();
+        assert_eq!(kernel.trusted_exit(successor), Ok(vec![mutex]));
+        assert_eq!(kernel.trusted_exit(holder), Ok(vec![]));
+        for task in [successor, holder] {
+            kernel.trusted_notifications_drained(task).unwrap();
+            kernel.try_retire(task).unwrap();
+        }
+    }
+
+    #[test]
+    fn host_ready_queue_cancel_grant_race_keeps_successor_and_cancel_wakes_distinct() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let holder = kernel.issue(None).unwrap();
+        let a = kernel.issue(None).unwrap();
+        let b = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(4).unwrap();
+        let owner = owned(kernel.acquire(holder, mutex).unwrap());
+        kernel.claim(holder, mutex, owner).unwrap();
+        let grant_a = pending(kernel.acquire(a, mutex).unwrap());
+        kernel.park_lock_wait(a, mutex, grant_a).unwrap();
+        let grant_b = pending(kernel.acquire(b, mutex).unwrap());
+        kernel.park_lock_wait(b, mutex, grant_b).unwrap();
+
+        kernel.trusted_guard_scope_exit(holder, mutex).unwrap();
+        assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, grant_a)]);
+        kernel.cancel(a).unwrap();
+        assert_eq!(kernel.claim(a, mutex, grant_a), Err(Error::CancellationPending));
+        // B's valid grant and A's cancellation notification are distinct
+        // ready-queue entries, each admitted only once.
+        assert_eq!(kernel.pump_ready(), Ok(2));
+        assert_eq!(kernel.pump_ready(), Ok(0));
+        assert_eq!(kernel.next_ready(), Ok(Some(a)));
+        assert_eq!(kernel.next_ready(), Ok(Some(b)));
+        assert_eq!(kernel.next_ready(), Ok(None));
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
+
+        assert_eq!(kernel.trusted_exit(a), Ok(vec![]));
+        kernel.claim(b, mutex, grant_b).unwrap();
+        assert_eq!(kernel.trusted_exit(b), Ok(vec![mutex]));
+        assert_eq!(kernel.trusted_exit(holder), Ok(vec![]));
+        assert_eq!(kernel.terminal(holder), Ok(Some(TaskExitKind::Succeeded)));
+        assert_eq!(kernel.terminal(a), Ok(Some(TaskExitKind::Cancelled)));
+        for who in [holder, a, b] {
+            kernel.trusted_notifications_drained(who).unwrap();
+            kernel.try_retire(who).unwrap();
+        }
+    }
+
+    #[test]
+    fn host_ready_queue_kernel_arbiter_does_not_park_carrier() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let guard = kernel.core.lock().unwrap();
+        assert_eq!(kernel.pump_ready(), Err(Error::AdmissionBusy));
+        assert_eq!(kernel.next_ready(), Err(Error::AdmissionBusy));
+        drop(guard);
+        assert_eq!(kernel.pump_ready(), Ok(0));
+        assert_eq!(kernel.next_ready(), Ok(None));
+    }
+
 }
