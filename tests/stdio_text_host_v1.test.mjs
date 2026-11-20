@@ -125,7 +125,6 @@ test('sink failure is checked, not a silent success, and terminal',async()=>{
   assert.deepEqual(await host.stdio.out.writech('again'),{ok:false,error:{kind:'SinkFailure'}});
 });
 
-
 test('generation and quota configuration fail closed before acquiring input',()=>{
   assert.throws(()=>mk(chunks(),{generation:0}),/generation/);
   assert.throws(()=>mk(chunks(),{generation:-1}),/generation/);
