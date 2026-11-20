@@ -46,7 +46,13 @@ impl<'a> Cursor<'a> {
     }
     fn ident(&mut self) -> R<String> {
         match self.peek().clone() {
-            Tok::Ident(name) if name != "_" => { self.at += 1; Ok(name) }
+            Tok::Ident(name) if name != "_" => {
+                if crate::parser::is_reserved(&name) {
+                    return Err(err(self.pos(), "E_RESERVED", "reserved identifier in List pattern profile"));
+                }
+                self.at += 1;
+                Ok(name)
+            }
             _ => Err(unsupported(self.pos()))
         }
     }
@@ -110,9 +116,14 @@ fn match_pattern(p: &mut Cursor<'_>) -> R<(bool,bool,Vec<Fixed>)> {
     }
     let leading = seq.first().is_some_and(Option::is_none);
     let trailing = seq.len()>1 && seq.last().is_some_and(Option::is_none);
+    // Adjacent rest operators cannot define a unique decomposition.
+    // Reject them with the specification's syntax diagnostic, not a
+    // misleading "feature not implemented" marker.
+    if seq.windows(2).any(|pair| pair[0].is_none() && pair[1].is_none()) {
+        return Err(err(p.pos(), "E_PATTERN_SOURCE", "adjacent sequence rests"));
+    }
     let rests = seq.iter().filter(|x| x.is_none()).count();
-    if rests > usize::from(leading) + usize::from(trailing) ||
-        (rests == 2 && seq.len() == 2) {
+    if rests > usize::from(leading) + usize::from(trailing) {
         return Err(unsupported(p.pos()));
     }
     let items: Vec<Fixed> = seq.into_iter().flatten().collect();
