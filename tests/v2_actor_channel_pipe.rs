@@ -69,7 +69,7 @@ fn canonical_port_headers_are_enforced_before_guest_emission() {
         assert_eq!(e.code, "E_DUPLICATE", "{e}");
 
         let missing_handler = source.replace(
-            "susp receive(ActorMail<int> mail): void {\\n    stdio.println(mail.value);\\n  }",
+            "susp receive(ActorMail<int> mail): void {\n    stdio.println(mail.value);\n  }",
             "",
         );
         assert_ne!(missing_handler, source);
