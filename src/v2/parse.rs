@@ -19,7 +19,7 @@ const KEYWORDS: &[&str] = &[
     "define", "fnc", "routine", "suspends", "return", "self", "pub", "const", "val", "let", "mut", "if", "then", "else",
     "elif", "elseif", "fi", "do", "done", "end", "while", "for", "loop", "block", "break", "continue", "match", "over",
     "on", "default", "when", "spawn", "await", "nb", "try", "readch", "writech", "eq", "neq", "is", "new", "true",
-    "false", "task", "using", "with", "use", "yield", "pipe", "rpipe", "as", "in",
+    "false", "task", "using", "with", "use", "yield", "pipe", "rpipe", "as", "in", "receives", "emits", "susp",
 ];
 
 fn unsupported(pos: Pos, what: &str) -> Diagnostic {
@@ -183,8 +183,32 @@ impl Parser {
             return Err(unsupported(self.pos(), &format!("'define {w}' together with async/pattern features")));
         };
         let (name, pos) = self.ident("a type name")?;
+        // Canonical actor effects: typed receive/send ports are declarations,
+        // not inferred host privileges. The older v2 syntax without headers
+        // remains a restricted legacy guest profile while migration proceeds.
+        let mut declared_receives = None;
+        let mut declared_emits = None;
+        if self.eat_word("receives") {
+            if kind != ObjKind::Actor {
+                return Err(Diagnostic::new(self.pos(), "E_ACTOR",
+                    "only an actor declares a receives port"));
+            }
+            declared_receives = Some(self.parse_type()?);
+        }
+        if self.eat_word("emits") {
+            if kind != ObjKind::Actor {
+                return Err(Diagnostic::new(self.pos(), "E_ACTOR",
+                    "only an actor declares an emits port"));
+            }
+            declared_emits = Some(self.parse_type()?);
+        }
+        if self.is_word("receives") || self.is_word("emits") {
+            return Err(Diagnostic::new(self.pos(), "E_DUPLICATE",
+                "actor port declarations must be unique and ordered receives, emits"));
+        }
         self.expect_word("as")?;
-        let mut o = Object { kind, name, pos, fields: Vec::new(), receive: None, methods: Vec::new() };
+        let mut o = Object { kind, name, pos, declared_receives, declared_emits,
+            fields: Vec::new(), receive: None, methods: Vec::new() };
         loop {
             if self.eat_word("end") {
                 break;
@@ -203,7 +227,12 @@ impl Parser {
                 }
                 continue;
             }
-            if self.is_word("receive") && *self.peek_at(1) == Tok::LParen {
+            if (self.is_word("receive") && *self.peek_at(1) == Tok::LParen)
+                || (self.is_word("susp") && self.word_at(1) == Some("receive")
+                    && *self.peek_at(2) == Tok::LParen) {
+                if self.eat_word("susp") {
+                    // An actor receive handler already suspends cooperatively.
+                }
                 if kind != ObjKind::Actor {
                     return Err(Diagnostic::new(self.pos(), "E_SYNTAX", "only an actor declares 'receive'"));
                 }
@@ -261,7 +290,7 @@ impl Parser {
     /// may omit `fnc`.
     fn parse_func(&mut self, method: bool) -> R<Func> {
         self.eat_word("pub");
-        let suspends = self.eat_word("suspends");
+        let suspends = self.eat_word("suspends") || self.eat_word("susp");
         let has_kw = self.eat_word("fnc") || self.eat_word("routine") || (method && self.eat_word("mtd"));
         if !has_kw && !method {
             return Err(Diagnostic::new(
