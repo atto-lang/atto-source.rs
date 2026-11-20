@@ -126,6 +126,12 @@ pub fnc main(): int throws Error {
         assert_eq!(crate::compile_with_imports(EXAMPLE,
             std::path::Path::new("src/main.atto"), |_| panic!("no file reads allowed"))
             .unwrap_err().code, "E_STDLIB_UNLINKED");
+        assert_eq!(crate::linker::import_paths(EXAMPLE, "src/main.atto")
+            .unwrap_err().code, "E_STDLIB_UNLINKED");
+        let oversized = " ".repeat(crate::SOURCE_CAP + 1);
+        assert_eq!(crate::compile_with_imports(&oversized,
+            std::path::Path::new("src/main.atto"), |_| panic!("must not load"))
+            .unwrap_err().code, "E_SOURCE_LIMIT");
     }
 
     #[test]
