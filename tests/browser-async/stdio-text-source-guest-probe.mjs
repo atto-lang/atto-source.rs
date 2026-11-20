@@ -110,7 +110,7 @@ self.onmessage=async()=>{
     // Host-only adapter tests are insufficient for on-is pattern parity.
     const proofCases=[
       ['LF echo',[encoder.encode('hello\n')],{exit:0,stdout:prompt+'hello',stderr:'echo complete'},{}],
-      ['CRLF + NUL',[encoder.encode('β\\0x\\r\\n')],{exit:0,stdout:prompt+'β\\0x',stderr:'echo complete'},{}],
+      ['CRLF + NUL',[encoder.encode('β\0x\r\n')],{exit:0,stdout:prompt+'β\0x',stderr:'echo complete'},{}],
       ['empty record',[encoder.encode('\n')],{exit:0,stdout:prompt,stderr:'echo complete'},{}],
       ['unterminated final',[encoder.encode('last')],{exit:0,stdout:prompt+'last',stderr:'echo complete'},{}],
       ['clean EOF',[],{exit:11,stdout:prompt,stderr:''},{}],
