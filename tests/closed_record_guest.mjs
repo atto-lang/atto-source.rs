@@ -49,6 +49,8 @@ function run(bytes){
  return {value:inst.exports.main(),stdout};
 }
 const positives=[
+ ['pub fnc main(): int {val Record<{z:bool,a:int}> x=Record.of(z=true,a=40);val Record<{a:int,z:bool}> y=Record.of(a=2,z=false);return x.a+y.a;}',42n,''],
+ ['pub fnc main(): int {val Record<{"x,y<>":int,"über":int}> x=Record.of("über":2,"x,y<>":40);return x["x,y<>"]+x["über"];}',42n,''],
  ['pub fnc main(): int {let Record p={y:2,x:40}; return p.x+p.y;}',42n,''],
  ['pub fnc main(): int {let Record h={"content-type":"application/json","über field":40,status_code:2}; stdio.println(h["content-type"]); return h["über field"]+h.status_code;}',42n,'application/json\n'],
  ['pub fnc main(): int {let Record x={z:true,a:40}; let record y={a:41,z:false}; return x.a+y.a-39;}',42n,''],
@@ -60,6 +62,10 @@ const positives=[
  ['pub fnc main(): int {val a=Array.of(20,22);return a[0]+a[1];}',42n,'']
 ];
 const negatives=[
+ ['pub fnc main(): int {val Record<{a:int,b:bool}> x=Record.of(a=42);return x.a;}','E_NO_FIELD'],
+ ['pub fnc main(): int {val Record<{a:int}> x=Record.of(a=42,extra=true);return x.a;}','E_NO_FIELD'],
+ ['pub fnc main(): int {val Record<{a:string}> x=Record.of(a=42);return 0;}','E_TYPE'],
+ ['pub fnc main(): int {val Record<{items:Array<int>}> x=Record.of(items=Array.of());return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:42}; let string key="x"; return r[key];}','E_UNSUPPORTED'],
  ['pub fnc main(): int {let Record r={x:42}; return r["missing"]; }','E_NO_FIELD'],
  ['pub fnc main(): int {let Map<string,int> m={"x"=>42}; return m["x"]; }','E_UNSUPPORTED'],
