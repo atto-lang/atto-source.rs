@@ -1908,9 +1908,17 @@ impl Parser {
             }
             return self.parse_erlang_body(ret);
         }
-        if colon_type && self.eat(&Tok::Arrow) && *self.peek() != Tok::LBrace {
-            return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                "a ': Type ->' callable body must open with '{'"));
+        if colon_type && self.eat(&Tok::Arrow) {
+            // : T -> { statements } keeps the existing explicit-return semantics.
+            // : T -> expression; is a single expression body with a checked
+            // implicit return, not an implicit return from a brace block.
+            if *self.peek() == Tok::LBrace {
+                return self.parse_block();
+            }
+            let pos = self.pos();
+            let value = self.parse_expr()?;
+            self.expect(Tok::Semi, "';' after an inline callable expression body")?;
+            return Ok(vec![Stmt::Return(Some(value), pos)]);
         }
         self.parse_block()
     }
