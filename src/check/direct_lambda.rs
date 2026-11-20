@@ -256,6 +256,8 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             rewrite_expr(target, d)?;
             rewrite_expr(value, d)
         }
+        Stmt::IndexAssign { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
+            "direct lambda indexed mutation needs checked lvalue and loan analysis")),
         Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
             "direct lambda rewriting cannot cross a protected state loan")),
         Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
@@ -461,7 +463,8 @@ fn free_names(e: &Expr, names: &mut BTreeSet<String>, depth: usize) -> R<()> {
 fn stmt_pos(s: &Stmt) -> Pos {
     match s {
         Stmt::Bind { pos, .. } | Stmt::Assign { pos, .. } |
-        Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
+        Stmt::FieldAssign { pos, .. } | Stmt::IndexAssign { pos, .. } |
+        Stmt::StateWrite { pos, .. } | Stmt::If { pos, .. } |
         Stmt::While { pos, .. } | Stmt::Loop { pos, .. } |
         Stmt::For { pos, .. } | Stmt::ForIn { pos, .. } |
         Stmt::Match { pos, .. } | Stmt::Throw(_, pos) |

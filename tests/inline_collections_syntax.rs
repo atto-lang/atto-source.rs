@@ -347,22 +347,31 @@ fn bracket_lvalues_preserve_exact_index_target_without_guessing_record_or_map() 
     for case in cases {
         let p = parse_binding(case).unwrap_or_else(|e| panic!("{case}: {e}"));
         match &p.funcs[0].body[1] {
-            Stmt::Expr(e) => match &e.kind {
-                ExprKind::Call(name, args) if name == "@builtin/checked-index-write" => {
-                    assert_eq!(args.len(), 2);
-                    assert!(matches!(&args[1].kind, ExprKind::Int(Some(3))));
-                    match &args[0].kind {
-                        ExprKind::Index(receiver, key) => {
-                            assert!(matches!(&receiver.kind, ExprKind::Var(n) if n == "x"));
-                            assert!(matches!(&key.kind, ExprKind::Str(s) if s == "foo"));
-                        }
-                        _ => panic!("must keep unlowered Index lvalue to resolve after typing"),
-                    }
-                }
-                _ => panic!("synthetic index write must be a checked, unspellable intrinsic"),
+            Stmt::IndexAssign { target, index, value, .. } => {
+                assert!(matches!(&target.kind, ExprKind::Var(n) if n == "x"));
+                assert!(matches!(&index.kind, ExprKind::Str(s) if s == "foo"));
+                assert!(matches!(&value.kind, ExprKind::Int(Some(3))));
             }
-            _ => panic!("expected a single checked index assignment statement"),
+            _ => panic!("index lvalue must be a checked IndexAssign AST statement"),
         }
+    }
+}
+
+#[test]
+fn dynamic_index_lvalue_preserves_unevaluated_receiver_key_and_rhs() {
+    let p = parse_binding(
+        r#"let int sentinel = 1; get_map()[next_key()] = next_value();"#
+    ).expect("parse-only dynamic indexed assignment");
+    match &p.funcs[0].body[1] {
+        Stmt::IndexAssign { target, index, value, .. } => {
+            assert!(matches!(&target.kind, ExprKind::Call(name, args)
+                if name == "get_map" && args.is_empty()));
+            assert!(matches!(&index.kind, ExprKind::Call(name, args)
+                if name == "next_key" && args.is_empty()));
+            assert!(matches!(&value.kind, ExprKind::Call(name, args)
+                if name == "next_value" && args.is_empty()));
+        }
+        _ => panic!("indexed lvalue must retain its unevaluated source AST"),
     }
 }
 

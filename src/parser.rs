@@ -1910,21 +1910,11 @@ impl Parser {
                                 pos,
                             })
                         }
-                        ExprKind::Index(target, key) => {
+                        ExprKind::Index(target, index) => {
+                            // Typed lvalue lowering resolves Map, closed Record or forbidden Struct.
+                            // Do not wrap in a synthetic intrinsic or evaluate any child here.
                             let value = value_of(self)?;
-                            // Preserve the entire lvalue, with exact receiver
-                            // and key expressions, until the owning compiler's
-                            // typed lvalue checker distinguishes mutable Maps,
-                            // fixed-shape Records and forbidden Struct indexing.
-                            // The unspellable intrinsic is rejected by check.rs
-                            // until the ownership-aware guest write exists.
-                            Ok(Stmt::Expr(Expr {
-                                kind: ExprKind::Call(
-                                    "@builtin/checked-index-write".into(),
-                                    vec![Expr { kind: ExprKind::Index(target,key), pos: at }, value],
-                                ),
-                                pos,
-                            }))
+                            Ok(Stmt::IndexAssign { target: *target, index: *index, value, pos })
                         }
                         _ => Err(Diagnostic::new(
                             at,
