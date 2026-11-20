@@ -427,8 +427,11 @@ mod bang_exception_keyword_tests {
         assert!(matches!(&separate[0].tok, Tok::Ident(s) if s == "trap"));
         assert_eq!(separate[1].tok, Tok::Bang);
         assert!(matches!(&separate[4].tok, Tok::Ident(s) if s == "trap"));
-        assert!(matches!(&separate[6].tok, Tok::Ident(s) if s == "throw"));
-        assert!(matches!(&separate[8].tok, Tok::Ident(s) if s == "other_trap"));
-        assert_eq!(separate[9].tok, Tok::Bang);
+        assert_eq!(separate[5].tok, Tok::Bang);
+        assert!(matches!(&separate[6].tok, Tok::Ident(s) if s == "eq"));
+        assert!(matches!(&separate[7].tok, Tok::Ident(s) if s == "throw"));
+        assert_eq!(separate[8].tok, Tok::NotEq);
+        assert!(matches!(&separate[9].tok, Tok::Ident(s) if s == "other_trap"));
+        assert_eq!(separate[10].tok, Tok::Bang);
     }
 }
