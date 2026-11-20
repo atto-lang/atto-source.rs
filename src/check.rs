@@ -2468,13 +2468,18 @@ impl<'a> FnCx<'a> {
                 // construction while validating every *directed* edge in
                 // source-to-sink order. The reversed AST is never a license
                 // to infer dataflow direction from endpoint types.
-                let reversed = matches!(&e.kind,
-                    ExprKind::DirectedPipeline(_, PipeDirection::RightToLeft));
-                let flow: Vec<PipeStage> = if reversed {
-                    stages.iter().rev().cloned().collect()
-                } else {
-                    stages.to_vec()
+                let direction = match &e.kind {
+                    ExprKind::DirectedPipeline(_, d) => *d,
+                    ExprKind::MixedPipeline(_) => PipeDirection::LeftToRight,
+                    _ => unreachable!("only continuous pipelines reach this branch"),
                 };
+                // Preserve endpoint ASTs in lexical order; normalize DATA
+                // edges using indices, not duplicate endpoint expressions.
+                let topology = crate::pipe_contract::directed_topology(stages.len(), direction)
+                    .ok_or_else(|| Diagnostic::new(
+                        pos, "E_SOURCE_LIMIT", "mixed pipeline must have 2 to 16 stages"))?;
+                let flow: Vec<&PipeStage> = topology.flow_indices.iter()
+                    .map(|&i| &stages[i]).collect();
                 let stages = flow.as_slice();
                 // A pipe is a typed continuous graph, NEVER a single I/O
                 // operator or a collection of ordinary actor.send() calls.
