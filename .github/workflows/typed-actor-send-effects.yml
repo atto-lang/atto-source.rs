@@ -4,22 +4,34 @@ on:
     paths:
       - 'src/actor_send_effect_graph.rs'
       - 'src/actor_owned_admission.rs'
+      - 'src/actor_isolation_witness.rs'
       - 'src/ast.rs'
       - 'src/parser.rs'
       - 'src/check.rs'
       - 'src/lib.rs'
       - 'tests/actor_sends_never.rs'
+      - 'tests/actor_isolation_compiled_guest.mjs'
+      - 'tests/fixtures/fail/actor-isolation-*.atto'
+      - 'tests/fixtures/fail/actor-untrusted-no-sandbox-v1.atto'
+      - 'tests/fixtures/fail/actor-isolated-no-private-runtime-v1.atto'
+      - 'tests/fixtures/pass/actor-explicit-shared-domain-v1.atto'
       - 'tests/fixtures/pass/actor-bool-never-parity-v1.atto'
       - '.github/workflows/typed-actor-send-effects.yml'
   push:
     paths:
       - 'src/actor_send_effect_graph.rs'
       - 'src/actor_owned_admission.rs'
+      - 'src/actor_isolation_witness.rs'
       - 'src/ast.rs'
       - 'src/parser.rs'
       - 'src/check.rs'
       - 'src/lib.rs'
       - 'tests/actor_sends_never.rs'
+      - 'tests/actor_isolation_compiled_guest.mjs'
+      - 'tests/fixtures/fail/actor-isolation-*.atto'
+      - 'tests/fixtures/fail/actor-untrusted-no-sandbox-v1.atto'
+      - 'tests/fixtures/fail/actor-isolated-no-private-runtime-v1.atto'
+      - 'tests/fixtures/pass/actor-explicit-shared-domain-v1.atto'
       - 'tests/fixtures/pass/actor-bool-never-parity-v1.atto'
       - '.github/workflows/typed-actor-send-effects.yml'
   workflow_dispatch:
@@ -28,7 +40,7 @@ permissions:
 jobs:
   compile-exact-actor-effects:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       CARGO_NET_OFFLINE: 'true'
     steps:
@@ -61,8 +73,35 @@ jobs:
           set -euo pipefail
           cargo test --offline --locked --test actor_sends_never
           cargo build --offline --locked --bin attoc
+      - name: Validate compiler-owned isolation witness and guarded receiver dequeue
+        run: |
+          set -euo pipefail
+          cargo test --offline --locked --lib actor_isolation_witness
+          cargo test --offline --locked --lib actor_owned_admission
+      - name: Run actual emitted actor Wasm in synthetic trusted host
+        run: |
+          set -euo pipefail
+          ./target/debug/attoc tests/fixtures/pass/actor-explicit-shared-domain-v1.atto -o "$RUNNER_TEMP/atto-shared-actor.wasm"
+          ./target/debug/attoc tests/fixtures/pass/actor-bool-never-parity-v1.atto -o "$RUNNER_TEMP/atto-bool-actor.wasm"
+          node tests/actor_isolation_compiled_guest.mjs "$RUNNER_TEMP/atto-shared-actor.wasm" "$RUNNER_TEMP/atto-bool-actor.wasm"
+      - name: Confirm nine actor isolation compiler rejections with no Wasm artifact
+        run: |
+          set -euo pipefail
+          for fixture in tests/fixtures/fail/actor-isolation-*.atto tests/fixtures/fail/actor-untrusted-no-sandbox-v1.atto tests/fixtures/fail/actor-isolated-no-private-runtime-v1.atto; do
+            expected="$(sed -n 's@^// expect-error: @@p' "$fixture" | head -n1)"
+            test -n "$expected"
+            rm -f "$RUNNER_TEMP/atto-denied.wasm"
+            if ./target/debug/attoc "$fixture" -o "$RUNNER_TEMP/atto-denied.wasm" 2>"$RUNNER_TEMP/atto-denied.log"; then
+              echo "unexpected compiler success: $fixture" >&2; exit 1
+            fi
+            test ! -e "$RUNNER_TEMP/atto-denied.wasm"
+            grep -F "$expected" "$RUNNER_TEMP/atto-denied.log"
+          done
+          echo 'RUST_ATTO_ISOLATION_NEGATIVE_NO_ARTIFACT=9_OF_9'
       - name: Scope and non-promotion
         run: |
           echo 'RUST_ATTO_BOOL_NEVER_SOURCE_TO_WASM=TESTED'
-          echo 'REAL_WASM_ACTOR_RECEIVE_RUNTIME=NOT_EXECUTED'
+          echo 'ACTUAL_GUEST_WASM_ACTOR_HANDLER_SYNTHETIC_HOST=TESTED'
+          echo 'PRODUCTION_ACTOR_RUNTIME=NOT_EXECUTED'
+          echo 'TENANTVM_ISOLATION=NOT_PROVED'
           echo 'NATIVE_LLVM_AOT_ACTOR=NOT_EXECUTED'
