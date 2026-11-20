@@ -1,0 +1,6 @@
+// NEVER lower hostile actors on a trusted shared Wasm/Worker path.
+// expect-error: E_UNTRUSTED_SANDBOX_UNAVAILABLE
+define untrusted actor Worker receives int as
+    susp receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { return 0; }
