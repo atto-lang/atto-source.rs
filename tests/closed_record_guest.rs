@@ -179,7 +179,7 @@ fn rejected_fields_and_ownership_do_not_emit_guest_wasm() {
             return r.x;
         }
     "#,
-        "E_OWNERSHIP",
+        "E_IMMUTABLE",
     );
 }
 
@@ -526,6 +526,72 @@ fn static_bracket_read_infers_field_type_in_return_checker() {
         }
     "#,
     );
+}
+
+
+#[test]
+fn checked_owned_scalar_record_writes_emit_guest_wasm() {
+    for source in [
+        r#"pub fnc main(): int {
+            let mut Record r = {foo: 1};
+            r["foo"] = 42;
+            return r.foo;
+        }"#,
+        r#"pub fnc main(): int {
+            val mut Record r = {"content-type": 1};
+            r["content-type"] = 42;
+            return r["content-type"];
+        }"#,
+        r#"pub fnc main(): int {
+            let mut Record r = {foo: 1, bar: 9};
+            r.foo = 33;
+            return r["foo"] + r.bar;
+        }"#,
+        r#"pub fnc main(): int {
+            let mut Record r = {"": 1, "é": 2, "é": 3};
+            r[""] = 37;
+            r["é"] = 3;
+            return r[""] + r["é"] + r["é"];
+        }"#,
+    ] {
+        wasm(source);
+    }
+}
+
+#[test]
+fn record_write_fail_closed_immutable_type_missing_or_computed() {
+    for (source, code) in [
+        (r#"pub fnc main(): int { let Record r={foo:1}; r["foo"]=42; return 0; }"#, "E_IMMUTABLE"),
+        (r#"pub fnc main(): int { val Record r={foo:1}; r.foo=42; return 0; }"#, "E_IMMUTABLE"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; r["bar"]=42; return 0; }"#, "E_NO_FIELD"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; r["foo"]="bad"; return 0; }"#, "E_TYPE"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; let string key="foo"; r[key]=42; return 0; }"#, "E_UNSUPPORTED"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; r[0]=42; return 0; }"#, "E_UNSUPPORTED"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; r["f"+"oo"]=42; return 0; }"#, "E_UNSUPPORTED"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; val moved=take! r; r["foo"]=42; return 0; }"#, "E_MOVED"),
+        (r#"pub fnc main(): int { let mut Record r={foo:1}; val reader=borrow! r; r["foo"]=42; return 0; }"#, "E_BORROW"),
+        (r#"define struct Point as int foo; end pub fnc main(): int { let mut p=Point{foo:1}; p["foo"]=42; return 0; }"#, "E_UNSUPPORTED"),
+        (r#"define struct Point as int foo; end pub fnc main(): int { val p=Point{foo:1}; return p["foo"]; }"#, "E_UNSUPPORTED"),
+    ] {
+        invalid(source,code);
+    }
+}
+
+#[test]
+fn index_write_retains_field_type_and_lexical_class_identity() {
+    let p = Parser::new(lexer::lex(
+        r#"pub fnc main(): int {
+            let mut Record r={foo:1,"a-b":9};
+            r["a-b"]=42;
+            return r["a-b"];
+        }"#).unwrap()).parse_program().unwrap();
+    let checked = collection_types::analyze(&p).unwrap();
+    let mut lowered=p.clone();
+    closed_record_guest::lower(&mut lowered, &checked).unwrap();
+    assert!(matches!(&lowered.funcs[0].body.last().unwrap(),
+        Stmt::Return(Some(v),_) if matches!(&v.kind,ExprKind::Index(_, _))));
+    assert!(lowered.classes.iter().any(|c| c.name.starts_with(
+        closed_record_guest::PRIVATE_PREFIX)));
 }
 
 #[test]
