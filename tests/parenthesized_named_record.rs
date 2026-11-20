@@ -148,6 +148,95 @@ fn adjacent_generic_close_and_assignment_preserve_type_and_comparison_tokens() {
 }
 
 #[test]
+fn duplicate_checkers_agree_across_parens_braces_and_constant_maps() {
+    for literal in [
+        "(foo=1,foo=2)",
+        "(café=1,café=2)",
+        "{foo:1,\"foo\":2}",
+        "{\"foo\":1,foo:2}",
+        "{\"foo\" => 1,\"foo\" => 2}",
+        "{1 => true,1 => false}",
+    ] {
+        rejected(
+            &format!("pub fnc main():int {{let value={literal};return 0;}}"),
+            "E_DUPLICATE",
+        );
+    }
+    // Identifier equality is exact and case sensitive: neither runtime nor
+    // compiler may normalize or fold distinct names into one slot.
+    guest("pub fnc main():int {let r=(Foo=40,foo=2);return r.Foo+r.foo;}");
+    guest("pub fnc main():int {let r=(café=40,cafe=2);return r.café+r.cafe;}");
+}
+
+#[test]
+fn parser_rejects_ambiguous_nested_and_mixed_named_syntax() {
+    for literal in [
+        "(foo=1,bar)",
+        "(foo=1,bar==2)",
+        "(foo=1,if=2)",
+        "(foo=1,bar:2)",
+        "(foo=1,\"bar\"=2)",
+        "(foo=1,bar=2,3)",
+    ] {
+        rejected(
+            &format!("pub fnc main():int {{let r={literal};return 0;}}"),
+            "E_LITERAL_KIND",
+        );
+    }
+    rejected("pub fnc main():int {let r=(\"\"=42);return 0;}", "E_LITERAL_KIND");
+    rejected(
+        "pub fnc main():int {let r=(__atto_closed_record_shape_0=42);return 0;}",
+        "E_RESERVED",
+    );
+    rejected(
+        "pub fnc main():int {let r=(foo=1,bar=[1,2]);return 0;}",
+        "E_UNSUPPORTED",
+    );
+}
+
+#[test]
+fn parenthesized_record_budget_is_bounded_and_fails_before_guest_creation() {
+    let many = (0..1025usize)
+        .map(|i| format!("field_{i}=1"))
+        .collect::<Vec<_>>()
+        .join(",");
+    rejected(
+        &format!("pub fnc main():int {{let r=({many});return 0;}}"),
+        "E_SOURCE_LIMIT",
+    );
+    // Backend's fixed closed-scalar layout is intentionally narrower than
+    // the parser budget. It must reject rather than overflow guest storage.
+    let nine = (0..9usize)
+        .map(|i| format!("field_{i}=1"))
+        .collect::<Vec<_>>()
+        .join(",");
+    rejected(
+        &format!("pub fnc main():int {{let r=({nine});return 0;}}"),
+        "E_UNSUPPORTED",
+    );
+    let eight = (0..8usize)
+        .map(|i| format!("field_{i}=1"))
+        .collect::<Vec<_>>()
+        .join(",");
+    guest(&format!(
+        "pub fnc main():int {{let r=({eight});return r.field_0+41;}}"
+    ));
+}
+
+#[test]
+fn format_grammar_does_not_reinterpret_call_argument_binders() {
+    let cases = [
+        "fnc f(int a):int {return a;} pub fnc main():int {return f(a=1);}",
+        "fnc f(int a):int {return a;} pub fnc main():int {return f(a:1);}",
+        "fnc f(int a):int {return a;} pub fnc main():int {return f(...(a=1));}",
+        "define class A as A(int a) {} method get():int {return 42;} end pub fnc main():int {return new A(a=1).get();}",
+    ];
+    for src in cases {
+        rejected(src, "E_UNSUPPORTED");
+    }
+}
+
+#[test]
 fn parenthesized_record_compiles_via_existing_owned_scalar_guest_abi() {
     for src in [
         "pub fnc main():int {let y=(foo=\"star\",abc=5);return y.abc;}",
