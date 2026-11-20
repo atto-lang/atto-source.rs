@@ -236,6 +236,11 @@ try{
     '214-v2-pipe-closed-channel.atto',
     '215-v2-pipe-stopped-consumer.atto',
     '216-v2-pipe-stopped-actor-sink.atto',
+    '225-v2-pipe-claimed-channel-send.atto',
+    '226-v2-pipe-claimed-channel-receive.atto',
+    '227-v2-pipe-claimed-channel-close.atto',
+    '228-v2-pipe-claimed-for-await.atto',
+    '229-v2-pipe-claimed-rx-poll.atto',
   ]) {
     const guest = await readFile(new URL('./fixtures/panic/' + filename, import.meta.url), 'utf8');
     assert.match(await run(guest, 'E_PANIC'), /^E_PANIC:/);
