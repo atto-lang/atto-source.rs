@@ -216,6 +216,7 @@ try{
   for (const filename of [
     '210-v2-pipe-double-attach.atto',
     '211-v2-pipe-rendezvous-denial.atto',
+    '212-v2-pipe-duplicate-consumer.atto',
   ]) {
     const guest = await readFile(new URL('./fixtures/panic/' + filename, import.meta.url), 'utf8');
     assert.match(await run(guest, 'E_PANIC'), /^E_PANIC:/);
