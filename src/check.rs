@@ -1861,6 +1861,18 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(e.pos, "E_GENERATOR_OWNERSHIP",
                         "discarding an unclosed generator handle is prohibited"));
                 }
+                // Channel reads, writes, close and construction can fail.
+                // Do not let a standalone expression erase Err/EOF or a
+                // rejected send. The caller must bind, match or explicitly
+                // propagate the entire checked outcome.
+                if matches!(v.ty,
+                    Type::ResultOptionIntIoError |
+                    Type::ResultChannelIntIoError |
+                    Type::ResultVoidIoError)
+                {
+                    return Err(Diagnostic::new(e.pos, "E_IO_DISCARD",
+                        "discarding a checked channel outcome is prohibited; bind, match or propagate its Result"));
+                }
                 TStmt::Expr(v)
             }
             Stmt::Throw(error, pos) => self.guest_throw(error, *pos)?,
