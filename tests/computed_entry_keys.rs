@@ -97,3 +97,29 @@ fn compiled_symbol_entry_and_computed_map_guest_fail_closed(){
         expected_reject(source,"E_UNSUPPORTED");
     }
 }
+
+#[test]
+fn record_construction_remains_identifier_only_and_has_no_entry_type(){
+    let p=parse(r#"let a={bar:5};let b=(bar=5);let m={"bar":5};"#).unwrap();
+    assert!(matches!(first_init(&p,0),ExprKind::Record(_)));
+    assert!(matches!(first_init(&p,1),ExprKind::Record(_)));
+    assert!(matches!(first_init(&p,2),ExprKind::Map(_)));
+    let ir=collection_types::analyze(&p).unwrap();
+    assert_eq!(ir[0].value.ty,ir[1].value.ty);
+    assert_ne!(ir[0].value.ty,ir[2].value.ty);
+    assert_eq!(parse("let r={bar};").unwrap_err().code,"E_LITERAL_KIND");
+    let p=parse(r#"const string bar="hello";let a={bar:bar};let b=(bar=bar);"#).unwrap();
+    let ir=collection_types::analyze(&p).unwrap();
+    assert_eq!(ir[0].value.ty,ir[1].value.ty);
+    assert_eq!(ir[0].value.ty,T::Record(vec![("bar".to_owned(),T::String)]));
+}
+#[test]
+fn lexical_consts_cannot_leak_across_scopes_or_mutable_shadow(){
+    let inner=parse(r#"block {const string foo="bar";}let e=[foo]=>5;"#).unwrap();
+    assert_eq!(collection_types::analyze(&inner).unwrap_err().code,"E_UNSUPPORTED");
+    let shadow=parse(r#"const string foo="bar";block {let foo=7;let e=[foo]=>5;}"#).unwrap();
+    assert_eq!(collection_types::analyze(&shadow).unwrap_err().code,"E_UNSUPPORTED");
+    let valid=parse(r#"const string foo="bar";block {let e=[foo]=>5;}"#).unwrap();
+    assert_eq!(collection_types::analyze(&valid).unwrap()[0].value.ty,
+        T::Entry(Box::new(T::String),Box::new(T::Int)));
+}
