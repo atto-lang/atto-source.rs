@@ -663,6 +663,92 @@ fn inline_task_cleanup_safe_stmts(body: &[Stmt]) -> bool {
     })
 }
 
+
+/// Separate typed-IR admission, independent of the syntax allowlist.
+/// String concatenation is a real bump-heap allocation even though its AST
+/// looks like scalar binary arithmetic. Neither syntactic recognition nor a
+/// scalar *result* type alone is proof of zero allocation, no IO, no actor
+/// state, no hidden call, and no cross-TenantVM authority. Keep this match
+/// exhaustive so any new IR expression is denied until audited explicitly.
+fn inline_task_typed_scalar_expr(value: &TE, no_trap: bool) -> bool {
+    if !matches!(value.ty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+        return false;
+    }
+    match &value.e {
+        TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
+        TExpr::StrConst(_, _) | TExpr::Local(_) => true,
+        TExpr::Neg(inner) | TExpr::FNeg(inner) |
+        TExpr::Not(inner) | TExpr::IntToFloat(inner) =>
+            !no_trap && inline_task_typed_scalar_expr(inner, false),
+        TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) =>
+            !no_trap && inline_task_typed_scalar_expr(a, false)
+                && inline_task_typed_scalar_expr(b, false),
+        TExpr::Ternary(cond, yes, no) =>
+            !no_trap && cond.ty == Type::Bool
+                && inline_task_typed_scalar_expr(cond, false)
+                && inline_task_typed_scalar_expr(yes, false)
+                && inline_task_typed_scalar_expr(no, false),
+        // Pure read-only string helpers are allowed without cleanup.
+        // Concat allocates guest heap storage and must never be smuggled
+        // through the generic Binary source gate.
+        TExpr::Str(op, receiver, arg) =>
+            !no_trap && matches!(op,
+                StrOp::Eq | StrOp::StartsWith | StrOp::EndsWith |
+                StrOp::Contains | StrOp::Cmp)
+                && inline_task_typed_scalar_expr(receiver, false)
+                && arg.as_ref().is_some_and(|v| inline_task_typed_scalar_expr(v, false)),
+        // Never infer safety from a scalar output of a call, guest allocation,
+        // print, state read, actor operation, exception, or nested inline task.
+        TExpr::InlineTask { .. } | TExpr::Call(_, _) |
+        TExpr::Print { .. } | TExpr::PrintStr { .. } |
+        TExpr::PrintStrVal { .. } | TExpr::PrintObj { .. } |
+        TExpr::EnumVal(_) | TExpr::AdtNew { .. } |
+        TExpr::AdtIs { .. } | TExpr::AdtPayload(_) |
+        TExpr::Trap { .. } | TExpr::AdtPropagate { .. } |
+        TExpr::FieldGet { .. } | TExpr::StateFieldRead { .. } |
+        TExpr::GlobalGet(_) | TExpr::CollectionLoad { .. } |
+        TExpr::CollectionAlloc(_) | TExpr::Alloc(_) |
+        TExpr::Spawn(_) | TExpr::Send { .. } => false,
+    }
+}
+
+/// The typed statement verifier rejects any future lowering that bypasses
+/// scalar-only task-local control flow. The active-cleanup profile excludes
+/// operations that can trap before the cleanup epilogue.
+fn inline_task_typed_stmts(body: &[TStmt], no_trap: bool) -> bool {
+    body.iter().all(|stmt| match stmt {
+        TStmt::Set(_, value) =>
+            inline_task_typed_scalar_expr(value, no_trap),
+        TStmt::InlineReturn { value, .. } =>
+            value.as_ref().is_none_or(|v| inline_task_typed_scalar_expr(v, no_trap)),
+        TStmt::Block(inner) => inline_task_typed_stmts(inner, no_trap),
+        TStmt::If(arms, otherwise) =>
+            arms.iter().all(|(cond, inner)|
+                cond.ty == Type::Bool && inline_task_typed_scalar_expr(cond, no_trap)
+                    && inline_task_typed_stmts(inner, no_trap))
+                && otherwise.as_ref().is_none_or(|inner|
+                    inline_task_typed_stmts(inner, no_trap)),
+        TStmt::Expr(_) | TStmt::GlobalSet(..) |
+        TStmt::CollectionStore { .. } | TStmt::FieldSet { .. } |
+        TStmt::StateFieldWrite { .. } | TStmt::StateCriticalWrite(..) |
+        TStmt::StateRegister(..) | TStmt::Throw(..) | TStmt::Raise(..) |
+        TStmt::UnwindFrame { .. } | TStmt::Try { .. } |
+        TStmt::Defer { .. } | TStmt::Recover { .. } |
+        TStmt::RecoverNext | TStmt::Return(..) | TStmt::ForIn { .. } |
+        TStmt::Loop { .. } | TStmt::Break | TStmt::Continue |
+        TStmt::Unreachable => false,
+    })
+}
+
+/// A deferred epilogue must be entirely non-trapping local assignments,
+/// never a hidden return, call, state write, or other IR statement.
+fn inline_task_typed_cleanups(cleanups: &[Vec<TStmt>]) -> bool {
+    cleanups.iter().all(|block| block.iter().all(|stmt| match stmt {
+        TStmt::Set(_, value) => inline_task_typed_scalar_expr(value, true),
+        _ => false,
+    }))
+}
+
 /// A 'do' cannot discard a value, including from a nested lexical branch.
 fn inline_task_has_valued_return(body: &[Stmt]) -> bool {
     body.iter().any(|s| match s {
@@ -4050,6 +4136,15 @@ impl<'a> FnCx<'a> {
                 })();
                 self.pop_scope();
                 let (checked, cleanups) = checked?;
+                // This second, independent typed gate runs before publishing
+                // any lowered task, so a future syntax/type-checker change
+                // cannot introduce hidden allocations or effects.
+                if !inline_task_typed_stmts(&checked, defer_count > 0)
+                    || !inline_task_typed_cleanups(&cleanups)
+                {
+                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+                        "inline task typed IR contains unproven allocation, call, state access or trapping effect"));
+                }
                 let actual = inferred.unwrap_or(Type::Void);
                 if actual != Type::Void && executable.is_empty() {
                     // Preserve the established diagnostic: an explicitly

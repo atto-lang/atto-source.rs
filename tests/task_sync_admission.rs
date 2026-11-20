@@ -47,6 +47,8 @@ fn inline_empty_and_scalar_return_profiles() {
     admit("pub fnc main(): int { val x = 40; return sync task<int> { return x + 2; }; }");
     admit("pub fnc main(): int { do sync task {}; val result = sync task<int> { return 40 + 2; }; do sync task {}; return result; }");
     admit("pub fnc main(): int { val x = sync task<bool> { return true; }; return 42; }");
+    admit("pub fnc main(): int { val s = sync task<string> { return \"safe\"; }; return 42; }");
+    admit("pub fnc main(): int { val x = sync task<int> { if \"ok\" == \"ok\" { return 42; } else { return 0; } fi }; return x; }");
 }
 #[test]
 fn require_do_and_void_only_for_discarded_inline_tasks() {
@@ -86,6 +88,11 @@ fn fail_closed_type_effect_and_cleanup_boundaries() {
     reject("pub fnc main(): int { do sync task { val x = stdio.println(42); }; return 42; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return spawn Worker(); }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return stdio.println(42); }; return x; }", "E_UNSUPPORTED");
+    // The source gate sees string '+' as a scalar Binary. The typed IR
+    // must detect its actual bump-heap concatenation and deny emission.
+    reject("pub fnc main(): int { val x = sync task<string> { return \"a\" + \"b\"; }; return 42; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { val x = sync task<string> { val a = \"a\"; return a + \"b\"; }; return 42; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { val x = sync task<int> { if (\"a\" + \"b\") == \"ab\" { return 42; } else { return 0; } fi }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return await task<int> { return 42; }; }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { let x = 0; do sync task { defer { x = x + 1; }; }; return x; }", "E_UNSUPPORTED");
     reject(&format!("pub fnc main(): int {{ do sync task {{ {} return; }}; return 42; }}",
