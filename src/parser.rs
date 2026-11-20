@@ -3459,6 +3459,25 @@ impl Parser {
                 "new" => {
                     self.advance();
                     let (class, _) = self.ident("a class name after 'new'")?;
+                    // A bounded Channel<int> is fallible: treat the familiar
+                    // constructor spelling as the *checked* bounded intrinsic,
+                    // never as an unchecked allocation or a naked handle.
+                    // A Result<Channel<int>,IoError> must be handled before the
+                    // channel may be used. Other generic 'new' expressions
+                    // remain explicitly unsupported in this guest subset.
+                    if class == "Channel" && self.eat(&Tok::Lt) {
+                        if !self.eat_word("int") {
+                            return Err(unsupported(self.pos(),
+                                "Channel<T> constructor item types other than int"));
+                        }
+                        self.expect(Tok::Gt, "'>' after Channel<int>")?;
+                        if *self.peek() != Tok::LParen {
+                            return Err(self.expected("'(' after Channel<int>"));
+                        }
+                        let args = self.parse_args()?;
+                        return Ok(Expr { kind: ExprKind::Call(
+                            "Channel<int>.bounded".to_owned(), args), pos });
+                    }
                     if *self.peek() == Tok::Lt {
                         return Err(unsupported(self.pos(), "generic class instantiation"));
                     }
