@@ -74,3 +74,24 @@ fn signed_minimum_and_empty_list_shape_are_exact() {
             "...");
     rejection(&empty,"E_PATTERN_BINDING");
 }
+
+#[test]
+fn fixed_atom_budget_applies_after_removing_rest_wildcards() {
+    const OLD: &str =
+        "on List.of(..., is int as val a, is int as val b, is int as val c, ...) -> a + b + c,";
+    assert!(BASE.contains(OLD), "budget test must rewrite the actual fixture");
+
+    // Exactly 16 fixed atoms are legal even when the shorter subject
+    // makes the first arm impossible; falling to default remains safe.
+    let max_valid = (0..16).map(|_| "is int").collect::<Vec<_>>().join(", ");
+    let valid = BASE.replace(OLD, &format!("on List.of({max_valid}) -> 1,"));
+    assert!(compile(&valid).is_ok(), "boundary at fixed atom budget");
+
+    // There are no rests here, so a token limit of MAX_FIXED + 2 would
+    // accidentally admit 17/18 fixed atoms. The typed IR limit is 16.
+    for count in [17, 18, 19] {
+        let parts = (0..count).map(|_| "is int").collect::<Vec<_>>().join(", ");
+        let invalid = BASE.replace(OLD, &format!("on List.of({parts}) -> 1,"));
+        rejection(&invalid, "E_PATTERN_BUDGET");
+    }
+}
