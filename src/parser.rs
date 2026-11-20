@@ -2539,6 +2539,12 @@ impl Parser {
     /// typing, unreachable-arm detection and Wasm branches. It does not
     /// pretend that arbitrary expressions are value matches.
     fn parse_return_match(&mut self, pos: Pos) -> R<Stmt> {
+        self.parse_return_match_body(pos, true)
+    }
+
+    /// A result arm may itself be a checked nested return match:
+    /// on Ok(_) -> match << input over ... end,
+    fn parse_return_match_body(&mut self, pos: Pos, terminator: bool) -> R<Stmt> {
         self.expect_word("match")?;
         let subject = self.parse_expr()?;
         self.expect_word("over")?;
@@ -2572,6 +2578,12 @@ impl Parser {
                         "braced return match arm must return or throw on every path"));
                 }
                 body
+            } else if self.is_word("match") {
+                // Bound nesting with the usual parser recursion budget.
+                self.enter()?;
+                let nested = self.parse_return_match_body(apos, false);
+                self.leave();
+                vec![nested?]
             } else {
                 let value = self.parse_expr()?;
                 vec![Stmt::Return(Some(value), apos)]
@@ -2597,7 +2609,7 @@ impl Parser {
         if arms.is_empty() {
             return Err(Diagnostic::new(pos, "E_SYNTAX", "return match requires at least one arm"));
         }
-        self.terminator()?;
+        if terminator { self.terminator()?; }
         Ok(Stmt::Match { subject, arms, pos })
     }
 
