@@ -199,6 +199,7 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
         "Array" | "array" => Some("Array"),
         "Tuple" | "tuple" => Some("Tuple"),
         "Entry" | "entry" => Some("Entry"),
+        "Symbol" | "symbol" => Some("Symbol"),
         _ => None,
     }
 }
@@ -484,6 +485,8 @@ impl Parser {
                     "Record" => !generic,
                     "Array" | "List" => !generic || args.len() == 1,
                     "Map" => !generic || args.len() == 2,
+                    "Entry" => generic && args.len() == 2,
+                    "Symbol" => !generic,
                     "Tuple" => !generic || !args.is_empty(),
                     _ => unreachable!(),
                 };
