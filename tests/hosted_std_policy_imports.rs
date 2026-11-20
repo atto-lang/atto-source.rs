@@ -36,9 +36,8 @@ fn native_compiler_cannot_inject_untrusted_files_over_sealed_std_sources() {
     let mut requests = 0;
     let wasm = compile_with_imports(POSITIVE, Path::new("project/main.atto"), |_path| {
         requests += 1;
-        panic!("sealed stdlib must NEVER consult mutable source loader")
-        #[allow(unreachable_code)]
-        { Err(std::io::Error::other("unreachable")) }
+        Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
+            "sealed stdlib must never consult the untrusted source loader"))
     }).unwrap();
     assert_eq!(requests, 0);
     assert_eq!(wasm, compile(POSITIVE).unwrap());
