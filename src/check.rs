@@ -1897,6 +1897,9 @@ impl<'a> FnCx<'a> {
                 TStmt::StateCriticalWrite(checked?)
             }
             Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
+            Stmt::IndexAssign { pos, .. } => return Err(Diagnostic::new(*pos,
+                "E_UNSUPPORTED",
+                "indexed assignment needs resolved receiver kind, mutability and checked guest storage; no unchecked Map/Record/Struct writes")),
             Stmt::Expr(Expr { kind: ExprKind::MethodCall(base, method, args), pos })
                 if method == "next" && args.is_empty()
                     && matches!(&base.kind, ExprKind::Var(n) if self.recover_cursor.as_deref() == Some(n.as_str())) =>
