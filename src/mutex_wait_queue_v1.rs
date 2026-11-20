@@ -515,7 +515,30 @@ impl TaskScopeLockCoordinator {
             TaskExitKind::Succeeded
         });
         task.guest_exited = true;
+        // Lexical TaskScope exit MUST cancel unfinished descendants, even
+        // when the parent itself returned successfully. Otherwise discarded
+        // children continue running after their scope and may strand locks.
+        // Claim the parent's terminal outcome first (so cancelling a child
+        // does not turn a successful parent into TaskCancelled), fence future
+        // child admission, then request transitive child cancellation.
+        let child_ids: Vec<u64> = tasks.iter()
+            .filter_map(|(id, child)| {
+                (child.parent == Some(who.logical_task) && !child.physically_retired)
+                    .then_some(*id)
+            })
+            .collect();
+        // Release the local task's mutable borrow before recursively
+        // cancelling children through the same trusted serialized arbiter.
+        let _ = task;
         let mut failure = None;
+        for id in child_ids {
+            let child = self.tasks.get(&id).ok_or(Error::UnknownTask)?.continuation;
+            if let Err(err) = self.cancel_tree(child) {
+                failure.get_or_insert(err);
+            }
+        }
+        let (tasks, locks) = (&mut self.tasks, &mut self.locks);
+        let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
         for (lock_id, ticket) in std::mem::take(&mut task.waiting) {
             let r = locks.get_mut(&lock_id).ok_or(Error::StaleTicket)
                 .and_then(|queue| queue.cancel(ticket));
