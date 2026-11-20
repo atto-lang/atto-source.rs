@@ -78,6 +78,13 @@ fn terminal_postfix_requires_contiguous_double_gt_not_shift_or_binding() {
 }
 
 #[test]
+fn discarded_terminal_postfix_is_a_checked_io_error() {
+    let err=compile(&source("c >>; return Err(0);"))
+        .expect_err("a checked read outcome may not be discarded");
+    assert_eq!(err.code,"E_IO_DISCARD","{err}");
+}
+
+#[test]
 fn prefix_and_postfix_share_the_checked_read_guest_imports() {
     let a=compile(&source("return (<< c);")).expect("prefix guest");
     let b=compile(&source("return (c >>);")).expect("postfix guest");
