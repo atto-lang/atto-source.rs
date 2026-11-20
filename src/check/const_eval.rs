@@ -82,6 +82,19 @@ impl<'a> FnCx<'a> {
                     _ => Err(not_const(pos)),
                 }
             }
+            TExpr::Builtin(op, lhs, rhs) => {
+                // Named And/Or/Xor lower as eager guest calls. Both operands
+                // must be evaluated before boolean computation: a provable
+                // checked overflow on the RHS cannot hide behind false/true.
+                let left = self.eval_const(lhs, pos)?;
+                let right = self.eval_const(rhs, pos)?;
+                match (op, left, right) {
+                    (Builtin::And, Bool(a), Bool(b)) => Ok(Bool(a && b)),
+                    (Builtin::Or, Bool(a), Bool(b)) => Ok(Bool(a || b)),
+                    (Builtin::Xor, Bool(a), Bool(b)) => Ok(Bool(a ^ b)),
+                    _ => Err(not_const(pos)),
+                }
+            }
             TExpr::Bin(op, lhs, rhs) => {
                 // Binary operators in this guest subset evaluate both sides.
                 let a = self.eval_const(lhs, pos)?;
