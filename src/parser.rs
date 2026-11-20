@@ -23,6 +23,7 @@ pub const MAX_TREE_HEIGHT: u32 = 256;
 
 /// Words reserved by the reference lexer (spec chapter 16 keyword table).
 const RESERVED: &[&str] = &[
+    "unsafe", "sync", "task", "pipe", "rpipe",
     "define",
     "def",
     "module",
