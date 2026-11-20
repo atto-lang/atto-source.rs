@@ -1,0 +1,6 @@
+// Reject raw pointer messages at the compiler boundary; no guest artifact.
+// expect-error: E_UNSUPPORTED_TYPE
+define actor Worker receives Pointer<int> as
+  receive(ActorMail<Pointer<int>> mail): void { return; }
+end
+pub fnc main(): int { return 0; }
