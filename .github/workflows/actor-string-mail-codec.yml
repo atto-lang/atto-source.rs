@@ -1,0 +1,38 @@
+name: Actor string DATA codec (Rust source-only)
+
+on:
+  pull_request:
+    paths:
+      - 'src/actor_string_mail.rs'
+      - 'src/lib.rs'
+      - 'docs/typed-actor-message-contracts.md'
+      - '.github/workflows/actor-string-mail-codec.yml'
+  push:
+    paths:
+      - 'src/actor_string_mail.rs'
+      - 'src/lib.rs'
+      - 'docs/typed-actor-message-contracts.md'
+      - '.github/workflows/actor-string-mail-codec.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  strict-rust-codec-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 pinned
+        with:
+          persist-credentials: false
+      - name: Compile exact bounded UTF-8 codec module and run adversarial unit tests
+        run: |
+          rustc --version
+          mkdir -p target
+          rustc --edition=2021 --test -D warnings src/actor_string_mail.rs -o target/atto-actor-string-mail-tests
+          target/atto-actor-string-mail-tests --nocapture
+      - name: Assert guest-ABI boundary remains explicitly unverified
+        run: |
+          grep -q 'not a guest messaging implementation' src/actor_string_mail.rs
+          grep -q 'NOT_EXECUTED' docs/typed-actor-message-contracts.md
