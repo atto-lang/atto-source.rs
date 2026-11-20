@@ -62,6 +62,7 @@ pub enum Import {
     /// Synchronous checked Worker-local Channel<int> lifecycle imports.
     ChannelOpen,
     ChannelSend,
+    ChannelSendAsync,
     ChannelClose,
     ChannelRelease,
     /// Authenticated Worker-only UTF-8 process stdio, version 1.
@@ -70,7 +71,7 @@ pub enum Import {
 }
 
 impl Import {
-    pub const ALL: [Import; 23] = [
+    pub const ALL: [Import; 24] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -90,6 +91,7 @@ impl Import {
         Import::ChannelAwaitRead,
         Import::ChannelOpen,
         Import::ChannelSend,
+        Import::ChannelSendAsync,
         Import::ChannelClose,
         Import::ChannelRelease,
         Import::StdioRead,
@@ -116,6 +118,7 @@ impl Import {
             Import::ChannelAwaitRead => "channel_int_await_read_v1",
             Import::ChannelOpen => "channel_int_open_v1",
             Import::ChannelSend => "channel_int_send_v1",
+            Import::ChannelSendAsync => "channel_int_send_async_v1",
             Import::ChannelClose => "channel_int_close_v1",
             Import::ChannelRelease => "channel_int_release_v1",
             Import::StdioRead => "stdio_text_read_v1",
@@ -259,6 +262,12 @@ pub enum TExpr {
     },
     /// Nonparking immediate send. Full is a checked Err(Full), not a wait or panic.
     ChannelTrySend {
+        channel: Box<TE>, value: Box<TE>,
+        result_slot: u32, status_slot: u32,
+    },
+    /// One suspending, checked FIFO admission; Full waits cooperatively.
+    /// Unlike try_send, this operation never returns Err(Full) for pressure.
+    ChannelSendAsync {
         channel: Box<TE>, value: Box<TE>,
         result_slot: u32, status_slot: u32,
     },
@@ -1370,7 +1379,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ChannelRead { .. } |
             TExpr::StdioRead { .. } | TExpr::StdioWrite { .. } |
             TExpr::ChannelOpen { .. } | TExpr::ChannelTrySend { .. } |
-            TExpr::ChannelStatus { .. })));
+            TExpr::ChannelSendAsync { .. } | TExpr::ChannelStatus { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
         || any_in_stmts(&f.body, &|e| matches!(e.e, TExpr::Trap { .. })));
     let tasks = p.funcs.iter().enumerate().filter(|(_, f)| f.name.starts_with("$atto_task_"))
@@ -1562,7 +1571,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::TaskAwait(_) | TExpr::AwaitYield(_) | TExpr::ChannelRead { .. } |
         TExpr::StdioRead { .. } | TExpr::StdioWrite { .. } |
         TExpr::ChannelOpen { .. } | TExpr::ChannelTrySend { .. } |
-        TExpr::ChannelStatus { .. } => false,
+        TExpr::ChannelSendAsync { .. } | TExpr::ChannelStatus { .. } => false,
     }
 }
 
@@ -1619,7 +1628,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::ChannelRead { channel, .. } | TExpr::ChannelStatus { channel, .. } =>
             any_in(channel, f),
         TExpr::ChannelOpen { capacity, .. } => any_in(capacity, f),
-        TExpr::ChannelTrySend { channel, value, .. } =>
+        TExpr::ChannelTrySend { channel, value, .. } |
+        TExpr::ChannelSendAsync { channel, value, .. } =>
             any_in(channel, f) || any_in(value, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
         TExpr::Ternary(c, a, b) => any_in(c, f) || any_in(a, f) || any_in(b, f),
@@ -3607,6 +3617,10 @@ impl<'a> FnCx<'a> {
         }
         if recv.ty == Type::ChannelInt {
             match name {
+                "send_async" => {
+                    self.arity("Channel<int>.send_async", 1, args.len(), pos)?;
+                    return self.channel_send_async(recv, &args[0], pos);
+                }
                 "try_send" => {
                     self.arity("Channel<int>.try_send", 1, args.len(), pos)?;
                     let value=self.value(&args[0])?;
@@ -3634,7 +3648,7 @@ impl<'a> FnCx<'a> {
                     },ty:Type::ResultVoidIoError});
                 }
                 _ => return Err(type_err(pos,
-                    "Channel<int> supports try_send, close, release, and unary read")),
+                    "Channel<int> supports send_async, try_send, close, release, and unary read")),
             }
         }
         match recv.ty {
@@ -3738,9 +3752,42 @@ impl<'a> FnCx<'a> {
         })
     }
 
+    // All checked suspending writes use one typed lowering path. JSPI yields
+    // the Worker carrier while the bounded queue is full; no implicit unwrap.
+    fn channel_send_async(&mut self, channel: TE, payload: &Expr, pos: Pos) -> R<TE> {
+        if !self.suspends {
+            return Err(Diagnostic::new(pos, "E_SUSPENDS_REQUIRED",
+                "Channel<int> << send can suspend; declare susp/suspends fnc"));
+        }
+        if !self.loans.is_empty() || self.state_write_scope || self.state_read_scope {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "Channel<int> << cannot suspend while an object loan or protected state lease is active"));
+        }
+        if channel.ty != Type::ChannelInt {
+            return Err(Diagnostic::new(pos, "E_IO_WRITABLE",
+                "checked << send requires a statically writable Channel<int>"));
+        }
+        let value=self.value(payload)?;
+        if value.ty != Type::Int {
+            return Err(type_err(payload.pos, "checked Channel<int> << accepts only int"));
+        }
+        let result_slot=self.temp(Type::ResultVoidIoError,pos)?;
+        let status_slot=self.temp(Type::IoError,pos)?;
+        self.imports.push(Import::ChannelSendAsync);
+        self.imports.push(Import::Cooperate);
+        Ok(TE {e:TExpr::ChannelSendAsync {
+            channel:Box::new(channel),value:Box::new(value),result_slot,status_slot,
+        },ty:Type::ResultVoidIoError})
+    }
+
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
+        }
+        if name == "$atto_channel_send_async" {
+            self.arity("channel << value", 2, args.len(), pos)?;
+            let channel=self.value(&args[0])?;
+            return self.channel_send_async(channel, &args[1], pos);
         }
         if name == "$atto_writech" {
             self.arity("writech", 2, args.len(), pos)?;
