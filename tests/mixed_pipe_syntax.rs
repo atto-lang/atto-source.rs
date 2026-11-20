@@ -24,7 +24,7 @@ fn program(expression: &str, validate_payload: &str) -> String {
          pub fnc main(): int {{\n\
            val source = spawn Parse();\n\
            val sink = spawn Sink();\n\
-           val middle = spawn Validate();\n\\
+           val middle = spawn Validate();\n\
            val connection = {expression};\n\
            return 0;\n\
          }}\n"
