@@ -2133,4 +2133,74 @@ mod tests {
         assert_eq!(kernel.next_ready(), Ok(None));
     }
 
+
+
+    #[test]
+    fn suspended_or_ready_task_cannot_allocate_tickets_or_spawn_children() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let holder = kernel.issue(None).unwrap();
+        let waiter = kernel.issue(None).unwrap();
+        let contested = kernel.add_mutex(4).unwrap();
+        let different = kernel.add_mutex(4).unwrap();
+        let first = owned(kernel.acquire(holder, contested).unwrap());
+        kernel.claim(holder, contested, first).unwrap();
+        let ticket = pending(kernel.acquire(waiter, contested).unwrap());
+
+        // Merely holding a pending ticket is not suspension. Once the
+        // scheduler commits the park, however, this task is not executing.
+        kernel.park_lock_wait(waiter, contested, ticket).unwrap();
+        assert_eq!(kernel.acquire(waiter, different), Err(Error::NotQuiescent));
+        assert_eq!(kernel.issue(Some(waiter)), Err(Error::NotQuiescent));
+        kernel.trusted_guard_scope_exit(holder, contested).unwrap();
+        assert_eq!(kernel.pump_ready(), Ok(1));
+
+        // Ready admission alone does not mean the guest was dispatched.
+        assert_eq!(kernel.acquire(waiter, different), Err(Error::NotQuiescent));
+        assert_eq!(kernel.issue(Some(waiter)), Err(Error::NotQuiescent));
+        assert_eq!(kernel.next_ready(), Ok(Some(waiter)));
+        kernel.claim(waiter, contested, ticket).unwrap();
+
+        // The same authenticated continuation may resume legal work only
+        // after the host ready->running transition is complete.
+        let second = owned(kernel.acquire(waiter, different).unwrap());
+        kernel.claim(waiter, different, second).unwrap();
+        let child = kernel.issue(Some(waiter)).unwrap();
+        assert_eq!(kernel.trusted_exit(waiter).unwrap(), vec![different, contested]);
+        assert_eq!(kernel.terminal(waiter).unwrap(), Some(TaskExitKind::Succeeded));
+        assert_eq!(kernel.terminal(child).unwrap(), None);
+        assert_eq!(kernel.try_retire(waiter), Err(Error::NotQuiescent));
+        kernel.trusted_exit(child).unwrap();
+        kernel.trusted_notifications_drained(child).unwrap();
+        kernel.try_retire(child).unwrap();
+        kernel.trusted_notifications_drained(waiter).unwrap();
+        kernel.try_retire(waiter).unwrap();
+        kernel.trusted_exit(holder).unwrap();
+        kernel.trusted_notifications_drained(holder).unwrap();
+        kernel.try_retire(holder).unwrap();
+    }
+
+    #[test]
+    fn parked_task_cannot_mint_new_lock_even_if_another_lock_is_free() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        scope.register(c(2), None).unwrap();
+        let token = owned(scope.acquire(c(1), 1).unwrap());
+        scope.enter(c(1), 1, token).unwrap();
+        let wait = pending(scope.acquire(c(2), 1).unwrap());
+        scope.park_lock_wait(c(2), 1, wait).unwrap();
+        assert_eq!(scope.acquire(c(2), 2), Err(Error::NotQuiescent));
+        assert_eq!(scope.register(c(3), Some(c(2))), Err(Error::NotQuiescent));
+        assert!(!scope.locks[&2].has_outstanding_grant());
+        scope.cancel_tree(c(2)).unwrap();
+        assert_eq!(scope.admit_parked_wakes_to_ready(), Ok(1));
+        assert_eq!(scope.acquire(c(2), 2), Err(Error::CancellationPending));
+        assert_eq!(scope.pop_ready(), Some(c(2)));
+        scope.guest_exited_at_safe_point(c(2)).unwrap();
+        scope.notification_drain_ack(c(2)).unwrap();
+        scope.certify_physical_retirement(c(2)).unwrap();
+        scope.guest_exited_at_safe_point(c(1)).unwrap();
+        scope.notification_drain_ack(c(1)).unwrap();
+        scope.certify_physical_retirement(c(1)).unwrap();
+    }
+
 }
