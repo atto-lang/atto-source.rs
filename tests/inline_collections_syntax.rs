@@ -157,7 +157,7 @@ fn generic_nesting_is_bounded_before_stack_exhaustion() {
 fn never_emit_unchecked_guest_collection_values() {
     for source in [
         "let Record foo = {bar: []};",
-        "let List<Record> foo = [];",
+        "let List<Record> foo = [{bar: 1}];",
         "let Array<Record> foo = [{job: 1}];",
         "let tuple foo = ();",
     ] {
