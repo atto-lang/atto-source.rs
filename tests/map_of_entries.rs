@@ -129,3 +129,30 @@ fn owned_entry_variables_dynamic_keys_and_runtime_const_remain_fail_closed() {
         return 0;
     }"#,"E_UNSUPPORTED");
 }
+
+#[test]
+fn entry_factory_budget_duplicate_and_lookup_safety_fail_closed() {
+    rejected(r#"pub fnc main(): int {
+        val m = Map.of_entries<int,bool>(Entry.of(5));
+        return 0;
+    }"#,"E_FACTORY_ARITY");
+    rejected(r#"pub fnc main(): int {
+        val m = Map.of_entries<int,bool>(5 => true,Entry.of(5,false));
+        return 0;
+    }"#,"E_DUPLICATE");
+    rejected(r#"pub fnc main(): int {
+        val m = Map.of_entries<int,bool>(
+            1 => true, 2 => false, 3 => true, 4 => false, 5 => true
+        );
+        return 0;
+    }"#,"E_UNSUPPORTED");
+    rejected(r#"pub fnc main(): int {
+        val m = Map.of_entries<int,bool>(5 => true);
+        return m[8];
+    }"#,"E_UNSUPPORTED");
+    rejected(r#"pub fnc main(): int {
+        val m = Map.of_entries<int,bool>(5 => true);
+        val int key = 5;
+        return m[key];
+    }"#,"E_UNSUPPORTED");
+}
