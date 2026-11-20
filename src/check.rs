@@ -2729,6 +2729,13 @@ impl<'a> FnCx<'a> {
                         ));
                     }
                 }
+                // A void inline task is a statement, not a value that can
+                // inhabit a local. Without this guard a void Wasm expression
+                // would be compiled into a typed local.set with no operand.
+                if v.ty == Type::Void {
+                    return Err(type_err(init.pos,
+                        "cannot bind a void result; use 'do sync task' for inline void work"));
+                }
                 // Unowned generator-valued locals could escape a close path.
                 if v.ty == Type::GeneratorInt {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",

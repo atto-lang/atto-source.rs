@@ -22,6 +22,8 @@ fn inline_empty_and_scalar_return_profiles() {
     admit("pub fnc main(): int { do sync task<void> {}; return 42; }");
     admit("pub fnc main(): int { do sync task { return; }; return 42; }");
     admit("pub fnc main(): int { do sync task<void> { return; }; return 42; }");
+    admit("pub fnc main(): int { do /* gap */ sync /* gap */ task < void > { return; }; return 42; }");
+    admit("pub fnc main(): int { block { do sync task {}; } return 42; }");
     admit("pub fnc main(): int { val x = sync task<int> { return 40 + 2; }; return x; }");
     admit("pub fnc main(): int { val x = sync task { return 42; }; return x; }");
     admit("pub fnc main(): int { val x = 40; return sync task<int> { return x + 2; }; }");
@@ -34,6 +36,9 @@ fn require_do_and_void_only_for_discarded_inline_tasks() {
     reject("pub fnc main(): int { sync task {}; return 42; }", "E_SYNTAX");
     reject("pub fnc main(): int { sync task<void> {}; return 42; }", "E_SYNTAX");
     reject("pub fnc main(): int { sync task<int> { return 42; }; return 0; }", "E_SYNTAX");
+    reject("pub fnc main(): int { (sync task {}); return 42; }", "E_SYNTAX");
+    reject("pub fnc main(): int { ((sync task<void> {})); return 42; }", "E_SYNTAX");
+    reject("pub fnc main(): int { (sync task<int> { return 42; }); return 0; }", "E_SYNTAX");
     // The 'do' form cannot have a value-producing type parameter or body,
     // even when the caller would otherwise discard the result.
     reject("pub fnc main(): int { do sync task<int> { return 7; }; return 42; }", "E_TASK_RETURN_TYPE");
@@ -41,16 +46,21 @@ fn require_do_and_void_only_for_discarded_inline_tasks() {
     reject("pub fnc main(): int { do sync task<bool> {}; return 42; }", "E_TASK_RETURN_TYPE");
     reject("pub fnc main(): int { do sync task { return 7; }; return 42; }", "E_TASK_RETURN_TYPE");
     reject("pub fnc main(): int { do sync task<void> { return 7; }; return 42; }", "E_TASK_RETURN_TYPE");
+    reject("pub fnc main(): int { do sync task<int> { defer { } return 42; }; return 0; }", "E_TASK_RETURN_TYPE");
+    reject("pub fnc main(): int { do sync task<bool> { return; }; return 0; }", "E_TASK_RETURN_TYPE");
+    reject("pub fnc main(): int { do sync task { return sync task<int> { return 42; }; }; return 0; }", "E_TASK_RETURN_TYPE");
 }
 
 #[test]
 fn fail_closed_type_effect_and_cleanup_boundaries() {
     reject("pub fnc main(): int { val x = sync task<int> { return true; }; return 42; }", "E_TYPE");
     reject("pub fnc main(): int { val x = sync task<int> {}; return 42; }", "E_TYPE");
+    reject("pub fnc main(): int { val x = sync task<void> {}; return 42; }", "E_TYPE");
+    reject("pub fnc main(): int { let x = sync task {}; return 42; }", "E_TYPE");
     reject("pub fnc main(): int { val x = sync task<int> { val y = 41; return y + 1; }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return stdio.println(42); }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return await task<int> { return 42; }; }; return x; }", "E_UNSUPPORTED");
-    reject("pub fnc main(): int { do sync task<int> { defer { } return 42; }; return 0; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { do sync task<void> { defer { } return; }; return 0; }", "E_UNSUPPORTED");
 }
 #[test]
 fn independent_child_cancellation_not_silently_enabled() {

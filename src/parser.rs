@@ -2251,19 +2251,14 @@ impl Parser {
             }
             Some("match") => self.parse_match(false),
             Some("do") if self.word_at(1) == Some("sync") && self.word_at(2) == Some("task") => {
-                self.advance(); // 'do' permits only a void inline task, never a Future.
-                let e = self.parse_primary()?;
-                let ExprKind::InlineTask { declared_type, value } = &e.kind else {
-                    return Err(Diagnostic::new(pos, "E_SYNTAX", "expected 'sync task' after 'do'"));
-                };
-                // 'do' does not silently discard a non-void result. Both the
-                // explicit generic and any inferred return must be void.
-                if declared_type.is_some_and(|ty| ty != Type::Void) || value.is_some() {
-                    return Err(Diagnostic::new(pos, "E_TASK_RETURN_TYPE",
-                        "'do sync task' requires a void body and only permits <void> as its type argument"));
-                }
+                // The discard flag is syntax, not an implicit cast. Reject
+                // non-void type parameters BEFORE parsing an untrusted body,
+                // so unsupported body syntax cannot mask E_TASK_RETURN_TYPE.
+                self.advance();
+                let task_pos = self.pos();
+                let kind = self.parse_inline_task(true)?;
                 self.terminator()?;
-                Ok(Stmt::Expr(e))
+                Ok(Stmt::Expr(Expr { kind, pos: task_pos }))
             }
             Some("do") if self.word_at(1) == Some("task") =>
                 Err(unsupported(pos, "supervised task statements")),
@@ -2449,6 +2444,13 @@ impl Parser {
                         "E_UNSUPPORTED",
                         "'++' and '--' exist only in a for update clause",
                     ));
+                }
+                if matches!(e.kind, ExprKind::InlineTask { .. }) {
+                    // Parentheses reset the primary expression but do NOT
+                    // introduce a value-consuming context: (sync task {});
+                    // must not bypass the mandatory 'do' statement prefix.
+                    return Err(Diagnostic::new(e.pos, "E_SYNTAX",
+                        "standalone sync task requires 'do sync task'; use sync task<T> only in a value context"));
                 }
                 self.terminator()?;
                 Ok(Stmt::Expr(e))
@@ -3789,7 +3791,7 @@ impl Parser {
 
     /// Executable subset: an empty lexical body or one scalar return.
     /// More complex bodies need lexical resource and suspension lowering.
-    fn parse_inline_task(&mut self) -> R<ExprKind> {
+    fn parse_inline_task(&mut self, discard: bool) -> R<ExprKind> {
         let pos = self.pos();
         self.expect_word("sync")?;
         self.expect_word("task")?;
@@ -3798,6 +3800,10 @@ impl Parser {
             self.expect(Tok::Gt, "'>' after sync task type")?;
             Some(t)
         } else { None };
+        if discard && declared_type.is_some_and(|ty| ty != Type::Void) {
+            return Err(Diagnostic::new(pos, "E_TASK_RETURN_TYPE",
+                "'do sync task' permits only <void>; non-void inline results must be used in an expression"));
+        }
         self.expect(Tok::LBrace, "'{' after sync task")?;
         let value = if self.eat(&Tok::RBrace) {
             None
@@ -3814,6 +3820,10 @@ impl Parser {
         } else {
             return Err(unsupported(pos, "sync task statements requiring cleanup or suspension"));
         };
+        if discard && value.is_some() {
+            return Err(Diagnostic::new(pos, "E_TASK_RETURN_TYPE",
+                "'do sync task' requires a void body: use 'return;' or no return value"));
+        }
         Ok(ExprKind::InlineTask { declared_type, value })
     }
 
@@ -3898,7 +3908,7 @@ impl Parser {
                 "task" if matches!(self.peek_at(1), Tok::Lt | Tok::LBrace) => {
                     return Err(unsupported(pos, "typed or inferred task expressions"));
                 }
-                "sync" if self.word_at(1) == Some("task") => self.parse_inline_task()?,
+                "sync" if self.word_at(1) == Some("task") => self.parse_inline_task(false)?,
                 "await" | "sync" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
