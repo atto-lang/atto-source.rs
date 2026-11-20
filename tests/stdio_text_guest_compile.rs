@@ -69,6 +69,7 @@ fn invalid_direction_effect_and_unchecked_result_never_emit_guest() {
         (r#"pub susp fnc main(): int { val c=stdio.in; val result=writech c, "bad"; return 0; }"#,"E_IO_WRITABLE"),
         (r#"pub susp fnc main(): int { readch stdio.in; return 0; }"#,"E_IO_DISCARD"),
         (r#"pub susp fnc main(): int { val result=readch stdio.in; val string line=result; return 0; }"#,"E_TYPE"),
+        (r#"pub susp fnc main(): int { val item=readch stdio.in; val status=writech stdio.out, item; return 0; }"#,"E_IO_PAYLOAD_TYPE"),
         (r#"pub susp fnc main(): int { val c=new Channel<string>(1); return 0; }"#,"E_UNSUPPORTED"),
     ] {
         let err=compile(source).expect_err("unsupported or unsafe stdio guest must fail closed");
