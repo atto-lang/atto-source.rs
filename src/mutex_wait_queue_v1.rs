@@ -335,6 +335,12 @@ impl TaskScopeLockCoordinator {
         if id == 0 || queue.domain != self.domain || self.locks.contains_key(&id) {
             return Err(Error::ForeignDomain);
         }
+        // Tickets do not carry a separate lock id: generations MUST be unique
+        // across all locks in this TaskScope or a matching sequence/task token
+        // could be replayed against a different mutex.
+        if self.locks.values().any(|other| other.generation == queue.generation) {
+            return Err(Error::StaleTicket);
+        }
         if self.locks.len() >= Self::MAX_LOCKS { return Err(Error::Exhausted); }
         self.locks.insert(id, queue);
         Ok(())
@@ -623,7 +629,13 @@ impl HostTaskLockKernel {
             let lock_id = u64::try_from(core.locks.len())
                 .map_err(|_| Error::Exhausted)?
                 .checked_add(1).ok_or(Error::Exhausted)?;
-            let queue = WaitQueue::new(core.domain, self.scope_id, max_waiters)?;
+            // Reserve 512 disjoint generations per scope (MAX_LOCKS=256).
+            // Both the scope epoch and lock slot are host-minted, so grants
+            // cannot alias across locks, tasks, or TaskScope incarnations.
+            let generation = self.scope_id.checked_mul(512)
+                .and_then(|epoch| epoch.checked_add(lock_id))
+                .ok_or(Error::Exhausted)?;
+            let queue = WaitQueue::new(core.domain, generation, max_waiters)?;
             core.add_lock(lock_id, queue)?;
             Ok(lock_id)
         })
@@ -979,7 +991,7 @@ mod tests {
     fn scoped() -> TaskScopeLockCoordinator {
         let mut scope = TaskScopeLockCoordinator::new(d());
         scope.add_lock(1, queue(8)).unwrap();
-        scope.add_lock(2, queue(8)).unwrap();
+        scope.add_lock(2, WaitQueue::new(d(), 8, 8).unwrap()).unwrap();
         scope
     }
 
