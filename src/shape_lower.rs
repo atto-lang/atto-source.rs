@@ -122,6 +122,20 @@ fn simple_literal(tok: &Tok) -> bool {
     matches!(tok, Tok::Int(Some(_)) | Tok::Float(_) | Tok::Str(_)) ||
         matches!(tok, Tok::Ident(s) if matches!(s.as_str(),"true"|"false"))
 }
+
+/// A source-local infer-struct shape is selected only with positive
+/// *field type* evidence. A same-name/different-type declaration must not
+/// silently claim the initializer or make an otherwise unique shape
+/// ambiguous. No implicit numeric widening or host reflection is allowed.
+fn literal_matches_field(ty: &str, value: &Tok) -> bool {
+    match (ty, value) {
+        ("int", Tok::Int(Some(n))) => *n <= i64::MAX as u64,
+        ("float", Tok::Float(_)) => true,
+        ("string", Tok::Str(_)) => true,
+        ("bool", Tok::Ident(v)) => matches!(v.as_str(), "true" | "false"),
+        _ => false,
+    }
+}
 fn keyed(t: &[Token], open: usize) -> R<(BTreeMap<String, Token>, usize)> {
     if t.get(open).is_none_or(|x| x.tok != Tok::LBrace) {
         return Err(error(t[open.saturating_sub(1)].pos,"E_SYNTAX","product initializer requires '{'"));
@@ -300,14 +314,22 @@ pub fn lower(t: Vec<Token>) -> R<Vec<Token>> {
         }
         if word(&first,i,"infer") && word(&first,i+1,"struct") {
             let (values,next)=keyed(&first,i+2)?;
-            let mut compatible=declared.values().filter(|d| d.kind==Kind::Struct &&
-                d.fields.len()==values.len() &&
-                d.fields.iter().all(|f|values.contains_key(&f.name)));
-            let found=compatible.next().ok_or_else(||error(first[i].pos,"E_SHAPE",
-                "no declared struct has this exact set of fields"))?;
+            let named = declared.values().filter(|d| d.kind == Kind::Struct &&
+                d.fields.len() == values.len() &&
+                d.fields.iter().all(|f| values.contains_key(&f.name)))
+                .collect::<Vec<_>>();
+            if named.is_empty() {
+                return Err(error(first[i].pos, "E_SHAPE",
+                    "no declared struct has this exact set of fields"));
+            }
+            let mut compatible = named.iter().copied().filter(|d|
+                d.fields.iter().all(|f| values.get(&f.name).is_some_and(|v|
+                    literal_matches_field(&f.ty, &v.tok))));
+            let found = compatible.next().ok_or_else(|| error(first[i].pos, "E_TYPE",
+                "infer struct fields do not match any complete nominal field type signature"))?;
             if compatible.next().is_some() {
                 return Err(error(first[i].pos,"E_AMBIGUOUS_MEMBER",
-                    "anonymous struct matches multiple declared named shapes"));
+                    "anonymous struct matches multiple declared nominal shapes and types"));
             }
             out.extend(constructor_tokens(found,values,first[i].pos)?);
             i=next;continue;
