@@ -388,16 +388,21 @@ fnc __actor_link(int a, int b): int {
   if a == 0 then __panic(10); fi
   if b == 0 then __panic(10); fi
   if __load(b, 48) != 0 then __panic(10); fi
+  // An actor that has stopped/closed its mailbox cannot become a DATA port.
+  // Check before any link publication, including the candidate downstream.
+  if __load(__load(b, 0), 32) != 0 then __panic(10); fi
   let t = a;
   let count = 0;
   loop do
     if count >= 16 then __panic(10); fi
     if __load(t, 24) != 0 then __panic(10); fi
+    if __load(__load(t, 0), 32) != 0 then __panic(10); fi
     let q = b;
     let tail_size = 0;
     loop do
       if tail_size >= 16 then __panic(10); fi
       if __load(q, 24) != 0 then __panic(10); fi
+      if __load(__load(q, 0), 32) != 0 then __panic(10); fi
       if t == q then __panic(10); fi
       tail_size = tail_size + 1;
       val next_b = __load(q, 8);
@@ -425,6 +430,8 @@ fnc __actor_pipe_channel(int a, int ch): int {
   val cap = __load(ch, 0);
   if cap < 1 then __panic(10); fi
   if cap > 16 then __panic(10); fi
+  if __load(ch, 32) != 0 then __panic(10); fi
+  if __load(__load(a, 0), 32) != 0 then __panic(10); fi
   if __load(a, 8) != 0 then __panic(10); fi
   if __load(ch, 56) != 0 then __panic(10); fi
   __store(ch, 56, a);
@@ -437,6 +444,8 @@ fnc __channel_pipe_actor(int ch, int a): int {
   val cap = __load(ch, 0);
   if cap < 1 then __panic(10); fi
   if cap > 16 then __panic(10); fi
+  if __load(ch, 32) != 0 then __panic(10); fi
+  if __load(__load(a, 0), 32) != 0 then __panic(10); fi
   if __load(ch, 64) != 0 then __panic(10); fi
   if __load(a, 48) != 0 then __panic(10); fi
   __store(ch, 64, a);
