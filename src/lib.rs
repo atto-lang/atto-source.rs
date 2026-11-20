@@ -112,7 +112,21 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
             format!("source exceeds {SOURCE_CAP} UTF-8 bytes"),
         ));
     }
-    compile_prelexed(lexer::lex(source)?, logical_path)
+    let lexed = lexer::lex(source)?;
+    // A single-file/browser compiler cannot access the host filesystem.
+    // It may link the compiler-embedded, explicitly allowlisted *pure-policy*
+    // std modules, but every relative source import still fails without a
+    // caller-supplied loader. Never turn this into an ambient FS/HTTP grant.
+    let tokens = if matches!(lexed.first().map(|t| &t.tok),
+        Some(lexer::Tok::Ident(word)) if word == "import") {
+        let logical = logical_path.unwrap_or_else(|| std::path::Path::new("main.atto"));
+        import_link::lower(source, logical, |_| Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied, "single-file compiler cannot load source files"
+        )))?
+    } else {
+        lexed
+    };
+    compile_prelexed(tokens, logical_path)
 }
 
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
