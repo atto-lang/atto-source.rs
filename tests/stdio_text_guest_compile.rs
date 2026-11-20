@@ -62,7 +62,7 @@ fn all_four_nested_checked_stdin_grammars_compile_to_versioned_guest_abi() {
         ("is ADT + readch", nominal.replace("match << input over", "match readch input over")),
     ] {
         let wasm=compile(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"), "{name}");
+        assert!(wasm.starts_with(b"\0asm\x01\0\0\0"), "{name}");
         for import in ["atto.stdio_text", "stdio_text_read_v1",
                        "stdio_text_write_v1", "atto.async"] {
             assert!(includes(&wasm,import), "{name}: missing {import}");
