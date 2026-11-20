@@ -682,6 +682,32 @@ check('pipe/inline-arrow-invalid-return-and-terminator-fail-closed', () => {
   }
 });
 
+// Independent SHA-exact multi-argument functional spec edges. These are
+// real browser/Wasm guest executions, NOT a host-side pipe evaluator.
+for (const [name, expected, sha] of [
+  ['two-argument-61.atto',61n,'4089c524db1d076593994ad65acb5ca7f90eea32'],
+  ['preapplied-grouped-42.atto',42n,'9a89ada18865fead0d92a7de75415957fbb5f67f'],
+]) {
+  const file=join(here,'fixtures','pass','spec-functional-pipelines-edge',name);
+  const source=await readFile(file,'utf8');
+  check('pipe/spec-multiargument-real-wasm-guest/'+name,()=>{
+    const digest=createHash('sha1')
+      .update(Buffer.from('blob '+Buffer.byteLength(source)+'\0'))
+      .update(source).digest('hex');
+    assert.equal(digest,sha,name+': canonical edge source drift');
+    const compiled=compile(source);
+    assert.equal(compiled.ok,true,compiled.message);
+    assert.ok(WebAssembly.validate(compiled.wasm));
+    assert.deepEqual(compile(source).wasm,compiled.wasm);
+    if(attoc)assert.deepEqual(nativeBytes(file),compiled.wasm,
+      name+': native/Wasm compiler emitted different guest bytes');
+    const run=runGuest(compiled.wasm);
+    assert.equal(run.ok,true,run.error);
+    assert.equal(run.value,expected,name+': argument-0 insertion order');
+    assert.equal(run.stdout,'');
+  });
+}
+
 // Exact current site preview corpus. Rejections never count as executing a
 // feature; the report explicitly separates admitted, unsupported and guests.
 try {
