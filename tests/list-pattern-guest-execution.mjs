@@ -80,12 +80,31 @@ try {
     const input=join(root,name+'.atto');
     const output=join(root,name+'.wasm');
     writeFileSync(input,source);
-    writeFileSync(output,'stale artifact must be cleared');
+    // An absent output is the only valid negative no-artifact proof.
+    // attoc deliberately does not delete or rewrite pre-existing user files
+    // when compilation fails, so never preseed this destination.
+    assert.equal(existsSync(output),false,name+': test output must start absent');
     const result=compile(input,output);
     assert.equal(result.error,undefined,name+': compiler process failed');
     assert.notEqual(result.status,0,name+': malformed source was admitted');
     assert.ok(result.stderr.includes(diagnostic),name+': wrong diagnostic: '+result.stderr);
-    assert.equal(existsSync(output),false,name+': compiler left an artifact behind');
+    assert.equal(existsSync(output),false,name+': failed compilation created an artifact');
+  }
+  // A separate regression checks the CLI's existing preservation contract:
+  // compilation failures must not overwrite or delete a pre-existing file.
+  // Such a stale file is NOT evidence that compilation succeeded.
+  {
+    const input=join(root,'preexisting-output-rejection.atto');
+    const output=join(root,'preexisting-output-rejection.wasm');
+    const sentinel=Buffer.from('PRESERVE_PREEXISTING_OUTPUT_ON_COMPILE_ERROR');
+    writeFileSync(input,negatives[0][1]);
+    writeFileSync(output,sentinel);
+    const result=compile(input,output);
+    assert.equal(result.error,undefined,'pre-existing output compiler process failed');
+    assert.notEqual(result.status,0,'pre-existing output invalid input was admitted');
+    assert.ok(result.stderr.includes(negatives[0][2]),'wrong pre-existing output diagnostic');
+    assert.deepEqual(readFileSync(output),sentinel,
+      'failed compilation must preserve an existing user file unchanged');
   }
   console.log('LIST_PATTERN_COMPILED_GUEST=PASS positives=4 overflow_panics=1 negatives=7');
 }finally {rmSync(root,{recursive:true,force:true});}
