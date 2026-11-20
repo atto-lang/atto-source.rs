@@ -399,6 +399,38 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             Record(typed_fields)
         }
+        // Typed Entry-only Map factory. The type witness is compiler-owned:
+        // no dynamic Map type erasure or invented implicit widening.
+        ExprKind::Call(factory, args) if factory.starts_with("@builtin/Map.of_entries<") => {
+            let signature = factory.strip_prefix("@builtin/Map.of_entries<")
+                .and_then(|s| s.strip_suffix('>'))
+                .ok_or_else(|| diag(e.pos, "E_SHAPE",
+                    "malformed compiler-owned Map.of_entries signature"))?;
+            let (key_name, value_name) = signature.split_once(',')
+                .ok_or_else(|| diag(e.pos, "E_SHAPE",
+                    "Map.of_entries requires precisely K and V witnesses"))?;
+            let key_type = match key_name {
+                "int" => Int, "bool" => Bool, "string" => String,
+                _ => return Err(diag(e.pos, "E_MAP_KEY",
+                    "Map.of_entries requires a scalar hashable key type")),
+            };
+            let value_type = match value_name {
+                "int" => Int, "bool" => Bool, "string" => String, "float" => Float,
+                _ => return Err(diag(e.pos, "E_UNSUPPORTED_TYPE",
+                    "Map.of_entries requires a scalar value type in this guest profile")),
+            };
+            if args.len() % 2 != 0 {
+                return Err(diag(e.pos, "E_FACTORY_ARITY",
+                    "Map.of_entries requires whole Entry<K,V> pairs"));
+            }
+            for entry in args.chunks_exact(2) {
+                let k = inferred(&entry[0], Some(&key_type), depth + 1)?;
+                let v = inferred(&entry[1], Some(&value_type), depth + 1)?;
+                children.push(k);
+                children.push(v);
+            }
+            Map(Box::new(key_type), Box::new(value_type))
+        }
         ExprKind::Map(entries) => {
             let (wanted_k, wanted_v) = match expected {
                 Some(Map(k,v)) => (k.as_ref().clone(), v.as_ref().clone()),
@@ -478,7 +510,9 @@ fn starts_literal(e: &Expr) -> bool {
         ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_)) ||
         matches!(&e.kind, ExprKind::Call(name, _) if
             matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of" |
-                "@builtin/Pair.of" | "@builtin/Entry.of"))
+                "@builtin/Pair.of" | "@builtin/Entry.of")) ||
+        matches!(&e.kind, ExprKind::Call(name, _) if
+            name.starts_with("@builtin/Map.of_entries<"))
 }
 
 /// Staged semantic preflight: checked declarations are *not* yet executable.
