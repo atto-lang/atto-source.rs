@@ -1023,19 +1023,28 @@ fn helper_bodies() -> Vec<(Sig, Vec<u8>, Vec<u8>)> {
     v
 }
 
-/// `alloc(size: i32) -> i32`: bump-allocate from `heap_ptr`; panic 3 when the
-/// fixed memory is exhausted. Objects are never freed (no GC in this subset).
+/// `alloc(size: i32) -> i32`: bounded bump allocation. A single-page
+/// stdin scratch reservation reduces the upper heap bound for checked stdin
+/// guests. Reject overflowing or negative sizes *before* calculating p+size:
+/// a wrapped pointer must never enter the host-visible scratch region.
 fn alloc_body(heap_global: u32, reserved_stdio_page: bool) -> (Sig, Vec<u8>, Vec<u8>) {
-    // A real stdin import reserves the final 64 KiB as exclusive scratch.
-    // Heap allocations can never alias that page, even after many reads.
     let limit = (HEAP_PAGES * 65536 - u32::from(reserved_stdio_page) * STDIO_SCRATCH_BYTES) as i64;
-    let mut c = vec![0x23];
+    let mut c = vec![0x23]; // global.get(heap_ptr)
     uleb(&mut c, heap_global as u64);
-    c.extend_from_slice(&[0x21, 1, 0x20, 1, 0x20, 0, 0x6A, 0x41]); // p = heap; p + size
+    c.extend_from_slice(&[0x21, 1]); // local.set(p)
+    // Even a corrupted heap pointer must not produce an underflow in
+    // limit-p. All comparisons use unsigned i32 bounds.
+    c.extend_from_slice(&[0x20, 1, 0x41]); // local.get(p), i32.const(limit)
     sleb(&mut c, limit);
-    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // if (p + size) >u limit
+    c.extend_from_slice(&[0x4B, 0x04, 0x40]); // if p >u limit
     panic(&mut c, PANIC_HEAP);
-    c.extend_from_slice(&[0x0B, 0x20, 1, 0x20, 0, 0x6A, 0x24]); // heap = p + size
+    c.push(0x0B);
+    c.extend_from_slice(&[0x20, 0, 0x41]); // size, limit
+    sleb(&mut c, limit);
+    c.extend_from_slice(&[0x20, 1, 0x6B, 0x4B, 0x04, 0x40]); // if size >u limit - p
+    panic(&mut c, PANIC_HEAP);
+    c.push(0x0B);
+    c.extend_from_slice(&[0x20, 1, 0x20, 0, 0x6A, 0x24]); // heap = p + size
     uleb(&mut c, heap_global as u64);
     c.extend_from_slice(&[0x20, 1, 0x0B]); // return p
     (Sig(vec![I32], vec![I32]), vec![1u8, 1, I32], c)
