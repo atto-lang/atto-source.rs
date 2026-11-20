@@ -80,6 +80,8 @@ try {
     'contextual await must lower to the same guest bytes');
   const lazy=compile('lazy-unawaited');
   assert.deepEqual([lazy.exit,lazy.stdout],[0,'']);
+  const neverDriven=compile('lazy-overflow-unexecuted');
+  assert.deepEqual([neverDriven.exit,neverDriven.stdout],[0,'']);
   compile('negative-guard-ready','E_GUARD_SUSPEND');
   compile('negative-guard-escape','E_GUARD_ESCAPE');
   compile('negative-await-effect','E_AWAIT_EFFECT');
@@ -88,7 +90,7 @@ try {
 }
 const receipt={schema:'atto.mutex-fast-guest.v1',profile:'single_task_uncontended_only',
   compiler_source_head:sha,compiler_binary_sha256:binarySha,
-  cases:results,pass:results.length===9&&results.every(x=>x.status==='PASS'),
+  cases:results,pass:results.length===10&&results.every(x=>x.status==='PASS'),
   excluded:['contended_async','tenant_isolation','general_task_runtime','exceptional_guard_cleanup']};
 if(process.env.ATTO_RECEIPT_PATH){
   const {writeFileSync}=await import('node:fs');
