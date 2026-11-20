@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'src/actor_send_effect_graph.rs'
+      - 'src/actor_owned_admission.rs'
       - 'src/ast.rs'
       - 'src/parser.rs'
       - 'src/check.rs'
@@ -13,6 +14,7 @@ on:
   push:
     paths:
       - 'src/actor_send_effect_graph.rs'
+      - 'src/actor_owned_admission.rs'
       - 'src/ast.rs'
       - 'src/parser.rs'
       - 'src/check.rs'
@@ -49,6 +51,11 @@ jobs:
           rustc --version
           rustc --edition=2021 --test -D warnings src/actor_send_effect_graph.rs -o "$RUNNER_TEMP/atto-effect-graph-tests"
           "$RUNNER_TEMP/atto-effect-graph-tests"
+      - name: Compile typed affine owned-mail escrow safety model
+        run: |
+          set -euo pipefail
+          rustc --edition=2021 --test -D warnings src/actor_owned_admission.rs -o "$RUNNER_TEMP/atto-owned-mail-tests"
+          "$RUNNER_TEMP/atto-owned-mail-tests"
       - name: Compile full Atto guest compiler and real sends-never fixtures
         run: |
           set -euo pipefail
