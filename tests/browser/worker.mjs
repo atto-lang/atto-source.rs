@@ -55,7 +55,7 @@ self.onmessage=async ({data})=>{
     catch(e){
       const code=instance.exports.panic_code.value;
       const kind=code===1?'integer overflow':code===2?'division by zero':code===3?'heap exhausted':'trap: '+e.message;
-      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind,...spanCounts()});return;
+      self.postMessage({ok:false,error:stdout+'E_PANIC: '+kind,panicCode:code,...spanCounts()});return;
     }
     self.postMessage({ok:true,value:String(value),stdout,...spanCounts()});
   }catch(e){self.postMessage({ok:false,error:'E_HOST: '+e.message})}
