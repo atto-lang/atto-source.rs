@@ -1,0 +1,6 @@
+// Duplicate or out-of-order contract clauses must fail closed.
+// expect-error: E_ACTOR_CONTRACT
+define actor Router receives int receives bool as
+    receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { return 0; }
