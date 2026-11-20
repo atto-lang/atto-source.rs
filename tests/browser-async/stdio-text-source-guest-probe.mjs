@@ -205,11 +205,52 @@ pub suspends fnc main(): int using io, suspend {
       {exit:0,stdout:'keep',stderr:''},{},repeatedModule);
     if(repeated.cooperates<41)
       throw Error('40 reads and checked write failed to cooperate');
+    // A stream of near-capacity lines must exhaust the *owned* heap as a
+    // checked Quota error, not panic while holding the stdin scratch lease.
+    // 15 x 62,000-byte strings fit the 15-page heap; the 16th does not.
+    // The final short record must still be readable after the Quota path.
+    const quotaSource=`
+pub suspends fnc main(): int using io, suspend {
+  val input = stdio.in;
+  let count: int = 0;
+  while count < 17 {
+    val received = readch input;
+    match received over
+      on is Ok<line> -> {
+        match line over
+          on is Some<item> -> { count = count + 1; }
+          on is None -> { return 11; }
+        end
+      }
+      on is Err<error> -> {
+        val next = readch input;
+        return match next over
+          on is Ok<line> -> match line over
+            on is Some<item> -> match writech stdio.out, item over
+              on is Ok<_> -> 0,
+              on is Err<error> -> 13,
+            end,
+            on is None -> 14,
+          end,
+          on is Err<error> -> 15,
+        end;
+      }
+    end
+  }
+  return 16;
+}
+`;
+    const quotaModule=compile(quotaSource);
+    const quotaParts=Array.from({length:16},()=>encoder.encode('x'.repeat(62000)+'\n'));
+    quotaParts.push(encoder.encode('tail\n'));
+    const quotaResult=await run('quota error releases scratch lease for next read',
+      quotaParts,{exit:0,stdout:'tail',stderr:''},{},quotaModule);
     self.postMessage({ok:true,compiledAtto:true,checkedStdio:true,
       directReadchAbiEquivalent:true,nominalIsAdtGuest:true,
       patternVariants:compiledVariants.map(([name])=>name),
       patternExecutions,stringFallbackGuest:true,fallbackCases,
-      repeatScratchGuest:true,repeatedReads:41,cases});
+      repeatScratchGuest:true,repeatedReads:41,
+      quotaScratchGuest:true,quotaFollowupExit:quotaResult.exit,cases});
   } catch(e) {
     self.postMessage({ok:false,error:String(e?.stack||e)});
   }
