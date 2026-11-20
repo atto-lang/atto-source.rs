@@ -83,6 +83,10 @@ fn malformed_entry_arguments_and_duplicate_keys_reject() {
         return 0;
     }"#,"E_UNSUPPORTED");
     rejected(r#"pub fnc main(): int {
+        val m = Map.of_entries<int,bool>(Pair.of(5,true));
+        return 0;
+    }"#,"E_TYPE");
+    rejected(r#"pub fnc main(): int {
         val m = Map.of_entries<int,bool>(5 => true,5 => false);
         return 0;
     }"#,"E_DUPLICATE");
