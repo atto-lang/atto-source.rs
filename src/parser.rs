@@ -2420,8 +2420,15 @@ impl Parser {
                         return Ok(Pattern::Adt(w, None));
                     }
                     self.expect(Tok::LParen, "'(' after payload variant")?;
-                    let (name, _) = self.ident("a payload binding name")?;
-                    self.expect(Tok::RParen, "')' after payload binding")?;
+                    // Err()/Ok()/Some() and the (_) spelling discard a
+                    // variant's payload without introducing a binding.
+                    let name = if self.eat(&Tok::RParen) {
+                        "_".to_owned()
+                    } else {
+                        let (name, _) = self.ident("a payload binding name or '_'")?;
+                        self.expect(Tok::RParen, "')' after payload pattern")?;
+                        name
+                    };
                     Ok(Pattern::Adt(w, Some(name)))
                 },
                 "_" => {

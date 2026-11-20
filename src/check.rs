@@ -2704,11 +2704,14 @@ impl<'a> FnCx<'a> {
                         _ => return Err(type_err(arm.pos,
                             format!("variant '{name}' is not part of {}", self.tn(sty)))),
                     };
-                    if bind.is_some() != needed.is_some() {
+                    // A discard checks the variant tag but neither reads nor
+                    // binds the payload. This also permits Ok() for void Ok.
+                    let discard = bind.as_deref() == Some("_");
+                    if !discard && bind.is_some() != needed.is_some() {
                         return Err(Diagnostic::new(arm.pos, "E_ARITY",
                             format!("pattern '{name}' has incorrect payload arity")));
                     }
-                    (Some(tag), bind.as_deref(), needed)
+                    (Some(tag), bind.as_deref().filter(|n| *n != "_"), needed)
                 }
                 _ => return Err(type_err(arm.pos,
                     format!("pattern is not a variant of {}", self.tn(sty)))),
