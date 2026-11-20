@@ -6,6 +6,8 @@
 //! This is a subset compiler: every construct outside the admitted subset is
 //! rejected with a diagnostic and never produces an artifact. See README.md.
 
+/// Proposed browser filesystem ABI gate; no Wasm guest imports until approved lowering.
+pub mod browser_fs_abi_v1;
 pub mod ast;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
