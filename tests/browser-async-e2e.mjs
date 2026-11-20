@@ -166,6 +166,10 @@ try{
     'repeated checked reads must execute in source-generated JSPI guest');
   assert.equal(textEcho.repeatedReads,41,
     'repeated text read fixture must exceed the old 16-page heap lifetime');
+  assert.equal(textEcho.quotaScratchGuest,true,
+    'heap exhaustion must produce a checked Result Err, not an unreleased stdin lease');
+  assert.equal(textEcho.quotaFollowupExit,0,
+    'a short text read must work after the previous large record exceeded heap quota');
   assert.ok(textEcho.cases.every(x=>x.cooperates>0));
   console.log('PASS source-compiled checked UTF-8 stdin echo: LF/CRLF/NUL, EOF, typed errors and per-port permissions');
 
