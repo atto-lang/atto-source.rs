@@ -811,6 +811,22 @@ impl Parser {
         let (name, pos) = self.ident("an actor name")?;
         reject_intrinsic_type_name(&name, pos)?;
         self.decl_head("actor")?;
+        // Header types are message contracts, not actor/recipient counts.
+        // Preserve the legacy unannotated actor form as a compatibility mode.
+        let receives = if self.eat_word("receives") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let sends = if self.eat_word("sends") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        if self.is_word("receives") || self.is_word("sends") {
+            return Err(Diagnostic::new(self.pos(), "E_ACTOR_CONTRACT",
+                "duplicate or out-of-order actor message clause; use 'receives T sends U'"));
+        }
         let close = if defined {
             self.expect_word("as")?;
             "end"
@@ -831,6 +847,8 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
+            receives,
+            sends,
             persistence,
             persistence_hooks: m.persistence_hooks,
             fields: m.fields,
@@ -1022,6 +1040,14 @@ impl Parser {
                 FieldVisibility::Private
             } else { FieldVisibility::Private };
             let public = visibility == FieldVisibility::Public;
+            // The mailbox entrypoint may be marked susp. The browser subset
+            // still rejects unsupported suspension expressions in its body.
+            if actor && self.is_word("susp")
+                && self.word_at(1) == Some("receive")
+                && *self.peek_at(2) == Tok::LParen
+            {
+                self.advance();
+            }
             let word = self.word_at(0).map(str::to_owned);
             if visibility == FieldVisibility::Package
                 && (matches!(word.as_deref(), Some("static" | "constructor" | "fnc" | "method" | "receive"))
@@ -1568,6 +1594,9 @@ impl Parser {
         }
         let start = self.pos();
         self.eat_word("pub");
+        // A susp callable with no actual suspended operation is a valid
+        // executable subset; unsupported await/suspend lowering still fails closed.
+        let _susp = self.eat_word("susp");
         let is_pure = self.eat_word("pure");
         if self.is_word("private") {
             return Err(unsupported(self.pos(), "'private' visibility"));
