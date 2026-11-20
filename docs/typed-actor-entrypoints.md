@@ -48,3 +48,43 @@ not contain duplicate type names or extra bytes.
 
 Do not treat browser single-worker execution as proof of native concurrency,
 hard-real-time scheduling, isolation, or zero-copy actor messaging.
+
+## Mainline reconciliation and verification obligations (2026-11-20)
+
+This feature branch previously diverged from `main` by **317 commits**.
+Merge commit `cac2b524c9b899e98b3947cd830ee23abd41942a`
+reconciles the typed actor receive AST, checker and Wasm metadata with
+current default branch `2cb5721722517cb472a61852810f9bdd9275d39e`
+without replacing mainline actor persistence data, package/import/compiler
+changes or the existing native and browser suites.
+
+The resulting actor declaration preserves **two independent contracts**:
+`ActorKind` (default/serial/isolated/shared/untrusted) and the pre-existing
+`ActorPersistenceMode` (volatile/persistent/durable). The browser runtime
+accepts only the two serially-executing kinds and fails closed for unproved
+isolation. Persistence and durable modes are still checked separately and
+must not be silently lowered to volatile execution. The `Receive.envelope`
+bit distinguishes `receive(msg: int)` from `receive(ActorMail<T> mail)`;
+the former cannot access envelope metadata. Direct bool payloads remain
+unsupported until tagged ingress is proven. Checked signed-i64 booleans
+and sequence validation still occur inside guest Wasm.
+
+`tests/typed_receive_mainline_merge.rs` is a regression gate for actor
+kind metadata, direct-vs-envelope ingress, persistence identity, rejected
+unproved isolation kinds, rejected direct bool and the one-receiver rule.
+The existing executable guest corpus and `tests/conformance.mjs` remain
+required as well.
+
+**Current-head status: NOT_EXECUTED.** Prior 305-test/496-guest private
+carrier green runs documented in this PR belong to much older source
+trees, not the new merge commit or latest test addition. All inspected
+current-head GitHub Actions jobs failed with **zero executed steps**, so
+there is no compiler/runtime test verdict on this integration.
+Keep draft and require exact-head Cargo, wasm32 build, guest conformance,
+Chromium Worker E2E and cross-tenant negative evidence before Ready.
+
+This PR provides typed receiver ingestion, **not** the full canonical
+`Counter` actor with `on_start`, `using state.read/write`,
+`critical-read`/`critical-write` and actor-state attachement. Those
+semantics are tracked in atto-platform-conformance#114 and must be
+reconciled with actor-state PRs #418 and #167.
