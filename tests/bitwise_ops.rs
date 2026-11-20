@@ -64,6 +64,26 @@ fn binary_literals_match_signed_int_range_and_reject_malformed_prefixes() {
 }
 
 #[test]
+fn canonical_caret_return_and_double_caret_xor_never_alias() {
+    for positive in [
+        "pub fnc main(): int { ^ 42; }",
+        "pub fnc main(): int { return 12 ^^ 10; }",
+        "pub fnc main(): int { ^ 12 ^^ 10; }",
+    ] {
+        compile(positive).unwrap_or_else(|error| panic!("{positive}: {error}"));
+    }
+    for negative in [
+        "pub fnc main(): int { return 12 ^ 10; }",
+        "pub fnc main(): int { return 12 ^ ^ 10; }",
+        "pub fnc main(): int { let x: int = 12; x ^= 3; return x; }",
+    ] {
+        let err = compile(negative).expect_err("old XOR spelling must not emit a guest");
+        assert_eq!(err.code, "E_SEMICOLON", "{negative}: {err}");
+    }
+    assert_eq!(compile(&source("true ^^ false")).unwrap_err().code, "E_TYPE");
+}
+
+#[test]
 fn existing_io_and_boolean_operators_are_unchanged() {
     compile("pub fnc main(): int { stdio.out << 42; return 0; }").unwrap();
     compile("pub fnc main(): int { if true | false then return 1; fi return 0; }").unwrap();
