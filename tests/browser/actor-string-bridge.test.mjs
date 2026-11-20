@@ -154,3 +154,38 @@ test('reentrant receive is refused and close during handler cannot return a succ
   }), 'E_ACTOR_CLOSED');
   fails(()=>bridge.receiveNext(receiver,()=>{}),'E_ACTOR_CLOSED');
 });
+
+
+// Tiny, independently assembled Wasm guest stub. This is NOT an Atto compiler
+// artifact; it verifies the host passes the pointer/length to a real Wasm call.
+function tinyWasmReceiver() {
+  const section=(type,body)=>Uint8Array.from([type,body.length,...body]);
+  const sig=section(1,[1,0x60,3,0x7f,0x7e,0x7e,0]); // (i32,i64,i64)->void
+  const funcs=section(3,[1,0]);
+  const mem=section(5,[1,1,2,2]); // two pages, fixed
+  const exports=section(7,[
+    2,
+    6, ...Buffer.from('memory'), 2,0,
+    13,...Buffer.from('actor_receive'),0,0,
+  ]);
+  // Store the first byte of the received guest string at memory[0].
+  const body=[0,0x41,0,0x20,1,0x42,32,0x88,0xa7,0x2d,0,0,0x3a,0,0,0x0b];
+  const code=section(10,[1,body.length,...body]);
+  const bytes=Buffer.concat([Buffer.from([0,97,115,109,1,0,0,0]),sig,funcs,mem,exports,code]);
+  assert.ok(WebAssembly.validate(bytes));
+  return new WebAssembly.Instance(new WebAssembly.Module(bytes));
+}
+
+test('actual Wasm exported function reads owned string copied into isolated memory',()=>{
+  const guest=tinyWasmReceiver();
+  const bridge=new ActorStringMailBridge();
+  const from=memory(1);
+  const sender=bridge.register({tenant:'A',actorId:'s',generation:1,memory:from,
+    receives:null,sends:['string']});
+  const receiver=bridge.register({tenant:'A',actorId:'r',generation:1,
+    memory:guest.exports.memory,receives:'string',sends:[],actorType:0,
+    guestDataEnd:4096,reservation:{offset:65536,capacity:65536}});
+  bridge.sendPacked(sender,receiver,encode(from,512,'hello Wasm'));
+  assert.equal(bridge.receiveNext(receiver,guest.exports.actor_receive).status,'HANDLER_RETURNED');
+  assert.equal(new Uint8Array(guest.exports.memory.buffer)[0],104); // 'h'
+});
