@@ -197,6 +197,33 @@ try{
     console.log('PASS browser: denied invalid actor graph ' + fixture);
   }
 
+  // Compile real .atto source in the Rust-to-Wasm frontend, then execute
+  // the compiled Wasm guest in Chromium. The capacity-1 channel must force
+  // the actor emission to suspend and resume without dropping either item.
+  // No JS transport simulation, sleep-based completion or host ActorRef.
+  for (const filename of [
+    '208-v2-actor-channel-actor-pipe.atto',
+    '209-v2-actor-channel-actor-rpipe.atto',
+  ]) {
+    const guest = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
+    const observed = await run(guest, 'main() -> 42');
+    assert.equal(observed, '40\\n2\\nmain() -> 42',
+      filename + ': exact ordered DATA and BOTH completion futures in real Wasm');
+    assert.equal(await evaluate('window.__attoLastPanicCode'), null,
+      filename + ': guest must complete without a hidden runtime trap');
+    console.log('PASS browser: real bounded actor-channel-actor guest ' + filename);
+  }
+  for (const filename of [
+    '210-v2-pipe-double-attach.atto',
+    '211-v2-pipe-rendezvous-denial.atto',
+  ]) {
+    const guest = await readFile(new URL('./fixtures/panic/' + filename, import.meta.url), 'utf8');
+    assert.match(await run(guest, 'E_PANIC'), /^E_PANIC:/);
+    assert.equal(await evaluate('window.__attoLastPanicCode'), 10,
+      filename + ': invalid graph rejected before any unsafe edge publication');
+    console.log('PASS browser: real guest rejects unsafe pipe ' + filename);
+  }
+
   // Real compiler -> Wasm guest: a second same-direction actor connection
   // must trap before publishing any cycle (not hang the actor-link walk).
   // The v2 actor-only runtime remains experimental and lacks checked handles.
