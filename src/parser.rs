@@ -3040,7 +3040,10 @@ impl Parser {
                     }
                     self.advance();
                     let member = match self.peek().clone() {
-                        Tok::Ident(m) if !is_reserved(&m) => m,
+                        Tok::Ident(m) if !is_reserved(&m) ||
+                            (m == "of" && *self.peek_at(1) == Tok::LParen &&
+                                matches!(&e.kind, ExprKind::Var(base) if
+                                    matches!(base.as_str(), "Record" | "Map" | "Tuple" | "Array" | "List"))) => m,
                         _ => return Err(self.expected("a member name after '.'")),
                     };
                     self.advance();
