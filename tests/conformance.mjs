@@ -658,12 +658,21 @@ check('pipe/inline-arrow-bodies-with-reverse-and-forward-real-guest', () => {
   ].join('\n'));
   assert.equal(nested.ok, true, nested.message);
   assert.equal(runGuest(nested.wasm).value, 42n);
+
+  const grouped = compile([
+    'fnc twice(int x): int -> x * 2;',
+    'fnc next(int x): int -> x + 1;',
+    'pub fnc main(): int -> twice <| (20 |> next);',
+  ].join('\\n'));
+  assert.equal(grouped.ok, true, grouped.message);
+  assert.equal(runGuest(grouped.wasm).value, 42n);
 });
 check('pipe/inline-arrow-invalid-return-and-terminator-fail-closed', () => {
   for (const bad of [
     'fnc twice(int x): int -> x * 2 pub fnc main(): int { return 42; }',
     'fnc twice(int x): int -> true; pub fnc main(): int { return twice(2); }',
     'fnc twice(int x): int -> { x * 2; } pub fnc main(): int { return twice(2); }',
+    'fnc twice(int x): int -> x * 2; fnc next(int x): int -> x + 1; pub fnc main(): int -> twice <| 20 |> next;',
   ]) {
     const result = compile(bad);
     assert.equal(result.ok, false, 'invalid arrow body admitted');
