@@ -82,7 +82,7 @@ fn prefix_and_postfix_share_the_checked_read_guest_imports() {
     let a=compile(&source("return (<< c);")).expect("prefix guest");
     let b=compile(&source("return (c >>);")).expect("postfix guest");
     for guest in [&a, &b] {
-        assert!(guest.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+        assert!(guest.starts_with(b"\0asm\x01\0\0\0"));
         for marker in ["atto.channel_int", "channel_int_nb_read_v1",
                        "channel_int_await_read_v1", "cooperate"] {
             assert!(marker.as_bytes().len() <= guest.len());
