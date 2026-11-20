@@ -89,3 +89,14 @@ fn return_first_rejects_unicode_bullet_lookalikes_and_split_arrow() {
         assert!(parse(&source).is_err(), "must reject {source:?}");
     }
 }
+
+#[test]
+fn mixed_arrow_and_bullet_declarations_are_one_signature() {
+    let source = "int <- compute(int x) { return x; }\n\
+                  int • compute(int x) { return x; }\n\
+                  fnc main(): int { return compute(42); }\n";
+    let program = parse(source).expect("both headers parse");
+    let err = oreslang_source_rs::mir::lower(program)
+        .expect_err("duplicate same-signature declaration must be rejected");
+    assert_eq!(err.class, "duplicate_declaration");
+}
