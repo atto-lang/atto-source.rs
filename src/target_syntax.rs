@@ -486,8 +486,10 @@ impl Cursor<'_> {
                 } else {
                     let negative = self.take(&Tok::Minus);
                     let in_range = match self.tok() {
-                        Tok::Int(Some(n)) =>
-                            *n <= (i64::MAX as u64) + u64::from(negative),
+                        Tok::Int(Some(n)) => *n <= i64::MAX as u64,
+                        // Lexer represents 2^63 as None specifically for
+                        // the signed i64 minimum when preceded by '-'.
+                        Tok::Int(None) => negative,
                         _ => false,
                     };
                     if !in_range { return Err(self.err("E_SYNTAX", "state initializer must be a signed i64 literal")); }
