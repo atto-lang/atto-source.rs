@@ -153,6 +153,25 @@ independently attestable payload-type and memory-reservation metadata while
 preserving byte-identical output for actors that do not receive strings.
 
 
+### Exact-blob funded runner evidence (host + layout only)
+
+[Run #44654596675](https://github.com/bait-bikes-test/atto-ci/actions/runs/44654596675)
+ran real GitHub Actions build/test steps using an independent private
+cross-organization mirror: **13/13 Rust DATA codec tests, 11/11 Rust
+scratch-layout tests, and 14/14 Node/Wasm memory-bridge tests passed**.
+All four mirrored source files matched their Git blob SHAs before testing.
+Toolchains: rustc 1.99.1, Node 22.23.4. The carrier commit is
+`0c0c6d92388be4940dbdb1918a176370de8c4314` and the verified source
+head at mirror creation is `c77130f973aa0b667d6c7f13c63943617fd04018`.
+The corresponding pin and explicit `NOT_EXECUTED` compiled-guest status
+are in [atto-platform-conformance #33](https://github.com/atto-lang/atto-platform-conformance/pull/33)
+(`evidence/typed-actor-string-memory-layout-host-20261119.json`).
+
+This result proves the candidate codec, layout planner and host-side transfer
+logic only; it does NOT enable source-level `ActorMail<string>`, execute an
+Atto-compiled actor, attest a production guest memory region, or establish
+multi-backend parity.
+
 ### Required compiler/runtime integration before enabling strings
 
 1. Change the compiler only after allocating an actor-owned string mailbox
