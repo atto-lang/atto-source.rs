@@ -1250,4 +1250,42 @@ mod tests {
         kernel.try_retire(owner).unwrap();
     }
 
+
+    #[test]
+    fn host_kernel_shutdown_fences_active_lease_and_cancels_waiters() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let owner = kernel.issue(None).unwrap();
+        let queued = kernel.issue(None).unwrap();
+        let lock = kernel.add_mutex(3).unwrap();
+        let grant = owned(kernel.acquire(owner, lock).unwrap());
+        kernel.claim(owner, lock, grant).unwrap();
+        let waiter = pending(kernel.acquire(queued, lock).unwrap());
+
+        kernel.shutdown().unwrap();
+        kernel.shutdown().unwrap(); // idempotent: no duplicate callbacks
+        assert_eq!(kernel.acquire(queued, lock), Err(Error::CancellationPending));
+        assert_eq!(kernel.claim(queued, lock, waiter), Err(Error::CancellationPending));
+        assert_eq!(kernel.try_retire(owner), Err(Error::NotQuiescent));
+        kernel.try_with_core(|core| {
+            assert!(core.locks[&lock].has_active_lease());
+            assert!(core.locks[&lock].cancellation_pending());
+            assert_eq!(core.locks.get_mut(&lock).unwrap().take_wakeup(), None);
+            Ok(())
+        }).unwrap();
+
+        assert_eq!(kernel.trusted_exit(queued).unwrap(), Vec::<u64>::new());
+        kernel.trusted_notifications_drained(queued).unwrap();
+        kernel.try_retire(queued).unwrap();
+        assert_eq!(kernel.trusted_exit(owner).unwrap(), vec![lock]);
+        kernel.try_with_core(|core| {
+            assert!(!core.locks[&lock].has_outstanding_grant());
+            assert_eq!(core.locks.get_mut(&lock).unwrap().take_wakeup(), None);
+            Ok(())
+        }).unwrap();
+        kernel.trusted_notifications_drained(owner).unwrap();
+        kernel.try_retire(owner).unwrap();
+        assert_eq!(kernel.terminal(owner).unwrap(), Some(TaskExitKind::Cancelled));
+        assert_eq!(kernel.terminal(queued).unwrap(), Some(TaskExitKind::Cancelled));
+    }
+
 }
