@@ -737,7 +737,7 @@ impl<'a> Checker<'a> {
         let ty = if actor { Ty::Actor(i) } else { Ty::Object(i) };
         self.cx.push(FnCx::new(ty.clone(), false, false));
         let this = self.declare("self", ty, false, o.pos)?;
-        let base = if actor { 48 } else { 0 };
+        let base = if actor { 56 } else { 0 };
         let size = base + 8 * o.fields.len() as u32;
         self.objs[i].size = size;
         let mut body = vec![IrStmt::Set(this, Ir::Helper(Helper::Alloc, vec![Ir::Const(size.max(8) as i64)]))];
