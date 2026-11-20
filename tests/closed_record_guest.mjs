@@ -135,6 +135,69 @@ negatives.push([
 ]);
 
 
+// Checked owned static Record mutation: real native/browser-compiler-produced
+// guest Wasm must write a fixed slot, not fabricate a Map, alias or interpreter.
+positives.push([
+ 'pub fnc main(): int {let mut Record r={foo:1}; r["foo"]=42; return r.foo;}',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {val mut Record r={"content-type":1}; r["content-type"]=42; return r["content-type"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let mut Record r={foo:1,bar:5}; r.foo=37; return r["foo"]+r.bar; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let mut Record r={"":1,"café":2,"café":3}; r[""]=37; return r[""]+r["café"]+r["café"]; }',
+ 42n, ''
+]);
+positives.push([
+ 'pub fnc main(): int {let mut Record r={flag:false,code:1}; r["flag"]=true; r["code"]=41; return r.code + (r.flag ? 1 : 0); }',
+ 42n, ''
+]);
+negatives.push([
+ 'pub fnc main(): int {let Record r={foo:1}; r["foo"]=42; return 0;}',
+ 'E_IMMUTABLE'
+]);
+negatives.push([
+ 'pub fnc main(): int {val Record r={foo:1}; r.foo=42; return 0;}',
+ 'E_IMMUTABLE'
+]);
+negatives.push([
+ 'pub fnc main(): int {let mut Record r={foo:1}; r["bar"]=42; return 0;}',
+ 'E_NO_FIELD'
+]);
+negatives.push([
+ 'pub fnc main(): int {let mut Record r={foo:1}; r["foo"]="bad"; return 0;}',
+ 'E_TYPE'
+]);
+negatives.push([
+ 'pub fnc main(): int {let mut Record r={foo:1}; let string key="foo"; r[key]=42; return 0;}',
+ 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int {let mut Record r={foo:1}; r["f"+"oo"]=42; return 0;}',
+ 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main(): int {let mut Record r={foo:1}; val reader=borrow! r; r["foo"]=42; return 0;}',
+ 'E_BORROW'
+]);
+negatives.push([
+ 'pub fnc main(): int {let mut Record r={foo:1}; val moved=take! r; r["foo"]=42; return 0;}',
+ 'E_MOVED'
+]);
+negatives.push([
+ 'define struct Point as int foo; end pub fnc main(): int {let mut p=Point{foo:1}; p["foo"]=42; return 0;}',
+ 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'define struct Point as int foo; end pub fnc main(): int {val p=Point{foo:1}; return p["foo"]; }',
+ 'E_UNSUPPORTED'
+]);
+
 // Exhaustive guest execution: four independent scalar fields, 24 source orders.
 // Both compilers must produce byte-identical Wasm; every module must return 42.
 function visit_record_orders(items, start, visit) {
