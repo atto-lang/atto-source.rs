@@ -43,6 +43,15 @@ function compile(sourceText) {
   return { ok: true, guest };
 }
 
+// Canonical operator spelling must execute through the real wasm32 compiler.
+const caretXorGuest = compile('pub fnc main(): int { ^ 12 ^^ 10; }');
+assert.equal(caretXorGuest.ok, true, caretXorGuest.diagnostic || 'caret/XOR compile');
+const caretXorModule = new WebAssembly.Module(caretXorGuest.guest);
+assert.deepEqual(WebAssembly.Module.imports(caretXorModule), [], 'caret/XOR guest has no imports');
+const caretXorRuntime = new WebAssembly.Instance(caretXorModule, { atto: {} });
+assert.equal(caretXorRuntime.exports.main(), 6n, 'return marker and XOR are unambiguous');
+assert.equal(caretXorRuntime.exports.panic_code.value, 0);
+
 const compiled = compile(source);
 assert.equal(compiled.ok, true, compiled.diagnostic || 'preview must compile');
 const guestModule = new WebAssembly.Module(compiled.guest);
