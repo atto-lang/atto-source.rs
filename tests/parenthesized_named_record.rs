@@ -44,8 +44,8 @@ fn tuple_grouping_empty_and_named_record_grammars_do_not_alias() {
         if matches!(&init.kind,ExprKind::Tuple(items) if items.len()==1)));
     assert!(matches!(&b[3], Stmt::Bind {init,..}
         if matches!(&init.kind,ExprKind::Tuple(items) if items.len()==2)));
-    for i in 4..8 {
-        assert!(matches!(&b[i], Stmt::Bind {init,..}
+    for (i, stmt) in b.iter().enumerate().take(8).skip(4) {
+        assert!(matches!(stmt, Stmt::Bind {init,..}
             if matches!(&init.kind,ExprKind::Record(_))), "record at {i}");
     }
     assert!(matches!(&b[8], Stmt::Bind {init,..}
