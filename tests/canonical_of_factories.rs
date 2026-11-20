@@ -81,15 +81,14 @@ fn array_and_list_of_keep_distinct_inferred_types() {
 }
 
 #[test]
-fn array_list_and_map_guest_execution_do_not_acquire_a_host_fallback() {
+fn list_map_and_uninferred_factories_still_fail_closed() {
     rejected(
         r#"pub fnc main(): int { val m = Map.of("a",1); return 0; }"#,
         "E_UNSUPPORTED",
     );
-    rejected(
-        r#"pub fnc main(): int { val a = Array.of(1,2,3); return 0; }"#,
-        "E_UNSUPPORTED",
-    );
+    let array = compile(r#"pub fnc main(): int { val a = Array.of(1,2,3); return a[0]; }"#)
+        .expect("bounded scalar Array.of guest is now implemented");
+    assert!(array.starts_with(b"\0asm\x01\0\0\0"));
     rejected(
         r#"pub fnc main(): int { val l = List.of("a","b"); return 0; }"#,
         "E_UNSUPPORTED",
