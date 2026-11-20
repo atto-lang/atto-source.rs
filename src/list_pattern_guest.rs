@@ -54,13 +54,13 @@ impl<'a> Cursor<'a> {
         let pos = self.pos();
         let negative = self.eat(Tok::Minus);
         match self.peek().clone() {
-            Tok::Int(Some(value))
-                if (!negative && value <= i64::MAX as u64) ||
-                    (negative && value <= i64::MAX as u64 + 1) => {
+            Tok::Int(Some(value)) if value <= i64::MAX as u64 => {
                 self.at += 1;
-                if negative && value == i64::MAX as u64 + 1 { Ok(i64::MIN) }
-                else if negative { Ok(-(value as i64)) }
-                else { Ok(value as i64) }
+                if negative { Ok(-(value as i64)) } else { Ok(value as i64) }
+            }
+            Tok::Int(None) if negative => {
+                self.at += 1;
+                Ok(i64::MIN)
             }
             _ => Err(err(pos,"E_INTEGER_RANGE","invalid signed i64 literal"))
         }
