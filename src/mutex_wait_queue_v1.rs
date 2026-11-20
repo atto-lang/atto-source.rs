@@ -1409,4 +1409,72 @@ mod tests {
         assert!(!q.has_outstanding_grant());
     }
 
+    #[test]
+    fn host_kernel_cancellation_wakes_queued_task_without_unlocking_owner() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let owner = kernel.issue(None).unwrap();
+        let waiter = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(4).unwrap();
+        let claimed = owned(kernel.acquire(owner, mutex).unwrap());
+        kernel.claim(owner, mutex, claimed).unwrap();
+        let queued = pending(kernel.acquire(waiter, mutex).unwrap());
+        assert!(kernel.cancelled_continuation_wake_hints().unwrap().is_empty());
+        kernel.cancel(waiter).unwrap();
+
+        // A suspended guest waiting on this mutex must be scheduled to see
+        // TaskCancelled, without the cancellation unlocking another holder.
+        assert_eq!(kernel.cancelled_continuation_wake_hints().unwrap(), vec![waiter]);
+        assert_eq!(kernel.cancelled_continuation_wake_hints().unwrap(), vec![waiter]);
+        assert!(kernel.take_grant_wake_hints().unwrap().is_empty());
+        assert_eq!(kernel.claim(waiter, mutex, queued), Err(Error::CancellationPending));
+
+        assert_eq!(kernel.trusted_exit(waiter).unwrap(), Vec::<u64>::new());
+        assert!(kernel.cancelled_continuation_wake_hints().unwrap().is_empty());
+        kernel.trusted_notifications_drained(waiter).unwrap();
+        kernel.try_retire(waiter).unwrap();
+        assert_eq!(kernel.trusted_exit(owner).unwrap(), vec![mutex]);
+        assert!(kernel.take_grant_wake_hints().unwrap().is_empty());
+        kernel.trusted_notifications_drained(owner).unwrap();
+        kernel.try_retire(owner).unwrap();
+    }
+
+    #[test]
+    fn host_kernel_grant_hints_remain_claim_checked_across_cancel_race() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let owner = kernel.issue(None).unwrap();
+        let cancelled = kernel.issue(None).unwrap();
+        let successor = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(4).unwrap();
+        let active = owned(kernel.acquire(owner, mutex).unwrap());
+        kernel.claim(owner, mutex, active).unwrap();
+        let stale = pending(kernel.acquire(cancelled, mutex).unwrap());
+        let next = pending(kernel.acquire(successor, mutex).unwrap());
+
+        assert_eq!(kernel.trusted_exit(owner).unwrap(), vec![mutex]);
+        // Delivery is only a wake *hint*, not a grant claim or permission.
+        assert_eq!(kernel.take_grant_wake_hints().unwrap(), vec![(mutex, stale)]);
+        assert!(kernel.take_grant_wake_hints().unwrap().is_empty());
+        kernel.cancel(cancelled).unwrap();
+        assert_eq!(kernel.claim(cancelled, mutex, stale), Err(Error::CancellationPending));
+        assert_eq!(kernel.take_grant_wake_hints().unwrap(), vec![(mutex, next)]);
+        kernel.claim(successor, mutex, next).unwrap();
+        assert_eq!(kernel.trusted_exit(cancelled).unwrap(), Vec::<u64>::new());
+        assert_eq!(kernel.trusted_exit(successor).unwrap(), vec![mutex]);
+        for task in [owner, cancelled, successor] {
+            kernel.trusted_notifications_drained(task).unwrap();
+            kernel.try_retire(task).unwrap();
+        }
+    }
+
+    #[test]
+    fn host_kernel_wake_hint_queries_never_park_scheduler_carrier() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let guard = kernel.core.lock().unwrap(); // inject host arbiter contention
+        assert_eq!(kernel.cancelled_continuation_wake_hints(), Err(Error::AdmissionBusy));
+        assert_eq!(kernel.take_grant_wake_hints(), Err(Error::AdmissionBusy));
+        drop(guard);
+        assert!(kernel.cancelled_continuation_wake_hints().unwrap().is_empty());
+        assert!(kernel.take_grant_wake_hints().unwrap().is_empty());
+    }
+
 }
