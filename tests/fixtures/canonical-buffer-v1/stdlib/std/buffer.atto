@@ -1,0 +1,134 @@
+// Canonical target implementation of the public std.buffer API.
+// Not yet compiled or linked on any backend. The following minimal sealed
+// runtime types are REQUIRED before this module can be admitted:
+//   OwnedBytes.empty(), OwnedBytes.allocate_zeroed(int),
+//   OwnedBytes.length, OwnedBytes.read_byte(int), OwnedBytes.write_byte(int,int)
+// All methods must be actor/tenant-owned, checked, quota-governed,
+// nonsuspending, and inaccessible to untrusted code except through this API.
+// Buffer*Error are distinct Error subclasses supplied by the alloc ABI.
+import module bounds from "stdlib/core/byte_bounds.atto";
+import module endian from "stdlib/core/u32_endian.atto";
+
+define class ByteBuffer as
+  private let mut OwnedBytes storage = OwnedBytes.empty();
+
+  constructor(int count) throws Error {
+    if count < 0 then
+      throw BufferAllocationError("negative buffer length");
+    fi
+    // The primitive must reserve quota, zero all exposed bytes, and publish
+    // the owned region only on success; no system-malloc fallback.
+    self.storage = OwnedBytes.allocate_zeroed(count);
+  }
+
+  pub static fnc allocate(int count): ByteBuffer throws Error {
+    return new ByteBuffer(count);
+  }
+
+  pub length(): int {
+    return self.storage.length;
+  }
+
+  private require_range(int offset, int width): void throws Error {
+    if bounds.byte_range_valid(self.storage.length, offset, width) == false then
+      throw BufferBoundsError("byte range out of bounds");
+    fi
+  }
+
+  private require_u8(int value): void throws Error {
+    if bounds.byte_u8_valid(value) == false then
+      throw BufferValueError("unsigned byte value out of range");
+    fi
+  }
+
+  private require_u16(int value): void throws Error {
+    if bounds.byte_u16_valid(value) == false then
+      throw BufferValueError("unsigned 16-bit value out of range");
+    fi
+  }
+
+  private require_u32(int value): void throws Error {
+    if bounds.byte_u32_valid(value) == false then
+      throw BufferValueError("unsigned 32-bit value out of range");
+    fi
+  }
+
+  pub read_u8(int offset): int throws Error {
+    self.require_range(offset, 1);
+    return self.storage.read_byte(offset);
+  }
+
+  pub read_u16_le(int offset): int throws Error {
+    self.require_range(offset, 2);
+    return self.storage.read_byte(offset) +
+           self.storage.read_byte(offset + 1) * 256;
+  }
+
+  pub read_u16_be(int offset): int throws Error {
+    self.require_range(offset, 2);
+    return self.storage.read_byte(offset) * 256 +
+           self.storage.read_byte(offset + 1);
+  }
+
+  pub read_u32_le(int offset): int throws Error {
+    self.require_range(offset, 4);
+    return endian.u32_pack_le(
+      self.storage.read_byte(offset),
+      self.storage.read_byte(offset + 1),
+      self.storage.read_byte(offset + 2),
+      self.storage.read_byte(offset + 3)
+    );
+  }
+
+  pub read_u32_be(int offset): int throws Error {
+    self.require_range(offset, 4);
+    return endian.u32_pack_be(
+      self.storage.read_byte(offset),
+      self.storage.read_byte(offset + 1),
+      self.storage.read_byte(offset + 2),
+      self.storage.read_byte(offset + 3)
+    );
+  }
+end
+
+// Mutating receivers require an exclusive loan. These cannot be invoked
+// through a read-only val, a shared readonly view, or a moved buffer.
+pub mtd (mut self: ByteBuffer) write_u8(int offset, int value): void throws Error {
+  self.require_range(offset, 1);
+  self.require_u8(value);
+  self.storage.write_byte(offset, value);
+}
+
+pub mtd (mut self: ByteBuffer) write_u16_le(int offset, int value): void throws Error {
+  self.require_range(offset, 2);
+  self.require_u16(value);
+  self.storage.write_byte(offset, value & 255);
+  self.storage.write_byte(offset + 1, (value >>> 8) & 255);
+}
+
+pub mtd (mut self: ByteBuffer) write_u16_be(int offset, int value): void throws Error {
+  self.require_range(offset, 2);
+  self.require_u16(value);
+  self.storage.write_byte(offset, (value >>> 8) & 255);
+  self.storage.write_byte(offset + 1, value & 255);
+}
+
+pub mtd (mut self: ByteBuffer) write_u32_le(int offset, int value): void throws Error {
+  self.require_range(offset, 4);
+  self.require_u32(value);
+  // All four offsets are valid and values are validated before the first
+  // mutation. write_byte must not allocate or suspend after validation.
+  self.storage.write_byte(offset, endian.u32_low8(value));
+  self.storage.write_byte(offset + 1, endian.u32_lane1(value));
+  self.storage.write_byte(offset + 2, endian.u32_lane2(value));
+  self.storage.write_byte(offset + 3, endian.u32_lane3(value));
+}
+
+pub mtd (mut self: ByteBuffer) write_u32_be(int offset, int value): void throws Error {
+  self.require_range(offset, 4);
+  self.require_u32(value);
+  self.storage.write_byte(offset, endian.u32_lane3(value));
+  self.storage.write_byte(offset + 1, endian.u32_lane2(value));
+  self.storage.write_byte(offset + 2, endian.u32_lane1(value));
+  self.storage.write_byte(offset + 3, endian.u32_low8(value));
+}
