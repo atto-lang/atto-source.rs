@@ -61,7 +61,7 @@ fn lambda_parameter_annotations_are_preserved_not_discarded() {
     let Stmt::Bind { init, .. } = &p.funcs[0].body[0] else { panic!("binding"); };
     let ExprKind::Lambda { params, param_types, .. } = &init.kind else { panic!("lambda"); };
     assert_eq!(params, &["a", "b"]);
-    assert_eq!(param_types, &[Some(Type::Int), Some(Type::Float)]);
+    assert_eq!(param_types, &[Some("int".to_owned()), Some("float".to_owned())]);
 }
 
 #[test]

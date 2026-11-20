@@ -29,25 +29,25 @@ pub fn check_noncapturing(
     if param_types.len() != names.len() {
         return Err(err(lambda.pos, "E_TYPE", "malformed lambda parameter annotations"));
     }
+    let explicit = param_types.iter()
+        .map(|a| a.as_deref().map(|s| annotation(s, lambda.pos)).transpose())
+        .collect::<R<Vec<_>>>()?;
     let types: Vec<Type> = match expected_params {
         Some(types) if types.len() == names.len() => {
-            for (index, (actual, want)) in param_types.iter().zip(types).enumerate() {
-                if let Some(actual) = actual {
-                    if actual != want {
-                        return Err(err(lambda.pos, "E_TYPE", format!(
-                            "lambda parameter {} is declared {} but callable expects {}",
-                            index + 1, actual.name(), want.name())));
-                    }
+            for (i, (declared, inferred)) in explicit.iter().zip(types).enumerate() {
+                if declared.is_some_and(|want| want != *inferred) {
+                    return Err(err(lambda.pos, "E_TYPE", format!(
+                        "lambda parameter {} conflicts with expected callable signature", i + 1)));
                 }
             }
             types.to_vec()
         }
         Some(types) => return Err(err(lambda.pos, "E_ARITY", format!(
             "callback expects {} parameters, found {}", types.len(), names.len()))),
-        None if param_types.iter().all(Option::is_some) =>
-            param_types.iter().map(|t| t.expect("checked above")).collect(),
-        None => return Err(err(lambda.pos, "E_INFER",
-            "lambda parameters need explicit annotations or contextual callable types")),
+        None => explicit.into_iter().map(|t| t.ok_or_else(||
+            err(lambda.pos, "E_INFER",
+                "unannotated lambda parameters need contextual callable types")))
+            .collect::<R<Vec<_>>>()?,
     };
     if types.iter().any(|t| !scalar(*t) || *t == Type::Void) {
         return Err(err(lambda.pos, "E_UNSUPPORTED_TYPE", "lambda parameter type is not a scalar value"));

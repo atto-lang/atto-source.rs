@@ -366,6 +366,7 @@ struct MethodInfo {
     is_static: bool,
     idx: u32,
     params: Vec<Type>,
+    param_names: Vec<String>,
     ret: Type,
 }
 
@@ -378,6 +379,7 @@ struct ClassInfo {
     new_idx: u32,
     ctor_idx: Option<u32>,
     ctor_params: Vec<Type>,
+    ctor_names: Vec<String>,
 }
 
 struct ActorInfo {
@@ -391,6 +393,7 @@ struct ActorInfo {
 /// Program-wide declaration tables shared by every body check.
 struct Globals<'a> {
     sigs: BTreeMap<(String, usize), (u32, Vec<Type>, Type)>,
+    param_names: BTreeMap<(String, usize), Vec<String>>,
     names: BTreeMap<String, Vec<usize>>,
     classes: Vec<ClassInfo>,
     enums: &'a [EnumDecl],
@@ -472,6 +475,50 @@ fn string_member_err(name: &str, pos: Pos) -> Diagnostic {
 
 fn type_err(pos: Pos, msg: impl Into<String>) -> Diagnostic {
     Diagnostic::new(pos, "E_TYPE", msg)
+}
+
+/// Bind arguments by their declared names without changing observable source
+/// evaluation order. Reordered calls currently admit only pure scalar literal
+/// values (no calls, reads, moves or side effects); complex reordering needs
+/// explicit ordered temporary slots in typed IR.
+fn bind_named_arguments(args: &[Expr], formals: &[String], pos: Pos) -> R<Vec<Expr>> {
+    if args.len() != formals.len() {
+        return Err(Diagnostic::new(pos, "E_ARITY", format!(
+            "named call expects {} arguments, found {}", formals.len(), args.len())));
+    }
+    let mut ordered = vec![None; formals.len()];
+    let mut indices = Vec::with_capacity(args.len());
+    for (source_slot, arg) in args.iter().enumerate() {
+        let (slot, value) = match &arg.kind {
+            ExprKind::NamedArg(name, value) => (
+                formals.iter().position(|p| p == name).ok_or_else(||
+                    Diagnostic::new(arg.pos, "E_NAMED_ARG",
+                        format!("unknown named argument '{name}'")))?,
+                value.as_ref(),
+            ),
+            _ => (source_slot, arg),
+        };
+        if ordered[slot].is_some() {
+            return Err(Diagnostic::new(arg.pos, "E_DUPLICATE",
+                format!("parameter '{}' is supplied more than once", formals[slot])));
+        }
+        ordered[slot] = Some(value.clone());
+        indices.push(slot);
+    }
+    let reorders = indices.windows(2).any(|x| x[0] > x[1]);
+    if reorders && args.iter().any(|a| {
+        let expr = match &a.kind {
+            ExprKind::NamedArg(_, value) => value.as_ref(),
+            _ => a,
+        };
+        !matches!(expr.kind, ExprKind::Int(_) | ExprKind::Float(_) |
+            ExprKind::Bool(_) | ExprKind::Str(_))
+    }) {
+        return Err(Diagnostic::new(pos, "E_EFFECT_ORDER",
+            "reordered named arguments currently require literal values to preserve evaluation order"));
+    }
+    ordered.into_iter().map(|x| x.ok_or_else(||
+        Diagnostic::new(pos, "E_ARITY", "missing named argument"))).collect()
 }
 
 impl Globals<'_> {
@@ -880,6 +927,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
                 is_static: m.is_static,
                 idx: 0,
                 params: m.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
+                param_names: m.params.iter().map(|q| q.name.clone()).collect(),
                 ret: res(m.ret)?,
             });
         }
@@ -938,6 +986,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             Some(k) => k.params.iter().map(|q| res(q.ty)).collect::<R<Vec<_>>>()?,
             None => Vec::new(),
         };
+        let ctor_names = c.ctor.as_ref().map(|k| k.params.iter().map(|q| q.name.clone()).collect()).unwrap_or_default();
         classes.push(ClassInfo {
             name: c.name.clone(),
             state_container: c.state_container,
@@ -946,6 +995,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             new_idx,
             ctor_idx,
             ctor_params,
+            ctor_names,
         });
     }
     let mut actors = Vec::new();
@@ -992,8 +1042,13 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     }
     let total = next as usize;
 
+    let param_names = p.funcs.iter().map(|f| (
+        (f.name.clone(), f.params.len()),
+        f.params.iter().map(|q| q.name.clone()).collect::<Vec<_>>(),
+    )).collect();
     let g = Globals {
         sigs,
+        param_names,
         names,
         classes,
         enums: &p.enums,
@@ -3121,6 +3176,8 @@ impl<'a> FnCx<'a> {
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
+            ExprKind::NamedArg(_, _) => return Err(Diagnostic::new(pos, "E_NAMED_ARG",
+                "named arguments require a supported statically resolved callable")),
             ExprKind::StateRead(field) => {
                 let c = match self.owner {
                     Owner::Class { c, ctor: false, is_static: false }
@@ -3238,12 +3295,23 @@ impl<'a> FnCx<'a> {
                 ),
             ));
         }
-        let (idx, params) = (info.new_idx, info.ctor_params.clone());
-        let targs = self.args(&format!("{class} constructor"), args, &params)?;
+        let (idx, params, names) = (info.new_idx, info.ctor_params.clone(), info.ctor_names.clone());
+        let targs = self.args_named(&format!("{class} constructor"), args, &params, &names, pos)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
             ty: Type::Class(ci),
         })
+    }
+
+    /// Named parameters are bound to static formal names before typing.
+    fn args_named(&mut self, callee: &str, args: &[Expr], params: &[Type],
+                  names: &[String], pos: Pos) -> R<Vec<TE>> {
+        if args.iter().any(|a| matches!(a.kind, ExprKind::NamedArg(..))) {
+            let ordered = bind_named_arguments(args, names, pos)?;
+            self.args(callee, &ordered, params)
+        } else {
+            self.args(callee, args, params)
+        }
     }
 
     /// Check arguments against parameter types; object arguments move.
@@ -3471,7 +3539,7 @@ impl<'a> FnCx<'a> {
                     }
                     let label = format!("{n}.{name}");
                     self.arity(&label, m.params.len(), args.len(), pos)?;
-                    let targs = self.args(&label, args, &m.params)?;
+                    let targs = self.args_named(&label, args, &m.params, &m.param_names, pos)?;
                     return Ok(TE {
                         e: TExpr::Call(m.idx, targs),
                         ty: m.ret,
@@ -3513,7 +3581,7 @@ impl<'a> FnCx<'a> {
                     };
                     let label = format!("{}.{name}", actor.name);
                     self.arity(&label, m.params.len(), args.len(), pos)?;
-                    let targs = self.args(&label, args, &m.params)?;
+                    let targs = self.args_named(&label, args, &m.params, &m.param_names, pos)?;
                     return Ok(TE {
                         e: TExpr::Call(m.idx, targs),
                         ty: m.ret,
@@ -3621,7 +3689,7 @@ impl<'a> FnCx<'a> {
         let label = format!("{cname}.{name}");
         self.arity(&label, m.params.len(), args.len(), pos)?;
         let mut targs = vec![recv];
-        targs.extend(self.args(&label, args, &m.params)?);
+        targs.extend(self.args_named(&label, args, &m.params, &m.param_names, pos)?);
         Ok(TE {
             e: TExpr::Call(m.idx, targs),
             ty: m.ret,
@@ -3792,7 +3860,13 @@ impl<'a> FnCx<'a> {
                 })
             }
         };
-        let targs = self.args(name, args, &params)?;
+        let ordered;
+        let arguments = if args.iter().any(|a| matches!(a.kind, ExprKind::NamedArg(..))) {
+            let names = &self.g.param_names[&(name.to_string(), args.len())];
+            ordered = bind_named_arguments(args, names, pos)?;
+            &ordered
+        } else { args };
+        let targs = self.args(name, arguments, &params)?;
         Ok(TE {
             e: TExpr::Call(idx, targs),
             ty: ret,
