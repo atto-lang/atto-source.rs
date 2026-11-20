@@ -188,7 +188,9 @@ mod tests {
         let t = m.stage(7, actor(), 1, true, Box::new(17)).unwrap();
         let (_, value) = m.stage(7, actor(), 1, true, Box::new(42)).unwrap_err();
         assert_eq!(*value, 42);
-        assert_eq!(*m.abort(t).unwrap().payload, 17);
+        let recovered = m.abort(t).unwrap();
+        assert_eq!(recovered.sender_tenant, 7);
+        assert_eq!(*recovered.payload, 17);
         assert!(m.deliver().is_none());
     }
     #[test] fn denied_and_cross_tenant_stage_return_owner() {
@@ -234,8 +236,10 @@ mod tests {
         m.commit(a, true).unwrap();
         let outcome = m.stop();
         assert_eq!(outcome.recovered.len(), 1);
+        assert_eq!(outcome.recovered[0].sender_tenant, 7);
         assert_eq!(outcome.recovered[0].payload, 25);
         assert_eq!(outcome.abandoned.len(), 1);
+        assert_eq!(outcome.abandoned[0].actor, actor());
         assert_eq!(outcome.abandoned[0].payload, 17);
         assert_eq!(m.abandoned, 1);
         assert!(matches!(m.abort(b), Err(AdmissionError::InvalidTicket)));
@@ -261,7 +265,10 @@ mod tests {
         let actual = m.stage(7, actor(), 1, true, "value").unwrap();
         let mut forged = Ticket { serial: actual.serial, actor: actual.actor,
             epoch: actual.epoch, sender_tenant: 8 };
-        assert!(matches!(m.commit(forged, true), Err(CommitError::InvalidTicket(_))));
+        match m.commit(forged, true) {
+            Err(CommitError::InvalidTicket(reason)) => assert_eq!(reason, AdmissionError::InvalidTicket),
+            _ => panic!("forged ticket must fail before touching the owner"),
+        }
         forged = Ticket { serial: actual.serial, actor: actual.actor,
             epoch: 999, sender_tenant: 7 };
         assert!(matches!(m.commit(forged, true), Err(CommitError::InvalidTicket(_))));
