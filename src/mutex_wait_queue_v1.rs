@@ -462,6 +462,30 @@ impl TaskScopeLockCoordinator {
         }
         first_failure.map_or(Ok(()), Err)
     }
+
+    /// Trusted actor/TenantVM stop: fence all task admissions first, cancel
+    /// every registered waiter/grant, then close each lock. Active leases
+    /// remain occupied until the real holder completes safe-point unwind.
+    /// A failure leaves the domain quarantined; shutdown is NOT retirement.
+    fn shutdown_domain(&mut self) -> Result<(), Error> {
+        for task in self.tasks.values_mut() {
+            if !task.guest_exited && !task.physically_retired {
+                task.cancel_requested = true;
+            }
+        }
+        let tasks: Vec<u64> = self.tasks.keys().copied().collect();
+        let mut first_error = None;
+        for id in tasks {
+            if let Err(err) = self.cancel_one(id) {
+                first_error.get_or_insert(err);
+            }
+        }
+        for lock in self.locks.values_mut() {
+            lock.shutdown();
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
     /// Called ONLY after a trusted scheduler proves that this guest task has
     /// stopped executing protected code. Do not call this at cancel request.
     /// Normal return, exceptional unwind and cancellation share this path.
@@ -613,6 +637,10 @@ impl HostTaskLockKernel {
     }
     fn cancel(&self, who: Continuation) -> Result<(), Error> {
         self.try_with_core(|core| core.cancel_tree(who))
+    }
+    /// Host-only STOP; no guest can force retirement by requesting shutdown.
+    fn shutdown(&self) -> Result<(), Error> {
+        self.try_with_core(|core| core.shutdown_domain())
     }
     /// This must only be invoked by a scheduler after its actual guest code
     /// has stopped touching leased memory. It is NOT an untrusted guest call.
