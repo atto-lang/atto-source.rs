@@ -9,7 +9,7 @@
 
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 const CANDIDATE_SOURCES: [(&str, usize, &str); 4] = [
     ("stdlib/core/byte_bounds.atto", 726, "7465eb4b8e3325957d47fd0fc92206e75231c1ad140b5605cec56c5262cb5c7e"),
@@ -110,6 +110,7 @@ pub(crate) fn preflight(tokens: &[Token]) -> Result<(), Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     const EXAMPLE: &str = r#"import module buffer from pkg "std.buffer";
 pub fnc main(): int throws Error {
