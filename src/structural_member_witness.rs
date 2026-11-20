@@ -74,6 +74,8 @@ pub struct SourceMethod {
 #[derive(Clone, Debug)]
 pub struct RequiredMembers {
     pub kind: RequiredKind,
+    /// Trusted requesting TenantVM context, never supplied by guest code.
+    pub tenant_vm_id: u64,
     /// Exported instance fields, NOT private/protected/class statics.
     pub fields: Vec<RequiredField>,
     pub methods: Vec<MethodContract>,
@@ -85,6 +87,8 @@ pub struct RequiredMembers {
 
 #[derive(Clone, Debug)]
 pub struct SourceMembers {
+    /// Trusted concrete source TenantVM context, never supplied by guest code.
+    pub tenant_vm_id: u64,
     /// An ordinary concrete class, struct, Record, Tuple or Map.
     pub shape: SourceShape,
     pub methods: Vec<SourceMethod>,
@@ -103,6 +107,7 @@ pub struct MethodWitness {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructuralMemberWitness {
+    pub tenant_vm_id: u64,
     pub source_nominal_id: u32,
     pub layout_epoch: u64,
     pub region_loan_id: u64,
@@ -121,6 +126,7 @@ pub enum MemberError {
     IncompatibleMethod,
     AmbiguousMethod,
     UnverifiedDispatch,
+    TenantBoundary,
     TupleArity,
     TupleElementType,
     MapElementType,
@@ -206,6 +212,11 @@ fn check_declarations(
         }) {
             return Err(MemberError::InvalidDeclaration);
         }
+    }
+    if actual.tenant_vm_id == 0 || required.tenant_vm_id == 0
+        || actual.tenant_vm_id != required.tenant_vm_id
+    {
+        return Err(MemberError::TenantBoundary);
     }
     if actual.shape.sealed_actor_state {
         return Err(MemberError::Shape(ShapeError::SealedActorState));
@@ -312,6 +323,7 @@ pub fn prove_structural_members(
     witnesses.sort_by(|a,b| a.name.cmp(&b.name)
         .then(a.dispatch_slot.cmp(&b.dispatch_slot)));
     Ok(StructuralMemberWitness {
+        tenant_vm_id: actual.tenant_vm_id,
         source_nominal_id: actual.shape.source_nominal_id,
         layout_epoch: actual.shape.layout_epoch,
         region_loan_id: actual.shape.region_loan_id,
