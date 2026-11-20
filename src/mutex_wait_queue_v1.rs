@@ -538,4 +538,67 @@ mod tests {
         assert!(!q.has_outstanding_grant());
         assert_eq!(q.cancel(t), Err(Error::Closed));
     }
+    #[test]
+    fn pending_waiter_cancellation_never_releases_an_active_task_guard() {
+        let mut locks = BTreeMap::new();
+        locks.insert(1, queue(3));
+        let mut active_scope = TaskLeaseStack::new(c(1));
+        let owner = owned(locks.get_mut(&1).unwrap().acquire(c(1)).unwrap());
+        active_scope.enter(1, locks.get_mut(&1).unwrap(), owner).unwrap();
+        let waiting = pending(locks.get_mut(&1).unwrap().acquire(c(2)).unwrap());
+        assert_eq!(locks.get_mut(&1).unwrap().cancel(waiting), Ok(Cancellation::Queued));
+        assert!(locks.get(&1).unwrap().has_active_lease());
+        assert!(locks.get(&1).unwrap().has_outstanding_grant());
+        assert_eq!(locks.get_mut(&1).unwrap().take_wakeup(), None);
+        // A pending waiter's cancellation must not unlock another owner's guard.
+        active_scope.request_cancel(&mut locks).unwrap();
+        assert!(locks.get(&1).unwrap().has_active_lease());
+        assert_eq!(locks.get_mut(&1).unwrap().claim(waiting), Err(Error::StaleTicket));
+        assert_eq!(active_scope.unwind_after_safe_point(&mut locks).unwrap(), vec![1]);
+        assert_eq!(locks.get_mut(&1).unwrap().take_wakeup(), None);
+        assert!(!locks.get(&1).unwrap().has_outstanding_grant());
+    }
+
+    #[test]
+    fn task_guard_cleanup_on_normal_exit_is_lifo_and_idempotent() {
+        let mut locks = BTreeMap::new();
+        locks.insert(1, queue(2));
+        locks.insert(2, queue(2));
+        let mut scope = TaskLeaseStack::new(c(1));
+        for id in [1_u64, 2_u64] {
+            let q = locks.get_mut(&id).unwrap();
+            let grant = owned(q.acquire(c(1)).unwrap());
+            scope.enter(id, q, grant).unwrap();
+        }
+        // Scoped cleanup applies to successful return as well as cancellation.
+        assert_eq!(scope.unwind_after_safe_point(&mut locks).unwrap(), vec![2, 1]);
+        assert_eq!(scope.unwind_after_safe_point(&mut locks).unwrap(), Vec::<u64>::new());
+        assert!(scope.all_local_locks_released());
+        for id in [1_u64, 2_u64] {
+            assert!(!locks.get(&id).unwrap().has_outstanding_grant());
+        }
+    }
+
+    #[test]
+    fn cancellation_validation_failure_keeps_existing_guard_fenced() {
+        let mut locks = BTreeMap::new();
+        locks.insert(1, queue(2));
+        locks.insert(2, queue(2));
+        let mut scope = TaskLeaseStack::new(c(1));
+        for id in [1_u64, 2_u64] {
+            let q = locks.get_mut(&id).unwrap();
+            let grant = owned(q.acquire(c(1)).unwrap());
+            scope.enter(id, q, grant).unwrap();
+        }
+        locks.remove(&2); // inject loss of a required cleanup dependency
+        assert_eq!(scope.request_cancel(&mut locks), Err(Error::StaleTicket));
+        assert!(locks.get(&1).unwrap().has_active_lease());
+        assert!(!locks.get(&1).unwrap().cancellation_pending());
+        assert!(!scope.all_local_locks_released());
+        // This mock is NOT permission to retire the Task or unlock a live guard.
+        assert_eq!(scope.unwind_after_safe_point(&mut locks), Err(Error::StaleTicket));
+        assert!(!locks.get(&1).unwrap().has_outstanding_grant());
+        assert!(!scope.all_local_locks_released());
+    }
+
 }
