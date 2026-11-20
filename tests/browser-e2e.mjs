@@ -204,6 +204,8 @@ try{
   for (const filename of [
     '208-v2-actor-channel-actor-pipe.atto',
     '209-v2-actor-channel-actor-rpipe.atto',
+    '217-v2-declared-port-pipe.atto',
+    '218-v2-declared-port-rpipe.atto',
   ]) {
     const guest = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const observed = await run(guest, 'main() -> 42');
