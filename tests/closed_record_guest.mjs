@@ -72,6 +72,11 @@ const positives=[
  ['pub fnc main(): int {val Record r=(abc="foo",xyz=true,foo=5);return r.foo;}',5n,''],
  ['pub fnc main(): int {val Pair<int,bool> p=5=>true;val Entry<int,bool> e=40=>true;return p.first+e.key-3;}',42n,''],
  ['pub fnc main(): int {val Pair<int,bool> p=Pair.of(40,true);val Entry<int,bool> e=Entry.of(2,false);return p.first+e.key;}',42n,'']
+,
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true,8=>false,9=>true);return m[9] == true ? 42 : 0;}',42n,''],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(Entry.of(5,true),Entry.of(8,false));return m[5] == true ? 42 : 0;}',42n,''],
+ ['pub fnc main(): int {val m=Map.of_entries(5=>true,8=>false);return m[5] == true ? 42 : 0;}',42n,''],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>();return 42;}',42n,'']
 ];
 const negatives=[
  ['pub fnc main(): int {val Record<{a:int,b:bool}> x=Record.of(a=42);return x.a;}','E_NO_FIELD'],
@@ -101,6 +106,11 @@ const negatives=[
  ['pub fnc main(): int {val Pair<int,bool> p=5=>42;return 0;}','E_TYPE'],
  ['pub fnc main(): int {val List<int> xs=[1,"bad"];return 0;}','E_TYPE'],
  ['pub fnc main(): int {val Map<int,string> xs={"a"=>"bad"};return 0;}','E_TYPE']
+,
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5,true);return 0;}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true,5=>false);return 0;}','E_DUPLICATE'],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true,8=>"bad");return 0;}','E_TYPE'],
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(5=>true);return 0;}','E_UNSUPPORTED']
 ];
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
