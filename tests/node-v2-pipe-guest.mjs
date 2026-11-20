@@ -19,6 +19,8 @@ const cases=[
   ['pass/220-v2-checked-actor-channel-actor-rpipe.atto',false],
   ['pass/221-v2-checked-setup-rollback.atto',false],
   ['pass/222-v2-checked-setup-output-occupied.atto',false],
+  ['pass/222-v2-checked-output-occupied-rollback.atto',false],
+  ['pass/223-v2-checked-input-occupied-rollback.atto',false],
   ['pass/217-v2-declared-port-pipe.atto',false],
   ['pass/218-v2-declared-port-rpipe.atto',false],
   ['panic/210-v2-pipe-double-attach.atto',true],
