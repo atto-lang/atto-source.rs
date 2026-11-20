@@ -98,10 +98,11 @@ cargo test --test shape_witness_contract -- --nocapture
 cargo test --lib
 ```
 
-The integration suite includes public/all-member compliance, effect and
+The 16-case Rust integration suite includes public/all-member compliance, effect and
 permission negatives, borrow/async receiver safety, overload ambiguity,
 cross-nominal field offsets, tuple exact arity, Map key-snapshot planning,
-stale loan rejection, and TenantVM mismatch. All results must be associated
+stale loan rejection, method-only malformed receiver layouts, duplicated concrete
+method slots, and TenantVM mismatch. All results must be associated
 with the **exact tested source SHA**. GitHub workflows failing with no job
 steps are **NOT_EXECUTED**, not compiler test failures or PASS.
 
