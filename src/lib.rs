@@ -31,7 +31,8 @@ fn has_explicit_async_frontend(toks: &[lexer::Token]) -> bool {
         matches!(
             (&pair[0].tok, &pair[1].tok),
             (lexer::Tok::Ident(effect), lexer::Tok::Ident(kind))
-                if effect == "suspends" && (kind == "fnc" || kind == "routine")
+                if (effect == "suspends" || effect == "susp")
+                    && (kind == "fnc" || kind == "routine")
         )
     })
 }
