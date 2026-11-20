@@ -124,3 +124,30 @@ test('sink failure is checked, not a silent success, and terminal',async()=>{
   assert.deepEqual(await host.stdio.out.writech('oops'),{ok:false,error:{kind:'SinkFailure'}});
   assert.deepEqual(await host.stdio.out.writech('again'),{ok:false,error:{kind:'SinkFailure'}});
 });
+
+
+test('generation and quota configuration fail closed before acquiring input',()=>{
+  assert.throws(()=>mk(chunks(),{generation:0}),/generation/);
+  assert.throws(()=>mk(chunks(),{generation:-1}),/generation/);
+  assert.throws(()=>mk(chunks(),{generation:1.25}),/generation/);
+  assert.throws(()=>mk(chunks(),{maxRecordBytes:Infinity}),/quota/);
+  assert.throws(()=>mk(chunks(),{maxPendingBytes:0}),/quota/);
+});
+
+test('revocation rejects queued writes but retains an already-admitted write outcome',async()=>{
+  let complete;
+  const written=[];
+  const sink=async bytes=>{
+    written.push(new TextDecoder().decode(bytes));
+    await new Promise(resolve=>{complete=resolve});
+  };
+  const {host}=mk(chunks(),{stdout:sink});
+  const admitted=host.stdio.out.writech('admitted');
+  const waiting=host.stdio.out.writech('queued');
+  host.revoke();
+  assert.deepEqual(await waiting,{ok:false,error:{kind:'Revoked'}});
+  complete();
+  assert.deepEqual(await admitted,{ok:true,value:undefined});
+  assert.deepEqual(await host.stdio.out.writech('denied'),{ok:false,error:{kind:'Revoked'}});
+  assert.deepEqual(written,['admitted']);
+});
