@@ -6,6 +6,7 @@ on:
       - 'src/lib.rs'
       - 'tests/list_pattern_guest.rs'
       - 'tests/list-pattern-guest-execution.mjs'
+      - 'scripts/verify-list-pattern-guest.sh'
       - 'tests/fixtures/pass/list-pattern-*.atto'
       - '.github/workflows/list-pattern-guest.yml'
   pull_request:
@@ -14,6 +15,7 @@ on:
       - 'src/lib.rs'
       - 'tests/list_pattern_guest.rs'
       - 'tests/list-pattern-guest-execution.mjs'
+      - 'scripts/verify-list-pattern-guest.sh'
       - 'tests/fixtures/pass/list-pattern-*.atto'
       - '.github/workflows/list-pattern-guest.yml'
 permissions:
@@ -40,11 +42,7 @@ jobs:
           rustup component add clippy --toolchain 1.85.1
           rustup default 1.85.1
           rustc --version
-      - name: Production Rust compiler and fail-closed tests
-        run: |
-          cargo test --locked --test list_pattern_guest --test typed_seq_fragment_admission --test sequence_v2_fail_closed --test sequence_v2_ellipsis_lexer
-          cargo clippy --locked --all-targets -- -D warnings
-      - name: Compile production attoc
-        run: cargo build --locked --release --bin attoc
-      - name: Execute produced guest Wasm and no-artifact negatives
-        run: ATTOC=target/release/attoc node tests/list-pattern-guest-execution.mjs
+      - name: Verify checked Rust compiler and execute generated guest Wasm
+        env:
+          ATTO_EXPECT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash scripts/verify-list-pattern-guest.sh
