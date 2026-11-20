@@ -1,6 +1,6 @@
 // expect-panic: 10
 // A stopped consumer cannot acquire an incoming DATA edge or spawn a bridge.
-define actor Consumer as
+define actor Consumer receives int as
   receive(ActorMail<int> mail): void { stdio.println(mail.value); return; }
 end
 pub suspends fnc main(): int {
