@@ -9,7 +9,7 @@ self.onmessage=async()=>{
     }
     const output=[],error=[];
     const port=new StdioTextHostV1({
-      generation:7,
+      generation:7,tenantId:'chromium-stdio-probe',
       stdin:injectedInput(),
       stdout:async bytes=>{output.push(new TextDecoder().decode(bytes))},
       stderr:async bytes=>{error.push(new TextDecoder().decode(bytes))},
