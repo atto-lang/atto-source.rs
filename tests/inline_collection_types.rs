@@ -106,7 +106,6 @@ fn wrong_collection_kinds_and_item_types_reject_before_wasm() {
 fn static_typing_success_is_not_wasm_execution() {
     for s in [
         "let Record foo = {bar: []};",
-        "let Map foo = {\"1\" => 1};",
         "let List foo = [];",
         "let Array<Record> foo = [{job: 1}];",
         "let Tuple foo = ();",
@@ -117,6 +116,12 @@ fn static_typing_success_is_not_wasm_execution() {
         let err = compile(&source).expect_err("guest lowering is deliberately blocked");
         assert_eq!(err.code,"E_UNSUPPORTED","{s}: {err}");
     }
+}
+
+#[test]
+fn statically_keyed_scalar_map_values_now_have_a_real_guest() {
+    let wasm = compile("fnc main(): int {let Map foo = {\"1\" => 42};return foo[\"1\"];}").expect("owned static Map guest");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
 
 #[test]
