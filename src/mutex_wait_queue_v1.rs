@@ -354,6 +354,10 @@ struct TaskScopeLockCoordinator {
     closed: bool,
     tasks: BTreeMap<u64, ScopeTask>,
     locks: BTreeMap<u64, WaitQueue>,
+    /// Trusted scheduler-only ready queue: no guest can mint a ready receipt.
+    /// Bounded by the total number of registered tasks.
+    ready: VecDeque<Continuation>,
+    ready_ids: BTreeMap<u64, Continuation>,
 }
 impl TaskScopeLockCoordinator {
     const MAX_TASKS: usize = 1024;
@@ -361,7 +365,11 @@ impl TaskScopeLockCoordinator {
     const MAX_TASK_PERMITS: usize = 256;
 
     fn new(domain: Domain) -> Self {
-        Self { domain, closed: false, tasks: BTreeMap::new(), locks: BTreeMap::new() }
+        Self {
+            domain, closed: false, tasks: BTreeMap::new(),
+            locks: BTreeMap::new(), ready: VecDeque::new(),
+            ready_ids: BTreeMap::new(),
+        }
     }
     fn add_lock(&mut self, id: u64, queue: WaitQueue) -> Result<(), Error> {
         if self.closed { return Err(Error::Closed); }
@@ -431,6 +439,9 @@ impl TaskScopeLockCoordinator {
     fn enter(&mut self, who: Continuation, lock_id: u64, token: Ticket)
         -> Result<(), Error> {
         self.registered(who)?;
+        // A task on the ready queue is NOT yet executing. Only the trusted
+        // scheduler's pop_ready() may transition it back to running.
+        if self.ready_ids.contains_key(&who.logical_task) { return Err(Error::NotQuiescent); }
         let (tasks, locks) = (&mut self.tasks, &mut self.locks);
         let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
         if task.cancel_requested || task.guest_exited { return Err(Error::CancellationPending); }
@@ -577,6 +588,7 @@ impl TaskScopeLockCoordinator {
     /// Normal return, exceptional unwind and cancellation share this path.
     fn guest_exited_at_safe_point(&mut self, who: Continuation) -> Result<Vec<u64>, Error> {
         self.registered(who)?;
+        if self.ready_ids.contains_key(&who.logical_task) { return Err(Error::NotQuiescent); }
         let (tasks, locks) = (&mut self.tasks, &mut self.locks);
         let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
         if task.guest_exited { return Err(Error::AlreadyClaimed); }
@@ -674,6 +686,70 @@ impl TaskScopeLockCoordinator {
         self.tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?
             .notifications_drained = true;
         Ok(())
+    }
+    /// Atomically transfer cancellation/grant notifications into the
+    /// scheduler's bounded ready queue. This is one serialized host arbiter
+    /// transaction: never acknowledge a lock grant before ready admission.
+    /// Cancel notices have priority over grants for the same continuation;
+    /// a task is never queued twice. No guest code executes in this method.
+    fn admit_parked_wakes_to_ready(&mut self) -> Result<usize, Error> {
+        let mut additions: Vec<(Continuation, Option<(u64, Ticket)>)> = Vec::new();
+        // A cancellation wake is warranted only for a physically parked task.
+        for task in self.tasks.values() {
+            if task.cancel_requested && task.lock_wait_cancel_wake
+                && task.parked_lock.is_some() && !task.guest_exited
+                && !self.ready_ids.contains_key(&task.continuation.logical_task)
+            {
+                additions.push((task.continuation, None));
+            }
+        }
+        for (&lock_id, lock) in &self.locks {
+            if let Some(token) = lock.wakeup {
+                let who = token.continuation;
+                if self.ready_ids.contains_key(&who.logical_task)
+                    || additions.iter().any(|(other, _)| *other == who) {
+                    continue;
+                }
+                if self.tasks.get(&who.logical_task).is_some_and(|task|
+                    task.continuation == who
+                    && task.parked_lock == Some((lock_id, token))
+                    && !task.cancel_requested && !task.guest_exited
+                ) {
+                    additions.push((who, Some((lock_id, token))));
+                }
+            }
+        }
+        // Check capacity BEFORE modifying either the ready ledger or a grant.
+        if self.ready.len().checked_add(additions.len())
+            .is_none_or(|n| n > Self::MAX_TASKS) {
+            return Err(Error::Exhausted);
+        }
+        let admitted = additions.len();
+        for (who, grant) in additions {
+            let task = self.tasks.get_mut(&who.logical_task)
+                .ok_or(Error::UnknownTask)?;
+            // Cancel status may coexist with a parked ticket, but its actual
+            // waiter/grant was already revoked by cancel_one().
+            task.parked_lock = None;
+            task.lock_wait_cancel_wake = false;
+            if let Some((lock_id, token)) = grant {
+                let lock = self.locks.get_mut(&lock_id).ok_or(Error::StaleTicket)?;
+                if lock.wakeup != Some(token) { return Err(Error::StaleTicket); }
+                lock.wakeup = None;
+            }
+            self.ready_ids.insert(who.logical_task, who);
+            self.ready.push_back(who);
+        }
+        Ok(admitted)
+    }
+
+    /// Return one runnable continuation to the trusted scheduler; this pop is
+    /// the only ready->running transition. A cancellation can win while the
+    /// task is queued; the resumed continuation must check it at safe point.
+    fn pop_ready(&mut self) -> Option<Continuation> {
+        let who = self.ready.pop_front()?;
+        self.ready_ids.remove(&who.logical_task);
+        Some(who)
     }
     /// Public Task DONE cannot be published from just a cancellation flag or
     /// guest-return bit. All active guards, waiters, descendants and callbacks
@@ -814,6 +890,14 @@ impl HostTaskLockKernel {
     }
     fn terminal(&self, who: Continuation) -> Result<Option<TaskExitKind>, Error> {
         self.try_with_core(|core| core.exit_kind(who))
+    }
+    /// Bounded ready admission and grant acknowledgement in one transaction.
+    /// Never exposes raw grants or cancellation requests to untrusted guest.
+    fn pump_ready(&self) -> Result<usize, Error> {
+        self.try_with_core(|core| core.admit_parked_wakes_to_ready())
+    }
+    fn next_ready(&self) -> Result<Option<Continuation>, Error> {
+        self.try_with_core(|core| Ok(core.pop_ready()))
     }
     /// Level-triggered cancellation wake hints. The caller may schedule any
     /// listed continuation again until its trusted guest-exit receipt arrives.
