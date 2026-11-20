@@ -617,9 +617,11 @@ impl TaskScopeLockCoordinator {
     fn guest_exited_at_safe_point(&mut self, who: Continuation) -> Result<Vec<u64>, Error> {
         self.registered(who)?;
         if self.ready_ids.contains_key(&who.logical_task) { return Err(Error::NotQuiescent); }
-        let (tasks, locks) = (&mut self.tasks, &mut self.locks);
-        let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
-        if task.guest_exited { return Err(Error::AlreadyClaimed); }
+        // Finish the terminal claim inside an isolated mutable borrow.
+        // Descendant traversal must occur only after that borrow ends.
+        {
+            let task = self.tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
+            if task.guest_exited { return Err(Error::AlreadyClaimed); }
         // A task physically suspended on a lock cannot have independently
         // completed successful guest execution. The trusted runtime must
         // first cancel it, or deliver/claim its wake and resume it. Treat
@@ -640,21 +642,19 @@ impl TaskScopeLockCoordinator {
         // Cancellation notification is a scheduler hint, not a live guard.
         task.parked_lock = None;
         task.lock_wait_cancel_wake = false;
+        }
         // Lexical TaskScope exit MUST cancel unfinished descendants, even
         // when the parent itself returned successfully. Otherwise discarded
         // children continue running after their scope and may strand locks.
         // Claim the parent's terminal outcome first (so cancelling a child
         // does not turn a successful parent into TaskCancelled), fence future
         // child admission, then request transitive child cancellation.
-        let child_ids: Vec<u64> = tasks.iter()
+        let child_ids: Vec<u64> = self.tasks.iter()
             .filter_map(|(id, child)| {
                 (child.parent == Some(who.logical_task) && !child.physically_retired)
                     .then_some(*id)
             })
             .collect();
-        // Release the local task's mutable borrow before recursively
-        // cancelling children through the same trusted serialized arbiter.
-        let _ = task;
         let mut failure = None;
         for id in child_ids {
             let child = self.tasks.get(&id).ok_or(Error::UnknownTask)?.continuation;
@@ -819,11 +819,19 @@ impl HostTaskLockKernel {
         if domain.tenant == 0 || domain.actor == 0 || domain.incarnation == 0 {
             return Err(Error::ForeignDomain);
         }
-        let scope_id = NEXT_KERNEL_SCOPE.fetch_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |n| n.checked_add(1),
-        ).map_err(|_| Error::Exhausted)?;
+        // Use a checked CAS loop rather than deprecated fetch_update, and
+        // never wrap scope generations when the monotonic counter exhausts.
+        let mut observed = NEXT_KERNEL_SCOPE.load(std::sync::atomic::Ordering::Relaxed);
+        let scope_id = loop {
+            let next = observed.checked_add(1).ok_or(Error::Exhausted)?;
+            match NEXT_KERNEL_SCOPE.compare_exchange_weak(
+                observed, next, std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => break observed,
+                Err(actual) => observed = actual,
+            }
+        };
         Ok(Self {
             core: std::sync::Mutex::new(TaskScopeLockCoordinator::new(domain)),
             scope_id,
