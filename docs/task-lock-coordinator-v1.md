@@ -1,8 +1,8 @@
 # TaskScope and Mutex cancellation bridge (restricted reference v1)
 
-**Status: HOST-ONLY. NOT compiled guest, production scheduler, physical-retirement proof, or TenantVM certification.**
+**Status: PRIVATE NATIVE HOST KERNEL (code authored, tests not yet executed). NOT a compiled AttoLang guest, active production scheduler integration, physical-retirement proof, or TenantVM certification.**
 
-The private TaskScopeLockCoordinator in src/mutex_wait_queue_v1.rs ties a logical task identity and its lexical parent to the existing bounded mutex waiter arbiter and TaskLeaseStack. src/lib.rs still enables this model ONLY in Rust unit-test builds. This is an implementation checkpoint, not permission to enable guest task/Mutex compilation.
+The private TaskScopeLockCoordinator in src/mutex_wait_queue_v1.rs ties a logical task identity and its lexical parent to the existing bounded mutex waiter arbiter and TaskLeaseStack. src/lib.rs compiles the private kernel for the native Rust host, but intentionally excludes it from wasm32 browser-compiler builds. No untrusted guest import/call path is wired, and no guest task/Mutex execution is enabled. This is an implementation checkpoint, not permission to enable guest task/Mutex compilation.
 
 ## Contract implemented in this reference model
 
@@ -15,7 +15,7 @@ The private TaskScopeLockCoordinator in src/mutex_wait_queue_v1.rs ties a logica
 - Keep a parent-held guard's release ahead of waiting for child retirement; this avoids joining a child that is waiting for that same mutex.
 - Reject wrong tenant, actor/incarnation, forged task segment, revoked or duplicate lock grant.
 
-## Seven new task-scope race tests
+## TaskScope and host-runtime regression coverage
 
 1. Cancelled parent and active-guard child cannot retire early or hand off until safe release.
 2. Cancellation of a queued waiter leaves the active holder's guard untouched.
@@ -24,6 +24,8 @@ The private TaskScopeLockCoordinator in src/mutex_wait_queue_v1.rs ties a logica
 5. Missing cleanup dependency blocks retirement while independent guards are attempted.
 6. Parent releases its guard before joining a cancelled child that was waiting for it.
 7. A cancelled parent cannot spawn more children; forged tenant/segment identities fail closed.
+
+The module also contains an internal HostTaskLockKernel, which serializes trusted metadata with try_lock (returns AdmissionBusy instead of parking a scheduler carrier), uses host-issued task/lock IDs, and reserves unique generation epochs for each mutex. This prevents cross-mutex replay of identical task/sequence tickets. Trusted host STOP requests cancel all tasks and waiters before closing queues; claimed guards remain held until safe-point cleanup. Further regression tests cover nonparking arbiter contention, cancellation of a child while preserving an unrelated sibling, task/scope epoch separation, cancellation-versus-claim, tenant STOP, cross-mutex ticket replay, and duplicate-generation denial.
 
 There is also an added compiler test in tests/mutex_fast_guest_profile.rs: guest programs combining Task, Future.cancel and Mutex must keep failing closed until scheduler and lifetime proofs exist.
 
@@ -43,3 +45,10 @@ There is also an added compiler test in tests/mutex_fast_guest_profile.rs: guest
 - Compile and EXECUTE exact source-pinned cancellation/lock guests and nine lifecycle probes in atto-platform-conformance PR #115, with actual physical-retirement and cleanup receipts. Do not move NOT_EXECUTED backends to PASS on the strength of this reference model.
 
 References: atto-spec PRs #125/#129, atto-source.rs issue #428 and PR #416, atto-platform-conformance PR #115.
+
+## Latest CI runner admission blocker (2026-11-20)
+
+- The original source organization and temporary private [usa-acc carrier #6](https://github.com/usa-acc/atto-ci/pull/6) failed before executing steps. That carrier mirrors an **earlier exact source blob**; it is not a test receipt for the latest bridge.
+- A new private [scintilla-run admission probe PR #6](https://github.com/scintilla-run/atto-ci/pull/6), [run #44681240718](https://github.com/scintilla-run/atto-ci/actions/runs/44681240718), also failed with zero executed steps. No source was copied to this second carrier.
+- Recent Actions checks in several additional Atto private carriers likewise recorded no executed steps. Do not treat a workflow's failure status as a compiler/test failure, or any authored test as a pass.
+- Next verification must execute cargo test and clippy on the exact source head and run real compiler-to-Wasm guest tests before guest support or parity claims.
