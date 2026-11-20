@@ -8,6 +8,10 @@ const REVERSE: &str = include_str!("fixtures/pass/209-v2-actor-channel-actor-rpi
 const DOUBLE: &str = include_str!("fixtures/panic/210-v2-pipe-double-attach.atto");
 const RENDEZVOUS: &str = include_str!("fixtures/panic/211-v2-pipe-rendezvous-denial.atto");
 const INPUT_OCCUPIED: &str = include_str!("fixtures/panic/212-v2-pipe-duplicate-consumer.atto");
+const STOPPED_PRODUCER: &str = include_str!("fixtures/panic/213-v2-pipe-stopped-producer.atto");
+const CLOSED_CHANNEL: &str = include_str!("fixtures/panic/214-v2-pipe-closed-channel.atto");
+const STOPPED_CONSUMER: &str = include_str!("fixtures/panic/215-v2-pipe-stopped-consumer.atto");
+const STOPPED_ACTOR_SINK: &str = include_str!("fixtures/panic/216-v2-pipe-stopped-actor-sink.atto");
 
 #[test]
 fn real_compiler_emits_independent_wasm_guests_for_both_directional_graphs() {
@@ -23,7 +27,15 @@ fn real_compiler_emits_independent_wasm_guests_for_both_directional_graphs() {
 fn executable_negative_fixtures_also_compile_to_guests_that_must_trap() {
     // Runtime graph-admission failure cannot be inferred from compiler
     // rejection. Chromium must execute these guests and observe panic 10.
-    for (name, source) in [("double", DOUBLE), ("rendezvous", RENDEZVOUS), ("input_occupied", INPUT_OCCUPIED)] {
+    for (name, source) in [
+        ("double", DOUBLE),
+        ("rendezvous", RENDEZVOUS),
+        ("input_occupied", INPUT_OCCUPIED),
+        ("stopped_producer", STOPPED_PRODUCER),
+        ("closed_channel", CLOSED_CHANNEL),
+        ("stopped_consumer", STOPPED_CONSUMER),
+        ("stopped_actor_sink", STOPPED_ACTOR_SINK),
+    ] {
         let guest = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("{name} must reach runtime: {e}"));
         assert!(guest.starts_with(b"\0asm\x01\0\0\0"), "{name} is not Wasm");
