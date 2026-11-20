@@ -2251,8 +2251,17 @@ impl Parser {
             }
             Some("match") => self.parse_match(false),
             Some("do") if self.word_at(1) == Some("sync") && self.word_at(2) == Some("task") => {
-                self.advance(); // discard the inline result without spawning
+                self.advance(); // 'do' permits only a void inline task, never a Future.
                 let e = self.parse_primary()?;
+                let ExprKind::InlineTask { declared_type, value } = &e.kind else {
+                    return Err(Diagnostic::new(pos, "E_SYNTAX", "expected 'sync task' after 'do'"));
+                };
+                // 'do' does not silently discard a non-void result. Both the
+                // explicit generic and any inferred return must be void.
+                if declared_type.is_some_and(|ty| ty != Type::Void) || value.is_some() {
+                    return Err(Diagnostic::new(pos, "E_TYPE",
+                        "'do sync task' requires a void body and only permits <void> as its type argument"));
+                }
                 self.terminator()?;
                 Ok(Stmt::Expr(e))
             }
@@ -2328,13 +2337,9 @@ impl Parser {
                     pos,
                 }))
             }
-            Some("sync") if self.word_at(1) == Some("task") => {
-                // Inline expression-statement form executes on the same caller
-                // with its result discarded; it is not a child Future.
-                let e = self.parse_expr()?;
-                self.terminator()?;
-                Ok(Stmt::Expr(e))
-            }
+            Some("sync") if self.word_at(1) == Some("task") =>
+                Err(Diagnostic::new(pos, "E_SYNTAX",
+                    "standalone sync task requires 'do sync task'; a value-producing sync task must be used as an expression")),
             Some("trap") => {
                 // Caller-side trap also works in expression-statement position.
                 let e = self.parse_expr()?;

@@ -18,16 +18,31 @@ fn contextual_keywords() {
 }
 #[test]
 fn inline_empty_and_scalar_return_profiles() {
-    admit("pub fnc main(): int { sync task {}; return 42; }");
     admit("pub fnc main(): int { do sync task {}; return 42; }");
-    admit("pub fnc main(): int { sync task<void> {}; return 42; }");
-    admit("pub fnc main(): int { sync task { return; }; return 42; }");
+    admit("pub fnc main(): int { do sync task<void> {}; return 42; }");
+    admit("pub fnc main(): int { do sync task { return; }; return 42; }");
+    admit("pub fnc main(): int { do sync task<void> { return; }; return 42; }");
     admit("pub fnc main(): int { val x = sync task<int> { return 40 + 2; }; return x; }");
     admit("pub fnc main(): int { val x = sync task { return 42; }; return x; }");
     admit("pub fnc main(): int { val x = 40; return sync task<int> { return x + 2; }; }");
-    admit("pub fnc main(): int { do sync task<int> { return 7; }; return 42; }");
+    admit("pub fnc main(): int { do sync task {}; val result = sync task<int> { return 40 + 2; }; do sync task {}; return result; }");
     admit("pub fnc main(): int { val x = sync task<bool> { return true; }; return 42; }");
 }
+#[test]
+fn require_do_and_void_only_for_discarded_inline_tasks() {
+    // Standalone task syntax cannot silently discard even a void result.
+    reject("pub fnc main(): int { sync task {}; return 42; }", "E_SYNTAX");
+    reject("pub fnc main(): int { sync task<void> {}; return 42; }", "E_SYNTAX");
+    reject("pub fnc main(): int { sync task<int> { return 42; }; return 0; }", "E_SYNTAX");
+    // The 'do' form cannot have a value-producing type parameter or body,
+    // even when the caller would otherwise discard the result.
+    reject("pub fnc main(): int { do sync task<int> { return 7; }; return 42; }", "E_TYPE");
+    reject("pub fnc main(): int { do sync task<int> {}; return 42; }", "E_TYPE");
+    reject("pub fnc main(): int { do sync task<bool> {}; return 42; }", "E_TYPE");
+    reject("pub fnc main(): int { do sync task { return 7; }; return 42; }", "E_TYPE");
+    reject("pub fnc main(): int { do sync task<void> { return 7; }; return 42; }", "E_TYPE");
+}
+
 #[test]
 fn fail_closed_type_effect_and_cleanup_boundaries() {
     reject("pub fnc main(): int { val x = sync task<int> { return true; }; return 42; }", "E_TYPE");

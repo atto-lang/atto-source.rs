@@ -8,15 +8,24 @@ import { fileURLToPath } from 'node:url';
 
 const attoc = process.env.ATTOC || fileURLToPath(new URL('../target/debug/attoc', import.meta.url));
 const pass = [
-  ['sync task {}; return 42;', 42n],
   ['do sync task {}; return 42;', 42n],
-  ['sync task<void> {}; return 42;', 42n],
+  ['do sync task<void> {}; return 42;', 42n],
+  ['do sync task { return; }; return 42;', 42n],
+  ['do sync task<void> { return; }; return 42;', 42n],
   ['val x = sync task<int> { return 40 + 2; }; return x;', 42n],
   ['val x = 40; return sync task<int> { return x + 2; };', 42n],
-  ['do sync task<int> { return 7; }; return 42;', 42n],
+  ['do sync task {}; val result = sync task<int> { return 40 + 2; }; do sync task {}; return result;', 42n],
   ['val x = sync task<bool> { return true; }; return 42;', 42n],
 ];
 const fail = [
+  ['sync task {}; return 42;', 'E_SYNTAX'],
+  ['sync task<void> {}; return 42;', 'E_SYNTAX'],
+  ['sync task<int> { return 42; }; return 42;', 'E_SYNTAX'],
+  ['do sync task<int> {}; return 42;', 'E_TYPE'],
+  ['do sync task<bool> {}; return 42;', 'E_TYPE'],
+  ['do sync task<int> { return 7; }; return 42;', 'E_TYPE'],
+  ['do sync task { return 7; }; return 42;', 'E_TYPE'],
+  ['do sync task<void> { return 7; }; return 42;', 'E_TYPE'],
   ['val x = sync task<int> { return true; }; return 42;', 'E_TYPE'],
   ['val x = sync task<int> { val y = 42; return y; }; return x;', 'E_UNSUPPORTED'],
   ['val x = sync task<int> { return stdio.println(42); }; return x;', 'E_UNSUPPORTED'],
