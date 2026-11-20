@@ -284,3 +284,18 @@ fn implicit_non_pub_main_remains_a_native_entry_point() {
         42,
     );
 }
+
+
+#[test]
+fn return_first_bullet_and_arrow_brace_and_end_forms_execute_native() {
+    // Run real compiled/linkable scalar guests, not AST/MIR-only checks.
+    for header in [
+        "int <- main()", "int• main()",
+        "fnc int <- main()", "fnc int • main()",
+    ] {
+        for body in ["{ return 42; }", "begin return 42; end", "return 42; end"] {
+            let source = format!("{header} {body}");
+            run_guest(&source, 42);
+        }
+    }
+}

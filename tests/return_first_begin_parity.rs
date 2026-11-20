@@ -33,8 +33,6 @@ fn scalar_helpers_are_callable_through_return_first_declarations() {
 #[test]
 fn malformed_or_unlowerable_return_first_declarations_fail_closed() {
     for source in [
-        "int <- main() begin return 42; end",
-        "int <- main()\nbegin return 42;\nend",
         "int <- main()\nbegin\nreturn 42;",
         "fnc int <- main() -> int\nbegin\nreturn 42;\nend",
         "int <- main()\nbegin\nreturn 42;\nend..",
@@ -59,4 +57,35 @@ fn trivia_and_newline_boundaries_are_enforced() {
     let duplicate = parse("int <- main()\nbegin\nreturn 42;\nend;\nfnc main(): int {return 0;}").unwrap();
     let error = oreslang_source_rs::mir::lower(duplicate).unwrap_err();
     assert_eq!(error.class, "duplicate_declaration");
+}
+
+
+#[test]
+fn return_first_bullet_and_arrow_allow_all_named_callable_body_families() {
+    for header in [
+        "int <- main()", "int• main()",
+        "fnc int <- main()", "fnc int • main()",
+    ] {
+        for body in [
+            "{ return 42; }",
+            "begin return 42; end",
+            "return 42; end",
+        ] {
+            let source = format!("{header} {body}");
+            let program = parse(&source).expect(&source);
+            assert_eq!(program.functions.len(), 1);
+            assert_eq!(program.functions[0].expression, Expr::Integer(42));
+            let mir = oreslang_source_rs::mir::lower(program).expect("validated scalar MIR");
+            assert_eq!(mir.functions[0].symbol, "main");
+            assert_eq!(mir.functions[0].return_value, Expr::Integer(42));
+        }
+    }
+}
+
+#[test]
+fn return_first_rejects_unicode_bullet_lookalikes_and_split_arrow() {
+    for header in ["int · main()", "int ∙ main()", "int < - main()"] {
+        let source = format!("{header} {{ return 42; }}");
+        assert!(parse(&source).is_err(), "must reject {source:?}");
+    }
 }
