@@ -1879,4 +1879,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn host_kernel_parking_cannot_forge_success_or_task_retirement() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let owner = kernel.issue(None).unwrap();
+        let blocked = kernel.issue(None).unwrap();
+        let lock = kernel.add_mutex(3).unwrap();
+        let active = owned(kernel.acquire(owner, lock).unwrap());
+        kernel.claim(owner, lock, active).unwrap();
+        let ticket = pending(kernel.acquire(blocked, lock).unwrap());
+        kernel.park_lock_wait(blocked, lock, ticket).unwrap();
+
+        assert_eq!(kernel.trusted_exit(blocked), Err(Error::NotQuiescent));
+        assert_eq!(kernel.terminal(blocked).unwrap(), None);
+        assert_eq!(kernel.try_retire(blocked), Err(Error::NotQuiescent));
+        kernel.cancel(blocked).unwrap();
+        assert_eq!(kernel.cancelled_continuation_wake_hints().unwrap(), vec![blocked]);
+        assert_eq!(kernel.trusted_exit(blocked).unwrap(), Vec::<u64>::new());
+        assert_eq!(kernel.terminal(blocked).unwrap(), Some(TaskExitKind::Cancelled));
+        kernel.trusted_notifications_drained(blocked).unwrap();
+        kernel.try_retire(blocked).unwrap();
+
+        assert_eq!(kernel.trusted_exit(owner).unwrap(), vec![lock]);
+        kernel.trusted_notifications_drained(owner).unwrap();
+        kernel.try_retire(owner).unwrap();
+    }
+
 }
