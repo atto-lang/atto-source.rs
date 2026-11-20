@@ -28,13 +28,13 @@ fn error(at: Pos, code: &'static str, message: impl Into<String>) -> Diagnostic 
     Diagnostic::new(at, code, message)
 }
 
-fn item_field(index: usize) -> String {
+pub(crate) fn item_field(index: usize) -> String {
     // Deliberately not an Atto identifier, so source '.item_0' cannot expose
     // the checked guest ABI or bypass the bounds-checked index operation.
     format!("\u{1f}index_{index}")
 }
 
-fn scalar_type(ty: &LiteralType, at: Pos) -> Result<Type, Diagnostic> {
+pub(crate) fn scalar_type(ty: &LiteralType, at: Pos) -> Result<Type, Diagnostic> {
     match ty {
         LiteralType::Int => Ok(Type::Int),
         LiteralType::Bool => Ok(Type::Bool),
@@ -59,7 +59,7 @@ fn default_value(ty: Type, at: Pos) -> Expr {
     Expr { pos: at, kind }
 }
 
-fn generated_class(name: String, types: &[LiteralType], at: Pos) -> Result<ClassDecl, Diagnostic> {
+pub(crate) fn generated_class(name: String, types: &[LiteralType], at: Pos) -> Result<ClassDecl, Diagnostic> {
     let mut fields = Vec::with_capacity(types.len());
     let mut params = Vec::with_capacity(types.len());
     let mut body = Vec::with_capacity(types.len());
