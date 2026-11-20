@@ -1,0 +1,13 @@
+// expect-error: E_TYPE
+define actor Producer as
+  receive(ActorMail<int> mail): void { return; }
+end
+define actor Consumer as
+  receive(ActorMail<int> mail): void { return; }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val bad = producer pipe consumer;
+  return 0;
+}
