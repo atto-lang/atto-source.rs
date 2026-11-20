@@ -22,10 +22,11 @@ pub suspends fnc main(): int {
   val Result<PipeHandle, PipeSetupError> rejected =
       producer pipe channel pipe consumer;
   val int failed = match rejected over
-    on Err(_) -> 1,
+    on Err(error) -> error.code(),
     on Ok(_) -> 0,
   end;
-  if failed != 1 then return 91; fi
+  // 3 = a closed/stopped DATA endpoint. Error was returned, not trapped.
+  if failed != 3 then return 91; fi
   val live = spawn Consumer();
   val Result<PipeHandle, PipeSetupError> connection =
       producer pipe channel pipe live;
