@@ -57,6 +57,45 @@ Supervisor priority CONTROL is runtime-authenticated and excluded from both
 application clauses. No runtime topology, fan-out count or delivery ACK
 guarantee is inferred from the declared types.
 
+## Candidate UTF-8 DATA framing primitive (not connected to guest)
+
+`src/actor_string_mail.rs` supplies a bounded, strictly validated host-independent
+frame for future `ActorMail<string>` admission. The exact byte layout is:
+
+| Offset | Field | Encoding |
+| --- | --- | --- |
+| 0–3 | Magic | ASCII `ATAM` |
+| 4 | Version | `1` |
+| 5 | Application payload kind | `1` = UTF-8 string DATA only |
+| 6–9 | Payload byte length | unsigned 32-bit little-endian |
+| 10 onward | Payload | exact, validated UTF-8 bytes |
+
+A frame is limited to **65,546 bytes** including the ten-byte header; zero-length
+strings are valid, while mismatched lengths, trailing bytes, wrong tags,
+malformed UTF-8 and forged lengths must be rejected. The decoder returns an
+owned `String` independent of the frame buffer. This deliberately grants **no**
+mailbox, actor, tenant, sequence, or supervisor CONTROL authority. Distinct
+Unicode byte spellings are not normalized or aliased.
+
+This module is only a **candidate codec**, not a published network format or
+source-level runtime ABI. It is not called by the Wasm compiler's actor send,
+the Web Worker host mailbox, the worker memory copying bridge, or guest
+`receive`. An acceptance of the original `receives string` source sample
+remains **forbidden** until bounded cross-memory admission, guest decoding,
+end-to-end ownership, and real compiled guest execution are implemented.
+Do not reuse the separately proposed `Job<T>` envelope protocol as if it
+were an `ActorMail<string>` DATA frame.
+
+Standalone unit test (local Rust toolchain or authorized CI runner):
+
+```sh
+rustc --edition=2021 --test -D warnings src/actor_string_mail.rs -o /tmp/atto-actor-string-mail-tests
+/tmp/atto-actor-string-mail-tests
+```
+
+**Evidence status: NOT_EXECUTED** until a trusted stepful runner produces
+an exact-commit test receipt. Host codec tests do not prove guest transport.
+
 ## Verification gates
 
 - A real pinned Rust compiler must build and compile the new positive fixture.
