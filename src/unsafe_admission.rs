@@ -403,6 +403,71 @@ mod tests {
     }
 
     #[test]
+    fn forged_nested_expression_lambdas_are_denied_before_lowering() {
+        use crate::ast::{ClassDecl, Expr, ExprKind, Field, FieldBinding,
+            FieldMode, FieldVisibility, LambdaBody, Stmt, Type};
+        let pos = Pos { line: 7, col: 3 };
+        let unsafe_lambda = || Expr {
+            kind: ExprKind::Lambda {
+                params: vec![], return_type: None,
+                body: LambdaBody::Block(vec![Stmt::UnsafeBlock {
+                    body: vec![Stmt::Return(None, pos)], pos,
+                }]),
+            },
+            pos,
+        };
+        let safe_tokens = lexer::lex("pub fnc main(): int { return 42; }").unwrap();
+        let mut program = crate::parser::Parser::new(safe_tokens)
+            .parse_program().unwrap();
+
+        // Previously the top-level AST admission only descended into
+        // statement bodies. An unsafe block nested in an expression-valued
+        // closure was invisible to that early pass.
+        for expression in [
+            unsafe_lambda(),
+            Expr { kind: ExprKind::Call("unresolved".into(),
+                vec![unsafe_lambda()]), pos },
+            Expr { kind: ExprKind::MethodCall(
+                Box::new(Expr { kind: ExprKind::Var("obj".into()), pos }),
+                "unresolved".into(), vec![unsafe_lambda()]), pos },
+            Expr { kind: ExprKind::Array(vec![unsafe_lambda()]), pos },
+        ] {
+            program.funcs[0].body = vec![Stmt::Expr(expression)];
+            let err = crate::check::check(&program).unwrap_err();
+            assert_eq!(err.code, "E_UNSAFE_DOMAIN");
+            assert_eq!(err.pos, pos);
+        }
+
+        program.funcs[0].body = vec![Stmt::Return(Some(
+            Expr { kind: ExprKind::Int(Some(42)), pos }), pos)];
+        program.classes.push(ClassDecl {
+            name: "Forged".into(), pos, public: false, state_container: false,
+            fields: vec![Field {
+                name: "value".into(), pos, ty: Type::Int,
+                visibility: FieldVisibility::Private,
+                mode: FieldMode::Final, binding: FieldBinding::Val,
+                referent_mutable: false, init: Some(unsafe_lambda()),
+            }],
+            ctor: None, methods: vec![],
+        });
+        let err = crate::check::check(&program).unwrap_err();
+        assert_eq!(err.code, "E_UNSAFE_DOMAIN");
+        assert_eq!(err.pos, pos);
+    }
+
+    #[test]
+    fn forged_ast_visits_are_bounded_even_without_unsafe_keyword() {
+        use crate::ast::Stmt;
+        let pos = Pos { line: 1, col: 1 };
+        let safe_tokens = lexer::lex("pub fnc main(): int { return 42; }").unwrap();
+        let mut program = crate::parser::Parser::new(safe_tokens)
+            .parse_program().unwrap();
+        program.funcs[0].body = vec![Stmt::Return(None, pos); 65_537];
+        let err = crate::check::check(&program).unwrap_err();
+        assert_eq!(err.code, "E_SOURCE_LIMIT");
+    }
+
+    #[test]
     fn direct_production_parser_entry_also_denies_unsafe_guest() {
         let toks = lexer::lex("pub fnc main(): int { unsafe { } return 42; }").unwrap();
         let mut parser = crate::parser::Parser::new(toks);
