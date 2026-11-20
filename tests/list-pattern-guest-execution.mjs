@@ -16,6 +16,9 @@ const cases=[
   ['list-pattern-guard-once-0.atto',0n,[5n,-1n,5n,10n,20n,30n]],
   ['list-pattern-infix-30.atto',30n,[5n,10n,20n,30n,40n,50n]],
   ['list-pattern-anchored-no-match-7.atto',7n,[3n,10n,20n,30n]],
+  ['list-pattern-full-width-1.atto',1n,[3n,10n,20n,30n]],
+  ['list-pattern-leftmost-3.atto',3n,[3n,1n,2n,3n]],
+  ['list-pattern-max-length-32.atto',32n,[32n,1n,2n,3n,4n,5n,6n,7n,8n,9n,10n,11n,12n,13n,14n,15n,16n,17n,18n,19n,20n,21n,22n,23n,24n,25n,26n,27n,28n,29n,30n,31n,32n]],
 ];
 const sha=buf=>createHash('sha256').update(buf).digest('hex');
 const compile=(input,output)=>spawnSync(compiler,[input,'-o',output],{
@@ -74,7 +77,10 @@ try {
     ['malformed-list',base.replace('10, 20, 30, 40, 50','10, 20,'),'E_PATTERN_SOURCE'],
     ['unlowered-counted',base.replace('..., is int as val a','...(3 of int), is int as val a'),'E_UNSUPPORTED'],
     ['unlowered-fragment',base.replace('..., is int as val a','pattern.of<int>("..."), is int as val a'),'E_UNSUPPORTED'],
-    ['unlowered-nested-rest',base.replace('..., is int as val a','..., ..., is int as val a'),'E_UNSUPPORTED'],
+    ['unlowered-nested-rest',base.replace('..., is int as val a','..., ..., is int as val a'),'E_PATTERN_SOURCE'],
+    ['reserved-subject',base.replace('val items: List<int>','val match: List<int>').replace('match<int> items over','match<int> match over'),'E_RESERVED'],
+    ['reserved-capture',base.replace('is int as val a','is int as val return').replace('a + b + c','return + b + c'),'E_RESERVED'],
+    ['unlowered-interior-rest',base.replace('is int as val b, is int as val c','is int as val b, ..., is int as val c'),'E_UNSUPPORTED'],
   ];
   for(const [name,source,diagnostic] of negatives){
     const input=join(root,name+'.atto');
@@ -106,5 +112,5 @@ try {
     assert.deepEqual(readFileSync(output),sentinel,
       'failed compilation must preserve an existing user file unchanged');
   }
-  console.log('LIST_PATTERN_COMPILED_GUEST=PASS positives=4 overflow_panics=1 negatives=7');
+  console.log('LIST_PATTERN_COMPILED_GUEST=PASS positives=7 overflow_panics=1 negatives=10');
 }finally {rmSync(root,{recursive:true,force:true});}
