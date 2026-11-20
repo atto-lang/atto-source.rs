@@ -225,6 +225,10 @@ impl Builder {
             Stmt::Block(body) => {
                 self.nested(body, Pos::default())?;
             }
+            Stmt::UnsafeBlock { pos, .. } => {
+                return Err(Diagnostic::new(*pos, "E_UNSAFE_DOMAIN",
+                    "generator continuation lowering cannot execute unsafe code"));
+            }
             Stmt::ForIn { pos, .. } => {
                 return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
                     "for-in inside generator requires iterator lifetime/close lowering"));
