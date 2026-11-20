@@ -155,3 +155,87 @@ fn empty_record_factory_is_static_but_not_a_guest_allocation_profile() {
         "E_UNSUPPORTED",
     );
 }
+
+
+#[test]
+fn explicit_closed_record_row_annotations_compile_with_canonical_field_slots() {
+    let source = r#"
+        pub fnc main(): int {
+          val Record<{z: bool, a: int}> first = Record.of(z=true, a=40);
+          val Record<{a: int, z: bool}> second = Record.of(a=2, z=false);
+          return first.a + second.a;
+        }
+    "#;
+    let p = parsed(source);
+    let checked = collection_types::analyze(&p).expect("closed row has checked field types");
+    assert_eq!(checked[0].value.ty, checked[1].value.ty);
+    assert_eq!(checked[0].value.source_to_record_slot, vec![1, 0]);
+    assert_eq!(checked[1].value.source_to_record_slot, vec![0, 1]);
+    let wasm = compile(source).expect("closed scalar row must have checked guest ABI");
+    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert_eq!(wasm, compile(source).expect("deterministic closed row ABI"));
+}
+
+#[test]
+fn explicit_row_annotations_preserve_quoted_utf8_field_names() {
+    let source = r#"
+        pub fnc main(): int {
+          val Record<{"x,y<>": int, "": bool, "über": int}> r =
+            Record.of("über": 2, "": true, "x,y<>": 40);
+          return r["x,y<>"] + r["über"];
+        }
+    "#;
+    let p = parsed(source);
+    let checked = collection_types::analyze(&p).expect("quoted UTF-8 row type");
+    assert_eq!(checked[0].value.source_to_record_slot, vec![2, 0, 1]);
+    assert!(compile(source).expect("quoted closed row guest").starts_with(b"\\0asm"));
+}
+
+#[test]
+fn explicit_row_types_use_contextual_inference_but_nested_values_fail_closed() {
+    let p = parsed(r#"
+        pub fnc main(): int {
+          val Record<{items: Array<int>}> r = Record.of(items=Array.of());
+          return 0;
+        }
+    "#);
+    let checked = collection_types::analyze(&p).expect("array element inferred from row field type");
+    assert_eq!(checked[0].value.ty, LiteralType::Record(vec![(
+        "items".into(), LiteralType::Array(Box::new(LiteralType::Int))
+    )]));
+    // Nested arrays are not yet a verified guest Record ABI.
+    rejected(r#"
+        pub fnc main(): int {
+          val Record<{items: Array<int>}> r = Record.of(items=Array.of());
+          return 0;
+        }
+    "#, "E_UNSUPPORTED");
+}
+
+#[test]
+fn explicit_record_row_shape_errors_never_emit_guest_code() {
+    rejected(r#"pub fnc main(): int {
+        val Record<{a: int, b: bool}> r = Record.of(a=42);
+        return r.a;
+    }"#, "E_NO_FIELD");
+    rejected(r#"pub fnc main(): int {
+        val Record<{a: int}> r = Record.of(a=42, extra=true);
+        return r.a;
+    }"#, "E_NO_FIELD");
+    rejected(r#"pub fnc main(): int {
+        val Record<{a: string}> r = Record.of(a=42);
+        return 0;
+    }"#, "E_TYPE");
+    rejected(r#"pub fnc main(): int {
+        val Record<{a: int, "a": int}> r = Record.of(a=42);
+        return 0;
+    }"#, "E_DUPLICATE");
+    rejected(r#"pub fnc main(): int {
+        val Record<{name: string, ...}> r = Record.of(name="Atto");
+        return 0;
+    }"#, "E_TYPE");
+    rejected(r#"pub fnc main(): int {
+        val Record<int> r = Record.of(value=1);
+        return 0;
+    }"#, "E_TYPE_ARITY");
+}

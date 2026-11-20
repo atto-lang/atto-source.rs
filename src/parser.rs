@@ -447,7 +447,55 @@ impl Parser {
                 // browser profile; never misread '<' as an expression comparison.
                 let generic = self.eat(&Tok::Lt);
                 let mut args = Vec::new();
-                if generic {
+                // A closed Record's sole generic argument is a *type-level row*,
+                // not a list of homogeneous value parameters. Serialize labels
+                // as UTF-8 hex in the compiler-private type identity so names
+                // containing punctuation, commas or angle brackets stay safe.
+                let mut closed_row = None;
+                if generic && builtin == "Record" && self.eat(&Tok::LBrace) {
+                    let mut fields: Vec<(String, String)> = Vec::new();
+                    if !self.eat(&Tok::RBrace) {
+                        loop {
+                            if fields.len() >= MAX_PARAMS {
+                                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                                    "closed Record type exceeds the field limit"));
+                            }
+                            let at = self.pos();
+                            let label = match self.peek().clone() {
+                                Tok::Ident(name) | Tok::Str(name) => name,
+                                _ => return Err(Diagnostic::new(at, "E_TYPE",
+                                    "closed Record type needs a static field label; open rows are not yet supported")),
+                            };
+                            self.advance();
+                            self.expect(Tok::Colon, "':' after Record type field")?;
+                            let field_type = self.parse_type()?;
+                            let type_spelling = match field_type {
+                                Type::Named(i) | Type::NamedRef(i) | Type::Callable(i) =>
+                                    self.type_names[i as usize].0.clone(),
+                                other => other.name().to_string(),
+                            };
+                            if fields.iter().any(|(name, _)| *name == label) {
+                                return Err(Diagnostic::new(at, "E_DUPLICATE",
+                                    "duplicate closed Record type field"));
+                            }
+                            fields.push((label, type_spelling));
+                            if self.eat(&Tok::Comma) {
+                                if self.eat(&Tok::RBrace) { break; }
+                            } else {
+                                self.expect(Tok::RBrace, "'}' after Record type fields")?;
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Tok::Gt, "'>' after closed Record type")?;
+                    fields.sort_by(|a, b| a.0.cmp(&b.0));
+                    let row = fields.into_iter().map(|(label, ty)| {
+                        let hex = label.as_bytes().iter()
+                            .map(|byte| format!("{byte:02x}")).collect::<String>();
+                        format!("{hex}:{ty}")
+                    }).collect::<Vec<_>>().join(",");
+                    closed_row = Some(format!("{{{row}}}"));
+                } else if generic {
                     if *self.peek() == Tok::Gt {
                         return Err(Diagnostic::new(self.pos(), "E_TYPE_ARITY",
                             format!("{builtin} does not accept an empty generic argument list")));
@@ -469,7 +517,7 @@ impl Parser {
                     self.expect(Tok::Gt, "'>' to close collection type arguments")?;
                 }
                 let correct_arity = match builtin {
-                    "Record" => !generic,
+                    "Record" => !generic || closed_row.is_some(),
                     "Array" | "List" => !generic || args.len() == 1,
                     "Map" => !generic || args.len() == 2,
                     "Tuple" => !generic || !args.is_empty(),
@@ -479,10 +527,11 @@ impl Parser {
                     return Err(Diagnostic::new(pos, "E_TYPE_ARITY",
                         format!("incorrect number of generic type arguments for {builtin}")));
                 }
-                // Inaccessible sentinel spelling: parser recognizes syntax but
-                // guest collection allocation/layout is deliberately not lowered.
-                // Its resolution in check.rs always fails closed.
-                let spelling = if generic {
+                // Internal type identity only. It never authorizes a host object
+                // or bypasses checked guest allocation and ownership.
+                let spelling = if let Some(row) = closed_row {
+                    format!("@builtin/Record<{row}>")
+                } else if generic {
                     format!("@builtin/{builtin}<{}>", args.join(","))
                 } else {
                     format!("@builtin/{builtin}")
