@@ -371,6 +371,39 @@ mod tests {
     }
 
     #[test]
+    fn actual_production_ast_retains_unsafe_blocks_and_callable_flags() {
+        use crate::ast::Stmt;
+        let source = "pub unsafe fnc trusted(): int { return 42; }\\n\
+                      pub fnc main(): int { unsafe { unsafe { return trusted(); } } }";
+        let tokens = lexer::lex(source).unwrap();
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program_for_unsafe_analysis().unwrap();
+        assert_eq!(program.funcs.len(), 2);
+        assert!(program.funcs[0].is_unsafe);
+        assert!(!program.funcs[1].is_unsafe);
+        let Stmt::UnsafeBlock { body, pos } = &program.funcs[1].body[0] else {
+            panic!("real source AST must preserve unsafe");
+        };
+        assert!(pos.line >= 1);
+        assert!(matches!(&body[0], Stmt::UnsafeBlock { .. }));
+        let err = crate::check::check(&program)
+            .expect_err("forged or analysis-only AST may not produce browser guest");
+        assert_eq!(err.code, "E_UNSAFE_DOMAIN");
+    }
+
+    #[test]
+    fn parser_analysis_rejects_direct_unsafe_call_without_lexical_scope() {
+        let src = "pub unsafe fnc trusted(): int { return 42; } pub fnc main(): int { return trusted(); }";
+        let mut parser = crate::parser::Parser::new(lexer::lex(src).unwrap());
+        assert_eq!(parser.parse_program_for_unsafe_analysis()
+                   .unwrap_err().code, "E_UNSAFE_CONTEXT");
+        let src = "pub unsafe fnc trusted(): int { return 42; } pub fnc main(): int { unsafe { return trusted(); } }";
+        let mut parser = crate::parser::Parser::new(lexer::lex(src).unwrap());
+        let ast = parser.parse_program_for_unsafe_analysis().unwrap();
+        assert!(matches!(&ast.funcs[1].body[0], crate::ast::Stmt::UnsafeBlock { .. }));
+    }
+
+    #[test]
     fn direct_production_parser_entry_also_denies_unsafe_guest() {
         let toks = lexer::lex("pub fnc main(): int { unsafe { } return 42; }").unwrap();
         let mut parser = crate::parser::Parser::new(toks);
