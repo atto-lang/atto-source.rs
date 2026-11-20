@@ -1560,6 +1560,7 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
         TExpr::AdtPropagate { .. } |
         TExpr::SleepMs(_) | TExpr::Barrier(_) | TExpr::TaskStart(_) |
         TExpr::TaskAwait(_) | TExpr::AwaitYield(_) | TExpr::ChannelRead { .. } |
+        TExpr::StdioRead { .. } | TExpr::StdioWrite { .. } |
         TExpr::ChannelOpen { .. } | TExpr::ChannelTrySend { .. } |
         TExpr::ChannelStatus { .. } => false,
     }
@@ -1628,6 +1629,9 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         TExpr::AdtIs { obj, .. } | TExpr::AdtPayload(obj) => any_in(obj, f),
         TExpr::AdtPropagate { source, .. } => any_in(source, f),
         TExpr::Print { value, .. } | TExpr::PrintStrVal { value, .. } => any_in(value, f),
+        TExpr::StdioRead { channel, .. } => any_in(channel, f),
+        TExpr::StdioWrite { endpoint, value, .. } =>
+            any_in(endpoint, f) || any_in(value, f),
         TExpr::FieldGet { obj, .. } | TExpr::StateFieldRead { obj, .. } |
         TExpr::PrintObj { obj, .. } => any_in(obj, f),
         TExpr::Send { target, value } => any_in(target, f) || any_in(value, f),
