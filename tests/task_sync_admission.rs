@@ -27,6 +27,44 @@ fn typed_task_and_sync_aliases_never_fall_into_wrong_lowering() {
 }
 
 #[test]
+fn inline_sync_not_reinterpreted_as_spawn_or_await_without_verified_lowering() {
+    // TARGET: sync task executes in the caller's TaskId, with no independent
+    // child admission, Future handle, worker dispatch, or synthetic join.
+    // This compiler branch has no authenticated inline MIR or cleanup proof:
+    // reject BEFORE producing guest Wasm, even for purely scalar bodies.
+    rejected_source(
+        "pub fnc main(): int { val int x = sync task<int> { return 42; }; return x; }",
+    );
+    rejected_source(
+        "pub susp fnc main(): int { val int x = sync task<int> { return 42; }; return x; }",
+    );
+    // TARGET: 'do sync task' must execute inline and discard only the result;
+    // never accept it as a silently rewritten 'do task' child spawn.
+    rejected_source(
+        "pub fnc main(): int { do sync task<int> { return 1; }; return 42; }",
+    );
+    // A nested independent task is allowed only when the async runtime,
+    // suspension effect, capture and physical retirement proofs are live.
+    rejected_source(
+        "pub susp fnc main(): int { val int x = sync task<int> { return await task<int> { return 42; }; }; return x; }",
+    );
+}
+
+#[test]
+fn sync_inline_lexical_effects_and_order_must_not_be_faked() {
+    // Direct parent-local access and source-ordered effects are not evidence
+    // of a Future, and cannot be replaced with a schedulable child.
+    rejected_source(
+        "pub susp fnc main(): int { val int x = sync task<int> { stdio.println(7); return 42; }; stdio.println(9); return x; }",
+    );
+    // A non-susp enclosing function can only admit transitive non-susp
+    // inline effects once the compiler has proven cleanup and no hidden yield.
+    rejected_source(
+        "pub fnc main(): int { val int x = sync task<int> { return 40 + 2; }; return x; }",
+    );
+}
+
+#[test]
 fn reserved_sync_cannot_be_local_variable() {
     let d = compile("pub fnc main(): int { val sync = 42; return sync; }")
         .expect_err("reserved sync must not become a user variable");
