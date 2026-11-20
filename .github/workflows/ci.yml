@@ -31,7 +31,7 @@ jobs:
       - name: Verify Worker-owned Channel<int> host contract and keyword-only pipe reference oracle
         run: |
           node --version
-          node --test tests/channel_int_host_v1.test.mjs tests/endpoint_pipe_oracle.mjs
+          node --test tests/channel_int_host_v1.test.mjs tests/channel_int_guest_v1.test.mjs tests/endpoint_pipe_oracle.mjs
       - name: Test injected UTF-8 stdio host boundary (NOT an Atto guest)
         run: node --test tests/stdio_text_host_v1.test.mjs
       - name: Run checked per-tenant stdio JSPI import contract tests
