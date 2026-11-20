@@ -8,6 +8,7 @@
 
 use crate::ast::{Expr, ExprKind, Program, Stmt, Type, UnOp};
 use crate::diag::{Diagnostic, Pos};
+use std::collections::BTreeMap;
 
 pub const MAX_LITERAL_DEPTH: usize = 128;
 
@@ -18,6 +19,7 @@ pub enum LiteralType {
     Bool,
     Float,
     String,
+    Symbol,
     /// A polymorphic element slot in an empty collection; never a dynamic Any.
     Bottom,
     /// The built-in open Record supertype. Access requires a shape/presence guard.
@@ -25,6 +27,8 @@ pub enum LiteralType {
     /// Preserved concrete field-name -> field-type structure.
     Record(Vec<(String, LiteralType)>),
     Map(Box<LiteralType>, Box<LiteralType>),
+    /// Nominal immutable Map Entry. Never a Tuple or anonymous Record.
+    Entry(Box<LiteralType>, Box<LiteralType>),
     List(Box<LiteralType>),
     Array(Box<LiteralType>),
     /// Unparameterized Tuple accepts any arity; not the same as ().
@@ -108,6 +112,7 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
         "bool" => LiteralType::Bool,
         "float" => LiteralType::Float,
         "string" => LiteralType::String,
+        "Symbol" => LiteralType::Symbol,
         "Record" => LiteralType::OpenRecord,
         "Array" => LiteralType::Array(Box::new(LiteralType::Bottom)),
         "List" => LiteralType::List(Box::new(LiteralType::Bottom)),
@@ -126,6 +131,8 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
                 ("List", [item]) => LiteralType::List(Box::new(item.clone())),
                 ("Map", [key, value]) =>
                     LiteralType::Map(Box::new(key.clone()), Box::new(value.clone())),
+                ("Entry", [key, value]) =>
+                    LiteralType::Entry(Box::new(key.clone()), Box::new(value.clone())),
                 ("Tuple", values) if !values.is_empty() => LiteralType::Tuple(values.to_vec()),
                 _ => return Err(diag(pos, "E_TYPE_ARITY",
                     format!("unsupported collection constructor/arity in '{name}'"))),
@@ -163,7 +170,8 @@ fn compatible(actual: &LiteralType, expected: &LiteralType) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|((na,ta),(nb,tb))|
                 na == nb && compatible(ta,tb)),
         (Array(a), Array(b)) | (List(a), List(b)) => compatible(a,b),
-        (Map(ka, va), Map(kb, vb)) => compatible(ka,kb) && compatible(va,vb),
+        (Map(ka, va), Map(kb, vb)) |
+        (Entry(ka, va), Entry(kb, vb)) => compatible(ka,kb) && compatible(va,vb),
         (Tuple(_), AnyTuple) => true,
         (Tuple(a), Tuple(b)) =>
             a.len() == b.len() && a.iter().zip(b).all(|(x,y)| compatible(x,y)),
@@ -182,6 +190,8 @@ fn common(a: LiteralType, b: LiteralType, at: Pos) -> Result<LiteralType, Diagno
         (List(a), List(b)) => Ok(List(Box::new(common(*a, *b, at)?))),
         (Array(a), Array(b)) => Ok(Array(Box::new(common(*a, *b, at)?))),
         (Map(ka,va), Map(kb,vb)) => Ok(Map(
+            Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
+        (Entry(ka,va), Entry(kb,vb)) => Ok(Entry(
             Box::new(common(*ka,*kb,at)?), Box::new(common(*va,*vb,at)?))),
         (Tuple(a), Tuple(b)) if a.len() == b.len() =>
             Ok(Tuple(a.into_iter().zip(b).map(|(x,y)| common(x,y,at))
@@ -219,6 +229,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
+        ExprKind::Symbol(_) => Symbol,
         ExprKind::Unary(UnOp::Neg, v) if matches!(&v.kind, ExprKind::Int(_)) => {
             // The exact signed-minimum literal is represented as i64::MAX+1.
             if let ExprKind::Int(Some(n)) = &v.kind {
@@ -272,6 +283,27 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             Record(typed_fields)
         }
+        ExprKind::Entry(key, value) => {
+            let (wanted_k, wanted_v) = match expected {
+                Some(Entry(k,v)) => (k.as_ref().clone(),v.as_ref().clone()),
+                None => (Bottom,Bottom),
+                _ => return Err(diag(e.pos,"E_TYPE",
+                    "Entry<K,V> cannot be coerced into a Map, Record or Tuple")),
+            };
+            let key_node = inferred(key,
+                if wanted_k == Bottom {None} else {Some(&wanted_k)}, depth+1)?;
+            let value_node = inferred(value,
+                if wanted_v == Bottom {None} else {Some(&wanted_v)}, depth+1)?;
+            let key_ty = if wanted_k == Bottom {key_node.ty.clone()} else {wanted_k};
+            let value_ty = if wanted_v == Bottom {value_node.ty.clone()} else {wanted_v};
+            if !matches!(key_ty, Int | Bool | String | Symbol) {
+                return Err(diag(e.pos,"E_MAP_KEY",
+                    "Entry key requires a stable scalar Hash/Eq type"));
+            }
+            children.push(key_node);
+            children.push(value_node);
+            Entry(Box::new(key_ty),Box::new(value_ty))
+        }
         ExprKind::Map(entries) => {
             let (wanted_k, wanted_v) = match expected {
                 Some(Map(k,v)) => (k.as_ref().clone(), v.as_ref().clone()),
@@ -289,7 +321,7 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
             }
             let key_ty = if wanted_k == Bottom { keys } else { wanted_k };
             let val_ty = if wanted_v == Bottom { vals } else { wanted_v };
-            if !matches!(key_ty, Int | Bool | String | Bottom) {
+            if !matches!(key_ty, Int | Bool | String | Symbol | Bottom) {
                 return Err(diag(e.pos, "E_MAP_KEY",
                     "this profile permits only scalar hashable map key types"));
             }
@@ -348,7 +380,7 @@ pub fn static_record_field_type(
 
 fn starts_literal(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
-        ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
+        ExprKind::Map(_) | ExprKind::Entry(_, _) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
 }
 
 /// Staged semantic preflight: checked declarations are *not* yet executable.
@@ -361,7 +393,7 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
             Stmt::Bind {name, ty,init,pos,..} => {
                 let wanted = ty.map(|t| annotation(t,program,*pos)).transpose()?.flatten();
                 if wanted.as_ref().is_some_and(|t| matches!(t, LiteralType::Array(_) |
-                    LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::OpenRecord |
+                    LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::Entry(_,_) | LiteralType::OpenRecord |
                     LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
                     || starts_literal(init)
                 {
