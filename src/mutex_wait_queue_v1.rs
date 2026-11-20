@@ -825,7 +825,14 @@ impl HostTaskLockKernel {
             let mut out = Vec::with_capacity(core.locks.len());
             for (&lock_id, lock) in &core.locks {
                 if let Some(ticket) = lock.wakeup {
-                    out.push((lock_id, ticket));
+                    // Never schedule a task whose continuation is still
+                    // executing because its queue ticket alone is not a
+                    // trusted suspension receipt.
+                    let parked = core.tasks.get(&ticket.continuation.logical_task)
+                        .is_some_and(|task| task.continuation == ticket.continuation
+                            && task.parked_lock == Some((lock_id, ticket))
+                            && !task.cancel_requested && !task.guest_exited);
+                    if parked { out.push((lock_id, ticket)); }
                 }
             }
             Ok(out)
@@ -1848,10 +1855,10 @@ mod tests {
         // A scheduler that has not parked the task cannot acknowledge its
         // lock notification, even if the queue has a valid generation.
         kernel.trusted_guard_scope_exit(holder, mutex).unwrap();
-        assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, second)]);
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
         assert_eq!(kernel.acknowledge_grant_wake_hint(mutex, second),
             Err(Error::StaleTicket));
-        assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, second)]);
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
         assert_eq!(kernel.park_lock_wait(waiter, mutex, second),
             Err(Error::StaleTicket)); // Already granted: cannot park.
         // The still-running continuation can claim the grant directly.
