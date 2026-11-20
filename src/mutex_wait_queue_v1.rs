@@ -407,6 +407,12 @@ impl TaskScopeLockCoordinator {
             if owner.cancel_requested || owner.guest_exited || owner.physically_retired {
                 return Err(Error::CancellationPending);
             }
+            // A parked or ready-but-undispatched parent cannot execute a
+            // child-spawn instruction. Do not trust stale host callbacks to
+            // mint child capabilities for a non-running continuation.
+            if owner.parked_lock.is_some() || self.ready_ids.contains_key(&p.logical_task) {
+                return Err(Error::NotQuiescent);
+            }
             Some(p.logical_task)
         } else { None };
         self.tasks.insert(who.logical_task, ScopeTask {
@@ -424,6 +430,12 @@ impl TaskScopeLockCoordinator {
     fn acquire(&mut self, who: Continuation, lock_id: u64) -> Result<Admission, Error> {
         let task = self.registered(who)?;
         if task.cancel_requested || task.guest_exited { return Err(Error::CancellationPending); }
+        // A suspended or ready-but-not-dispatched task cannot run another
+        // guest acquire expression. Admission would create a second ticket
+        // without a legal continuation executing that instruction.
+        if task.parked_lock.is_some() || self.ready_ids.contains_key(&who.logical_task) {
+            return Err(Error::NotQuiescent);
+        }
         let permits = task.waiting.len() + task.unclaimed.len() + task.guards.held.len();
         if permits >= Self::MAX_TASK_PERMITS { return Err(Error::Exhausted); }
         let admission = self.locks.get_mut(&lock_id).ok_or(Error::StaleTicket)?.acquire(who)?;
