@@ -81,5 +81,5 @@ fn consuming_take_cannot_be_sent_through_void_admission_abi() {
 fn scalar_send_without_take_retains_existing_guest_compilation() {
     let source = BASE.replace("return 0; }",
         "val value = 42; val worker = spawn Worker(); worker.send(value); return 0; }");
-    assert!(compile(&source).expect("copyable scalar send remains allowed").starts_with(b"\\0asm"));
+    assert!(compile(&source).expect("copyable scalar send remains allowed").starts_with(b"\0asm"));
 }
