@@ -3216,6 +3216,29 @@ impl Parser {
                     }
                 }
                 Tok::LBracket => return Err(unsupported(self.pos(), "indexing")),
+                // A terminal `source >>` is a postfix, value-producing read.
+                // Lower to the *same* AST as prefix `<< source` / readch.
+                // The final token must delimit the expression: `source >> val x`
+                // is a separate read-binding statement, and `>>>` is a shift.
+                Tok::Gt if *self.peek_at(1) == Tok::Gt => {
+                    let first = self.pos();
+                    let second = self.toks[self.i + 1].pos;
+                    let contiguous = first.line == second.line
+                        && first.col.checked_add(1) == Some(second.col);
+                    let terminal = matches!(self.peek_at(2),
+                        Tok::RParen | Tok::RBracket | Tok::Comma | Tok::Semi);
+                    if !contiguous || !terminal {
+                        break;
+                    }
+                    self.advance();
+                    self.advance();
+                    self.grow(1)?;
+                    *chain += 1;
+                    e = Expr {
+                        kind: ExprKind::PrefixRead(Box::new(e)),
+                        pos: first,
+                    };
+                }
                 Tok::Question if !self.question_opens_ternary() => {
                     let question = self.pos();
                     self.advance();
