@@ -80,6 +80,29 @@ fn canonical_port_headers_are_enforced_before_guest_emission() {
 }
 
 #[test]
+fn observed_emit_does_not_grant_undeclared_pipeline_source_or_sink() {
+    // Keeping the emit(value) body must not widen an actor's declared port
+    // capabilities. The compiler must deny both spellings before Wasm output.
+    for source in [DECLARED_FORWARD, DECLARED_REVERSE] {
+        let missing_emits = source.replace(
+            "Producer receives int emits int as", "Producer receives int as",
+        );
+        assert_ne!(missing_emits, source);
+        let e = atto_compiler::compile(&missing_emits)
+            .expect_err("body emit(value) must not infer a public DATA output");
+        assert_eq!(e.code, "E_TYPE", "{e}");
+
+        let missing_receives = source.replace(
+            "Consumer receives int as", "Consumer as",
+        );
+        assert_ne!(missing_receives, source);
+        let e = atto_compiler::compile(&missing_receives)
+            .expect_err("receive handler must not grant an undeclared DATA input");
+        assert_eq!(e.code, "E_TYPE", "{e}");
+    }
+}
+
+#[test]
 fn executable_negative_fixtures_also_compile_to_guests_that_must_trap() {
     // Runtime graph-admission failure cannot be inferred from compiler
     // rejection. Chromium must execute these guests and observe panic 10.
