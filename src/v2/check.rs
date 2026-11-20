@@ -60,6 +60,10 @@ struct ObjInfo {
     /// payload type of `receive(ActorMail<T> mail)`
     mail: Ty,
     receive: Option<u32>,
+    /// Canonical declared actor source/sink effects; a body containing
+    /// emit(value) does not silently authorize pipeline transport.
+    receives_declared: bool,
+    emits_declared: bool,
     /// constructor: `spawn A()` or `S()`
     ctor: u32,
     dispose: u32,
@@ -219,6 +223,8 @@ impl<'a> Checker<'a> {
                 methods: Vec::new(),
                 mail: Ty::Void,
                 receive: None,
+                receives_declared: o.declared_receives.is_some(),
+                emits_declared: o.declared_emits.is_some(),
                 ctor: 0,
                 dispose: 0,
                 size: 0,
@@ -1630,6 +1636,14 @@ impl<'a> Checker<'a> {
                     (Ty::Actor(a), Ty::Actor(b)) => {
                         let from = &self.objs[*a];
                         let to = &self.objs[*b];
+                        if !from.emits_declared {
+                            return Err(type_err(pos,
+                                "pipeline actor source requires an explicit 'emits T' declaration"));
+                        }
+                        if !to.receives_declared {
+                            return Err(type_err(pos,
+                                "pipeline actor sink requires an explicit 'receives T' declaration"));
+                        }
                         let emitted = from.emit.as_ref().ok_or_else(|| type_err(pos,
                             format!("actor '{}' has no observed emit(T) source", from.name)))?;
                         if to.receive.is_none() || *emitted != to.mail {
@@ -1641,6 +1655,10 @@ impl<'a> Checker<'a> {
                     }
                     (Ty::Actor(a), Ty::Channel(item)) => {
                         let from = &self.objs[*a];
+                        if !from.emits_declared {
+                            return Err(type_err(pos,
+                                "actor-to-channel DATA source requires declared 'emits T'"));
+                        }
                         let emitted = from.emit.as_ref().ok_or_else(|| type_err(pos,
                             format!("actor '{}' has no observed emit(T) source", from.name)))?;
                         if *emitted != **item {
@@ -1652,6 +1670,10 @@ impl<'a> Checker<'a> {
                     }
                     (Ty::Channel(item), Ty::Actor(b)) => {
                         let to = &self.objs[*b];
+                        if !to.receives_declared {
+                            return Err(type_err(pos,
+                                "channel-to-actor DATA sink requires declared 'receives T'"));
+                        }
                         if to.receive.is_none() || **item != to.mail {
                             return Err(type_err(pos,
                                 format!("channel emits {}, actor '{}' receives {}",
