@@ -3104,6 +3104,10 @@ impl Parser {
                         let key = args.pop().expect("length checked");
                         (key,value)
                     },
+                    Expr {kind: ExprKind::Call(name, _), pos}
+                        if name == "@builtin/Pair.of" =>
+                        return Err(Diagnostic::new(pos, "E_TYPE",
+                            "Pair<K,V> is distinct from Entry<K,V> and cannot be used in Map.of_entries")),
                     other => return Err(Diagnostic::new(other.pos, "E_UNSUPPORTED",
                         "Map.of_entries expects Entry<K,V> values: k => v or Entry.of(k,v); extracting a variable Entry awaits owned product access")),
                 }
