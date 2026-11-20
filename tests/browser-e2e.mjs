@@ -231,6 +231,15 @@ try{
     console.log('PASS browser: real guest rejects unsafe pipe ' + filename);
   }
 
+  // Byte-identical canonical atto-platform-conformance fixture #102:
+  // both spellings attempt producer -> consumer, not an implicit duplex.
+  const canonicalDuplicate = await readFile(new URL(
+    './fixtures/conformance/pipe-rpipe-v1/actor-duplicate-direction.atto',
+    import.meta.url), 'utf8');
+  assert.match(await run(canonicalDuplicate, 'E_PANIC'), /^E_PANIC:/);
+  assert.equal(await evaluate('window.__attoLastPanicCode'), 10,
+    'canonical duplicate lexical direction must trap during guest DATA admission');
+
   // Real compiler -> Wasm guest: a second same-direction actor connection
   // must trap before publishing any cycle (not hang the actor-link walk).
   // The v2 actor-only runtime remains experimental and lacks checked handles.
