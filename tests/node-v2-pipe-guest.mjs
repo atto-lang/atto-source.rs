@@ -13,6 +13,11 @@ const temporary=mkdtempSync(join(tmpdir(),'atto-v2-pipe-'));
 const cases=[
   ['pass/208-v2-actor-channel-actor-pipe.atto',false],
   ['pass/209-v2-actor-channel-actor-rpipe.atto',false],
+  // Checked Result<PipeHandle,PipeSetupError>: forward, reverse, and failed
+  // attachment followed by successful reuse of the *same* source/channel.
+  ['pass/219-v2-checked-actor-channel-actor-pipe.atto',false],
+  ['pass/220-v2-checked-actor-channel-actor-rpipe.atto',false],
+  ['pass/221-v2-checked-setup-rollback.atto',false],
   ['pass/217-v2-declared-port-pipe.atto',false],
   ['pass/218-v2-declared-port-rpipe.atto',false],
   ['panic/210-v2-pipe-double-attach.atto',true],
