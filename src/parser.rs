@@ -2606,8 +2606,14 @@ impl Parser {
                 }
                 "Some" | "Ok" | "Err" => {
                     self.advance();
+                    // Result<void, E>.Ok has no payload. Keep Ok(_) as a
+                    // compatible explicit-discard spelling, but also permit
+                    // the canonical zero-payload arm "on Ok -> ...".
+                    if w == "Ok" && *self.peek() != Tok::LParen {
+                        return Ok(Pattern::Adt(w, None));
+                    }
                     self.expect(Tok::LParen, "'(' after payload variant")?;
-                    let (name, _) = self.ident("a payload binding name")?;
+                    let (name, _) = self.ident("a payload binding name or '_'")?;
                     self.expect(Tok::RParen, "')' after payload binding")?;
                     Ok(Pattern::Adt(w, Some(name)))
                 },
