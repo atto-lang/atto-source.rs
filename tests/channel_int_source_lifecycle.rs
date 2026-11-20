@@ -136,3 +136,65 @@ fn standalone_fallible_channel_operations_cannot_discard_result() {
             "standalone checked channel expression {expression}: {err}");
     }
 }
+
+#[test]
+fn checked_suspending_send_uses_distinct_jspi_import_and_requires_result_handling() {
+    let guest=r#"
+        match new Channel<int>(2) over
+            on Ok(ch) -> {
+                match ch << 42 over
+                    on Ok() -> { return (ch >>); }
+                    on Err(error) -> { return Err(error); }
+                end
+            }
+            on Err(error) -> { return Err(error); }
+        end
+    "#;
+    let wasm=compile(&src(guest))
+        .expect("checked suspending send and postfix receive must compile");
+    for key in ["atto.async","atto.channel_int","channel_int_open_v1",
+        "channel_int_send_async_v1","channel_int_nb_read_v1",
+        "channel_int_await_read_v1","cooperate"] {
+        assert!(has(&wasm,key),"compiled channel guest missing {key}");
+    }
+    // The same new import must be produced through the explicit method.
+    let method=r#"
+        match Channel<int>.bounded(1) over
+            on Ok(ch) -> {
+                val result = ch.send_async(42);
+                match result over
+                    on Ok() -> { return readch ch; }
+                    on Err(error) -> { return Err(error); }
+                end
+            }
+            on Err(error) -> { return Err(error); }
+        end
+    "#;
+    let w=compile(&src(method)).expect("checked send_async should share typed send ABI");
+    assert!(has(&w,"channel_int_send_async_v1"));
+    assert!(!has(&w,"channel_int_send_v1"),
+        "async checked send must not silently become nonparking try_send");
+}
+
+#[test]
+fn async_write_is_fail_closed_for_wrong_type_effect_and_result_discard() {
+    let cases=[
+        ("seed << 42; return Err(0);","E_IO_DISCARD"),
+        ("seed.send_async(42); return Err(0);","E_IO_DISCARD"),
+        ("val x = 1 << 42; return Err(0);","E_IO_WRITABLE"),
+        ("val x = seed << \"wrong\"; return Err(0);","E_TYPE"),
+        ("val x = seed.send_async(\"wrong\"); return Err(0);","E_TYPE"),
+        ("val x = seed <<< 42; return Err(0);","E_IO_SYNTAX"),
+    ];
+    for (body,code) in cases {
+        let err=compile(&src(body))
+            .expect_err("invalid checked async channel send cannot produce Wasm");
+        assert_eq!(err.code,code,"source {body}: {err}");
+    }
+    let no_susp=r#"pub fnc illegal(Channel<int> c): Result<void,IoError> {
+        return c << 42;
+    }
+    pub fnc main():int {return 0;}"#;
+    let err=compile(no_susp).expect_err("channel send requires suspension effect");
+    assert_eq!(err.code,"E_SUSPENDS_REQUIRED");
+}
