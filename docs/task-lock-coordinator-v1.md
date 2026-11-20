@@ -74,3 +74,22 @@ Host-only kernel `HostTaskLockKernel` now exposes separate bounded wake-hint ope
 The unit-test source contains 40 `#[test]` cases at the latest update, including three new wake-notification regressions (queued cancellation, cancel-after-grant stale wake, and nonparking query contention). **These tests are authored, not yet executed on the current source head.**
 
 CI carrier `benefactor-cc/atto-ci#6` has an exact mirrored Rust blob and pinned workflow. Its initial [Actions run #44682496723](https://github.com/benefactor-cc/atto-ci/actions/runs/44682496723) failed with **no job steps**; no compiler or host test result exists. Keep guest admission and all ten backend release flags disabled until proven.
+
+
+## Follow-up audit: lexical TaskScope return and guard-scope exit (2026-11-20)
+
+**Two verified-by-source, unexecuted runtime model changes:**
+
+1. `TaskScopeLockCoordinator::guest_exited_at_safe_point` now marks the parent's terminal success/cancel winner, fences new child admission, and automatically requests cancellation of all unfinished children and grandchildren on ordinary **successful parent return** as well as on explicit cancel. Parent guard cleanup proceeds, then physical retirement remains gated on descendants' callback-drained quiescence. Added regression `scope_exit_auto_cancels_unfinished_descendants_without_clobbering_success`; siblings outside that scope remain healthy.
+2. `TaskLeaseStack::release_top_guard`, `TaskScopeLockCoordinator::guard_scope_exit`, and `HostTaskLockKernel::trusted_guard_scope_exit` now model a **trusted lexical using-guard boundary** distinct from task exit. A claimed guard is released after its protected region ends, allowing a waiting successor to enter while the previous task keeps running. Only the top nested guard may be released (otherwise `GuardOrder`); successful release removes the ledger entry so cancellation cannot double-unlock. Stale/double release fails closed and fences retirement. These are trusted host-side model events, **not guest-callable methods or a proof that code actually left its critical region**. Three new regression tests cover early handoff, nested LIFO/duplicate guard release and post-terminal denial.
+
+**Current source:** refer to exact draft [atto-source.rs PR #416](https://github.com/atto-lang/atto-source.rs/pull/416) HEAD and its `src/mutex_wait_queue_v1.rs` blob at test time. During this audit other commits landed on the same draft branch; always re-check live SHAs before testing or mirroring.
+
+**Alternate GH Actions attempt (source-only model):**
+- The temporary private [honeypot-r-us-test carrier PR #3](https://github.com/honeypot-r-us-test/atto-ci/pull/3) mirrored the then-current source file as exact Git blob `681238fa9b9dfa13cc3774dd61dbfed485f3fa03`, with zero-dependency Cargo harness and an SHA-gated workflow. [Run #44682861661](https://github.com/honeypot-r-us-test/atto-ci/actions/runs/44682861661) failed **before recording any job steps**. Not a compiler/test failure, and the snapshot predates the latest lexical-guard patch. Carrier PR closed unmerged and its branch reset to the base SHA.
+- Temporary [voxletra capacity probe PR #12](https://github.com/voxletra/atto-ci/pull/12), [run #44682989587](https://github.com/voxletra/atto-ci/actions/runs/44682989587), also failed before job steps. No source copied; PR closed unmerged and branch reset.
+- Other prior temporary carriers likewise failed before job steps. **No claim of available GHA budget, Rust compilation, sanitizer pass, guest conformance or backend parity.**
+
+**Source-conformance checks performed:** current atto-platform-conformance #115 main registry has 32 SHA-pinned `.atto` fixtures and 13 target lock-lifecycle runtime probes. **All 32 source fixture SHA pins matched GitHub readback** (16+16 checks), every case has a valid expected category, IDs are unique, and ten backend cells correctly remain `NOT_EXECUTED`. This is source integrity, NOT actual `node --test`, compiled Atto, compiled Rust or runtime lock safety.
+
+**Next release gates:** obtain an Actions runner that actually starts steps, regenerate a fresh exact-sha mirror of the **latest** source, execute `cargo test --offline --locked --lib`, optimized tests, Clippy and sanitizer/model checking; then integrate the trusted guard-scope end and TaskScope descendant cancellation into an authenticated, versioned production guest ABI. Run real compiled-guest scheduler traces before changing backend statuses or merging.
