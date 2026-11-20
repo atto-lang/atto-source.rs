@@ -208,15 +208,15 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             let LiteralType::Map(key_type, value_type) = &binding.value.ty else {
                 return Err(error(init.pos, "E_SHAPE", "typed Map identity was lost"));
             };
-            if !matches!(key_type.as_ref(), LiteralType::Int | LiteralType::Bool | LiteralType::String) {
-                return Err(error(init.pos, "E_MAP_KEY",
-                    "executable Map.of requires homogeneous int/bool/string literal keys"));
-            }
             // Untyped Map.of() is not a concrete Map<K,V>. Reject instead
             // of creating a type-erased or host-backed dictionary.
             if entries.is_empty() && matches!(key_type.as_ref(), LiteralType::Bottom) {
                 return Err(error(init.pos, "E_TYPE_INFERENCE",
                     "empty Map needs an explicit concrete Map<K,V> type"));
+            }
+            if !matches!(key_type.as_ref(), LiteralType::Int | LiteralType::Bool | LiteralType::String) {
+                return Err(error(init.pos, "E_MAP_KEY",
+                    "executable Map.of requires homogeneous int/bool/string literal keys"));
             }
             let key_type_scalar = scalar_type(key_type, init.pos)?;
             let value_type_scalar = scalar_type(value_type, init.pos)?;
