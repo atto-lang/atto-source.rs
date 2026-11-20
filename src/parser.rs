@@ -2664,7 +2664,43 @@ impl Parser {
                     self.advance();
                     Ok(Pattern::Wild)
                 }
-                "is" | "structural" => Err(unsupported(pos, "type patterns")),
+                // Alias spelling for a *statically known* ADT constructor,
+                // not an unchecked Scala-style extractor or dynamic type test.
+                // In `on is Ok<line>`, `line` binds the Ok payload; the angle
+                // brackets are pattern syntax, not generic type arguments.
+                "is" => {
+                    self.advance();
+                    let (constructor, at) = self.ident("an ADT variant after 'is'")?;
+                    if !matches!(constructor.as_str(), "Ok" | "Err" | "Some" | "None") {
+                        return Err(Diagnostic::new(at, "E_PATTERN",
+                            "on is currently admits only the nominal Ok, Err, Some and None variants"));
+                    }
+                    if constructor == "None" {
+                        if *self.peek() == Tok::Lt || *self.peek() == Tok::LParen {
+                            return Err(Diagnostic::new(self.pos(), "E_ARITY",
+                                "None has no payload: use on is None"));
+                        }
+                        return Ok(Pattern::Adt(constructor, None));
+                    }
+                    if *self.peek() != Tok::Lt {
+                        if constructor == "Ok" {
+                            // On Result<void,E> only. The existing match
+                            // typechecker rejects missing payloads elsewhere.
+                            return Ok(Pattern::Adt(constructor, None));
+                        }
+                        return Err(Diagnostic::new(self.pos(), "E_ARITY",
+                            "payload variant requires <name> or <_> after 'is'"));
+                    }
+                    self.advance(); // <
+                    let (binding, _) = self.ident("an ADT payload binding or '_'")?;
+                    self.expect(Tok::Gt, "'>' after ADT pattern binding")?;
+                    if *self.peek() == Tok::LParen || *self.peek() == Tok::Lt {
+                        return Err(Diagnostic::new(self.pos(), "E_PATTERN",
+                            "nested or mixed extractor syntax is not admitted in the v1 ADT profile"));
+                    }
+                    Ok(Pattern::Adt(constructor, Some(binding)))
+                }
+                "structural" => Err(unsupported(pos, "structural type patterns")),
                 _ => {
                     self.advance();
                     if *self.peek() == Tok::Dot {
