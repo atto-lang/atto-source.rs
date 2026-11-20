@@ -208,6 +208,22 @@ pub fn analyze(tokens: &[Token]) -> Result<UnsafeSyntaxTree, Diagnostic> {
     // the production typed checker; this G1 AST never claims they are safe.
     let decl_names: BTreeMap<&str, usize> = out.callables.iter()
         .map(|f| (f.name.as_str(), f.name_token)).collect();
+    // Conservative bounded lambda marker. G1 cannot resolve closure effect
+    // identities, so a direct unsafe call after a closure header in its
+    // lexical block cannot borrow that block's authority. This may reject
+    // some valid-but-unproved source; it must never grant an unsafe call.
+    let mut lambda_prefix = vec![0usize; tokens.len() + 1];
+    let mut last_pipe = None;
+    for (i, token) in tokens.iter().enumerate() {
+        lambda_prefix[i + 1] = lambda_prefix[i];
+        if matches!(token.tok, Tok::Pipe) {
+            last_pipe = Some(i);
+        }
+        if matches!(token.tok, Tok::Arrow)
+            && last_pipe.is_some_and(|p| i - p <= 16) {
+            lambda_prefix[i + 1] += 1;
+        }
+    }
     for (i, token) in tokens.iter().enumerate() {
         let Some(name) = ident(token) else { continue };
         if !decl_names.contains_key(name) || decl_names.get(name) == Some(&i) {
@@ -231,6 +247,10 @@ pub fn analyze(tokens: &[Token]) -> Result<UnsafeSyntaxTree, Diagnostic> {
         if owner.is_none() {
             return Err(Diagnostic::new(token.pos, "E_UNSAFE_CONTEXT",
                 format!("direct call to unsafe fnc '{name}' requires unsafe {{ ... }}")));
+        }
+        if lambda_prefix[i] > lambda_prefix[out.blocks[owner.unwrap()].open] {
+            return Err(Diagnostic::new(token.pos, "E_UNSAFE_CALL",
+                "unsafe block authority cannot be inherited by a nested lambda or closure"));
         }
         // In v1 a nested callable must not inherit the outer unsafe block.
         if tokens.iter().enumerate().any(|(j, t)| j < i
@@ -340,6 +360,14 @@ mod tests {
                    .unwrap_err().code, "E_UNSAFE_CALL");
         assert_eq!(parse("pub fnc main(): int { unsafe { val x = (42]; } return 42; }")
                    .unwrap_err().code, "E_UNSAFE_SYNTAX");
+    }
+
+    #[test]
+    fn nested_lambda_cannot_inherit_outer_unsafe_context() {
+        let source = "pub unsafe fnc trusted(): int { return 42; } pub fnc main(): int { unsafe { val callback = || -> trusted(); } return 42; }";
+        assert_eq!(parse(source).unwrap_err().code, "E_UNSAFE_CALL");
+        let typed = "pub unsafe fnc trusted(): int { return 42; } pub fnc main(): int { unsafe { val callback = |n|: int -> trusted(); } return 42; }";
+        assert_eq!(parse(typed).unwrap_err().code, "E_UNSAFE_CALL");
     }
 
     #[test]
