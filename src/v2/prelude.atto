@@ -257,11 +257,13 @@ fnc __deadline_pop(int old): void {
 }
 
 // ---------------------------------------------------------------- channels
-// Channel (56 bytes): 0 capacity (-1 unbounded), 8 count, 16 head, 24 tail,
+// Channel (72 bytes): 0 capacity (-1 unbounded), 8 count, 16 head, 24 tail,
 // 32 closed, 40/48 queue of pending `nb readch` futures.
+// 56 unique pipeline producer actor, 64 unique pipeline consumer actor.
+// These two additional words prevent silent duplicate DATA attachments.
 
 fnc __chan_new(int cap): int {
-  val c = __alloc(56);
+  val c = __alloc(72);
   __store(c, 0, cap);
   return c;
 }
@@ -357,17 +359,22 @@ fnc __chan_close(int c): void {
 }
 
 // ------------------------------------------------------------------ actors
-// Actor instance: 0 mailbox channel, 8 downstream actor, 16 next sequence
-// number, then the actor's state fields.
+// Actor instance (48-byte prefix): 0 mailbox channel, 8 downstream target,
+// 16 next sequence, 24 downstream kind (0 actor, 1 bounded channel),
+// 32/40 completion Future flag/value, then the actor's state fields.
+// This is a SINGLE guest-memory domain; no cross-TenantVM bridge exists.
 
 fnc __mail_send(int a, int v): void {
-  val c = __load(a, 0);
-  if __load(c, 32) != 0 then
-    return;
+  // Legacy synchronous mailbox admission: bounded, no silent loss.
+  // Full/closed mailbox traps; checked Result and async actor admission are
+  // still required before this can be called a production send contract.
+  if __chan_offer(__load(a, 0), v) == 0 then
+    __panic(8);
   fi
-  __q_push(c + 16, v);
-  __store(c, 8, __load(c, 8) + 1);
-  __set_rt(4, 1);
+}
+
+suspends fnc __mail_send_wait(int a, int v): void {
+  await __chan_send(__load(a, 0), v);
 }
 
 // Provisional guest actor-only chain; not a structured PipeHandle.
@@ -383,10 +390,12 @@ fnc __actor_link(int a, int b): int {
   let count = 0;
   loop do
     if count >= 16 then __panic(10); fi
+    if __load(t, 24) != 0 then __panic(10); fi
     let q = b;
     let tail_size = 0;
     loop do
       if tail_size >= 16 then __panic(10); fi
+      if __load(q, 24) != 0 then __panic(10); fi
       if t == q then __panic(10); fi
       tail_size = tail_size + 1;
       val next_b = __load(q, 8);
@@ -406,16 +415,72 @@ fnc __actor_link(int a, int b): int {
   return a;
 }
 
-fnc __actor_emit(int a, int v): void {
+// Checked single-producer/single-consumer attachment for a *bounded* channel.
+// No suspension takes place between validation and publication. Each channel
+// belongs to one actor pipe; ambient userland channel sharing is NOT a bridge.
+fnc __actor_pipe_channel(int a, int ch): int {
+  val cap = __load(ch, 0);
+  if cap < 1 then __panic(10); fi
+  if cap > 16 then __panic(10); fi
+  if __load(a, 8) != 0 then __panic(10); fi
+  if __load(ch, 56) != 0 then __panic(10); fi
+  __store(ch, 56, a);
+  __store(a, 8, ch);
+  __store(a, 24, 1);
+  return ch;
+}
+
+fnc __channel_pipe_actor(int ch, int a): int {
+  val cap = __load(ch, 0);
+  if cap < 1 then __panic(10); fi
+  if cap > 16 then __panic(10); fi
+  if __load(ch, 64) != 0 then __panic(10); fi
+  __store(ch, 64, a);
+  // The bridge is a guest task and borrows no host thread. It suspends on
+  // both bounded source and mailbox pressure, and drains through EOF.
+  val bridge = task {
+    loop do
+      val item = await __chan_recv_opt(ch);
+      if item == 0 then
+        __actor_stop(a);
+        return 0;
+      fi
+      await __mail_send_wait(a, __load(item, 0));
+    done
+  };
+  return ch;
+}
+
+suspends fnc __actor_emit(int a, int v): void {
   val n = __load(a, 8);
-  if n == 0 then
-    __panic(10);
+  if n == 0 then __panic(10); fi
+  if __load(a, 24) == 1 then
+    await __chan_send(n, v);
+  else
+    await __mail_send_wait(n, v);
   fi
-  __mail_send(n, v);
 }
 
 fnc __actor_stop(int a): void {
   __chan_close(__load(a, 0));
+}
+
+fnc __actor_done(int a): int {
+  return a + 32;
+}
+
+fnc __actor_exit(int a): void {
+  // After the actor has drained all admitted messages, propagate EOF. The
+  // pipeline bridge then stops its consumer after forwarding every item.
+  val n = __load(a, 8);
+  if n != 0 then
+    if __load(a, 24) == 1 then
+      __chan_close(n);
+    else
+      __actor_stop(n);
+    fi
+  fi
+  __fut_done(a + 32, 0);
 }
 
 // --------------------------------------------------------------- telemetry
