@@ -76,7 +76,9 @@ const positives=[
  ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true,8=>false,9=>true);return m[9] == true ? 42 : 0;}',42n,''],
  ['pub fnc main(): int {val m=Map.of_entries<int,bool>(Entry.of(5,true),Entry.of(8,false));return m[5] == true ? 42 : 0;}',42n,''],
  ['pub fnc main(): int {val m=Map.of_entries(5=>true,8=>false);return m[5] == true ? 42 : 0;}',42n,''],
- ['pub fnc main(): int {val m=Map.of_entries<int,bool>();return 42;}',42n,'']
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>();return 42;}',42n,''],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true,8=>false,9=>true);return m[8] == false ? 42 : 0;}',42n,''],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true,Entry.of(8,false),9=>true);return m[9] == true ? 42 : 0;}',42n,'']
 ];
 const negatives=[
  ['pub fnc main(): int {val Record<{a:int,b:bool}> x=Record.of(a=42);return x.a;}','E_NO_FIELD'],
@@ -110,7 +112,14 @@ const negatives=[
  ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5,true);return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true,5=>false);return 0;}','E_DUPLICATE'],
  ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true,8=>"bad");return 0;}','E_TYPE'],
- ['pub fnc main(): int {const m=Map.of_entries<int,bool>(5=>true);return 0;}','E_UNSUPPORTED']
+ ['pub fnc main(): int {const m=Map.of_entries<int,bool>(5=>true);return 0;}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5,true);return 0;}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(Pair.of(5,true));return 0;}','E_TYPE'],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(0=>true,-0=>false);return 0;}','E_DUPLICATE'],
+ ['pub fnc main(): int {val m=Map.of_entries<int,bool>(5=>true,8=>"wrong");return 0;}','E_TYPE'],
+ ['pub fnc main(): int {val m=Map.of_entries();return 0;}','E_TYPE_INFERENCE'],
+ ['pub fnc main(): int {val Entry<int,bool> e=5=>true;val m=Map.of_entries<int,bool>(e);return 0;}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {val int k=5;val m=Map.of_entries<int,bool>(k=>true);return 0;}','E_UNSUPPORTED']
 ];
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
