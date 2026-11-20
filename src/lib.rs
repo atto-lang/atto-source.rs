@@ -46,6 +46,8 @@ pub mod package_resolver;
 #[cfg(target_os = "linux")]
 mod secure_fs;
 pub mod sha256;
+/// Version-pinned std.buffer candidate sources and fail-closed package admission.
+pub mod std_buffer_gate;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
 pub mod any_type_lower;
 /// Source-local scalar products use the checked class/constructor guest ABI.
@@ -99,6 +101,10 @@ pub fn compile_with_imports<F>(
     source: &str, logical_path: &std::path::Path, load: F,
 ) -> Result<Vec<u8>, Diagnostic>
 where F: FnMut(&std::path::Path) -> std::io::Result<String> {
+    // Reject unlinked std.buffer before the relative-file loader can reject
+    // its package syntax ambiguously; this must never ask for a host fallback.
+    let source_tokens = lexer::lex(source)?;
+    std_buffer_gate::preflight(&source_tokens)?;
     let tokens = import_link::lower(source, logical_path, load)?;
     compile_prelexed(tokens, Some(logical_path))
 }
@@ -118,6 +124,7 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
+    std_buffer_gate::preflight(&original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
         type_declarations::parse_tokens(&original_tokens)?;
