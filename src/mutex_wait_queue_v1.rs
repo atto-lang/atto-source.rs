@@ -491,6 +491,18 @@ impl TaskScopeLockCoordinator {
         if !task.guards.all_local_locks_released() {
             return Err(Error::GuardSuspend);
         }
+        // A granted-but-not-yet-claimed mutex is already reserved for this
+        // continuation. Parking on another mutex would strand that grant:
+        // revoke/claim-and-release it first, then legally suspend.
+        if !task.unclaimed.is_empty() {
+            return Err(Error::UnclaimedGrant);
+        }
+        // Until typed select/race MIR exists, a logical continuation may
+        // park on exactly one outstanding lock wait. Multiple queued waits
+        // cannot safely be represented by one parked_lock and one ready hint.
+        if task.waiting.len() != 1 {
+            return Err(Error::NotQuiescent);
+        }
         if task.parked_lock.is_some() {
             return Err(Error::AlreadyClaimed);
         }
