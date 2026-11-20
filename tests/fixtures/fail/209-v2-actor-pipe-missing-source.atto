@@ -1,8 +1,8 @@
 // expect-error: E_TYPE
-define actor Producer as
+define actor Producer receives int as
   receive(ActorMail<int> mail): void { return; }
 end
-define actor Consumer as
+define actor Consumer receives int as
   receive(ActorMail<int> mail): void { return; }
 end
 pub suspends fnc main(): int {
