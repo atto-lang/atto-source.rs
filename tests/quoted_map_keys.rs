@@ -96,3 +96,13 @@ fn malformed_literals_and_guest_map_are_never_executed(){
         reject(&format!("pub fnc main():int {{let m={literal};return 0;}}"),"E_UNSUPPORTED");
     }
 }
+
+#[test]
+fn nul_and_raw_carriage_returns_cannot_hide_in_quoted_map_keys(){
+    for literal in ["\"before\0after\"", "'before\0after'", "`before\0after`"] {
+        reject(&format!("pub fnc main():int {{let m={{{literal}:5}};return 0;}}"),
+            "E_NUL");
+    }
+    reject("pub fnc main():int {let m={`before\rafter`:5};return 0;}",
+        "E_STRING");
+}
