@@ -62,7 +62,6 @@ fn import_path(source_file: &Path, value: &str, pos: Pos) -> R<PathBuf> {
     }
     Ok(path)
 }
-#[derive(Clone)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum SealedStd {
     HttpPolicy,
