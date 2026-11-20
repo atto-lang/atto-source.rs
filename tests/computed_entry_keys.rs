@@ -35,8 +35,8 @@ fn inferred_symbol_and_string_entries_preserve_nominal_type(){
     assert_ne!(ir[0].value.ty,ir[1].value.ty);
 }
 #[test]
-fn computed_brackets_are_explicit_key_expressions_not_array_keys(){
-    let p=parse(r#"const string foo="bar"; let e=[foo]=>5; let m={[foo]=>7};"#).unwrap();
+fn bracket_key_is_always_a_list_literal_not_an_evaluated_scalar(){
+    let p=parse(r#"const string foo="bar"; let e=foo=>5; let m={foo=>7};"#).unwrap();
     assert!(matches!(first_init(&p,1),ExprKind::Entry(k,_)
         if matches!(&k.kind,ExprKind::Var(s) if s=="foo")));
     assert!(matches!(first_init(&p,2),ExprKind::Map(kv)
@@ -45,11 +45,29 @@ fn computed_brackets_are_explicit_key_expressions_not_array_keys(){
     assert_eq!(ir.len(),2);
     assert_eq!(ir[0].value.ty,T::Entry(Box::new(T::String),Box::new(T::Int)));
     assert_eq!(ir[1].value.ty,T::Map(Box::new(T::String),Box::new(T::Int)));
-    let old=parse(r#"const string foo="bar";let e=foo=>5;"#).unwrap();
-    assert_eq!(collection_types::analyze(&old).unwrap()[0].value.ty,
-        T::Entry(Box::new(T::String),Box::new(T::Int)));
-    let array=parse(r#"let array=[5];"#).unwrap();
-    assert!(matches!(first_init(&array,0),ExprKind::Array(v) if v.len()==1));
+
+    for (source, expected) in [
+        (r#"let e=["foo"]=>5;"#,"foo"),
+        (r#"let e=['foo']=>5;"#,"foo"),
+    ] {
+        let p=parse(source).unwrap();
+        assert!(matches!(first_init(&p,0),ExprKind::Entry(k,_)
+            if matches!(&k.kind,ExprKind::Array(items)
+                if items.len()==1 && matches!(&items[0].kind,ExprKind::Str(s) if s==expected))));
+        assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_MAP_KEY",
+            "List key must not bypass stable Hash/Eq proof: {source}");
+    }
+    let p=parse("let e=[true]=>5;").unwrap();
+    assert!(matches!(first_init(&p,0),ExprKind::Entry(k,_)
+        if matches!(&k.kind,ExprKind::Array(items)
+            if items.len()==1 && matches!(&items[0].kind,ExprKind::Bool(true)))));
+    assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_MAP_KEY");
+    let p=parse("let m={[\"foo\"]=>5};").unwrap();
+    assert!(matches!(first_init(&p,0),ExprKind::Map(kv)
+        if matches!(&kv[0].0.kind,ExprKind::Array(items) if items.len()==1)));
+    assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_MAP_KEY");
+    let ordinary=parse(r#"let a=["foo"];"#).unwrap();
+    assert!(matches!(first_init(&ordinary,0),ExprKind::Array(items) if items.len()==1));
 }
 #[test]
 fn typed_symbol_maps_entries_and_duplicates(){
@@ -66,9 +84,16 @@ fn typed_symbol_maps_entries_and_duplicates(){
     assert_eq!(collection_types::analyze(&mismatched).unwrap_err().code,"E_TYPE");
 }
 #[test]
-fn nonassociative_arrow_and_bounded_computed_key(){
-    for s in ["let e=[a,b]=>5;","let e=[]=>5;","let m={[a,b]=>5};"]{
-        assert_eq!(parse(s).unwrap_err().code,"E_MAP_KEY", "{s}");
+fn arrow_nonassociativity_and_unhashable_list_keys_fail_closed(){
+    for s in [
+        r#"let e=["foo","bar"]=>5;"#,
+        "let e=[]=>5;",
+        r#"let m={["foo","bar"]=>5};"#,
+        "let e=[true]=>5;",
+    ] {
+        let p=parse(s).unwrap();
+        assert_eq!(collection_types::analyze(&p).unwrap_err().code,
+                   "E_MAP_KEY", "{s}");
     }
     assert_eq!(parse(r#"let e=#foo=>5=>7;"#).unwrap_err().code,"E_LITERAL_KIND");
     assert_eq!(parse("let e=bar::5;").unwrap_err().code,"E_SYNTAX");
@@ -80,9 +105,9 @@ fn nonassociative_arrow_and_bounded_computed_key(){
 }
 #[test]
 fn unknown_or_mutable_runtime_keys_cannot_be_fake_inferred(){
-    let p=parse(r#"let string foo="bar";let e=[foo]=>5;"#).unwrap();
+    let p=parse(r#"let string foo="bar";let e=foo=>5;"#).unwrap();
     assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_UNSUPPORTED");
-    let p=parse(r#"let e=[unbound]=>5;"#).unwrap();
+    let p=parse(r#"let e=unbound=>5;"#).unwrap();
     assert_eq!(collection_types::analyze(&p).unwrap_err().code,"E_UNSUPPORTED");
 }
 #[test]
@@ -90,8 +115,8 @@ fn compiled_symbol_entry_and_computed_map_guest_fail_closed(){
     for source in [
         r#"let e=#foo=>5;"#,
         r#"let m={#foo=>5};"#,
-        r#"const string foo="bar";let e=[foo]=>5;"#,
-        r#"const string foo="bar";let m={[foo]=>5};"#,
+        r#"const string foo="bar";let e=foo=>5;"#,
+        r#"const string foo="bar";let m={foo=>5};"#,
         r#"let e="foo"=>5;"#,
     ] {
         expected_reject(source,"E_UNSUPPORTED");
@@ -115,11 +140,11 @@ fn record_construction_remains_identifier_only_and_has_no_entry_type(){
 }
 #[test]
 fn lexical_consts_cannot_leak_across_scopes_or_mutable_shadow(){
-    let inner=parse(r#"block {const string foo="bar";}let e=[foo]=>5;"#).unwrap();
+    let inner=parse(r#"block {const string foo="bar";}let e=foo=>5;"#).unwrap();
     assert_eq!(collection_types::analyze(&inner).unwrap_err().code,"E_UNSUPPORTED");
-    let shadow=parse(r#"const string foo="bar";block {let foo=7;let e=[foo]=>5;}"#).unwrap();
+    let shadow=parse(r#"const string foo="bar";block {let foo=7;let e=foo=>5;}"#).unwrap();
     assert_eq!(collection_types::analyze(&shadow).unwrap_err().code,"E_UNSUPPORTED");
-    let valid=parse(r#"const string foo="bar";block {let e=[foo]=>5;}"#).unwrap();
+    let valid=parse(r#"const string foo="bar";block {let e=foo=>5;}"#).unwrap();
     assert_eq!(collection_types::analyze(&valid).unwrap()[0].value.ty,
         T::Entry(Box::new(T::String),Box::new(T::Int)));
 }
