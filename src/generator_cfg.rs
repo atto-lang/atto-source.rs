@@ -151,7 +151,8 @@ impl Builder {
                 return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
                     "try/defer/recover/raise inside generators need continuation-owned unwind frames"));
             }
-            Stmt::FieldAssign { pos, .. } | Stmt::StateWrite { pos, .. } => {
+            Stmt::FieldAssign { pos, .. } | Stmt::IndexAssign { pos, .. } |
+            Stmt::StateWrite { pos, .. } => {
                 return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
                     "generator mutation and state loans require an owned frame and borrow analysis"));
             }
