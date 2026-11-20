@@ -3,7 +3,7 @@
 //! This admission profile is deliberately narrower than the normative Mutex
 //! contract. A source file must have exactly one suspending scalar increment()
 //! function and one main(); the mutex is created locally, never escapes, is
-//! awaited at most once, and no other task, actor, FFI or handle can run or
+//! awaited at most twice sequentially, and no other task, actor, FFI or handle can run or
 //! alias it. The proof permits lock elision on the ready path. The generated
 //! Wasm still performs i64 mutation, snapshots the result and clears its
 //! private per-instance lease flag BEFORE returning from the helper.
