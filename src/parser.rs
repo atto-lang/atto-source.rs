@@ -3091,7 +3091,7 @@ impl Parser {
                 (left, value)
             } else {
                 match left {
-                    Expr {kind: ExprKind::Call(factory, args), pos}
+                    Expr {kind: ExprKind::Call(factory, args), pos: _}
                         if factory == "@builtin/Entry.of" && args.len() == 2 => {
                             let mut args = args.into_iter();
                             (args.next().expect("checked Entry arity"), args.next().expect("checked Entry arity"))
