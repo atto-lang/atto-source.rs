@@ -1,6 +1,7 @@
 //! Bounded first executable relative-file import profile.
 //! File loading is caller supplied, without compiler network or filesystem access.
-//! Only one-hop braced functions are admitted; all other imports fail closed.
+//! Allows one-hop braced-file functions and two sealed, compiler-embedded
+//! hosted-std *pure-policy* packages only. Never authorizes HTTP/FS I/O.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
