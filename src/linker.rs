@@ -151,6 +151,7 @@ fn header(source: &str, file: &str) -> R<Header> {
     // Normalize explicit/dotted and folder-derived namespace spellings using
     // the same production grammar as the single-file compiler.
     let raw = lexer::lex(source)?;
+    crate::std_buffer_gate::preflight(&raw)?;
     let t = crate::namespace::normalize(&raw, Some(std::path::Path::new(file)))?;
     let mut i = 0;
     let mut namespace = None;
