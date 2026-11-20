@@ -1,0 +1,25 @@
+// TARGET: compile the exact requested Counter; send() is admission-only.
+// Do not assert stdout until the harness drains or acknowledges the accepted turn.
+define actor Counter as
+  state {
+    let int count;
+  }
+  on_start(): void using state.write {
+    self.handle_state(critical-write |s| -> {
+      s.count = 0;
+    });
+  }
+  receive(ActorMail<int> mail): void using state.read, state.write {
+    self.handle_state(critical-write |s| -> {
+      s.count += mail.value;
+    });
+    val observed = self.handle_state(critical-read |s| -> s.count);
+    stdio.println(observed);
+  }
+end
+
+pub fnc main(): int {
+  val counter = spawn Counter();
+  counter.send(1); // mailbox admission, not execution completion
+  return 0;
+}
