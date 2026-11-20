@@ -5,7 +5,7 @@
 //! would serialize calls and mint continuation identities. No blocking OS
 //! primitive, thread spawn, spin-loop or guest pointer is used here.
 //! Never treat these unit tests as compiled-guest / TenantVM security evidence.
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Domain {
@@ -197,6 +197,81 @@ impl WaitQueue {
     }
 }
 
+/// Host-only, serialized task-local lexical guard stack. Caller MUST stop
+/// executing protected guest code before invoking unwind_after_safe_point().
+/// This is not an Atto scheduler and does not itself prove descendant quiescence.
+pub(crate) struct TaskLeaseStack {
+    continuation: Continuation,
+    held: Vec<(u64, Ticket)>,
+    cancellation_requested: bool,
+}
+impl TaskLeaseStack {
+    pub(crate) fn new(continuation: Continuation) -> Self {
+        Self { continuation, held: Vec::new(), cancellation_requested: false }
+    }
+    pub(crate) fn enter(
+        &mut self, lock_id: u64, lock: &mut WaitQueue, ticket: Ticket,
+    ) -> Result<(), Error> {
+        if self.cancellation_requested { return Err(Error::CancellationPending); }
+        if lock_id == 0 || ticket.continuation != self.continuation {
+            return Err(Error::ForeignDomain);
+        }
+        if self.held.iter().any(|(id, _)| *id == lock_id) {
+            return Err(Error::Reentrant);
+        }
+        if self.held.len() >= 256 { return Err(Error::Exhausted); }
+        lock.claim(ticket)?;
+        self.held.push((lock_id, ticket));
+        Ok(())
+    }
+    /// Idempotent cancellation request. It never releases an active lock;
+    /// each active holder must run lexical cleanup at a legal safe point.
+    pub(crate) fn request_cancel(
+        &mut self, locks: &mut BTreeMap<u64, WaitQueue>,
+    ) -> Result<(), Error> {
+        if self.cancellation_requested { return Ok(()); }
+        // Validate the entire registered ledger before modifying any lock.
+        for (id, ticket) in &self.held {
+            let lock = locks.get(id).ok_or(Error::StaleTicket)?;
+            if lock.owner != Some(*ticket) || !lock.active {
+                return Err(Error::StaleTicket);
+            }
+        }
+        for (id, ticket) in &self.held {
+            let lock = locks.get_mut(id).ok_or(Error::StaleTicket)?;
+            match lock.cancel(*ticket)? {
+                Cancellation::ActiveDeferred => {}
+                _ => return Err(Error::StaleTicket),
+            }
+        }
+        self.cancellation_requested = true;
+        Ok(())
+    }
+    /// Local cleanup of ALL successfully entered guards, in reverse
+    /// acquisition order. A failed release is retained for quarantine/retry,
+    /// while independent guards still get their own release attempt.
+    /// This does NOT mark the TaskScope or its descendants physically retired.
+    pub(crate) fn unwind_after_safe_point(
+        &mut self, locks: &mut BTreeMap<u64, WaitQueue>,
+    ) -> Result<Vec<u64>, Error> {
+        let mut failed = Vec::new();
+        let mut released = Vec::new();
+        for &(id, ticket) in self.held.iter().rev() {
+            let result = locks.get_mut(&id).ok_or(Error::StaleTicket)
+                .and_then(|lock| lock.release(ticket));
+            match result {
+                Ok(()) => released.push(id),
+                Err(_) => failed.push((id, ticket)),
+            }
+        }
+        // Preserve acquisition order for future retry, not unwind order.
+        failed.reverse();
+        self.held = failed;
+        if self.held.is_empty() { Ok(released) } else { Err(Error::StaleTicket) }
+    }
+    pub(crate) fn all_local_locks_released(&self) -> bool { self.held.is_empty() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +449,65 @@ mod tests {
         assert_eq!(q.claim(a), Err(Error::AlreadyClaimed));
         assert_eq!(q.acquire(c(1)), Err(Error::Reentrant));
         q.release(a).unwrap();
+    }
+
+    #[test]
+    fn cancelled_task_unwinds_multiple_locks_lifo_before_successor_grants() {
+        let mut locks = BTreeMap::new();
+        locks.insert(1, queue(2));
+        locks.insert(2, queue(2));
+        let mut scope = TaskLeaseStack::new(c(1));
+        let first = owned(locks.get_mut(&1).unwrap().acquire(c(1)).unwrap());
+        scope.enter(1, locks.get_mut(&1).unwrap(), first).unwrap();
+        let second = owned(locks.get_mut(&2).unwrap().acquire(c(1)).unwrap());
+        scope.enter(2, locks.get_mut(&2).unwrap(), second).unwrap();
+        let waiting_first = pending(locks.get_mut(&1).unwrap().acquire(c(2)).unwrap());
+        let waiting_second = pending(locks.get_mut(&2).unwrap().acquire(c(2)).unwrap());
+        scope.request_cancel(&mut locks).unwrap();
+        scope.request_cancel(&mut locks).unwrap();
+        assert_eq!(locks.get_mut(&1).unwrap().take_wakeup(), None);
+        assert_eq!(locks.get_mut(&2).unwrap().take_wakeup(), None);
+        assert!(!scope.all_local_locks_released());
+        assert_eq!(scope.unwind_after_safe_point(&mut locks).unwrap(), vec![2, 1]);
+        assert!(scope.all_local_locks_released());
+        assert_eq!(locks.get_mut(&2).unwrap().take_wakeup(), Some(waiting_second));
+        assert_eq!(locks.get_mut(&1).unwrap().take_wakeup(), Some(waiting_first));
+        locks.get_mut(&2).unwrap().claim(waiting_second).unwrap();
+        locks.get_mut(&1).unwrap().claim(waiting_first).unwrap();
+        locks.get_mut(&2).unwrap().release(waiting_second).unwrap();
+        locks.get_mut(&1).unwrap().release(waiting_first).unwrap();
+    }
+    #[test]
+    fn cleanup_attempts_remaining_locks_if_one_lease_is_lost() {
+        let mut locks = BTreeMap::new();
+        locks.insert(1, queue(2));
+        locks.insert(2, queue(2));
+        let mut scope = TaskLeaseStack::new(c(1));
+        for id in [1_u64, 2_u64] {
+            let q = locks.get_mut(&id).unwrap();
+            let t = owned(q.acquire(c(1)).unwrap());
+            scope.enter(id, q, t).unwrap();
+        }
+        // Inject a malformed/unavailable cleanup dependency.
+        locks.remove(&2);
+        assert_eq!(scope.unwind_after_safe_point(&mut locks), Err(Error::StaleTicket));
+        assert!(!scope.all_local_locks_released());
+        assert!(!locks.get(&1).unwrap().has_outstanding_grant());
+        // Local task may not advertise physical retirement on this failure.
+    }
+    #[test]
+    fn cancellation_forbids_new_enter_and_shutdown_still_allows_unwind() {
+        let mut locks = BTreeMap::new();
+        locks.insert(1, queue(2));
+        let mut scope = TaskLeaseStack::new(c(1));
+        let a = owned(locks.get_mut(&1).unwrap().acquire(c(1)).unwrap());
+        scope.enter(1, locks.get_mut(&1).unwrap(), a).unwrap();
+        scope.request_cancel(&mut locks).unwrap();
+        locks.get_mut(&1).unwrap().shutdown();
+        assert_eq!(scope.unwind_after_safe_point(&mut locks).unwrap(), vec![1]);
+        assert!(scope.all_local_locks_released());
+        let new = owned(queue(2).acquire(c(1)).unwrap());
+        assert_eq!(scope.enter(2, locks.get_mut(&1).unwrap(), new),
+            Err(Error::CancellationPending));
     }
 }
