@@ -43,6 +43,8 @@ pub enum SourceKind {
     Class,
     Record,
     Struct,
+    /// Positional tuple: no implicit open-row or Array/List width conversion.
+    Tuple,
     /// Only a verified immutable snapshot/key witness can be projected.
     Map,
 }
