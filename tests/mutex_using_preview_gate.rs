@@ -32,13 +32,11 @@ pub susp fnc main(): int {
 "#;
 
 #[test]
-fn both_mutex_await_spellings_fail_closed_before_guest_emission() {
-    for source in [IMPLICIT, EXPLICIT] {
-        let error = compile(source).expect_err("Mutex lease cannot become executable guest yet");
-        assert_eq!(error.code, "E_LOCK_UNSUPPORTED", "{error}");
-        assert!(error.pos.line > 1);
-        assert!(error.pos.col > 0);
-    }
+fn both_proven_single_task_await_spellings_emit_real_guest() {
+    let implicit = compile(IMPLICIT).expect("admitted single-task fast path");
+    let explicit = compile(EXPLICIT).expect("same semantics for explicit await");
+    assert!(implicit.starts_with(b"\\0asm"));
+    assert_eq!(implicit, explicit, "contextual await must lower identically");
 }
 
 #[test]
@@ -52,8 +50,8 @@ pub susp fnc main(): int {
   return 0;
 }
 "#;
-    let error = compile(source).expect_err("unsupported guard await must fail before guest");
-    assert_eq!(error.code, "E_LOCK_UNSUPPORTED");
+    let error = compile(source).expect_err("syntactic await under scoped lease must be rejected");
+    assert_eq!(error.code, "E_GUARD_SUSPEND");
 }
 
 #[test]
