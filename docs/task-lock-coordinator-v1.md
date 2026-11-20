@@ -93,3 +93,17 @@ CI carrier `benefactor-cc/atto-ci#6` has an exact mirrored Rust blob and pinned 
 **Source-conformance checks performed:** current atto-platform-conformance #115 main registry has 32 SHA-pinned `.atto` fixtures and 13 target lock-lifecycle runtime probes. **All 32 source fixture SHA pins matched GitHub readback** (16+16 checks), every case has a valid expected category, IDs are unique, and ten backend cells correctly remain `NOT_EXECUTED`. This is source integrity, NOT actual `node --test`, compiled Atto, compiled Rust or runtime lock safety.
 
 **Next release gates:** obtain an Actions runner that actually starts steps, regenerate a fresh exact-sha mirror of the **latest** source, execute `cargo test --offline --locked --lib`, optimized tests, Clippy and sanitizer/model checking; then integrate the trusted guard-scope end and TaskScope descendant cancellation into an authenticated, versioned production guest ABI. Run real compiled-guest scheduler traces before changing backend statuses or merging.
+
+
+## Scheduler-authenticated lock parking and resume (2026-11-20)
+
+The private host-side coordinator no longer infers that a task is suspended merely from its existence in a mutex wait queue. `park_lock_wait(task, lock_id, ticket)` is a trusted, serialized scheduler transition and requires:
+- exact task/tenant/actor/incarnation identity and a still-queued matching ticket;
+- no active scoped guard and no cancellation/physical exit;
+- a task not already parked on another wait.
+
+Cancellation wins before the park transition: the still-running task must observe cancellation itself; **no cancellation wake** may be issued. A successful park wins before cancellation: `cancelled_continuation_wake_hints()` returns a durable wake until trusted task exit. A grant that wins before park is claimed directly by the still-running task, never scheduled again. Grant notifications are visible only for actually parked tasks. A parked task cannot claim its grant until the trusted host ready-queue admission is acknowledged with its exact ticket, and a parked but unresumed task cannot certify successful physical exit.
+
+Added adversarial Rust tests to the host model for pre-park cancellation, forged/duplicate park attempts, attempting to park under a live guard, grant-before-park, grant-ack ordering and premature retirement. **Current source has 48 authored host tests but none have executed at the exact head.** This remains a private native-host model; actual production guest scheduler callbacks and compiled `.atto` cancellation are still absent. Conformance registry in `atto-platform-conformance#115` now includes a 14th park/cancel race probe, with ten runtime backend cells kept NOT_EXECUTED.
+
+The previous CI carriers did not admit jobs. [benefactor-cc/atto-ci#6](https://github.com/benefactor-cc/atto-ci/pull/6) mirrors the model source with a pinned Git blob; [run #44684958402](https://github.com/benefactor-cc/atto-ci/actions/runs/44684958402) failed with zero job steps. Do not mark Cargo tests or guest execution as passing.
