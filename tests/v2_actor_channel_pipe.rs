@@ -159,3 +159,25 @@ fn mixed_direction_without_parentheses_is_a_compile_error() {
         .expect_err("unparenthesized mixed direction must fail closed");
     assert_eq!(e.code, "E_PIPE_DIRECTION", "{e}");
 }
+
+
+#[test]
+fn nested_four_stage_graphs_fail_closed_before_prefix_emission() {
+    // Only an exact actor/Channel/actor triple has the experimental
+    // atomic guest setup helper. A fourth stage must not recursively
+    // activate the first three and then fail a later admission.
+    for (label, fixture, original, longer) in [
+        ("pipe", FORWARD,
+         "producer pipe channel pipe consumer",
+         "producer pipe channel pipe consumer pipe consumer"),
+        ("rpipe", REVERSE,
+         "consumer rpipe channel rpipe producer",
+         "consumer rpipe channel rpipe producer rpipe producer"),
+    ] {
+        let source = fixture.replace(original, longer);
+        assert_ne!(source, fixture, "{label}: source must change");
+        let e = atto_compiler::compile(&source)
+            .expect_err("four-stage graph must fail before Wasm emission");
+        assert_eq!(e.code, "E_UNSUPPORTED", "{label}: {e}");
+    }
+}
