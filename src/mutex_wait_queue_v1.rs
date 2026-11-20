@@ -314,6 +314,9 @@ struct ScopeTask {
     waiting: Vec<(u64, Ticket)>,
     unclaimed: Vec<(u64, Ticket)>,
     cancel_requested: bool,
+    /// Only cancellation of a *suspended lock waiter* needs a scheduler
+    /// wake hint. An active critical holder must not be reentered.
+    lock_wait_cancel_wake: bool,
     guest_exited: bool,
     notifications_drained: bool,
     physically_retired: bool,
@@ -384,7 +387,8 @@ impl TaskScopeLockCoordinator {
             parent: parent_id,
             guards: TaskLeaseStack::new(who),
             waiting: Vec::new(), unclaimed: Vec::new(),
-            cancel_requested: false, guest_exited: false,
+            cancel_requested: false, lock_wait_cancel_wake: false,
+            guest_exited: false,
             notifications_drained: false, physically_retired: false,
             cleanup_failed: false, exit_kind: None,
         });
@@ -426,6 +430,12 @@ impl TaskScopeLockCoordinator {
         let task = tasks.get_mut(&id).ok_or(Error::UnknownTask)?;
         if task.physically_retired || task.guest_exited { return Ok(()); }
         task.cancel_requested = true; // prevents new claims before any release
+        // Wake only a task parked on lock acquisition. Running critical
+        // holders observe cancellation at safe points, never by duplicate
+        // runnable admission. Channel/timer waits have separate registrars.
+        if !task.waiting.is_empty() || !task.unclaimed.is_empty() {
+            task.lock_wait_cancel_wake = true;
+        }
         let mut failure = None;
         let pending = std::mem::take(&mut task.waiting);
         for (lock_id, ticket) in pending {
@@ -715,15 +725,12 @@ impl HostTaskLockKernel {
     /// This does NOT run callbacks or unlock a claimed guard.
     fn cancelled_continuation_wake_hints(&self) -> Result<Vec<Continuation>, Error> {
         self.try_with_core(|core| Ok(core.tasks.values()
-            .filter(|task| task.cancel_requested && !task.guest_exited)
+            .filter(|task| task.cancel_requested && task.lock_wait_cancel_wake && !task.guest_exited)
             .map(|task| task.continuation)
             .collect()))
     }
-    /// Edge-triggered *grant hints* from the serialized lock arbiter. Taking
-    /// a hint does NOT claim the lease. The scheduler must pass the exact
-    /// ticket back through claim() to revalidate generation, owner and cancel
-    /// state before any guest code accesses protected memory.
-    /// Level-triggered grant hints. Merely inspecting a wake hint must NOT
+    /// Grant wake hints never confer ownership: the scheduler still calls
+    /// claim() to revalidate the exact ticket. Level-triggered grant hints. Merely inspecting a wake hint must NOT
     /// consume it: failed scheduler enqueue or a busy carrier may retry.
     /// A trusted scheduler acknowledges only AFTER admission to its ready
     /// queue; guest code can never acknowledge a raw lock ticket.
