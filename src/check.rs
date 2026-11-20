@@ -3640,6 +3640,13 @@ impl<'a> FnCx<'a> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        // Entry<K,V> has passed the bounded nominal static preflight, but there
+        // is no ownership-safe guest Entry allocation/lowering yet. A reserved
+        // compiler intrinsic is never an unresolved user function (E_UNBOUND).
+        if name == "@builtin/Entry.of" || name.starts_with("@builtin/Entry.ascribe<") {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "first-class Entry<K,V> guest lowering is not implemented"));
+        }
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
         }
