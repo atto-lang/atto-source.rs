@@ -234,7 +234,28 @@ where F: FnMut(&Path) -> std::io::Result<String> {
         return Err(diagnostic(Pos { line: 1, col: 1 }, "E_IMPORT_PATH", "logical path must be project-relative"));
     }
     let lexed = lexer::lex(source)?;
-    let (imports, root) = imports(&lexed, logical)?;
+    // Namespace headers are recognized and validated by the canonical
+    // namespace normalizer, not silently swallowed as ordinary identifiers.
+    // For this restricted single-file/function import profile, the header is
+    // compile-time source metadata. Its declared namespace cannot mint an
+    // external package authority or relax the import allowlist.
+    let import_tokens = if word(lexed.get(0), "use")
+        && (word(lexed.get(1), "namespace")
+            || (word(lexed.get(1), "default") && word(lexed.get(2), "namespace")))
+    {
+        let normalized = crate::namespace::normalize(&lexed, Some(logical))?;
+        let end = normalized.iter().position(|t| t.tok == Tok::Semi)
+            .ok_or_else(|| diagnostic(lexed[0].pos, "E_SYNTAX",
+                "namespace declaration must end with a semicolon"))?;
+        if word(normalized.get(end + 1), "import") {
+            normalized[end + 1..].to_vec()
+        } else {
+            lexed.clone()
+        }
+    } else {
+        lexed.clone()
+    };
+    let (imports, root) = imports(&import_tokens, logical)?;
     if imports.is_empty() { return Ok(lexed); }
     reject_forged_names(&root)?;
     let mut parser = Parser::new(root.clone());
