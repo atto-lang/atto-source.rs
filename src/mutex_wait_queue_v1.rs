@@ -163,9 +163,17 @@ impl WaitQueue {
     /// Same ticket cancels either a still-pending request or its already-
     /// granted handoff. The arbiter serializes cancellation versus release.
     pub(crate) fn cancel(&mut self, token: Ticket) -> Result<Cancellation, Error> {
-        if self.closed { return Err(Error::Closed); }
         self.check_domain(token.continuation)?;
         if token.generation != self.generation { return Err(Error::StaleTicket); }
+        if self.closed {
+            // A shutdown may have closed new admission while an active holder
+            // still needs a safe-point unwind; cancellation remains idempotent.
+            if self.owner == Some(token) && self.active {
+                self.cancel_requested = true;
+                return Ok(Cancellation::ActiveDeferred);
+            }
+            return Err(Error::Closed);
+        }
         if let Some(i) = self.waiting.iter().position(|t| *t == token) {
             self.waiting.remove(i);
             return Ok(Cancellation::Queued);
@@ -192,7 +200,13 @@ impl WaitQueue {
         self.wakeup = None;
         let retired = self.waiting.len();
         self.waiting.clear();
-        if !self.active { self.owner = None; }
+        if self.active {
+            // Inform active holder to unwind; do NOT publish a free lock.
+            self.cancel_requested = true;
+        } else {
+            self.owner = None;
+            self.cancel_requested = false;
+        }
         retired
     }
 }
@@ -509,5 +523,19 @@ mod tests {
         let new = owned(queue(2).acquire(c(1)).unwrap());
         assert_eq!(scope.enter(2, locks.get_mut(&1).unwrap(), new),
             Err(Error::CancellationPending));
+    }
+
+    #[test]
+    fn late_cancel_after_shutdown_preserves_active_lock_until_cleanup() {
+        let mut q = queue(2);
+        let t = owned(q.acquire(c(1)).unwrap());
+        q.claim(t).unwrap();
+        assert_eq!(q.shutdown(), 0);
+        assert!(q.cancellation_pending());
+        assert_eq!(q.cancel(t), Ok(Cancellation::ActiveDeferred));
+        assert!(q.has_outstanding_grant());
+        q.release(t).unwrap();
+        assert!(!q.has_outstanding_grant());
+        assert_eq!(q.cancel(t), Err(Error::Closed));
     }
 }
