@@ -116,3 +116,45 @@ pub susp fnc main(): int {
     let overflow=source(main).replace("new Mutex<int>(0)", "new Mutex<int>(9223372036854775806)");
     assert_eq!(compile(&overflow).unwrap_err().code,"E_OVERFLOW");
 }
+
+
+#[test]
+fn typed_task_cancel_with_mutex_remains_fail_closed() {
+    // The single-task lock-elision profile MUST NOT be widened into a
+    // cancellable guest TaskScope merely because its lexical body is valid.
+    // The host-only TaskScopeLockCoordinator is not an installed scheduler.
+    let cases = [
+        r#"
+pub susp fnc main(): int {
+    val Future<int> work = task<int> {
+        val mutex = new Mutex<int>(41);
+        using await mutex.lock_async() as guard { return guard.value; }
+    };
+    work.cancel();
+    return 0;
+}
+"#,
+        r#"
+pub susp fnc main(): int {
+    do task<void> {
+        val mutex = new Mutex<int>(0);
+        using await mutex.lock_async() as guard { guard.value += 1; }
+    };
+    return 0;
+}
+"#,
+        r#"
+pub susp fnc main(): int {
+    val mutex = new Mutex<int>(0);
+    val Future<int> work = task<int> { return 42; };
+    using mutex.lock() as guard {
+        return await work;
+    }
+}
+"#,
+    ];
+    for src in cases {
+        assert!(compile(src).is_err(),
+            "unverified cancellable TaskScope/Mutex guest was emitted: {src}");
+    }
+}
