@@ -495,6 +495,8 @@ impl<'a> Checker<'a> {
             Ty::List(a) => format!("List<{}>", self.tn(a)),
             Ty::Future(a) => format!("Future<{}>", self.tn(a)),
             Ty::Channel(a) => format!("Channel<{}>", self.tn(a)),
+            Ty::PipeHandle => "PipeHandle".into(),
+            Ty::PipeSetupError => "PipeSetupError".into(),
             Ty::AsyncGen(a) => format!("AsyncGenerator<{}>", self.tn(a)),
             Ty::Fn(p, r) => format!("fnc({}) -> {}", p.iter().map(|x| self.tn(x)).collect::<Vec<_>>().join(", "), self.tn(r)),
             Ty::Actor(i) => format!("ActorRef<{}>", self.objs[*i].name),
@@ -533,6 +535,8 @@ impl<'a> Checker<'a> {
             ("Result", 2) => Ty::Result(arg(0)?, arg(1)?),
             ("Future" | "Task", 1) => Ty::Future(arg(0)?),
             ("Channel", 1) => Ty::Channel(arg(0)?),
+            ("PipeHandle", 0) => Ty::PipeHandle,
+            ("PipeSetupError", 0) => Ty::PipeSetupError,
             ("AsyncGenerator", 1) => Ty::AsyncGen(arg(0)?),
             ("List" | "Array", 1) => Ty::List(arg(0)?),
             ("Observable", 1) => Ty::Observable(arg(0)?),
@@ -1369,7 +1373,7 @@ impl<'a> Checker<'a> {
                 None => Err(err(pos, "E_SELF", "'self' is only valid inside an actor or supervisor")),
             },
             Ex::Unary(op, inner) => self.unary(*op, inner, pos),
-            Ex::Binary(op, l, r) => self.binary(*op, l, r, pos),
+            Ex::Binary(op, l, r) => self.binary(*op, l, r, pos, want),
             Ex::Ternary(c, a, b) => {
                 let cond = self.condition(c)?;
                 let (pa, a_ir, a_ty) = self.isolated(a, want)?;
@@ -1574,7 +1578,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos) -> R<(Ir, Ty)> {
+    fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr, pos: Pos, want: Option<&Ty>) -> R<(Ir, Ty)> {
         match op {
             BinOp::And | BinOp::Or | BinOp::CondAnd | BinOp::CondOr => {
                 let left = self.condition(l)?;
