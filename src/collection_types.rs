@@ -6,7 +6,7 @@
 //! an invented runtime type. Once this is wired to checked guest allocation the
 //! same type and tree structure can be consumed by the lowering stage.
 
-use crate::ast::{Expr, ExprKind, Program, Stmt, Type, UnOp};
+use crate::ast::{BindKind, Expr, ExprKind, Program, Stmt, Type, UnOp};
 use crate::diag::{Diagnostic, Pos};
 use std::collections::BTreeMap;
 
@@ -387,51 +387,79 @@ fn starts_literal(e: &Expr) -> bool {
         ExprKind::Map(_) | ExprKind::Entry(_, _) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
 }
 
-/// Staged semantic preflight: checked declarations are *not* yet executable.
-/// Scalar-only statements remain the responsibility of the existing checker.
-fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
-    -> Result<(), Diagnostic>
+/// Nested scopes never leak const key identities outward or across
+/// control-flow alternatives. Only direct, immutable scalar constants are
+/// eligible for early computed-key type inference; all other names require
+/// the ordinary ownership-aware binder and fail closed in this profile.
+fn walk_scoped(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>,
+    known: &BTreeMap<String,LiteralType>) -> Result<(), Diagnostic> {
+    let mut inner = known.clone();
+    walk(body, program, out, &mut inner)
+}
+
+fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>,
+    known: &mut BTreeMap<String,LiteralType>) -> Result<(), Diagnostic>
 {
     for stmt in body {
         match stmt {
-            Stmt::Bind {name, ty,init,pos,..} => {
+            Stmt::Bind {name, ty,init,pos,kind,..} => {
                 let wanted = ty.map(|t| annotation(t,program,*pos)).transpose()?.flatten();
                 if wanted.as_ref().is_some_and(|t| matches!(t, LiteralType::Array(_) |
-                    LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::Entry(_,_) | LiteralType::OpenRecord |
-                    LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
+                    LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::Entry(_,_) |
+                    LiteralType::OpenRecord | LiteralType::Record(_) |
+                    LiteralType::Tuple(_) | LiteralType::AnyTuple))
                     || starts_literal(init)
                 {
-                    let value = inferred(init,wanted.as_ref(),0)?;
+                    let value = inferred(init,wanted.as_ref(),0,known)?;
                     if ty.is_none() && (matches!(&init.kind, ExprKind::EmptyBraces) ||
                         matches!(&init.kind, ExprKind::Array(v) if v.is_empty())) {
                         return Err(diag(init.pos,"E_INFER",
                             "empty collection without type annotation is ambiguous"));
                     }
-                    out.push(TypedBinding {name:name.clone(),declared:wanted,value});
+                    out.push(TypedBinding {name:name.clone(),declared:wanted.clone(),value});
+                }
+                let is_direct_scalar = matches!(&init.kind,
+                    ExprKind::Int(Some(_)) | ExprKind::Bool(_) | ExprKind::Float(_) |
+                    ExprKind::Str(_) | ExprKind::Symbol(_));
+                let accepted = if *kind == BindKind::Const && is_direct_scalar {
+                    wanted.as_ref().filter(|t| matches!(t,
+                        LiteralType::Int | LiteralType::Bool | LiteralType::Float |
+                        LiteralType::String | LiteralType::Symbol)).cloned()
+                } else {
+                    None
+                };
+                // Do not grant inferred type based on annotation alone: verify
+                // the literal expression truly has that declared scalar type.
+                if let Some(t) = accepted {
+                    inferred(init,Some(&t),0,known)?;
+                    known.insert(name.clone(),t);
+                } else {
+                    known.remove(name);
                 }
             }
             Stmt::Block(inner) | Stmt::While {body:inner,..} |
             Stmt::Loop {body:inner,..} | Stmt::StateWrite {body:inner,..} |
-            Stmt::ForIn {body:inner,..} => walk(inner,program,out)?,
+            Stmt::ForIn {body:inner,..} => walk_scoped(inner,program,out,known)?,
             Stmt::If {arms,otherwise,..} => {
-                for (_,inner) in arms { walk(inner,program,out)?; }
-                if let Some(inner) = otherwise { walk(inner,program,out)?; }
+                for (_,inner) in arms { walk_scoped(inner,program,out,known)?; }
+                if let Some(inner) = otherwise { walk_scoped(inner,program,out,known)?; }
             }
             Stmt::For {init,update,body,..} => {
-                if let Some(s) = init { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
-                walk(body,program,out)?;
-                if let Some(s) = update { walk(std::slice::from_ref(s.as_ref()),program,out)?; }
+                let mut local = known.clone();
+                if let Some(s) = init { walk(std::slice::from_ref(s.as_ref()),program,out,&mut local)?; }
+                walk_scoped(body,program,out,&local)?;
+                if let Some(s) = update { walk(std::slice::from_ref(s.as_ref()),program,out,&mut local)?; }
             }
             Stmt::Match {arms,..} => {
-                for arm in arms { walk(&arm.body,program,out)?; }
+                for arm in arms { walk_scoped(&arm.body,program,out,known)?; }
             }
             Stmt::Try {body,catch,finally,..} => {
-                walk(body,program,out)?;
-                if let Some((_,inner)) = catch { walk(inner,program,out)?; }
-                if let Some(inner) = finally { walk(inner,program,out)?; }
+                walk_scoped(body,program,out,known)?;
+                if let Some((_,inner)) = catch { walk_scoped(inner,program,out,known)?; }
+                if let Some(inner) = finally { walk_scoped(inner,program,out,known)?; }
             }
             Stmt::Defer {body,..} | Stmt::Recover {body,..} =>
-                walk(body,program,out)?,
+                walk_scoped(body,program,out,known)?,
             _ => {}
         }
     }
@@ -443,7 +471,7 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
 pub fn analyze(program: &Program) -> Result<Vec<TypedBinding>, Diagnostic> {
     let mut out = Vec::new();
     for func in &program.funcs {
-        walk(&func.body,program,&mut out)?;
+        walk(&func.body,program,&mut out,&mut BTreeMap::new())?;
     }
     Ok(out)
 }
