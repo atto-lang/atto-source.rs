@@ -1,0 +1,8 @@
+// Guard rejects FIRST leftmost-shortest witness. It must not retry at 5.
+pub fnc main(): int {
+  val items: List<int> = List.of(-1, 5, 10, 20, 30);
+  return match<int> items over
+    on List.of(..., is int as val a, is int as val b, is int as val c, ...) when a > 0 -> a + b + c,
+    on _ -> 0
+  end;
+}
