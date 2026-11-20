@@ -65,6 +65,9 @@ pub mod state_admission;
 pub mod target_syntax;
 /// Fail-closed scoped Mutex admission until verified lease/await guest lowering.
 pub mod mutex_using_preview_gate;
+/// Narrow executable single-task Mutex<int> uncontended guest profile.
+/// Other lock sites remain blocked until real typed async scheduling exists.
+pub mod mutex_fast_guest;
 /// Host-reference waiter/cancellation model, compiled only in Rust unit tests;
 /// NOT an Atto guest mutex runtime or an admitted compiler intrinsic.
 #[cfg(test)]
@@ -122,8 +125,17 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
 fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::Path>)
     -> Result<Vec<u8>, Diagnostic> {
     let original_tokens = namespace::normalize(&tokens, logical_path)?;
-    // A lexical admission fence, not a replacement for typed Mutex ownership.
-    // Never emit guest Wasm for a lock scope until scheduler/lease lowering exists.
+    // The only admitted lock execution is a checked, closed-world,
+    // single-task uncontended fast path. All other scoped Mutex use remains
+    // fail-closed before general parser or guest emission.
+    if let Some(program) = mutex_fast_guest::try_lower(&original_tokens)? {
+        let bytes = wasm::emit(&program);
+        if bytes.len() > wasm::MAX_OUTPUT {
+            return Err(Diagnostic::new(Pos { line:1,col:1 },
+                "E_OUTPUT_LIMIT", "generated guest module exceeds size limit"));
+        }
+        return Ok(bytes);
+    }
     mutex_using_preview_gate::reject_unimplemented(&original_tokens)?;
     // A type-declaration syntax preflight must not publish a fake guest artifact.
     if type_declarations::contains_type_declaration(&original_tokens) {
