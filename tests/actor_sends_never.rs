@@ -83,3 +83,46 @@ fn scalar_send_without_take_retains_existing_guest_compilation() {
         "val value = 42; val worker = spawn Worker(); worker.send(value); return 0; }");
     assert!(compile(&source).expect("copyable scalar send remains allowed").starts_with(b"\0asm"));
 }
+
+#[test]
+fn actor_isolation_negative_fixtures_never_emit_wasm() {
+    // A successful compile would return an artifact, so every attempted
+    // negative case must instead yield its stable, declared diagnostic.
+    const NEGATIVES: &[(&str, &str)] = &[
+        (include_str!("fixtures/fail/actor-isolation-pointer-mail-v1.atto"), "E_UNSUPPORTED_TYPE"),
+        (include_str!("fixtures/fail/actor-isolation-arc-mail-v1.atto"), "E_UNSUPPORTED_TYPE"),
+        (include_str!("fixtures/fail/actor-isolation-mutex-mail-v1.atto"), "E_UNSUPPORTED_TYPE"),
+        (include_str!("fixtures/fail/actor-isolation-nominal-mail-v1.atto"), "E_UNSUPPORTED_TYPE"),
+        (include_str!("fixtures/fail/actor-isolation-sendable-spoof-v1.atto"), "E_UNSUPPORTED_TYPE"),
+        (include_str!("fixtures/fail/actor-isolation-shareable-spoof-v1.atto"), "E_UNSUPPORTED_TYPE"),
+        (include_str!("fixtures/fail/actor-isolation-serializable-spoof-v1.atto"), "E_UNSUPPORTED_TYPE"),
+        (include_str!("fixtures/fail/actor-untrusted-no-sandbox-v1.atto"), "E_UNTRUSTED_SANDBOX_UNAVAILABLE"),
+        (include_str!("fixtures/fail/actor-isolated-no-private-runtime-v1.atto"), "E_ACTOR_DOMAIN_RUNTIME_UNAVAILABLE"),
+    ];
+    for (index, (source, expected_code)) in NEGATIVES.iter().enumerate() {
+        let err = compile(source).expect_err("invalid isolation contract must not emit guest bytes");
+        assert_eq!(err.code, *expected_code, "negative isolation fixture {index}");
+    }
+}
+
+#[test]
+fn forged_receive_ast_cannot_widen_compiler_scalar_witness() {
+    let mut parser = Parser::new(lexer::lex(BASE).unwrap());
+    let program = parser.parse_program().unwrap();
+    for forbidden in [Type::Float, Type::Str, Type::ActorRef(0), Type::OptionInt] {
+        let mut tampered = program.clone();
+        tampered.actors[0].receives = Some(forbidden);
+        tampered.actors[0].receive.as_mut().unwrap().payload = forbidden;
+        let err = check::check(&tampered)
+            .expect_err("typed checker must reject forged actor mailbox shapes");
+        assert_eq!(err.code, "E_UNSUPPORTED_TYPE", "forged mailbox {forbidden:?}");
+    }
+}
+
+#[test]
+fn runtime_scalar_witness_does_not_weaken_take_send_gate() {
+    let source = BASE.replace("return 0; }",
+        "val worker = spawn Worker(); val value = 42; worker.send(take! value); return 0; }");
+    let err = compile(&source).expect_err("copyable scalar is not a permit for take! escrow");
+    assert_eq!(err.code, "E_ACTOR_TRANSFER_UNSUPPORTED");
+}
