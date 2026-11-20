@@ -25,6 +25,11 @@ pub enum LiteralType {
     /// Preserved concrete field-name -> field-type structure.
     Record(Vec<(String, LiteralType)>),
     Map(Box<LiteralType>, Box<LiteralType>),
+    /// Tagged Option<T>: None has no payload but still has a concrete type.
+    Option(Box<LiteralType>),
+    /// Pair and Entry have identical slot count, but distinct type identity.
+    Pair(Box<LiteralType>, Box<LiteralType>),
+    Entry(Box<LiteralType>, Box<LiteralType>),
     List(Box<LiteralType>),
     Array(Box<LiteralType>),
     /// Unparameterized Tuple accepts any arity; not the same as ().
@@ -158,6 +163,9 @@ fn canonical_type(name: &str, pos: Pos, depth: usize) -> Result<LiteralType, Dia
             let args: Vec<_> = parts.iter().map(|p| canonical_type(p, pos, depth + 1))
                 .collect::<Result<_, _>>()?;
             match (head, args.as_slice()) {
+                ("Option", [item]) => LiteralType::Option(Box::new(item.clone())),
+                ("Pair", [key,value]) => LiteralType::Pair(Box::new(key.clone()), Box::new(value.clone())),
+                ("Entry", [key,value]) => LiteralType::Entry(Box::new(key.clone()), Box::new(value.clone())),
                 ("Array", [item]) => LiteralType::Array(Box::new(item.clone())),
                 ("List", [item]) => LiteralType::List(Box::new(item.clone())),
                 ("Map", [key, value]) =>
@@ -199,7 +207,11 @@ fn compatible(actual: &LiteralType, expected: &LiteralType) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|((na,ta),(nb,tb))|
                 na == nb && compatible(ta,tb)),
         (Array(a), Array(b)) | (List(a), List(b)) => compatible(a,b),
-        (Map(ka, va), Map(kb, vb)) => compatible(ka,kb) && compatible(va,vb),
+        (Map(ka, va), Map(kb, vb))
+        | (Pair(ka, va), Pair(kb, vb))
+        | (Entry(ka, va), Entry(kb, vb)) =>
+            compatible(ka,kb) && compatible(va,vb),
+        (Option(a), Option(b)) => compatible(a,b),
         (Tuple(_), AnyTuple) => true,
         (Tuple(a), Tuple(b)) =>
             a.len() == b.len() && a.iter().zip(b).all(|(x,y)| compatible(x,y)),
@@ -215,6 +227,7 @@ fn common(a: LiteralType, b: LiteralType, at: Pos) -> Result<LiteralType, Diagno
     match (a, b) {
         (Record(_), Record(_)) | (Record(_), OpenRecord) |
         (OpenRecord, Record(_)) => Ok(OpenRecord),
+        (Option(a), Option(b)) => Ok(Option(Box::new(common(*a,*b,at)?))),
         (List(a), List(b)) => Ok(List(Box::new(common(*a, *b, at)?))),
         (Array(a), Array(b)) => Ok(Array(Box::new(common(*a, *b, at)?))),
         (Map(ka,va), Map(kb,vb)) => Ok(Map(
@@ -255,6 +268,36 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         ExprKind::Float(_) => Float,
         ExprKind::Bool(_) => Bool,
         ExprKind::Str(_) => String,
+        ExprKind::Var(name) if name == "None" => match expected {
+            Some(Option(item)) if **item != Bottom => Option(item.clone()),
+            _ => return Err(diag(e.pos, "E_TYPE_INFERENCE",
+                "None requires an explicit Option<T> contextual type")),
+        },
+        ExprKind::Call(name, args) if matches!(name.as_str(),
+                "@builtin/Pair.of" | "@builtin/Entry.of") => {
+            if args.len() != 2 {
+                return Err(diag(e.pos,"E_FACTORY_ARITY",
+                    "Pair.of/Entry.of requires exactly two arguments"));
+            }
+            let is_pair = name == "@builtin/Pair.of";
+            let (left,right) = match (is_pair,expected) {
+                (true,Some(Pair(a,b))) | (false,Some(Entry(a,b))) =>
+                    (Some(a.as_ref()),Some(b.as_ref())),
+                (_,None) => (None,None),
+                _ => return Err(diag(e.pos,"E_TYPE",
+                    "Pair and Entry are different product types")),
+            };
+            let a = inferred(&args[0],left,depth+1)?;
+            let b = inferred(&args[1],right,depth+1)?;
+            let ty = if is_pair {
+                Pair(Box::new(a.ty.clone()),Box::new(b.ty.clone()))
+            } else {
+                Entry(Box::new(a.ty.clone()),Box::new(b.ty.clone()))
+            };
+            children.push(a);
+            children.push(b);
+            ty
+        }
         ExprKind::Unary(UnOp::Neg, v) if matches!(&v.kind, ExprKind::Int(_)) => {
             // The exact signed-minimum literal is represented as i64::MAX+1.
             if let ExprKind::Int(Some(n)) = &v.kind {
@@ -434,7 +477,8 @@ fn starts_literal(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
         ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_)) ||
         matches!(&e.kind, ExprKind::Call(name, _) if
-            matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of"))
+            matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of" |
+                "@builtin/Pair.of" | "@builtin/Entry.of"))
 }
 
 /// Staged semantic preflight: checked declarations are *not* yet executable.
@@ -447,7 +491,9 @@ fn walk(body: &[Stmt], program: &Program, out: &mut Vec<TypedBinding>)
             Stmt::Bind {name, ty,init,pos,..} => {
                 let wanted = ty.map(|t| annotation(t,program,*pos)).transpose()?.flatten();
                 if wanted.as_ref().is_some_and(|t| matches!(t, LiteralType::Array(_) |
-                    LiteralType::List(_) | LiteralType::Map(_,_) | LiteralType::OpenRecord |
+                    LiteralType::List(_) | LiteralType::Map(_,_) |
+                    LiteralType::Pair(_,_) | LiteralType::Entry(_,_) |
+                    LiteralType::Option(_) | LiteralType::OpenRecord |
                     LiteralType::Record(_) | LiteralType::Tuple(_) | LiteralType::AnyTuple))
                     || starts_literal(init)
                 {
