@@ -152,3 +152,19 @@ pub fnc main(): int {
         assert_eq!(err.code, expected, "{bad}: {err}");
     }
 }
+
+
+#[test]
+fn standalone_default_namespace_keeps_original_missing_path_diagnostic() {
+    let source = "use default namespace; pub fnc main(): int { return 42; }";
+    let err = compile(source).expect_err("missing logical folder must not be guessed");
+    assert_eq!(err.code, "E_NAMESPACE_PATH");
+
+    let ordinary = "use namespace storefront; pub fnc main(): int { return 42; }";
+    // No new import path or ambient package is needed for this pre-existing
+    // namespace-only source admission. Keep it on the ordinary compiler path.
+    let outcome = compile(ordinary);
+    if let Err(err) = outcome {
+        assert_ne!(err.code, "E_IMPORT", "standalone namespace must not trigger source loading");
+    }
+}
