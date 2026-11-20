@@ -1,0 +1,8 @@
+// Exact-width match with no rests must compare all source elements.
+pub fnc main(): int {
+  val items: List<int> = List.of(10, 20, 30);
+  return match<int> items over
+    on List.of(10, 20, 30) -> 1,
+    on _ -> 0
+  end;
+}
