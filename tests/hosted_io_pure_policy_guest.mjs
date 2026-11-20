@@ -80,7 +80,25 @@ try{
    assert.equal(result.stdout.length,0,label+' emitted a Wasm artifact');
    assert.ok(result.stderr?.toString().includes(code),label+': '+result.stderr?.toString());
  }
- console.log('PASS compiled Atto sealed std HTTP/FS pure-policy imports: exit 42, zero host imports, five negative cases');
+
+ // The originally requested async GET -> file write/read guest program is
+ // not lowered yet. Verify the production compiler emits no misleading Wasm.
+ const realIo=compile([
+   'import * as http from pkg "std.http";',
+   'import * as fs from pkg "std.fs";',
+   'pub susp fnc main(): int {',
+   '  val response = await http.get("http://127.0.0.1:8080/data");',
+   '  val body = await response.text();',
+   '  await fs.write_text("./response.txt", body);',
+   '  val saved = await fs.read_text("./response.txt");',
+   '  return saved.length;',
+   '}'
+ ].join('\n'));
+ assert.equal(realIo.status,1,
+   'unimplemented async HTTP/FS must not produce a success exit code');
+ assert.equal(realIo.stdout.length,0,
+   'unimplemented async HTTP/FS unexpectedly produced executable Wasm');
+ console.log('PASS compiled Atto sealed std HTTP/FS pure-policy imports: exit 42, zero host imports, five negative cases plus rejected async HTTP/FS');
 } finally {
  rmSync(dir,{recursive:true,force:true});
 }
