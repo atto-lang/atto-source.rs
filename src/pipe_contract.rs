@@ -109,6 +109,43 @@ mod tests {
     }
 
     #[test]
+    fn forward_and_reverse_spelling_produce_identical_data_edges() {
+        use crate::ast::PipeDirection;
+        let forward = directed_topology(3, PipeDirection::LeftToRight).unwrap();
+        let reverse = directed_topology(3, PipeDirection::RightToLeft).unwrap();
+        // Producer, Transform, Consumer written forward.
+        assert_eq!(forward.flow_indices, vec![0, 1, 2]);
+        assert_eq!(forward.edges, vec![(0, 1), (1, 2)]);
+        // Consumer, Transform, Producer written backward. Written indices
+        // reverse but source->sink identities and DATA order remain identical.
+        assert_eq!(reverse.flow_indices, vec![2, 1, 0]);
+        assert_eq!(reverse.edges, vec![(2, 1), (1, 0)]);
+        for written in [0usize, 1, 2] {
+            assert_eq!(forward.flow_indices[written], reverse.flow_indices[2-written]);
+        }
+    }
+
+    #[test]
+    fn pipeline_topology_enforces_tenant_stage_limit_without_cloning_expressions() {
+        use crate::ast::PipeDirection;
+        for n in [0, 1, 17, usize::MAX] {
+            assert_eq!(directed_topology(n, PipeDirection::LeftToRight), None);
+            assert_eq!(directed_topology(n, PipeDirection::RightToLeft), None);
+        }
+        for n in [2, 3, 16] {
+            for direction in [PipeDirection::LeftToRight, PipeDirection::RightToLeft] {
+                let plan = directed_topology(n, direction).unwrap();
+                assert_eq!(plan.edges.len(), n - 1);
+                assert_eq!(plan.flow_indices.len(), n);
+                let mut sorted = plan.flow_indices.clone();
+                sorted.sort_unstable();
+                assert_eq!(sorted, (0..n).collect::<Vec<_>>());
+                assert!(plan.edges.iter().all(|&(from, to)| from != to));
+            }
+        }
+    }
+
+    #[test]
     fn producer_transform_consumer_is_typed_and_ordered() {
         assert_eq!(validate_known_edges(&[
             port(None, Some(Type::Int)),
