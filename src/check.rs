@@ -805,7 +805,59 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
     Ok(())
 }
 
+/// Guest profile admission: preserve the real source AST for tooling while
+/// preventing forged analysis-only unsafe nodes from reaching any lowerer.
+fn first_unsafe_block(body: &[Stmt]) -> Option<Pos> {
+    for stmt in body {
+        let found = match stmt {
+            Stmt::UnsafeBlock { pos, .. } => Some(*pos),
+            Stmt::StateWrite { body, .. } | Stmt::Block(body)
+            | Stmt::While { body, .. } | Stmt::Loop { body, .. }
+            | Stmt::ForIn { body, .. } => first_unsafe_block(body),
+            Stmt::For { init, update, body, .. } => init.as_ref()
+                .and_then(|s| first_unsafe_block(std::slice::from_ref(s.as_ref())))
+                .or_else(|| update.as_ref()
+                    .and_then(|s| first_unsafe_block(std::slice::from_ref(s.as_ref()))))
+                .or_else(|| first_unsafe_block(body)),
+            Stmt::If { arms, otherwise, .. } => arms.iter()
+                .find_map(|(_, body)| first_unsafe_block(body))
+                .or_else(|| otherwise.as_ref().and_then(|b| first_unsafe_block(b))),
+            Stmt::Try { body, catch, finally, .. } => first_unsafe_block(body)
+                .or_else(|| catch.as_ref().and_then(|(_, b)| first_unsafe_block(b)))
+                .or_else(|| finally.as_ref().and_then(|b| first_unsafe_block(b))),
+            Stmt::Defer { body, .. } | Stmt::Recover { body, .. } => first_unsafe_block(body),
+            Stmt::Match { arms, .. } => arms.iter()
+                .find_map(|arm| first_unsafe_block(&arm.body)),
+            _ => None,
+        };
+        if found.is_some() { return found; }
+    }
+    None
+}
+
+fn deny_unsafe_guest_ast(p: &Program) -> R<()> {
+    // User-crafted ASTs are no more privileged than text parsed by the
+    // production browser compiler; no native host grant is possible.
+    let forbidden = p.funcs.iter().find_map(|f| if f.is_unsafe {
+        Some(f.pos)
+    } else { first_unsafe_block(&f.body) })
+    .or_else(|| p.classes.iter().find_map(|c| {
+        c.ctor.as_ref().and_then(|ctor| first_unsafe_block(&ctor.body))
+            .or_else(|| c.methods.iter().find_map(|m| first_unsafe_block(&m.body)))
+    }))
+    .or_else(|| p.actors.iter().find_map(|a| {
+        a.methods.iter().find_map(|m| first_unsafe_block(&m.body))
+            .or_else(|| a.receive.as_ref().and_then(|r| first_unsafe_block(&r.body)))
+    }));
+    if let Some(pos) = forbidden {
+        return Err(Diagnostic::new(pos, "E_UNSAFE_DOMAIN",
+            "analysis-only unsafe source AST cannot be checked into browser/Wasm guest code"));
+    }
+    Ok(())
+}
+
 pub fn check(p: &Program) -> R<TProgram> {
+    deny_unsafe_guest_ast(p)?;
     let lowered = direct_lambda::lower(p)?;
     check_lowered(&lowered)
 }
@@ -1928,7 +1980,8 @@ fn ctor_init_stmts(
                 ctor_init_expr(e, flow, fields)?; false
             }
             Stmt::Break(_) | Stmt::Continue(_) => false,
-            Stmt::Block(stmts) | Stmt::StateWrite { body: stmts, .. } =>
+            Stmt::Block(stmts) | Stmt::UnsafeBlock { body: stmts, .. } |
+            Stmt::StateWrite { body: stmts, .. } =>
                 ctor_init_stmts(stmts, flow, fields, ambiguous)?,
             Stmt::If { arms, otherwise, .. } => {
                 // Condition effects do not initialize fields. Merge all
@@ -2109,7 +2162,8 @@ fn constructor_self_stmts(body: &[Stmt], captured: bool) -> R<()> {
             Stmt::Return(Some(expr), _) => constructor_self_expr(expr, captured)?,
             Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::StateWrite { body, .. } | Stmt::Loop { body, .. }
-            | Stmt::Block(body) => constructor_self_stmts(body, captured)?,
+            | Stmt::Block(body) | Stmt::UnsafeBlock { body, .. } =>
+                constructor_self_stmts(body, captured)?,
             Stmt::Try { body, catch, finally, .. } => {
                 constructor_self_stmts(body, captured)?;
                 if let Some((_, handler)) = catch {
@@ -3011,6 +3065,9 @@ impl<'a> FnCx<'a> {
                 }
             }
             Stmt::Block(b) => TStmt::Block(self.scoped(b)?),
+            Stmt::UnsafeBlock { pos, .. } => return Err(Diagnostic::new(*pos,
+                "E_UNSAFE_DOMAIN",
+                "untrusted browser/Wasm guest cannot lower an unsafe block")) ,
             Stmt::Match { subject, arms, pos } => self.match_stmt(subject, arms, *pos)?,
         })
     }
