@@ -17,10 +17,18 @@ pub(super) enum ConstValue {
 }
 
 fn not_const(pos: Pos) -> Diagnostic {
-    Diagnostic::new(pos, "E_CONST", "initializer is not a supported compile-time value; use 'val' for a runtime immutable binding")
+    Diagnostic::new(
+        pos,
+        "E_CONST",
+        "initializer is not a supported compile-time value; use 'val' for a runtime immutable binding",
+    )
 }
 fn overflow(pos: Pos) -> Diagnostic {
-    Diagnostic::new(pos, "E_CONST_OVERFLOW", "checked integer arithmetic overflows during compile-time evaluation")
+    Diagnostic::new(
+        pos,
+        "E_CONST_OVERFLOW",
+        "checked integer arithmetic overflows during compile-time evaluation",
+    )
 }
 
 impl FnCx<'_> {
@@ -61,9 +69,15 @@ impl FnCx<'_> {
                 _ => Err(not_const(pos)),
             },
             TExpr::Str(op, lhs, rhs) => {
-                let a = match self.eval_const(lhs, pos)? { Str(v) => v, _ => return Err(not_const(pos)) };
+                let a = match self.eval_const(lhs, pos)? {
+                    Str(v) => v,
+                    _ => return Err(not_const(pos)),
+                };
                 let b = match rhs {
-                    Some(v) => match self.eval_const(v, pos)? { Str(v) => v, _ => return Err(not_const(pos)) },
+                    Some(v) => match self.eval_const(v, pos)? {
+                        Str(v) => v,
+                        _ => return Err(not_const(pos)),
+                    },
                     None => return Err(not_const(pos)),
                 };
                 match op {
