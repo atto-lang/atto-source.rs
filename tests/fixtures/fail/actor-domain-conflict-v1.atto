@@ -1,0 +1,6 @@
+// Two execution classes are a parse-time error.
+// expect-error: E_ACTOR_DOMAIN_MODIFIER
+define isolated untrusted actor Bad receives int as
+    susp receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { return 0; }
