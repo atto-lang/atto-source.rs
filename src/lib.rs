@@ -33,6 +33,8 @@ pub mod lexer;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+/// Closed-world, nonescaping Pointer<int> lexical read loan; general pointers remain gated.
+pub mod pointer_local;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Bounded host-independent direct relative-file linker.
@@ -244,7 +246,7 @@ fn compile_prelexed(tokens: Vec<lexer::Token>, logical_path: Option<&std::path::
         nominal_lower::lower(lowered_modules.tokens)?)?)?)?;
     // Only the checked, bounded Copy-scalar Tuple profile can reach guest
     // lowering. Non-scalar tuple graphs/borrows fail closed before parser.
-    let toks = tuple_binding_lower::lower(toks)?;
+    let toks = pointer_local::lower(tuple_binding_lower::lower(toks)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
