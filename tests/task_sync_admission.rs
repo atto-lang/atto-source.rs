@@ -22,6 +22,10 @@ fn inline_empty_and_scalar_return_profiles() {
     admit("pub fnc main(): int { do sync task<void> {}; return 42; }");
     admit("pub fnc main(): int { do sync task { return; }; return 42; }");
     admit("pub fnc main(): int { do sync task { defer {}; return; }; return 42; }");
+    admit(&format!("pub fnc main(): int {{ do sync task {{ {} return; }}; return 42; }}",
+        "defer {};".repeat(32)));
+    admit(&format!("pub fnc main(): int {{ let x = 0; do sync task {{ defer {{ {} }}; return; }}; return x; }}",
+        "x = 0;".repeat(64)));
     admit("pub fnc main(): int { let x = 0; do sync task { defer { x = 42; }; return; }; return x; }");
     admit("pub fnc main(): int { let x = 0; do sync task<void> { defer { x = 1; }; defer { x = 2; }; return; }; return 41 + x; }");
     admit("pub fnc main(): int { let x = 0; do sync task { defer { x = 42; }; }; return x; }");
@@ -84,6 +88,14 @@ fn fail_closed_type_effect_and_cleanup_boundaries() {
     reject("pub fnc main(): int { val x = sync task<int> { return stdio.println(42); }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return await task<int> { return 42; }; }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { let x = 0; do sync task { defer { x = x + 1; }; }; return x; }", "E_UNSUPPORTED");
+    reject(&format!("pub fnc main(): int {{ do sync task {{ {} return; }}; return 42; }}",
+        "defer {};".repeat(33)), "E_SOURCE_LIMIT");
+    reject(&format!("pub fnc main(): int {{ let x = 0; do sync task {{ defer {{ {} }}; }}; return x; }}",
+        "x = 0;".repeat(65)), "E_SOURCE_LIMIT");
+    reject("pub fnc main(): int { val x = 0; do sync task { defer { x = 42; }; }; return x; }", "E_IMMUTABLE");
+    reject("pub fnc main(): int { do sync task { defer { x = 42; }; let x = 0; }; return 0; }", "E_UNBOUND");
+    reject("pub fnc main(): int { let x = 0; do sync task { defer (|int v| -> _ -> { x = v; })(42); }; return x; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { let x = 0; do sync task { defer { x = stdio.println(42); }; }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { let x = 0; do sync task { defer { x = 1; }; x = x + 1; }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { let x = 0; do sync task { x = 1; defer { x = 2; }; }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { let x = 0; do sync task { block { defer { x = 2; }; } }; return x; }", "E_UNSUPPORTED");

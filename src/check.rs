@@ -4009,6 +4009,13 @@ impl<'a> FnCx<'a> {
                 // flags and validated lexical-scope cleanup; reject them.
                 let defer_count = body.iter().take_while(|stmt|
                     matches!(stmt, Stmt::Defer { .. })).count();
+                // Hard tenant-local compiler quota; an attacker must not
+                // create an unbounded Wasm epilogue by repeating zero-capture
+                // registrations. Each defer has its own 64-assignment cap.
+                if defer_count > 32 {
+                    return Err(Diagnostic::new(e.pos, "E_SOURCE_LIMIT",
+                        "inline task permits at most 32 static defer registrations"));
+                }
                 let executable = &body[defer_count..];
                 if !inline_task_scalar_stmts(executable) {
                     return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
