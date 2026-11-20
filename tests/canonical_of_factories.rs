@@ -173,7 +173,7 @@ fn explicit_closed_record_row_annotations_compile_with_canonical_field_slots() {
     assert_eq!(checked[0].value.source_to_record_slot, vec![1, 0]);
     assert_eq!(checked[1].value.source_to_record_slot, vec![0, 1]);
     let wasm = compile(source).expect("closed scalar row must have checked guest ABI");
-    assert!(wasm.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
     assert_eq!(wasm, compile(source).expect("deterministic closed row ABI"));
 }
 
@@ -189,7 +189,7 @@ fn explicit_row_annotations_preserve_quoted_utf8_field_names() {
     let p = parsed(source);
     let checked = collection_types::analyze(&p).expect("quoted UTF-8 row type");
     assert_eq!(checked[0].value.source_to_record_slot, vec![2, 0, 1]);
-    assert!(compile(source).expect("quoted closed row guest").starts_with(b"\\0asm"));
+    assert!(compile(source).expect("quoted closed row guest").starts_with(b"\0asm"));
 }
 
 #[test]
