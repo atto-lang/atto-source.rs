@@ -136,6 +136,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
         for statement in std::mem::take(&mut func.body) {
             let Stmt::Bind {
                 kind,
+                referent_mutable,
                 name,
                 ty,
                 init,
@@ -148,6 +149,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             let ExprKind::Record(fields) = init.kind else {
                 body.push(Stmt::Bind {
                     kind,
+                    referent_mutable,
                     name,
                     ty,
                     init,
@@ -243,6 +245,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 let value_pos = value.pos;
                 body.push(Stmt::Bind {
                     kind: BindKind::Val,
+                    referent_mutable: false,
                     name: temp_name.clone(),
                     ty: Some(temp_ty),
                     init: value,
@@ -265,6 +268,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             }
             body.push(Stmt::Bind {
                 kind,
+                referent_mutable,
                 name,
                 ty: Some(Type::Named(class_index)),
                 init: Expr {
