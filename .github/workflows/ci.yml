@@ -30,6 +30,11 @@ jobs:
         run: cargo test --locked --verbose
       - name: Build native attoc host
         run: cargo build --locked --release --bin attoc
+      - name: Execute compiled Atto actor-channel-actor pipe/rpipe guests (Node Wasm)
+        run: |
+          # Native attoc compiles checked .atto; Node only instantiates its guest.
+          cargo build --locked --bin attoc
+          node tests/node-v2-pipe-guest.mjs
       - name: Build actual Wasm compiler
         run: |
           cargo rustc --locked --release --lib --target wasm32-unknown-unknown --crate-type cdylib -- -C link-arg=--max-memory=67108864
