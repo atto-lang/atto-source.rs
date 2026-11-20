@@ -14,6 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::*;
+use crate::actor_send_effect_graph::{audit_effect, EffectNode};
 use crate::diag::{Diagnostic, Pos};
 
 mod generator_lower;
@@ -1542,70 +1543,54 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     // ordinary helpers. Inspect typed IR, not source-token string matching.
     // There are no dynamic call targets in this browser subset; unknown
     // indices fail closed instead of silently skipping an effect.
-    let send_graph: Vec<(Vec<Type>, Vec<u32>)> = funcs.iter().map(|f| {
+    // The same byte-pinned, independently unit-tested DATA graph closure is
+    // used in both frontends. Caller metadata is type-checked before this point.
+    let send_graph: Vec<EffectNode<Type>> = funcs.iter().map(|f| {
         let sends = std::cell::RefCell::new(Vec::<Type>::new());
         let calls = std::cell::RefCell::new(Vec::<u32>::new());
-        let _ = any_in_stmts(&f.body, &|e| {
-            match &e.e {
+        let _ = any_in_stmts(&f.body, &|node| {
+            match &node.e {
                 TExpr::Send { value, .. } => sends.borrow_mut().push(value.ty),
-                TExpr::Call(target, _) => calls.borrow_mut().push(*target),
+                TExpr::Call(index, _) => calls.borrow_mut().push(*index),
                 _ => {}
             }
             false
         });
-        (sends.into_inner(), calls.into_inner())
+        EffectNode { sends: sends.into_inner(), calls: calls.into_inner() }
     }).collect();
     for (ai, actor) in p.actors.iter().enumerate() {
-        let Some(contract) = actor.sends else { continue };
-        let allowed: Option<Type> = match contract {
+        let Some(clause) = actor.sends else { continue };
+        // None is an *explicit* Never, not an omitted declaration.
+        let allowed: Option<Type> = match clause {
             ActorSendEffect::Never => None,
             ActorSendEffect::Payload(message_type) => Some(res(message_type)?),
         };
         let info = &g.actors[ai];
-        let mut pending = Vec::<u32>::new();
-        if let Some(entry) = info.receive_idx { pending.push(entry); }
-        pending.extend(info.methods.iter().map(|m| m.idx));
-        // Initializers may contain nested sends OR call helpers which send.
-        // Seed the same bounded transitive typed-IR call graph as receive().
-        // Only direct application DATA sends are counted; CONTROL is host-only.
-        for (_, initializer) in &tactors[ai].inits {
-            let invalid_send = std::cell::Cell::new(false);
-            let callees = std::cell::RefCell::new(Vec::<u32>::new());
-            let _ = any_in(initializer, &|node| {
+        let mut roots = Vec::<u32>::new();
+        if let Some(entry) = info.receive_idx { roots.push(entry); }
+        roots.extend(info.methods.iter().map(|m| m.idx));
+        // Field expressions and their reachable helpers belong to this same
+        // outbound effect. A post-lowering initializer must not bypass it.
+        let mut initializers = Vec::<EffectNode<Type>>::new();
+        for (_, init) in &tactors[ai].inits {
+            let sends = std::cell::RefCell::new(Vec::<Type>::new());
+            let calls = std::cell::RefCell::new(Vec::<u32>::new());
+            let _ = any_in(init, &|node| {
                 match &node.e {
-                    TExpr::Send { value, .. } if Some(value.ty) != allowed =>
-                        invalid_send.set(true),
-                    TExpr::Call(target, _) => callees.borrow_mut().push(*target),
+                    TExpr::Send { value, .. } => sends.borrow_mut().push(value.ty),
+                    TExpr::Call(index, _) => calls.borrow_mut().push(*index),
                     _ => {}
                 }
                 false
             });
-            if invalid_send.get() {
-                return Err(Diagnostic::new(actor.pos, "E_ACTOR_SEND_CONTRACT",
-                    "an actor field initializer sends outside its declared DATA effect"));
-            }
-            pending.extend(callees.into_inner());
+            initializers.push(EffectNode {
+                sends: sends.into_inner(), calls: calls.into_inner(),
+            });
         }
-        let mut visited = vec![false; funcs.len()];
-        while let Some(index) = pending.pop() {
-            let Some(used) = visited.get_mut(index as usize) else {
-                return Err(Diagnostic::new(actor.pos, "E_ACTOR_SEND_CONTRACT",
-                    "actor call graph contains an unresolved send-effect target"));
-            };
-            if *used { continue }
-            *used = true;
-            let (outbound, calls) = &send_graph[index as usize];
-            if outbound.iter().any(|ty| Some(*ty) != allowed) {
-                let contract_name = match allowed {
-                    None => "never".to_string(),
-                    Some(t) => tn_plain(t, tn, &class_names, &p.enums, &actor_names),
-                };
-                return Err(Diagnostic::new(actor.pos, "E_ACTOR_SEND_CONTRACT",
-                    format!("actor '{}' sends a payload outside its declared sends {} effect",
-                        actor.name, contract_name)));
-            }
-            pending.extend(calls.iter().copied());
-        }
+        audit_effect(allowed, &send_graph, &roots, &initializers)
+            .map_err(|e| Diagnostic::new(actor.pos, "E_ACTOR_SEND_CONTRACT",
+                format!("actor '{}' has an invalid transitive DATA send effect: {e:?}",
+                    actor.name)))?;
     }
     let strings = funcs
         .iter()
