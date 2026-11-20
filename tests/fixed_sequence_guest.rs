@@ -123,10 +123,7 @@ fn unsupported_sequence_escapes_and_nested_bindings_are_not_lowered() {
         "E_UNSUPPORTED",
     );
     admitted("pub fnc main(): int {val x=List.of(20,22);return x[0]+x[1];}");
-    rejected(
-        "pub fnc main(): int {val x=Map.of(\"a\",42);return 0;}",
-        "E_UNSUPPORTED",
-    );
+    admitted("pub fnc main(): int {val x=Map.of(\"a\",42);return x[\"a\"];}");
 }
 
 #[test]
