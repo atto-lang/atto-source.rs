@@ -26,6 +26,9 @@ fn other_compiled_guests_still_emit_wasm(){
         include_str!("fixtures/pass/list-pattern-full-width-1.atto"),
         include_str!("fixtures/pass/list-pattern-leftmost-3.atto"),
         include_str!("fixtures/pass/list-pattern-max-length-32.atto"),
+        include_str!("fixtures/pass/list-pattern-standalone-rest-11.atto"),
+        include_str!("fixtures/pass/list-pattern-empty-list-9.atto"),
+        include_str!("fixtures/pass/list-pattern-empty-rest-13.atto"),
     ] {
         let result=compile(src).expect("bounded guest match source");
         assert!(result.starts_with(b"\0asm"));
@@ -147,4 +150,18 @@ fn empty_list_and_standalone_rest_use_checked_guest_representation() {
     );
     assert_ne!(any_length, BASE, "test must replace actual pattern");
     assert!(compile(&any_length).unwrap().starts_with(b"\0asm"));
+}
+
+#[test]
+fn lone_rest_matches_nonempty_and_empty_without_branch_budget_exhaustion() {
+    for source in [
+        include_str!("fixtures/pass/list-pattern-standalone-rest-11.atto"),
+        include_str!("fixtures/pass/list-pattern-empty-rest-13.atto"),
+    ] {
+        let checked = list_pattern_guest::try_lower(&lexer::lex(source).unwrap())
+            .unwrap().expect("single rest should be accepted in checked IR");
+        assert!(checked.heap);
+        assert_eq!(checked.funcs.len(), 1);
+        assert!(compile(source).unwrap().starts_with(b"\\0asm"));
+    }
 }
