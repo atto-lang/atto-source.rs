@@ -42,9 +42,18 @@ impl StringMailLayout {
         actual_data_end: u64,
         ordinary_heap_ceiling: u64,
     ) -> Result<(), StringMailLayoutError> {
+        // Input metadata may be hostile; verification must never panic on
+        // a forged u32::MAX page count or an invalid legacy memory profile.
+        if self.ordinary_pages != SCALAR_BASE_PAGES &&
+            self.ordinary_pages != HEAP_BASE_PAGES
+        {
+            return Err(StringMailLayoutError::UnsupportedGuestMemoryProfile);
+        }
+        let expected = self.ordinary_pages.checked_add(STRING_MAIL_PAGES)
+            .ok_or(StringMailLayoutError::InvalidMemoryLimits)?;
         if emitted_min_pages != self.fixed_pages ||
             emitted_max_pages != self.fixed_pages ||
-            self.fixed_pages != self.ordinary_pages + STRING_MAIL_PAGES
+            self.fixed_pages != expected
         {
             return Err(StringMailLayoutError::InvalidMemoryLimits);
         }
@@ -172,6 +181,18 @@ mod tests {
         p.scratch_capacity = 65_535;
         assert_eq!(p.verify_emitted_memory(2, 2, 0, 65_536),
             Err(StringMailLayoutError::InvalidReservation));
+    }
+
+    #[test]
+    fn forged_maximum_page_count_fails_without_integer_overflow() {
+        let bogus = StringMailLayout {
+            ordinary_pages: u32::MAX,
+            fixed_pages: u32::MAX,
+            scratch_offset: u32::MAX,
+            scratch_capacity: STRING_MAIL_MAX_BYTES,
+        };
+        assert_eq!(bogus.verify_emitted_memory(u32::MAX, u32::MAX, 0, 0),
+            Err(StringMailLayoutError::UnsupportedGuestMemoryProfile));
     }
 
     #[test]
