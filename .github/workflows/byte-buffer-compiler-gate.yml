@@ -8,6 +8,8 @@ on:
       - 'src/linker.rs'
       - 'src/std_buffer_gate.rs'
       - 'tests/fixtures/canonical-buffer-v1/**'
+      - 'tests/fixtures/byte-buffer-v1/**'
+      - 'tests/byte_buffer_rust_frontend_guest.mjs'
       - '.github/workflows/byte-buffer-compiler-gate.yml'
   workflow_dispatch:
 permissions:
@@ -40,6 +42,12 @@ jobs:
         run: cargo +1.85.1 test --locked --lib
       - name: Strict Rust diagnostics
         run: cargo +1.85.1 clippy --locked --lib -- -D warnings
+      - name: Build real normal Rust compiler
+        run: cargo +1.85.1 build --locked --release --bin attoc
+      - name: Execute normal-compiler scalar Wasm guests and reject unlinked BB-001
+        env:
+          ATTOC: target/release/attoc
+        run: node tests/byte_buffer_rust_frontend_guest.mjs
       - name: Evidence boundary
         run: |
           echo 'Rust lexer/parser and canonical stdlib source identity tested only if steps actually execute.'
