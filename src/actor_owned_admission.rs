@@ -135,11 +135,22 @@ impl<T> Admission<T> {
         Ok(Recovered { sender_tenant: escrow.sender_tenant, payload: escrow.payload })
     }
 
-    // "Delivered" only means handed to the caller, NOT handler completion.
-    pub(crate) fn deliver(&mut self) -> Option<(u64, T)> {
+    // Only a trusted receiver principal for the current actor incarnation can
+    // dequeue an admitted DATA message. This is still a host-only oracle, not
+    // cryptographic authentication or a production TenantVM capability.
+    // "Delivered" means handed to the caller, NOT handler completion.
+    pub(crate) fn deliver(&mut self, receiver: ActorIdentity, epoch: u64,
+                          trusted_receiver: bool) -> Result<Option<(u64, T)>, AdmissionError> {
+        if !trusted_receiver || receiver.tenant != self.destination.tenant {
+            return Err(AdmissionError::Unauthorized);
+        }
+        if receiver != self.destination || epoch != self.epoch {
+            return Err(AdmissionError::Stale);
+        }
+        if self.closed { return Err(AdmissionError::Closed); }
         let message = self.queue.pop_front();
         if message.is_some() { self.delivered += 1; }
-        message
+        Ok(message)
     }
 
     pub(crate) fn stop(&mut self) -> StopOutcome<T> {
@@ -179,7 +190,7 @@ mod tests {
         let mut m = Admission::new(actor(), 1, 1);
         let t = m.stage(7, actor(), 1, true, String::from("parcel")).unwrap();
         assert_eq!(m.commit(t, true).unwrap(), 1);
-        assert_eq!(m.deliver().unwrap().1, "parcel");
+        assert_eq!(m.deliver(actor(), 1, true).unwrap().unwrap().1, "parcel");
         assert_eq!(m.delivered, 1);
         assert_eq!(m.abandoned, 0);
     }
@@ -191,7 +202,7 @@ mod tests {
         let recovered = m.abort(t).unwrap();
         assert_eq!(recovered.sender_tenant, 7);
         assert_eq!(*recovered.payload, 17);
-        assert!(m.deliver().is_none());
+        assert!(m.deliver(actor(), 1, true).unwrap().is_none());
     }
     #[test] fn denied_and_cross_tenant_stage_return_owner() {
         let mut m = Admission::new(actor(), 1, 1);
@@ -210,13 +221,13 @@ mod tests {
                 assert_eq!(payload.payload, vec![3, 4]),
             _ => panic!("expected exactly one recovered owner"),
         }
-        assert!(m.deliver().is_none());
+        assert!(m.deliver(actor(), 1, true).unwrap().is_none());
     }
     #[test] fn abort_before_commit_restores_owner() {
         let mut m = Admission::new(actor(), 1, 1);
         let ticket = m.stage(7, actor(), 1, true, 99).unwrap();
         assert_eq!(m.abort(ticket).unwrap().payload, 99);
-        assert!(m.deliver().is_none());
+        assert!(m.deliver(actor(), 1, true).unwrap().is_none());
     }
     #[test] fn stage_capacity_counts_inbox_and_escrow() {
         let mut m = Admission::new(actor(), 1, 2);
@@ -273,6 +284,34 @@ mod tests {
             epoch: 999, sender_tenant: 7 };
         assert!(matches!(m.commit(forged, true), Err(CommitError::InvalidTicket(_))));
         assert_eq!(m.abort(actual).unwrap().payload, "value");
+    }
+    #[test] fn stolen_receiver_cannot_dequeue_an_admitted_payload() {
+        let mut m = Admission::new(actor(), 1, 1);
+        let t = m.stage(7, actor(), 1, true, Box::new(42)).unwrap();
+        m.commit(t, true).unwrap();
+        assert!(matches!(m.deliver(actor(), 1, false), Err(AdmissionError::Unauthorized)));
+        let mut wrong = actor(); wrong.tenant = 8;
+        assert!(matches!(m.deliver(wrong, 1, true), Err(AdmissionError::Unauthorized)));
+        wrong = actor(); wrong.actor += 1;
+        assert!(matches!(m.deliver(wrong, 1, true), Err(AdmissionError::Stale)));
+        wrong = actor(); wrong.placement += 1;
+        assert!(matches!(m.deliver(wrong, 1, true), Err(AdmissionError::Stale)));
+        wrong = actor(); wrong.incarnation += 1;
+        assert!(matches!(m.deliver(wrong, 1, true), Err(AdmissionError::Stale)));
+        assert!(matches!(m.deliver(actor(), 2, true), Err(AdmissionError::Stale)));
+        assert_eq!(m.delivered, 0);
+        assert_eq!(*m.deliver(actor(), 1, true).unwrap().unwrap().1, 42);
+        assert_eq!(m.delivered, 1);
+    }
+    #[test] fn closed_receiver_and_pre_restart_capabilities_cannot_dequeue() {
+        let mut m = Admission::new(actor(), 1, 1);
+        m.stop();
+        assert!(matches!(m.deliver(actor(), 1, true), Err(AdmissionError::Closed)));
+        let mut next = actor();
+        next.incarnation += 1;
+        m.restart(next, 2);
+        assert!(matches!(m.deliver(actor(), 1, true), Err(AdmissionError::Stale)));
+        assert!(m.deliver(next, 2, true).unwrap().is_none());
     }
     #[test] fn pre_admission_failure_does_not_drop_owned_payload() {
         use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
