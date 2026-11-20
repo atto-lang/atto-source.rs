@@ -429,26 +429,41 @@ fnc __actor_link(int a, int b): int {
 // published until ALL stages have passed admission checks. This is still a
 // provisional single-guest-memory trap path; checked PipeHandle setup,
 // cancellation leases, TenantVM generations and true rendezvous come later.
-fnc __actor_channel_actor_atomic(int src, int ch, int dst): int {
-  if src == 0 then __panic(10); fi
-  if ch == 0 then __panic(10); fi
-  if dst == 0 then __panic(10); fi
-  if src == dst then __panic(10); fi
+// Experimental single-domain checked setup. Tags use the ordinary Result
+// layout: tag 0 -> owned PipeHandle, tag 1 -> PipeSetupError code.
+// This is *not* yet a production lifecycle-capability implementation: no
+// task-cancellation guarantees or TenantVM generations exist in v2.
+// Error codes: 1 invalid/null alias, 2 invalid capacity, 3 closed port,
+// 4 source occupied, 5 sink occupied, 6 channel occupied, 7 sink has output.
+// All failure branches are BEFORE any DATA edge publication or bridge spawn.
+fnc __actor_channel_actor_try(int src, int ch, int dst): int {
+  if src == 0 then return __box(1, 1); fi
+  if ch == 0 then return __box(1, 1); fi
+  if dst == 0 then return __box(1, 1); fi
+  if src == dst then return __box(1, 1); fi
+  if src == ch then return __box(1, 1); fi
+  if ch == dst then return __box(1, 1); fi
   val cap = __load(ch, 0);
-  if cap < 1 then __panic(10); fi
-  if cap > 16 then __panic(10); fi
-  if __load(ch, 32) != 0 then __panic(10); fi
-  if __load(__load(src, 0), 32) != 0 then __panic(10); fi
-  if __load(__load(dst, 0), 32) != 0 then __panic(10); fi
-  if __load(src, 8) != 0 then __panic(10); fi
-  if __load(dst, 48) != 0 then __panic(10); fi
-  if __load(ch, 56) != 0 then __panic(10); fi
-  if __load(ch, 64) != 0 then __panic(10); fi
-  // This provisional triple cannot safely extend an already linked
-  // downstream sink graph; reject rather than form a hidden cycle.
-  if __load(dst, 8) != 0 then __panic(10); fi
-  // The only publication point is AFTER the full preflight. The cooperative
-  // channel-to-mailbox bridge starts after all owners are installed.
+  if cap < 1 then return __box(1, 2); fi
+  if cap > 16 then return __box(1, 2); fi
+  if __load(ch, 32) != 0 then return __box(1, 3); fi
+  if __load(__load(src, 0), 32) != 0 then return __box(1, 3); fi
+  if __load(__load(dst, 0), 32) != 0 then return __box(1, 3); fi
+  if __load(src, 8) != 0 then return __box(1, 4); fi
+  if __load(dst, 48) != 0 then return __box(1, 5); fi
+  if __load(ch, 56) != 0 then return __box(1, 6); fi
+  if __load(ch, 64) != 0 then return __box(1, 6); fi
+  if __load(dst, 8) != 0 then return __box(1, 7); fi
+
+  // Reserve owner state and construct a non-forgeable handle before the
+  // scheduler is permitted to run the bridge. Each handle is a guest
+  // capability created only by successful typed compiler lowering.
+  // Layout (32 bytes): 0 producer actor, 8 bounded channel,
+  // 16 consumer actor, 24 bridge task (not yet cancellable).
+  val handle = __alloc(32);
+  __store(handle, 0, src);
+  __store(handle, 8, ch);
+  __store(handle, 16, dst);
   __store(ch, 56, src);
   __store(src, 8, ch);
   __store(src, 24, 1);
@@ -464,7 +479,18 @@ fnc __actor_channel_actor_atomic(int src, int ch, int dst): int {
       await __mail_send_wait(dst, __load(item, 0));
     done
   };
-  return ch;
+  __store(handle, 24, bridge);
+  return __box(0, handle);
+}
+
+// Preserve the legacy unannotated pipe-expression behavior for existing
+// fixtures. It unwraps the SAME checked admission, trapping only at the
+// compatibility boundary. Typed Result<PipeHandle,PipeSetupError> callers
+// receive errors without guest panics or partially published graphs.
+fnc __actor_channel_actor_atomic(int src, int ch, int dst): int {
+  val r = __actor_channel_actor_try(src, ch, dst);
+  if __load(r, 0) != 0 then __panic(10); fi
+  return __load(__load(r, 8), 8);
 }
 
 // Checked single-producer/single-consumer attachment for a *bounded* channel.
