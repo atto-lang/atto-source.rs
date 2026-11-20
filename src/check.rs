@@ -423,6 +423,8 @@ struct Local {
     slot: u32,
     ty: Type,
     mutable: bool,
+    /// Authority to mutate the referent, separate from local rebinding.
+    referent_mutable: bool,
     /// `Some(payload)` for the `ActorMail<T>` parameter of receive
     mail: Option<Type>,
 }
@@ -1395,6 +1397,7 @@ fn body_check(
             slot: 0,
             ty: Type::Int,
             mutable: false,
+            referent_mutable: false,
             mail: Some(payload),
         });
     } else {
@@ -1404,6 +1407,7 @@ fn body_check(
                 slot: i as u32,
                 ty: *t,
                 mutable: *m,
+                referent_mutable: false,
                 mail: None,
             });
         }
@@ -1739,7 +1743,8 @@ impl<'a> FnCx<'a> {
         Ok(t)
     }
 
-    fn declare(&mut self, name: &str, ty: Type, mutable: bool, pos: Pos) -> R<u32> {
+    fn declare(&mut self, name: &str, ty: Type, mutable: bool,
+               referent_mutable: bool, pos: Pos) -> R<u32> {
         if self.scopes.last().unwrap().iter().any(|l| l.name == name) {
             return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate binding '{name}'")));
         }
@@ -1752,6 +1757,7 @@ impl<'a> FnCx<'a> {
             slot,
             ty,
             mutable,
+            referent_mutable,
             mail: None,
         });
         Ok(slot)
@@ -1825,7 +1831,7 @@ impl<'a> FnCx<'a> {
 
     fn stmt(&mut self, s: &Stmt) -> R<TStmt> {
         Ok(match s {
-            Stmt::Bind { kind, name, ty, init, pos } => {
+            Stmt::Bind { kind, referent_mutable, name, ty, init, pos } => {
                 if let ExprKind::Ownership(OwnershipOp::Borrow, mutable, inner) = &init.kind {
                     return self.borrow_binding(*kind, name, *ty, inner, *mutable, *pos);
                 }
@@ -1854,7 +1860,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(*pos, "E_GENERATOR_OWNERSHIP",
                         "generator handles must be consumed by for-in until owned bindings support close"));
                 }
-                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *pos)?;
+                let slot = self.declare(name, v.ty, *kind == BindKind::Let, *referent_mutable, *pos)?;
                 TStmt::Set(slot, v)
             }
             Stmt::Assign { name, value, pos } => {
@@ -1969,7 +1975,8 @@ impl<'a> FnCx<'a> {
                     }
                     let slot = self.temp(ty, *ppos)?;
                     sets.push((slot, v));
-                    bound.push(Local { name: name.clone(), slot, ty, mutable: false, mail: None });
+                    bound.push(Local { name: name.clone(), slot, ty, mutable: false,
+                        referent_mutable: false, mail: None });
                 }
                 let flag = self.temp(Type::Bool, *pos)?;
                 let body = self.isolated(bound, Some(cursor.clone()), body)?;
@@ -2011,7 +2018,7 @@ impl<'a> FnCx<'a> {
                 let handle_slot = self.temp(Type::GeneratorInt, *pos)?;
                 self.scopes.push(Vec::new());
                 let checked = (|| {
-                    let value_slot = self.declare(name, Type::Int, false, *pos)?;
+                    let value_slot = self.declare(name, Type::Int, false, false, *pos)?;
                     let body = self.looped(body)?;
                     Ok(TStmt::ForIn { source: gen, handle_slot, value_slot, body })
                 })();
@@ -2275,7 +2282,7 @@ impl<'a> FnCx<'a> {
             let r = (|| -> R<(TE, Vec<TStmt>)> {
                 let mut body = Vec::new();
                 if let Some(n) = bind {
-                    let slot = self.declare(n, sty, false, arm.pos)?;
+                    let slot = self.declare(n, sty, false, false, arm.pos)?;
                     let assignment = TStmt::Set(slot, get());
                     if arm.guard.is_some() {
                         // A guard reads its arm-local binding in the If
@@ -2401,7 +2408,7 @@ impl<'a> FnCx<'a> {
                 let mut body = Vec::new();
                 if let Some(name) = payload_name {
                     let ty = payload_ty.expect("the pattern binds a value");
-                    let slot = self.declare(name, ty, false, arm.pos)?;
+                    let slot = self.declare(name, ty, false, false, arm.pos)?;
                     let value = if key.is_none() {
                         get()
                     } else {
@@ -2679,10 +2686,10 @@ impl<'a> FnCx<'a> {
             if !matches!(owner_ty, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Enum(_)) {
                 return Err(Diagnostic::new(pos, "E_BORROW", "borrowing this type is not supported by the guest Wasm backend"));
             }
-            let slot = self.declare(name, value.ty, kind == BindKind::Let, pos)?;
+            let slot = self.declare(name, value.ty, kind == BindKind::Let, false, pos)?;
             return Ok(TStmt::Set(slot, value));
         }
-        let slot = self.declare(name, value.ty, false, pos)?;
+        let slot = self.declare(name, value.ty, false, false, pos)?;
         self.loans.insert(slot, ScopedLoan { owner, mutable });
         Ok(TStmt::Set(slot, value))
     }
