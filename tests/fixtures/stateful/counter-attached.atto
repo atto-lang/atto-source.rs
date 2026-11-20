@@ -1,0 +1,15 @@
+// The protected owner field is attached to the actor declaration by name.
+// This is the restricted source-compiled Wasm method preview, NOT the full
+// on_start/receive Counter conformance contract.
+use namespace counters;
+declare actor Counter;
+define actor Counter as
+end
+define state on actor Counter as {
+    let int count = 17;
+}
+mtd (mut self: Counter) increment(int delta): void {
+    self.handle_state(critical-write |s| -> {
+        s.count = s.count + delta;
+    });
+}

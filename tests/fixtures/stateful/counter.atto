@@ -1,0 +1,10 @@
+use namespace counters;
+declare actor Counter;
+define actor Counter as
+    let int count = 17;
+end
+mtd (mut self: Counter) increment(int delta): void {
+    self.handle_state(critical-write |s| -> {
+        s.count = s.count + delta;
+    });
+}

@@ -17,8 +17,11 @@ fn main() -> ExitCode {
         [flag, i] if flag == "--cleanup-wasm-witness" => (i.clone(),None,3),
         [flag, i, o, out] if flag == "--cleanup-wasm-witness" && o == "-o" =>
             (i.clone(),Some(out.clone()),3),
+        [flag, i] if flag == "--stateful-method-preview" => (i.clone(),None,4),
+        [flag, i, o, out] if flag == "--stateful-method-preview" && o == "-o" =>
+            (i.clone(),Some(out.clone()),4),
         _ => {
-            eprintln!("usage: attoc [--scalar-preview | --receiver-instance-preview | --cleanup-wasm-witness] <input.atto> [-o out.wasm]");
+            eprintln!("usage: attoc [--scalar-preview | --receiver-instance-preview | --cleanup-wasm-witness | --stateful-method-preview] <input.atto> [-o out.wasm]");
             return ExitCode::from(2);
         }
     };
@@ -33,6 +36,7 @@ fn main() -> ExitCode {
         1 => atto_compiler::target_scalar::compile_scalar_receiver_preview(&source),
         2 => atto_compiler::target_scalar::compile_scalar_receiver_instance_preview(&source),
         3 => atto_compiler::target_cleanup_wasm::compile_cleanup_wasm_witness(&source),
+        4 => atto_compiler::target_stateful::compile_stateful_method_preview(&source),
         _ => atto_compiler::compile(&source),
     };
     match built {
