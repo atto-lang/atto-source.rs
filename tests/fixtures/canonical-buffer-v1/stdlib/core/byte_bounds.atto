@@ -1,0 +1,22 @@
+// Pure, overflow-safe bounds and unsigned range admission.
+// Used by alloc-owned ByteBuffer; does not allocate or perform I/O.
+pub fnc byte_range_valid(int length, int offset, int width) -> bool {
+  if length < 0 then return false; fi
+  if offset < 0 then return false; fi
+  if width < 0 then return false; fi
+  if width > length then return false; fi
+  // Subtract only after validating width, avoiding offset+width overflow.
+  return offset <= length - width;
+}
+
+pub fnc byte_u8_valid(int value) -> bool {
+  return value >= 0 && value <= 255;
+}
+
+pub fnc byte_u16_valid(int value) -> bool {
+  return value >= 0 && value <= 65535;
+}
+
+pub fnc byte_u32_valid(int value) -> bool {
+  return value >= 0 && value <= 4294967295;
+}
