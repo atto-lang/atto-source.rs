@@ -84,6 +84,14 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
     while word(toks.get(i), "import") {
         let pos = toks[i].pos;
         i += 1;
+        // Canonical package shorthand is NOT a file import. The bounded
+        // one-hop relative-file linker must not try a host filesystem lookup.
+        // This explicit rejection precedes generic selected-name parsing.
+        if word(toks.get(i), "pkg")
+            && toks.get(i + 1).is_some_and(|t| matches!(&t.tok, Tok::Str(_))) {
+            return Err(diagnostic(pos, "E_UNSUPPORTED",
+                "package namespace imports require a verified package-export resolver"));
+        }
         let mut namespace = None;
         let mut names = Vec::new();
         if toks.get(i).is_some_and(|t| t.tok == Tok::Star) {
