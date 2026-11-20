@@ -267,7 +267,7 @@ mod tests {
         assert!(matches!(m.commit(forged, true), Err(CommitError::InvalidTicket(_))));
         assert_eq!(m.abort(actual).unwrap().payload, "value");
     }
-    #[test] fn pre-admission_failure_does_not_drop_owned_payload() {
+    #[test] fn pre_admission_failure_does_not_drop_owned_payload() {
         use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
         struct Tracked { drops: Arc<AtomicUsize> }
         impl Drop for Tracked {
