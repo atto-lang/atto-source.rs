@@ -1,0 +1,34 @@
+# Source-org runner admission probe only: NO checkout, no source read, no artifact.
+name: Rust source-owned source-free admission probe (PR448)
+on:
+  push:
+    branches:
+      - ci/atto-rs-448-source-free-admission-20261120
+  workflow_dispatch:
+permissions: {}
+jobs:
+  admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Demonstrate real source-org runner admission
+        shell: bash
+        env:
+          EXPECTED_BRANCH: ci/atto-rs-448-source-free-admission-20261120
+        run: |
+          set -euo pipefail
+          test -n "$GITHUB_RUN_ID"
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test -n "$RUNNER_NAME"
+          echo "SOURCE_FREE_RUNNER_ADMITTED=true"
+          echo "RUN_ID=$GITHUB_RUN_ID"
+          echo "RUNNER_OS=$RUNNER_OS"
+      - name: Verify basic Rust tools without checking out private source
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v cargo
+          command -v rustc
+          command -v node
+          rustc --version
+          echo "SOURCE_FREE_EXECUTED_STEPS=2"
