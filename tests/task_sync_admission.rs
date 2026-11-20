@@ -49,3 +49,24 @@ fn cancellable_typed_task_must_not_emit_guest_until_scope_and_retirement_are_rea
         "pub susp fnc main(): int {          val Future<void> pending = task<void> {            do task<void> { return; }; return;          }; pending.cancel(); return 42; }",
     );
 }
+
+#[test]
+fn task_cancellation_lock_releasing_cannot_emit_unproven_guest() {
+    // Task <-> Mutex ownership transfer requires runtime-owned lease ledgers,
+    // cancellation winner fencing, unwind and physical quiescence evidence.
+    // Until those are integrated, reject before producing guest executable bytes.
+    rejected_source(
+        "pub susp fnc main(): int { \
+         val Future<int> worker = task<int> { \
+           val lock = new Mutex<int>(41); \
+           using await lock.lock_async() as guard { return guard.value; } \
+         }; worker.cancel(); return 42; }",
+    );
+    rejected_source(
+        "pub susp fnc main(): int { \
+         do task<void> { \
+           val lock = new Mutex<int>(41); \
+           using await lock.lock_async() as guard { guard.value += 1; } \
+         }; return 42; }",
+    );
+}
