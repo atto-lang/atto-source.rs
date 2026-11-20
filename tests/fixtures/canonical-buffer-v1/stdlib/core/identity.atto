@@ -1,0 +1,3 @@
+pub fnc identity(int value) -> int {
+  return value;
+}
