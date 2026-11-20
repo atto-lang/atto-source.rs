@@ -13,6 +13,8 @@ const temporary=mkdtempSync(join(tmpdir(),'atto-v2-pipe-'));
 const cases=[
   ['pass/208-v2-actor-channel-actor-pipe.atto',false],
   ['pass/209-v2-actor-channel-actor-rpipe.atto',false],
+  ['pass/217-v2-declared-port-pipe.atto',false],
+  ['pass/218-v2-declared-port-rpipe.atto',false],
   ['panic/210-v2-pipe-double-attach.atto',true],
   ['panic/211-v2-pipe-rendezvous-denial.atto',true],
   ['panic/212-v2-pipe-duplicate-consumer.atto',true],
