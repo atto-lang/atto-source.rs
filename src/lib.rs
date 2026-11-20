@@ -17,6 +17,8 @@ pub mod lexer;
 pub mod io_shorthand;
 pub mod detached_io;
 pub mod parser;
+/// Opt-in bounded, nonallocating Pointer<int> local-place lowering.
+pub mod pointer_local;
 /// Checked single-source module functions; external imports remain unlinked.
 pub mod module_lower;
 /// Fail-closed monomorphic scalar Any specialization; no dynamic Any ABI.
@@ -51,7 +53,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
         ));
     }
     let mut visibility = visibility_lower::lower(lexer::lex(source)?)?;
-    let toks = any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?;
+    let toks = pointer_local::lower(any_type_lower::lower(routine_lower::lower(shape_lower::lower(nominal_lower::lower(module_lower::lower(visibility.tokens)?)?)?)?)?)?;
     // Detached tasks require ownership, completion callbacks and supervisor
     // error routing. Parse-check early; NEVER execute them as synchronous I/O.
     if let Some(detached) = detached_io::inspect(&toks)?.first() {
