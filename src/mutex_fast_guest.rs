@@ -139,7 +139,7 @@ fn parse_increment(p: &mut Cursor<'_>) -> R<Increment> {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum MainKind { ReturnObserved, PrintAndZero, LazyAndZero }
+enum MainKind { ReturnObserved, PrintAndZero, LazyAndZero, TwoSequential }
 #[derive(Debug)]
 struct Main { initial: i64, kind: MainKind }
 
@@ -184,20 +184,33 @@ fn parse_main(p: &mut Cursor<'_>, increment: &str) -> R<Main> {
         p.expect(Tok::Semi, "expected ';' after return")?;
         MainKind::PrintAndZero
     } else if p.word("val") {
-        // Ordinary function call creates an unstarted lazy task. The compiler
-        // may DCE this task because both arguments are constant and there is
-        // no explicit scheduling/driving effect or observable side effect.
-        if is_susp { return Err(error(pos,"E_LOCK_UNSUPPORTED","lazy-only profile requires plain main")); }
-        let pending = p.name()?;
-        if pending == owner { return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","task and owner names must differ")); }
-        p.expect(Tok::Assign, "expected lazy task binding")?;
-        p.call(increment, &owner)?;
-        p.expect(Tok::Semi, "expected ';' after lazy task")?;
-        p.require("return")?;
-        let zero = p.int()?;
-        if zero != 0 { return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","lazy profile must return 0")); }
-        p.expect(Tok::Semi, "expected ';' after return")?;
-        MainKind::LazyAndZero
+        let temp = p.name()?;
+        if temp == owner { return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","task and owner names must differ")); }
+        p.expect(Tok::Assign, "expected exact task/value binding")?;
+        if p.word("await") {
+            if !is_susp { return Err(error(pos,"E_AWAIT_EFFECT","await requires a suspending main")); }
+            // Two sequential completed acquisitions prove cleanup of the
+            // first lease before the next checked admission. No parallel task
+            // or scheduling construct is permitted in this fast-path profile.
+            p.call(increment, &owner)?;
+            p.expect(Tok::Semi, "expected ';' after observed value")?;
+            p.require("return")?;
+            p.require("await")?;
+            p.call(increment, &owner)?;
+            p.expect(Tok::Semi, "expected ';' after second await")?;
+            MainKind::TwoSequential
+        } else {
+            // An unawaited callable invocation constructs a lazy task, so
+            // creating and dropping it has no runtime side effects here.
+            if is_susp { return Err(error(pos,"E_LOCK_UNSUPPORTED","lazy-only profile requires plain main")); }
+            p.call(increment, &owner)?;
+            p.expect(Tok::Semi, "expected ';' after lazy task")?;
+            p.require("return")?;
+            let zero = p.int()?;
+            if zero != 0 { return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","lazy profile must return 0")); }
+            p.expect(Tok::Semi, "expected ';' after return")?;
+            MainKind::LazyAndZero
+        }
     } else {
         return Err(error(p.pos(),"E_LOCK_UNSUPPORTED","unsupported mutex single-task main body"));
     };
@@ -215,9 +228,13 @@ fn lower(inc: Increment, main: Main) -> R<TProgram> {
     // No panic/abort path can occur while holding the single-task guard:
     // reject even a statically-proven overflowing arithmetic operation.
     // (The emitted i64 addition still runs through the checked Wasm helper.)
-    if main.initial.checked_add(inc.delta).is_none() {
+    let once = main.initial.checked_add(inc.delta).ok_or_else(|| error(
+        Pos { line:1,col:1 },"E_OVERFLOW",
+        "constant guarded mutation would overflow; no unwind cleanup on this profile"
+    ))?;
+    if matches!(main.kind,MainKind::TwoSequential) && once.checked_add(inc.delta).is_none() {
         return Err(error(Pos { line:1,col:1 },"E_OVERFLOW",
-            "constant guarded mutation would overflow; no unwind cleanup on this profile"));
+            "second checked acquisition would overflow before lease cleanup"));
     }
     if matches!(main.kind, MainKind::LazyAndZero) {
         return Ok(TProgram {
@@ -251,6 +268,10 @@ fn lower(inc: Increment, main: Main) -> R<TProgram> {
                 value:Box::new(call_increment()),newline:true,
             }}),TStmt::Return(Some(lit(0)))],
         ),
+        MainKind::TwoSequential => (vec![],vec![
+            TStmt::Expr(call_increment()),
+            TStmt::Return(Some(call_increment())),
+        ]),
         MainKind::LazyAndZero => unreachable!(),
     };
     let mut main_body = vec![TStmt::GlobalSet(0,lit(main.initial)),TStmt::GlobalSet(1,lit(0))];
