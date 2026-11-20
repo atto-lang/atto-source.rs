@@ -83,11 +83,15 @@ test('exact-head and whole-tree mirror provenance fail closed', () => {
     const gitShim = join(bin, 'git');
     const failGitOperation = (operation, output = '', exitCode = 76) => {
       rmSync(gitShim);
-      writeFileSync(gitShim,
-        '#!/bin/sh\\nif [ "$1" = "' + operation + '" ]; then\\n' +
-        (output ? '  printf "%s\\n" "' + output + '"\\n' : '') +
-        '  exit ' + exitCode + '\\nfi\\nexec "' + gitProgram + '" "$@"\\n',
-        { mode: 0o755 });
+      const lines = [
+        '#!/bin/sh',
+        'if [ "$1" = "' + operation + '" ]; then',
+        ...(output ? ['  echo "' + output + '"'] : []),
+        '  exit ' + exitCode,
+        'fi',
+        'exec "' + gitProgram + '" "$@"',
+      ];
+      writeFileSync(gitShim, lines.join(String.fromCharCode(10)) + String.fromCharCode(10), { mode: 0o755 });
     };
     const restoreGit = () => {
       rmSync(gitShim);
