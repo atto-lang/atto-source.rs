@@ -1016,4 +1016,30 @@ mod tests {
         }), Err(Error::ForeignDomain));
     }
 
+
+    #[test]
+    fn task_scope_terminal_cancellation_and_success_race_winners() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        scope.register(c(2), None).unwrap();
+
+        // Cancellation won before the trusted guest safe-point terminal claim.
+        scope.cancel_tree(c(1)).unwrap();
+        assert_eq!(scope.exit_kind(c(1)).unwrap(), None);
+        scope.guest_exited_at_safe_point(c(1)).unwrap();
+        assert_eq!(scope.exit_kind(c(1)).unwrap(), Some(TaskExitKind::Cancelled));
+
+        // Terminal success has already claimed its outcome. A later cancel
+        // cannot replace it with cancellation or trigger duplicate cleanup.
+        scope.guest_exited_at_safe_point(c(2)).unwrap();
+        assert_eq!(scope.exit_kind(c(2)).unwrap(), Some(TaskExitKind::Succeeded));
+        scope.cancel_tree(c(2)).unwrap();
+        assert_eq!(scope.exit_kind(c(2)).unwrap(), Some(TaskExitKind::Succeeded));
+
+        for id in [1_u64, 2] {
+            scope.notification_drain_ack(c(id)).unwrap();
+            scope.certify_physical_retirement(c(id)).unwrap();
+        }
+    }
+
 }
