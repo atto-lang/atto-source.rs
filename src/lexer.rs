@@ -230,6 +230,10 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 if i >= chars.len() || chars[i] == '\n' {
                     return Err(Diagnostic::new(pos, "E_STRING", "unterminated string literal"));
                 }
+                if chars[i] == '\0' {
+                    return Err(Diagnostic::new(Pos { line, col }, "E_NUL",
+                        "NUL characters are not allowed inside string literals"));
+                }
                 let ch = chars[i];
                 if ch == quote {
                     bump!();
@@ -292,9 +296,13 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             bump!();
             let mut s = String::new();
             loop {
-                if i >= chars.len() || chars[i] == '\n' {
+                if i >= chars.len() || matches!(chars[i], '\n' | '\r') {
                     return Err(Diagnostic::new(pos, "E_STRING",
                         "unterminated backtick string literal"));
+                }
+                if chars[i] == '\0' {
+                    return Err(Diagnostic::new(Pos { line, col }, "E_NUL",
+                        "NUL characters are not allowed inside string literals"));
                 }
                 if chars[i] == '\x60' {
                     bump!();
