@@ -1,7 +1,7 @@
 // Unique ownership/Sendable proof for nominal mutable classes is not implemented.
 // expect-error: E_UNSUPPORTED_TYPE
 define class Parcel as
-  val int id: 42;
+  int id: 42;
 end
 define actor Worker receives Parcel as
   receive(ActorMail<Parcel> mail): void { return; }
