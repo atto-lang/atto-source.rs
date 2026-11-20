@@ -68,6 +68,9 @@ pub mod mutex_using_preview_gate;
 /// Narrow executable single-task Mutex<int> uncontended guest profile.
 /// Other lock sites remain blocked until real typed async scheduling exists.
 pub mod mutex_fast_guest;
+/// Affine MutexLease<int> proof and typed guard protocol for the ready-only
+/// guest fast path. This is NOT a general contended scheduler/async ABI.
+pub(crate) mod mutex_lease_hir_v1;
 /// Host-reference waiter/cancellation model, compiled only in Rust unit tests;
 /// NOT an Atto guest mutex runtime or an admitted compiler intrinsic.
 #[cfg(test)]
