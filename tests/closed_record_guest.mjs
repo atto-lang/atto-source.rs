@@ -61,7 +61,11 @@ const positives=[
  ['pub fnc main(): int {val t=Tuple.of(40,true,"ok");return t[0];}',40n,''],
  ['pub fnc main(): int {val a=Array.of(20,22);return a[0]+a[1];}',42n,''],
  ['pub fnc main(): int {val l=List.of("Atto","Lima");stdio.println(l[0]);return 42;}',42n,'Atto\n'],
- ['pub fnc main(): int {val xs=List.of(20,22);return xs[0]+xs[1];}',42n,'']
+ ['pub fnc main(): int {val xs=List.of(20,22);return xs[0]+xs[1];}',42n,''],
+ ['pub fnc main(): int {val m=Map.of("a",40,"b",2);return m["a"]+m["b"];}',42n,''],
+ ['pub fnc main(): int {val m=Map.of("a"=>40,"b"=>2);return m["b"]+m["a"];}',42n,''],
+ ['pub fnc main(): int {val m=Map.of(true,40,false,2);return m[true]+m[false];}',42n,''],
+ ['pub fnc main(): int {val pair=Tuple.of(10,20);val values=Array.of(1,2,3);val names=List.of("Atto","Lima");val scores=Map.of("a",10,"b",20);val item=Record.of(name="Atto",count=3);return values[0]+pair[1];}',21n,'']
 ];
 const negatives=[
  ['pub fnc main(): int {val Record<{a:int,b:bool}> x=Record.of(a=42);return x.a;}','E_NO_FIELD'],
@@ -75,7 +79,6 @@ const negatives=[
  ['pub fnc main(): int {const Record r={x:42}; return r.x;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val r=Record.of(name=1,"name":2);return 0;}','E_DUPLICATE'],
  ['pub fnc main(): int {val m=Map.of("a",1,"b");return 0;}','E_FACTORY_ARITY'],
- ['pub fnc main(): int {val m=Map.of("a",1);return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val a=Array.of();return 0;}','E_TYPE_INFERENCE'],
  ['pub fnc main(): int {val a=Array.of(1,2);return a[2];}','E_INDEX_BOUNDS'],
  ['pub fnc main(): int {val t=Tuple.of(10);return t[-1];}','E_INDEX_BOUNDS'],
@@ -83,7 +86,10 @@ const negatives=[
  ['pub fnc main(): int {val a=Array.of(1,2);val writer=borrow! mut a;return 0;}','E_BORROW'],
  ['pub fnc main(): int {val t=Tuple.of();return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val l=List.of(10,20);return l[2];}','E_INDEX_BOUNDS'],
- ['pub fnc main(): int {val l=List.of(10,20);val writer=borrow! mut l;return 0;}','E_BORROW']
+ ['pub fnc main(): int {val l=List.of(10,20);val writer=borrow! mut l;return 0;}','E_BORROW'],
+ ['pub fnc main(): int {val m=Map.of("a",1);return m["missing"];}', 'E_UNSUPPORTED'],
+ ['pub fnc main(): int {val m=Map.of("a",1);val writer=borrow! mut m;return 0;}', 'E_BORROW'],
+ ['pub fnc main(): int {val m=Map.of(0,1,-0,2);return 0;}', 'E_DUPLICATE']
 ];
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
