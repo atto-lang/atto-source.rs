@@ -32,6 +32,9 @@ const cases=[
   ['panic/214-v2-pipe-closed-channel.atto',true],
   ['panic/215-v2-pipe-stopped-consumer.atto',true],
   ['panic/216-v2-pipe-stopped-actor-sink.atto',true],
+  ['panic/225-v2-pipe-claimed-channel-send.atto',true],
+  ['panic/226-v2-pipe-claimed-channel-receive.atto',true],
+  ['panic/227-v2-pipe-claimed-channel-close.atto',true],
   ['conformance/pipe-rpipe-v1/actor-duplicate-direction.atto',true],
 ];
 try {
