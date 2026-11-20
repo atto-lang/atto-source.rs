@@ -1,6 +1,6 @@
 //! Bounded parse-only grammar for proposed actor declarations and mtd receivers.
 //! This does not lower, link, typecheck method bodies, or emit actor Wasm.
-use crate::ast::ActorDecl;
+use crate::ast::{ActorDecl, Field, FieldMode, Type};
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
 use crate::parser::{is_reserved, Parser, MAX_FUNCS, MAX_PARAMS};
@@ -33,6 +33,9 @@ pub struct TargetHeaders {
     /// Real concrete actor syntax trees parsed by the production parser.
     /// Bodies are parsed but NOT typechecked for the new out-of-line profile.
     pub definitions: Vec<ActorDecl>,
+    /// Attached actor-owned state is a nominal schema, never an unguarded
+    /// runtime class field. Parsed here, linked only after owner resolution.
+    pub state_attachments: Vec<ActorStateAttachment>,
     pub receivers: Vec<ReceiverHeader>,
     /// Lexically located state member uses. These are type checked only if
     /// the nominal actor has a concrete definition with known field types.
@@ -48,6 +51,13 @@ pub struct TargetHeaders {
     pub receiver_returns: Vec<ReceiverReturn>,
     /// Entire bounded, balanced token bodies for structured CFG preflight.
     pub receiver_bodies: Vec<ReceiverBodyTokens>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActorStateAttachment {
+    pub owner: String,
+    pub pos: Pos,
+    pub field: Field,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -245,6 +255,53 @@ impl Cursor<'_> {
         Ok((ReceiverHeader { owner, name, arity, params, return_type, mutable, public, pos }, start, end))
     }
 
+    // Restricted source-compiled stateful preview admission. Parse one exact
+    // initialized scalar int field through the canonical actor parser; never
+    // manufacture a plain class field or bypass the actor-state type checker.
+    // This intentionally does not claim the entire attached-state language
+    // grammar (bool/multiple/deferred fields remain unsupported here).
+    fn state_attachment(&mut self, pos: Pos) -> R<ActorStateAttachment> {
+        self.expect_word("on")?;
+        self.expect_word("actor")?;
+        let owner = self.ident()?;
+        self.expect_word("as")?;
+        self.expect(&Tok::LBrace, "expected '{' before protected actor state")?;
+        let start = self.i;
+        self.expect_word("let")?;
+        self.expect_word("int")?;
+        let _name = self.ident()?;
+        self.expect(&Tok::Assign, "expected constant '=' initializer")?;
+        self.take(&Tok::Minus);
+        match self.tok() {
+            Tok::Int(Some(_)) | Tok::Int(None) => self.next(),
+            _ => return Err(self.err("E_SYNTAX",
+                "restricted attached-state preview requires an integer literal")),
+        }
+        self.expect(&Tok::Semi, "expected ';' after actor state field")?;
+        let end = self.i;
+        self.expect(&Tok::RBrace, "expected '}' after actor state field")?;
+
+        // Reparse the exact source field tokens in an artificial nominal
+        // *actor* declaration, obtaining canonical FieldMode::ActorState,
+        // type and initializer. No emitted module or ordinary-field rewrite
+        // is performed at this stage.
+        let ident = |name: String| Token { tok: Tok::Ident(name), pos };
+        let mut actor = vec![ident("define".into()), ident("actor".into()),
+            ident(owner.clone()), ident("as".into())];
+        actor.extend_from_slice(&self.toks[start..end]);
+        actor.push(ident("end".into()));
+        actor.push(Token { tok: Tok::Eof, pos: self.pos() });
+        let program = Parser::new(actor).parse_program()?;
+        if program.actors.len() != 1 || program.actors[0].fields.len() != 1 {
+            return Err(self.err("E_STATE", "attached actor state schema is malformed"));
+        }
+        let field = program.actors[0].fields[0].clone();
+        if field.ty != Type::Int || field.mode != FieldMode::ActorState {
+            return Err(self.err("E_STATE", "attached state must remain protected actor-owned int"));
+        }
+        Ok(ActorStateAttachment { owner, pos, field })
+    }
+
     /// Parse a concrete "define actor Foo as ... end" using the existing
     /// production parser. The delimiter scan observes braces so an "end"
     /// inside a method body does not truncate the actor declaration.
@@ -318,7 +375,8 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             out.namespace = Some(c.ident()?);
             c.expect(&Tok::Semi, "expected ';' after namespace")?;
         } else if c.take_word("import") {
-            if !out.actors.is_empty() || !out.receivers.is_empty() {
+            if !out.actors.is_empty() || !out.receivers.is_empty() ||
+                !out.definitions.is_empty() || !out.state_attachments.is_empty() {
                 return Err(c.err("E_SYNTAX", "module imports must precede actor declarations"));
             }
             c.expect_word("module")?;
@@ -334,12 +392,21 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             c.expect(&Tok::Semi, "expected ';' after module import")?;
             out.imports.push(alias);
         } else if c.take_word("define") {
-            let actor = c.definition(c.i - 1)?;
-            if out.definitions.iter().any(|other| other.name == actor.name) {
-                return Err(Diagnostic::new(actor.pos, "E_DUPLICATE",
-                    format!("duplicate concrete actor definition '{}'", actor.name)));
+            if c.take_word("state") {
+                let attached = c.state_attachment(pos)?;
+                if out.state_attachments.iter().any(|a| a.owner == attached.owner) {
+                    return Err(Diagnostic::new(pos, "E_DUPLICATE",
+                        "multiple state schemas for the same actor are forbidden"));
+                }
+                out.state_attachments.push(attached);
+            } else {
+                let actor = c.definition(c.i - 1)?;
+                if out.definitions.iter().any(|other| other.name == actor.name) {
+                    return Err(Diagnostic::new(actor.pos, "E_DUPLICATE",
+                        format!("duplicate concrete actor definition '{}'", actor.name)));
+                }
+                out.definitions.push(actor);
             }
-            out.definitions.push(actor);
         } else if c.take_word("declare") {
             c.expect_word("actor")?;
             let name = c.ident()?;
@@ -367,6 +434,29 @@ pub fn parse_target_declarations(toks: &[Token]) -> R<TargetHeaders> {
             }
         }
         decls += 1;
+    }
+    // Resolve attached state against the exact nominal actor in this source
+    // file after the declaration scan, independently of source order. Missing
+    // owners and double/ordinary inline layouts fail closed.
+    for attached in &out.state_attachments {
+        if !out.actors.contains(&attached.owner) {
+            return Err(Diagnostic::new(attached.pos, "E_UNBOUND",
+                "attached protected state must have an exact actor declaration"));
+        }
+        let Some(actor) = out.definitions.iter_mut().find(|a| a.name == attached.owner) else {
+            return Err(Diagnostic::new(attached.pos, "E_UNBOUND",
+                "attached protected state requires one concrete actor definition"));
+        };
+        if !actor.fields.is_empty() {
+            return Err(Diagnostic::new(attached.pos, "E_DUPLICATE",
+                "inline and attached actor state schemas cannot coexist"));
+        }
+        if actor.methods.iter().any(|m| m.name == attached.field.name) ||
+           attached.field.name == "receive" {
+            return Err(Diagnostic::new(attached.pos, "E_DUPLICATE",
+                "protected state field collides with actor method or receive"));
+        }
+        actor.fields.push(attached.field.clone());
     }
     for receiver in &out.receivers {
         if !out.actors.contains(&receiver.owner) {
