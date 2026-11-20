@@ -54,7 +54,10 @@ const positives=[
  ['pub fnc main(): int {let Record x={z:true,a:40}; let record y={a:41,z:false}; return x.a+y.a-39;}',42n,''],
  ['define struct Point as int x; int y; end pub fnc main(): int {val p=Point{y:2,x:40}; let Record c={x:40,y:2}; return p.x+c.y;}',42n,''],
  ['pub fnc main(): int {val x=Record.of(z=2,a=40);return x.a+x.z;}',42n,''],
- ['pub fnc main(): int {val r=Record.of("x-y":40,ok:2);return r["x-y"]+r.ok;}',42n,'']
+ ['pub fnc main(): int {val r=Record.of("x-y":40,ok:2);return r["x-y"]+r.ok;}',42n,''],
+ ['pub fnc main(): int {val pair=Tuple.of(10,20);val values=Array.of(1,2,3);return values[0]+pair[1];}',21n,''],
+ ['pub fnc main(): int {val t=Tuple.of(40,true,"ok");return t[0];}',40n,''],
+ ['pub fnc main(): int {val a=Array.of(20,22);return a[0]+a[1];}',42n,'']
 ];
 const negatives=[
  ['pub fnc main(): int {let Record r={x:42}; let string key="x"; return r[key];}','E_UNSUPPORTED'],
@@ -67,7 +70,12 @@ const negatives=[
  ['pub fnc main(): int {val m=Map.of("a",1);return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val a=Array.of(1,2);return 0;}','E_UNSUPPORTED'],
  ['pub fnc main(): int {val l=List.of("x","y");return 0;}','E_UNSUPPORTED'],
- ['pub fnc main(): int {val a=Array.of();return 0;}','E_TYPE_INFERENCE']
+ ['pub fnc main(): int {val a=Array.of();return 0;}','E_TYPE_INFERENCE'],
+ ['pub fnc main(): int {val a=Array.of(1,2);return a[2];}','E_INDEX_BOUNDS'],
+ ['pub fnc main(): int {val t=Tuple.of(10);return t[-1];}','E_INDEX_BOUNDS'],
+ ['pub fnc main(): int {val t=Tuple.of(10);val i=0;return t[i];}','E_UNSUPPORTED'],
+ ['pub fnc main(): int {val a=Array.of(1,2);val writer=borrow! mut a;return 0;}','E_BORROW'],
+ ['pub fnc main(): int {val t=Tuple.of();return 0;}','E_UNSUPPORTED']
 ];
 const dir=await mkdtemp(join(tmpdir(),'atto-closed-record-'));
 try{
@@ -96,5 +104,5 @@ try{
   assert.equal(compiled.ok,false,'unsupported guest admitted');
   assert.equal(compiled.error.split(':')[0],code);
  }
- console.log('PASS factory/closed Record guests: '+positives.length+' executed, '+negatives.length+' rejected with zero artifact, native/browser decisions and byte parity');
+ console.log('PASS canonical factories and closed Record guests: '+positives.length+' executed, '+negatives.length+' rejected with zero artifact, native/browser decisions and byte parity');
 } finally {await rm(dir,{recursive:true,force:true})}
