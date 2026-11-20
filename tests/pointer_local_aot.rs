@@ -56,6 +56,19 @@ fn all_canonical_and_legacy_prefix_pairs_have_same_guest_effect() {
     }
 }
 #[test]
+fn canonical_prl_001_and_prl_002_unmodified_source_compile_as_real_guests() {
+    // Source bytes are Git-blob-identical to atto-platform-conformance #30.
+    // These files have NO compiler-side rewritten comments or ownership ops.
+    const PRL_001: &str = include_str!("pointer_local_spec_exact/PRL-001.atto");
+    const PRL_002: &str = include_str!("pointer_local_spec_exact/PRL-002.atto");
+    let guest_a = compile_ok(PRL_001);
+    let guest_b = compile_ok(PRL_002);
+    assert_eq!(guest_a, guest_b, "rt and bang spellings have equivalent guest code");
+    assert_eq!(guest_a, compile_ok(RT));
+    assert_eq!(guest_b, compile_ok(MIXED));
+}
+
+#[test]
 fn malformed_spellings_and_pointer_lifecycle_fail_before_guest_generation() {
     for body in [
         "val Pointer<int> ptr = rt ref value; val answer = deref! ptr; return answer;",
