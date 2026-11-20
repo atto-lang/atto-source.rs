@@ -100,6 +100,7 @@ const RESERVED: &[&str] = &[
     "durable",
     "isoactor",
     "shared",
+    "isolated",
     "untrusted",
     "spawn",
     "stop",
@@ -606,8 +607,18 @@ impl Parser {
         let mut p = Self::new(toks.to_vec());
         p.i = offset;
         p.expect_word("define")?;
+        let domain = if p.eat_word("shared") {
+            ActorExecutionDomain::Shared
+        } else if p.eat_word("isolated") {
+            ActorExecutionDomain::Isolated
+        } else if p.eat_word("untrusted") {
+            ActorExecutionDomain::Untrusted
+        } else {
+            ActorExecutionDomain::Shared
+        };
         p.expect_word("actor")?;
-        let decl = p.parse_actor(true, ActorPersistenceMode::Volatile)?;
+        let mut decl = p.parse_actor(true, ActorPersistenceMode::Volatile)?;
+        decl.domain = domain;
         Ok((decl, p.i))
     }
 
@@ -628,29 +639,53 @@ impl Parser {
             let public = self.is_word("pub");
             let at = usize::from(public);
             let start = self.pos();
-            // Canonical 'define [pub] (persistent | durable) actor'.
-            // Also retain legacy 'pub define ...' visibility placement.
-            // Never downgrade a qualified actor to ordinary volatile state.
+            // Domain and storage modifiers are orthogonal and ordered:
+            // define [pub] [shared|isolated|untrusted] [persistent|durable] actor.
+            // The declared domain is metadata, NOT host-authenticated authority.
             if self.word_at(at) == Some("define") {
-                let mut qualifier = at + 1;
-                if self.word_at(qualifier) == Some("pub") {
-                    qualifier += 1;
+                let mut next = at + 1;
+                let post_define_public = self.word_at(next) == Some("pub");
+                if post_define_public {
+                    next += 1;
                 }
-                let mode = match self.word_at(qualifier) {
+                let (domain, domain_provided) = match self.word_at(next) {
+                    Some("shared") => (ActorExecutionDomain::Shared, true),
+                    Some("isolated") => (ActorExecutionDomain::Isolated, true),
+                    Some("untrusted") => (ActorExecutionDomain::Untrusted, true),
+                    _ => (ActorExecutionDomain::Shared, false),
+                };
+                if domain_provided {
+                    next += 1;
+                }
+                let mode = match self.word_at(next) {
                     Some("persistent") => Some(ActorPersistenceMode::Persistent),
                     Some("durable") => Some(ActorPersistenceMode::Durable),
                     _ => None,
                 };
-                if let Some(mode) = mode {
-                    if self.word_at(qualifier + 1) != Some("actor") {
-                        return Err(Diagnostic::new(
-                            start, "E_ACTOR_PERSISTENCE_MODIFIER",
-                            "persistent/durable must occur once before 'actor'; not a class modifier",
-                        ));
+                if mode.is_some() {
+                    next += 1;
+                }
+                if self.word_at(next) == Some("actor") {
+                    // Restricted subset does not have a public actor ABI.
+                    // Do not accept syntax and accidentally drop visibility.
+                    if public || post_define_public {
+                        return Err(unsupported(start, "'pub' actors"));
                     }
-                    self.i += qualifier + 2;
-                    prog.actors.push(self.parse_actor(true, mode)?);
+                    self.i += next + 1;
+                    let mut decl = self.parse_actor(
+                        true, mode.unwrap_or(ActorPersistenceMode::Volatile)
+                    )?;
+                    decl.domain = domain;
+                    prog.actors.push(decl);
                     continue;
+                }
+                if mode.is_some() {
+                    return Err(Diagnostic::new(start, "E_ACTOR_PERSISTENCE_MODIFIER",
+                        "persistent/durable must occur once after the domain modifier and before 'actor'"));
+                }
+                if domain_provided {
+                    return Err(Diagnostic::new(start, "E_ACTOR_DOMAIN_MODIFIER",
+                        "actor execution class must occur once, immediately before optional storage and 'actor'"));
                 }
             }
             match (self.word_at(at), self.word_at(at + 1)) {
@@ -849,6 +884,7 @@ impl Parser {
             pos,
             receives,
             sends,
+            domain: ActorExecutionDomain::Shared,
             persistence,
             persistence_hooks: m.persistence_hooks,
             fields: m.fields,
