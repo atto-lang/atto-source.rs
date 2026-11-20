@@ -85,7 +85,7 @@ impl Plan {
                 Storage::Soa => Ok((0, cursor)),
                 Storage::Aosoa(_) => {
                     let block = aligned(cursor, max_align).ok_or(PlanError::SizeOverflow)?;
-                    let blocks = len / width + u64::from(len % width != 0);
+                    let blocks = len / width + u64::from(!len.is_multiple_of(width));
                     let bytes = block.checked_mul(blocks).ok_or(PlanError::SizeOverflow)?;
                     Ok((block, bytes))
                 }
