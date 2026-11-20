@@ -40,8 +40,11 @@ fn scalar_type(ty: &LiteralType, at: Pos) -> Result<Type, Diagnostic> {
         LiteralType::Bool => Ok(Type::Bool),
         LiteralType::Float => Ok(Type::Float),
         LiteralType::String => Ok(Type::Str),
-        _ => Err(error(at, "E_UNSUPPORTED",
-            "executable Tuple.of/Array.of needs owned scalar int/bool/float/string elements")),
+        _ => Err(error(
+            at,
+            "E_UNSUPPORTED",
+            "executable Tuple.of/Array.of needs owned scalar int/bool/float/string elements",
+        )),
     }
 }
 
@@ -72,11 +75,22 @@ fn generated_class(name: String, types: &[LiteralType], at: Pos) -> Result<Class
             mode: FieldMode::Constructor,
             init: default_value(ty, at),
         });
-        params.push(Param { name: param_name.clone(), ty, mutable: false, pos: at });
+        params.push(Param {
+            name: param_name.clone(),
+            ty,
+            mutable: false,
+            pos: at,
+        });
         body.push(Stmt::FieldAssign {
-            target: Expr { kind: ExprKind::SelfRef, pos: at },
+            target: Expr {
+                kind: ExprKind::SelfRef,
+                pos: at,
+            },
             field: field_name,
-            value: Expr { kind: ExprKind::Var(param_name), pos: at },
+            value: Expr {
+                kind: ExprKind::Var(param_name),
+                pos: at,
+            },
             pos: at,
         });
     }
@@ -86,7 +100,11 @@ fn generated_class(name: String, types: &[LiteralType], at: Pos) -> Result<Class
         public: false,
         state_container: false,
         fields,
-        ctor: Some(Constructor { pos: at, params, body }),
+        ctor: Some(Constructor {
+            pos: at,
+            params,
+            body,
+        }),
         methods: Vec::new(),
     })
 }
@@ -100,7 +118,11 @@ fn rewrite_projection(
     depth: usize,
 ) -> Result<(), Diagnostic> {
     if depth >= MAX_REWRITE_DEPTH {
-        return Err(error(expr.pos, "E_NESTING", "indexed sequence expression exceeds depth budget"));
+        return Err(error(
+            expr.pos,
+            "E_NESTING",
+            "indexed sequence expression exceeds depth budget",
+        ));
     }
     match &mut expr.kind {
         ExprKind::Index(receiver, index) => {
@@ -108,16 +130,24 @@ fn rewrite_projection(
             rewrite_projection(index, locals, depth + 1)?;
             if let ExprKind::Var(name) = &receiver.kind {
                 if let Some(&length) = locals.get(name) {
-                    let field = match &index.kind {
-                        ExprKind::Int(Some(i)) if *i < length as u64 =>
-                            item_field(*i as usize),
-                        ExprKind::Int(Some(_)) | ExprKind::Int(None) |
-                        ExprKind::Unary(UnOp::Neg, _) =>
-                            return Err(error(index.pos, "E_INDEX_BOUNDS",
-                                "static Array/Tuple index is outside the fixed allocation")),
-                        _ => return Err(error(index.pos, "E_UNSUPPORTED",
-                            "computed Array/Tuple indexes need a runtime checked indexing ABI")),
-                    };
+                    let field =
+                        match &index.kind {
+                            ExprKind::Int(Some(i)) if *i < length as u64 => item_field(*i as usize),
+                            ExprKind::Int(Some(_))
+                            | ExprKind::Int(None)
+                            | ExprKind::Unary(UnOp::Neg, _) => {
+                                return Err(error(
+                                    index.pos,
+                                    "E_INDEX_BOUNDS",
+                                    "static Array/Tuple index is outside the fixed allocation",
+                                ))
+                            }
+                            _ => return Err(error(
+                                index.pos,
+                                "E_UNSUPPORTED",
+                                "computed Array/Tuple indexes need a runtime checked indexing ABI",
+                            )),
+                        };
                     expr.kind = ExprKind::Member(receiver.clone(), field);
                 }
             }
@@ -126,8 +156,7 @@ fn rewrite_projection(
         | ExprKind::Trap(inner)
         | ExprKind::Propagate(inner)
         | ExprKind::Ownership(_, _, inner)
-        | ExprKind::Member(inner, _) =>
-            rewrite_projection(inner, locals, depth + 1)?,
+        | ExprKind::Member(inner, _) => rewrite_projection(inner, locals, depth + 1)?,
         ExprKind::Binary(_, lhs, rhs) => {
             rewrite_projection(lhs, locals, depth + 1)?;
             rewrite_projection(rhs, locals, depth + 1)?;
@@ -137,16 +166,24 @@ fn rewrite_projection(
             rewrite_projection(yes, locals, depth + 1)?;
             rewrite_projection(no, locals, depth + 1)?;
         }
-        ExprKind::Call(_, args) | ExprKind::New(_, args) |
-        ExprKind::Array(args) | ExprKind::Tuple(args) => {
-            for arg in args { rewrite_projection(arg, locals, depth + 1)?; }
+        ExprKind::Call(_, args)
+        | ExprKind::New(_, args)
+        | ExprKind::Array(args)
+        | ExprKind::Tuple(args) => {
+            for arg in args {
+                rewrite_projection(arg, locals, depth + 1)?;
+            }
         }
         ExprKind::MethodCall(recv, _, args) => {
             rewrite_projection(recv, locals, depth + 1)?;
-            for arg in args { rewrite_projection(arg, locals, depth + 1)?; }
+            for arg in args {
+                rewrite_projection(arg, locals, depth + 1)?;
+            }
         }
         ExprKind::Record(fields) => {
-            for (_, arg) in fields { rewrite_projection(arg, locals, depth + 1)?; }
+            for (_, arg) in fields {
+                rewrite_projection(arg, locals, depth + 1)?;
+            }
         }
         ExprKind::Map(entries) => {
             for (key, value) in entries {
@@ -154,19 +191,26 @@ fn rewrite_projection(
                 rewrite_projection(value, locals, depth + 1)?;
             }
         }
-        ExprKind::EmptyBraces | ExprKind::Int(_) | ExprKind::Float(_) |
-        ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) |
-        ExprKind::SelfRef | ExprKind::StateRead(_) | ExprKind::Spawn(_) |
-        ExprKind::Lambda { .. } => {}
+        ExprKind::EmptyBraces
+        | ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Var(_)
+        | ExprKind::SelfRef
+        | ExprKind::StateRead(_)
+        | ExprKind::Spawn(_)
+        | ExprKind::Lambda { .. } => {}
     }
     Ok(())
 }
 
 fn rewrite_statement(stmt: &mut Stmt, locals: &BTreeMap<String, usize>) -> Result<(), Diagnostic> {
     match stmt {
-        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } |
-        Stmt::Expr(init) | Stmt::Return(Some(init), _) =>
-            rewrite_projection(init, locals, 0),
+        Stmt::Bind { init, .. }
+        | Stmt::Assign { value: init, .. }
+        | Stmt::Expr(init)
+        | Stmt::Return(Some(init), _) => rewrite_projection(init, locals, 0),
         // Scope-sensitive indexing inside nested branches must wait for
         // lexical SSA proof; do not let an outer binding leak into a shadow.
         _ => Ok(()),
@@ -182,11 +226,21 @@ fn rewrite_statement(stmt: &mut Stmt, locals: &BTreeMap<String, usize>) -> Resul
 pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diagnostic> {
     let mut source_types = BTreeMap::new();
     for binding in checked {
-        if matches!(&binding.value.ty, LiteralType::Tuple(_) | LiteralType::Array(_)) {
-            let key = (binding.value.pos.line, binding.value.pos.col, binding.name.clone());
+        if matches!(
+            &binding.value.ty,
+            LiteralType::Tuple(_) | LiteralType::Array(_)
+        ) {
+            let key = (
+                binding.value.pos.line,
+                binding.value.pos.col,
+                binding.name.clone(),
+            );
             if source_types.insert(key, binding).is_some() {
-                return Err(error(binding.value.pos, "E_SHAPE",
-                    "ambiguous typed sequence source provenance"));
+                return Err(error(
+                    binding.value.pos,
+                    "E_SHAPE",
+                    "ambiguous typed sequence source provenance",
+                ));
             }
         }
     }
@@ -198,7 +252,14 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
         let mut body = Vec::with_capacity(func.body.len());
         let mut locals = BTreeMap::<String, usize>::new();
         for original in std::mem::take(&mut func.body) {
-            let Stmt::Bind { kind, name, ty, init, pos } = original else {
+            let Stmt::Bind {
+                kind,
+                name,
+                ty,
+                init,
+                pos,
+            } = original
+            else {
                 let mut other = original;
                 rewrite_statement(&mut other, &locals)?;
                 body.push(other);
@@ -210,7 +271,13 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 _ => false,
             };
             if !raw_items {
-                let mut other = Stmt::Bind { kind, name: name.clone(), ty, init, pos };
+                let mut other = Stmt::Bind {
+                    kind,
+                    name: name.clone(),
+                    ty,
+                    init,
+                    pos,
+                };
                 rewrite_statement(&mut other, &locals)?;
                 locals.remove(&name);
                 body.push(other);
@@ -218,26 +285,42 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             }
             let key = (init.pos.line, init.pos.col, name.clone());
             let typed = source_types.get(&key).ok_or_else(|| {
-                error(init.pos, "E_SHAPE", "missing compiler-owned Array/Tuple type inventory")
+                error(
+                    init.pos,
+                    "E_SHAPE",
+                    "missing compiler-owned Array/Tuple type inventory",
+                )
             })?;
             let types = match &typed.value.ty {
                 LiteralType::Tuple(items) => items.clone(),
-                LiteralType::Array(element) =>
-                    vec![element.as_ref().clone(); typed.value.children.len()],
+                LiteralType::Array(element) => {
+                    vec![element.as_ref().clone(); typed.value.children.len()]
+                }
                 _ => return Err(error(init.pos, "E_SHAPE", "Array/Tuple type identity lost")),
             };
-            if types.is_empty() || types.len() > MAX_EXECUTABLE_ITEMS ||
-                ordinal >= MAX_EXECUTABLE_BINDINGS
+            if types.is_empty()
+                || types.len() > MAX_EXECUTABLE_ITEMS
+                || ordinal >= MAX_EXECUTABLE_BINDINGS
             {
-                return Err(error(init.pos, "E_UNSUPPORTED",
-                    "executable Array.of/Tuple.of requires 1..=8 scalar items and <=32 bindings"));
+                return Err(error(
+                    init.pos,
+                    "E_UNSUPPORTED",
+                    "executable Array.of/Tuple.of requires 1..=8 scalar items and <=32 bindings",
+                ));
             }
             if kind == BindKind::Const {
-                return Err(error(pos, "E_UNSUPPORTED",
-                    "const Array/Tuple allocation is not a compile-time constant"));
+                return Err(error(
+                    pos,
+                    "E_UNSUPPORTED",
+                    "const Array/Tuple allocation is not a compile-time constant",
+                ));
             }
             if typed.value.children.len() != types.len() {
-                return Err(error(init.pos, "E_SHAPE", "typed sequence length differs from source"));
+                return Err(error(
+                    init.pos,
+                    "E_SHAPE",
+                    "typed sequence length differs from source",
+                ));
             }
             let values = match init.kind {
                 ExprKind::Tuple(items) => items,
@@ -245,12 +328,16 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 _ => unreachable!("raw_items checked factory AST"),
             };
             let mut arguments = Vec::with_capacity(values.len());
-            for (value, (type_expected, checked_child)) in
-                values.into_iter().zip(types.iter().zip(&typed.value.children))
+            for (value, (type_expected, checked_child)) in values
+                .into_iter()
+                .zip(types.iter().zip(&typed.value.children))
             {
                 if &checked_child.ty != type_expected {
-                    return Err(error(value.pos, "E_SHAPE",
-                        "typed sequence element disagrees with checked factory type"));
+                    return Err(error(
+                        value.pos,
+                        "E_SHAPE",
+                        "typed sequence element disagrees with checked factory type",
+                    ));
                 }
                 let element_type = scalar_type(type_expected, value.pos)?;
                 let var = format!("{PRIVATE_PREFIX}temp_{temp_id}");
@@ -265,7 +352,10 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                     init: initializer,
                     pos: value_pos,
                 });
-                arguments.push(Expr { kind: ExprKind::Var(var), pos: value_pos });
+                arguments.push(Expr {
+                    kind: ExprKind::Var(var),
+                    pos: value_pos,
+                });
             }
             let class_name = format!("{PRIVATE_PREFIX}shape_{ordinal}");
             let type_index = program.type_names.len() as u32;
@@ -277,7 +367,10 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 kind,
                 name,
                 ty: Some(Type::Named(type_index)),
-                init: Expr { kind: ExprKind::New(class_name, arguments), pos: init.pos },
+                init: Expr {
+                    kind: ExprKind::New(class_name, arguments),
+                    pos: init.pos,
+                },
                 pos,
             });
         }
