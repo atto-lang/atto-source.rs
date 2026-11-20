@@ -115,7 +115,9 @@ fn match_pattern(p: &mut Cursor<'_>) -> R<(bool,bool,Vec<Fixed>)> {
         }
     }
     let leading = seq.first().is_some_and(Option::is_none);
-    let trailing = seq.len()>1 && seq.last().is_some_and(Option::is_none);
+    // A lone rest spans the entire input, including an empty List.
+    // It is both an unanchored prefix and an unanchored suffix.
+    let trailing = seq.last().is_some_and(Option::is_none);
     // Adjacent rest operators cannot define a unique decomposition.
     // Reject them with the specification's syntax diagnostic, not a
     // misleading "feature not implemented" marker.
@@ -279,10 +281,17 @@ fn build(values:&[i64],arm:&Arm)->R<TProgram>{
     let m=arm.items.len();
     let mut starts=Vec::new();
     if m<=n {
-        for start in 0..=n-m {
-            if !arm.leading && start!=0 {continue;}
-            if !arm.trailing && start+m!=n {continue;}
-            starts.push(start);
+        if m==0 && arm.leading && arm.trailing {
+            // One unbound rest has one semantic witness, independent
+            // of subject length. Enumerating n+1 equivalent positions
+            // wastes code and rejects valid 32-element Lists.
+            starts.push(0);
+        } else {
+            for start in 0..=n-m {
+                if !arm.leading && start!=0 {continue;}
+                if !arm.trailing && start+m!=n {continue;}
+                starts.push(start);
+            }
         }
     }
     if starts.len()>MAX_VALUES{
