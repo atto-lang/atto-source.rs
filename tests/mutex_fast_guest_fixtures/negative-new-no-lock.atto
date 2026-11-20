@@ -1,0 +1,5 @@
+// COMPILE-NEGATIVE: E_LOCK_UNSUPPORTED. Correct class syntax, no guest runtime.
+pub fnc main(): int {
+  val counter = new Mutex<int>(0);
+  return 0;
+}
