@@ -1,0 +1,44 @@
+// EXPERIMENTAL checked setup must reject a channel containing messages
+// from before graph ownership without redirecting those bytes to the sink.
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val channel = Channel<int>.bounded(1);
+  channel.send(99);
+  val Result<PipeHandle, PipeSetupError> rejected =
+      producer pipe channel pipe consumer;
+  val int rejected_code = match rejected over
+    on Err(error) -> error.code(),
+    on Ok(_) -> 0,
+  end;
+  if rejected_code != 8 then return 91; fi
+  val int original = await channel.receive();
+  if original != 99 then return 92; fi
+  // The failed graph must not have consumed ownership. Draining the
+  // original channel restores quiescence and permits the same endpoints.
+  val Result<PipeHandle, PipeSetupError> connection =
+      producer pipe channel pipe consumer;
+  val int accepted = match connection over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if accepted != 1 then return 93; fi
+  producer.send(40);
+  producer.send(2);
+  producer.stop();
+  await producer.get_done();
+  await consumer.get_done();
+  return 42;
+}
