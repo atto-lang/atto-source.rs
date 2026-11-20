@@ -109,12 +109,12 @@ self.onmessage=async()=>{
     // runtime: old/new ADT constructors x unary/explicit checked read.
     // Host-only adapter tests are insufficient for on-is pattern parity.
     const proofCases=[
-      ['LF echo',[encoder.encode('hello\\n')],{exit:0,stdout:prompt+'hello',stderr:'echo complete'},{}],
-      ['empty record',[encoder.encode('\\n')],{exit:0,stdout:prompt,stderr:'echo complete'},{}],
+      ['LF echo',[encoder.encode('hello\n')],{exit:0,stdout:prompt+'hello',stderr:'echo complete'},{}],
+      ['empty record',[encoder.encode('\n')],{exit:0,stdout:prompt,stderr:'echo complete'},{}],
       ['clean EOF',[],{exit:11,stdout:prompt,stderr:''},{}],
       ['bad UTF-8',[new Uint8Array([0xc3,0x28,10])],{exit:14,stdout:prompt,stderr:''},{}],
-      ['stdin denied',[encoder.encode('secret\\n')],{exit:14,stdout:prompt,stderr:''},{allowStdin:false}],
-      ['stdout denied',[encoder.encode('unused\\n')],{exit:10,stdout:'',stderr:''},{allowStdout:false}],
+      ['stdin denied',[encoder.encode('secret\n')],{exit:14,stdout:prompt,stderr:''},{allowStdin:false}],
+      ['stdout denied',[encoder.encode('unused\n')],{exit:10,stdout:'',stderr:''},{allowStdout:false}],
     ];
     const patternExecutions=[];
     for(const [name,guest] of compiledVariants) {
