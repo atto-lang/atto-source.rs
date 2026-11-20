@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(m.delivered, 1);
     }
     #[test] fn closed_receiver_and_pre_restart_capabilities_cannot_dequeue() {
-        let mut m = Admission::new(actor(), 1, 1);
+        let mut m = Admission::<i64>::new(actor(), 1, 1);
         m.stop();
         assert!(matches!(m.deliver(actor(), 1, true), Err(AdmissionError::Closed)));
         let mut next = actor();
