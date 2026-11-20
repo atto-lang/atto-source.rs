@@ -17,6 +17,14 @@ Linux/POSIX experimental host component; it is not a secure production TenantVM.
 - `src/target_native.rs` from the same commit, Git blob `d9ba4ecb57c08f141613fbeff9705803927f7e6e`.
 - `runtime/actor_runtime.c` from the same commit, Git blob `95780f61ed1deba59a2375710a25eee6e9e5b86a`.
 
+**Compatibility delta:** The relocated `src/main.rs` now explicitly rejects
+six `BinOp` variants added since the frozen frontend snapshot
+(`BitAnd`, `BitOr`, `BitXor`, `Shl`, `LShr`, `AShr`) with
+`E_UNSUPPORTED_NATIVE_BITWISE`, rather than retaining a non-exhaustive
+Rust match against the canonical AST. The SHA above records the **original
+source blob**, not the post-fix blob. This is a deliberate fail-closed API
+compatibility change, not proof of native bitwise support.
+
 **Note:** The 2026-11-14 old compiler relied on a pinned frontend snapshot.
 The canonical root compiler has evolved since then. Byte-identity of the three
 adapter files does **not** prove they compile against the current frontend.
@@ -42,3 +50,20 @@ backend. It must not publish/compiler-export binaries or relax private-source
 CI permissions. The deletion of the vendored frontend in `.llvm` is
 dependent on exact-head native guest verification and review of its existing
 `cargo` entrypoints and workflow consumers.
+
+## Executable gates (once an admitted runner is available)
+
+The isolated package now pins its own `Cargo.lock`, and the root-source
+read-only GitHub workflow `.github/workflows/llvm-aot-adapter.yml`
+runs `experimental/llvm-aot/ci/verify-native-guest.sh`.
+The script requires a pinned exact source HEAD, native `cargo +1.85.1`
+build/test, deterministic LLVM IR, a real ELF64 x86-64 native guest
+returning exit code 42, fail-closed invalid source with no new artifact,
+and C actor runtime compilation with warnings as errors.
+
+**Verification status:** shell syntax and gate-presence assertions were
+checked locally on the authored script; Rust 1.85.1 is unavailable in the
+working container, and current source GitHub jobs fail before runner steps.
+No successful Cargo test, native guest execution or independent carrier run
+is claimed. Cross-org source exports remain denied by the protected root
+`.github/private-ci-approved-repositories.txt`.
