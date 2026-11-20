@@ -297,6 +297,9 @@ impl TaskLeaseStack {
 /// a signed physical-quiescence witness, or a production Atto capability API.
 /// The trusted scheduler must replace the modeled guest-exit/callback receipts
 /// with authenticated, separately ordered runtime facts before guest admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskExitKind { Succeeded, Cancelled }
+
 struct ScopeTask {
     continuation: Continuation,
     parent: Option<u64>,
@@ -308,6 +311,7 @@ struct ScopeTask {
     notifications_drained: bool,
     physically_retired: bool,
     cleanup_failed: bool,
+    exit_kind: Option<TaskExitKind>,
 }
 
 /// Serial arbiter: each mutation (grant, cancellation, claim, cleanup) is
@@ -363,7 +367,7 @@ impl TaskScopeLockCoordinator {
             waiting: Vec::new(), unclaimed: Vec::new(),
             cancel_requested: false, guest_exited: false,
             notifications_drained: false, physically_retired: false,
-            cleanup_failed: false,
+            cleanup_failed: false, exit_kind: None,
         });
         Ok(())
     }
@@ -465,6 +469,14 @@ impl TaskScopeLockCoordinator {
         let (tasks, locks) = (&mut self.tasks, &mut self.locks);
         let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
         if task.guest_exited { return Err(Error::AlreadyClaimed); }
+        // This safe-point transition wins the modeled success/cancel race.
+        // A real runtime must derive the winner from an atomic scheduler
+        // terminal claim, not from a guest-writable or callback-owned flag.
+        task.exit_kind = Some(if task.cancel_requested {
+            TaskExitKind::Cancelled
+        } else {
+            TaskExitKind::Succeeded
+        });
         task.guest_exited = true;
         let mut failure = None;
         for (lock_id, ticket) in std::mem::take(&mut task.waiting) {
@@ -489,6 +501,9 @@ impl TaskScopeLockCoordinator {
         };
         if failure.is_some() { task.cleanup_failed = true; }
         match failure { None => Ok(released), Some(err) => Err(err) }
+    }
+    fn exit_kind(&self, who: Continuation) -> Result<Option<TaskExitKind>, Error> {
+        Ok(self.registered(who)?.exit_kind)
     }
     fn notification_drain_ack(&mut self, who: Continuation) -> Result<(), Error> {
         let task = self.registered(who)?;
