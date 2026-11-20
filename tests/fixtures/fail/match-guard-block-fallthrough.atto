@@ -1,0 +1,9 @@
+// A value match cannot accept a block that falls through without a result.
+// expect-error: E_RETURN
+fnc classify(int value): int {
+  ^ match value over
+    on 0 -> { val seen = 0; }
+    on _ -> { return 2; }
+  end
+}
+pub fnc main(): int { return classify(7); }
