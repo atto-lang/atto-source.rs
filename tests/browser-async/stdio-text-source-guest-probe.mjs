@@ -166,10 +166,50 @@ pub suspends fnc main(): int using io, suspend {
       const result=await run('exact-string-fallback '+name,parts,expected,grant,fallbackModule);
       fallbackCases.push({name,exit:result.exit});
     }
+    // Every checked read crosses a JSPI boundary. The old lowering leaked
+    // an entire 64 KiB heap buffer per record and exhausted a 16-page guest
+    // heap after about fifteen tiny lines. The new lowering must retain the
+    // first owned string unchanged while forty later reads reuse scratch.
+    const repeatedSource=`
+pub suspends fnc main(): int using io, suspend {
+  val input = stdio.in;
+  val first = << input;
+  let count: int = 0;
+  while count < 40 {
+    val result = readch input;
+    match result over
+      on is Ok<line> -> {
+        match line over
+          on is Some<item> -> { count = count + 1; }
+          on is None -> { return 11; }
+        end
+      }
+      on is Err<error> -> { return 14; }
+    end
+  }
+  return match first over
+    on is Ok<line> -> match line over
+      on is Some<item> -> match writech stdio.out, item over
+        on is Ok<_> -> 0,
+        on is Err<error> -> 12,
+      end,
+      on is None -> 13,
+    end,
+    on is Err<error> -> 15,
+  end;
+}
+`;
+    const repeatedModule=compile(repeatedSource);
+    const repeated=await run('40 reusable stdin reads preserve first string',
+      [encoder.encode('keep\n'+'x\n'.repeat(40))],
+      {exit:0,stdout:'keep',stderr:''},{},repeatedModule);
+    if(repeated.cooperates<41)
+      throw Error('40 reads and checked write failed to cooperate');
     self.postMessage({ok:true,compiledAtto:true,checkedStdio:true,
       directReadchAbiEquivalent:true,nominalIsAdtGuest:true,
       patternVariants:compiledVariants.map(([name])=>name),
-      patternExecutions,stringFallbackGuest:true,fallbackCases,cases});
+      patternExecutions,stringFallbackGuest:true,fallbackCases,
+      repeatScratchGuest:true,repeatedReads:41,cases});
   } catch(e) {
     self.postMessage({ok:false,error:String(e?.stack||e)});
   }
