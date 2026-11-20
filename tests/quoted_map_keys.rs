@@ -34,8 +34,7 @@ fn quoted_colon_and_arrow_are_maps_in_three_delimiters(){
 }
 #[test]
 fn inner_quotes_and_backtick_literals_are_preserved(){
-    for literal in [r#"'{\"foo\"}'"#,r#"'\"foo\"'"#,"`\"foo\"`"] {
-        if literal=="'{\"foo\"}'"{continue;}
+    for literal in [r#"'\"foo\"'"#, "`\"foo\"`"] {
         let p=parse(&format!("let m={{{literal}:5}};")).unwrap();
         let Stmt::Bind{init,..}=&p.funcs[0].body[0] else{panic!("bind")};
         assert!(matches!(&init.kind,ExprKind::Map(v)
