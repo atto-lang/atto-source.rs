@@ -248,6 +248,16 @@ pub struct ActorPersistenceHook {
     pub body_provided: bool,
 }
 
+/// Checked actor outbound application DATA effect.
+/// The absence of a clause is distinct from an explicit empty effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActorSendEffect {
+    /// `sends never`: no application DATA sends, including via helpers.
+    Never,
+    /// `sends T`: application DATA may only carry payload T.
+    Payload(Type),
+}
+
 /// `define actor Name as ... end` or `actor Name ... end` (Java Parser).
 #[derive(Clone, Debug)]
 pub struct ActorDecl {
@@ -257,7 +267,7 @@ pub struct ActorDecl {
     /// Existing ActorMail<T> is still the nominal receive-handler envelope.
     pub receives: Option<Type>,
     /// Optional outbound application send effect, not a recipient count.
-    pub sends: Option<Type>,
+    pub sends: Option<ActorSendEffect>,
     /// Verified backend dispatch may never erase Isolated or Untrusted into Shared.
     pub domain: ActorExecutionDomain,
     pub persistence: ActorPersistenceMode,
