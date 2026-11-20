@@ -473,6 +473,71 @@ impl Emit<'_> {
         self.channel_status_result(status, result, None);
     }
 
+    /// One externally authorized UTF-8 stdin record. Allocate before JSPI
+    /// suspension, and never retain a guest DataView across asynchronous I/O.
+    /// Host flattened outcome: i32 tag 0=Some,1=None,2=Err; i32 error +4,
+    /// i32 UTF-8 byte length +8. The bytes live in the guest-owned buffer.
+    fn stdio_read(&mut self, channel: &TE, bytes: u32, outcome: u32,
+                  result: u32, option: u32, status: u32) {
+        let alloc = self.l.helper(H_ALLOC);
+        // The v1 text ABI bounds a single line to 64 KiB.
+        self.i32c(65536); self.call(alloc); self.set(bytes);
+        self.i32c(16); self.call(alloc); self.set(outcome);
+        self.i32c(16); self.call(alloc); self.set(result);
+        self.i32c(16); self.call(alloc); self.set(option);
+
+        self.expr(channel);
+        self.get(bytes);
+        self.i32c(65536);
+        self.get(outcome);
+        self.call(self.l.import(Import::StdioRead));
+        self.set(status);
+        self.call(self.l.import(Import::Cooperate)); // ready reads also yield
+
+        self.get(status);
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(result); self.i32c(1); self.store_i32(0);
+        self.get(result); self.get(status); self.store_i32(8);
+        self.op(0x05);
+        // Flat tag 2 is a checked IoError (including EOF is tag 1).
+        self.get(outcome); self.load_i32(0); self.i32c(2); self.op(0x46);
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(result); self.i32c(1); self.store_i32(0);
+        self.get(result); self.get(outcome); self.load_i32(4); self.store_i32(8);
+        self.op(0x05);
+        // Option<string>: Some = 1, None = 0. Never convert a clean
+        // EOF into an empty string; the UTF-8 length may legitimately be 0.
+        self.get(option);
+        self.get(outcome); self.load_i32(0); self.op(0x45);
+        self.store_i32(0);
+        self.get(outcome); self.load_i32(0); self.op(0x45);
+        self.open(0x04, 0x40, Frame::Other);
+        self.get(option);
+        self.get(bytes); self.op(0xAD); // i64.extend_i32_u
+        self.i64c(32); self.op(0x86); // i64.shl
+        self.get(outcome); self.load_i32(8); self.op(0xAD);
+        self.op(0x84); // i64.or, packed UTF-8 pointer/length
+        self.store_i64(8);
+        self.close();
+        self.get(result); self.i32c(0); self.store_i32(0);
+        self.get(result); self.get(option); self.store_i32(8);
+        self.close(); // checked guest result
+        self.close(); // JSPI host status
+        self.get(result);
+    }
+
+    fn stdio_write(&mut self, endpoint: &TE, value: &TE,
+                   text: u32, result: u32, status: u32) {
+        self.expr(endpoint); // writable endpoint identity 1 stdout, 2 stderr
+        self.expr(value); // packed immutable string
+        self.set(text);
+        str_parts(&mut self.code, text);
+        self.call(self.l.import(Import::StdioWrite)); // checked JSPI write
+        self.set(status);
+        self.call(self.l.import(Import::Cooperate));
+        self.channel_status_result(status, result, None);
+    }
+
     fn channel_read(&mut self, channel: &TE, ticket: u32, outcome: u32,
                     result: u32, option: u32, status: u32) {
         let alloc = self.l.helper(H_ALLOC);
@@ -629,6 +694,12 @@ impl Emit<'_> {
             TExpr::TaskAwait(handle) => {self.expr(handle);self.call(self.l.import(Import::TaskAwait));}
             TExpr::ChannelRead { channel, ticket, outcome, result, option, status } => {
                 self.channel_read(channel, *ticket, *outcome, *result, *option, *status);
+            }
+            TExpr::StdioRead { channel, bytes, outcome, result, option, status } => {
+                self.stdio_read(channel, *bytes, *outcome, *result, *option, *status);
+            }
+            TExpr::StdioWrite { endpoint, value, text, result, status } => {
+                self.stdio_write(endpoint, value, *text, *result, *status);
             }
             TExpr::ChannelOpen {capacity,capacity_slot,handle_slot,result_slot,status_slot} =>
                 self.channel_open(capacity,*capacity_slot,*handle_slot,*result_slot,*status_slot),
