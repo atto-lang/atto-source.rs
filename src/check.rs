@@ -3129,6 +3129,10 @@ impl<'a> FnCx<'a> {
             },
             ExprKind::Unary(..) | ExprKind::Trap(..) | ExprKind::Ownership(..) | ExprKind::Binary(..) | ExprKind::Ternary(..)
             | ExprKind::Propagate(..) => unreachable!("handled by expr"),
+            ExprKind::Call(name, _)
+                if matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of") =>
+                return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                    "Array.of/List.of guest allocation is not implemented for this compiler profile")),
             ExprKind::Call(name, _) if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") =>
                 return Err(type_err(pos, format!("'{name}' requires a contextual Result/Option type"))),
             ExprKind::Call(name, args) => self.call(name, args, pos)?,
