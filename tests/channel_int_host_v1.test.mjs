@@ -276,3 +276,37 @@ test('pre-aborted send does not admit even with capacity and pending-send quota 
   assert.deepEqual(await rt.await_read(rt.nb_read(ch).value),item(2));
   rt.close(ch);assert.equal(rt.release(ch).ok,true);
 });
+
+test('deterministic 128-round FIFO stress preserves backpressure, abort and rendezvous',async()=>{
+  for(let round=0;round<128;round++) {
+    const capacity=round%3;
+    const host=new ChannelIntHostV1({maxPendingSends:16,maxTickets:16,maxCapacity:3});
+    const channel=host.open(capacity).value;
+    const initial=[];
+    for(let k=0;k<capacity;k++) {
+      const value=BigInt(1000+round*20+k);
+      initial.push(value);
+      assert.equal(host.send(channel,value).ok,true);
+    }
+    const controllers=Array.from({length:6},()=>new AbortController());
+    const pending=controllers.map((controller,k)=>
+      host.send_async(channel,BigInt(round*20+k),{signal:controller.signal}));
+    const cancelled=new Set([1,4]);
+    for(const i of cancelled) controllers[i].abort();
+    const expected=[...initial,...[0,2,3,5].map(k=>BigInt(round*20+k))];
+    for(const value of expected) {
+      const ticket=host.nb_read(channel);
+      assert.equal(ticket.ok,true);
+      assert.deepEqual(await host.await_read(ticket.value),
+        {ok:true,value:{some:true,value}});
+    }
+    for(let k=0;k<pending.length;k++) {
+      const result=await pending[k];
+      assert.equal(result.ok,!cancelled.has(k));
+      if(cancelled.has(k)) assert.equal(result.error.kind,'Cancelled');
+    }
+    assert.equal(host.snapshot(channel).value.queued,0);
+    assert.equal(host.close(channel).ok,true);
+    assert.equal(host.release(channel).ok,true);
+  }
+});
