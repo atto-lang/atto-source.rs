@@ -1676,6 +1676,7 @@ impl Parser {
                 self.terminator()?;
                 Ok(Stmt::Bind {
                     kind: BindKind::Const,
+                    referent_mutable: false,
                     name,
                     ty: Some(ty),
                     init,
@@ -2066,18 +2067,12 @@ impl Parser {
         } else {
             return Err(self.expected("'val', 'const' or 'let'"));
         };
-        // Java Parser.parseReferentMutability: `const mut` / `let mut` request a
-        // mutable referent (no effect on scalar values); `val` already means
-        // `const mut`, so `val mut` is a duplicate qualifier.
-        if self.is_word("mut") {
-            if kind == BindKind::Val {
-                return Err(Diagnostic::new(
-                    self.pos(),
-                    "E_SYNTAX",
-                    "'val' already means 'const mut'; 'val mut' is a duplicate mutability qualifier",
-                ));
-            }
-            self.advance();
+        // Referent mutation is independent of binding rebinding.
+        // `val mut` and `let mut` are both legal; neither bypasses ownership.
+        let referent_mutable = self.eat_word("mut");
+        if kind == BindKind::Const && referent_mutable {
+            return Err(Diagnostic::new(pos, "E_CONST_MUT_TARGET",
+                "const mut is not supported for the scalar/Record guest profile"));
         }
         let (name, ty) = if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
             let (name, _) = self.ident("a variable name")?;
@@ -2114,7 +2109,7 @@ impl Parser {
         }
         self.advance();
         let init = self.parse_expr()?;
-        Ok(Stmt::Bind { kind, name, ty, init, pos })
+        Ok(Stmt::Bind { kind, referent_mutable, name, ty, init, pos })
     }
 
     /// A guard is an else-free early-exit check. Its failure branch runs only
@@ -2476,6 +2471,7 @@ impl Parser {
             let init = self.parse_expr()?;
             Some(Box::new(Stmt::Bind {
                 kind: BindKind::Let,
+                referent_mutable: false,
                 name,
                 ty: Some(ty),
                 init,
