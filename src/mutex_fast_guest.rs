@@ -268,18 +268,46 @@ fn lower(inc: Increment, main: Main) -> R<TProgram> {
     })
 }
 
-fn guarded_suspension(tokens: &[Token]) -> Option<Pos> {
+fn guarded_diagnostic(tokens: &[Token]) -> Option<Diagnostic> {
     for (i, token) in tokens.iter().enumerate() {
         if !matches!(&token.tok, Tok::Ident(name) if name == "using") { continue; }
+        // The nearest enclosing function declaration must carry the
+        // suspension effect. Contextual "using lock_async" is itself await.
+        if let Some(j) = (0..i).rev().find(|&j| matches!(
+            &tokens[j].tok,Tok::Ident(word) if word=="fnc"
+        )) {
+            let marked = j > 0 && matches!(
+                &tokens[j-1].tok,Tok::Ident(word) if word=="susp" || word=="suspends"
+            );
+            if !marked {
+                return Some(error(token.pos,"E_AWAIT_EFFECT",
+                    "contextual lock_async requires a suspending callable"));
+            }
+        }
+
         let Some(open) = tokens.iter().enumerate().skip(i).find_map(|(j,t)|
             (t.tok == Tok::LBrace).then_some(j)) else { continue };
+        let lease = tokens[i..open].windows(2).find_map(|w| match (&w[0].tok,&w[1].tok) {
+            (Tok::Ident(as_kw),Tok::Ident(name)) if as_kw=="as" => Some(name.as_str()),
+            _ => None,
+        });
         let mut depth = 1usize;
-        for tok in tokens.iter().skip(open+1) {
+        for (j,tok) in tokens.iter().enumerate().skip(open+1) {
             match &tok.tok {
                 Tok::LBrace => depth += 1,
                 Tok::RBrace => { depth -= 1; if depth == 0 { break; } },
                 Tok::Ident(name) if matches!(name.as_str(),"await"|"select"|"readch"|"yield") =>
-                    return Some(tok.pos),
+                    return Some(error(tok.pos,"E_GUARD_SUSPEND",
+                        "await/select/readch/yield inside a live MutexLease")),
+                Tok::Ident(name) if name == "return" => {
+                    if let (Some(l),Some(next)) = (lease,tokens.get(j+1)) {
+                        if matches!(&next.tok,Tok::Ident(x) if x==l)
+                            && !tokens.get(j+2).is_some_and(|t| t.tok==Tok::Dot) {
+                            return Some(error(tok.pos,"E_GUARD_ESCAPE",
+                                "opaque mutex lease cannot escape its lexical scope"));
+                        }
+                    }
+                },
                 _ => {},
             }
         }
@@ -298,8 +326,8 @@ pub fn try_lower(tokens: &[Token]) -> R<Option<TProgram>> {
         (Tok::Dot,Tok::Ident(name),Tok::LParen) if name=="lock_async"
     ));
     if !has_mutex || !lock_async { return Ok(None); }
-    if let Some(pos) = guarded_suspension(tokens) {
-        return Err(error(pos,"E_GUARD_SUSPEND","await/select/readch/yield inside live MutexLease"));
+    if let Some(diagnostic) = guarded_diagnostic(tokens) {
+        return Err(diagnostic);
     }
     // This restricted parser owns *all* candidate source; never fall back to
     // the generic language parser and silently erase guard/await effects.
