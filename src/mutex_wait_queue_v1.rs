@@ -40,6 +40,10 @@ pub(crate) enum Error {
     StaleTicket,
     CancellationPending,
     AlreadyClaimed,
+    UnknownTask,
+    DuplicateTask,
+    NotQuiescent,
+    CleanupFailed,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cancellation {
