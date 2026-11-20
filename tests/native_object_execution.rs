@@ -68,6 +68,21 @@ fn run_guest(source: &str, expected_exit: i32) {
 }
 
 #[test]
+fn return_first_all_twelve_variants_compile_link_and_execute_native() {
+    // Unlike AST/MIR-only assertions, run_guest compiles the unmodified
+    // source to an ELF object, links it with cc, and executes the guest.
+    for header in [
+        "int <- main()", "int• main()",
+        "fnc int <- main()", "fnc int• main()",
+    ] {
+        for closer in ["end", "end.", "end;"] {
+            let source = format!("{header}\nbegin\n  return 42;\n{closer}\n");
+            run_guest(&source, 42);
+        }
+    }
+}
+
+#[test]
 fn true_native_guest_preserves_i64_above_binary64_mantissa() {
     run_guest(
         "pub fnc main(): int { return 9007199254740993 - 9007199254740992; }",
