@@ -213,6 +213,9 @@ fn check_type_test(
 }
 
 fn parse_atom(source: &str, expected: ElementType) -> R<Atom> {
+    if source.contains(" as ") {
+        return Err(error("E_PATTERN_BINDING", "bindings belong outside pattern text"));
+    }
     if source == "..." { return Ok(Atom::Rest); }
     if source == "_" { return Ok(Atom::One); }
     if let Some(type_name) = source.strip_prefix("is ") {
@@ -257,7 +260,7 @@ fn parse_atom(source: &str, expected: ElementType) -> R<Atom> {
         if expected != ElementType::Any && expected != ElementType::Int {
             return Err(error("E_PATTERN_TYPE", "integer literal cannot match element type"));
         }
-        if source.starts_with('+') || source.starts_with('0') && source.len() > 1 {
+        if source.starts_with('+') || source.starts_with("-0") || (source.starts_with('0') && source.len() > 1) {
             return Err(error("E_PATTERN_SOURCE", "noncanonical numeric literal"));
         }
         return Ok(Atom::Int(value));
