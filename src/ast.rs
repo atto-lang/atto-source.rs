@@ -406,6 +406,8 @@ pub enum ExprKind {
     Float(u64),
     Bool(bool),
     Str(String),
+    /// Domain-scoped source Symbol literal; not a string or host pointer.
+    Symbol(String),
     Var(String),
     Unary(UnOp, Box<Expr>),
     /// Unary call-site trap: evaluates its operand once and wraps only
@@ -440,6 +442,8 @@ pub enum ExprKind {
     Record(Vec<(String, Expr)>),
     /// Parsed map key/value pairs. Browser allocation is gated.
     Map(Vec<(Expr, Expr)>),
+    /// Nominal immutable Entry<K,V> parsed without granting Map guest storage.
+    Entry(Box<Expr>, Box<Expr>),
     /// Contextually typed record/map empty braces.
     EmptyBraces,
     /// Parsed bracket selection. Kept separate from dot-member syntax so
