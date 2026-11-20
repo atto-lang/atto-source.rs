@@ -73,6 +73,7 @@ fn attached_state_preview_rejects_unsafe_or_unproved_field_schemas() {
         ATTACHED.replace("define actor Counter as\nend",
             "define actor Counter as\n    let int count = 17;\nend"),
         ATTACHED.replace("mtd (mut self: Counter)","mtd (mut self: Other)"),
+        ATTACHED.replace("increment(int delta)","count(int delta)"),
         ATTACHED.replace("s.count = s.count + delta","s.count = delta"),
         ATTACHED.replace("s.count = s.count + delta","s.count = s.count - delta"),
         format!("{ATTACHED}\ndefine state on actor Counter as {{ let int count = 17; }}"),
