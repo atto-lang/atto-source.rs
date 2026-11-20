@@ -3637,6 +3637,14 @@ impl<'a> FnCx<'a> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        if name == "@builtin/checked-index-write" {
+            // Parser has retained the full Index(receiver,key) lvalue, but
+            // no guest writer may bypass Record field-shape, Struct nominal
+            // exclusion, Map Hash/Eq and exclusive ownership checking.
+            // Rejection must precede evaluating any argument or emitting Wasm.
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "indexed assignment awaits checked Map/Record lvalue typing and guest lowering"));
+        }
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
         }
