@@ -184,7 +184,7 @@ try{
     'duplicate actor pipe must use bounded graph-admission trap code 10');
   console.log('PASS browser: actual guest traps duplicate actor pipe before cycle');
   assert.match(await run('pub fnc main(): int { return 42; }', 'main() -> 42'),
-    /^main\\(\\) -> 42$/);
+    /^main\(\) -> 42$/);
   console.log('PASS browser: fresh guest remains runnable after rejected actor pipe');
 
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
