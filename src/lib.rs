@@ -13,6 +13,8 @@ pub mod collection_types;
 pub mod record_struct_layout;
 /// Executable narrow closed-scalar Record profile through checked fixed-slot guest class ABI.
 pub mod closed_record_guest;
+/// Executable bounded scalar Tuple.of/Array.of with checked constant indexes.
+pub mod fixed_sequence_guest;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -59,9 +61,10 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // parameters or temporaries, even when those names occur in dead code.
     for token in &source_tokens {
         if let lexer::Tok::Ident(name) = &token.tok {
-            if name.starts_with(closed_record_guest::PRIVATE_PREFIX) {
+            if name.starts_with(closed_record_guest::PRIVATE_PREFIX) ||
+                name.starts_with(fixed_sequence_guest::PRIVATE_PREFIX) {
                 return Err(Diagnostic::new(token.pos, "E_RESERVED",
-                    "compiler-owned closed Record symbols are reserved"));
+                    "compiler-owned aggregate allocation symbols are reserved"));
             }
         }
     }
@@ -140,6 +143,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // It never grants a guest allocation; unsupported values remain rejected.
     let collection_ir = collection_types::analyze(&program)?;
     closed_record_guest::lower(&mut program, &collection_ir)?;
+    fixed_sequence_guest::lower(&mut program, &collection_ir)?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
