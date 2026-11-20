@@ -326,6 +326,10 @@ struct ScopeTask {
 /// No OS thread ID, ambient socket access, guest pointer, or blocking wait.
 struct TaskScopeLockCoordinator {
     domain: Domain,
+    /// Terminal TenantVM/TaskScope admission fence. Cleanup of previously
+    /// registered guards still proceeds after closure, but neither new
+    /// root tasks nor new mutexes may be admitted to the stopped domain.
+    closed: bool,
     tasks: BTreeMap<u64, ScopeTask>,
     locks: BTreeMap<u64, WaitQueue>,
 }
@@ -335,9 +339,10 @@ impl TaskScopeLockCoordinator {
     const MAX_TASK_PERMITS: usize = 256;
 
     fn new(domain: Domain) -> Self {
-        Self { domain, tasks: BTreeMap::new(), locks: BTreeMap::new() }
+        Self { domain, closed: false, tasks: BTreeMap::new(), locks: BTreeMap::new() }
     }
     fn add_lock(&mut self, id: u64, queue: WaitQueue) -> Result<(), Error> {
+        if self.closed { return Err(Error::Closed); }
         if id == 0 || queue.domain != self.domain || self.locks.contains_key(&id) {
             return Err(Error::ForeignDomain);
         }
@@ -359,6 +364,7 @@ impl TaskScopeLockCoordinator {
         Ok(task)
     }
     fn register(&mut self, who: Continuation, parent: Option<Continuation>) -> Result<(), Error> {
+        if self.closed { return Err(Error::Closed); }
         if who.domain != self.domain || who.logical_task == 0 || who.segment == 0 {
             return Err(Error::ForeignDomain);
         }
@@ -480,6 +486,10 @@ impl TaskScopeLockCoordinator {
     /// remain occupied until the real holder completes safe-point unwind.
     /// A failure leaves the domain quarantined; shutdown is NOT retirement.
     fn shutdown_domain(&mut self) -> Result<(), Error> {
+        // Fence admission BEFORE cancelling tasks or closing queues. This is
+        // a one-way transition; repeated shutdown never reopens the domain.
+        // A failed cleanup still keeps the fence in force for all new work.
+        self.closed = true;
         for task in self.tasks.values_mut() {
             if !task.guest_exited && !task.physically_retired {
                 task.cancel_requested = true;
@@ -1358,6 +1368,38 @@ mod tests {
         assert_eq!(kernel.terminal(queued).unwrap(), Some(TaskExitKind::Cancelled));
     }
 
+
+    #[test]
+    fn terminal_shutdown_rejects_new_roots_and_mutexes_but_allows_old_guard_cleanup() {
+        // Verify the direct coordinator rather than inferring a stop fence
+        // from individual queues alone.
+        let mut empty = TaskScopeLockCoordinator::new(d());
+        empty.shutdown_domain().unwrap();
+        assert!(empty.closed);
+        assert_eq!(empty.register(c(1), None), Err(Error::Closed));
+        assert_eq!(empty.add_lock(1, queue(2)), Err(Error::Closed));
+        empty.shutdown_domain().unwrap(); // terminal and idempotent
+
+        // Host-facing methods must inherit that same permanent fence.
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let holder = kernel.issue(None).unwrap();
+        let lock = kernel.add_mutex(2).unwrap();
+        let permit = owned(kernel.acquire(holder, lock).unwrap());
+        kernel.claim(holder, lock, permit).unwrap();
+        kernel.shutdown().unwrap();
+        assert_eq!(kernel.issue(None), Err(Error::Closed));
+        assert_eq!(kernel.add_mutex(2), Err(Error::Closed));
+        kernel.shutdown().unwrap();
+        assert_eq!(kernel.issue(None), Err(Error::Closed));
+        // Closed admission MUST NOT revoke an active holder before the
+        // trusted guest safe-point event establishes safe cleanup.
+        assert_eq!(kernel.try_retire(holder), Err(Error::NotQuiescent));
+        assert_eq!(kernel.trusted_exit(holder).unwrap(), vec![lock]);
+        kernel.trusted_notifications_drained(holder).unwrap();
+        kernel.try_retire(holder).unwrap();
+        assert_eq!(kernel.terminal(holder).unwrap(), Some(TaskExitKind::Cancelled));
+        assert_eq!(kernel.issue(None), Err(Error::Closed));
+    }
 
     #[test]
     fn host_kernel_cross_lock_ticket_replay_is_denied() {
