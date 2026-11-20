@@ -131,6 +131,22 @@ export function runGuest(wasm) {
 function header(source, key) {
   return [...source.matchAll(new RegExp(`^// ${key}: ?(.*)$`, 'gm'))].map(m => m[1]);
 }
+// One directive describes one output line; a literal \n in a directive
+// denotes an embedded newline (as in // expect-stdout: 40\n2\n).
+// Preserve literal text otherwise. Do not append a second trailing newline
+// if the fixture explicitly specified one.
+function expectedStdout(source) {
+  const lines = header(source, 'expect-stdout');
+  if (!lines.length) return '';
+  const value = lines.map(x => x.replace(/\\n/g, '\n')).join('\n');
+  return value.endsWith('\n') ? value : value + '\n';
+}
+
+// Guard the fixture metadata parser itself against escaped-newline mistakes.
+assert.equal(expectedStdout('// expect-stdout: 40\\n2\\n\n'), '40\n2\n');
+assert.equal(expectedStdout('// expect-stdout: hello\n'), 'hello\n');
+assert.equal(expectedStdout('pub fnc main(): int {return 0;}'), '');
+
 async function fixtures(kind) {
   const dir = join(here, 'fixtures', kind);
   const names = (await readdir(dir)).filter(n => n.endsWith('.atto')).sort();
@@ -173,8 +189,7 @@ for (const f of await fixtures('pass')) {
     const g = runGuest(r.wasm);
     assert.ok(g.ok, `guest trapped: ${g.error}`);
     assert.equal(g.value, BigInt(header(f.source, 'expect-exit')[0]), 'main() result');
-    const want = header(f.source, 'expect-stdout');
-    assert.equal(g.stdout, want.length ? want.join('\n') + '\n' : '', 'stdout');
+    assert.equal(g.stdout, expectedStdout(f.source), 'stdout');
     if (attoc) {
       assert.deepEqual(nativeBytes(f.path), r.wasm, 'native and wasm32 compiler hosts emit identical bytes');
       nativeChecked++;
@@ -251,8 +266,7 @@ for (const f of await fixtures('panic')) {
     const g = runGuest(r.wasm);
     assert.equal(g.ok, false, 'expected a panic');
     assert.equal(g.panic, Number(header(f.source, 'expect-panic')[0]), 'panic code');
-    const want = header(f.source, 'expect-stdout');
-    assert.equal(g.stdout, want.length ? want.join('\n') + '\n' : '');
+    assert.equal(g.stdout, expectedStdout(f.source));
     if (attoc) { assert.deepEqual(nativeBytes(f.path), r.wasm); nativeChecked++; }
   });
 }
