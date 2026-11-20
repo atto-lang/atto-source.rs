@@ -1,0 +1,6 @@
+// No private dispatch pool exists in this compiler's current guest ABI.
+// expect-error: E_ACTOR_DOMAIN_RUNTIME_UNAVAILABLE
+define isolated actor Worker receives int as
+    susp receive(ActorMail<int> mail): void { return; }
+end
+pub fnc main(): int { return 0; }
