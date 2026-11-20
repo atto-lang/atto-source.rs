@@ -33,8 +33,10 @@ ATTO_EXPECT_TREE=<40-character-original-source-Git-tree-SHA> \
   bash scripts/verify-list-pattern-guest.sh
 ```
 
-Missing/malformed source provenance, a mismatched complete tree, or a dirty
-checkout fails **before** any compiler run. Mirror mode prints both the pinned
+Missing/malformed source provenance, a mismatched complete tree, an untracked
+or ignored in-tree build input, an unverified gitlink/submodule, or a dirty
+checkout fails **before** any compiler run. Run on a fresh checkout: even an
+ignored prior `target/` directory is rejected by this proof mode. Mirror mode prints both the pinned
 source commit and the distinct carrier commit; it never presents carrier commit
 identity as a source commit proof. `ATTO_EXPECT_TREE` may also be set in
 normal mode for defense-in-depth. Verify that the externally supplied tree SHA
