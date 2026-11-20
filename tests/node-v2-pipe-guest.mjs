@@ -35,6 +35,8 @@ const cases=[
   ['panic/225-v2-pipe-claimed-channel-send.atto',true],
   ['panic/226-v2-pipe-claimed-channel-receive.atto',true],
   ['panic/227-v2-pipe-claimed-channel-close.atto',true],
+  ['panic/228-v2-pipe-claimed-for-await.atto',true],
+  ['panic/229-v2-pipe-claimed-rx-poll.atto',true],
   ['conformance/pipe-rpipe-v1/actor-duplicate-direction.atto',true],
 ];
 try {
