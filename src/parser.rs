@@ -1910,10 +1910,26 @@ impl Parser {
                                 pos,
                             })
                         }
+                        ExprKind::Index(target, key) => {
+                            let value = value_of(self)?;
+                            // Preserve the entire lvalue, with exact receiver
+                            // and key expressions, until the owning compiler's
+                            // typed lvalue checker distinguishes mutable Maps,
+                            // fixed-shape Records and forbidden Struct indexing.
+                            // The unspellable intrinsic is rejected by check.rs
+                            // until the ownership-aware guest write exists.
+                            Ok(Stmt::Expr(Expr {
+                                kind: ExprKind::Call(
+                                    "@builtin/checked-index-write".into(),
+                                    vec![Expr { kind: ExprKind::Index(target,key), pos: at }, value],
+                                ),
+                                pos,
+                            }))
+                        }
                         _ => Err(Diagnostic::new(
                             at,
                             "E_ASSIGN_TARGET",
-                            "only a local variable or a 'self' field can be assigned",
+                            "only a local, field or checked index lvalue may be assigned",
                         )),
                     };
                 }
