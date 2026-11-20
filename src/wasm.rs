@@ -464,6 +464,20 @@ impl Emit<'_> {
         self.channel_status_result(status, result, None);
     }
 
+    fn channel_send_async(&mut self, channel: &TE, value: &TE,
+                          result: u32, status: u32) {
+        // Operands evaluated once in order. Async host admission waits for a
+        // real bounded FIFO slot (or zero-capacity receiver), never spins,
+        // parks a carrier, or treats Full as a successful send.
+        self.expr(channel);
+        self.expr(value);
+        self.call(self.l.import(Import::ChannelSendAsync)); // JSPI suspending
+        self.set(status);
+        // Even immediately admitted writes release the carrier for a turn.
+        self.call(self.l.import(Import::Cooperate));
+        self.channel_status_result(status, result, None);
+    }
+
     fn channel_close_or_release(&mut self, channel: &TE, release: bool,
                                  result: u32, status: u32) {
         self.expr(channel);
@@ -705,6 +719,8 @@ impl Emit<'_> {
                 self.channel_open(capacity,*capacity_slot,*handle_slot,*result_slot,*status_slot),
             TExpr::ChannelTrySend {channel,value,result_slot,status_slot} =>
                 self.channel_try_send(channel,value,*result_slot,*status_slot),
+            TExpr::ChannelSendAsync {channel,value,result_slot,status_slot} =>
+                self.channel_send_async(channel,value,*result_slot,*status_slot),
             TExpr::ChannelStatus {channel,release,result_slot,status_slot} =>
                 self.channel_close_or_release(channel,*release,*result_slot,*status_slot),
             // Value stays on the Wasm stack over the void JSPI host call.
@@ -1255,6 +1271,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
             Import::ChannelAwaitRead => Sig(vec![I32, I32], vec![I32]),
             Import::ChannelOpen => Sig(vec![I32, I32], vec![I32]),
             Import::ChannelSend => Sig(vec![I32, I64], vec![I32]),
+            Import::ChannelSendAsync => Sig(vec![I32, I64], vec![I32]),
             Import::ChannelClose | Import::ChannelRelease => Sig(vec![I32], vec![I32]),
             Import::StdioRead => Sig(vec![I32, I32, I32, I32], vec![I32]),
             Import::StdioWrite => Sig(vec![I32, I32, I32], vec![I32]),
@@ -1579,7 +1596,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
     // Deliberately versioned and opt-in: the public guest.v2 contract
     // remains unchanged for programs without actual async imports.
     if p.imports.iter().any(|i| matches!(i, Import::SleepMs | Import::Barrier | Import::TaskStart | Import::TaskAwait | Import::Cooperate |
-        Import::ChannelOpen | Import::ChannelSend | Import::ChannelClose | Import::ChannelRelease |
+        Import::ChannelOpen | Import::ChannelSend | Import::ChannelSendAsync | Import::ChannelClose | Import::ChannelRelease |
         Import::StdioRead | Import::StdioWrite)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.async");
@@ -1587,7 +1604,7 @@ pub fn emit(p: &TProgram) -> Vec<u8> {
         section(&mut out, 0, marker);
     }
     if p.imports.iter().any(|i| matches!(i, Import::ChannelNbRead | Import::ChannelAwaitRead |
-        Import::ChannelOpen | Import::ChannelSend | Import::ChannelClose | Import::ChannelRelease)) {
+        Import::ChannelOpen | Import::ChannelSend | Import::ChannelSendAsync | Import::ChannelClose | Import::ChannelRelease)) {
         let mut marker = Vec::new();
         name(&mut marker, "atto.channel_int");
         marker.push(1);
