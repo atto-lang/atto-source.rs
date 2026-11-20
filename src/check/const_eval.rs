@@ -23,7 +23,7 @@ fn overflow(pos: Pos) -> Diagnostic {
     Diagnostic::new(pos, "E_CONST_OVERFLOW", "checked integer arithmetic overflows during compile-time evaluation")
 }
 
-impl<'a> FnCx<'a> {
+impl FnCx<'_> {
     pub(super) fn eval_const(&self, v: &TE, pos: Pos) -> R<ConstValue> {
         use ConstValue::*;
         match &v.e {
