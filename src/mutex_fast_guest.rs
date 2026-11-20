@@ -333,8 +333,12 @@ fn guarded_diagnostic(tokens: &[Token]) -> Option<Diagnostic> {
 /// Lexer tokens exclude comments and strings; nesting is bounded by source
 /// admission. The function performs no allocation and never grants a runtime
 /// capability. In particular, `Mutex<int>` in a parameter is NOT a call.
-fn reject_legacy_mutex_constructors(tokens: &[Token]) -> R<()> {
+fn check_mutex_constructors(tokens: &[Token]) -> R<bool> {
+    // Track whether at least one canonical nominal class construction is
+    // present. The ordinary source parser must not get another chance to
+    // turn an unsupported Mutex<T> into an impostor user-defined class.
     const MAX_GENERIC_SCAN: usize = 128;
+    let mut constructed = false;
     for (i, token) in tokens.iter().enumerate() {
         if !matches!(&token.tok, Tok::Ident(name) if name == "Mutex")
             || !tokens.get(i + 1).is_some_and(|t| t.tok == Tok::Lt) {
@@ -343,7 +347,10 @@ fn reject_legacy_mutex_constructors(tokens: &[Token]) -> R<()> {
         let mut depth = 0usize;
         let mut closing = None;
         for (j, t) in tokens.iter().enumerate().skip(i + 1) {
-            if j - i > MAX_GENERIC_SCAN { break; }
+            if j - i > MAX_GENERIC_SCAN {
+                return Err(error(token.pos, "E_LOCK_UNSUPPORTED",
+                    "Mutex<T> type-argument nesting exceeds bounded admission"));
+            }
             match &t.tok {
                 Tok::Lt => depth += 1,
                 Tok::Gt => {
@@ -357,15 +364,16 @@ fn reject_legacy_mutex_constructors(tokens: &[Token]) -> R<()> {
         }
         let Some(end) = closing else { continue; };
         if !tokens.get(end + 1).is_some_and(|t| t.tok == Tok::LParen) {
-            continue;
+            continue; // a type annotation, not construction
         }
         if i == 0 || !matches!(&tokens[i - 1].tok,
             Tok::Ident(name) if name == "new") {
             return Err(error(token.pos, "E_NEW_REQUIRED",
                 "Mutex<T> is an opaque resource class: use new Mutex<T>(value)"));
         }
+        constructed = true;
     }
-    Ok(())
+    Ok(constructed)
 }
 
 /// A narrow scanner selects only source using the reserved intrinsic and
@@ -378,11 +386,15 @@ pub fn try_lower(tokens: &[Token]) -> R<Option<TProgram>> {
     // lock_async(). In particular, a bare Mutex<Result<int,E>>(0) or
     // Mutex<int>(0) in an unrelated function must not fall through to the
     // ordinary parser as a legal value-struct/function call.
-    reject_legacy_mutex_constructors(tokens)?;
+    let constructs_mutex = check_mutex_constructors(tokens)?;
     let lock_async = tokens.windows(3).any(|w| matches!(
         (&w[0].tok,&w[1].tok,&w[2].tok),
         (Tok::Dot,Tok::Ident(name),Tok::LParen) if name=="lock_async"
     ));
+    if constructs_mutex && !lock_async {
+        return Err(error(tokens[0].pos, "E_LOCK_UNSUPPORTED",
+            "new Mutex<T>(...) is not a guest allocation without verified scoped lock_async lowering"));
+    }
     if !has_mutex || !lock_async { return Ok(None); }
     if let Some(diagnostic) = guarded_diagnostic(tokens) {
         return Err(diagnostic);
@@ -446,11 +458,21 @@ pub susp fnc main(): int {
         let param = crate::lexer::lex(
             "pub fnc test(Mutex<int> mutex): int { return 0; }"
         ).unwrap();
-        assert!(reject_legacy_mutex_constructors(&param).is_ok());
+        assert_eq!(check_mutex_constructors(&param).unwrap(), false);
         let commented = crate::lexer::lex(
             "// Mutex<int>(0)\\n pub fnc main(): int { return 42; }"
         ).unwrap();
-        assert!(reject_legacy_mutex_constructors(&commented).is_ok());
+        assert_eq!(check_mutex_constructors(&commented).unwrap(), false);
+    }
+    #[test]
+    fn canonical_but_unlowered_resource_creation_cannot_fall_through() {
+        for src in [
+            "pub fnc main(): int { val m = new Mutex<int>(0); return 0; }",
+            "pub fnc main(): int { val m = new Mutex<Result<int,string>>(0); return 0; }",
+            "pub fnc main(): int { val m = new Mutex<List<Map<int,bool>>>(0); return 0; }",
+        ] {
+            assert_eq!(crate::compile(src).unwrap_err().code, "E_LOCK_UNSUPPORTED", "{src}");
+        }
     }
     #[test]
     fn implicit_and_explicit_acquisition_are_semantically_identical() {
