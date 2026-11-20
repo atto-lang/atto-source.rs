@@ -80,6 +80,7 @@ fn malformed_scalar_attachments_fail_without_artifacts() {
         ("define actor C as end define state on actor C as { val bool ready: 3; }", "E_SYNTAX"),
         ("define actor C as end define state on actor C as { let int count: 9223372036854775808; }", "E_SYNTAX"),
         ("define actor C as end define state on actor C as { let int count: 0; ", "E_EOF"),
+        ("define actor C as end define state on actor C as { val bool ready; }", "E_STATE"),
         ("define actor C as end define state on actor C as { let int count: 0 }", "E_SYNTAX"),
     ] {
         fail_source(source, code);
