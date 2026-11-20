@@ -1578,40 +1578,68 @@ impl<'a> Checker<'a> {
                 Ok((Ir::Local(t), Ty::Bool))
             }
             BinOp::Pipe | BinOp::Rpipe => {
-                // Evaluate expressions once in the WRITTEN order (left, right).
-                // rpipe changes only which endpoint is upstream in DATA flow.
+                // Evaluate stage expressions ONCE in the original written
+                // order. Reverse only source-to-sink DATA orientation for
+                // rpipe; neither form permits an implicit reverse/CONTROL edge.
                 let reverse = op == BinOp::Rpipe;
                 let vals = self.operands(&[(l, None), (r, None)])?;
-                let (Ty::Actor(a), Ty::Actor(b)) = (&vals[0].1, &vals[1].1) else {
-                    return Err(type_err(pos,
-                        "'pipe' and 'rpipe' require typed actor references, not functional values"));
+                let (left_ty, right_ty) = (vals[0].1.clone(), vals[1].1.clone());
+                let (upstream, downstream) = if reverse {
+                    (&right_ty, &left_ty)
+                } else {
+                    (&left_ty, &right_ty)
                 };
-                let (source, sink) = if reverse { (*b, *a) } else { (*a, *b) };
-                // In the legacy v2 actor-only subset, receive handlers establish
-                // a statically observed emit type. This is NOT the new declarative
-                // 'emits T' contract in atto-spec #45. Only direct two-actor
-                // edges can be checked here: nested graphs need a typed graph IR
-                // that tracks BOTH the graph head and tail before admission.
-                let is_nested = matches!(&l.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
-                    || matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _));
-                if !is_nested {
-                    let from = &self.objs[source];
-                    let to = &self.objs[sink];
-                    let emitted = from.emit.as_ref().ok_or_else(|| type_err(pos,
-                        format!("actor '{}' has no observed emit(T) source; pipe requires an output port", from.name)))?;
-                    if to.receive.is_none() || !fits(emitted, &to.mail) {
-                        return Err(type_err(pos,
-                            format!("actor '{}' emits {}, cannot pipe into '{}' receiving {}",
-                                from.name, self.tn(emitted), to.name, self.tn(&to.mail))));
-                    }
+                // Actor-only nested ASTs are ambiguous (the legacy type is a
+                // head ActorRef, not a graph head+tail). Do not route through
+                // the wrong actor or skip typed checks when a graph is nested.
+                let nested_actor = matches!(&l.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
+                    && matches!(left_ty, Ty::Actor(_))
+                    || matches!(&r.kind, Ex::Binary(BinOp::Pipe | BinOp::Rpipe, _, _))
+                        && matches!(right_ty, Ty::Actor(_));
+                if nested_actor {
+                    return Err(err(pos, "E_UNSUPPORTED",
+                        "nested actor-only graph needs explicit typed head/tail PipeHandle lowering"));
                 }
+                let (helper, result_ty) = match (upstream, downstream) {
+                    (Ty::Actor(a), Ty::Actor(b)) => {
+                        let from = &self.objs[*a];
+                        let to = &self.objs[*b];
+                        let emitted = from.emit.as_ref().ok_or_else(|| type_err(pos,
+                            format!("actor '{}' has no observed emit(T) source", from.name)))?;
+                        if to.receive.is_none() || *emitted != to.mail {
+                            return Err(type_err(pos,
+                                format!("actor '{}' emits {}, cannot pipe into '{}' receiving {}",
+                                    from.name, self.tn(emitted), to.name, self.tn(&to.mail))));
+                        }
+                        ("__actor_link", Ty::Actor(*a))
+                    }
+                    (Ty::Actor(a), Ty::Channel(item)) => {
+                        let from = &self.objs[*a];
+                        let emitted = from.emit.as_ref().ok_or_else(|| type_err(pos,
+                            format!("actor '{}' has no observed emit(T) source", from.name)))?;
+                        if *emitted != **item {
+                            return Err(type_err(pos,
+                                format!("actor '{}' emits {}, channel accepts {}",
+                                    from.name, self.tn(emitted), self.tn(item))));
+                        }
+                        ("__actor_pipe_channel", Ty::Channel(item.clone()))
+                    }
+                    (Ty::Channel(item), Ty::Actor(b)) => {
+                        let to = &self.objs[*b];
+                        if to.receive.is_none() || **item != to.mail {
+                            return Err(type_err(pos,
+                                format!("channel emits {}, actor '{}' receives {}",
+                                    self.tn(item), to.name, self.tn(&to.mail))));
+                        }
+                        ("__channel_pipe_actor", Ty::Channel(item.clone()))
+                    }
+                    _ => return Err(type_err(pos,
+                        "pipe/rpipe needs typed actor and bounded Channel<T> stages; streams and implicit transport adapters are unsupported")),
+                };
                 let mut it = vals.into_iter();
                 let (a_ir, b_ir) = (it.next().unwrap().0, it.next().unwrap().0);
-                if reverse {
-                    Ok((self.rt("__actor_link", vec![b_ir, a_ir]), Ty::Actor(source)))
-                } else {
-                    Ok((self.rt("__actor_link", vec![a_ir, b_ir]), Ty::Actor(source)))
-                }
+                let (source_ir, sink_ir) = if reverse { (b_ir, a_ir) } else { (a_ir, b_ir) };
+                Ok((self.rt(helper, vec![source_ir, sink_ir]), result_ty))
             }
             _ => {
                 let vals = self.operands(&[(l, None), (r, None)])?;
