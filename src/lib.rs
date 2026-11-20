@@ -117,8 +117,16 @@ fn compile_inner(source: &str, logical_path: Option<&std::path::Path>)
     // It may link the compiler-embedded, explicitly allowlisted *pure-policy*
     // std modules, but every relative source import still fails without a
     // caller-supplied loader. Never turn this into an ambient FS/HTTP grant.
-    let tokens = if matches!(lexed.first().map(|t| &t.tok),
-        Some(lexer::Tok::Ident(word)) if word == "import") {
+    let first = lexed.first().map(|t| &t.tok);
+    let second = lexed.get(1).map(|t| &t.tok);
+    let third = lexed.get(2).map(|t| &t.tok);
+    let import_entry = matches!(first,
+        Some(lexer::Tok::Ident(word)) if word == "import")
+        || (matches!(first, Some(lexer::Tok::Ident(word)) if word == "use")
+            && (matches!(second, Some(lexer::Tok::Ident(word)) if word == "namespace")
+                || (matches!(second, Some(lexer::Tok::Ident(word)) if word == "default")
+                    && matches!(third, Some(lexer::Tok::Ident(word)) if word == "namespace"))));
+    let tokens = if import_entry {
         let logical = logical_path.unwrap_or_else(|| std::path::Path::new("main.atto"));
         import_link::lower(source, logical, |_| Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied, "single-file compiler cannot load source files"
