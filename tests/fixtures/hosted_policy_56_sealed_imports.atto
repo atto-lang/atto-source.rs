@@ -1,0 +1,127 @@
+// Compiled guest parity candidate from canonical 56 pure-policy vectors.
+// Uses actual sealed std.http/std.fs pkg imports, NOT concatenated source.
+// HTTP/FS runtime operations remain unsupported; this is pure policy only.
+import * as http from pkg "std.http";
+import * as fs from pkg "std.fs";
+
+pub fnc check_policy_a(): int {
+  // http_status_valid.below
+  if http.http_status_valid(99) then return 1; fi
+  // http_status_valid.first
+  if http.http_status_valid(100) == false then return 2; fi
+  // http_status_valid.last
+  if http.http_status_valid(599) == false then return 3; fi
+  // http_status_valid.above
+  if http.http_status_valid(600) then return 4; fi
+  // http_status_success.below
+  if http.http_status_success(199) then return 5; fi
+  // http_status_success.first
+  if http.http_status_success(200) == false then return 6; fi
+  // http_status_success.last
+  if http.http_status_success(299) == false then return 7; fi
+  // http_status_success.above
+  if http.http_status_success(300) then return 8; fi
+  // http_status_redirect.below
+  if http.http_status_redirect(299) then return 9; fi
+  // http_status_redirect.first
+  if http.http_status_redirect(300) == false then return 10; fi
+  // http_status_redirect.last
+  if http.http_status_redirect(399) == false then return 11; fi
+  // http_status_redirect.above
+  if http.http_status_redirect(400) then return 12; fi
+  // http_status_client_error.below
+  if http.http_status_client_error(399) then return 13; fi
+  // http_status_client_error.first
+  if http.http_status_client_error(400) == false then return 14; fi
+  // http_status_client_error.last
+  if http.http_status_client_error(499) == false then return 15; fi
+  // http_status_client_error.above
+  if http.http_status_client_error(500) then return 16; fi
+  // http_status_server_error.below
+  if http.http_status_server_error(499) then return 17; fi
+  // http_status_server_error.first
+  if http.http_status_server_error(500) == false then return 18; fi
+  // http_status_server_error.last
+  if http.http_status_server_error(599) == false then return 19; fi
+  // http_status_server_error.above
+  if http.http_status_server_error(600) then return 20; fi
+  // http_get_status_may_have_body.invalid-low
+  if http.http_get_status_may_have_body(99) then return 21; fi
+  // http_get_status_may_have_body.informational
+  if http.http_get_status_may_have_body(101) then return 22; fi
+  // http_get_status_may_have_body.success
+  if http.http_get_status_may_have_body(200) == false then return 23; fi
+  // http_get_status_may_have_body.no-content
+  if http.http_get_status_may_have_body(204) then return 24; fi
+  // http_get_status_may_have_body.reset-content
+  if http.http_get_status_may_have_body(205) then return 25; fi
+  // http_get_status_may_have_body.partial
+  if http.http_get_status_may_have_body(206) == false then return 26; fi
+  // http_get_status_may_have_body.not-modified
+  if http.http_get_status_may_have_body(304) then return 27; fi
+  // http_get_status_may_have_body.not-found
+  if http.http_get_status_may_have_body(404) == false then return 28; fi
+  return 42;
+}
+
+pub fnc check_policy_b(): int {
+  // http_get_status_may_have_body.server-error
+  if http.http_get_status_may_have_body(500) == false then return 1; fi
+  // http_get_status_may_have_body.invalid-high
+  if http.http_get_status_may_have_body(600) then return 2; fi
+  // fs_text_size_admissible.zero
+  if fs.fs_text_size_admissible(0, 0, 0) == false then return 3; fi
+  // fs_text_size_admissible.fits
+  if fs.fs_text_size_admissible(1, 1, 1) == false then return 4; fi
+  // fs_text_size_admissible.above-file
+  if fs.fs_text_size_admissible(2, 1, 3) then return 5; fi
+  // fs_text_size_admissible.negative-payload
+  if fs.fs_text_size_admissible(-1, 10, 10) then return 6; fi
+  // fs_text_size_admissible.negative-limit
+  if fs.fs_text_size_admissible(1, -1, 2) then return 7; fi
+  // fs_text_size_admissible.negative-quota
+  if fs.fs_text_size_admissible(1, 5, -1) then return 8; fi
+  // fs_text_size_admissible.i64-max
+  if fs.fs_text_size_admissible(9223372036854775807, 9223372036854775807, 9223372036854775807) == false then return 9; fi
+  // fs_text_range_admissible.empty
+  if fs.fs_text_range_admissible(0, 0, 0) == false then return 10; fi
+  // fs_text_range_admissible.zero-tail
+  if fs.fs_text_range_admissible(10, 0, 10) == false then return 11; fi
+  // fs_text_range_admissible.overrun
+  if fs.fs_text_range_admissible(9, 2, 10) then return 12; fi
+  // fs_text_range_admissible.offset-past
+  if fs.fs_text_range_admissible(11, 0, 10) then return 13; fi
+  // fs_text_range_admissible.negative-offset
+  if fs.fs_text_range_admissible(-1, 1, 10) then return 14; fi
+  // fs_text_range_admissible.negative-length
+  if fs.fs_text_range_admissible(0, -1, 10) then return 15; fi
+  // fs_text_range_admissible.negative-size
+  if fs.fs_text_range_admissible(0, 0, -1) then return 16; fi
+  // fs_text_range_admissible.max-tail
+  if fs.fs_text_range_admissible(9223372036854775806, 1, 9223372036854775807) == false then return 17; fi
+  // fs_text_range_admissible.overflow-hazard
+  if fs.fs_text_range_admissible(9223372036854775806, 2, 9223372036854775807) then return 18; fi
+  // fs_text_replacement_admissible.empty-new
+  if fs.fs_text_replacement_admissible(0, 5, 0, 5) == false then return 19; fi
+  // fs_text_replacement_admissible.exact
+  if fs.fs_text_replacement_admissible(5, 5, 5, 5) == false then return 20; fi
+  // fs_text_replacement_admissible.within
+  if fs.fs_text_replacement_admissible(4, 7, 5, 8) == false then return 21; fi
+  // fs_text_replacement_admissible.over-budget
+  if fs.fs_text_replacement_admissible(4, 8, 5, 8) then return 22; fi
+  // fs_text_replacement_admissible.bad-old
+  if fs.fs_text_replacement_admissible(6, 1, 5, 10) then return 23; fi
+  // fs_text_replacement_admissible.already-over-quota
+  if fs.fs_text_replacement_admissible(1, 1, 11, 10) then return 24; fi
+  // fs_text_replacement_admissible.negative-old
+  if fs.fs_text_replacement_admissible(-1, 1, 1, 10) then return 25; fi
+  // fs_text_replacement_admissible.negative-new
+  if fs.fs_text_replacement_admissible(1, -1, 1, 10) then return 26; fi
+  // fs_text_replacement_admissible.max-exact
+  if fs.fs_text_replacement_admissible(9223372036854775807, 9223372036854775807, 9223372036854775807, 9223372036854775807) == false then return 27; fi
+  // fs_text_replacement_admissible.max-over
+  if fs.fs_text_replacement_admissible(9223372036854775806, 9223372036854775807, 9223372036854775807, 9223372036854775807) then return 28; fi
+  return 42;
+}
+
+pub fnc main(): int { return check_policy_a() + check_policy_b() - 42; }
