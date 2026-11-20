@@ -1,0 +1,5 @@
+// A concrete receives contract requires a designated handler.
+// expect-error: E_ACTOR_RECEIVES
+define actor Router receives int sends bool as
+end
+pub fnc main(): int { return 0; }
