@@ -210,6 +210,11 @@ const UNLOWERED_OWNERSHIP_TYPES: &[&str] = &[
     "Arc", "Weak", "Box", "Rc",
     "Mutex", "RwLock", "MutexGuard", "RwLockReadGuard", "RwLockWriteGuard",
     "UnsafeCell",
+    // Compiler-controlled actor-boundary witnesses are not user-definable
+    // marker classes. Neither declaring nor naming one may grant mailbox
+    // transfer, immutable sharing or a trusted serialization contract.
+    // This restricted compiler does not yet prove/lower these witnesses.
+    "Sendable", "Shareable", "Serializable",
 ];
 
 pub fn is_unlowered_ownership_intrinsic(name: &str) -> bool {
