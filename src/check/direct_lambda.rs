@@ -256,6 +256,8 @@ fn rewrite_stmt_inner(s: &mut Stmt, d: &mut Direct) -> R<()> {
             rewrite_expr(target, d)?;
             rewrite_expr(value, d)
         }
+        Stmt::IndexAssign { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
+            "indexed assignment in direct lambda needs a checked lvalue/ownership rewrite")),
         Stmt::StateWrite { pos, .. } => Err(error(*pos, "E_UNSUPPORTED",
             "direct lambda rewriting cannot cross a protected state loan")),
         Stmt::Expr(e) | Stmt::Throw(e, _) | Stmt::Raise(e, _) | Stmt::Yield(e, _) | Stmt::YieldFrom(e, _) =>
