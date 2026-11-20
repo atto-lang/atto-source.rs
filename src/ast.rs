@@ -238,6 +238,14 @@ pub enum Stmt {
         value: Expr,
         pos: Pos,
     },
+    /// Preserve a bracket assignment lvalue until type/ownership checking
+    /// identifies Map vs closed Record vs nominal Struct. No parser rewrite.
+    IndexAssign {
+        target: Expr,
+        index: Expr,
+        value: Expr,
+        pos: Pos,
+    },
     Expr(Expr),
     /// Ordinary guest failure. The checker admits only throw Error(string).
     /// Wasm's fatal traps, panics and host exceptions are never this signal.
