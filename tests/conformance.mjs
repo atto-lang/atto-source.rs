@@ -708,6 +708,56 @@ for (const [name, expected, sha] of [
   });
 }
 
+// Supplemental signed-int64 and authority edge conformance. These are real
+// compiler emitted Wasm bytes run in a WebAssembly instance; source hashes
+// independently match atto-spec#121. Invalid sources emit no Wasm artifact.
+for (const [name, sha, expected, kind] of [
+  ['signed-i64-min.atto','bbc22347d7ccb0a5be1a7c2193f11c5f2f4805cc',
+   -9223372036854775808n,'execute'],
+  ['checked-overflow.atto','59bb890b54addc1659065ab55cd565771523bfce',
+   null,'panic'],
+  ['reject-i64-positive-overflow.atto','2e584ee01ee74a3a31e282cf0116957f9ff95bd1',
+   'E_INTEGER_RANGE','reject'],
+  ['reject-i64-negative-underflow.atto','8b63b45e406db3e19aa793e0f7a627914623b9e0',
+   'E_INTEGER_RANGE','reject'],
+  ['reject-reserved-unsafe.atto','b159def3fa26ca6023395e1c546b95c1b929fd14',
+   null,'reject'],
+]) {
+  const file=join(here,'fixtures','spec-functional-pipelines-edge',name);
+  const bytes=await readFile(file);
+  check('pipe/spec-signed-i64-edge-real-wasm/'+name,()=>{
+    const hash=createHash('sha1')
+      .update(Buffer.from('blob '+bytes.length+'\0'))
+      .update(bytes).digest('hex');
+    assert.equal(hash,sha,'independent spec source Git blob identity');
+    const compiled=compile(decoder.decode(bytes));
+    if (kind==='reject') {
+      assert.equal(compiled.ok,false,name+': invalid source admitted');
+      assert.equal('wasm' in compiled,false,'invalid source emitted runnable Wasm');
+      if (expected !== null) assert.equal(compiled.code,expected,name+': diagnostic');
+      if (attoc) assert.equal(nativeBytes(file),null,
+        name+': Rust native compiler emitted rejected Wasm');
+      return;
+    }
+    assert.equal(compiled.ok,true,compiled.message);
+    assert.ok(WebAssembly.validate(compiled.wasm));
+    assert.deepEqual(compile(decoder.decode(bytes)).wasm,compiled.wasm,
+      name+': nondeterministic compiled Wasm output');
+    if (attoc) assert.deepEqual(nativeBytes(file),compiled.wasm,
+      name+': native/Wasm guest byte mismatch');
+    const observed=runGuest(compiled.wasm);
+    if (kind==='panic') {
+      assert.equal(observed.ok,false,'overflow must trap, not wrap');
+      assert.notEqual(observed.panic,0,'overflow must report guest panic code');
+      assert.equal(observed.stdout,'','failed guest must not emit a result');
+    } else {
+      assert.equal(observed.ok,true,observed.error);
+      assert.equal(observed.value,expected,'full signed 64-bit result preserved');
+      assert.equal(observed.stdout,'');
+    }
+  });
+}
+
 // Exact current site preview corpus. Rejections never count as executing a
 // feature; the report explicitly separates admitted, unsupported and guests.
 try {
