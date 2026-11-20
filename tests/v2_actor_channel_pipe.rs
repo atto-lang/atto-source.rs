@@ -196,6 +196,7 @@ fn annotated_pipe_handle_result_compiles_both_directions_and_failed_setup_rollba
         ("checked_forward", CHECKED_FORWARD),
         ("checked_reverse", CHECKED_REVERSE),
         ("checked_rollback", CHECKED_ROLLBACK),
+        ("checked_output_occupied", CHECKED_OUTPUT_OCCUPIED),
     ] {
         let guest = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("{name}: checked graph failed compiler: {e}"));
@@ -229,4 +230,17 @@ fn typed_pipe_handle_is_not_implicitly_unwrapped_to_channel() {
     // contract. Reject the resulting invalid match pattern, rather than
     // pretending typed Result is silently available.
     assert!(e.code == "E_TYPE" || e.code == "E_MATCH", "{e}");
+}
+
+
+#[test]
+fn unverified_pipe_handle_cancel_is_rejected_before_wasm_emission() {
+    let bad = CHECKED_FORWARD.replace(
+        "on Ok(_) -> 1,",
+        "on Ok(handle) -> handle.cancel(),",
+    );
+    assert_ne!(bad, CHECKED_FORWARD);
+    let e = atto_compiler::compile(&bad)
+        .expect_err("guest must not cancel a PipeHandle without scheduler cleanup support");
+    assert_eq!(e.code, "E_UNSUPPORTED", "{e}");
 }
