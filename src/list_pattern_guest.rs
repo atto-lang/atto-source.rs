@@ -116,6 +116,9 @@ fn match_pattern(p: &mut Cursor<'_>) -> R<(bool,bool,Vec<Fixed>)> {
         return Err(unsupported(p.pos()));
     }
     let items: Vec<Fixed> = seq.into_iter().flatten().collect();
+    if items.len() > MAX_FIXED {
+        return Err(err(p.pos(), "E_PATTERN_BUDGET", "too many fixed sequence atoms"));
+    }
     let mut names = BTreeSet::new();
     for item in &items {
         if let Fixed::Capture(name) = item {
