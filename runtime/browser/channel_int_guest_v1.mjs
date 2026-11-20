@@ -59,11 +59,19 @@ const types = Object.freeze({
 });
 const identical=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
 const status=answer=>answer.ok?ERR.Ok:(ERR[answer.error?.kind]??ERR.InvalidHandle);
+// A channel host belongs to exactly one Worker guest adapter. No ambient
+// cross-tenant handle namespace, even if a trusted caller supplies a host.
+const attachedHosts=new WeakSet();
 
 // A read is an owned capability, not a transferable integer capability.
 // The creating Worker constructs precisely one adapter per guest instance.
 export function createChannelIntGuestV1({getMemory,host=new ChannelIntHostV1()}={}) {
   if (typeof getMemory!=='function') throw new TypeError('getMemory callback required');
+  if (!(host instanceof ChannelIntHostV1))
+    throw new TypeError('channel host must be a Worker-owned ChannelIntHostV1');
+  if (attachedHosts.has(host))
+    throw new TypeError('ChannelIntHostV1 already bound to a different guest adapter');
+  attachedHosts.add(host);
   function view(out,len,alignment) {
     const memory=getMemory();
     if (!(memory instanceof WebAssembly.Memory)) return null;
