@@ -1,6 +1,6 @@
-//! Checked first executable scalar Array.of/Tuple.of slice.
+//! Checked first executable scalar Array.of/List.of/Tuple.of slice.
 //!
-//! Both factory kinds retain distinct types in collection_types::analyze.
+//! All three factory kinds retain distinct types in collection_types::analyze.
 //! Only direct local, 1..=8 scalar-element factories are lowerable. We reuse
 //! the guest class allocator's owned 8-byte slots, never a host array or a
 //! forged raw pointer. Static integer index bounds are proved against the
@@ -43,7 +43,7 @@ fn scalar_type(ty: &LiteralType, at: Pos) -> Result<Type, Diagnostic> {
         _ => Err(error(
             at,
             "E_UNSUPPORTED",
-            "executable Tuple.of/Array.of needs owned scalar int/bool/float/string elements",
+            "executable Tuple.of/Array.of/List.of needs owned scalar int/bool/float/string elements",
         )),
     }
 }
@@ -109,7 +109,7 @@ fn generated_class(name: String, types: &[LiteralType], at: Pos) -> Result<Class
     })
 }
 
-/// Only a directly named bound Array/Tuple with a literal nonnegative index
+/// Only a directly named bound Array/List/Tuple with a literal nonnegative index
 /// acquires a field projection. All computed, negative and non-local accesses
 /// retain the original Index node and fail closed in the scalar checker.
 fn rewrite_projection(
@@ -139,13 +139,13 @@ fn rewrite_projection(
                                 return Err(error(
                                     index.pos,
                                     "E_INDEX_BOUNDS",
-                                    "static Array/Tuple index is outside the fixed allocation",
+                                    "static Array/List/Tuple index is outside the fixed allocation",
                                 ))
                             }
                             _ => return Err(error(
                                 index.pos,
                                 "E_UNSUPPORTED",
-                                "computed Array/Tuple indexes need a runtime checked indexing ABI",
+                                "computed Array/List/Tuple indexes need a runtime checked indexing ABI",
                             )),
                         };
                     expr.kind = ExprKind::Member(receiver.clone(), field);
@@ -217,7 +217,7 @@ fn rewrite_statement(stmt: &mut Stmt, locals: &BTreeMap<String, usize>) -> Resul
     }
 }
 
-/// Execute a bounded, scalar, factory-owned Array/Tuple in guest Wasm.
+/// Execute a bounded, scalar, factory-owned Array/List/Tuple in guest Wasm.
 ///
 /// The original source must pass `collection_types::analyze` first. This
 /// pass consumes its trusted type inventory and maps each source-evaluated
@@ -228,7 +228,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
     for binding in checked {
         if matches!(
             &binding.value.ty,
-            LiteralType::Tuple(_) | LiteralType::Array(_)
+            LiteralType::Tuple(_) | LiteralType::Array(_) | LiteralType::List(_)
         ) {
             let key = (
                 binding.value.pos.line,
@@ -267,7 +267,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             };
             let raw_items = match &init.kind {
                 ExprKind::Tuple(_) => true,
-                ExprKind::Call(factory, _) if factory == "@builtin/Array.of" => true,
+                ExprKind::Call(factory, _) if matches!(factory.as_str(), "@builtin/Array.of" | "@builtin/List.of") => true,
                 _ => false,
             };
             if !raw_items {
@@ -288,15 +288,15 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 error(
                     init.pos,
                     "E_SHAPE",
-                    "missing compiler-owned Array/Tuple type inventory",
+                    "missing compiler-owned Array/List/Tuple type inventory",
                 )
             })?;
             let types = match &typed.value.ty {
                 LiteralType::Tuple(items) => items.clone(),
-                LiteralType::Array(element) => {
+                LiteralType::Array(element) | LiteralType::List(element) => {
                     vec![element.as_ref().clone(); typed.value.children.len()]
                 }
-                _ => return Err(error(init.pos, "E_SHAPE", "Array/Tuple type identity lost")),
+                _ => return Err(error(init.pos, "E_SHAPE", "Array/List/Tuple type identity lost")),
             };
             if types.is_empty()
                 || types.len() > MAX_EXECUTABLE_ITEMS
@@ -305,14 +305,14 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 return Err(error(
                     init.pos,
                     "E_UNSUPPORTED",
-                    "executable Array.of/Tuple.of requires 1..=8 scalar items and <=32 bindings",
+                    "executable Array.of/List.of/Tuple.of requires 1..=8 scalar items and <=32 bindings",
                 ));
             }
             if kind == BindKind::Const {
                 return Err(error(
                     pos,
                     "E_UNSUPPORTED",
-                    "const Array/Tuple allocation is not a compile-time constant",
+                    "const Array/List/Tuple allocation is not a compile-time constant",
                 ));
             }
             if typed.value.children.len() != types.len() {
@@ -324,7 +324,7 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             }
             let values = match init.kind {
                 ExprKind::Tuple(items) => items,
-                ExprKind::Call(factory, items) if factory == "@builtin/Array.of" => items,
+                ExprKind::Call(factory, items) if matches!(factory.as_str(), "@builtin/Array.of" | "@builtin/List.of") => items,
                 _ => unreachable!("raw_items checked factory AST"),
             };
             let mut arguments = Vec::with_capacity(values.len());
