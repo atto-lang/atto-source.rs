@@ -191,6 +191,7 @@ const CHECKED_ROLLBACK: &str = include_str!("fixtures/pass/221-v2-checked-setup-
 const CHECKED_OUTPUT_OCCUPIED: &str = include_str!("fixtures/pass/222-v2-checked-setup-output-occupied.atto");
 const CHECKED_OUTPUT_REUSE: &str = include_str!("fixtures/pass/222-v2-checked-output-occupied-rollback.atto");
 const CHECKED_INPUT_REUSE: &str = include_str!("fixtures/pass/223-v2-checked-input-occupied-rollback.atto");
+const CHECKED_CHANNEL_REUSE: &str = include_str!("fixtures/pass/224-v2-checked-channel-occupied-rollback.atto");
 
 #[test]
 fn annotated_pipe_handle_result_compiles_both_directions_and_failed_setup_rollback() {
@@ -201,6 +202,7 @@ fn annotated_pipe_handle_result_compiles_both_directions_and_failed_setup_rollba
         ("checked_output_occupied", CHECKED_OUTPUT_OCCUPIED),
         ("checked_output_occupied_rollback", CHECKED_OUTPUT_REUSE),
         ("checked_input_occupied_rollback", CHECKED_INPUT_REUSE),
+        ("checked_channel_occupied_rollback", CHECKED_CHANNEL_REUSE),
     ] {
         let guest = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("{name}: checked graph failed compiler: {e}"));
