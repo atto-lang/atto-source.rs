@@ -36,7 +36,7 @@ fn rejects_other_types_and_nonexistent_bindings(){
     let guarded=include_str!("fixtures/pass/list-pattern-guard-once-0.atto");
     rejection(&guarded.replace("when a > 0","when missing > 0"),"E_PATTERN_BINDING");
     rejection(&BASE.replace("on List.of(...,","on List.of(..., ...,"),
-        "E_UNSUPPORTED");
+        "E_PATTERN_SOURCE");
 }
 #[test]
 fn rejects_bad_constructor_and_unverified_patterns(){
@@ -94,4 +94,28 @@ fn fixed_atom_budget_applies_after_removing_rest_wildcards() {
         let invalid = BASE.replace(OLD, &format!("on List.of({parts}) -> 1,"));
         rejection(&invalid, "E_PATTERN_BUDGET");
     }
+}
+
+#[test]
+fn reserved_names_and_adjacent_rests_fail_before_guest_artifact() {
+    let bad_subject = BASE.replace("val items: List<int>", "val match: List<int>")
+        .replace("match<int> items over", "match<int> match over");
+    rejection(&bad_subject, "E_RESERVED");
+
+    let bad_binder = BASE.replace("is int as val a", "is int as val return")
+        .replace("a + b + c", "return + b + c");
+    rejection(&bad_binder, "E_RESERVED");
+
+    // Adjacent rests are malformed even if they occur after a fixed atom.
+    for pat in ["..., ..., is int as val a",
+                "is int as val a, ..., ..."] {
+        let source = BASE.replace("..., is int as val a", pat);
+        rejection(&source, "E_PATTERN_SOURCE");
+    }
+
+    // Interior nonadjacent rests are valid in the broader specification,
+    // but are deliberately not executable under this restricted profile.
+    let interior = BASE.replace("is int as val b, is int as val c",
+        "is int as val b, ..., is int as val c");
+    rejection(&interior, "E_UNSUPPORTED");
 }
