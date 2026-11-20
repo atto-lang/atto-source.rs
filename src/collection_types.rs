@@ -230,6 +230,37 @@ fn inferred(e: &Expr, expected: Option<&LiteralType>, depth: usize)
         }
         ExprKind::Unary(UnOp::Plus, v) if matches!(v.kind, ExprKind::Int(_)) =>
             inferred(v, Some(&Int), depth + 1)?.ty,
+        // Keep Array and List factories distinct even though both accept
+        // positional items. Rewriting both to bracket literals would infer
+        // List for an untyped Array.of(...) and violate the factory contract.
+        ExprKind::Call(name, args)
+            if matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of") => {
+            let is_array = name == "@builtin/Array.of";
+            let element = match (is_array, expected) {
+                (true, Some(Array(item))) | (false, Some(List(item))) => (**item).clone(),
+                (_, None) => Bottom,
+                _ => return Err(diag(e.pos, "E_TYPE",
+                    "collection factory result does not match expected Array/List type")),
+            };
+            if args.is_empty() && element == Bottom {
+                return Err(diag(e.pos, "E_TYPE_INFERENCE",
+                    "empty Array.of/List.of requires a concrete generic element type"));
+            }
+            let target = if is_array {
+                Array(Box::new(element))
+            } else {
+                List(Box::new(element))
+            };
+            let literal = Expr {pos: e.pos, kind: ExprKind::Array(args.clone())};
+            return inferred(&literal, Some(&target), depth + 1).map_err(|err| {
+                if err.code == "E_TYPE" {
+                    diag(err.pos, "E_TYPE_INFERENCE",
+                        "Array.of/List.of elements have no checked common type")
+                } else {
+                    err
+                }
+            });
+        }
         ExprKind::Array(items) => {
             let (kind, element) = match expected {
                 Some(Array(element)) => (true, element.as_ref().clone()),
@@ -348,7 +379,9 @@ pub fn static_record_field_type(
 
 fn starts_literal(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Array(_) | ExprKind::Record(_) |
-        ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_))
+        ExprKind::Map(_) | ExprKind::EmptyBraces | ExprKind::Tuple(_)) ||
+        matches!(&e.kind, ExprKind::Call(name, _) if
+            matches!(name.as_str(), "@builtin/Array.of" | "@builtin/List.of"))
 }
 
 /// Staged semantic preflight: checked declarations are *not* yet executable.
