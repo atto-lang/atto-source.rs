@@ -96,7 +96,7 @@ pub fn check_noncapturing(
     }
     Ok(CheckedLambda {
         params: names.iter().cloned().zip(types.iter().copied()).collect(),
-        result, annotated: ann.is_some(),
+        result, annotated: ann.is_some() || param_types.iter().any(Option::is_some),
     })
 }
 
