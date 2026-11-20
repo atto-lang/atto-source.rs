@@ -22,7 +22,7 @@ const cases = [
   ['0B1011 >>> 1', 5n],
 ];
 const compounds = [
-  ['x &= 10', 8n], ['x |= 2', 14n], 
+  ['x &= 10', 8n], ['x |= 2', 14n],
   ['x <<<= 2', 48n], ['x >>>= 1', 6n], ['x ashr= 1', 6n],
 ];
 const tmp = await mkdtemp(join(tmpdir(), 'atto-bitwise-'));
