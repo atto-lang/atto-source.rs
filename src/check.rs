@@ -1148,7 +1148,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         let payload = match &a.receive {
             Some(r) => {
                 let t = res(r.payload)?;
-                if !matches!(t, Type::Int | Type::Bool) {
+                if crate::actor_isolation_witness::prove_payload(
+                    actor_mail_shape(t),
+                    crate::actor_isolation_witness::TransferIntent::GuestScalarCopy,
+                ).is_err() {
                     return Err(Diagnostic::new(
                         r.pos,
                         "E_UNSUPPORTED_TYPE",
@@ -1887,6 +1890,18 @@ fn actor_send_has_take(payload: &Expr) -> bool {
         }
     }
     false
+}
+
+// Derive a mailbox shape from *resolved compiler types*, never from a
+// user-provided Sendable/Shareable/Serializable name or source trait.
+fn actor_mail_shape(t: Type) -> crate::actor_isolation_witness::PayloadShape {
+    use crate::actor_isolation_witness::PayloadShape;
+    match t {
+        Type::Int => PayloadShape::Int,
+        Type::Bool => PayloadShape::Bool,
+        Type::ActorRef(_) | Type::NamedRef(_) => PayloadShape::ActorCapability,
+        _ => PayloadShape::NonScalar,
+    }
 }
 
 fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
@@ -4737,6 +4752,17 @@ impl<'a> FnCx<'a> {
                         ),
                     ));
                 }
+                // This proof is derived from the checked, resolved payload
+                // type only. The guest actor_send ABI can copy int/bool; it
+                // cannot convey a moved owner, immutable Arc or remote
+                // capability. Do not trust user-declared Sendable markers.
+                let _copy_proof = crate::actor_isolation_witness::prove_payload(
+                    actor_mail_shape(v.ty),
+                    crate::actor_isolation_witness::TransferIntent::GuestScalarCopy,
+                ).map_err(|_| Diagnostic::new(args[0].pos,
+                    "E_ACTOR_SEND_NOT_SENDABLE",
+                    "actor_send ABI only admits compiler-proven int/bool copy; no actor reference, owned handle, frozen share or wire payload"
+                ))?;
                 self.imports.push(Import::ActorSend);
                 Ok(TE {
                     e: TExpr::Send {
