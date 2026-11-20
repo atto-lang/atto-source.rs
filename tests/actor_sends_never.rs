@@ -45,3 +45,10 @@ fn explicit_sends_never_does_not_change_the_destination_inbox() {
         .replace("ActorMail<int>", "ActorMail<bool>");
     assert_eq!(compile(&source).unwrap_err().code, "E_ACTOR_RECEIVES");
 }
+
+#[test]
+fn canonical_bool_never_fixture_compiles_to_wasm() {
+    let source = include_str!("fixtures/pass/actor-bool-never-parity-v1.atto");
+    let wasm = compile(source).expect("bool inbox and empty outbound effect must compile");
+    assert!(wasm.starts_with(b"\0asm"));
+}
