@@ -16,9 +16,15 @@ pub enum Type {
     FutureInt,
     /// Staged, exact checked Channel<int> ABI types (no guest imports yet).
     ChannelInt,
+    /// Stdin-only UTF-8 Channel<string> subset; no source constructor yet.
+    ChannelStr,
+    /// Writable<string> process stdout/stderr endpoint.
+    WritableStr,
     IoError,
     FutureReadInt,
     ResultOptionIntIoError,
+    /// Checked, nullable UTF-8 stdin item: EOF is None, never empty text.
+    ResultOptionStrIoError,
     ResultChannelIntIoError,
     ResultVoidIoError,
     /// Unresolved user type name: index into [`Program::type_names`].
@@ -40,6 +46,7 @@ pub enum Type {
     /// First executable ADT profiles; their payloads use the checked module heap.
     /// Other generic instantiations reject without emitting an artifact.
     OptionInt,
+    OptionStr,
     ResultIntStr,
     /// First nested ADT profile: Some(Result<int,string>) or None.
     /// Generic ADT instantiations remain deliberately restricted.
@@ -60,12 +67,16 @@ impl Type {
             Type::Str => "string",
             Type::FutureInt => "Future<int>",
             Type::ChannelInt => "Channel<int>",
+            Type::ChannelStr => "Channel<string>",
+            Type::WritableStr => "Writable<string>",
             Type::IoError => "IoError",
             Type::FutureReadInt => "Future<Result<Option<int>,IoError>>",
             Type::ResultOptionIntIoError => "Result<Option<int>,IoError>",
+            Type::ResultOptionStrIoError => "Result<Option<string>,IoError>",
             Type::ResultChannelIntIoError => "Result<Channel<int>,IoError>",
             Type::ResultVoidIoError => "Result<void,IoError>",
             Type::OptionInt => "Option<int>",
+            Type::OptionStr => "Option<string>",
             Type::ResultIntStr => "Result<int,string>",
             Type::OptionResultIntStr => "Option<Result<int,string>>",
             Type::GeneratorInt => "Generator<int>",
