@@ -1831,10 +1831,9 @@ impl Parser {
                 let legacy_actor_bar = *self.peek() == Tok::Pipe;
                 if legacy_actor_bar {
                     self.advance();
-                } else if reversed {
-                    assert!(self.consume_pipeline_operator("rpipe"));
-                } else {
-                    assert!(self.consume_pipeline_operator("pipe"));
+                } else if !self.consume_pipeline_operator(if reversed { "rpipe" } else { "pipe" }) {
+                    return Err(Diagnostic::new(operator, "E_SYNTAX",
+                        "pipeline bang suffix must end at a token boundary"));
                 }
                 let stage = self.parse_postfix()?;
                 let next = match &stage.kind {
