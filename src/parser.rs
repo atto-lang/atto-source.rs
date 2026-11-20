@@ -3130,7 +3130,7 @@ impl Parser {
                     return Err(Diagnostic::new(pos, "E_DUPLICATE", format!("duplicate lambda parameter '{name}'")));
                 }
                 if explicit_type == Some(Type::Void) {
-                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                    return Err(Diagnostic::new(pos, "E_TYPE",
                         "lambda parameters cannot have void type"));
                 }
                 params.push(name);
