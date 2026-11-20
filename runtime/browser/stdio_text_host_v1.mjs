@@ -266,10 +266,12 @@ class OutputPort {
 // object, native descriptors, async iterators, or callback functions. A future
 // guest ABI must gate each import on tenant identity/generation.
 export class StdioTextHostV1 {
-  constructor({stdin,stdout,stderr,generation,maxRecordBytes=65536,
+  constructor({stdin,stdout,stderr,tenantId,generation,maxRecordBytes=65536,
     maxChunkBytes=262144,maxQueuedRecords=128,maxQueuedBytes=262144,
     maxWriteBytes=65536,maxPendingWrites=64,maxPendingBytes=262144}={}) {
     if (!uint(generation,1,0x7fffffff)) throw new TypeError('tenant/process generation required');
+    if (typeof tenantId !== 'string' || !tenantId.trim() || tenantId.length>128)
+      throw new TypeError('explicit trusted tenant identity required');
     for (const n of [maxRecordBytes,maxChunkBytes,maxQueuedRecords,maxQueuedBytes,
       maxWriteBytes,maxPendingWrites,maxPendingBytes]) {
       if (!uint(n,1,1048576)) throw new TypeError('invalid stdio quota');
@@ -279,6 +281,8 @@ export class StdioTextHostV1 {
     const input = new InputPort(stdin,limits);
     const out = new OutputPort(stdout,limits);
     const error = new OutputPort(stderr,limits);
+    this.tenantId = tenantId;
+    this.generation = generation;
     this.stdio = Object.freeze({in:input,out,err:error});
     this.process = Object.freeze({stdin:input,stdout:out,stderr:error});
     this.revoke = () => {input.revoke();out.revoke();error.revoke()};
