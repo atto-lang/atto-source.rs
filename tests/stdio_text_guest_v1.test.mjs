@@ -71,6 +71,18 @@ test('guest-owned memory boundaries, UTF-8 validation and quotas fail closed',as
   assert.equal(await f.bridge.imports.stdio_text_write_v1(1,64,2),E.MalformedUtf8);
 });
 
+test('overlapping result and input buffers are rejected before consuming stdin',async()=>{
+  const f=fixture({stdin:input('not-lost\\n')});
+  // A result slot overlapping the guest-owned byte destination would
+  // overwrite the read payload when the JSPI import commits its tag.
+  assert.equal(await f.bridge.imports.stdio_text_read_v1(0,64,128,64),E.InvalidPointer);
+  assert.equal(await f.bridge.imports.stdio_text_read_v1(0,64,128,176),E.InvalidPointer);
+  // Rejected reads must not consume the injected line.
+  assert.equal(await f.bridge.imports.stdio_text_read_v1(0,64,128,16),E.Ok);
+  const length=f.view.getInt32(24,true);
+  assert.equal(decoder.decode(new Uint8Array(f.memory.buffer,64,length)),'not-lost');
+});
+
 test('grant identity and generation are mandatory, never chosen by the guest',()=>{
   const f=fixture();
   assert.throws(()=>createStdioTextGuestV1({
