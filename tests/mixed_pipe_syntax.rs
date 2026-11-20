@@ -212,7 +212,8 @@ fn scalar_endpoint_is_rejected_before_runtime_abi_admission() {
         .replacen("val source = spawn Parse();", "val source: int = 0;", 1);
     let err = atto_compiler::compile(&source).unwrap_err();
     assert_eq!(err.code, "E_TYPE", "{err}");
-    assert!(err.message.contains("scalar"), "{err}");
+    // A scalar local has no statically verified PipeSource/PipeSink rights.
+    assert!(err.message.contains("not a typed PipeSource/PipeSink"), "{err}");
 }
 
 #[test]
