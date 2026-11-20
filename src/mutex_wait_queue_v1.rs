@@ -1621,4 +1621,30 @@ mod tests {
         assert_eq!(scope.exit_kind(c(4)).unwrap(), Some(TaskExitKind::Succeeded));
     }
 
+    #[test]
+    fn host_kernel_cancel_does_not_double_schedule_active_guard_holder() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let active = kernel.issue(None).unwrap();
+        let queued = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(3).unwrap();
+        let grant = owned(kernel.acquire(active, mutex).unwrap());
+        kernel.claim(active, mutex, grant).unwrap();
+        let waiter = pending(kernel.acquire(queued, mutex).unwrap());
+
+        kernel.cancel(active).unwrap();
+        // Cancellation is a safe-point flag for the already running holder,
+        // not an invitation to dispatch the same logical continuation twice.
+        assert!(kernel.cancelled_continuation_wake_hints().unwrap().is_empty());
+        assert_eq!(kernel.claim(queued, mutex, waiter), Err(Error::StaleTicket));
+        assert_eq!(kernel.trusted_exit(active).unwrap(), vec![mutex]);
+        assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, waiter)]);
+        kernel.acknowledge_grant_wake_hint(mutex, waiter).unwrap();
+        kernel.claim(queued, mutex, waiter).unwrap();
+        assert_eq!(kernel.trusted_exit(queued).unwrap(), vec![mutex]);
+        for who in [active, queued] {
+            kernel.trusted_notifications_drained(who).unwrap();
+            kernel.try_retire(who).unwrap();
+        }
+    }
+
 }
