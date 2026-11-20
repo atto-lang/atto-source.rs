@@ -1903,6 +1903,18 @@ impl Parser {
                                 pos,
                             })
                         }
+                        ExprKind::Index(target, index) => {
+                            // Preserve the original receiver and index AST.
+                            // Only the typed checker may resolve a static
+                            // Record field, Map upsert or a forbidden Struct.
+                            let value = value_of(self)?;
+                            Ok(Stmt::IndexAssign {
+                                target: *target,
+                                index: *index,
+                                value,
+                                pos,
+                            })
+                        }
                         _ => Err(Diagnostic::new(
                             at,
                             "E_ASSIGN_TARGET",
