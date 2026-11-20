@@ -635,6 +635,43 @@ check('pipe-left/right-associative-call-order-and-negative-admission', () => {
   }
 });
 
+// Single-expression callable bodies and both functional pipeline directions
+// must execute as compiled Wasm guests; host-only simulation is insufficient.
+const arrowPipePath = join(here, 'fixtures', 'pass', 'functional-pipelines-arrow.atto');
+check('pipe/inline-arrow-bodies-with-reverse-and-forward-real-guest', async () => {
+  const source = await readFile(arrowPipePath, 'utf8');
+  const compiled = compile(source);
+  assert.equal(compiled.ok, true, compiled.message);
+  assert.ok(WebAssembly.validate(compiled.wasm));
+  assert.deepEqual(compile(source).wasm, compiled.wasm);
+  if (attoc) assert.deepEqual(nativeBytes(arrowPipePath), compiled.wasm, 'native/wasm compiler byte parity');
+  const executed = runGuest(compiled.wasm);
+  assert.equal(executed.ok, true, executed.error);
+  assert.equal(executed.value, 83n);
+  assert.equal(executed.stdout, '');
+
+  const nested = compile([
+    'fnc twice(int x): int -> x * 2;',
+    'fnc next(int x): int -> x + 1;',
+    'pub fnc main(): int -> twice <| next <| 20;',
+  ].join('\n'));
+  assert.equal(nested.ok, true, nested.message);
+  assert.equal(runGuest(nested.wasm).value, 42n);
+});
+check('pipe/inline-arrow-invalid-return-and-terminator-fail-closed', () => {
+  for (const bad of [
+    'fnc twice(int x): int -> x * 2 pub fnc main(): int { return 42; }',
+    'fnc twice(int x): int -> true; pub fnc main(): int { return twice(2); }',
+    'fnc twice(int x): int -> { x * 2; } pub fnc main(): int { return twice(2); }',
+  ]) {
+    const result = compile(bad);
+    assert.equal(result.ok, false, 'invalid arrow body admitted');
+    assert.equal('wasm' in result, false, 'invalid source emitted Wasm');
+    assert.match(result.code, /^E_[A-Z_]+$/);
+    assert.ok(result.line > 0 && result.col > 0);
+  }
+});
+
 // Exact current site preview corpus. Rejections never count as executing a
 // feature; the report explicitly separates admitted, unsupported and guests.
 try {
