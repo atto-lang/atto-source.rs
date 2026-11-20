@@ -157,7 +157,6 @@ fn generic_nesting_is_bounded_before_stack_exhaustion() {
 fn never_emit_unchecked_guest_collection_values() {
     for source in [
         "let Record foo = {bar: []};",
-        "let Map foo = {\"1\" => 1};",
         "let List foo = [];",
         "let Array<Record> foo = [{job: 1}];",
         "let tuple foo = ();",
@@ -168,6 +167,12 @@ fn never_emit_unchecked_guest_collection_values() {
     }
 }
 
+
+#[test]
+fn literal_map_indexing_uses_real_guest_owned_storage() {
+    let wasm = compile("fnc main(): int {let Map foo = {\"1\" => 42};return foo[\"1\"];}").expect("static Map guest");
+    assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
+}
 
 #[test]
 fn bracket_access_keeps_receiver_and_literal_key_distinct_from_dot_members() {
