@@ -48,6 +48,7 @@ const RESERVED: &[&str] = &[
     "routine",
     "pure",
     "async",
+    "sync",
     "suspends",
     "generator",
     "yield",
@@ -148,6 +149,7 @@ const UNSUPPORTED_STMT: &[&str] = &[
     "define",
     "import",
     "async",
+    "sync",
     "yield",
     "nb",
     "cb",
@@ -2248,6 +2250,10 @@ impl Parser {
                 Ok(Stmt::Continue(pos))
             }
             Some("match") => self.parse_match(false),
+            Some("do") if self.word_at(1) == Some("task")
+                || (self.word_at(1) == Some("sync") && self.word_at(2) == Some("task")) => {
+                Err(unsupported(pos, "supervised task statements"))
+            }
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
                 self.parse_match(true)
@@ -2584,7 +2590,7 @@ impl Parser {
             (name, Some(self.parse_type()?))
         } else if matches!(self.peek(), Tok::Ident(_))
             && (matches!(self.peek_at(1), Tok::Ident(_))
-                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array"))
+                || (matches!(self.word_at(0), Some("Option" | "Result" | "ActorRef" | "Array" | "Future"))
                     && *self.peek_at(1) == Tok::Lt))
         {
             // Recognize generic type-first bindings without treating
@@ -3843,7 +3849,10 @@ impl Parser {
                     self.advance();
                     ExprKind::Spawn(actor)
                 }
-                "await" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
+                "task" if matches!(self.peek_at(1), Tok::Lt | Tok::LBrace) => {
+                    return Err(unsupported(pos, "typed or inferred task expressions"));
+                }
+                "await" | "sync" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }
                 w if is_reserved(w) => {
