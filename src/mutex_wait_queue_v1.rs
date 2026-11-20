@@ -1140,4 +1140,86 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn host_kernel_never_parks_when_arbiter_is_busy() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let held = kernel.core.lock().unwrap(); // host-only contention injection
+        assert_eq!(kernel.issue(None), Err(Error::AdmissionBusy));
+        assert_eq!(kernel.add_mutex(4), Err(Error::AdmissionBusy));
+        drop(held);
+        let owner = kernel.issue(None).unwrap();
+        let mutex = kernel.add_mutex(4).unwrap();
+        let grant = owned(kernel.acquire(owner, mutex).unwrap());
+        kernel.claim(owner, mutex, grant).unwrap();
+        assert_eq!(kernel.terminal(owner).unwrap(), None);
+        assert_eq!(kernel.trusted_exit(owner).unwrap(), vec![mutex]);
+        kernel.trusted_notifications_drained(owner).unwrap();
+        kernel.try_retire(owner).unwrap();
+        assert_eq!(kernel.terminal(owner).unwrap(), Some(TaskExitKind::Succeeded));
+    }
+
+    #[test]
+    fn host_kernel_cancel_unwinds_child_guards_and_preserves_sibling() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let parent = kernel.issue(None).unwrap();
+        let child = kernel.issue(Some(parent)).unwrap();
+        let sibling = kernel.issue(None).unwrap();
+        let lock = kernel.add_mutex(3).unwrap();
+        let owner_grant = owned(kernel.acquire(child, lock).unwrap());
+        kernel.claim(child, lock, owner_grant).unwrap();
+        let sibling_wait = pending(kernel.acquire(sibling, lock).unwrap());
+        kernel.cancel(parent).unwrap();
+        assert_eq!(kernel.try_retire(parent), Err(Error::NotQuiescent));
+        assert_eq!(kernel.try_retire(child), Err(Error::NotQuiescent));
+        assert_eq!(kernel.trusted_exit(parent).unwrap(), Vec::<u64>::new());
+        kernel.trusted_notifications_drained(parent).unwrap();
+        assert_eq!(kernel.try_retire(parent), Err(Error::NotQuiescent));
+        assert_eq!(kernel.trusted_exit(child).unwrap(), vec![lock]);
+        assert_eq!(kernel.terminal(child).unwrap(), Some(TaskExitKind::Cancelled));
+        // Exact handoff from the cancelled child is revalidated by the
+        // un-cancelled sibling; no early unlock and no privilege escalation.
+        kernel.claim(sibling, lock, sibling_wait).unwrap();
+        kernel.trusted_notifications_drained(child).unwrap();
+        kernel.try_retire(child).unwrap();
+        kernel.try_retire(parent).unwrap();
+        assert_eq!(kernel.trusted_exit(sibling).unwrap(), vec![lock]);
+        kernel.trusted_notifications_drained(sibling).unwrap();
+        kernel.try_retire(sibling).unwrap();
+        assert_eq!(kernel.terminal(sibling).unwrap(), Some(TaskExitKind::Succeeded));
+    }
+
+    #[test]
+    fn host_kernel_epoch_and_tenant_handles_fail_closed() {
+        let one = HostTaskLockKernel::new(d()).unwrap();
+        let two = HostTaskLockKernel::new(d()).unwrap();
+        let task_one = one.issue(None).unwrap();
+        let task_two = two.issue(None).unwrap();
+        assert_ne!(task_one.segment, task_two.segment);
+        assert_eq!(one.cancel(task_two), Err(Error::ForeignDomain));
+        assert_eq!(two.cancel(task_one), Err(Error::ForeignDomain));
+        let invalid = HostTaskLockKernel::new(Domain { tenant: 0, ..d() });
+        assert!(matches!(invalid, Err(Error::ForeignDomain)));
+    }
+
+    #[test]
+    fn host_kernel_rejected_cancel_during_claim_keeps_physical_retire_blocked() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let owner = kernel.issue(None).unwrap();
+        let wait = kernel.issue(None).unwrap();
+        let lock = kernel.add_mutex(3).unwrap();
+        let held = owned(kernel.acquire(owner, lock).unwrap());
+        kernel.claim(owner, lock, held).unwrap();
+        let pending_ticket = pending(kernel.acquire(wait, lock).unwrap());
+        kernel.cancel(wait).unwrap();
+        assert_eq!(kernel.claim(wait, lock, pending_ticket), Err(Error::CancellationPending));
+        assert_eq!(kernel.try_retire(wait), Err(Error::NotQuiescent));
+        assert_eq!(kernel.trusted_exit(wait).unwrap(), Vec::<u64>::new());
+        kernel.trusted_notifications_drained(wait).unwrap();
+        kernel.try_retire(wait).unwrap();
+        assert_eq!(kernel.trusted_exit(owner).unwrap(), vec![lock]);
+        kernel.trusted_notifications_drained(owner).unwrap();
+        kernel.try_retire(owner).unwrap();
+    }
+
 }
