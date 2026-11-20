@@ -315,7 +315,7 @@ impl TaskLeaseStack {
 
 /// TaskScope-to-mutex integration reference. It owns the per-task waiter and
 /// claimed-guard reverse indexes, not just a standalone mutex wait queue.
-/// IMPORTANT: this file is #[cfg(test)] in lib.rs. It is NOT a guest scheduler,
+/// IMPORTANT: compiled only into the native private host crate; NOT a guest scheduler,
 /// a signed physical-quiescence witness, or a production Atto capability API.
 /// The trusted scheduler must replace the modeled guest-exit/callback receipts
 /// with authenticated, separately ordered runtime facts before guest admission.
