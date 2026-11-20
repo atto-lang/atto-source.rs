@@ -181,3 +181,51 @@ fn nested_four_stage_graphs_fail_closed_before_prefix_emission() {
         assert_eq!(e.code, "E_UNSUPPORTED", "{label}: {e}");
     }
 }
+
+
+// Provisional compile gates. The Node/Chromium suites MUST execute the
+// resulting Wasm guest before counting these as checked runtime passes.
+const CHECKED_FORWARD: &str = include_str!("fixtures/pass/219-v2-checked-actor-channel-actor-pipe.atto");
+const CHECKED_REVERSE: &str = include_str!("fixtures/pass/220-v2-checked-actor-channel-actor-rpipe.atto");
+const CHECKED_ROLLBACK: &str = include_str!("fixtures/pass/221-v2-checked-setup-rollback.atto");
+
+#[test]
+fn annotated_pipe_handle_result_compiles_both_directions_and_failed_setup_rollback() {
+    for (name, source) in [
+        ("checked_forward", CHECKED_FORWARD),
+        ("checked_reverse", CHECKED_REVERSE),
+        ("checked_rollback", CHECKED_ROLLBACK),
+    ] {
+        let guest = atto_compiler::compile(source)
+            .unwrap_or_else(|e| panic!("{name}: checked graph failed compiler: {e}"));
+        assert!(guest.starts_with(b"\\0asm\\x01\\0\\0\\0"),
+            "{name}: checked graph did not emit Wasm");
+    }
+}
+
+#[test]
+fn opaque_pipe_handle_is_not_constructible_from_an_integer() {
+    let bad = CHECKED_FORWARD.replace(
+        "producer pipe channel pipe consumer",
+        "Ok(42)",
+    );
+    assert_ne!(bad, CHECKED_FORWARD);
+    let e = atto_compiler::compile(&bad)
+        .expect_err("a guest integer must not forge an opaque PipeHandle");
+    assert_eq!(e.code, "E_TYPE", "{e}");
+}
+
+#[test]
+fn typed_pipe_handle_is_not_implicitly_unwrapped_to_channel() {
+    let bad = CHECKED_FORWARD.replace(
+        "Result<PipeHandle, PipeSetupError> connection",
+        "Channel<int> connection",
+    );
+    assert_ne!(bad, CHECKED_FORWARD);
+    let e = atto_compiler::compile(&bad)
+        .expect_err("an explicit Channel<T> binding must not become PipeHandle");
+    // The legacy raw Channel<T> guest surface remains a separate experimental
+    // contract. Reject the resulting invalid match pattern, rather than
+    // pretending typed Result is silently available.
+    assert!(e.code == "E_TYPE" || e.code == "E_MATCH", "{e}");
+}
