@@ -302,6 +302,10 @@ pub fn inspect(tokens: &[Token]) -> Result<Vec<IoShorthand>, Diagnostic> {
         let end = end_at(tokens, rhs_start, context)
             .ok_or_else(|| syntax(op_pos, "I/O shorthand requires ';' or '->' after its operand"))?;
         if end == rhs_start {
+            if operator == Direction::Read && context == Context::Standalone {
+                return Err(Diagnostic::new(op_pos, "E_IO_DISCARD",
+                    "postfix channel read outcome must be bound or handled, not discarded"));
+            }
             return Err(syntax(op_pos, "I/O shorthand requires a value or binding"));
         }
         if mode == Mode::Detached && (operator == Direction::Read || reversed_read) {
