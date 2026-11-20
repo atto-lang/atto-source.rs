@@ -106,7 +106,7 @@ fn wrong_collection_kinds_and_item_types_reject_before_wasm() {
 fn static_typing_success_is_not_wasm_execution() {
     for s in [
         "let Record foo = {bar: []};",
-        "let List foo = [];",
+        "let List<Record> foo = [];",
         "let Array<Record> foo = [{job: 1}];",
         "let Tuple foo = ();",
         "let array<record> foo = [{job: 1}, {car: \"str\"}];",
