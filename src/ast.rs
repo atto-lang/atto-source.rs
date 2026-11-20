@@ -242,6 +242,11 @@ pub struct ActorPersistenceHook {
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    /// Optional application mailbox type declared with `receives T`.
+    /// Existing ActorMail<T> is still the nominal receive-handler envelope.
+    pub receives: Option<Type>,
+    /// Optional outbound application send effect, not a recipient count.
+    pub sends: Option<Type>,
     pub persistence: ActorPersistenceMode,
     pub persistence_hooks: Vec<ActorPersistenceHook>,
     pub fields: Vec<Field>,
