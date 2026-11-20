@@ -23,6 +23,9 @@ fn other_compiled_guests_still_emit_wasm(){
         include_str!("fixtures/pass/list-pattern-guard-once-0.atto"),
         include_str!("fixtures/pass/list-pattern-infix-30.atto"),
         include_str!("fixtures/pass/list-pattern-anchored-no-match-7.atto"),
+        include_str!("fixtures/pass/list-pattern-full-width-1.atto"),
+        include_str!("fixtures/pass/list-pattern-leftmost-3.atto"),
+        include_str!("fixtures/pass/list-pattern-max-length-32.atto"),
     ] {
         let result=compile(src).expect("bounded guest match source");
         assert!(result.starts_with(b"\0asm"));
@@ -118,4 +121,28 @@ fn reserved_names_and_adjacent_rests_fail_before_guest_artifact() {
     let interior = BASE.replace("is int as val b, is int as val c",
         "is int as val b, ..., is int as val c");
     rejection(&interior, "E_UNSUPPORTED");
+}
+
+#[test]
+fn empty_list_and_standalone_rest_use_checked_guest_representation() {
+    let empty = r#"
+        pub fnc main(): int {
+          val items: List<int> = List.of();
+          return match<int> items over
+            on List.of() -> 9,
+            on _ -> 0
+          end;
+        }
+    "#;
+    let empty_program = list_pattern_guest::try_lower(
+        &lexer::lex(empty).expect("valid tokens")).unwrap().unwrap();
+    assert!(empty_program.heap);
+    assert!(compile(empty).unwrap().starts_with(b"\0asm"));
+
+    let any_length = BASE.replace(
+        "on List.of(..., is int as val a, is int as val b, is int as val c, ...) -> a + b + c,",
+        "on List.of(...) -> 1,",
+    );
+    assert_ne!(any_length, BASE, "test must replace actual pattern");
+    assert!(compile(&any_length).unwrap().starts_with(b"\0asm"));
 }
