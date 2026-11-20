@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use crate::ast::BinOp;
-use crate::check::{Builtin, TE, TExpr};
+use crate::check::{Builtin, TExpr, TE};
 use crate::diag::{Diagnostic, Pos};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,8 +18,11 @@ pub(crate) enum Scalar {
 }
 
 fn overflow(pos: Pos) -> Diagnostic {
-    Diagnostic::new(pos, "E_CONST_OVERFLOW",
-        "signed 64-bit arithmetic overflow in a compile-time constant")
+    Diagnostic::new(
+        pos,
+        "E_CONST_OVERFLOW",
+        "signed 64-bit arithmetic overflow in a compile-time constant",
+    )
 }
 
 fn checked(value: Option<i64>, pos: Pos) -> Result<Option<Scalar>, Diagnostic> {
@@ -30,9 +33,7 @@ fn checked(value: Option<i64>, pos: Pos) -> Result<Option<Scalar>, Diagnostic> {
 /// executing a guest. All binary inputs are inspected, including an overflow
 /// under multiplication by zero. A ternary inspects only the selected arm
 /// when its condition is statically known, matching guest laziness.
-pub(crate) fn evaluate(
-    expr: &TE, known: &BTreeMap<u32, Scalar>, pos: Pos,
-) -> Result<Option<Scalar>, Diagnostic> {
+pub(crate) fn evaluate(expr: &TE, known: &BTreeMap<u32, Scalar>, pos: Pos) -> Result<Option<Scalar>, Diagnostic> {
     use Scalar::{Bool, Int};
     Ok(match &expr.e {
         TExpr::I64(n) => Some(Int(*n)),
