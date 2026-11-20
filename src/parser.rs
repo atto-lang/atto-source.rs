@@ -198,6 +198,7 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
         "List" | "list" => Some("List"),
         "Array" | "array" => Some("Array"),
         "Tuple" | "tuple" => Some("Tuple"),
+        "Entry" | "entry" => Some("Entry"),
         _ => None,
     }
 }
@@ -208,6 +209,7 @@ fn collection_type_name(name: &str) -> Option<&'static str> {
 fn constant_map_key(value: &Expr) -> Option<String> {
     match &value.kind {
         ExprKind::Str(s) => Some(format!("str:{s}")),
+        ExprKind::Symbol(s) => Some(format!("symbol:{s}")),
         ExprKind::Bool(b) => Some(format!("bool:{b}")),
         ExprKind::Int(Some(v)) => Some(format!("int:{v}")),
         ExprKind::Int(None) => Some("int:9223372036854775808".into()),
@@ -222,6 +224,22 @@ fn constant_map_key(value: &Expr) -> Option<String> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// A top-level single bracket around a Map/Entry key denotes evaluation
+/// of that expression, not an Array/List allocation. Ordinary [x] still
+/// constructs a List/Array outside key-arrow context. Group ([x]) when an
+/// actual Array/List value is intended as a key (subject to Hash/Eq checks).
+fn computed_entry_key(key: Expr, begins_bracket: bool) -> R<Expr> {
+    if !begins_bracket {
+        return Ok(key);
+    }
+    let at = key.pos;
+    match key.kind {
+        ExprKind::Array(mut items) if items.len() == 1 => Ok(items.pop().unwrap()),
+        _ => Err(Diagnostic::new(at, "E_MAP_KEY",
+            "computed Map/Entry key uses exactly one [expression], not an Array/List")),
     }
 }
 
@@ -2605,10 +2623,29 @@ impl Parser {
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
-        let r = self.parse_ternary();
+        let begins_bracket = *self.peek() == Tok::LBracket;
+        let result = (|| {
+            let left = self.parse_ternary()?;
+            if !self.eat(&Tok::FatArrow) {
+                return Ok(left);
+            }
+            // Outside brace-map key position, => constructs one nominal Entry.
+            // A directly bracketed single expression is an explicit computed
+            // key, not a one-element List or Array.
+            let key = computed_entry_key(left, begins_bracket)?;
+            self.grow(1)?;
+            let val = self.parse_ternary()?;
+            self.height -= 1;
+            if *self.peek() == Tok::FatArrow {
+                return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                    "Entry arrows are non-associative; group nested Entries explicitly"));
+            }
+            let pos = key.pos;
+            Ok(Expr { kind: ExprKind::Entry(Box::new(key), Box::new(val)), pos })
+        })();
         self.cond = saved;
         self.leave();
-        r
+        result
     }
 
     fn parse_ternary(&mut self) -> R<Expr> {
@@ -3227,12 +3264,13 @@ impl Parser {
                     self.expect(Tok::Colon, "':' after quoted Map key")?;
                     Expr { kind: ExprKind::Str(decoded), pos: key_pos }
                 } else {
-                    let key = self.parse_expr()?;
+                    let begins_bracket = *self.peek() == Tok::LBracket;
+                    let key = self.parse_ternary()?;
                     if !self.eat(&Tok::FatArrow) {
                         return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
                             "expected '=>' for expression Map key"));
                     }
-                    key
+                    computed_entry_key(key, begins_bracket)?
                 };
                 let value = self.parse_expr()?;
                 // Constant duplicate keys are definite mistakes. Dynamically
@@ -3321,6 +3359,10 @@ impl Parser {
                 self.advance();
                 ExprKind::Str(s)
             }
+            Tok::Symbol(name) => {
+                self.advance();
+                ExprKind::Symbol(name)
+            }
             Tok::Float(bits) => {
                 self.advance();
                 ExprKind::Float(bits)
@@ -3342,7 +3384,7 @@ impl Parser {
                     && *self.peek_at(1) == Tok::Assign
                 {
                     return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
-                        "quoted Record field names require brace syntax: {\"label\": value}"));
+                        "Record field names must be identifiers, not quoted strings"));
                 }
                 let first = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
                 if self.eat(&Tok::Comma) {
@@ -3475,6 +3517,7 @@ fn describe(t: &Tok) -> String {
         Tok::Ident(s) => format!("'{s}'"),
         Tok::Int(_) => "an integer".into(),
         Tok::Str(_) => "a string".into(),
+        Tok::Symbol(_) => "a Symbol literal".into(),
         Tok::Eof => "end of input".into(),
         other => {
             let s = match other {
