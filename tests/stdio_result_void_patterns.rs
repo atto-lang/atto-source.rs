@@ -19,7 +19,7 @@ fn unit_result_accepts_bare_ok_or_explicit_discard() {
     for ok in ["on Ok -> { return 42; }",
                "on Ok(_) -> { return 42; }"] {
         let binary=compile(&src(ok)).unwrap_or_else(|d|panic!("{ok}: {d}"));
-        assert!(binary.starts_with(b"\\0asm\\x01\\0\\0\\0"), "{ok}");
+        assert!(binary.starts_with(b"\0asm\x01\0\0\0"), "{ok}");
     }
 }
 
