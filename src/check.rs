@@ -3070,7 +3070,25 @@ impl<'a> FnCx<'a> {
                 }
             }
             ExprKind::Var(name) if name == "None" => {
-                return Err(type_err(pos, "None requires a contextual Option<int> type"))
+                return Err(type_err(pos, "None requires a contextual Option<T> type"))
+            }
+            ExprKind::Var(name) if matches!(name.as_str(),
+                "stdio.in" | "stdio.out" | "stdio.err") => {
+                if self.lookup("stdio").is_some() || self.lookup("process").is_some() {
+                    return Err(Diagnostic::new(pos, "E_RESERVED",
+                        "process and stdio host namespaces cannot be shadowed"));
+                }
+                if self.owner != Owner::TopLevel {
+                    return Err(Diagnostic::new(pos, "E_ISOLATION",
+                        "ambient process stdio cannot be imported inside actor/class scope"));
+                }
+                let (id, ty) = match name.as_str() {
+                    "stdio.in" => (0, Type::ChannelStr),
+                    "stdio.out" => (1, Type::WritableStr),
+                    "stdio.err" => (2, Type::WritableStr),
+                    _ => unreachable!(),
+                };
+                TE {e: TExpr::EnumVal(id), ty}
             }
             ExprKind::Var(name) => match self.lookup(name) {
                 Some(l) if l.mail.is_some() => {
