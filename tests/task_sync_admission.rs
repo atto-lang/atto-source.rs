@@ -68,7 +68,7 @@ fn fail_closed_type_effect_and_cleanup_boundaries() {
     reject("pub fnc main(): int { val x = sync task<int> { val a = 1; block { val b = 2; } return b; }; return x; }", "E_UNBOUND");
     reject("pub fnc main(): int { val x = sync task<int> { return stdio.println(42); }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return await task<int> { return 42; }; }; return x; }", "E_UNSUPPORTED");
-    reject("pub fnc main(): int { do sync task<void> { defer { } return; }; return 0; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { do sync task<void> { defer {}; return; }; return 0; }", "E_UNSUPPORTED");
 }
 #[test]
 fn independent_child_cancellation_not_silently_enabled() {
