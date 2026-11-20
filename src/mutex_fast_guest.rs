@@ -225,6 +225,18 @@ fn local(index: u32) -> TE { TE { ty: Type::Int, e: TExpr::Local(index) } }
 fn call_increment() -> TE { TE { ty: Type::Int, e: TExpr::Call(0, vec![]) } }
 
 fn lower(inc: Increment, main: Main) -> R<TProgram> {
+    if matches!(main.kind, MainKind::LazyAndZero) {
+        return Ok(TProgram {
+            funcs: vec![TFunc { name:"main".into(),params:vec![],ret:Type::Int,
+                locals:vec![],body:vec![TStmt::Return(Some(lit(0)))] }],
+            generators:vec![],main:0,imports:vec![],data:vec![],heap:false,
+            globals:vec![],actors:vec![],strings:false,guest_eh:false,
+            raise_tag:false,catch_depth:false,
+        });
+    }
+
+    // Statically checked arithmetic is relevant only after a task is driven.
+    // An unstarted lazy call may be dropped even when executing its body would overflow.
     // No panic/abort path can occur while holding the single-task guard:
     // reject even a statically-proven overflowing arithmetic operation.
     // (The emitted i64 addition still runs through the checked Wasm helper.)
@@ -235,15 +247,6 @@ fn lower(inc: Increment, main: Main) -> R<TProgram> {
     if matches!(main.kind,MainKind::TwoSequential) && once.checked_add(inc.delta).is_none() {
         return Err(error(Pos { line:1,col:1 },"E_OVERFLOW",
             "second checked acquisition would overflow before lease cleanup"));
-    }
-    if matches!(main.kind, MainKind::LazyAndZero) {
-        return Ok(TProgram {
-            funcs: vec![TFunc { name:"main".into(),params:vec![],ret:Type::Int,
-                locals:vec![],body:vec![TStmt::Return(Some(lit(0)))] }],
-            generators:vec![],main:0,imports:vec![],data:vec![],heap:false,
-            globals:vec![],actors:vec![],strings:false,guest_eh:false,
-            raise_tag:false,catch_depth:false,
-        });
     }
 
     let busy = TE { ty:Type::Bool, e:TExpr::Bin(
