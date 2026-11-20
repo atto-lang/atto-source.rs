@@ -9,6 +9,8 @@
 pub mod ast;
 /// Pure bounded typed-IR DATA send-effect closure, shared with peer frontend.
 pub mod actor_send_effect_graph;
+/// Host-only typed transactional mailbox reference; NOT connected to guest actor_send.
+pub mod actor_owned_admission;
 /// Bounded UTF-8 DATA frame candidate; NOT connected to the actor Wasm guest ABI.
 pub mod actor_string_mail;
 /// Checked candidate dedicated Wasm string-mail page plan; guest still unsupported.

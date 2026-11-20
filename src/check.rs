@@ -1859,6 +1859,36 @@ fn tn_plain(t: Type, tn: &[(String, Pos)], classes: &[String], enums: &[EnumDecl
 }
 
 /// Actors are isolated from sibling classes, enums and other actors.
+/// Detect every consuming take! in a prospective mailbox payload before
+/// the type checker mutates the sender's move ledger. This conservative
+/// preflight is necessary while ActorSend has no Result/escrow guest ABI.
+fn actor_send_has_take(payload: &Expr) -> bool {
+    let mut pending = vec![payload];
+    while let Some(expr) = pending.pop() {
+        match &expr.kind {
+            ExprKind::Ownership(OwnershipOp::Take, _, _) => return true,
+            ExprKind::Unary(_, inner) | ExprKind::Trap(inner) |
+            ExprKind::Propagate(inner) | ExprKind::Ownership(_, _, inner) |
+            ExprKind::Member(inner, _) => pending.push(inner),
+            ExprKind::Binary(_, a, b) => { pending.push(a); pending.push(b); }
+            ExprKind::Ternary(c, yes, no) => {
+                pending.push(c); pending.push(yes); pending.push(no);
+            }
+            ExprKind::Call(_, args) | ExprKind::New(_, args) |
+            ExprKind::Array(args) => pending.extend(args),
+            ExprKind::MethodCall(base, _, args) => {
+                pending.push(base);
+                pending.extend(args);
+            }
+            // Lambda bodies are already forbidden in this guest compiler.
+            // Never reclassify them as authorizing a take! transfer.
+            ExprKind::Lambda { .. } => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn actor_type_ok(g: &Globals, actor: &str, t: Type, pos: Pos) -> R<()> {
     match t {
         Type::Class(i) => Err(isolation(pos, actor, "sibling class", &g.classes[i as usize].name)),
@@ -4687,6 +4717,15 @@ impl<'a> FnCx<'a> {
                 }
                 let (payload, actor_name) = (actor.payload, actor.name.clone());
                 self.arity("ActorRef.send", 1, args.len(), pos)?;
+                // The current guest ABI has actor_send(i32, i64) -> void.
+                // It cannot distinguish accepted mail from full/closed/revoked
+                // admission and cannot refund an affine owner on failure.
+                // Scan the WHOLE payload expression before marking local moves;
+                // a nested take! must not escape via arithmetic or a helper.
+                if actor_send_has_take(&args[0]) {
+                    return Err(Diagnostic::new(args[0].pos, "E_ACTOR_TRANSFER_UNSUPPORTED",
+                        "send(take! value) needs transactional admission and recoverable ownership; the void actor_send ABI cannot commit or refund a move"));
+                }
                 let v = self.value(&args[0])?;
                 if v.ty != payload {
                     return Err(type_err(

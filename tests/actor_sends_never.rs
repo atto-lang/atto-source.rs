@@ -64,3 +64,22 @@ fn never_is_distinct_from_void_and_forged_void_payload_fails_in_checker() {
     corrupted.actors[0].sends = Some(ActorSendEffect::Payload(Type::Void));
     assert_eq!(check::check(&corrupted).unwrap_err().code, "E_ACTOR_SEND_CONTRACT");
 }
+
+#[test]
+fn consuming_take_cannot_be_sent_through_void_admission_abi() {
+    for expression in ["take! value", "(take! value) + 1", "take! value + 1"] {
+        let source = BASE.replace(
+            "return 0; }",
+            &format!("val value = 42; val worker = spawn Worker(); worker.send({expression}); return 0; }}")
+        );
+        let err = compile(&source).expect_err("no artifact without transactional ownership acknowledgement");
+        assert_eq!(err.code, "E_ACTOR_TRANSFER_UNSUPPORTED", "{expression}");
+    }
+}
+
+#[test]
+fn scalar_send_without_take_retains_existing_guest_compilation() {
+    let source = BASE.replace("return 0; }",
+        "val value = 42; val worker = spawn Worker(); worker.send(value); return 0; }");
+    assert!(compile(&source).expect("copyable scalar send remains allowed").starts_with(b"\\0asm"));
+}
