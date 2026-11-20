@@ -434,6 +434,9 @@ impl TaskScopeLockCoordinator {
         let (tasks, locks) = (&mut self.tasks, &mut self.locks);
         let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
         if task.cancel_requested || task.guest_exited { return Err(Error::CancellationPending); }
+        // No execution of a parked continuation until the trusted scheduler
+        // has actually enqueued it and acknowledged the matching grant.
+        if task.parked_lock.is_some() { return Err(Error::NotQuiescent); }
         let granted = task.unclaimed.iter().position(|(id, t)| *id == lock_id && *t == token);
         let queued = task.waiting.iter().position(|(id, t)| *id == lock_id && *t == token);
         if granted.is_none() && queued.is_none() { return Err(Error::StaleTicket); }
