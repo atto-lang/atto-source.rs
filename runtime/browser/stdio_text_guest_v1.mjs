@@ -47,6 +47,9 @@ export function createStdioTextGuestV1({getMemory,host,grant}={}) {
     const outSlot=memoryRange(out,16,8);
     if(!outSlot||!destSlot||outSlot.memory!==destSlot.memory)
       return ERR.InvalidPointer;
+    // Memory is revalidated after suspension. Never trust pre-await views.
+    if(dest < out+16 && out < dest+cap)
+      return ERR.InvalidPointer;
     if(flat.tag===0) {
       if(!bytes || bytes.length>cap)return ERR.InvalidOutcome;
       // One synchronous commit, no arbitrary guest callback between writes.
@@ -64,6 +67,11 @@ export function createStdioTextGuestV1({getMemory,host,grant}={}) {
       if(endpoint!==0 || !allowStdin)return ERR.Denied;
       if(!isI32(cap)||cap<1||cap>65536)return ERR.InvalidCapacity;
       if(!memoryRange(dest,cap,1)||!memoryRange(out,16,8))
+        return ERR.InvalidPointer;
+      // Reject overlapping result records and data *before* consuming any
+      // stdin bytes. Without this, the post-JSPI flat tag/length stores can
+      // overwrite part of an admitted line or permit a forged outcome.
+      if(dest < out+16 && out < dest+cap)
         return ERR.InvalidPointer;
       let outcome;
       try {outcome=await host.stdio.in.readch()}
