@@ -138,6 +138,48 @@ pub fnc main(): int { return 1; }"#;
         ]).unwrap_err().code, "E_STDLIB_HASH");
     }
 
+    // These are read-only, byte-identical test snapshots of the four canonical
+    // candidate sources. The SHA256 manifest is authoritative; no test fixture
+    // must ever become an implicit stdlib host fallback.
+    const CANONICAL_BOUNDS: &str = include_str!("../tests/fixtures/canonical-buffer-v1/stdlib/core/byte_bounds.atto");
+    const CANONICAL_IDENTITY: &str = include_str!("../tests/fixtures/canonical-buffer-v1/stdlib/core/identity.atto");
+    const CANONICAL_ENDIAN: &str = include_str!("../tests/fixtures/canonical-buffer-v1/stdlib/core/u32_endian.atto");
+    const CANONICAL_BUFFER: &str = include_str!("../tests/fixtures/canonical-buffer-v1/stdlib/std/buffer.atto");
+
+    fn authentic_sources<'a>() -> [(&'a str, &'a str); 4] {
+        [
+            ("stdlib/core/byte_bounds.atto", CANONICAL_BOUNDS),
+            ("stdlib/core/identity.atto", CANONICAL_IDENTITY),
+            ("stdlib/core/u32_endian.atto", CANONICAL_ENDIAN),
+            ("stdlib/std/buffer.atto", CANONICAL_BUFFER),
+        ]
+    }
+
+    #[test]
+    fn original_canonical_source_bytes_are_accepted_only_for_identity_admission() {
+        assert!(verify_candidate_sources(authentic_sources()).is_ok());
+        // Even after verifying all four sources, the compiler may not emit
+        // a guest until it actually parses and links the canonical class.
+        assert_eq!(crate::compile(EXAMPLE).unwrap_err().code, "E_STDLIB_UNLINKED");
+    }
+
+    #[test]
+    fn a_changed_or_reordered_bundle_cannot_override_a_stdlib_source() {
+        let mut sources = authentic_sources();
+        let tampered = CANONICAL_BUFFER.replace("write_u32_le", "write_u32_be");
+        sources[3].1 = &tampered;
+        assert_eq!(verify_candidate_sources(sources).unwrap_err().code, "E_STDLIB_HASH");
+        let missing = authentic_sources();
+        assert_eq!(verify_candidate_sources(missing[..3].iter().copied())
+            .unwrap_err().code, "E_STDLIB_SOURCE");
+        let mut duplicate = authentic_sources();
+        duplicate[3] = duplicate[0];
+        assert_eq!(verify_candidate_sources(duplicate).unwrap_err().code, "E_STDLIB_SOURCE");
+        let mut reordered = authentic_sources();
+        reordered.reverse();
+        assert!(verify_candidate_sources(reordered).is_ok());
+    }
+
     #[test]
     fn source_manifest_is_complete_exactly_four_unique_byte_pins() {
         assert_eq!(CANDIDATE_SOURCES.len(), 4);
