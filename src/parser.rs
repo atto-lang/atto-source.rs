@@ -3165,7 +3165,7 @@ impl Parser {
             // but an unparenthesized mixed chain has no defined ordering.
             let mut group_depth = 0usize;
             for token in &self.toks[rhs_start..self.i] {
-                match token.tok {
+                match &token.tok {
                     Tok::LParen | Tok::LBracket | Tok::LBrace => group_depth += 1,
                     Tok::RParen | Tok::RBracket | Tok::RBrace => {
                         group_depth = group_depth.saturating_sub(1);
