@@ -51,6 +51,21 @@ try {
       guest_heap_words:words.map(String),panic_code:0
     }));
   }
+  // Runtime checked overflow must trap from real generated guest Wasm.
+  const overflowSource=join(here,'fixtures/pass/list-pattern-overflow-panic.atto');
+  const overflowOutput=join(root,'overflow-panic.wasm');
+  const overflowCompiler=compile(overflowSource,overflowOutput);
+  assert.equal(overflowCompiler.error,undefined,'overflow fixture compiler error');
+  assert.equal(overflowCompiler.status,0,'overflow source must compile: '+overflowCompiler.stderr);
+  assert.ok(existsSync(overflowOutput));
+  const overflowWasm=readFileSync(overflowOutput);
+  assert.ok(WebAssembly.validate(overflowWasm),'overflow Wasm is invalid');
+  const overflowModule=new WebAssembly.Module(overflowWasm);
+  assert.deepEqual(WebAssembly.Module.imports(overflowModule),[],'overflow cannot use host extractor');
+  const overflowGuest=new WebAssembly.Instance(overflowModule,{});
+  assert.throws(()=>overflowGuest.exports.main(),WebAssembly.RuntimeError,
+    'checked addition must trap rather than wrap or return');
+  assert.equal(overflowGuest.exports.panic_code.value,1,'expected checked i64 overflow panic code');
   const base=readFileSync(join(here,'fixtures/pass/list-pattern-rest-60.atto'),'utf8');
   const negatives=[
     ['duplicate-binding',base.replace('is int as val b','is int as val a'),'E_PATTERN_BINDING'],
@@ -72,5 +87,5 @@ try {
     assert.ok(result.stderr.includes(diagnostic),name+': wrong diagnostic: '+result.stderr);
     assert.equal(existsSync(output),false,name+': compiler left an artifact behind');
   }
-  console.log('LIST_PATTERN_COMPILED_GUEST=PASS positives=4 negatives=7');
+  console.log('LIST_PATTERN_COMPILED_GUEST=PASS positives=4 overflow_panics=1 negatives=7');
 }finally {rmSync(root,{recursive:true,force:true});}
