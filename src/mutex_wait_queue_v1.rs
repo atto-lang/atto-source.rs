@@ -44,6 +44,7 @@ pub(crate) enum Error {
     DuplicateTask,
     NotQuiescent,
     CleanupFailed,
+    AdmissionBusy,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cancellation {
@@ -531,6 +532,103 @@ impl TaskScopeLockCoordinator {
         self.tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?
             .physically_retired = true;
         Ok(())
+    }
+}
+
+
+/// Internal, host-side scheduling adapter. It serializes the reference kernel
+/// without ever parking a scheduler carrier: a busy arbiter returns Busy and
+/// its caller must reschedule. NOT an Atto guest API, scheduler implementation,
+/// or a substitute for verified guest-exit and callback-drain evidence.
+struct HostTaskLockKernel {
+    core: std::sync::Mutex<TaskScopeLockCoordinator>,
+    scope_id: u64,
+}
+static NEXT_KERNEL_SCOPE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+impl HostTaskLockKernel {
+    /// The trusted host must supply its authenticated TenantVM domain.
+    fn new(domain: Domain) -> Result<Self, Error> {
+        if domain.tenant == 0 || domain.actor == 0 || domain.incarnation == 0 {
+            return Err(Error::ForeignDomain);
+        }
+        let scope_id = NEXT_KERNEL_SCOPE.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |n| n.checked_add(1),
+        ).map_err(|_| Error::Exhausted)?;
+        Ok(Self {
+            core: std::sync::Mutex::new(TaskScopeLockCoordinator::new(domain)),
+            scope_id,
+        })
+    }
+    fn try_with_core<R>(
+        &self, f: impl FnOnce(&mut TaskScopeLockCoordinator) -> Result<R, Error>,
+    ) -> Result<R, Error> {
+        let mut guard = match self.core.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::WouldBlock) => return Err(Error::AdmissionBusy),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(Error::CleanupFailed),
+        };
+        f(&mut guard)
+    }
+    fn issue(&self, parent: Option<Continuation>) -> Result<Continuation, Error> {
+        self.try_with_core(|core| {
+            // Never mint a raw task id from guest or actor source input. The
+            // complete continuation is a host-issued, scope-bound capability.
+            let next = u64::try_from(core.tasks.len())
+                .map_err(|_| Error::Exhausted)?
+                .checked_add(1).ok_or(Error::Exhausted)?;
+            if next > TaskScopeLockCoordinator::MAX_TASKS as u64 {
+                return Err(Error::Exhausted);
+            }
+            let segment = self.scope_id.checked_mul(1024)
+                .and_then(|n| n.checked_add(next))
+                .ok_or(Error::Exhausted)?;
+            let who = Continuation {
+                domain: core.domain,
+                logical_task: next,
+                segment,
+            };
+            core.register(who, parent)?;
+            Ok(who)
+        })
+    }
+    fn add_mutex(&self, max_waiters: usize) -> Result<u64, Error> {
+        self.try_with_core(|core| {
+            let lock_id = u64::try_from(core.locks.len())
+                .map_err(|_| Error::Exhausted)?
+                .checked_add(1).ok_or(Error::Exhausted)?;
+            let queue = WaitQueue::new(core.domain, self.scope_id, max_waiters)?;
+            core.add_lock(lock_id, queue)?;
+            Ok(lock_id)
+        })
+    }
+    fn acquire(&self, who: Continuation, lock_id: u64) -> Result<Admission, Error> {
+        self.try_with_core(|core| core.acquire(who, lock_id))
+    }
+    fn claim(&self, who: Continuation, lock_id: u64, ticket: Ticket)
+        -> Result<(), Error> {
+        self.try_with_core(|core| core.enter(who, lock_id, ticket))
+    }
+    fn cancel(&self, who: Continuation) -> Result<(), Error> {
+        self.try_with_core(|core| core.cancel_tree(who))
+    }
+    /// This must only be invoked by a scheduler after its actual guest code
+    /// has stopped touching leased memory. It is NOT an untrusted guest call.
+    fn trusted_exit(&self, who: Continuation) -> Result<Vec<u64>, Error> {
+        self.try_with_core(|core| core.guest_exited_at_safe_point(who))
+    }
+    /// The future scheduler must prove all outstanding callbacks drained;
+    /// a call to cancel() is not such evidence.
+    fn trusted_notifications_drained(&self, who: Continuation) -> Result<(), Error> {
+        self.try_with_core(|core| core.notification_drain_ack(who))
+    }
+    fn try_retire(&self, who: Continuation) -> Result<(), Error> {
+        self.try_with_core(|core| core.certify_physical_retirement(who))
+    }
+    fn terminal(&self, who: Continuation) -> Result<Option<TaskExitKind>, Error> {
+        self.try_with_core(|core| core.exit_kind(who))
     }
 }
 
