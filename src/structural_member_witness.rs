@@ -195,6 +195,30 @@ fn check_declarations(
     {
         return Err(MemberError::Shape(ShapeError::TooManyFields));
     }
+    // Even a method-only interface witness cannot accept malformed concrete
+    // layout metadata. Otherwise no requested field would invoke the lower-
+    // level shape validator and an unchecked receiver could be admitted.
+    let mut field_names = BTreeSet::new();
+    let mut offsets = BTreeSet::new();
+    for field in &actual.shape.fields {
+        if field.name.is_empty() || !field_names.insert(field.name.as_str()) {
+            return Err(MemberError::Shape(ShapeError::DuplicateField));
+        }
+        if actual.shape.kind == SourceKind::Map {
+            if field.actual_offset.is_some() {
+                return Err(MemberError::Shape(ShapeError::UntrustedLayout));
+            }
+        } else {
+            let offset = field.actual_offset.ok_or(
+                MemberError::Shape(ShapeError::UntrustedLayout))?;
+            if !offsets.insert(offset) {
+                return Err(MemberError::Shape(ShapeError::UntrustedLayout));
+            }
+        }
+    }
+    if actual.shape.kind == SourceKind::Tuple && !actual.shape.fields.is_empty() {
+        return Err(MemberError::InvalidDeclaration);
+    }
     if required.kind == RequiredKind::Interface && !required.fields.is_empty() {
         return Err(MemberError::InvalidDeclaration);
     }
@@ -322,6 +346,14 @@ pub fn prove_structural_members(
     }
     witnesses.sort_by(|a,b| a.name.cmp(&b.name)
         .then(a.dispatch_slot.cmp(&b.dispatch_slot)));
+    // One concrete source dispatch slot cannot secretly implement two
+    // distinct required callable signatures without a verified alias thunk.
+    let mut selected_slots = BTreeSet::new();
+    for witness in &witnesses {
+        if !selected_slots.insert(witness.dispatch_slot) {
+            return Err(MemberError::UnverifiedDispatch);
+        }
+    }
     Ok(StructuralMemberWitness {
         tenant_vm_id: actual.tenant_vm_id,
         source_nominal_id: actual.shape.source_nominal_id,
