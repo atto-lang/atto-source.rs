@@ -4,12 +4,16 @@ on:
   pull_request:
     paths:
       - 'src/actor_string_mail.rs'
+      - 'tests/browser/actor-string-bridge.mjs'
+      - 'tests/browser/actor-string-bridge.test.mjs'
       - 'src/lib.rs'
       - 'docs/typed-actor-message-contracts.md'
       - '.github/workflows/actor-string-mail-codec.yml'
   push:
     paths:
       - 'src/actor_string_mail.rs'
+      - 'tests/browser/actor-string-bridge.mjs'
+      - 'tests/browser/actor-string-bridge.test.mjs'
       - 'src/lib.rs'
       - 'docs/typed-actor-message-contracts.md'
       - '.github/workflows/actor-string-mail-codec.yml'
@@ -36,3 +40,18 @@ jobs:
         run: |
           grep -q 'not a guest messaging implementation' src/actor_string_mail.rs
           grep -q 'NOT_EXECUTED' docs/typed-actor-message-contracts.md
+
+  host-string-bridge-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 pinned
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 pinned
+        with:
+          node-version: '22'
+      - name: Exercise bounded Wasm-memory DATA bridge (host-only, NOT guest parity)
+        run: |
+          node --version
+          node --test tests/browser/actor-string-bridge.test.mjs
