@@ -14,7 +14,8 @@
 //! This is a typed, deliberately bounded source profile, not textual macro
 //! substitution and not a claim of scheduler/async ABI parity.
 
-use crate::ast::{BinOp, Type};
+use crate::ast::Type;
+use crate::mutex_lease_hir_v1::CheckedReadyLease;
 use crate::check::{Import, TE, TExpr, TFunc, TProgram, TStmt};
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
@@ -224,8 +225,6 @@ fn parse_main(p: &mut Cursor<'_>, increment: &str) -> R<Main> {
 }
 
 fn lit(v: i64) -> TE { TE { ty: Type::Int, e: TExpr::I64(v) } }
-fn global(index: u32) -> TE { TE { ty: Type::Int, e: TExpr::GlobalGet(index) } }
-fn local(index: u32) -> TE { TE { ty: Type::Int, e: TExpr::Local(index) } }
 fn call_increment() -> TE { TE { ty: Type::Int, e: TExpr::Call(0, vec![]) } }
 
 fn lower(inc: Increment, main: Main) -> R<TProgram> {
@@ -246,34 +245,14 @@ fn lower(inc: Increment, main: Main) -> R<TProgram> {
         });
     }
 
-    // Statically checked arithmetic is relevant only after a task is driven.
-    // An unstarted lazy call may be dropped even when executing its body would overflow.
-    // No panic/abort path can occur while holding the single-task guard:
-    // reject even a statically-proven overflowing arithmetic operation.
-    // (The emitted i64 addition still runs through the checked Wasm helper.)
-    let once = main.initial.checked_add(inc.delta).ok_or_else(|| error(
-        Pos { line:1,col:1 },"E_OVERFLOW",
-        "constant guarded mutation would overflow; no unwind cleanup on this profile"
-    ))?;
-    if matches!(main.kind,MainKind::TwoSequential) && once.checked_add(inc.delta).is_none() {
-        return Err(error(Pos { line:1,col:1 },"E_OVERFLOW",
-            "second checked acquisition would overflow before lease cleanup"));
-    }
-
-    let busy = TE { ty:Type::Bool, e:TExpr::Bin(
-        BinOp::Ne,Box::new(global(1)),Box::new(lit(0))) };
-    let update = TE { ty:Type::Int, e:TExpr::Bin(
-        BinOp::Add,Box::new(global(0)),Box::new(lit(inc.delta))) };
-    let increment_body = vec![
-        // Per-instance runtime lock flag; this is a checked single-task
-        // lease, not a shareable or transportable mutex handle.
-        TStmt::If(vec![(busy,vec![TStmt::Unreachable])],None),
-        TStmt::GlobalSet(1,lit(1)),
-        TStmt::GlobalSet(0,update),
-        TStmt::Set(0,global(0)),
-        TStmt::GlobalSet(1,lit(0)), // cleanup always precedes return
-        TStmt::Return(Some(local(0))),
-    ];
+    // Construct one checked HIR proof for the unique, task-local Mutex<int>
+    // owner and its borrowed affine lease. The proof rejects any possible
+    // guarded overflow before we emit the ordinary typed Wasm instructions.
+    // The parser has already proved no aliases, FFI, exceptions, suspension
+    // in the critical body, unknown mutations or concurrently runnable task.
+    let acquisitions = if matches!(main.kind, MainKind::TwoSequential) { 2 } else { 1 };
+    let checked_lease = CheckedReadyLease::prove(main.initial, inc.delta, acquisitions)?;
+    let increment_body = checked_lease.lower_one_guard();
     let (imports,main_tail) = match main.kind {
         MainKind::ReturnObserved => (vec![],vec![TStmt::Return(Some(call_increment()))]),
         MainKind::PrintAndZero => (
