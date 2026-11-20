@@ -104,6 +104,7 @@ const RESERVED: &[&str] = &[
     "spawn",
     "stop",
     "rt",
+    "unsafe",
     "await",
     "nb",
     "cb",
@@ -614,6 +615,9 @@ impl Parser {
     // ------------------------------------------------------------ top level
 
     pub fn parse_program(&mut self) -> R<Program> {
+        // Any direct Parser entry is also a guest-context boundary.
+        // G1 structural syntax is available only through unsafe_admission::analyze.
+        crate::unsafe_admission::reject_unlowered(&self.toks)?;
         let mut prog = Program::default();
         let mut decls = 0usize;
         while *self.peek() != Tok::Eof {
