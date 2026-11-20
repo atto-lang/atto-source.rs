@@ -500,6 +500,9 @@ pub enum ExprKind {
     Str(String),
     Var(String),
     Unary(UnOp, Box<Expr>),
+    /// Caller-local execution, never a spawned task or Future.
+    /// Only empty and single scalar-returning bodies are admitted.
+    InlineTask { declared_type: Option<Type>, value: Option<Box<Expr>> },
     /// Unary call-site trap: evaluates its operand once and wraps only
     /// an ordinary guest throw into None, preserving all successful values.
     Trap(Box<Expr>),

@@ -2250,10 +2250,14 @@ impl Parser {
                 Ok(Stmt::Continue(pos))
             }
             Some("match") => self.parse_match(false),
-            Some("do") if self.word_at(1) == Some("task")
-                || (self.word_at(1) == Some("sync") && self.word_at(2) == Some("task")) => {
-                Err(unsupported(pos, "supervised task statements"))
+            Some("do") if self.word_at(1) == Some("sync") && self.word_at(2) == Some("task") => {
+                self.advance(); // discard the inline result without spawning
+                let e = self.parse_primary()?;
+                self.terminator()?;
+                Ok(Stmt::Expr(e))
             }
+            Some("do") if self.word_at(1) == Some("task") =>
+                Err(unsupported(pos, "supervised task statements")),
             Some("do") if self.word_at(1) == Some("match") => {
                 self.advance();
                 self.parse_match(true)
@@ -3771,6 +3775,36 @@ impl Parser {
         Ok(ExprKind::Array(items))
     }
 
+    /// Executable subset: an empty lexical body or one scalar return.
+    /// More complex bodies need lexical resource and suspension lowering.
+    fn parse_inline_task(&mut self) -> R<ExprKind> {
+        let pos = self.pos();
+        self.expect_word("sync")?;
+        self.expect_word("task")?;
+        let declared_type = if self.eat(&Tok::Lt) {
+            let t = self.parse_type()?;
+            self.expect(Tok::Gt, "'>' after sync task type")?;
+            Some(t)
+        } else { None };
+        self.expect(Tok::LBrace, "'{' after sync task")?;
+        let value = if self.eat(&Tok::RBrace) {
+            None
+        } else if self.eat_word("return") {
+            if self.eat(&Tok::Semi) {
+                self.expect(Tok::RBrace, "'}' after sync task")?;
+                None
+            } else {
+                let v = self.parse_expr()?;
+                self.terminator()?;
+                self.expect(Tok::RBrace, "'}' after sync task")?;
+                Some(Box::new(v))
+            }
+        } else {
+            return Err(unsupported(pos, "sync task statements requiring cleanup or suspension"));
+        };
+        Ok(ExprKind::InlineTask { declared_type, value })
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -3852,6 +3886,7 @@ impl Parser {
                 "task" if matches!(self.peek_at(1), Tok::Lt | Tok::LBrace) => {
                     return Err(unsupported(pos, "typed or inferred task expressions"));
                 }
+                "sync" if self.word_at(1) == Some("task") => self.parse_inline_task()?,
                 "await" | "sync" | "nb" | "super" | "match" | "maybe" | "select" | "readch" | "writech" | "obj" | "arr" | "typeof" => {
                     return Err(unsupported(pos, &format!("'{s}' expressions")))
                 }

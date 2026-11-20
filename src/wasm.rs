@@ -726,6 +726,10 @@ impl Emit<'_> {
                 }
             }
             TExpr::Bool(b) => self.i32c(*b as i32),
+            TExpr::InlineTask(body) => {
+                // This is caller-local evaluation, not task spawn or join.
+                if let Some(v) = body { self.expr(v); }
+            }
             TExpr::Local(slot) => {
                 self.op(0x20);
                 uleb(&mut self.code, *slot as u64);

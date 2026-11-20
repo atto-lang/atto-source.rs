@@ -132,6 +132,8 @@ pub enum TExpr {
         newline: bool,
     },
     Local(u32),
+    /// Inline caller continuation. No Future, TaskSpawn or scheduler admission.
+    InlineTask(Option<Box<TE>>),
     Neg(Box<TE>),
     Not(Box<TE>),
     /// operand type is the type of `l`
@@ -589,6 +591,20 @@ fn const_init(e: &Expr) -> bool {
         ExprKind::Binary(_, a, b) => const_init(a) && const_init(b),
         ExprKind::Ternary(c, a, b) => const_init(c) && const_init(a) && const_init(b),
         ExprKind::Member(base, _) => matches!(base.kind, ExprKind::Var(_)),
+        _ => false,
+    }
+}
+
+/// Fail-closed source allowlist: a non-susp scalar inline result may read
+/// caller locals, but never use I/O, ownership, cleanup, calls or child tasks.
+fn inline_task_scalar_expr(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) |
+        ExprKind::Str(_) | ExprKind::Var(_) => true,
+        ExprKind::Unary(_, v) => inline_task_scalar_expr(v),
+        ExprKind::Binary(_, a, b) => inline_task_scalar_expr(a) && inline_task_scalar_expr(b),
+        ExprKind::Ternary(c, a, b) => inline_task_scalar_expr(c) &&
+            inline_task_scalar_expr(a) && inline_task_scalar_expr(b),
         _ => false,
     }
 }
@@ -1558,6 +1574,8 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
         | TExpr::CollectionAlloc(_)
         | TExpr::Spawn(_) => EscapeEffects::default(),
+        TExpr::InlineTask(None) => EscapeEffects::default(),
+        TExpr::InlineTask(Some(v)) => expr_escape_effects(v, effects),
         TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
         | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
@@ -1846,6 +1864,8 @@ fn ctor_init_expr(e: &Expr, flow: &ConstructorInitFlow, fields: &[FieldInfo]) ->
             ctor_init_expr(yes, flow, fields)?;
             ctor_init_expr(no, flow, fields)
         }
+        ExprKind::InlineTask { value: Some(v), .. } => ctor_init_expr(v, flow, fields),
+        ExprKind::InlineTask { value: None, .. } => Ok(()),
         ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) => {
             for arg in args { ctor_init_expr(arg, flow, fields)?; }
             Ok(())
@@ -2076,6 +2096,8 @@ fn constructor_self_expr(e: &Expr, captured: bool) -> R<()> {
             constructor_self_expr(yes, captured)?;
             constructor_self_expr(no, captured)
         }
+        ExprKind::InlineTask { value: Some(v), .. } => constructor_self_expr(v, captured),
+        ExprKind::InlineTask { value: None, .. } => Ok(()),
         ExprKind::Call(_, args) | ExprKind::New(_, args) | ExprKind::Array(args) => {
             for arg in args { constructor_self_expr(arg, captured)?; }
             Ok(())
@@ -2253,6 +2275,8 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
     match &value.e {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
         TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
+        TExpr::InlineTask(None) => true,
+        TExpr::InlineTask(Some(v)) => pure_expr(v, pure_indices),
         TExpr::IntToFloat(a) | TExpr::FNeg(a) |
         TExpr::Neg(a) | TExpr::Not(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
@@ -2364,6 +2388,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         return true;
     }
     match &e.e {
+        TExpr::InlineTask(Some(v)) => any_in(v, f),
+        TExpr::InlineTask(None) => false,
         TExpr::Trap { value, .. } => any_in(value, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
@@ -3750,6 +3776,24 @@ impl<'a> FnCx<'a> {
 
     fn expr(&mut self, e: &Expr) -> R<TE> {
         match &e.kind {
+            ExprKind::InlineTask { declared_type, value } => {
+                if value.as_ref().is_some_and(|v| !inline_task_scalar_expr(v)) {
+                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+                        "inline task requires proven non-susp scalar expressions; calls and cleanup are unsupported"));
+                }
+                let result = value.as_ref().map(|v| self.expr(v)).transpose()?;
+                let actual = result.as_ref().map_or(Type::Void, |v| v.ty);
+                if !matches!(actual, Type::Int | Type::Bool | Type::Float | Type::Str | Type::Void) {
+                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED_TYPE", "inline task requires scalar or void result"));
+                }
+                if let Some(t) = declared_type {
+                    let required = self.resolve(*t, e.pos)?;
+                    if required != actual {
+                        return Err(type_err(e.pos, format!("sync task declares {} but returns {}", self.tn(required), self.tn(actual))));
+                    }
+                }
+                Ok(TE { e: TExpr::InlineTask(result.map(Box::new)), ty: actual })
+            }
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
                 e: TExpr::I64(i64::MIN),
                 ty: Type::Int,
