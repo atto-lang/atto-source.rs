@@ -1176,11 +1176,10 @@ fn check_lowered(p: &Program) -> R<TProgram> {
             }
         }
         if let Some(declared) = a.sends {
-            let output = res(declared)?;
-            if output == Type::Void {
-                return Err(Diagnostic::new(a.pos, "E_ACTOR_SEND_CONTRACT",
-                    "'sends void' is not an application payload contract"));
-            }
+            // Type::Void is internal to the sends header: after the parser
+            // rejected "sends void", it represents "sends never". The later
+            // typed-IR effect audit rejects every outbound Send<T> against it.
+            let _outbound = res(declared)?;
         }
         actors.push(ActorInfo {
             name: a.name.clone(),
