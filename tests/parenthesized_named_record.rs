@@ -229,7 +229,7 @@ fn format_grammar_does_not_reinterpret_call_argument_binders() {
         "fnc f(int a):int {return a;} pub fnc main():int {return f(a=1);}",
         "fnc f(int a):int {return a;} pub fnc main():int {return f(a:1);}",
         "fnc f(int a):int {return a;} pub fnc main():int {return f(...(a=1));}",
-        "define class A as A(int a) {} method get():int {return 42;} end pub fnc main():int {return new A(a=1).get();}",
+        "pub fnc main():int {stdio.println(value=42);return 0;}",
     ];
     for src in cases {
         rejected(src, "E_UNSUPPORTED");
