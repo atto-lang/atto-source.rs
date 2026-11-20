@@ -341,4 +341,35 @@ mod tests {
         assert_eq!(parse("pub fnc main(): int { unsafe { val x = (42]; } return 42; }")
                    .unwrap_err().code, "E_UNSAFE_SYNTAX");
     }
+
+    #[test]
+    fn direct_production_parser_entry_also_denies_unsafe_guest() {
+        let toks = lexer::lex("pub fnc main(): int { unsafe { } return 42; }").unwrap();
+        let mut parser = crate::parser::Parser::new(toks);
+        assert_eq!(parser.parse_program().unwrap_err().code, "E_UNSAFE_DOMAIN");
+    }
+
+    #[test]
+    fn root_unsafe_source_cannot_invoke_import_loader() {
+        use std::cell::Cell;
+        use std::path::Path;
+        let invoked = Cell::new(0usize);
+        let src = "import f from \"./mod.atto\"; pub fnc main(): int { unsafe { } return f(); }";
+        let err = crate::compile_with_imports(src, Path::new("main.atto"), |_path| {
+            invoked.set(invoked.get() + 1);
+            Ok("pub fnc f(): int { return 42; }".to_owned())
+        }).expect_err("root unsafe should fail before imported source is loaded");
+        assert_eq!(err.code, "E_UNSAFE_DOMAIN");
+        assert_eq!(invoked.get(), 0);
+    }
+
+    #[test]
+    fn imported_unsafe_source_is_denied_before_token_rewriting() {
+        use std::path::Path;
+        let src = "import f from \"./mod.atto\"; pub fnc main(): int { return f(); }";
+        let err = crate::compile_with_imports(src, Path::new("main.atto"), |_path| {
+            Ok("pub fnc f(): int { unsafe { } return 42; }".to_owned())
+        }).expect_err("unsafe imported module cannot be executed");
+        assert_eq!(err.code, "E_UNSAFE_DOMAIN");
+    }
 }
