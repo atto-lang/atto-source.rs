@@ -423,6 +423,50 @@ fnc __actor_link(int a, int b): int {
   return a;
 }
 
+// Atomic preflight for the canonical 3-stage actor-Channel-actor DATA graph.
+// The compiler evaluates each lexical stage once and supplies source, channel,
+// sink in DATA order for both pipe and rpipe. No actor/channel route is
+// published until ALL stages have passed admission checks. This is still a
+// provisional single-guest-memory trap path; checked PipeHandle setup,
+// cancellation leases, TenantVM generations and true rendezvous come later.
+fnc __actor_channel_actor_atomic(int src, int ch, int dst): int {
+  if src == 0 then __panic(10); fi
+  if ch == 0 then __panic(10); fi
+  if dst == 0 then __panic(10); fi
+  if src == dst then __panic(10); fi
+  val cap = __load(ch, 0);
+  if cap < 1 then __panic(10); fi
+  if cap > 16 then __panic(10); fi
+  if __load(ch, 32) != 0 then __panic(10); fi
+  if __load(__load(src, 0), 32) != 0 then __panic(10); fi
+  if __load(__load(dst, 0), 32) != 0 then __panic(10); fi
+  if __load(src, 8) != 0 then __panic(10); fi
+  if __load(dst, 48) != 0 then __panic(10); fi
+  if __load(ch, 56) != 0 then __panic(10); fi
+  if __load(ch, 64) != 0 then __panic(10); fi
+  // This provisional triple cannot safely extend an already linked
+  // downstream sink graph; reject rather than form a hidden cycle.
+  if __load(dst, 8) != 0 then __panic(10); fi
+  // The only publication point is AFTER the full preflight. The cooperative
+  // channel-to-mailbox bridge starts after all owners are installed.
+  __store(ch, 56, src);
+  __store(src, 8, ch);
+  __store(src, 24, 1);
+  __store(ch, 64, dst);
+  __store(dst, 48, ch);
+  val bridge = task {
+    loop do
+      val item = await __chan_recv_opt(ch);
+      if item == 0 then
+        __actor_stop(dst);
+        return 0;
+      fi
+      await __mail_send_wait(dst, __load(item, 0));
+    done
+  };
+  return ch;
+}
+
 // Checked single-producer/single-consumer attachment for a *bounded* channel.
 // No suspension takes place between validation and publication. Each channel
 // belongs to one actor pipe; ambient userland channel sharing is NOT a bridge.
