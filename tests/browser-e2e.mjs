@@ -174,6 +174,29 @@ try{
     /E_UNSUPPORTED/);
   console.log('PASS browser: removed ^^ rejects in async source');
 
+  // Actual .atto compiler -> guest Wasm, not a host-side graph simulation.
+  // These are v2 LEGACY actor-only pipes; they do not establish typed
+  // Channel/Stream/PipeHandle or authenticated TenantVM parity.
+  for (const [fixture, spelling] of [
+    ['207-v2-actor-pipe-forward.atto', 'pipe'],
+    ['208-v2-actor-rpipe-reverse.atto', 'rpipe'],
+  ]) {
+    const guest = await readFile(new URL('./fixtures/pass/' + fixture, import.meta.url), 'utf8');
+    const stdout = await run(guest, 'main() -> 42');
+    assert.match(stdout, /^42\nmain\(\) -> 42$/,
+      spelling + ' must deliver one ordered DATA item into compiled Atto receive');
+    console.log('PASS browser: ' + spelling + ' actor guest DATA edge delivered 42');
+  }
+  for (const [fixture, expected] of [
+    ['208-v2-actor-rpipe-direction-mix.atto', 'E_PIPE_DIRECTION'],
+    ['209-v2-actor-pipe-missing-source.atto', 'E_TYPE'],
+    ['210-v2-actor-rpipe-type-mismatch.atto', 'E_TYPE'],
+  ]) {
+    const rejected = await readFile(new URL('./fixtures/fail/' + fixture, import.meta.url), 'utf8');
+    assert.match(await run(rejected, expected), new RegExp(expected));
+    console.log('PASS browser: denied invalid actor graph ' + fixture);
+  }
+
   // Real compiler -> Wasm guest: a second same-direction actor connection
   // must trap before publishing any cycle (not hang the actor-link walk).
   // The v2 actor-only runtime remains experimental and lacks checked handles.
