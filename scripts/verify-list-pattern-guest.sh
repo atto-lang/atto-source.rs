@@ -37,23 +37,40 @@ if [[ -n "$expected_tree" && "$actual_tree" != "$expected_tree" ]]; then
   printf 'SOURCE_TREE_MISMATCH expected=%s actual=%s\n' "$expected_tree" "$actual_tree" >&2
   exit 2
 fi
-if [[ -n "$(git status --porcelain)" ]]; then
+# Never embed Git commands in [[ $(...) ]] conditions: the conditional
+# can mask a failing command and accidentally admit a dirty/incomplete tree.
+status_output="$(git status --porcelain --untracked-files=all)" || {
+  echo 'SOURCE_STATUS_CHECK_FAILED: cannot establish a clean checkout' >&2
+  exit 2
+}
+if [[ -n "$status_output" ]]; then
   echo 'SOURCE_TREE_DIRTY: verification requires a clean checkout' >&2
   exit 2
 fi
 # Ignored in-tree inputs are invisible to git status but could influence a
 # Cargo build (e.g. an ignored .cargo/config.toml, generated source, or target/).
 # Require a genuinely fresh checkout for an admissible executable proof.
-if [[ -n "$(git clean -ndx)" ]]; then
+clean_preview="$(git clean -ndx)" || {
+  echo 'SOURCE_CLEAN_CHECK_FAILED: cannot establish absence of ignored inputs' >&2
+  exit 2
+}
+if [[ -n "$clean_preview" ]]; then
   echo 'SOURCE_EXTRA_IGNORED_PATHS: fresh checkout required (git clean -ndx lists extra files)' >&2
   exit 2
 fi
-# Git-tree object identity does not attest to unmaterialized gitlink contents.
-# This narrow proof path does not fetch/validate submodule repositories.
-if git ls-tree -r HEAD | grep -E '^160000 commit ' >/dev/null; then
-  echo 'SOURCE_SUBMODULE_UNVERIFIED: gitlinks require a separate pinned proof' >&2
+# Git-tree identity does not attest to unmaterialized gitlink contents.
+# Read the complete listing and check Git's exit status, with no grep/PATH
+# dependency; a failed or missing grep must never silently skip this check.
+tree_entries="$(git ls-tree -r HEAD)" || {
+  echo 'SOURCE_GITLINK_CHECK_FAILED: cannot enumerate tracked entries' >&2
   exit 2
-fi
+}
+while IFS= read -r tree_entry; do
+  if [[ "$tree_entry" == "160000 commit "* ]]; then
+    echo 'SOURCE_SUBMODULE_UNVERIFIED: gitlinks require a separate pinned proof' >&2
+    exit 2
+  fi
+done <<< "$tree_entries"
 
 printf 'VERIFY_MODE=%s\nEXPECTED_SOURCE_HEAD=%s\nCHECKOUT_HEAD=%s\nSOURCE_TREE=%s\n' \
   "$mode" "$ATTO_EXPECT_HEAD" "$actual_head" "$actual_tree"
