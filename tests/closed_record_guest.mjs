@@ -298,6 +298,64 @@ visit_record_orders([0,1,2,3],0,order=>{
  const source='pub fnc main(): int { let Record r={'+parts.join(',')+'}; return r.a+r["b"]+r.c+r["d"]; }';
  positives.push([source,42n,'']);
 });
+// Audit parity: source-field permutation cannot change a named Record's
+// canonical shape, source value evaluation order, or emitted guest behavior.
+visit_record_orders([0,1,2,3],0,order=>{
+ const parts=order.map(i=>orderedFields[i][0]+'='+orderedFields[i][1]);
+ const source='pub fnc main(): int { let r=('+parts.join(',')+'); return r.a+r.b+r.c+r.d; }';
+ positives.push([source,42n,'']);
+});
+positives.push([
+ 'pub fnc main():int {let r=(Foo=40,foo=2);return r.Foo+r.foo;}',42n,''
+]);
+positives.push([
+ 'pub fnc main():int {let r=(café=40,cafe=2);return r.café+r.cafe;}',42n,''
+]);
+positives.push([
+ 'pub fnc main():int {let r=(f0=1,f1=1,f2=1,f3=1,f4=1,f5=1,f6=1,f7=35);return r.f0+r.f1+r.f2+r.f3+r.f4+r.f5+r.f6+r.f7;}',42n,''
+]);
+positives.push([
+ 'pub fnc main():int {return 3>=2 ? 42 : 0;}',42n,''
+]);
+for(const literal of [
+ '(foo=1,foo=2)',
+ '(café=1,café=2)',
+ '{foo:1,"foo":2}',
+ '{"foo":1,foo:2}',
+ '{"foo" => 1,"foo" => 2}',
+ '{1 => true,1 => false}',
+]){
+ negatives.push(['pub fnc main():int {let r='+literal+';return 0;}','E_DUPLICATE']);
+}
+for(const literal of [
+ '(foo=1,bar)',
+ '(foo=1,bar==2)',
+ '(foo=1,if=2)',
+ '(foo=1,bar:2)',
+ '(foo=1,"bar"=2)',
+ '(foo=1,bar=2,3)',
+]){
+ negatives.push(['pub fnc main():int {let r='+literal+';return 0;}','E_LITERAL_KIND']);
+}
+negatives.push([
+ 'pub fnc main():int {let r=(__atto_closed_record_shape_0=42);return 0;}', 'E_RESERVED'
+]);
+negatives.push([
+ 'pub fnc main():int {let r=(f0=1,f1=1,f2=1,f3=1,f4=1,f5=1,f6=1,f7=1,f8=1);return 0;}', 'E_UNSUPPORTED'
+]);
+negatives.push([
+ 'pub fnc main():int {let r:Map<string,int>={};return 0;}', 'E_UNSUPPORTED'
+]);
+// Check the source-level 1,024-field bound on native AND independent Wasm
+// compiler in an unprivileged process, without evaluating a partial guest.
+const oversizedNamed=(new Array(1025)).fill(0).map((_,i)=>'field_'+i+'=1').join(',');
+negatives.push([
+ 'pub fnc main():int {let r=('+oversizedNamed+');return 0;}', 'E_SOURCE_LIMIT'
+]);
+negatives.push([
+ 'pub fnc main():int {stdio.println(value=42);return 0;}', 'E_UNSUPPORTED'
+]);
+
 // Preserve safety boundaries without interpreting compile errors as guest tests.
 negatives.push([
  'pub fnc main(): int {let Record r={x:42}; val clone=copy! r; return clone.x;}',
