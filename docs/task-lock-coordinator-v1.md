@@ -107,3 +107,52 @@ Cancellation wins before the park transition: the still-running task must observ
 Added adversarial Rust tests to the host model for pre-park cancellation, forged/duplicate park attempts, attempting to park under a live guard, grant-before-park, grant-ack ordering and premature retirement. **Current source has 48 authored host tests but none have executed at the exact head.** This remains a private native-host model; actual production guest scheduler callbacks and compiled `.atto` cancellation are still absent. Conformance registry in `atto-platform-conformance#115` now includes a 14th park/cancel race probe, with ten runtime backend cells kept NOT_EXECUTED.
 
 The previous CI carriers did not admit jobs. [benefactor-cc/atto-ci#6](https://github.com/benefactor-cc/atto-ci/pull/6) mirrors the model source with a pinned Git blob; [run #44684958402](https://github.com/benefactor-cc/atto-ci/actions/runs/44684958402) failed with zero job steps. Do not mark Cargo tests or guest execution as passing.
+
+
+## Atomic native-host ready admission (2026-11-20)
+
+The private native-host reference coordinator now owns a bounded, per-scope
+`VecDeque<Continuation>` ready queue with a logical-task de-duplication ledger.
+`HostTaskLockKernel::pump_ready()` transfers **only authenticated parked**
+cancellation and lock-grant wakeups into this queue within the **same serialized
+arbiter transaction** that acknowledges the corresponding grant. The ready
+queue is never guest-visible, and no physical guest code runs while pumping.
+`next_ready()` is the trusted ready-to-running dispatch operation.
+
+Required ordering and safety:
+- Cancellation wakes precede grant handling for the same task; no logical task
+  can have two ready entries, including repeated ready-queue pumps.
+- An active guarded task cannot be forced runnable by cancellation.
+- A task sitting in the ready queue cannot re-park, claim the mutex, or
+  report guest exit until trusted scheduler dispatch.
+- A grant is not consumed without successful, bounded ready queue admission;
+  candidate capacity checks happen before any queue or grant mutation.
+- A cancelled waiter never drops another task's active guard. The next valid
+  waiting task receives the lock only after the active holder's legal scoped
+  release or safe-point cleanup.
+- A busy host metadata arbiter returns `AdmissionBusy`, without parking a
+  scheduler carrier thread. The queue is not yet wired to an actual guest
+  continuation poller; callback-drain/physical-quiescence receipts remain
+  host-modeled.
+
+Four additional host-model regressions cover single-admission grant,
+cancellation without unlock, grant/cancellation successor races, and
+nonparking arbiter contention. The current source file contains **52 authored
+Rust unit tests**, not an executed test result.
+
+**Evidence:** exact source Rust Git blob
+`f1ffaf709afc6a2a94e1c3edbd2e0b9e4b52d3ff` mirrored byte-identically
+into temporary private `benefactor-cc/atto-ci#6`. Git readback and workflow
+pin integrity **PASS**. Actions run
+[44765427068](https://github.com/benefactor-cc/atto-ci/actions/runs/44765427068)
+**failed before any job steps**. No `rustc`/`cargo` execution, no native
+test PASS and no compiled `.atto` guest cancellation/lock-release proof.
+The conformance registry in `atto-platform-conformance#115` now has
+32 source cases and 15 runtime probes, all backend cells NOT_EXECUTED.
+
+**Next:** execute the exact Rust source with Cargo and native sanitizers on an
+admitted runner; connect `next_ready()` to a real authenticated scheduler
+continuation poll/return path; ensure scheduler-derived safe-point exit and
+callback-drain receipts, and test compiled guest cancellation with
+(tenant, actor, incarnation, logical_task) isolation. Do not remove guest
+compiler fail-closed gates prematurely.
