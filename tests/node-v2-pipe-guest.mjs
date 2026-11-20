@@ -15,6 +15,7 @@ const cases=[
   ['pass/209-v2-actor-channel-actor-rpipe.atto',false],
   ['panic/210-v2-pipe-double-attach.atto',true],
   ['panic/211-v2-pipe-rendezvous-denial.atto',true],
+  ['panic/212-v2-pipe-duplicate-consumer.atto',true],
 ];
 try {
   for (const [suffix,mustPanic] of cases) {
