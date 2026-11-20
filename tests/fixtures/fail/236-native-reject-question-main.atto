@@ -1,0 +1,6 @@
+// expect-compile-error: postfix '?' from main(): int is forbidden
+// A failure must not be erased into zero or an implicit return.
+fnc maybe_zero(): Option<int> { return None; }
+pub fnc main(): int {
+  return maybe_zero()?;
+}
