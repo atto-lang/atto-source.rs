@@ -110,3 +110,20 @@ fn the_requested_counter_sample_is_not_silently_compiled_before_guards_and_start
     assert!(compile(source).is_err(),
         "full actor startup + lease lowering may be enabled only with compiled guest conformance");
 }
+
+#[test]
+fn exact_portable_counter_sources_stay_fail_closed_until_real_actor_guest_lowering() {
+    // Both files are SHA-identical Git blobs to the positive fixtures in
+    // atto-platform-conformance PR #113. This is a *deliberate* unsupported
+    // gate, not a claim that either Counter has executed in Wasm.
+    let fixtures = [
+        ("inline", include_str!("fixtures/actor_attached_state/inline_counter.atto")),
+        ("attached", include_str!("fixtures/actor_attached_state/attached_counter.atto")),
+    ];
+    for (name, source) in fixtures {
+        let d = compile(source).expect_err(
+            "Counter must not emit guest Wasm until startup, effects, mailbox and guarded actor state are fully checked"
+        );
+        assert!(d.pos.line > 0 && d.pos.col > 0, "{name}: {d}");
+    }
+}
