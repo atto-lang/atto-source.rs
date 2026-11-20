@@ -96,15 +96,24 @@ test('grant identity and generation are mandatory, never chosen by the guest',()
       allowStdin:true,allowStdout:true}}),/generation or permission/);
 });
 
-test('revocation cancels suspended stdin and denies future imports',async()=>{
+test('revocation cancels suspended stdin without committing late guest memory',async()=>{
   let send;
   const stdin=(async function*(){yield await new Promise(resolve=>{send=resolve})})();
   const f=fixture({stdin});
+  // Even if a malicious guest leaves a writable result region in memory,
+  // revocation must not allow late host data to appear in that region.
+  new Uint8Array(f.memory.buffer,64,128).fill(0xA5);
+  new Uint8Array(f.memory.buffer,16,16).fill(0x5A);
   const pending=f.bridge.imports.stdio_text_read_v1(0,64,128,16);
   f.bridge.revoke();
   assert.equal(await pending,E.Revoked);
+  assert.deepEqual([...new Uint8Array(f.memory.buffer,64,128)],Array(128).fill(0xA5));
+  assert.deepEqual([...new Uint8Array(f.memory.buffer,16,16)],Array(16).fill(0x5A));
   assert.equal(await f.bridge.imports.stdio_text_read_v1(0,64,128,16),E.Revoked);
   assert.equal(await f.bridge.imports.stdio_text_write_v1(1,64,0),E.Revoked);
-  // An aborted async generator may never have started its first pull.
+  // The injected iterator may finish later; a revoked bridge has no path
+  // back to this tenant's guest memory.
   if (send) send(encoder.encode('post-revoke\n'));
+  await Promise.resolve();
+  assert.deepEqual([...new Uint8Array(f.memory.buffer,64,128)],Array(128).fill(0xA5));
 });
