@@ -9,6 +9,8 @@
 pub mod ast;
 /// Bounded UTF-8 DATA frame candidate; NOT connected to the actor Wasm guest ABI.
 pub mod actor_string_mail;
+/// Checked candidate dedicated Wasm string-mail page plan; guest still unsupported.
+pub mod actor_string_memory_plan;
 /// Versioned actor-owned scalar snapshot codec groundwork, not durable runtime.
 pub mod actor_persistence;
 /// Recognize and reject unlowered named collection layouts before Wasm emission.
