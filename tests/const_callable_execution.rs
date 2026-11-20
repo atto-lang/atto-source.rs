@@ -116,11 +116,11 @@ fn four_local_const_void_lambda_spellings_compile_to_checked_wasm() {
         "const v = |foo: int, x: string| : void -> { return; }",
     ] {
         let source = format!(
-            "pub fnc main(): int {{\\n{declaration}\\nv(5, \\"ok\\");\\nreturn 42;\\n}}"
+            "pub fnc main(): int {{\n{declaration}\nv(5, \"ok\");\nreturn 42;\n}}"
         );
         let guest = atto_compiler::compile(&source)
             .unwrap_or_else(|error| panic!("{declaration}: {error}"));
-        assert!(guest.starts_with(b"\\0asm"), "{declaration}: not a Wasm guest");
+        assert!(guest.starts_with(b"\0asm"), "{declaration}: not a Wasm guest");
         assert_eq!(guest, atto_compiler::compile(&source).unwrap(),
             "{declaration}: nondeterministic emitted guest");
     }
@@ -135,14 +135,14 @@ fn local_const_lambda_rejections_match_four_style_conformance() {
         ("const v = |foo: int, x: string| -> void return;", "E_SYNTAX"),
     ] {
         let source = format!(
-            "pub fnc main(): int {{ {declaration} v(5, \\"ok\\"); return 42; }}"
+            "pub fnc main(): int {{ {declaration} v(5, \"ok\"); return 42; }}"
         );
         rejects(&source, diagnostic);
     }
     // Explicitly typed parameters are required for an unannotated local
     // const callable; there is no runtime closure object or inferred ABI.
     rejects(
-        "pub fnc main(): int { const v = |foo, x| -> { return; }; v(5, \\"ok\\"); return 42; }",
+        "pub fnc main(): int { const v = |foo, x| -> { return; }; v(5, \"ok\"); return 42; }",
         "E_INFER",
     );
     rejects(
@@ -154,7 +154,7 @@ fn local_const_lambda_rejections_match_four_style_conformance() {
         "E_UNSUPPORTED",
     );
     rejects(
-        "pub fnc main(): int { const v = |foo: int| : void -> { return; }; v(\\\"wrong\\\"); return 42; }",
+        "pub fnc main(): int { const v = |foo: int| : void -> { return; }; v(\"wrong\"); return 42; }",
         "E_TYPE",
     );
     rejects(
