@@ -344,10 +344,26 @@ pub enum ExprKind {
     /// Static actor and general endpoint stages composed using `pipe`.
     /// Mixed endpoints remain fail-closed until the typed channel/stream ABI.
     MixedPipeline(Vec<PipeStage>),
+    /// Continuous pipeline with explicit written direction. Stages remain in
+    /// lexical order; reverse wiring is checked in the opposite direction.
+    /// No guest runtime transport is inferred from this parsed AST.
+    DirectedPipeline(Vec<PipeStage>, PipeDirection),
+    /// Only legal as a parenthesized terminal stage of a continuous graph:
+    /// (let/val name: Stream<T> = Stream.buffered<T>(capacity)).
+    /// The initialized readable view and graph lifetime are NOT available
+    /// until the owned streaming ABI is actually implemented.
+    PipeCapture(String, Type, u32, bool),
     /// `base.name`: field read, `Enum.Variant`, or `mail.value`.
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
     MethodCall(Box<Expr>, String, Vec<Expr>),
+}
+
+/// Declared connection direction, never inferred from duplex port types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipeDirection {
+    LeftToRight,
+    RightToLeft,
 }
 
 /// Explicitly named endpoint constructors with directionally typed ports.

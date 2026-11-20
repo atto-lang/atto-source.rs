@@ -2459,7 +2459,28 @@ impl<'a> FnCx<'a> {
                     "typed channel/stream pipe adapter is parsed, but the owned guest transport and scheduler ABI are not implemented",
                 ));
             }
-            ExprKind::MixedPipeline(stages) => {
+            ExprKind::PipeCapture(..) => {
+                return Err(Diagnostic::new(pos, "E_PIPE_CONTRACT",
+                    "an inline Stream<T> capture is only valid as the terminal stage of a pipe/rpipe graph"));
+            }
+            ExprKind::MixedPipeline(stages) | ExprKind::DirectedPipeline(stages, _) => {
+                // Preserve original lexical stage order for future runtime
+                // construction while validating every *directed* edge in
+                // source-to-sink order. The reversed AST is never a license
+                // to infer dataflow direction from endpoint types.
+                let direction = match &e.kind {
+                    ExprKind::DirectedPipeline(_, d) => *d,
+                    ExprKind::MixedPipeline(_) => PipeDirection::LeftToRight,
+                    _ => unreachable!("only continuous pipelines reach this branch"),
+                };
+                // Preserve endpoint ASTs in lexical order; normalize DATA
+                // edges using indices, not duplicate endpoint expressions.
+                let topology = crate::pipe_contract::directed_topology(stages.len(), direction)
+                    .ok_or_else(|| Diagnostic::new(
+                        pos, "E_SOURCE_LIMIT", "mixed pipeline must have 2 to 16 stages"))?;
+                let flow: Vec<&PipeStage> = topology.flow_indices.iter()
+                    .map(|&i| &stages[i]).collect();
+                let stages = flow.as_slice();
                 // A pipe is a typed continuous graph, NEVER a single I/O
                 // operator or a collection of ordinary actor.send() calls.
                 // No mixed graph can reach guest code until PipeHandle and
@@ -2484,7 +2505,16 @@ impl<'a> FnCx<'a> {
                 let mut contracts = Vec::with_capacity(stages.len());
                 let mut actor_names = Vec::with_capacity(stages.len());
                 let mut seen_refs = BTreeSet::new();
-                for stage in stages {
+                for (stage_idx, stage) in stages.iter().enumerate() {
+                    // An inline binding creates one bounded *terminal* sink
+                    // plus a readable view; it is not a writable Stream<T>
+                    // variable or an intermediate pass-through transform.
+                    if matches!(stage, PipeStage::Endpoint(Expr {
+                        kind: ExprKind::PipeCapture(..), .. }))
+                        && stage_idx + 1 != stages.len() {
+                        return Err(Diagnostic::new(pos, "E_PIPE_CONTRACT",
+                            "inline Stream<T> capture must be the terminal sink in dataflow order"));
+                    }
                     // These concrete bounded adapters carry compiler-known
                     // item types and endpoint direction, but NEVER cause an
                     // allocation or guest source execution in this subset.
@@ -2504,6 +2534,10 @@ impl<'a> FnCx<'a> {
                             PipeEndpointKind::StreamSink => "Stream.port<T>.sink()",
                             PipeEndpointKind::StreamReadable => "Stream.port<T>.stream()",
                         })),
+                        PipeStage::Endpoint(Expr {
+                            kind: ExprKind::PipeCapture(_name, item, _capacity, _mutable), ..
+                        }) => Some((PipePort { input: Some(*item), output: None },
+                            "inline Stream<T> capture")),
                         _ => None,
                     };
                     // Only *typed ActorRef* values prove actor port roles.
@@ -2933,6 +2967,23 @@ impl<'a> FnCx<'a> {
     }
 
     fn method_call(&mut self, base: &Expr, name: &str, args: &[Expr], pos: Pos) -> R<TE> {
+        // io.pipe is a checked continuous graph, NOT a dynamic method call.
+        // The browser guest has no owned PipeHandle/transport/observer ABI yet.
+        // Reject the unbound library namespace deliberately, before evaluating
+        // either endpoint. User-declared values/classes named io remain subject
+        // to their ordinary lexical method lookup, not this reserved namespace.
+        if name == "pipe" {
+            if let ExprKind::Var(n) = &base.kind {
+                if n == "io" && self.lookup(n).is_none()
+                    && self.g.class(n).is_none()
+                    && self.g.enum_(n).is_none()
+                    && self.g.actor(n).is_none()
+                {
+                    return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                        "io.pipe(source, sink) requires checked PipeHandle setup, backpressure, failure completion and an owned guest transport ABI; no detached pump is emitted"));
+                }
+            }
+        }
         // Class.static(args)
         if let ExprKind::Var(n) = &base.kind {
             if self.lookup(n).is_none() {

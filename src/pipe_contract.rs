@@ -33,6 +33,38 @@ pub enum PipeContractError {
     },
 }
 
+/// A direction-normalized topology uses lexical indices rather than moving
+/// endpoint expressions. The compiler must evaluate constructors in written
+/// order exactly once; only DATA edge order is reversed for `rpipe`.
+///
+/// This is a statically derived plan, never a guest runtime connection,
+/// authorization token or PipeHandle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectedPipeTopology {
+    /// Lexical source indices in actual source-to-sink DATA order.
+    pub flow_indices: Vec<usize>,
+    /// Edges refer to the original lexical stages; never to actor CONTROL.
+    pub edges: Vec<(usize, usize)>,
+}
+
+/// Derive a fixed topology without evaluating or cloning endpoint expressions.
+/// The browser profile permits up to 16 stages; the actual runtime must
+/// independently validate tenant, ownership and source/sink capabilities.
+pub fn directed_topology(
+    stage_count: usize,
+    direction: crate::ast::PipeDirection,
+) -> Option<DirectedPipeTopology> {
+    if !(2..=16).contains(&stage_count) {
+        return None;
+    }
+    let mut flow_indices: Vec<usize> = (0..stage_count).collect();
+    if direction == crate::ast::PipeDirection::RightToLeft {
+        flow_indices.reverse();
+    }
+    let edges = flow_indices.windows(2).map(|p| (p[0], p[1])).collect();
+    Some(DirectedPipeTopology { flow_indices, edges })
+}
+
 /// Check each stage's input/output role and all fully-known adjacent edges.
 /// An unknown stage defers its own edges but must never authorize guest code.
 pub fn validate_known_edges(stages: &[StageContract]) -> Result<(), PipeContractError> {
@@ -74,6 +106,43 @@ mod tests {
 
     fn port(input: Option<Type>, output: Option<Type>) -> StageContract {
         StageContract::Known(PipePort { input, output })
+    }
+
+    #[test]
+    fn forward_and_reverse_spelling_produce_identical_data_edges() {
+        use crate::ast::PipeDirection;
+        let forward = directed_topology(3, PipeDirection::LeftToRight).unwrap();
+        let reverse = directed_topology(3, PipeDirection::RightToLeft).unwrap();
+        // Producer, Transform, Consumer written forward.
+        assert_eq!(forward.flow_indices, vec![0, 1, 2]);
+        assert_eq!(forward.edges, vec![(0, 1), (1, 2)]);
+        // Consumer, Transform, Producer written backward. Written indices
+        // reverse but source->sink identities and DATA order remain identical.
+        assert_eq!(reverse.flow_indices, vec![2, 1, 0]);
+        assert_eq!(reverse.edges, vec![(2, 1), (1, 0)]);
+        for written in [0usize, 1, 2] {
+            assert_eq!(forward.flow_indices[written], reverse.flow_indices[2-written]);
+        }
+    }
+
+    #[test]
+    fn pipeline_topology_enforces_tenant_stage_limit_without_cloning_expressions() {
+        use crate::ast::PipeDirection;
+        for n in [0, 1, 17, usize::MAX] {
+            assert_eq!(directed_topology(n, PipeDirection::LeftToRight), None);
+            assert_eq!(directed_topology(n, PipeDirection::RightToLeft), None);
+        }
+        for n in [2, 3, 16] {
+            for direction in [PipeDirection::LeftToRight, PipeDirection::RightToLeft] {
+                let plan = directed_topology(n, direction).unwrap();
+                assert_eq!(plan.edges.len(), n - 1);
+                assert_eq!(plan.flow_indices.len(), n);
+                let mut sorted = plan.flow_indices.clone();
+                sorted.sort_unstable();
+                assert_eq!(sorted, (0..n).collect::<Vec<_>>());
+                assert!(plan.edges.iter().all(|&(from, to)| from != to));
+            }
+        }
     }
 
     #[test]
