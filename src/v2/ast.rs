@@ -51,6 +51,8 @@ pub enum BinOp {
     CondOr,
     /// `a | b` / `a pipe b` between actor references: link a pipeline
     Pipe,
+    /// `a rpipe b` links b as source into a as sink, without reversing evaluation.
+    Rpipe,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
