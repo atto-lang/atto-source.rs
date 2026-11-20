@@ -464,11 +464,11 @@ fnc __actor_channel_actor_try(int src, int ch, int dst): int {
   __store(handle, 0, src);
   __store(handle, 8, ch);
   __store(handle, 16, dst);
-  __store(ch, 56, src);
-  __store(src, 8, ch);
-  __store(src, 24, 1);
-  __store(ch, 64, dst);
-  __store(dst, 48, ch);
+  // Allocate the Result box and queue the bridge *before* publication.
+  // No spawned task can execute until this cooperative continuation yields.
+  // Hence resource/allocation failure cannot leave a partially published
+  // graph. No allocation or suspending instruction follows publication.
+  val accepted = __box(0, handle);
   val bridge = task {
     loop do
       val item = await __chan_recv_opt(ch);
@@ -480,7 +480,13 @@ fnc __actor_channel_actor_try(int src, int ch, int dst): int {
     done
   };
   __store(handle, 24, bridge);
-  return __box(0, handle);
+  // Single commitment point for all three explicitly typed DATA endpoints.
+  __store(ch, 56, src);
+  __store(src, 8, ch);
+  __store(src, 24, 1);
+  __store(ch, 64, dst);
+  __store(dst, 48, ch);
+  return accepted;
 }
 
 // Preserve the legacy unannotated pipe-expression behavior for existing
