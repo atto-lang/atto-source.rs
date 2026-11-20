@@ -216,14 +216,14 @@ fn computed_bracket_keys_are_not_misparsed_as_static_record_fields() {
 #[test]
 fn quoted_map_key_duplicates_reject_after_string_decoding() {
     for source in [
-        "let Map x = {\"\": 1, '\': 2};",
-        "let Map x = {\"a\": 1, '\'a\' => 2};",
+        "let Map x = {\"\": 1, '': 2};",
+        "let Map x = {\"a\": 1, 'a' => 2};",
     ] {
         assert_eq!(parse_binding(source).unwrap_err().code, "E_DUPLICATE", "{source}");
     }
     assert_eq!(parse_binding("let Record x={a:1, \"a\":2};")
         .unwrap_err().code, "E_LITERAL_KIND");
-    let program = parse_binding("let Map x={\"\":1, '\'content-type\':2};").unwrap();
+    let program = parse_binding("let Map x={\"\":1, 'content-type':2};").unwrap();
     assert!(matches!(init_kind(&program), ExprKind::Map(items)
         if items.len()==2 &&
         matches!(&items[0].0.kind, ExprKind::Str(s) if s.is_empty()) &&
