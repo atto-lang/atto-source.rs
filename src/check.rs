@@ -880,6 +880,20 @@ fn check_lowered(p: &Program) -> R<TProgram> {
         }
     }
     for a in &p.actors {
+        // Parsing and AST metadata are not proof of host isolation. This
+        // browser guest ABI currently has only the trusted shared actor path.
+        // Never erase a requested isolated or untrusted class at codegen.
+        match a.domain {
+            ActorExecutionDomain::Shared => {},
+            ActorExecutionDomain::Isolated => {
+                return Err(Diagnostic::new(a.pos, "E_ACTOR_DOMAIN_RUNTIME_UNAVAILABLE",
+                    "isolated actors need private worker-pool admission and actor-incarnation fencing"));
+            }
+            ActorExecutionDomain::Untrusted => {
+                return Err(Diagnostic::new(a.pos, "E_UNTRUSTED_SANDBOX_UNAVAILABLE",
+                    "untrusted actors require verified TenantVM confinement and host capability admission"));
+            }
+        }
         if a.persistence != ActorPersistenceMode::Volatile {
             // Validate an AOT-friendly scalar snapshot schema first. No guest
             // emission may silently treat durable/persistent as volatile.
