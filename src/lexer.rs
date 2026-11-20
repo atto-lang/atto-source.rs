@@ -426,9 +426,9 @@ mod bang_exception_keyword_tests {
         let separate = lex("trap !f; trap!eq throw!= other_trap!").unwrap();
         assert!(matches!(&separate[0].tok, Tok::Ident(s) if s == "trap"));
         assert_eq!(separate[1].tok, Tok::Bang);
-        assert!(matches!(&separate[3].tok, Tok::Ident(s) if s == "trap"));
-        assert!(matches!(&separate[5].tok, Tok::Ident(s) if s == "throw"));
-        assert!(matches!(&separate[7].tok, Tok::Ident(s) if s == "other_trap"));
-        assert_eq!(separate[8].tok, Tok::Bang);
+        assert!(matches!(&separate[4].tok, Tok::Ident(s) if s == "trap"));
+        assert!(matches!(&separate[6].tok, Tok::Ident(s) if s == "throw"));
+        assert!(matches!(&separate[8].tok, Tok::Ident(s) if s == "other_trap"));
+        assert_eq!(separate[9].tok, Tok::Bang);
     }
 }
