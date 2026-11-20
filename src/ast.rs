@@ -217,6 +217,17 @@ pub struct Receive {
     pub body: Vec<Stmt>,
 }
 
+/// Source-declared execution class; the host principal is a separate,
+/// non-downgradable runtime admission security floor. No actor marker cast
+/// can make a malicious guest trusted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ActorExecutionDomain {
+    #[default]
+    Shared,
+    Isolated,
+    Untrusted,
+}
+
 /// Actor persistence is nominal and cannot be inferred from user code.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ActorPersistenceMode {
@@ -247,6 +258,8 @@ pub struct ActorDecl {
     pub receives: Option<Type>,
     /// Optional outbound application send effect, not a recipient count.
     pub sends: Option<Type>,
+    /// Verified backend dispatch may never erase Isolated or Untrusted into Shared.
+    pub domain: ActorExecutionDomain,
     pub persistence: ActorPersistenceMode,
     pub persistence_hooks: Vec<ActorPersistenceHook>,
     pub fields: Vec<Field>,
