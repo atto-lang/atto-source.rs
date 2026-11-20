@@ -156,9 +156,13 @@ fn parse_main(p: &mut Cursor<'_>, increment: &str) -> R<Main> {
     p.expect(Tok::LBrace, "expected main body")?;
     p.require("val")?;
     let owner = p.name()?;
-    p.expect(Tok::Assign, "expected local mutex factory")?;
+    p.expect(Tok::Assign, "expected local mutex constructor")?;
+    if !p.word("new") {
+        return Err(error(p.pos(),"E_NEW_REQUIRED",
+            "Mutex<T> is a resource class; construct with new Mutex<int>(value)"));
+    }
     p.mutex_int()?;
-    p.expect(Tok::LParen, "expected Mutex<int>(value)")?;
+    p.expect(Tok::LParen, "expected new Mutex<int>(value)")?;
     let initial = p.int()?;
     p.expect(Tok::RParen, "expected closing mutex factory")?;
     p.expect(Tok::Semi, "expected ';' after mutex construction")?;
@@ -352,6 +356,19 @@ pub fn try_lower(tokens: &[Token]) -> R<Option<TProgram>> {
     let has_mutex = tokens.windows(2).any(|w| matches!(
         (&w[0].tok,&w[1].tok),(Tok::Ident(name),Tok::Lt) if name=="Mutex"
     ));
+    // Class construction is explicit; no value-struct/function-call spelling.
+    // Match only the closed-world Mutex<int>(...) constructor shape,
+    // not nominal Mutex<int> types in parameters or local annotations.
+    for (i,w) in tokens.windows(5).enumerate() {
+        if matches!((&w[0].tok,&w[1].tok,&w[2].tok,&w[3].tok,&w[4].tok),
+            (Tok::Ident(m),Tok::Lt,Tok::Ident(t),Tok::Gt,Tok::LParen)
+                if m == "Mutex" && t == "int")
+            && (i == 0 || !matches!(&tokens[i-1].tok,
+                Tok::Ident(word) if word == "new")) {
+            return Err(error(tokens[i].pos,"E_NEW_REQUIRED",
+                "Mutex<T> is a resource class; construct with new Mutex<int>(value)"));
+        }
+    }
     let lock_async = tokens.windows(3).any(|w| matches!(
         (&w[0].tok,&w[1].tok,&w[2].tok),
         (Tok::Dot,Tok::Ident(name),Tok::LParen) if name=="lock_async"
@@ -379,7 +396,7 @@ susp fnc increment(Mutex<int> counter): int {
   }
 }
 pub susp fnc main(): int {
-  val counter = Mutex<int>(0);
+  val counter = new Mutex<int>(0);
   return await increment(counter);
 }
 "#;
@@ -397,6 +414,13 @@ pub susp fnc main(): int {
         let wasm = crate::compile(SOURCE).unwrap();
         assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
         assert_eq!(wasm,crate::compile(SOURCE).unwrap());
+    }
+    #[test]
+    fn resource_class_requires_new_keyword() {
+        let old = SOURCE.replace("new Mutex<int>(0)", "Mutex<int>(0)");
+        assert_eq!(crate::compile(&old).unwrap_err().code,"E_NEW_REQUIRED");
+        assert_eq!(try_lower(&crate::lexer::lex(&old).unwrap()).unwrap_err().code,
+            "E_NEW_REQUIRED");
     }
     #[test]
     fn implicit_and_explicit_acquisition_are_semantically_identical() {
@@ -417,7 +441,7 @@ pub susp fnc main(): int {
     }
     #[test]
     fn constant_overflow_rejects_before_emission() {
-        let bad = SOURCE.replace("Mutex<int>(0)", "Mutex<int>(9223372036854775807)");
+        let bad = SOURCE.replace("new Mutex<int>(0)", "new Mutex<int>(9223372036854775807)");
         assert_eq!(parse(&bad).unwrap_err().code,"E_OVERFLOW");
     }
 }
