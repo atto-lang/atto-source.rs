@@ -3108,6 +3108,13 @@ impl Parser {
                         "Map.of_entries expects Entry<K,V> values: k => v or Entry.of(k,v); extracting a variable Entry awaits owned product access")),
                 }
             };
+            if let Some(candidate) = constant_map_key(&key) {
+                if pairs.iter().step_by(2).any(|previous|
+                    constant_map_key(previous).as_deref() == Some(candidate.as_str())) {
+                    return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
+                        "duplicate static Map.of_entries key"));
+                }
+            }
             pairs.push(key);
             pairs.push(value);
             if self.eat(&Tok::Comma) {
