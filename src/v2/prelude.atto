@@ -359,9 +359,10 @@ fnc __chan_close(int c): void {
 }
 
 // ------------------------------------------------------------------ actors
-// Actor instance (48-byte prefix): 0 mailbox channel, 8 downstream target,
+// Actor instance (56-byte prefix): 0 mailbox channel, 8 downstream target,
 // 16 next sequence, 24 downstream kind (0 actor, 1 bounded channel),
-// 32/40 completion Future flag/value, then the actor's state fields.
+// 32/40 completion Future flag/value, 48 unique incoming pipe owner,
+// then the actor's state fields.
 // This is a SINGLE guest-memory domain; no cross-TenantVM bridge exists.
 
 fnc __mail_send(int a, int v): void {
@@ -386,6 +387,7 @@ suspends fnc __mail_send_wait(int a, int v): void {
 fnc __actor_link(int a, int b): int {
   if a == 0 then __panic(10); fi
   if b == 0 then __panic(10); fi
+  if __load(b, 48) != 0 then __panic(10); fi
   let t = a;
   let count = 0;
   loop do
@@ -407,6 +409,7 @@ fnc __actor_link(int a, int b): int {
     if next_a == 0 then
       if count + tail_size > 16 then __panic(10); fi
       // Single publication point; all validation above has succeeded.
+      __store(b, 48, t);
       __store(t, 8, b);
       return a;
     fi
@@ -435,7 +438,9 @@ fnc __channel_pipe_actor(int ch, int a): int {
   if cap < 1 then __panic(10); fi
   if cap > 16 then __panic(10); fi
   if __load(ch, 64) != 0 then __panic(10); fi
+  if __load(a, 48) != 0 then __panic(10); fi
   __store(ch, 64, a);
+  __store(a, 48, ch);
   // The bridge is a guest task and borrows no host thread. It suspends on
   // both bounded source and mailbox pressure, and drains through EOF.
   val bridge = task {
