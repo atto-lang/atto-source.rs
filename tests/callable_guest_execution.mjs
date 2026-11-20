@@ -16,6 +16,10 @@ const fixtures = [
   '173-class-mtd-executable.atto',
   '180-const-callable-global-structural.atto',
   '181-const-callable-local-static.atto',
+  '182-lambda-type-first-infer.atto',
+  '183-lambda-name-first-infer.atto',
+  '184-lambda-name-first-arrow-void.atto',
+  '185-lambda-name-first-colon-void.atto',
 ];
 const negative = [
   '39-end-form-body.atto',
@@ -26,6 +30,10 @@ const negative = [
   '169-callable-colon-arrow-end.atto',
   '180-const-callable-escape.atto',
   '181-const-callable-arity.atto',
+  '182-lambda-duplicate-param.atto',
+  '183-lambda-void-return-value.atto',
+  '184-lambda-void-parameter.atto',
+  '185-lambda-legacy-result-missing-block.atto',
 ];
 const allowed = new Set(['print_i64','print_bool','print_str','print_newline','print_f64','actor_spawn','actor_send']);
 const imports = {
