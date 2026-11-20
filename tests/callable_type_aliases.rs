@@ -79,15 +79,25 @@ fn mismatching_lambda_annotations_fail_before_wasm_gate() {
 }
 
 #[test]
-fn well_typed_callable_values_still_fail_closed_without_indirect_dispatch() {
+fn closed_typed_callable_uses_verified_static_dispatch() {
     let source = format!("{DEFINITIONS}
         pub fnc main(): int {{
             const F1 f = |int a, int b| :int -> a + b;
+            return f(20, 22);
+        }}");
+    let wasm = atto_compiler::compile(&source).expect("static callable execution");
+    assert!(wasm.starts_with(b"\0asm"));
+}
+#[test]
+fn escaping_typed_callable_still_fails_closed_without_indirect_dispatch() {
+    let source = format!("{DEFINITIONS}
+        pub fnc main(): int {{
+            const F1 f = |int a, int b| :int -> a + b;
+            val escaped = f;
             return 0;
         }}");
-    let d = atto_compiler::compile(&source).expect_err("no first-class ABI yet");
+    let d = atto_compiler::compile(&source).expect_err("no callable value storage ABI");
     assert_eq!(d.code, "E_UNSUPPORTED", "{d}");
-    assert!(d.message.contains("indirect dispatch"), "{d}");
 }
 
 #[test]

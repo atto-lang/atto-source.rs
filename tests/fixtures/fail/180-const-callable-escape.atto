@@ -1,0 +1,7 @@
+// expect-error: E_UNSUPPORTED
+type Binary = (int, int) => int;
+pub fnc main(): int {
+    const Binary add = |a: int, b: int| :int -> a + b;
+    val escaped = add;
+    return add(20, 22);
+}
