@@ -209,7 +209,7 @@ try{
   ]) {
     const guest = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const observed = await run(guest, 'main() -> 42');
-    assert.equal(observed, '40\\n2\\nmain() -> 42',
+    assert.equal(observed, '40\n2\nmain() -> 42',
       filename + ': exact ordered DATA and BOTH completion futures in real Wasm');
     assert.equal(await evaluate('window.__attoLastPanicCode'), null,
       filename + ': guest must complete without a hidden runtime trap');
