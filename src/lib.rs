@@ -55,13 +55,13 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     // reads and emits the versioned Worker-owned JSPI import contract.
     let unary_reads = io_shorthand::inspect_unary_reads(&toks)?;
     io_shorthand::validate_unary_read_suspension(&toks, &unary_reads)?;
-    // The browser guest already has a typed stdio.print output import.
-    // Permit the exact stdio.out << value statement form to lower through
-    // that existing checked path. All other channels, streams, read
-    // directions and select registrations fail closed until implemented.
+    // Direct channel writes must reach the typed production checker.
+    // That checker admits only statically writable Channel<int> and
+    // compatible values/effects, and produces a checked suspending Result.
+    // This syntax gate does NOT grant select/nb/try/detached writes, nor
+    // authorize an implicit nonparking try_send fallback.
     for io in io_shorthand::inspect(&toks)? {
-        if io.source_or_sink == "stdio.out"
-            && io.direction == io_shorthand::Direction::Write
+        if io.direction == io_shorthand::Direction::Write
             && io.context == io_shorthand::Context::Standalone
             && io.mode == io_shorthand::Mode::Direct
             && !io.read_binder_on_left
