@@ -141,13 +141,14 @@ try{
   assert.deepEqual(textEcho.patternVariants,[
     'parenthesized+unary','parenthesized+readch','on-is+unary','on-is+readch'
   ]);
-  assert.equal(textEcho.patternExecutions.length,24,
-    'must run each of the 4 compiler-generated programs across 6 stdin/permission cases');
+  assert.equal(textEcho.patternExecutions.length,36,
+    'must run each of the 4 compiler-generated programs across 9 stdin/permission cases');
   for(const pattern of textEcho.patternVariants) {
     const rows=textEcho.patternExecutions.filter(x=>x.pattern===pattern);
     assert.deepEqual(rows.map(x=>[x.case,x.exit]),[
-      ['LF echo',0],['empty record',0],['clean EOF',11],
-      ['bad UTF-8',14],['stdin denied',14],['stdout denied',10],
+      ['LF echo',0],['CRLF + NUL',0],['empty record',0],
+      ['unterminated final',0],['clean EOF',11],['bad UTF-8',14],
+      ['stdin denied',14],['stdout denied',10],['stderr denied',13],
     ],'checked stdin source guest diverged: '+pattern);
   }
   assert.deepEqual(textEcho.cases.map(x=>[x.label,x.exit]),[
