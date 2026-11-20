@@ -33,7 +33,8 @@ fn rejects_other_types_and_nonexistent_bindings(){
     rejection(&BASE.replace("is int as val b","is bool as val b"),"E_UNSUPPORTED");
     rejection(&BASE.replace("is int as val b","is int as val a"),"E_PATTERN_BINDING");
     rejection(&BASE.replace("a + b + c","a + missing + c"),"E_PATTERN_BINDING");
-    rejection(&BASE.replace("when a > 0","when missing > 0"),"E_UNSUPPORTED");
+    let guarded=include_str!("fixtures/pass/list-pattern-guard-once-0.atto");
+    rejection(&guarded.replace("when a > 0","when missing > 0"),"E_PATTERN_BINDING");
     rejection(&BASE.replace("on List.of(...,","on List.of(..., ...,"),
         "E_UNSUPPORTED");
 }
