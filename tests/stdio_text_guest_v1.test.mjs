@@ -93,5 +93,6 @@ test('revocation cancels suspended stdin and denies future imports',async()=>{
   assert.equal(await pending,E.Revoked);
   assert.equal(await f.bridge.imports.stdio_text_read_v1(0,64,128,16),E.Revoked);
   assert.equal(await f.bridge.imports.stdio_text_write_v1(1,64,0),E.Revoked);
-  send(encoder.encode('post-revoke\n'));
+  // An aborted async generator may never have started its first pull.
+  if (send) send(encoder.encode('post-revoke\n'));
 });
