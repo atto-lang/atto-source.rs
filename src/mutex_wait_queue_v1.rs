@@ -45,6 +45,7 @@ pub(crate) enum Error {
     NotQuiescent,
     CleanupFailed,
     AdmissionBusy,
+    UnclaimedGrant,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cancellation {
@@ -127,6 +128,11 @@ impl WaitQueue {
         if self.owner != Some(owner) || owner.generation != self.generation {
             return Err(Error::StaleTicket);
         }
+        // Only an active claimed guard may be *released*. An unclaimed grant
+        // must be revoked through cancel(), which serializes the handoff.
+        // Otherwise a stale grant could be "released" without ever acquiring
+        // the exclusive lease, hiding a lifetime/cancellation bug.
+        if !self.active { return Err(Error::UnclaimedGrant); }
         // An active task can still unwind and release after shutdown, but
         // shutdown must not hand this lock to another task.
         if self.closed {
@@ -701,6 +707,7 @@ mod tests {
     fn fifo_handoff_and_stale_wake_are_fenced() {
         let mut q = queue(3);
         let a = owned(q.acquire(c(1)).unwrap());
+        q.claim(a).unwrap();
         let b = pending(q.acquire(c(2)).unwrap());
         let c = pending(q.acquire(c(3)).unwrap());
         q.release(a).unwrap();
@@ -718,6 +725,7 @@ mod tests {
     fn cancellation_before_and_after_handoff_never_double_grants() {
         let mut q = queue(4);
         let a = owned(q.acquire(c(1)).unwrap());
+        q.claim(a).unwrap();
         let b = pending(q.acquire(c(2)).unwrap());
         let queued_c = pending(q.acquire(c(3)).unwrap());
         assert_eq!(q.cancel(b), Ok(Cancellation::Queued));
@@ -735,6 +743,7 @@ mod tests {
     fn canceled_unconsumed_wakeup_is_not_delivered() {
         let mut q = queue(4);
         let a = owned(q.acquire(c(1)).unwrap());
+        q.claim(a).unwrap();
         let b = pending(q.acquire(c(2)).unwrap());
         let c = pending(q.acquire(c(3)).unwrap());
         q.release(a).unwrap();
@@ -763,6 +772,7 @@ mod tests {
     fn recursion_and_quota_are_refused_without_parking() {
         let mut q = queue(1);
         let a = owned(q.acquire(c(1)).unwrap());
+        q.claim(a).unwrap();
         assert_eq!(q.acquire(c(1)), Err(Error::Reentrant));
         let b = pending(q.acquire(c(2)).unwrap());
         assert_eq!(q.acquire(c(2)), Err(Error::Reentrant));
