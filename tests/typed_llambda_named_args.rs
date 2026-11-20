@@ -123,3 +123,34 @@ fn type_annotation_errors_and_limits_are_explicit() {
     bad("const fnc c = |List<int> a| : int -> 1; pub fnc main(): int { return 0; }", "E_UNSUPPORTED_TYPE");
     bad("pub fnc main(): int { stdio.println(value: 42); return 0; }", "E_NAMED_ARG");
 }
+
+#[test]
+fn four_requested_void_lambda_headers_parse_to_identical_formals() {
+    // This is parser coverage for local const syntax, not evidence
+    // that every first-class callable/capture profile compiles or runs.
+    let variants = [
+        ("|int foo, string x| -> { return; };", None),
+        ("|foo: int, x: string| -> { return; }", None),
+        ("|foo: int, x: string| -> void { return; }", Some("void")),
+        ("|foo: int, x: string| : void -> { return; }", Some("void")),
+    ];
+    for (header, result) in variants {
+        let source = format!(
+            "pub fnc main(): int {{\nconst v = {header}\nreturn 42;\n}}\n"
+        );
+        let program = ast(&source);
+        let Stmt::Bind { init, .. } = &program.funcs[0].body[0] else {
+            panic!("lambda binding missing: {header}");
+        };
+        let ExprKind::Lambda { params, param_types, return_type, body } = &init.kind else {
+            panic!("expected a lambda for {header}");
+        };
+        assert_eq!(params, &["foo".to_owned(), "x".to_owned()], "{header}");
+        assert_eq!(param_types, &[Some("int".into()), Some("string".into())], "{header}");
+        assert_eq!(return_type.as_deref(), result, "{header}");
+        let atto_compiler::ast::LambdaBody::Block(statements) = body else {
+            panic!("return body was not preserved: {header}");
+        };
+        assert!(matches!(statements.as_slice(), [Stmt::Return(None, _)]), "{header}");
+    }
+}
