@@ -165,3 +165,43 @@ fn closed_record_missing_fields_and_open_record_unguarded_reads_reject() {
         "E_TYPE"
     );
 }
+
+#[test]
+fn nominal_entry_ascriptions_are_static_typed_and_identical() {
+    let first = one(r#"let e = ("foo" => 5) as Entry<string,int>;"#);
+    let second = one(r#"let e = "foo" => 5 (as Entry<string,int>);"#);
+    let explicit = one(r#"let Entry<string,int> e = "foo" => 5;"#);
+    let inferred = one(r#"let e = "foo" => 5;"#);
+    let target = T::Entry(Box::new(T::String), Box::new(T::Int));
+    for b in [&first, &second, &explicit, &inferred] {
+        assert_eq!(b.value.ty, target);
+    }
+    assert_eq!(first.value, second.value,
+        "both ascriptions must lower to identical typed Entry IR");
+    assert_eq!(first.value.children.len(), 1);
+    assert_eq!(first.value.children[0].children.len(), 2);
+    assert_eq!(inferred.value.children.len(), 2);
+}
+
+#[test]
+fn nominal_entry_type_mismatches_fail_preflight_before_guest_lowering() {
+    for src in [
+        r#"let e = ("foo" => 5) as Entry<int,int>;"#,
+        r#"let e = "foo" => 5 (as Entry<string,bool>);"#,
+        r#"let Entry<string,int> e = 5 => "foo";"#,
+        r#"let Map<string,int> x = "foo" => 5;"#,
+        r#"let Entry<string,int> e = {key:"foo",value:5};"#,
+    ] {
+        let err = typed(src).expect_err(src);
+        assert_eq!(err.code, "E_TYPE", "{src}: {err}");
+    }
+    for src in [
+        r#"let e = ("foo" => 5) as Entry<string,int>;"#,
+        r#"let e = "foo" => 5 (as Entry<string,int>);"#,
+    ] {
+        typed(src).expect("static preflight accepts nominal Entry");
+        let full = format!("fnc main(): int {{ {src} return 0; }}");
+        assert_eq!(compile(&full).expect_err("no guest Entry lowering").code,
+            "E_UNSUPPORTED", "{src}");
+    }
+}
