@@ -1,6 +1,7 @@
 //! Restricted source-compiled List<int> match tests.
 //! A real guest run additionally requires the Node Wasm execution harness.
 use atto_compiler::{compile,lexer,list_pattern_guest};
+use atto_compiler::check::{TExpr, TStmt};
 const BASE: &str=include_str!("fixtures/pass/list-pattern-rest-60.atto");
 fn rejection(source:&str,expected:&str){
     let err=compile(source).expect_err("unsupported source MUST NOT emit wasm");
@@ -154,14 +155,24 @@ fn empty_list_and_standalone_rest_use_checked_guest_representation() {
 
 #[test]
 fn lone_rest_matches_nonempty_and_empty_without_branch_budget_exhaustion() {
-    for source in [
-        include_str!("fixtures/pass/list-pattern-standalone-rest-11.atto"),
-        include_str!("fixtures/pass/list-pattern-empty-rest-13.atto"),
+    for (source, expected) in [
+        (include_str!("fixtures/pass/list-pattern-standalone-rest-11.atto"), 11),
+        (include_str!("fixtures/pass/list-pattern-empty-rest-13.atto"), 13),
     ] {
         let checked = list_pattern_guest::try_lower(&lexer::lex(source).unwrap())
             .unwrap().expect("single rest should be accepted in checked IR");
         assert!(checked.heap);
         assert_eq!(checked.funcs.len(), 1);
+        // These are IR shape assertions, not guest execution evidence:
+        // a lone rest must compile to one unconditional witness, not n+1
+        // candidate positions or a fallback-only result.
+        let Some(TStmt::If(arms, Some(_fallback))) = checked.funcs[0].body.last()
+            else { panic!("single rest must emit a checked conditional"); };
+        assert_eq!(arms.len(), 1, "standalone rest has one witness");
+        assert!(matches!(&arms[0].0.e, TExpr::Bool(true)));
+        let TStmt::Return(Some(value)) = &arms[0].1[0]
+            else { panic!("successful witness must return its arm value"); };
+        assert!(matches!(&value.e, TExpr::I64(n) if *n == expected));
         assert!(compile(source).unwrap().starts_with(b"\0asm"));
     }
 }
