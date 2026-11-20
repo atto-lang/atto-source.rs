@@ -1,9 +1,10 @@
 # Worker-owned `Channel<int>` guest ABI — staged v1 contract
 
-**Status: host runtime plus checked Worker-owned versioned import bridge implemented and tested; compiler-to-guest
-channel ABI NOT yet admitted.** A passing JavaScript host model is not a
-compiled AttoLang guest execution receipt. Avoid falsely promoting this to
-`atto.browser.guest.v2`.
+**Status: checked channel reads, bounded construction, and JSPI async
+channel writes are staged in a draft source compiler. No exact-head
+compiler/Chromium execution receipt exists yet.** JavaScript host tests and
+synthetic-module probes must never be promoted to compiled-guest PASS evidence.
+All other backends remain independently unverified.
 
 ## Source behavior to implement
 
@@ -144,3 +145,54 @@ Future compiler work must implement Channel<int> and
 Future<Result<Option<int>,IoError>> source typing, JSPI await lowering,
 ADT construction, source-level nb readch and compiler-generated markers.
 The bridge is not a substitute for any of those acceptance gates.
+
+## Checked write staging — distinct from try_send (November 19, 2026)
+
+`c << value` and `c.send_async(value)` are the same restricted
+`Channel<int>` **suspending** write operation with result
+`Result<void,IoError>`. The checker requires a `susp`/`suspends`
+caller and a statically typed `Channel<int>` plus `int` payload; it
+rejects live object loans and protected state leases across suspension.
+
+```atto
+pub susp fnc send_and_read(Channel<int> c): Result<Option<int>,IoError> {
+  match c << 42 over
+    on Ok() -> { return (c >>); }
+    on Err(error) -> { return Err(error); }
+  end
+}
+```
+
+There is **no** implicit conversion of the returned `Result` to an
+`int`; a standalone discarded `c << 42;` produces `E_IO_DISCARD`
+in the restricted browser compiler. `c.try_send(value)` instead makes
+one immediate nonparking attempt, returning checked `Err(Full)` when
+not admitted; it never waits or masquerades as successful async send.
+
+The new `atto.channel_int_send_async_v1(channel: i32, value: i64) ->
+status: i32` import is JSPI-suspending. It waits only for actual FIFO
+admission or a terminal error. A full queue imposes backpressure, and
+capacity zero requires a pending receiver; no busy polling or scheduler
+carrier parking is permitted. Close rejects pending writers with
+`Err(Closed)` without publishing their values. Trusted owner cancellation
+can remove pending writers with `Err(Cancelled)`. Pending writers are
+quota-bounded independently of pending readers, and the runtime does not
+allow a nonblocking writer to overtake an earlier waiting writer.
+A mandatory `cooperate` turn follows completion, including immediate
+admission. Ordinary host write errors are numeric checked statuses,
+not uncaught JS exceptions.
+
+One `ChannelIntHostV1` is bound to one Worker guest adapter and may
+not be attached to another guest instance. This is **in-process
+Worker/adapter scoping**, not proof of native TenantVM memory isolation
+or of cross-tenant channel authorization. Those require independent
+backend security tests.
+
+**Verification required:** cargo tests, Node host/adapter tests, exact
+Wasm import signature validation, compiled browser guest send/receive
+backpressure and capacity-zero rendezvous, cancellation/close races,
+cross-tenant handle rejection and exact Git tree receipts. These are
+new staged tests and must remain NOT_EXECUTED until a real runner reports
+completion. General `nb readch`, `select`, cross-Worker transport and
+native backend guest channels remain separately unsupported.
+
