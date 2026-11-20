@@ -1,0 +1,16 @@
+// Type-checked typed inbox and explicit outbound upper bound.
+// This profile has only executable int/bool mailbox payloads.
+// expect-exit: 0
+// expect-stdout: 42
+define actor Router receives int sends int as
+    susp receive(ActorMail<int> mail): void {
+        stdio.println(mail.value);
+        return;
+    }
+end
+
+pub susp fnc main(): int {
+    val router = spawn Router();
+    router.send(42);
+    return 0;
+}
