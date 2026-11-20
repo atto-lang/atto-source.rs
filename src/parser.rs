@@ -247,6 +247,8 @@ pub struct Parser {
     erlang_body: bool,
     state_method: bool,
     state_binder: Option<String>,
+    factories_seen: Vec<&'static str>,
+    factory_shadowing: Vec<(String, Pos)>,
 }
 
 struct TypeFirstField {
@@ -300,6 +302,8 @@ impl Parser {
             erlang_body: false,
             state_method: false,
             state_binder: None,
+            factories_seen: Vec::new(),
+            factory_shadowing: Vec::new(),
         }
     }
 
@@ -399,6 +403,9 @@ impl Parser {
         let pos = self.pos();
         match self.peek().clone() {
             Tok::Ident(s) => {
+                if matches!(s.as_str(), "Record" | "Tuple" | "Map") {
+                    self.factory_shadowing.push((s.clone(), pos));
+                }
                 if is_reserved(&s) {
                     return Err(Diagnostic::new(
                         pos,
@@ -684,6 +691,12 @@ impl Parser {
                     return Err(unsupported(self.pos(), &what));
                 }
                 _ => prog.funcs.push(self.parse_func()?),
+            }
+        }
+        for (name, pos) in &self.factory_shadowing {
+            if self.factories_seen.iter().any(|factory| factory == name) {
+                return Err(Diagnostic::new(*pos, "E_RESERVED",
+                    format!("builtin factory '{name}.of' cannot be shadowed by a user declaration")));
             }
         }
         prog.type_names = std::mem::take(&mut self.type_names);
@@ -2876,6 +2889,85 @@ impl Parser {
         Ok(args)
     }
 
+
+    /// Canonical Record.of fields are static labels, not dynamic arguments.
+    /// Checked Record allocation and shape validation remain in later passes.
+    fn parse_record_of_args(&mut self) -> R<Vec<(String, Expr)>> {
+        self.expect(Tok::LParen, "'(' after Record.of")?;
+        let mut fields = Vec::new();
+        if self.eat(&Tok::RParen) { return Ok(fields); }
+        loop {
+            if fields.len() >= MAX_PARAMS {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "too many Record.of fields"));
+            }
+            let at = self.pos();
+            let name = match (self.peek().clone(), self.peek_at(1)) {
+                (Tok::Ident(s), Tok::Colon | Tok::Assign) => s,
+                (Tok::Str(s), Tok::Colon) => s,
+                _ => return Err(Diagnostic::new(at, "E_UNSUPPORTED",
+                    "Record.of requires static field=value or quoted field: value; dynamic keys/spreads forbidden")),
+            };
+            self.advance(); // name
+            self.advance(); // ':' or '='
+            if fields.iter().any(|(prior, _): &(String, Expr)| *prior == name) {
+                return Err(Diagnostic::new(at, "E_DUPLICATE",
+                    format!("duplicate Record.of field '{name}'")));
+            }
+            let value = self.parse_expr()?;
+            fields.push((name, value));
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RParen) { break; }
+            } else {
+                self.expect(Tok::RParen, "')' after Record.of fields")?;
+                break;
+            }
+        }
+        Ok(fields)
+    }
+
+    /// Map.of supports either Entry-arrow or alternating key/value arguments.
+    /// Guest Map allocation remains explicitly unsupported until implemented.
+    fn parse_map_of_args(&mut self) -> R<Vec<(Expr, Expr)>> {
+        self.expect(Tok::LParen, "'(' after Map.of")?;
+        let mut entries: Vec<(Expr, Expr)> = Vec::new();
+        if self.eat(&Tok::RParen) { return Ok(entries); }
+        let mut arrow_form: Option<bool> = None;
+        loop {
+            if entries.len() >= MAX_PARAMS / 2 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "too many Map.of pairs"));
+            }
+            let key = self.parse_expr()?;
+            let arrow = self.eat(&Tok::FatArrow);
+            if arrow_form.is_some_and(|prior| prior != arrow) {
+                return Err(Diagnostic::new(key.pos, "E_FACTORY_ARITY",
+                    "Map.of cannot mix Entry-arrow and alternating key/value pairs"));
+            }
+            arrow_form = Some(arrow);
+            if !arrow && !self.eat(&Tok::Comma) {
+                return Err(Diagnostic::new(self.pos(), "E_FACTORY_ARITY",
+                    "Map.of positional arguments require alternating key/value pairs"));
+            }
+            let value = self.parse_expr()?;
+            if let Some(key_id) = constant_map_key(&key) {
+                if entries.iter().any(|(prev, _)| constant_map_key(prev).as_deref()
+                    == Some(key_id.as_str())) {
+                    return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
+                        "duplicate constant Map.of key"));
+                }
+            }
+            entries.push((key, value));
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RParen) { break; }
+            } else {
+                self.expect(Tok::RParen, "')' after Map.of pairs")?;
+                break;
+            }
+        }
+        Ok(entries)
+    }
+
     fn parse_postfix(&mut self) -> R<Expr> {
         let mut chain = 0u32;
         let r = self.parse_postfix_chain(&mut chain);
@@ -2955,11 +3047,36 @@ impl Parser {
                     self.grow(1)?;
                     *chain += 1;
                     if *self.peek() == Tok::LParen {
-                        let args = self.parse_args()?;
-                        e = Expr {
-                            kind: ExprKind::MethodCall(Box::new(e), member, args),
-                            pos: dot,
+                        let builtin = match &e.kind {
+                            ExprKind::Var(base) if member == "of"
+                                && matches!(base.as_str(), "Record" | "Tuple" | "Map") =>
+                                Some(base.clone()),
+                            _ => None,
                         };
+                        if let Some(name) = builtin {
+                            let kind = match name.as_str() {
+                                "Record" => ExprKind::Record(self.parse_record_of_args()?),
+                                "Map" => ExprKind::Map(self.parse_map_of_args()?),
+                                "Tuple" => ExprKind::Tuple(self.parse_args()?),
+                                _ => unreachable!(),
+                            };
+                            let symbol = match name.as_str() {
+                                "Record" => "Record",
+                                "Map" => "Map",
+                                "Tuple" => "Tuple",
+                                _ => unreachable!(),
+                            };
+                            if !self.factories_seen.contains(&symbol) {
+                                self.factories_seen.push(symbol);
+                            }
+                            e = Expr {kind, pos: dot};
+                        } else {
+                            let args = self.parse_args()?;
+                            e = Expr {
+                                kind: ExprKind::MethodCall(Box::new(e), member, args),
+                                pos: dot,
+                            };
+                        }
                     } else {
                         e = Expr {
                             kind: ExprKind::Member(Box::new(e), member),
