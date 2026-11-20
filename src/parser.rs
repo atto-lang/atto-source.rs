@@ -2988,6 +2988,29 @@ impl Parser {
                 // 'pending |> susp |f| -> await f >> val x' too early.
                 break;
             }
+            // Two *contiguous* '<' tokens are the checked suspending
+            // channel write operator, never a numeric shift or comparison.
+            // Parse the payload once at additive precedence, then let the
+            // typed checker enforce Channel<int>, int and suspending effects.
+            if *self.peek() == Tok::Lt && *self.peek_at(1) == Tok::Lt
+                && self.toks[self.i].pos.line == self.toks[self.i + 1].pos.line
+                && self.toks[self.i].pos.col.checked_add(1) ==
+                   Some(self.toks[self.i + 1].pos.col) {
+                if *self.peek_at(2) == Tok::Lt
+                    && self.toks[self.i + 1].pos.line == self.toks[self.i + 2].pos.line
+                    && self.toks[self.i + 1].pos.col.checked_add(1) ==
+                       Some(self.toks[self.i + 2].pos.col) {
+                    return Err(Diagnostic::new(pos, "E_IO_SYNTAX",
+                        "triple-angle <<< is not a Channel<int> write"));
+                }
+                self.advance(); self.advance();
+                self.grow(1)?;
+                links += 1;
+                let value=self.parse_additive()?;
+                left=Expr {kind:ExprKind::Call(
+                    "$atto_channel_send_async".to_owned(), vec![left,value]),pos};
+                continue;
+            }
             let op = match self.peek() {
                 Tok::Lt => BinOp::Lt,
                 Tok::Le => BinOp::Le,
