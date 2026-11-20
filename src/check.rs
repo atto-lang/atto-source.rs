@@ -134,7 +134,14 @@ pub enum TExpr {
     Local(u32),
     /// Caller-local inline lexical body. Its result is stored in an i64/f64/i32
     /// function local; only a task-local branch can exit the block.
-    InlineTask { body: Vec<TStmt>, result_slot: Option<u32> },
+    InlineTask {
+        body: Vec<TStmt>,
+        result_slot: Option<u32>,
+        /// Statically registered, zero-capture primitive cleanups in source
+        /// order. Emitted in reverse after the task-local exit block.
+        /// No suspension, errors, resource ownership or dynamic registration.
+        cleanups: Vec<Vec<TStmt>>,
+    },
     Neg(Box<TE>),
     Not(Box<TE>),
     /// operand type is the type of `l`
@@ -626,6 +633,32 @@ fn inline_task_scalar_stmts(body: &[Stmt]) -> bool {
             arms.iter().all(|(cond, then)|
                 inline_task_scalar_expr(cond) && inline_task_scalar_stmts(then))
                 && otherwise.as_ref().is_none_or(|b| inline_task_scalar_stmts(b)),
+        _ => false,
+    })
+}
+
+/// The first cleanup profile can only promise execution on *normal* and
+/// task-local early return. While cleanup is registered, reject guest code
+/// that could trap or allocate before reaching the epilogue. This is a
+/// deliberately narrower proof than the ordinary scalar inline profile.
+fn inline_task_cleanup_safe_expr(e: &Expr) -> bool {
+    matches!(&e.kind,
+        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) |
+        ExprKind::Str(_) | ExprKind::Var(_))
+}
+
+fn inline_task_cleanup_safe_stmts(body: &[Stmt]) -> bool {
+    body.iter().all(|s| match s {
+        Stmt::Bind { init, .. } | Stmt::Assign { value: init, .. } =>
+            inline_task_cleanup_safe_expr(init),
+        Stmt::Return(Some(v), _) => inline_task_cleanup_safe_expr(v),
+        Stmt::Return(None, _) => true,
+        Stmt::Block(inner) => inline_task_cleanup_safe_stmts(inner),
+        Stmt::If { arms, otherwise, .. } =>
+            arms.iter().all(|(test, arm)|
+                inline_task_cleanup_safe_expr(test) &&
+                    inline_task_cleanup_safe_stmts(arm))
+                && otherwise.as_ref().is_none_or(|b| inline_task_cleanup_safe_stmts(b)),
         _ => false,
     })
 }
@@ -1619,7 +1652,9 @@ fn expr_escape_effects(value: &TE, effects: &[EscapeEffects]) -> EscapeEffects {
         | TExpr::EnumVal(_) | TExpr::GlobalGet(_) | TExpr::Alloc(_)
         | TExpr::CollectionAlloc(_)
         | TExpr::Spawn(_) => EscapeEffects::default(),
-        TExpr::InlineTask { body, .. } => stmts_escape_effects(body, effects),
+        TExpr::InlineTask { body, cleanups, .. } =>
+            cleanups.iter().fold(stmts_escape_effects(body, effects),
+                |all, deferred| all.union(stmts_escape_effects(deferred, effects))),
         TExpr::IntToFloat(v) | TExpr::FNeg(v) | TExpr::Neg(v)
         | TExpr::Not(v) | TExpr::Print { value: v, .. }
         | TExpr::PrintStrVal { value: v, .. } | TExpr::AdtIs { obj: v, .. }
@@ -2319,7 +2354,9 @@ fn pure_expr(value: &TE, pure_indices: &BTreeSet<u32>) -> bool {
     match &value.e {
         TExpr::I64(_) | TExpr::F64(_) | TExpr::Bool(_) |
         TExpr::StrConst(_, _) | TExpr::Local(_) | TExpr::EnumVal(_) => true,
-        TExpr::InlineTask { body, .. } => pure_stmts(body, pure_indices),
+        TExpr::InlineTask { body, cleanups, .. } =>
+            pure_stmts(body, pure_indices) &&
+                cleanups.iter().all(|d| pure_stmts(d, pure_indices)),
         TExpr::IntToFloat(a) | TExpr::FNeg(a) |
         TExpr::Neg(a) | TExpr::Not(a) |
         TExpr::AdtIs { obj: a, .. } | TExpr::AdtPayload(a) =>
@@ -2435,7 +2472,8 @@ fn any_in(e: &TE, f: &dyn Fn(&TE) -> bool) -> bool {
         return true;
     }
     match &e.e {
-        TExpr::InlineTask { body, .. } => any_in_stmts(body, f),
+        TExpr::InlineTask { body, cleanups, .. } =>
+            any_in_stmts(body, f) || cleanups.iter().any(|d| any_in_stmts(d, f)),
         TExpr::Trap { value, .. } => any_in(value, f),
         TExpr::Neg(a) | TExpr::Not(a) | TExpr::FNeg(a) | TExpr::IntToFloat(a) => any_in(a, f),
         TExpr::Bin(_, a, b) | TExpr::Builtin(_, a, b) => any_in(a, f) || any_in(b, f),
@@ -2749,6 +2787,43 @@ impl<'a> FnCx<'a> {
         Ok(c)
     }
 
+
+    /// Check the only admitted task-local defer form: a statically registered,
+    /// zero-capture prefix with direct assignments of nontrapping scalar values
+    /// to already-live mutable scalars. It cannot acquire/release a resource,
+    /// launch work, return, read actor/tenant state or suspend.
+    fn inline_task_cleanup(&mut self, stmt: &Stmt) -> R<Vec<TStmt>> {
+        let Stmt::Defer { params, body, args, pos } = stmt else {
+            unreachable!("callers pass only a defer")
+        };
+        if !params.is_empty() || !args.is_empty() {
+            return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                "inline task defer cannot have factory captures or arguments"));
+        }
+        if body.len() > 64 {
+            return Err(Diagnostic::new(*pos, "E_SOURCE_LIMIT",
+                "inline task defer exceeds 64 primitive assignments"));
+        }
+        let mut typed = Vec::with_capacity(body.len());
+        for s in body {
+            let Stmt::Assign { value, pos: at, .. } = s else {
+                return Err(Diagnostic::new(*pos, "E_UNSUPPORTED",
+                    "inline task defer permits only direct scalar assignments"));
+            };
+            if !inline_task_cleanup_safe_expr(value) {
+                return Err(Diagnostic::new(*at, "E_UNSUPPORTED",
+                    "inline task defer cannot perform potentially trapping or effectful evaluation"));
+            }
+            match self.stmt(s)? {
+                TStmt::Set(slot, v) if matches!(v.ty,
+                    Type::Int | Type::Bool | Type::Float | Type::Str) =>
+                    typed.push(TStmt::Set(slot, v)),
+                _ => return Err(Diagnostic::new(*at, "E_UNSUPPORTED_TYPE",
+                    "inline task defer can mutate only primitive mutable locals")),
+            }
+        }
+        Ok(typed)
+    }
 
     /// Typecheck an inline task under a fresh lexical scope. Only primitive
     /// scalar binds/assignments, if/else, block and local returns are permitted.
@@ -3929,9 +4004,19 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(e.pos, "E_TASK_RETURN_TYPE",
                         "'do sync task' cannot return a value from any lexical branch"));
                 }
-                if !inline_task_scalar_stmts(body) {
+                // Only a contiguous, top-level defer prefix is statically
+                // registered. Conditional/later/nested defers need runtime
+                // flags and validated lexical-scope cleanup; reject them.
+                let defer_count = body.iter().take_while(|stmt|
+                    matches!(stmt, Stmt::Defer { .. })).count();
+                let executable = &body[defer_count..];
+                if !inline_task_scalar_stmts(executable) {
                     return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
-                        "inline task requires proven non-susp primitive statements; calls, ownership and cleanup are unsupported"));
+                        "inline task body has unproven suspension, ownership, dynamic defer or effects"));
+                }
+                if defer_count > 0 && !inline_task_cleanup_safe_stmts(executable) {
+                    return Err(Diagnostic::new(e.pos, "E_UNSUPPORTED",
+                        "cleanup-bearing inline task must be free of potentially trapping operations"));
                 }
                 let declared = declared_type.map(|t| self.resolve(t, e.pos)).transpose()?;
                 if *discard && declared.is_some_and(|ty| ty != Type::Void) {
@@ -3940,10 +4025,26 @@ impl<'a> FnCx<'a> {
                 }
                 let mut inferred = declared;
                 let mut result_slot = None;
-                let checked = self.inline_task_scoped(
-                    body, declared, *discard, &mut inferred, &mut result_slot)?;
+                // The zero-capture cleanup is checked at its lexical
+                // registration point; it cannot capture later task locals.
+                // All errors unwind the checker scope, never publish an IR.
+                self.scopes.push(Vec::new());
+                let checked = (|| -> R<(Vec<TStmt>, Vec<Vec<TStmt>>)> {
+                    let mut cleanups = Vec::with_capacity(defer_count);
+                    for stmt in &body[..defer_count] {
+                        cleanups.push(self.inline_task_cleanup(stmt)?);
+                    }
+                    let mut executable_ir = Vec::with_capacity(executable.len());
+                    for stmt in executable {
+                        executable_ir.push(self.inline_task_stmt(
+                            stmt, declared, *discard, &mut inferred, &mut result_slot)?);
+                    }
+                    Ok((executable_ir, cleanups))
+                })();
+                self.pop_scope();
+                let (checked, cleanups) = checked?;
                 let actual = inferred.unwrap_or(Type::Void);
-                if actual != Type::Void && body.is_empty() {
+                if actual != Type::Void && executable.is_empty() {
                     // Preserve the established diagnostic: an explicitly
                     // non-void empty task produces void, not a missing
                     // branch return (there are no branches to analyze).
@@ -3954,7 +4055,7 @@ impl<'a> FnCx<'a> {
                     return Err(Diagnostic::new(e.pos, "E_RETURN",
                         "non-void inline task must return on every lexical path"));
                 }
-                Ok(TE { e: TExpr::InlineTask { body: checked, result_slot }, ty: actual })
+                Ok(TE { e: TExpr::InlineTask { body: checked, result_slot, cleanups }, ty: actual })
             }
             ExprKind::Unary(UnOp::Neg, inner) if matches!(inner.kind, ExprKind::Int(None)) => Ok(TE {
                 e: TExpr::I64(i64::MIN),

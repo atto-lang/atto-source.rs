@@ -11,6 +11,12 @@ const pass = [
   ['do sync task {}; return 42;', 42n],
   ['do sync task<void> {}; return 42;', 42n],
   ['do sync task { return; }; return 42;', 42n],
+  ['do sync task { defer {}; return; }; return 42;', 42n],
+  ['let x = 0; do sync task { defer { x = 42; }; return; }; return x;', 42n],
+  ['let x = 0; do sync task<void> { defer { x = 1; }; defer { x = 2; }; return; }; return 41 + x;', 42n],
+  ['let x = 0; do sync task { defer { x = 42; }; }; return x;', 42n],
+  ['let x = 0; val v = sync task<int> { defer { x = 2; }; return 40; }; return v + x;', 42n],
+  ['let x = 0; val v = sync task<int> { defer { x = 2; }; if true { return 40; } else { return 1; } fi }; return v + x;', 42n],
   ['do sync task<void> { return; }; return 42;', 42n],
   ['do /* gap */ sync /* gap */ task<void> { return; }; return 42;', 42n],
   ['block { do sync task {}; } return 42;', 42n],
@@ -59,6 +65,14 @@ const fail = [
   ['val x = sync task<int> { return stdio.println(42); }; return x;', 'E_UNSUPPORTED'],
   ['val x = sync task<int> { return await task<int> { return 42; }; }; return x;', 'E_UNSUPPORTED'],
   ['val x = task<int> { return 42; }; return 0;', 'E_UNSUPPORTED'],
+  ['let x = 0; do sync task { defer { x = x + 1; }; }; return x;', 'E_UNSUPPORTED'],
+  ['let x = 0; do sync task { defer { x = 1; }; x = x + 1; }; return x;', 'E_UNSUPPORTED'],
+  ['let x = 0; do sync task { x = 1; defer { x = 2; }; }; return x;', 'E_UNSUPPORTED'],
+  ['let x = 0; do sync task { block { defer { x = 2; }; } }; return x;', 'E_UNSUPPORTED'],
+  ['let x = 0; do sync task { defer { val y = 42; }; }; return x;', 'E_UNSUPPORTED'],
+  ['let x = 0; do sync task { defer { x = borrow! x; }; }; return x;', 'E_UNSUPPORTED'],
+  ['let x = 0; do sync task { defer { x = 2; }; if x == 0 { return; } fi }; return x;', 'E_UNSUPPORTED'],
+  ['let x = 0; do sync task { defer { x = 2; }; return sync task<int> { return 42; }; }; return x;', 'E_TASK_RETURN_TYPE'],
 ];
 const work = await mkdtemp(join(tmpdir(), 'atto-sync-task-'));
 try {

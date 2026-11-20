@@ -735,13 +735,18 @@ impl Emit<'_> {
                 }
             }
             TExpr::Bool(b) => self.i32c(*b as i32),
-            TExpr::InlineTask { body, result_slot } => {
+            TExpr::InlineTask { body, result_slot, cleanups } => {
                 // Caller-local lexical scope, not a scheduled Task/Future.
-                // Every InlineReturn branches to this block's end; it MUST
-                // NOT return from the enclosing function or skip its cleanup.
+                // Every InlineReturn branches to this block's end, reaching
+                // the same epilogue as normal completion. All cleanups were
+                // registered unconditionally at entry, have no possible
+                // guest trap/suspension or ownership transfer, and run LIFO.
                 self.open(0x02, 0x40, Frame::InlineTask);
                 self.stmts(body);
                 self.close();
+                for deferred in cleanups.iter().rev() {
+                    self.stmts(deferred);
+                }
                 if let Some(slot) = result_slot { self.get(*slot); }
             }
             TExpr::Local(slot) => {

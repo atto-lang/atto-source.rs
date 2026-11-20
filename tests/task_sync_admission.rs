@@ -21,6 +21,12 @@ fn inline_empty_and_scalar_return_profiles() {
     admit("pub fnc main(): int { do sync task {}; return 42; }");
     admit("pub fnc main(): int { do sync task<void> {}; return 42; }");
     admit("pub fnc main(): int { do sync task { return; }; return 42; }");
+    admit("pub fnc main(): int { do sync task { defer {}; return; }; return 42; }");
+    admit("pub fnc main(): int { let x = 0; do sync task { defer { x = 42; }; return; }; return x; }");
+    admit("pub fnc main(): int { let x = 0; do sync task<void> { defer { x = 1; }; defer { x = 2; }; return; }; return 41 + x; }");
+    admit("pub fnc main(): int { let x = 0; do sync task { defer { x = 42; }; }; return x; }");
+    admit("pub fnc main(): int { let x = 0; val v = sync task<int> { defer { x = 2; }; return 40; }; return v + x; }");
+    admit("pub fnc main(): int { let x = 0; val v = sync task<int> { defer { x = 2; }; if true { return 40; } else { return 1; } fi }; return v + x; }");
     admit("pub fnc main(): int { do sync task<void> { return; }; return 42; }");
     admit("pub fnc main(): int { do /* gap */ sync /* gap */ task < void > { return; }; return 42; }");
     admit("pub fnc main(): int { block { do sync task {}; } return 42; }");
@@ -77,7 +83,14 @@ fn fail_closed_type_effect_and_cleanup_boundaries() {
     reject("pub fnc main(): int { val x = sync task<int> { return spawn Worker(); }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return stdio.println(42); }; return x; }", "E_UNSUPPORTED");
     reject("pub fnc main(): int { val x = sync task<int> { return await task<int> { return 42; }; }; return x; }", "E_UNSUPPORTED");
-    reject("pub fnc main(): int { do sync task<void> { defer {}; return; }; return 0; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { let x = 0; do sync task { defer { x = x + 1; }; }; return x; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { let x = 0; do sync task { defer { x = 1; }; x = x + 1; }; return x; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { let x = 0; do sync task { x = 1; defer { x = 2; }; }; return x; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { let x = 0; do sync task { block { defer { x = 2; }; } }; return x; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { let x = 0; do sync task { defer { val y = 42; }; }; return x; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { let x = 0; do sync task { defer { x = borrow! x; }; }; return x; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { let x = 0; do sync task { defer { x = 2; }; if x == 0 { return; } fi }; return x; }", "E_UNSUPPORTED");
+    reject("pub fnc main(): int { let x = 0; do sync task { defer { x = 2; }; return sync task<int> { return 42; }; }; return x; }", "E_TASK_RETURN_TYPE");
 }
 #[test]
 fn independent_child_cancellation_not_silently_enabled() {
