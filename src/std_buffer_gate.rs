@@ -175,7 +175,7 @@ pub fnc main(): int { return 1; }"#;
     const CANONICAL_ENDIAN: &str = include_str!("../tests/fixtures/canonical-buffer-v1/stdlib/core/u32_endian.atto");
     const CANONICAL_BUFFER: &str = include_str!("../tests/fixtures/canonical-buffer-v1/stdlib/std/buffer.atto");
 
-    fn authentic_sources<'a>() -> [(&'a str, &'a str); 4] {
+    fn authentic_sources() -> [(&'static str, &'static str); 4] {
         [
             ("stdlib/core/byte_bounds.atto", CANONICAL_BOUNDS),
             ("stdlib/core/identity.atto", CANONICAL_IDENTITY),
