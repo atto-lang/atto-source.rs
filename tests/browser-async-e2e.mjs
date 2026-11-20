@@ -16,6 +16,8 @@ const files=new Map([
   ['/channel-source-guest-probe.mjs',[new URL('./browser-async/channel-source-guest-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_guest_v1.mjs',[new URL('../runtime/browser/channel_int_guest_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/runtime/browser/channel_int_v1.mjs',[new URL('../runtime/browser/channel_int_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/stdio-text-host-probe.mjs',[new URL('./browser-async/stdio-text-host-probe.mjs',import.meta.url),'text/javascript; charset=utf-8']],
+  ['/runtime/browser/stdio_text_host_v1.mjs',[new URL('../runtime/browser/stdio_text_host_v1.mjs',import.meta.url),'text/javascript; charset=utf-8']],
   ['/atto_compiler.wasm',[new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url),'application/wasm']],
 ]);
 const server=createServer(async(req,res)=>{
@@ -73,6 +75,18 @@ try{
   await until(async()=>evaluate('window.__attoReady===true'),'module script ready');
   // Test the actual Worker host channel runtime independently of guest
   // compilation. This must NEVER count as the missing Channel<T> guest ABI.
+  // Independent Chromium Worker host adapter proof. This is NOT source-compiled
+  // Atto guest stdio (the string Channel guest ABI remains unimplemented).
+  const stdioProbe=await evaluate("new Promise((resolve,reject)=>{"+
+    "const w=new Worker('/stdio-text-host-probe.mjs',{type:'module'});"+
+    "const t=setTimeout(()=>{w.terminate();reject(Error('stdio Worker timeout'))},5000);"+
+    "w.onmessage=e=>{clearTimeout(t);w.terminate();resolve(e.data)};"+
+    "w.onerror=e=>{clearTimeout(t);w.terminate();reject(Error('stdio Worker error'))};"+
+    "w.postMessage({});})");
+  assert.deepEqual(stdioProbe,{ok:true,alias:true,first:'alpha',second:'β\0z',
+    eof:true,readerConflict:'ReaderBusy',stdout:'Echo:alpha',
+    stderr:'echo complete',postRevoke:'Revoked'});
+  console.log('PASS Chromium Worker host: injected UTF-8 stdio, aliases, EOF, reader lease and revoke (NOT .atto guest)');
   const hostProbe=await evaluate(`new Promise((resolve,reject)=>{
     const worker=new Worker('/channel-host-probe.mjs',{type:'module'});
     const timeout=setTimeout(()=>{worker.terminate();reject(new Error('channel host timeout'))},5000);
