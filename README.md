@@ -436,3 +436,19 @@ See [language spec](https://github.com/atto-lang/atto-spec/pull/32) and
 **Evidence boundary:** These are host-side infrastructure and tests, NOT a source-compiled Atto `Channel<string>`, process-stdio import ABI, checked `writech` guest result, permission enforcement in the guest checker, or compiled stdin echo. `generation` is trusted host configuration; an independent broker must authenticate tenant/generation before ever handing out guest imports. The existing scalar `stdio.print` import is unchanged and does not prove fallible/suspending text writes.
 
 The compiler must fail closed on unsupported guest stdin/stdout channel operations until the type/ABI bridge is implemented and actual compiled .atto guest tests pass. Cross-backend parity remains NOT_EXECUTED in the portable contract at [atto-platform-conformance #50](https://github.com/atto-lang/atto-platform-conformance/pull/50); the normative target is [atto-spec #32](https://github.com/atto-lang/atto-spec/pull/32).
+
+
+## Checked process-stdio guest integration (draft, not CI-certified)
+
+The existing draft #257 now contains a compiler/type/lowering implementation candidate for `Channel<string>`, `Result<Option<string>,IoError>`, and a `Writable<string>` process stdout/stderr endpoint. It distinguishes void success (`on Ok` and `on Ok(_)`) from successful checked reads, which require a nested `Option<string>` match. The syntax `on Ok(_) -> match << input over ...` is intended to be identical to `on Ok(_) -> match readch input over ...`.
+
+- `src/ast.rs`, `src/parser.rs`, `src/check.rs`, `src/wasm.rs`, and `src/io_shorthand.rs`: checked typed I/O operators and explicit `atto.stdio_text` v1 + `atto.async` v2 Wasm import signatures; guest string values use packed pointer/length and nested tagged ADT records. The I/O effect annotation is **not** a capability grant.
+- `runtime/browser/stdio_text_guest_v1.mjs`: host-only bridge with a strict version+signature verifier, broker-injected tenant identity/generation and explicit stdin/stdout/stderr Boolean grants, guest-owned memory bounds, copied writes, checked UTF-8 errors, cancellation, and revocation.
+- `tests/stdio_result_void_patterns.rs` and `tests/stdio_text_guest_compile.rs`: Rust source compiler positive/negative cases for the checked echo and `<<`/`readch` equivalence.
+- `tests/browser-async/stdio-text-source-guest-probe.mjs`: genuine compiler-Wasm → compiled .atto echo → Chromium JSPI guest path, with nine input/permission cases; wired to `tests/browser-async-e2e.mjs`.
+
+**Executed evidence:** 17/17 local Node host/runtime-import tests passed on exact Git blob contents (`stdio_text_host_v1.mjs`, `stdio_text_guest_v1.mjs` and their test files). **Not executed:** new Rust/Cargo compiler tests, Wasm compiler build, compiled echo guest, Chromium worker probe, full conformance or any other backend. Source and approved private carrier Actions are failing before all steps. Never claim guest or cross-backend parity until a real compiled guest and exact SHA CI run succeeds.
+
+The existing standalone `stdio.out << value` and `writech stdio.out, value` shortcut uses the older nonfallible `stdio.print` ABI. **It is not equivalent to the new checked expression `val result = writech output, value`**. This compatibility distinction requires an explicit migration plan before making checked writes canonical for standalone statements.
+
+Portable aliases/EOF/error contract: [atto-platform-conformance #50](https://github.com/atto-lang/atto-platform-conformance/pull/50); language authority: [atto-spec #32](https://github.com/atto-lang/atto-spec/pull/32).
