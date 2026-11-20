@@ -68,6 +68,16 @@ fn profile(p: &Program) -> R<Option<Profile>> {
     }
     let Some(name) = class_of_named(p, param.ty) else { return Ok(None); };
     let source = ordinary_class(p, name).unwrap();
+    // A ~Class contract includes every public INSTANCE method, even when
+    // the body currently reads only fields. The scalar-snapshot ABI carries
+    // fields, not concrete receiver/method dispatch slots. Do not silently
+    // accept a source class missing required methods: that would violate the
+    // all-member structural contract. A later checked concrete-receiver
+    // thunk must prove methods before lifting this gate.
+    if source.methods.iter().any(|m| m.public && !m.is_static) {
+        return Err(unsupported(param.pos,
+            "public structural class methods require a checked concrete-receiver method witness ABI"));
+    }
     let public: Vec<_> = source.fields.iter().filter(|q| q.public).collect();
     if public.is_empty() || public.len() > MAX_PROJECTED_INTS {
         return Ok(None);
