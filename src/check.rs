@@ -805,53 +805,142 @@ fn authenticate_flat_copy_aot(classes: &[ClassInfo], ci: u32, pos: Pos) -> R<()>
     Ok(())
 }
 
-/// Guest profile admission: preserve the real source AST for tooling while
-/// preventing forged analysis-only unsafe nodes from reaching any lowerer.
-fn first_unsafe_block(body: &[Stmt]) -> Option<Pos> {
-    for stmt in body {
-        let found = match stmt {
-            Stmt::UnsafeBlock { pos, .. } => Some(*pos),
-            Stmt::StateWrite { body, .. } | Stmt::Block(body)
-            | Stmt::While { body, .. } | Stmt::Loop { body, .. }
-            | Stmt::ForIn { body, .. } => first_unsafe_block(body),
-            Stmt::For { init, update, body, .. } => init.as_ref()
-                .and_then(|s| first_unsafe_block(std::slice::from_ref(s.as_ref())))
-                .or_else(|| update.as_ref()
-                    .and_then(|s| first_unsafe_block(std::slice::from_ref(s.as_ref()))))
-                .or_else(|| first_unsafe_block(body)),
-            Stmt::If { arms, otherwise, .. } => arms.iter()
-                .find_map(|(_, body)| first_unsafe_block(body))
-                .or_else(|| otherwise.as_ref().and_then(|b| first_unsafe_block(b))),
-            Stmt::Try { body, catch, finally, .. } => first_unsafe_block(body)
-                .or_else(|| catch.as_ref().and_then(|(_, b)| first_unsafe_block(b)))
-                .or_else(|| finally.as_ref().and_then(|b| first_unsafe_block(b))),
-            Stmt::Defer { body, .. } | Stmt::Recover { body, .. } => first_unsafe_block(body),
-            Stmt::Match { arms, .. } => arms.iter()
-                .find_map(|arm| first_unsafe_block(&arm.body)),
-            _ => None,
-        };
-        if found.is_some() { return found; }
-    }
-    None
-}
-
+/// Guest profile admission: a caller may construct `Program` without
+/// passing through the lexer or parser. Scan *every reachable expression and
+/// statement*, including lambda bodies and field initializers, before any
+/// effect inference, lambda rewriting, owner analysis, or guest codegen.
+///
+/// Iterative traversal keeps even a maliciously forged deep AST from using
+/// unbounded C/Rust call-stack depth. The node budget is independent of the
+/// normal parser's source nesting and tree-height limits.
 fn deny_unsafe_guest_ast(p: &Program) -> R<()> {
-    // User-crafted ASTs are no more privileged than text parsed by the
-    // production browser compiler; no native host grant is possible.
-    let forbidden = p.funcs.iter().find_map(|f| if f.is_unsafe {
-        Some(f.pos)
-    } else { first_unsafe_block(&f.body) })
-    .or_else(|| p.classes.iter().find_map(|c| {
-        c.ctor.as_ref().and_then(|ctor| first_unsafe_block(&ctor.body))
-            .or_else(|| c.methods.iter().find_map(|m| first_unsafe_block(&m.body)))
-    }))
-    .or_else(|| p.actors.iter().find_map(|a| {
-        a.methods.iter().find_map(|m| first_unsafe_block(&m.body))
-            .or_else(|| a.receive.as_ref().and_then(|r| first_unsafe_block(&r.body)))
-    }));
-    if let Some(pos) = forbidden {
-        return Err(Diagnostic::new(pos, "E_UNSAFE_DOMAIN",
-            "analysis-only unsafe source AST cannot be checked into browser/Wasm guest code"));
+    enum Node<'a> {
+        Stmt(&'a Stmt),
+        Expr(&'a Expr),
+    }
+    fn body<'a>(work: &mut Vec<Node<'a>>, stmts: &'a [Stmt]) {
+        work.extend(stmts.iter().map(Node::Stmt));
+    }
+    fn exprs<'a>(work: &mut Vec<Node<'a>>, expressions: &'a [Expr]) {
+        work.extend(expressions.iter().map(Node::Expr));
+    }
+    fn forbidden(pos: Pos) -> Diagnostic {
+        Diagnostic::new(pos, "E_UNSAFE_DOMAIN",
+            "unsafe source AST cannot be checked into browser/Wasm guest code")
+    }
+
+    const MAX_GUEST_AST_NODES: usize = 65_536;
+    let mut work = Vec::<Node<'_>>::new();
+    for function in &p.funcs {
+        if function.is_unsafe { return Err(forbidden(function.pos)); }
+        body(&mut work, &function.body);
+    }
+    for class in &p.classes {
+        for field in &class.fields {
+            if let Some(init) = &field.init { work.push(Node::Expr(init)); }
+        }
+        if let Some(ctor) = &class.ctor { body(&mut work, &ctor.body); }
+        for method in &class.methods { body(&mut work, &method.body); }
+    }
+    for actor in &p.actors {
+        for field in &actor.fields {
+            if let Some(init) = &field.init { work.push(Node::Expr(init)); }
+        }
+        if let Some(receive) = &actor.receive { body(&mut work, &receive.body); }
+        for method in &actor.methods { body(&mut work, &method.body); }
+    }
+
+    let mut visited = 0usize;
+    while let Some(node) = work.pop() {
+        visited += 1;
+        if visited > MAX_GUEST_AST_NODES {
+            return Err(Diagnostic::new(Pos::default(), "E_SOURCE_LIMIT",
+                "program AST exceeds bounded unsafe guest-admission visit budget"));
+        }
+        match node {
+            Node::Stmt(stmt) => match stmt {
+                Stmt::UnsafeBlock { pos, .. } => return Err(forbidden(*pos)),
+                Stmt::Bind { init, .. } => work.push(Node::Expr(init)),
+                Stmt::Assign { value, .. } => work.push(Node::Expr(value)),
+                Stmt::FieldAssign { target, value, .. } => {
+                    work.push(Node::Expr(target));
+                    work.push(Node::Expr(value));
+                }
+                Stmt::Expr(value) | Stmt::Throw(value, _) | Stmt::Raise(value, _)
+                | Stmt::Yield(value, _) | Stmt::YieldFrom(value, _) =>
+                    work.push(Node::Expr(value)),
+                Stmt::Return(Some(value), _) => work.push(Node::Expr(value)),
+                Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) => {}
+                Stmt::Block(inner) | Stmt::StateWrite { body: inner, .. }
+                | Stmt::Loop { body: inner, .. } => body(&mut work, inner),
+                Stmt::If { arms, otherwise, .. } => {
+                    for (condition, arm) in arms {
+                        work.push(Node::Expr(condition));
+                        body(&mut work, arm);
+                    }
+                    if let Some(other) = otherwise { body(&mut work, other); }
+                }
+                Stmt::While { cond, body: inner, .. } => {
+                    work.push(Node::Expr(cond));
+                    body(&mut work, inner);
+                }
+                Stmt::For { init, cond, update, body: inner, .. } => {
+                    if let Some(s) = init { work.push(Node::Stmt(s)); }
+                    if let Some(c) = cond { work.push(Node::Expr(c)); }
+                    if let Some(s) = update { work.push(Node::Stmt(s)); }
+                    body(&mut work, inner);
+                }
+                Stmt::ForIn { source, body: inner, .. } => {
+                    work.push(Node::Expr(source));
+                    body(&mut work, inner);
+                }
+                Stmt::Try { body: inner, catch, finally, .. } => {
+                    body(&mut work, inner);
+                    if let Some((_, catch)) = catch { body(&mut work, catch); }
+                    if let Some(finally) = finally { body(&mut work, finally); }
+                }
+                Stmt::Defer { args, body: inner, .. }
+                | Stmt::Recover { args, body: inner, .. } => {
+                    exprs(&mut work, args);
+                    body(&mut work, inner);
+                }
+                Stmt::Match { subject, arms, .. } => {
+                    work.push(Node::Expr(subject));
+                    for arm in arms {
+                        if let Some(guard) = &arm.guard { work.push(Node::Expr(guard)); }
+                        body(&mut work, &arm.body);
+                    }
+                }
+            },
+            Node::Expr(expr) => match &expr.kind {
+                ExprKind::Unary(_, inner) | ExprKind::Trap(inner)
+                | ExprKind::Ownership(_, _, inner) | ExprKind::Propagate(inner)
+                | ExprKind::Member(inner, _) => work.push(Node::Expr(inner)),
+                ExprKind::Binary(_, a, b) => {
+                    work.push(Node::Expr(a));
+                    work.push(Node::Expr(b));
+                }
+                ExprKind::Ternary(condition, yes, no) => {
+                    work.push(Node::Expr(condition));
+                    work.push(Node::Expr(yes));
+                    work.push(Node::Expr(no));
+                }
+                ExprKind::Call(_, args) | ExprKind::New(_, args)
+                | ExprKind::Array(args) => exprs(&mut work, args),
+                ExprKind::MethodCall(target, _, args) => {
+                    work.push(Node::Expr(target));
+                    exprs(&mut work, args);
+                }
+                ExprKind::Lambda { body: lambda_body, .. } => match lambda_body {
+                    LambdaBody::Expression(value) => work.push(Node::Expr(value)),
+                    LambdaBody::Statement(stmt) => work.push(Node::Stmt(stmt)),
+                    LambdaBody::Block(stmts) => body(&mut work, stmts),
+                },
+                ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_)
+                | ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::SelfRef
+                | ExprKind::StateRead(_) | ExprKind::Spawn(_) => {}
+            },
+        }
     }
     Ok(())
 }
