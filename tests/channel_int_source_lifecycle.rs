@@ -107,15 +107,13 @@ fn new_channel_constructor_is_not_an_unchecked_handle_or_generic_escape() {
 
 #[test]
 fn channel_shorthand_write_must_not_silently_become_nonparking_try_send() {
-    let body=r#"
-        match new Channel<int>(2) over
-            on Ok(ch) -> {
-                ch << 42;
-                return Err(0);
-            }
-            on Err(error) -> { return Err(error); }
-        end
+    let source=r#"
+        pub fnc unmarked_channel_writer(Channel<int> ch): int {
+            ch << 42;
+            return 0;
+        }
+        pub fnc main(): int { return 0; }
     "#;
-    assert!(compile(&src(body)).is_err(),
-        "a suspending write must not be silently lowered to unchecked try_send");
+    assert!(compile(source).is_err(),
+        "an unmarked non-suspending caller cannot use a potentially blocking channel write; it must not be silently lowered to try_send");
 }
