@@ -1647,4 +1647,70 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn lexical_guard_release_allows_successor_while_owner_task_continues() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let task_a = kernel.issue(None).unwrap();
+        let task_b = kernel.issue(None).unwrap();
+        let lock = kernel.add_mutex(4).unwrap();
+
+        let grant = owned(kernel.acquire(task_a, lock).unwrap());
+        kernel.claim(task_a, lock, grant).unwrap();
+        let pending_b = pending(kernel.acquire(task_b, lock).unwrap());
+        assert_eq!(kernel.terminal(task_a).unwrap(), None);
+
+        // Trusted lexical using-scope end releases guard before Task A ends.
+        kernel.trusted_guard_scope_exit(task_a, lock).unwrap();
+        assert_eq!(kernel.terminal(task_a).unwrap(), None);
+        assert_eq!(kernel.try_retire(task_a), Err(Error::NotQuiescent));
+        kernel.claim(task_b, lock, pending_b).unwrap();
+
+        // Cancel A after its lexical guard ended: no permit left to release,
+        // and its cancellation must not affect B's active critical section.
+        kernel.cancel(task_a).unwrap();
+        assert!(kernel.trusted_exit(task_a).unwrap().is_empty());
+        kernel.trusted_notifications_drained(task_a).unwrap();
+        kernel.try_retire(task_a).unwrap();
+        assert_eq!(kernel.terminal(task_a).unwrap(), Some(TaskExitKind::Cancelled));
+        assert_eq!(kernel.trusted_exit(task_b).unwrap(), vec![lock]);
+        kernel.trusted_notifications_drained(task_b).unwrap();
+        kernel.try_retire(task_b).unwrap();
+    }
+
+    #[test]
+    fn lexical_guard_release_must_be_lifo_and_failure_does_not_unlock() {
+        let mut scope = scoped();
+        scope.register(c(1), None).unwrap();
+        let first = owned(scope.acquire(c(1), 1).unwrap());
+        scope.enter(c(1), 1, first).unwrap();
+        let second = owned(scope.acquire(c(1), 2).unwrap());
+        scope.enter(c(1), 2, second).unwrap();
+
+        // An out-of-order release is refused with both guards still owned.
+        assert_eq!(scope.guard_scope_exit(c(1), 1), Err(Error::GuardOrder));
+        assert!(scope.locks[&1].has_active_lease());
+        assert!(scope.locks[&2].has_active_lease());
+        assert!(!scope.tasks[&1].cleanup_failed);
+        scope.guard_scope_exit(c(1), 2).unwrap();
+        scope.guard_scope_exit(c(1), 1).unwrap();
+        assert!(!scope.locks[&1].has_outstanding_grant());
+        assert!(!scope.locks[&2].has_outstanding_grant());
+        assert_eq!(scope.guard_scope_exit(c(1), 1), Err(Error::StaleTicket));
+        assert_eq!(scope.certify_physical_retirement(c(1)), Err(Error::CleanupFailed));
+    }
+
+    #[test]
+    fn lexical_guard_exit_after_guest_completion_fails_closed() {
+        let kernel = HostTaskLockKernel::new(d()).unwrap();
+        let task = kernel.issue(None).unwrap();
+        let lock = kernel.add_mutex(3).unwrap();
+        let granted = owned(kernel.acquire(task, lock).unwrap());
+        kernel.claim(task, lock, granted).unwrap();
+        assert_eq!(kernel.trusted_exit(task).unwrap(), vec![lock]);
+        assert_eq!(kernel.trusted_guard_scope_exit(task, lock), Err(Error::AlreadyClaimed));
+        kernel.trusted_notifications_drained(task).unwrap();
+        kernel.try_retire(task).unwrap();
+    }
+
 }
