@@ -143,12 +143,11 @@ pub fnc main(): int {
     assert!(bytes.starts_with(b"\0asm"));
 
     for (bad, expected) in [
-        ("use namespace storefront; use namespace other;", "E_DUPLICATE"),
-        ("use namespace storefront; import * as http from pkg \"std.http\"; use namespace other;", "E_DUPLICATE"),
-        ("use default namespace(2); import * as http from pkg \"std.http\"; pub fnc main(): int {return 42;}", "E_NAMESPACE_DEPTH"),
+        ("use namespace storefront; use namespace other; pub fnc main(): int { return 42; }", "E_DUPLICATE"),
+        ("use namespace storefront; import * as http from pkg \"std.http\"; use namespace other; pub fnc main(): int { return 42; }", "E_DUPLICATE"),
+        ("use default namespace(2); import * as http from pkg \"std.http\"; pub fnc main(): int { return 42; }", "E_NAMESPACE_DEPTH"),
     ] {
-        let attempt = format!("{bad}\npub fnc main(): int {{ return 42; }}");
-        let err = atto_compiler::compile_with_path(&attempt, Path::new("storefront/main.atto"))
+        let err = atto_compiler::compile_with_path(bad, Path::new("storefront/main.atto"))
             .expect_err("invalid namespace metadata may not create executable Wasm");
         assert_eq!(err.code, expected, "{bad}: {err}");
     }
