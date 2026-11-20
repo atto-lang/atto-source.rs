@@ -3738,6 +3738,35 @@ impl<'a> FnCx<'a> {
         if matches!(self.owner, Owner::FieldInit { .. }) {
             return Err(Diagnostic::new(pos, "E_UNSUPPORTED", "calls in a field initializer"));
         }
+        if name == "$atto_writech" {
+            self.arity("writech", 2, args.len(), pos)?;
+            if !self.suspends {
+                return Err(Diagnostic::new(pos, "E_SUSPENDS_REQUIRED",
+                    "checked writech may suspend; declare susp/suspends fnc"));
+            }
+            if !self.loans.is_empty() || self.state_write_scope || self.state_read_scope {
+                return Err(Diagnostic::new(pos, "E_BORROW",
+                    "checked writech cannot suspend with an outstanding protected loan"));
+            }
+            let endpoint = self.value(&args[0])?;
+            if endpoint.ty != Type::WritableStr {
+                return Err(Diagnostic::new(args[0].pos, "E_IO_WRITABLE",
+                    "writech requires a typed writable process stdout/stderr endpoint"));
+            }
+            let value = self.value(&args[1])?;
+            if value.ty != Type::Str {
+                return Err(type_err(args[1].pos, "checked process writech accepts string"));
+            }
+            let text = self.temp(Type::Str, pos)?;
+            let result = self.temp(Type::ResultVoidIoError, pos)?;
+            let status = self.temp(Type::IoError, pos)?;
+            self.imports.push(Import::StdioWrite);
+            self.imports.push(Import::Cooperate);
+            return Ok(TE {e: TExpr::StdioWrite {
+                endpoint: Box::new(endpoint), value: Box::new(value),
+                text, result, status,
+            }, ty: Type::ResultVoidIoError});
+        }
         if name == "Channel<int>.bounded" {
             self.arity(name, 1, args.len(), pos)?;
             let capacity = self.value(&args[0])?;
