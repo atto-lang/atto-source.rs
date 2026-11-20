@@ -351,6 +351,18 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 .into_iter()
                 .zip(types.iter().zip(&typed.value.children))
             {
+                // An open/closed Record or other nested aggregate cannot be
+                // stored in this scalar-only guest sequence ABI. In particular
+                // OpenRecord expected vs Record{...} actual is not a corrupt
+                // compiler shape: it is a well-typed, unsupported nested value.
+                // Reject *before* comparing their representation identities.
+                if !matches!(type_expected,
+                    LiteralType::Int | LiteralType::Bool |
+                    LiteralType::Float | LiteralType::String)
+                {
+                    return Err(error(value.pos, "E_UNSUPPORTED",
+                        "nested Array/List/Tuple/Entry elements need a checked owned guest ABI"));
+                }
                 if &checked_child.ty != type_expected {
                     return Err(error(
                         value.pos,
