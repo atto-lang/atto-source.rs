@@ -1450,6 +1450,9 @@ impl<'a> FnCx<'a> {
                 && self.locally_constant(lhs) && self.locally_constant(rhs),
             ExprKind::Var(name) => self.lookup(name)
                 .is_some_and(|local| self.const_values.contains_key(&local.slot)),
+            ExprKind::Call(name, args) if matches!(name.as_str(), "And" | "Or" | "Xor")
+                && self.lookup(name).is_none() && args.len() == 2 =>
+                self.locally_constant(&args[0]) && self.locally_constant(&args[1]),
             ExprKind::Member(base, variant) => {
                 // Only statically declared nominal enum variant ordinals.
                 matches!(&base.kind, ExprKind::Var(name)
