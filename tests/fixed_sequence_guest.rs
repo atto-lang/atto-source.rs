@@ -122,12 +122,21 @@ fn unsupported_sequence_escapes_and_nested_bindings_are_not_lowered() {
         "pub fnc main(): int {block {val a=Array.of(1,2);} return 0;}",
         "E_UNSUPPORTED",
     );
-    rejected(
-        "pub fnc main(): int {val x=List.of(1,2);return 0;}",
-        "E_UNSUPPORTED",
-    );
+    admitted("pub fnc main(): int {val x=List.of(20,22);return x[0]+x[1];}");
     rejected(
         "pub fnc main(): int {val x=Map.of(\"a\",42);return 0;}",
         "E_UNSUPPORTED",
     );
+}
+
+#[test]
+fn bounded_list_guests_have_checked_index_and_immutable_storage() {
+    admitted("pub fnc main(): int {val names=List.of(\"Atto\",\"Lima\");stdio.println(names[0]);return 42;}");
+    admitted("pub fnc main(): int {val scores=List.of(20,22);return scores[0]+scores[1];}");
+    rejected("pub fnc main(): int {val names=List.of(10,20);return names[2];}", "E_INDEX_BOUNDS");
+    rejected("pub fnc main(): int {val x=List.of(10,20);val i=1;return x[i];}", "E_UNSUPPORTED");
+    rejected("pub fnc main(): int {val x=List.of(10,20);val writer=borrow! mut x;return 0;}", "E_BORROW");
+    rejected("pub fnc main(): int {val x=List.of(1,\"two\");return 0;}", "E_TYPE_INFERENCE");
+    rejected("pub fnc main(): int {val x=List.of();return 0;}", "E_TYPE_INFERENCE");
+    rejected("pub fnc main(): int {val x=List.of(1,2,3,4,5,6,7,8,9);return 0;}", "E_UNSUPPORTED");
 }
