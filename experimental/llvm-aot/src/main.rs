@@ -143,6 +143,13 @@ impl<'a> FunctionEmitter<'a> {
                         Ok(self.checked_math(op_name, &a, &b))
                     }
                     BinOp::Div => Err("E_UNSUPPORTED_NATIVE_DIV: integer division is not admitted".into()),
+                    // The canonical frontend added typed bitwise/shifts since
+                    // the old frozen frontend snapshot. Reject BEFORE any
+                    // LLVM native guest artifact is published until their
+                    // checked native semantics are implemented and verified.
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor |
+                    BinOp::Shl | BinOp::LShr | BinOp::AShr =>
+                        Err("E_UNSUPPORTED_NATIVE_BITWISE: checked bitwise and shift lowering is not yet available".into()),
                     BinOp::And | BinOp::Or => {
                         if ty != "i1" {
                             return Err("E_UNSUPPORTED_NATIVE_LOGICAL: expected bool".into());
