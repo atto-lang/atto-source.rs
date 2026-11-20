@@ -56,3 +56,66 @@ fn method_signatures_are_statically_checked() {
     let err=compile(&src(body)).expect_err("no untyped channel write");
     assert_eq!(err.code,"E_TYPE","{err}");
 }
+
+#[test]
+fn checked_new_channel_syntax_reuses_bounded_intrinsic_and_guest_abi() {
+    use atto_compiler::{ast::{ExprKind, Stmt}, lexer, parser::Parser};
+    for ctor in ["Channel<int>.bounded(2)", "new Channel<int>(2)"] {
+        let body=format!(r#"
+            match {ctor} over
+                on Ok(ch) -> {{
+                    val admitted = ch.try_send(42);
+                    val outcome = (ch >>);
+                    val closed = ch.close();
+                    val released = ch.release();
+                    return outcome;
+                }}
+                on Err(error) -> {{ return Err(error); }}
+            end
+        "#);
+        let wasm=compile(&src(&body)).unwrap_or_else(|e| panic!("{ctor}: {e}"));
+        for import in ["atto.channel_int", "channel_int_open_v1",
+            "channel_int_send_v1", "channel_int_nb_read_v1",
+            "channel_int_await_read_v1", "channel_int_close_v1",
+            "channel_int_release_v1"] {
+            assert!(has(&wasm,import),"{ctor}: missing {import}");
+        }
+        let naked=format!("pub fnc main(): int {{ val opened = {ctor}; return 0; }}");
+        let p=Parser::new(lexer::lex(&naked).unwrap()).parse_program().expect(ctor);
+        let Stmt::Bind {init,..} = &p.funcs[0].body[0] else {
+            panic!("{ctor}: missing checked constructor binding");
+        };
+        assert!(matches!(&init.kind,ExprKind::Call(name,args)
+            if name=="Channel<int>.bounded" && args.len()==1),
+            "{ctor}: expected the same fallible intrinsic");
+    }
+}
+
+#[test]
+fn new_channel_constructor_is_not_an_unchecked_handle_or_generic_escape() {
+    for (body,expected) in [
+        ("val c: Channel<int> = new Channel<int>(2); return Err(0);","E_TYPE"),
+        ("val c = new Channel<int>(\"two\"); return Err(0);","E_TYPE"),
+        ("val c = new Channel<int>(); return Err(0);","E_ARITY"),
+        ("val c = new Channel<int>(1,2); return Err(0);","E_ARITY"),
+        ("val c = new Channel<string>(2); return Err(0);","E_UNSUPPORTED"),
+    ] {
+        let d=compile(&src(body)).expect_err("invalid channel construction cannot emit a guest");
+        assert_eq!(d.code,expected,"source: {body}: {d}");
+    }
+}
+
+#[test]
+fn channel_shorthand_write_must_not_silently_become_nonparking_try_send() {
+    let body=r#"
+        match new Channel<int>(2) over
+            on Ok(ch) -> {
+                ch << 42;
+                return Err(0);
+            }
+            on Err(error) -> { return Err(error); }
+        end
+    "#;
+    assert!(compile(&src(body)).is_err(),
+        "a suspending write must not be silently lowered to unchecked try_send");
+}
