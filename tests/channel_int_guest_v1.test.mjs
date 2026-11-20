@@ -205,3 +205,16 @@ test('guest ABI: closing while writer waits returns Closed with no ghost message
   assert.deepEqual(outcome(v),{tag:T.None,error:0,value:0n});
   assert.equal(i.channel_int_release_v1(ch),E.Ok);
 });
+
+test('tenant isolation: one channel host can be bound to only one guest adapter',()=>{
+  const {host}=fresh();
+  const otherMemory=new WebAssembly.Memory({initial:1});
+  assert.throws(
+    ()=>createChannelIntGuestV1({getMemory:()=>otherMemory,host}),
+    /already bound/,
+  );
+  assert.throws(
+    ()=>createChannelIntGuestV1({getMemory:()=>otherMemory,host:{send(){}}}),
+    /Worker-owned ChannelIntHostV1/,
+  );
+});
