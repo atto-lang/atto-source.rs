@@ -1902,10 +1902,20 @@ impl<'a> FnCx<'a> {
                 self.state_write_scope = false;
                 TStmt::StateCriticalWrite(checked?)
             }
-            Stmt::FieldAssign { target, field, value, pos } => self.field_assign(target, field, value, *pos)?,
-            Stmt::IndexAssign { pos, .. } => return Err(Diagnostic::new(*pos,
-                "E_UNSUPPORTED",
-                "indexed assignment needs resolved receiver kind, mutability and checked guest storage; no unchecked Map/Record/Struct writes")),
+            Stmt::FieldAssign { target, field, value, pos } => {
+                if self.is_closed_record_receiver(target) {
+                    self.checked_record_write(target, field, value, *pos)?
+                } else {
+                    self.field_assign(target, field, value, *pos)?
+                }
+            },
+            Stmt::IndexAssign { target, index, value, pos } => {
+                let ExprKind::Str(field) = &index.kind else {
+                    return Err(Diagnostic::new(index.pos, "E_UNSUPPORTED",
+                        "Record indexed assignment requires a literal quoted field name"));
+                };
+                self.checked_record_write(target, field, value, *pos)?
+            },
             Stmt::Expr(Expr { kind: ExprKind::MethodCall(base, method, args), pos })
                 if method == "next" && args.is_empty()
                     && matches!(&base.kind, ExprKind::Var(n) if self.recover_cursor.as_deref() == Some(n.as_str())) =>
@@ -2463,6 +2473,75 @@ impl<'a> FnCx<'a> {
             TStmt::Set(tmp, subj),
             TStmt::If(out, Some(vec![TStmt::Unreachable])),
         ]))
+    }
+
+    /// Only a compiler-lowered closed Record has a static shape-backed field ABI.
+    /// Identity is derived from lexical type resolution, never the receiver text.
+    fn is_closed_record_receiver(&self, target: &Expr) -> bool {
+        let ExprKind::Var(name) = &target.kind else { return false };
+        let Some(local) = self.lookup(name) else { return false };
+        matches!(local.ty, Type::Class(c) if
+            self.g.classes[c as usize].name.starts_with(crate::closed_record_guest::PRIVATE_PREFIX))
+    }
+
+    /// Typed owned scalar Record mutation. Never opens generic Class, Struct,
+    /// actor state, Map or a computed index to unchecked writes.
+    fn checked_record_write(
+        &mut self, target: &Expr, field: &str, value: &Expr, pos: Pos,
+    ) -> R<TStmt> {
+        let ExprKind::Var(name) = &target.kind else {
+            return Err(Diagnostic::new(target.pos, "E_UNSUPPORTED",
+                "Record mutation needs a named, lexically checked owned receiver"));
+        };
+        let Some(local) = self.lookup(name) else {
+            return Err(Diagnostic::new(target.pos, "E_UNBOUND",
+                format!("unknown Record receiver '{name}'")));
+        };
+        let (slot, ty, referent_mutable) =
+            (local.slot, local.ty, local.referent_mutable);
+        let Type::Class(c) = ty else {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "indexed assignment is not supported on this non-Record type"));
+        };
+        let class = &self.g.classes[c as usize];
+        if !class.name.starts_with(crate::closed_record_guest::PRIVATE_PREFIX) {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED",
+                "nominal Struct/Class bracket indexing and Map writes require separate checked lowering"));
+        }
+        let (offset, fty, field_mode) = match class.fields.iter().find(|f| f.name == field) {
+            Some(f) => (f.slot, f.ty, f.mode),
+            None => return Err(Diagnostic::new(pos, "E_NO_FIELD",
+                format!("closed Record has no field '{field}'"))),
+        };
+        if !referent_mutable || field_mode == FieldMode::Final {
+            return Err(Diagnostic::new(pos, "E_IMMUTABLE",
+                format!("cannot mutate Record field '{field}' without an owned 'mut' referent")));
+        }
+        if self.moved.contains(&slot) {
+            return Err(Diagnostic::new(pos, "E_MOVED",
+                format!("cannot mutate moved Record binding '{name}'")));
+        }
+        if self.loans.contains_key(&slot) ||
+            self.loans.values().any(|loan| loan.owner == slot) {
+            return Err(Diagnostic::new(pos, "E_BORROW",
+                "Record mutation through a loan or while the owner has active loans is forbidden"));
+        }
+        if !matches!(fty, Type::Int | Type::Bool | Type::Float | Type::Str) {
+            return Err(Diagnostic::new(pos, "E_UNSUPPORTED_TYPE",
+                "Record field mutation currently needs a proven scalar guest slot"));
+        }
+        let rhs = self.consume_expected(value, fty)?;
+        if rhs.ty != fty {
+            return Err(type_err(value.pos,
+                format!("Record field '{field}' expects {}, found {}",
+                    self.tn(fty), self.tn(rhs.ty))));
+        }
+        Ok(TStmt::FieldSet {
+            obj: TE { e: TExpr::Local(slot), ty },
+            offset,
+            ty: fty,
+            value: rhs,
+        })
     }
 
     fn field_assign(&mut self, target: &Expr, field: &str, value: &Expr, pos: Pos) -> R<TStmt> {
