@@ -1,0 +1,7 @@
+// expect-error: E_SEMICOLON
+// The obsolete ^= XOR assignment spelling cannot be emitted.
+pub fnc main(): int {
+  let x: int = 12;
+  x ^= 10;
+  return x;
+}
