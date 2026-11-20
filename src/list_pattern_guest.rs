@@ -228,6 +228,14 @@ fn parse(p: &mut Cursor<'_>) -> R<(Vec<i64>,Arm)> {
     p.expect_word("on")?;
     p.expect_word("_")?;
     p.expect(Tok::Arrow)?;
+    // A named capture belongs to the preceding arm's lexical scope.
+    // It is never visible in the independent wildcard fallback arm.
+    if let Tok::Ident(candidate) = p.peek() {
+        if names.contains(candidate) {
+            return Err(err(p.pos(), "E_PATTERN_BINDING", "capture escapes its match arm"));
+        }
+        return Err(unsupported(p.pos()));
+    }
     let fallback=p.i64_literal()?;
     p.expect_word("end")?;
     p.expect(Tok::Semi)?;
