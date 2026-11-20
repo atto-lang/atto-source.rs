@@ -373,8 +373,7 @@ mod tests {
     #[test]
     fn actual_production_ast_retains_unsafe_blocks_and_callable_flags() {
         use crate::ast::Stmt;
-        let source = "pub unsafe fnc trusted(): int { return 42; }\\n\
-                      pub fnc main(): int { unsafe { unsafe { return trusted(); } } }";
+        let source = "pub unsafe fnc trusted(): int { return 42; } pub fnc main(): int { unsafe { unsafe { return trusted(); } } }";
         let tokens = lexer::lex(source).unwrap();
         let mut parser = crate::parser::Parser::new(tokens);
         let program = parser.parse_program_for_unsafe_analysis().unwrap();
