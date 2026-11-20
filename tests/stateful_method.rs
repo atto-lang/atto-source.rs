@@ -46,3 +46,47 @@ fn reject_non_equivalent_stateful_callback_bodies(){
             "must not emit Wasm for non-admitted state callback: {altered}");
     }
 }
+
+const ATTACHED:&str=include_str!("fixtures/stateful/counter-attached.atto");
+
+#[test]
+fn attached_state_has_identical_compiled_wasm_to_inline_actor_state() {
+    let inline=compile_stateful_method_preview(SOURCE)
+        .expect("previously proven closed scalar inline state callback");
+    let attached=compile_stateful_method_preview(ATTACHED)
+        .expect("nominal attached state should resolve through checked actor state");
+    assert_eq!(inline,attached,
+        "same nominal owner, scalar layout, initializer and callback must yield identical guest Wasm");
+    audit_cleanup_wasm_witness(&attached).unwrap();
+    assert_eq!(atto_compiler::compile(ATTACHED).unwrap_err().code,"E_UNSUPPORTED",
+        "production actor guest lowering remains fail closed");
+}
+
+#[test]
+fn attached_state_preview_rejects_unsafe_or_unproved_field_schemas() {
+    for changed in [
+        ATTACHED.replace("Counter as {","Missing as {"),
+        ATTACHED.replace("let int count = 17;","let int count;"),
+        ATTACHED.replace("let int count = 17;","val int count = 17;"),
+        ATTACHED.replace("let int count = 17;","let bool count = true;"),
+        ATTACHED.replace("let int count = 17;","let int count = 17; let int other = 1;"),
+        ATTACHED.replace("define actor Counter as\nend",
+            "define actor Counter as\n    let int count = 17;\nend"),
+        ATTACHED.replace("mtd (mut self: Counter)","mtd (mut self: Other)"),
+        ATTACHED.replace("s.count = s.count + delta","s.count = delta"),
+        ATTACHED.replace("s.count = s.count + delta","s.count = s.count - delta"),
+        format!("{ATTACHED}\ndefine state on actor Counter as {{ let int count = 17; }}"),
+    ] {
+        assert!(compile_stateful_method_preview(&changed).is_err(),
+            "unsafe/unproved source must fail closed: {changed}");
+    }
+}
+
+#[test]
+fn attached_state_source_initializer_is_semantically_authoritative() {
+    let a=compile_stateful_method_preview(ATTACHED).unwrap();
+    let b=compile_stateful_method_preview(
+        &ATTACHED.replace("let int count = 17;","let int count = 29;")).unwrap();
+    assert_ne!(a,b,"the generated guest state must be initialized from the attached source field");
+    audit_cleanup_wasm_witness(&b).unwrap();
+}
