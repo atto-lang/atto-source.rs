@@ -307,3 +307,35 @@ fn unsupported_map_as_interface_and_invalid_interface_data_reject() {
     assert_eq!(prove_structural_members(&candidate, &contract),
                Err(MemberError::InvalidDeclaration));
 }
+
+#[test]
+fn method_only_interface_cannot_bypass_concrete_layout_validation() {
+    let contract = required(RequiredKind::Interface);
+    let mut candidate = actual(SourceKind::Class);
+    candidate.shape.fields = vec![
+        field("secret", ShapeTy::Int, 16),
+        field("secret", ShapeTy::Int, 24),
+    ];
+    assert_eq!(prove_structural_members(&candidate, &contract),
+               Err(MemberError::Shape(ShapeError::DuplicateField)));
+    candidate.shape.fields[1].name = "other".into();
+    candidate.shape.fields[1].actual_offset = Some(16);
+    assert_eq!(prove_structural_members(&candidate, &contract),
+               Err(MemberError::Shape(ShapeError::UntrustedLayout)));
+}
+
+#[test]
+fn two_distinct_required_methods_cannot_reuse_one_unverified_dispatch_slot() {
+    let mut contract = required(RequiredKind::Interface);
+    contract.methods = vec![
+        method("read", vec![], ShapeTy::Int),
+        method("close", vec![], ShapeTy::Bool),
+    ];
+    let mut candidate = actual(SourceKind::Class);
+    candidate.methods = vec![
+        impl_method(contract.methods[0].clone(), 13),
+        impl_method(contract.methods[1].clone(), 13),
+    ];
+    assert_eq!(prove_structural_members(&candidate, &contract),
+               Err(MemberError::UnverifiedDispatch));
+}
