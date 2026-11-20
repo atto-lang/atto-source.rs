@@ -197,6 +197,15 @@ The compiler's admitted guest subset now supports `trap` with `Result<int,Error>
 - `raise` uses a separate private EH tag; panic, cancellation, OOM and host faults are not caught by `trap`. Nested trap handler-depth is restored on direct `?` exit and on any rethrown non-ordinary Wasm exception. Existing caller-side catch priority over a callee's recover remains intact.
 - Contextual `Ok(...)`/`Err(Error(...))` constructors, exhaustive tagged `match`, `?` early-Err propagation, and the no-payload `Result<void,Error>` success case are compiled and tested for this bounded subset.
 
+
+### Draft checked int.parse(string) -> Result<int,Error> guest profile (not released)
+
+This PR now contains source-level, typed guest-Wasm lowering for `int.parse(text)`; this is a candidate, **NOT a completed CI or cross-backend parity claim**. The method accepts one string argument without a host parsing import and returns a fresh immutable tagged Result. Valid inputs are ASCII decimal digits with an optional single leading `+` or `-`, up to 1,024 UTF-8 bytes per call for the bounded browser profile. Leading zeros are accepted. Empty text, bare signs, embedded whitespace/NUL, non-ASCII digits, lengths above 1,024, and signed-i64 overflow return `Err(Error("invalid integer"))` instead of panicking. Allocation exhaustion remains a fatal heap-quota trap, not a catchable parse Err.
+
+The parse loop uses negative i64 accumulation to permit `-9223372036854775808` and reject `9223372036854775808`. It validates the bounded UTF-8 string view before memory loads, allocates the Error with the guest Error header/message ABI (message at +8), and retains the owned Error handle in the Result Err payload. Postfix `?` returns that tagged error unchanged through the existing cleanup path; `trap` does not reinterpret returned Err values.
+
+`int.parse` in class/actor scopes deliberately fails closed until actor isolation and effect semantics are verified. No automatic source-API migration, publication, or wide generic Result/Error subtype claim is implied. New fixtures 222–232 cover parse_id, invalid input, limits, Error.message, and no-codegen type errors. The CI run on this exact head must execute real native+wasm32 compiler guest passes and no-artifact diagnostics before these fixtures are marked supported; previous #331 exact-head receipts predate this change.
+
 **Fail closed for unproved joins.** `trap` on `Result<int,string>` raises `E_TRAP_ERROR_JOIN` and emits no guest because this backend cannot yet represent both returned string errors and thrown Error values losslessly. Other generic shapes and actor/method traps remain unsupported. The compiler does **not** claim arbitrary `Result<T,E>`, Error subclasses, reflection, async or cross-backend parity.
 
 The prior Option-valued `trap` was removed. Legacy `Some(Ok(...))`, `Some(Err(...))`, and caught `None` fixtures are now negative migration cases. The checked-in public playground binary is pinned separately and has **not** been replaced or relabeled by this candidate; any release requires independent approval and verified exact compiler/tree receipts.

@@ -1528,6 +1528,13 @@ fn int_parse_body(l: &Layout) -> (Sig, Vec<u8>, Vec<u8>) {
     e.get(LEN);
     e.op(0x45); // i32.eqz
     br_if_to(&mut e, Frame::Break);
+    // Browser admission profile: bound work per call even for strings
+    // containing thousands of leading zeros. Native target profiles may
+    // enlarge this ceiling only with an equivalent scheduler/fuel proof.
+    e.get(LEN);
+    e.i32c(1024);
+    e.op(0x4B); // i32.gt_u
+    br_if_to(&mut e, Frame::Break);
     // Check the bounded guest string view before loading a byte. No overflow
     // or out-of-bounds host trap from an invalid/forged (ptr,len) pair.
     e.get(PTR);
