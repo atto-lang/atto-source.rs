@@ -96,6 +96,8 @@ const RESERVED: &[&str] = &[
     "untrusted",
     "spawn",
     "pipe",
+    "receives",
+    "emits",
     "stop",
     "rt",
     "await",
@@ -524,6 +526,25 @@ impl Parser {
     fn parse_actor(&mut self, defined: bool) -> R<ActorDecl> {
         let (name, pos) = self.ident("an actor name")?;
         self.decl_head("actor")?;
+        // Header clauses derive typed pipe endpoint roles. Canonical order:
+        // receives Input, then emits Output. No declaration means no
+        // *explicit* capability, even if the body happens to emit.
+        let declared_receives = if self.eat_word("receives") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let declared_emits = if self.eat_word("emits") {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        if self.is_word("receives") || self.is_word("emits") {
+            return Err(Diagnostic::new(
+                self.pos(), "E_PIPE_CONTRACT",
+                "actor pipe header clauses must be unique and ordered: receives T emits U",
+            ));
+        }
         let close = if defined {
             self.expect_word("as")?;
             "end"
@@ -536,6 +557,8 @@ impl Parser {
         Ok(ActorDecl {
             name,
             pos,
+            declared_receives,
+            declared_emits,
             fields: m.fields,
             receive: m.receive,
             methods: m.methods,
@@ -1748,43 +1771,57 @@ impl Parser {
         }
         self.height -= links;
 
-        // Actor composition and functional pipeline expressions are distinct.
-        // Only explicit spawn stages are admitted for actor-pipeline typing.
-        if matches!(&c.kind, ExprKind::Spawn(_))
-            && (*self.peek() == Tok::Pipe || self.is_word("pipe"))
-        {
-            let ExprKind::Spawn(first) = &c.kind else { unreachable!() };
-            let mut actors = vec![first.clone()];
-            while *self.peek() == Tok::Pipe || self.is_word("pipe") {
+        // `pipe` is continuous endpoint composition, never one read/write.
+        // Retain legacy `|` only for explicit actor-to-actor chains.
+        // Parser records unresolved endpoint expressions; semantic admission
+        // fails closed until a typed PipeSource/PipeSink guest ABI exists.
+        let first_is_actor = matches!(&c.kind, ExprKind::Spawn(_));
+        if self.is_word("pipe") || (first_is_actor && *self.peek() == Tok::Pipe) {
+            let first_pos = c.pos;
+            let first = match &c.kind {
+                ExprKind::Spawn(actor) => PipeStage::Actor(actor.clone()),
+                ExprKind::Var(_) | ExprKind::Call(_, _) | ExprKind::Member(_, _)
+                | ExprKind::MethodCall(_, _, _) | ExprKind::PipeEndpoint(_, _, _) => PipeStage::Endpoint(c.clone()),
+                _ => return Err(Diagnostic::new(first_pos, "E_TYPE", "pipe source must be an actor, generator, channel or readable stream")),
+            };
+            let mut stages = vec![first];
+            let mut all_actors = first_is_actor;
+            while self.is_word("pipe") || (all_actors && *self.peek() == Tok::Pipe) {
                 let operator = self.pos();
+                let legacy_actor_bar = *self.peek() == Tok::Pipe;
                 self.advance();
                 let stage = self.parse_postfix()?;
-                let ExprKind::Spawn(actor) = stage.kind else {
-                    return Err(Diagnostic::new(
+                let next = match &stage.kind {
+                    ExprKind::Spawn(actor) => PipeStage::Actor(actor.clone()),
+                    ExprKind::Var(_) | ExprKind::Call(_, _) | ExprKind::Member(_, _)
+                    | ExprKind::MethodCall(_, _, _) | ExprKind::PipeEndpoint(_, _, _)
+                        if !legacy_actor_bar => {
+                        all_actors = false;
+                        PipeStage::Endpoint(stage.clone())
+                    }
+                    _ => return Err(Diagnostic::new(
                         operator,
                         "E_TYPE",
-                        "actor pipeline stages must be explicit spawn Actor() expressions",
-                    ));
+                        "pipe destination must be an actor or typed endpoint; '|' is actor-to-actor only",
+                    )),
                 };
-                if actors.len() >= 16 {
+                if stages.len() >= 16 {
                     return Err(Diagnostic::new(
-                        operator,
-                        "E_SOURCE_LIMIT",
-                        "actor pipeline exceeds the browser tenant's 16-actor budget",
+                        operator, "E_SOURCE_LIMIT",
+                        "pipeline exceeds the browser tenant's 16-stage budget",
                     ));
                 }
-                actors.push(actor);
+                stages.push(next);
             }
-            c = Expr {
-                kind: ExprKind::ActorPipeline(actors),
-                pos: c.pos,
+            let kind = if all_actors {
+                ExprKind::ActorPipeline(stages.into_iter().map(|s| match s {
+                    PipeStage::Actor(name) => name,
+                    PipeStage::Endpoint(_) => unreachable!("all_actors"),
+                }).collect())
+            } else {
+                ExprKind::MixedPipeline(stages)
             };
-        } else if self.is_word("pipe") {
-            return Err(Diagnostic::new(
-                self.pos(),
-                "E_TYPE",
-                "actor pipe requires spawn Actor() stages; functional composition uses the pipe-greater operator",
-            ));
+            c = Expr { kind, pos: first_pos };
         }
         match self.peek() {
             Tok::Pipe => {
@@ -2088,6 +2125,44 @@ impl Parser {
         Ok(e)
     }
 
+    // Finite buffering must be explicitly bounded by a compile-time literal.
+    // Zero is a rendezvous channel; capacities larger than this browser
+    // tenant's budget cannot be represented as an implicit allocation.
+    fn parse_pipe_capacity(&mut self) -> R<u32> {
+        let at = self.pos();
+        let args = self.parse_args()?;
+        if args.len() != 1 {
+            return Err(Diagnostic::new(
+                at, "E_PIPE_CONTRACT",
+                "bounded pipe adapter requires exactly one capacity argument",
+            ));
+        }
+        match args[0].kind {
+            ExprKind::Int(Some(n)) if n <= 4096 => Ok(n as u32),
+            ExprKind::Int(Some(_)) => Err(Diagnostic::new(
+                at, "E_SOURCE_LIMIT", "pipe adapter capacity exceeds 4096 messages",
+            )),
+            _ => Err(Diagnostic::new(
+                at, "E_PIPE_CONTRACT",
+                "pipe adapter capacity must be a nonnegative integer literal",
+            )),
+        }
+    }
+
+    fn parse_pipe_item_type(&mut self) -> R<Type> {
+        let at = self.pos();
+        self.expect(Tok::Lt, "'<' before pipe adapter item type")?;
+        let item = self.parse_type()?;
+        self.expect(Tok::Gt, "'>' after pipe adapter item type")?;
+        if !matches!(item, Type::Int | Type::Bool) {
+            return Err(Diagnostic::new(
+                at, "E_UNSUPPORTED_TYPE",
+                "browser pipe adapters currently check only int and bool elements",
+            ));
+        }
+        Ok(item)
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -2138,6 +2213,56 @@ impl Parser {
                     }
                     let args = self.parse_args()?;
                     ExprKind::New(class, args)
+                }
+                "Channel" if *self.peek_at(1) == Tok::Lt => {
+                    self.advance();
+                    let item = self.parse_pipe_item_type()?;
+                    self.expect(Tok::Dot, "'.bounded' after Channel<T>")?;
+                    let (method, _) = self.ident("a channel constructor")?;
+                    if method != "bounded" {
+                        return Err(Diagnostic::new(
+                            pos, "E_PIPE_CONTRACT",
+                            "Channel<T> pipe endpoint must use bounded(capacity)",
+                        ));
+                    }
+                    let cap = self.parse_pipe_capacity()?;
+                    ExprKind::PipeEndpoint(PipeEndpointKind::ChannelBounded, item, cap)
+                }
+                "Stream" if *self.peek_at(1) == Tok::Dot => {
+                    self.advance();
+                    self.expect(Tok::Dot, "'.' after Stream")?;
+                    let (method, _) = self.ident("a stream pipe adapter")?;
+                    if !matches!(method.as_str(), "buffered" | "port") {
+                        return Err(Diagnostic::new(
+                            pos, "E_PIPE_CONTRACT",
+                            "Stream pipe endpoint must use buffered<T>(capacity) or port<T>(capacity).sink()",
+                        ));
+                    }
+                    let item = self.parse_pipe_item_type()?;
+                    let cap = self.parse_pipe_capacity()?;
+                    let kind = if method == "buffered" {
+                        PipeEndpointKind::StreamBuffered
+                    } else {
+                        self.expect(Tok::Dot, "'.sink()' or '.stream()' for Stream.port<T>")?;
+                        let (name, _) = self.ident("the directional stream port selector")?;
+                        let selected = match name.as_str() {
+                            "sink" => PipeEndpointKind::StreamSink,
+                            "stream" => PipeEndpointKind::StreamReadable,
+                            _ => return Err(Diagnostic::new(
+                                pos, "E_PIPE_CONTRACT",
+                                "Stream.port<T> must select .sink() or .stream()",
+                            )),
+                        };
+                        let args = self.parse_args()?;
+                        if !args.is_empty() {
+                            return Err(Diagnostic::new(
+                                pos, "E_PIPE_CONTRACT",
+                                "Stream.port<T>.sink()/stream() takes no arguments",
+                            ));
+                        }
+                        selected
+                    };
+                    ExprKind::PipeEndpoint(kind, item, cap)
                 }
                 "spawn" => {
                     self.advance();

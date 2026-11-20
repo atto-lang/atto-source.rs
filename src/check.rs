@@ -283,6 +283,10 @@ struct ActorInfo {
     methods: Vec<MethodInfo>,
     receive_idx: Option<u32>,
     payload: Type,
+    /// Declared pipe-input and pipe-output capabilities; unlike inferred
+    /// `emitted`, they authorize mixed graph actor endpoints.
+    declared_receives: Option<Type>,
+    declared_emits: Option<Type>,
     /// Typed values explicitly emitted by this actor's receive handler.
     /// `None` means the actor is a terminal sink, not that its input type
     /// should automatically be forwarded to the next stage.
@@ -730,12 +734,40 @@ pub fn check(p: &Program) -> R<TProgram> {
             }
             None => Type::Void,
         };
+        // The header is a checked declaration, not duck typing on emit()
+        // nor a substitute for the application mailbox handler.
+        let declared_receives = a.declared_receives.map(&res).transpose()?;
+        let declared_emits = a.declared_emits.map(&res).transpose()?;
+        if let Some(input) = declared_receives {
+            if input == Type::Void || receive_idx.is_none() || input != payload {
+                return Err(type_err(
+                    a.pos,
+                    format!(
+                        "actor '{}' declared receives {} but its receive(ActorMail<T>) handler has {}",
+                        a.name,
+                        tn_plain(input, tn, &class_names, &p.enums, &actor_names),
+                        tn_plain(payload, tn, &class_names, &p.enums, &actor_names),
+                    ),
+                ));
+            }
+        }
+        if let Some(output) = declared_emits {
+            if !matches!(output, Type::Int | Type::Bool) {
+                return Err(Diagnostic::new(
+                    a.pos,
+                    "E_UNSUPPORTED_TYPE",
+                    format!("actor '{}' emitted pipe type must be int or bool in this browser subset", a.name),
+                ));
+            }
+        }
         actors.push(ActorInfo {
             name: a.name.clone(),
             fields,
             methods,
             receive_idx,
             payload,
+            declared_receives,
+            declared_emits,
             emitted: None,
         });
     }
@@ -755,7 +787,18 @@ pub fn check(p: &Program) -> R<TProgram> {
     // emitted type. This preflight collects typed emit values, including those
     // inside conditionals and loops, without exposing a guest capability.
     for (ai, actor) in p.actors.iter().enumerate() {
-        let Some(receive) = actor.receive.as_ref() else { continue };
+        let Some(receive) = actor.receive.as_ref() else {
+            if actor.declared_emits.is_some() {
+                return Err(Diagnostic::new(
+                    actor.pos, "E_UNSUPPORTED",
+                    format!(
+                        "actor '{}' declares emits but has no receive handler; startup producer hook is not implemented in this browser profile",
+                        actor.name,
+                    ),
+                ));
+            }
+            continue;
+        };
         let named = [("$value", Type::Int, false), ("$sequence", Type::Int, false)];
         let mut scratch_imports = Vec::new();
         let mut scratch_data = Vec::new();
@@ -787,6 +830,19 @@ pub fn check(p: &Program) -> R<TProgram> {
                 }
             } else {
                 emitted = Some(ty);
+            }
+        }
+        if let Some(declared) = g.actors[ai].declared_emits {
+            if emitted != Some(declared) {
+                return Err(type_err(
+                    actor.pos,
+                    format!(
+                        "actor '{}' declares emits {} but its receive handler emits {}",
+                        actor.name,
+                        g.tn(declared),
+                        emitted.map(|ty| g.tn(ty)).unwrap_or_else(|| "nothing".to_string()),
+                    ),
+                ));
             }
         }
         g.actors[ai].emitted = emitted;
@@ -2397,6 +2453,150 @@ impl<'a> FnCx<'a> {
                 })
             }
             ExprKind::New(class, args) => self.new_object(class, args, pos)?,
+            ExprKind::PipeEndpoint(_, _, _) => {
+                return Err(Diagnostic::new(
+                    pos, "E_UNSUPPORTED",
+                    "typed channel/stream pipe adapter is parsed, but the owned guest transport and scheduler ABI are not implemented",
+                ));
+            }
+            ExprKind::MixedPipeline(stages) => {
+                // A pipe is a typed continuous graph, NEVER a single I/O
+                // operator or a collection of ordinary actor.send() calls.
+                // No mixed graph can reach guest code until PipeHandle and
+                // the structured transport ABI have been implemented.
+                use crate::pipe_contract::{PipeContractError, PipePort, StageContract};
+                if let Some(me) = self.actor_name() {
+                    return Err(Diagnostic::new(
+                        pos, "E_UNSUPPORTED",
+                        format!("mixed pipeline cannot spawn stages inside actor '{me}'"),
+                    ));
+                }
+                if matches!(self.owner, Owner::FieldInit { .. }) {
+                    return Err(Diagnostic::new(
+                        pos, "E_UNSUPPORTED", "mixed pipeline in a field initializer",
+                    ));
+                }
+                if !(2..=16).contains(&stages.len()) {
+                    return Err(Diagnostic::new(
+                        pos, "E_SOURCE_LIMIT", "mixed pipeline must have 2 to 16 stages",
+                    ));
+                }
+                let mut contracts = Vec::with_capacity(stages.len());
+                let mut actor_names = Vec::with_capacity(stages.len());
+                let mut seen_refs = BTreeSet::new();
+                for stage in stages {
+                    // These concrete bounded adapters carry compiler-known
+                    // item types and endpoint direction, but NEVER cause an
+                    // allocation or guest source execution in this subset.
+                    let builtin_port = match stage {
+                        PipeStage::Endpoint(Expr {
+                            kind: ExprKind::PipeEndpoint(kind, item, _capacity), ..
+                        }) => Some((match kind {
+                            PipeEndpointKind::ChannelBounded | PipeEndpointKind::StreamBuffered =>
+                                PipePort { input: Some(*item), output: Some(*item) },
+                            PipeEndpointKind::StreamSink =>
+                                PipePort { input: Some(*item), output: None },
+                            PipeEndpointKind::StreamReadable =>
+                                PipePort { input: None, output: Some(*item) },
+                        }, match kind {
+                            PipeEndpointKind::ChannelBounded => "Channel<T>.bounded",
+                            PipeEndpointKind::StreamBuffered => "Stream.buffered<T>",
+                            PipeEndpointKind::StreamSink => "Stream.port<T>.sink()",
+                            PipeEndpointKind::StreamReadable => "Stream.port<T>.stream()",
+                        })),
+                        _ => None,
+                    };
+                    // Only *typed ActorRef* values prove actor port roles.
+                    // Other values remain unavailable in the current browser
+                    // subset; do not infer an endpoint from the name alone.
+                    let actor_index = match stage {
+                        PipeStage::Actor(name) => Some(self.g.actor(name).ok_or_else(|| {
+                            Diagnostic::new(pos, "E_UNBOUND",
+                                format!("unknown actor pipeline stage '{name}'"))
+                        })?),
+                        PipeStage::Endpoint(endpoint) => match &endpoint.kind {
+                            ExprKind::Var(name) => {
+                                let ty = self.lookup(name).map(|local| local.ty).ok_or_else(|| {
+                                    Diagnostic::new(endpoint.pos, "E_UNBOUND",
+                                        format!("unknown pipe endpoint '{name}'"))
+                                })?;
+                                match ty {
+                                    Type::ActorRef(index) => {
+                                        // Reusing an identical actor reference
+                                        // in the same chain would silently
+                                        // introduce cycles or duplicated edges.
+                                        if !seen_refs.insert(name.clone()) {
+                                            return Err(Diagnostic::new(
+                                                endpoint.pos, "E_PIPE_CONTRACT",
+                                                format!("actor reference '{name}' occurs more than once in one pipe graph"),
+                                            ));
+                                        }
+                                        Some(index)
+                                    }
+                                    Type::GeneratorInt => None, // guest iterator ABI is separately gated
+                                    _ => return Err(type_err(
+                                        endpoint.pos,
+                                        format!("pipe endpoint '{name}' is not a typed PipeSource/PipeSink"),
+                                    )),
+                                }
+                            }
+                            _ => None, // unresolved constructor/port: deferred, never executable
+                        },
+                    };
+                    if let Some(index) = actor_index {
+                        let actor = &self.g.actors[index as usize];
+                        if actor.receive_idx.is_none() {
+                            return Err(type_err(
+                                pos,
+                                format!("actor pipeline stage '{}' has no receive(ActorMail<T>) handler", actor.name),
+                            ));
+                        }
+                        contracts.push(StageContract::Known(PipePort {
+                            input: actor.declared_receives,
+                            output: actor.declared_emits,
+                        }));
+                        actor_names.push(actor.name.as_str());
+                    } else if let Some((port, label)) = builtin_port {
+                        contracts.push(StageContract::Known(port));
+                        actor_names.push(label);
+                    } else {
+                        contracts.push(StageContract::Deferred);
+                        actor_names.push("unresolved endpoint");
+                    }
+                }
+                // Reuse the same edge checker for actor-only segments and,
+                // eventually, statically resolved Channel/Stream adapters.
+                // A Deferred endpoint never means a dynamically typed Any.
+                crate::pipe_contract::validate_known_edges(&contracts).map_err(|problem| {
+                    match problem {
+                        PipeContractError::MissingSink { stage } => type_err(
+                            pos,
+                            if actor_names[stage].contains('<') {
+                                format!("pipe stage '{}' does not provide PipeSink<T>", actor_names[stage])
+                            } else {
+                                format!("actor '{}' needs an explicit receives T pipe-input declaration", actor_names[stage])
+                            },
+                        ),
+                        PipeContractError::MissingSource { stage } => type_err(
+                            pos,
+                            if actor_names[stage].contains('<') {
+                                format!("pipe stage '{}' does not provide PipeSource<T>", actor_names[stage])
+                            } else {
+                                format!("actor '{}' needs an explicit emits T pipe-output declaration", actor_names[stage])
+                            },
+                        ),
+                        PipeContractError::TypeMismatch { from, to, emitted, received } => type_err(
+                            pos,
+                            format!("actor pipeline emitted {} from '{}' cannot enter '{}' receiving {}",
+                                self.tn(emitted), actor_names[from], actor_names[to], self.tn(received)),
+                        ),
+                    }
+                })?;
+                return Err(Diagnostic::new(
+                    pos, "E_UNSUPPORTED",
+                    "mixed pipe static actor ports checked; typed channel/stream endpoints, backpressure, cancellation and guest ABI are not implemented",
+                ));
+            }
             ExprKind::ActorPipeline(stages) => {
                 // Admission only: do not generate a fake ActorRef or invoke a
                 // JavaScript-side pipeline interpreter for this source form.

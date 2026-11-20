@@ -13,6 +13,7 @@ pub mod generator_cfg;
 pub mod generator_frame;
 pub mod lexer;
 pub mod parser;
+pub mod pipe_contract;
 pub mod wasm;
 
 pub use diag::{Diagnostic, Pos};

@@ -138,6 +138,10 @@ pub struct Receive {
 pub struct ActorDecl {
     pub name: String,
     pub pos: Pos,
+    /// Explicit application mailbox type. Independent of ordinary sends.
+    pub declared_receives: Option<Type>,
+    /// Explicit pipeline event type, distinct from sends/replies/CONTROL.
+    pub declared_emits: Option<Type>,
     pub fields: Vec<Field>,
     pub receive: Option<Receive>,
     pub methods: Vec<Method>,
@@ -331,13 +335,37 @@ pub enum ExprKind {
     New(String, Vec<Expr>),
     /// `spawn Actor()`
     Spawn(String),
+    /// Typed bounded channel/stream adapter constructor recognized for pipe
+    /// contracts only. No allocator, scheduler or guest ABI is exposed.
+    PipeEndpoint(PipeEndpointKind, Type, u32),
     /// Two or more static spawned actor stages composed using actor pipe.
     /// Parsed and type-admitted; lowering requires actor forwarding support.
     ActorPipeline(Vec<String>),
+    /// Static actor and general endpoint stages composed using `pipe`.
+    /// Mixed endpoints remain fail-closed until the typed channel/stream ABI.
+    MixedPipeline(Vec<PipeStage>),
     /// `base.name`: field read, `Enum.Variant`, or `mail.value`.
     Member(Box<Expr>, String),
     /// `base.name(args)`: method, `Class.static(args)` or `ref.send(v)`.
     MethodCall(Box<Expr>, String, Vec<Expr>),
+}
+
+/// Explicitly named endpoint constructors with directionally typed ports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipeEndpointKind {
+    ChannelBounded,
+    StreamBuffered,
+    StreamSink,
+    StreamReadable,
+}
+
+/// One stage in a continuous typed data-flow connection.
+#[derive(Clone, Debug)]
+pub enum PipeStage {
+    /// A freshly spawned actor; the source side uses only explicit `emit`.
+    Actor(String),
+    /// A future typed PipeSource/PipeSink capability, never an inferred copy.
+    Endpoint(Expr),
 }
 
 #[derive(Clone, Debug)]
