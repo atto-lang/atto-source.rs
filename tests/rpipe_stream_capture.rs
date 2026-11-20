@@ -327,3 +327,50 @@ fn named_actor_pipe_ports_reject_wrong_types_and_read_only_sinks() {
         assert_eq!(diagnostic.code, "E_TYPE", "{graph}: {diagnostic}");
     }
 }
+
+
+#[test]
+fn contextual_bang_pipeline_aliases_keep_identical_checked_graph_shapes() {
+    for (bare, alias) in [
+        ("spawn Producer() pipe spawn Transform() pipe spawn Consumer()",
+         "spawn Producer() pipe! spawn Transform() pipe spawn Consumer()"),
+        ("spawn Producer() pipe spawn Transform() pipe spawn Consumer()",
+         "spawn Producer() pipe spawn Transform() pipe! spawn Consumer()"),
+        ("spawn Consumer() rpipe spawn Transform() rpipe spawn Producer()",
+         "spawn Consumer() rpipe! spawn Transform() rpipe spawn Producer()"),
+        ("spawn Consumer() rpipe spawn Transform() rpipe spawn Producer()",
+         "spawn Consumer() rpipe spawn Transform() rpipe! spawn Producer()"),
+    ] {
+        let original = parsed(bare);
+        let spelled = parsed(alias);
+        // Actor-only stages carry stable lexical names and direction; neither
+        // spelling may alter the logical AST or introduce extra ownership.
+        assert_eq!(format!("{original:?}"), format!("{spelled:?}"), "{alias}");
+        assert_eq!(error(bare), "E_UNSUPPORTED");
+        assert_eq!(error(alias), "E_UNSUPPORTED");
+    }
+}
+
+#[test]
+fn malformed_bang_pipeline_suffixes_reject_without_host_panic_or_guest_artifact() {
+    for graph in [
+        "spawn Producer() pipe!suffix spawn Consumer()",
+        "spawn Consumer() rpipe!suffix spawn Producer()",
+        "spawn Producer() pipe!! spawn Consumer()",
+        "spawn Producer() pipe !spawn Consumer()",
+    ] {
+        let diag = compile(&source(graph)).expect_err("malformed alias is not an executable graph");
+        assert!(matches!(diag.code, "E_SYNTAX" | "E_UNSUPPORTED"), "{graph}: {diag:?}");
+    }
+}
+
+#[test]
+fn stop_bang_does_not_invent_a_browser_actor_lifecycle_abi() {
+    // Neither standalone stop form is executable in this bounded browser
+    // frontend. A contiguous bang cannot promote unsupported stop to success.
+    for statement in ["stop worker;", "stop! worker;"] {
+        let source = format!("pub fnc main(): int {{ {statement} return 0; }}");
+        let diag = compile(&source).expect_err("actor lifecycle requires checked runtime admission");
+        assert_eq!(diag.code, "E_UNSUPPORTED", "{statement}: {diag:?}");
+    }
+}
