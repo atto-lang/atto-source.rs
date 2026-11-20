@@ -63,8 +63,29 @@ fn import_path(source_file: &Path, value: &str, pos: Pos) -> R<PathBuf> {
     Ok(path)
 }
 #[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SealedStd {
+    HttpPolicy,
+    FsTextPolicy,
+}
+impl SealedStd {
+    fn source(self) -> &'static str {
+        match self {
+            Self::HttpPolicy => include_str!("../stdlib/std/http_response_policy.atto"),
+            Self::FsTextPolicy => include_str!("../stdlib/std/fs_text_policy.atto"),
+        }
+    }
+    fn source_path(self) -> &'static str {
+        match self {
+            Self::HttpPolicy => "stdlib/std/http_response_policy.atto",
+            Self::FsTextPolicy => "stdlib/std/fs_text_policy.atto",
+        }
+    }
+}
+
 struct Import {
     path: PathBuf,
+    sealed_std: Option<SealedStd>,
     namespace: Option<String>,
     names: Vec<(String, String)>,
     pos: Pos,
@@ -109,20 +130,32 @@ fn imports(toks: &[Token], logical: &Path) -> R<(Vec<Import>, Vec<Token>)> {
             }
         }
         require_word(toks, &mut i, "from", pos)?;
-        if word(toks.get(i), "pkg") {
-            return Err(diagnostic(pos, "E_UNSUPPORTED", "package imports require a package resolver"));
-        }
-        let value = match toks.get(i).map(|t| &t.tok) {
-            Some(Tok::Str(s)) => s,
-            _ => return Err(diagnostic(pos, "E_SYNTAX", "expected quoted source file")),
+        let (path, sealed_std) = if word(toks.get(i), "pkg") {
+            i += 1;
+            let source = match toks.get(i).map(|t| &t.tok) {
+                Some(Tok::Str(s)) => s.as_str(),
+                _ => return Err(diagnostic(pos, "E_SYNTAX", "expected quoted package identifier")),
+            };
+            let sealed = match source {
+                "std.http" => SealedStd::HttpPolicy,
+                "std.fs" => SealedStd::FsTextPolicy,
+                _ => return Err(diagnostic(pos, "E_UNSUPPORTED",
+                    "only the sealed pure-policy std.http and std.fs subset is linked; other packages are unsupported")),
+            };
+            (PathBuf::from(sealed.source_path()), Some(sealed))
+        } else {
+            let value = match toks.get(i).map(|t| &t.tok) {
+                Some(Tok::Str(s)) => s,
+                _ => return Err(diagnostic(pos, "E_SYNTAX", "expected quoted source file")),
+            };
+            (import_path(logical, value, pos)?, None)
         };
-        let path = import_path(logical, value, pos)?;
         i += 1;
         if toks.get(i).is_none_or(|t| t.tok != Tok::Semi) {
             return Err(diagnostic(pos, "E_SYNTAX", "expected ';' after file import"));
         }
         i += 1;
-        result.push(Import { path, namespace, names, pos });
+        result.push(Import { path, sealed_std, namespace, names, pos });
         if result.len() > MAX_BINDINGS {
             return Err(diagnostic(pos, "E_SOURCE_LIMIT", "too many import declarations"));
         }
@@ -211,16 +244,23 @@ where F: FnMut(&Path) -> std::io::Result<String> {
     }
     let root_names: BTreeSet<_> = program.funcs.iter().map(|f| f.name.clone()).collect();
     let mut units = Vec::<FileUnit>::new();
-    let mut by_path = BTreeMap::<PathBuf, usize>::new();
+    let mut by_path = BTreeMap::<(PathBuf, Option<SealedStd>), usize>::new();
     let mut bound = BTreeMap::<String, Binding>::new();
 
     for imp in &imports {
-        let id = if let Some(id) = by_path.get(&imp.path) { *id } else {
+        let key = (imp.path.clone(), imp.sealed_std);
+        let id = if let Some(id) = by_path.get(&key) { *id } else {
             if units.len() >= MAX_FILES {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "too many imported files"));
             }
-            let text = load(&imp.path).map_err(|e| diagnostic(imp.pos, "E_IMPORT",
-                format!("cannot load source {}: {:?}", imp.path.display(), e.kind())))?;
+            // Sealed builtin sources are compiler-embedded, never loaded from the
+            // caller's mutable package tree. External packages remain denied.
+            let text = if let Some(sealed) = imp.sealed_std {
+                sealed.source().to_owned()
+            } else {
+                load(&imp.path).map_err(|e| diagnostic(imp.pos, "E_IMPORT",
+                    format!("cannot load source {}: {:?}", imp.path.display(), e.kind())))?
+            };
             if text.len() > crate::SOURCE_CAP {
                 return Err(diagnostic(imp.pos, "E_SOURCE_LIMIT", "imported file exceeds 64 KiB"));
             }
@@ -242,7 +282,7 @@ where F: FnMut(&Path) -> std::io::Result<String> {
                 if t.tok != Tok::Eof { rewritten.push(t.clone()); }
             }
             let id = units.len();
-            by_path.insert(imp.path.clone(), id);
+            by_path.insert(key, id);
             units.push(FileUnit { module, funcs, tokens: rewritten });
             id
         };
