@@ -86,12 +86,14 @@ try {
   compile('negative-guard-escape','E_GUARD_ESCAPE');
   compile('negative-await-effect','E_AWAIT_EFFECT');
   compile('negative-old-constructor','E_NEW_REQUIRED');
+  compile('negative-old-constructor-no-lock','E_NEW_REQUIRED');
+  compile('negative-old-constructor-nested','E_NEW_REQUIRED');
 } finally {
   rmSync(temp,{recursive:true,force:true});
 }
 const receipt={schema:'atto.mutex-fast-guest.v1',profile:'single_task_uncontended_only',
   compiler_source_head:sha,compiler_binary_sha256:binarySha,
-  cases:results,pass:results.length===11&&results.every(x=>x.status==='PASS'),
+  cases:results,pass:results.length===13&&results.every(x=>x.status==='PASS'),
   excluded:['contended_async','tenant_isolation','general_task_runtime','exceptional_guard_cleanup']};
 if(process.env.ATTO_RECEIPT_PATH){
   const {writeFileSync}=await import('node:fs');
