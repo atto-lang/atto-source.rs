@@ -188,6 +188,7 @@ fn nested_four_stage_graphs_fail_closed_before_prefix_emission() {
 const CHECKED_FORWARD: &str = include_str!("fixtures/pass/219-v2-checked-actor-channel-actor-pipe.atto");
 const CHECKED_REVERSE: &str = include_str!("fixtures/pass/220-v2-checked-actor-channel-actor-rpipe.atto");
 const CHECKED_ROLLBACK: &str = include_str!("fixtures/pass/221-v2-checked-setup-rollback.atto");
+const CHECKED_OUTPUT_OCCUPIED: &str = include_str!("fixtures/pass/222-v2-checked-setup-output-occupied.atto");
 
 #[test]
 fn annotated_pipe_handle_result_compiles_both_directions_and_failed_setup_rollback() {
