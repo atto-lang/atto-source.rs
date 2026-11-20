@@ -38,11 +38,15 @@ pub(crate) enum Error {
     QueueFull,
     Exhausted,
     StaleTicket,
+    CancellationPending,
+    AlreadyClaimed,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cancellation {
     Queued,
     GrantedAndRevoked,
+    /// Active lease cancellation is deferred until cleanup releases it.
+    ActiveDeferred,
 }
 
 /// This intentionally exposes no constructor for an untrusted guest.
@@ -54,6 +58,8 @@ pub(crate) struct WaitQueue {
     max_waiters: usize,
     closed: bool,
     owner: Option<Ticket>,
+    active: bool,
+    cancel_requested: bool,
     waiting: VecDeque<Ticket>,
     // At most one outstanding direct handoff wakeup for the current owner.
     wakeup: Option<Ticket>,
@@ -65,7 +71,8 @@ impl WaitQueue {
         }
         Ok(Self {
             domain, generation, next_sequence: 1, max_waiters, closed: false,
-            owner: None, waiting: VecDeque::new(), wakeup: None,
+            owner: None, active: false, cancel_requested: false,
+            waiting: VecDeque::new(), wakeup: None,
         })
     }
 
@@ -106,15 +113,25 @@ impl WaitQueue {
         // delivers must still be checked with `claim` on resume.
         let next = self.waiting.pop_front();
         self.owner = next;
+        self.active = false;
+        self.cancel_requested = false;
         self.wakeup = next;
     }
 
     pub(crate) fn release(&mut self, owner: Ticket) -> Result<(), Error> {
-        if self.closed { return Err(Error::Closed); }
         if self.owner != Some(owner) || owner.generation != self.generation {
             return Err(Error::StaleTicket);
         }
-        self.handoff();
+        // An active task can still unwind and release after shutdown, but
+        // shutdown must not hand this lock to another task.
+        if self.closed {
+            self.owner = None;
+            self.active = false;
+            self.cancel_requested = false;
+            self.wakeup = None;
+        } else {
+            self.handoff();
+        }
         Ok(())
     }
 
@@ -124,14 +141,24 @@ impl WaitQueue {
         self.wakeup.take()
     }
 
-    pub(crate) fn claim(&self, token: Ticket) -> Result<(), Error> {
+    pub(crate) fn claim(&mut self, token: Ticket) -> Result<(), Error> {
         if self.closed { return Err(Error::Closed); }
         self.check_domain(token.continuation)?;
         if self.owner != Some(token) || token.generation != self.generation {
             return Err(Error::StaleTicket);
         }
+        if self.cancel_requested { return Err(Error::CancellationPending); }
+        if self.active { return Err(Error::AlreadyClaimed); }
+        // Claim is the guarded-entry event. An active grant cannot be revoked.
+        self.active = true;
+        if self.wakeup == Some(token) { self.wakeup = None; }
         Ok(())
     }
+
+    /// Metadata is not proof that a guest continuation physically retired.
+    pub(crate) fn has_active_lease(&self) -> bool { self.owner.is_some() && self.active }
+    pub(crate) fn cancellation_pending(&self) -> bool { self.cancel_requested }
+    pub(crate) fn has_outstanding_grant(&self) -> bool { self.owner.is_some() }
 
     /// Same ticket cancels either a still-pending request or its already-
     /// granted handoff. The arbiter serializes cancellation versus release.
@@ -144,20 +171,28 @@ impl WaitQueue {
             return Ok(Cancellation::Queued);
         }
         if self.owner == Some(token) {
+            if self.active {
+                // Request cancellation and wait for the holder to run its
+                // lexical using/defer cleanup. No successor may be granted yet.
+                self.cancel_requested = true;
+                return Ok(Cancellation::ActiveDeferred);
+            }
+            // Pending handoff has not entered the critical section.
             self.handoff();
             return Ok(Cancellation::GrantedAndRevoked);
         }
         Err(Error::StaleTicket)
     }
 
-    /// Privileged supervisor quiescence: active grants and pending waiters
-    /// are invalidated, but physical guest heap reclamation is NOT proved.
+    /// Shutdown cancels waiters and disallows new grants, but cannot revoke
+    /// a task actively inside its critical section. Retain active owner until
+    /// lexical cleanup calls release(). Task-scope quiescence is still needed.
     pub(crate) fn shutdown(&mut self) -> usize {
         self.closed = true;
-        self.owner = None;
         self.wakeup = None;
         let retired = self.waiting.len();
         self.waiting.clear();
+        if !self.active { self.owner = None; }
         retired
     }
 }
@@ -280,5 +315,64 @@ mod tests {
         assert_eq!(q.acquire(c(1)), Err(Error::Exhausted));
         assert_eq!(q.owner, None);
         assert!(q.waiting.is_empty());
+    }
+
+    #[test]
+    fn cancelling_active_lease_waits_for_guard_unwind_before_handoff() {
+        let mut q = queue(3);
+        let a = owned(q.acquire(c(1)).unwrap());
+        q.claim(a).unwrap();
+        let b = pending(q.acquire(c(2)).unwrap());
+        assert_eq!(q.cancel(a), Ok(Cancellation::ActiveDeferred));
+        assert_eq!(q.cancel(a), Ok(Cancellation::ActiveDeferred));
+        assert!(q.cancellation_pending() && q.has_active_lease());
+        assert_eq!(q.take_wakeup(), None);
+        assert_eq!(q.claim(a), Err(Error::CancellationPending));
+        assert_eq!(q.claim(b), Err(Error::StaleTicket));
+        // Called by the task cleanup path after it stops using the lease.
+        q.release(a).unwrap();
+        assert!(!q.cancellation_pending());
+        assert_eq!(q.take_wakeup(), Some(b));
+        q.claim(b).unwrap();
+        q.release(b).unwrap();
+        assert!(!q.has_outstanding_grant());
+    }
+    #[test]
+    fn unclaimed_handoff_may_be_revoked_at_cancellation() {
+        let mut q = queue(3);
+        let a = owned(q.acquire(c(1)).unwrap());
+        q.claim(a).unwrap();
+        let b = pending(q.acquire(c(2)).unwrap());
+        let c = pending(q.acquire(c(3)).unwrap());
+        q.release(a).unwrap();
+        assert_eq!(q.cancel(b), Ok(Cancellation::GrantedAndRevoked));
+        assert_eq!(q.take_wakeup(), Some(c));
+        assert_eq!(q.claim(b), Err(Error::StaleTicket));
+        q.claim(c).unwrap();
+        q.release(c).unwrap();
+    }
+    #[test]
+    fn shutdown_retains_active_owner_until_explicit_cleanup_acknowledgment() {
+        let mut q = queue(2);
+        let a = owned(q.acquire(c(1)).unwrap());
+        q.claim(a).unwrap();
+        let b = pending(q.acquire(c(2)).unwrap());
+        assert_eq!(q.shutdown(), 1);
+        assert!(q.has_outstanding_grant() && q.has_active_lease());
+        assert_eq!(q.claim(b), Err(Error::Closed));
+        assert_eq!(q.acquire(c(3)), Err(Error::Closed));
+        assert_eq!(q.release(b), Err(Error::StaleTicket));
+        q.release(a).unwrap();
+        assert!(!q.has_outstanding_grant());
+        assert_eq!(q.release(a), Err(Error::StaleTicket));
+    }
+    #[test]
+    fn claimed_lease_cannot_replay_entry_or_reenter() {
+        let mut q = queue(2);
+        let a = owned(q.acquire(c(1)).unwrap());
+        q.claim(a).unwrap();
+        assert_eq!(q.claim(a), Err(Error::AlreadyClaimed));
+        assert_eq!(q.acquire(c(1)), Err(Error::Reentrant));
+        q.release(a).unwrap();
     }
 }
