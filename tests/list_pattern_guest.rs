@@ -61,3 +61,16 @@ fn scalar_match_compiler_does_not_acquire_list_privileges(){
     let out=compile(program).expect("existing scalar match must remain valid");
     assert!(out.starts_with(b"\0asm"));
 }
+
+#[test]
+fn signed_minimum_and_empty_list_shape_are_exact() {
+    let minimum=BASE.replace("10, 20, 30, 40, 50",
+        "-9223372036854775808, 20, 30, 40, 50");
+    assert!(compile(&minimum).unwrap().starts_with(b"\0asm"));
+    rejection(&BASE.replace("10, 20, 30, 40, 50",
+        "9223372036854775808, 20, 30, 40, 50"),"E_INTEGER_RANGE");
+    let empty=BASE.replace("10, 20, 30, 40, 50","")
+        .replace("..., is int as val a, is int as val b, is int as val c, ...",
+            "...");
+    rejection(&empty,"E_PATTERN_BINDING");
+}
