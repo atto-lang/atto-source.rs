@@ -2865,11 +2865,15 @@ impl Parser {
         let mut args = Vec::new();
         if *self.peek() != Tok::RParen {
             loop {
-                if matches!(self.peek(), Tok::Ident(_)) && *self.peek_at(1) == Tok::Colon {
-                    return Err(unsupported(self.pos(), "named arguments"));
+                if matches!(self.peek(), Tok::Ident(_))
+                    && matches!(self.peek_at(1), Tok::Assign | Tok::Colon)
+                {
+                    return Err(unsupported(self.pos(),
+                        "named callable arguments require checked parameter resolution (f(foo=1)); use f((foo=1)) to pass a Record"));
                 }
                 if *self.peek() == Tok::Dot {
-                    return Err(unsupported(self.pos(), "spread arguments"));
+                    return Err(unsupported(self.pos(),
+                        "explicit Record-to-named-argument expansion needs checked callable parameter and ownership resolution"));
                 }
                 args.push(self.parse_expr()?);
                 if args.len() > MAX_PARAMS {
@@ -3226,6 +3230,48 @@ impl Parser {
         }
     }
 
+    /// Parenthesized identifier-named Record literal. This is the same
+    /// closed structural Record AST as {foo: 1}, never a tuple or a call.
+    /// The source-order field inventory and static shape checks are shared.
+    fn parse_named_record_parens(&mut self, pos: Pos) -> R<Expr> {
+        let mut fields: Vec<(String, Expr)> = Vec::new();
+        loop {
+            if fields.len() >= 1024 {
+                return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
+                    "parenthesized Record exceeds 1024 fields"));
+            }
+            let at = self.pos();
+            let name = match self.peek().clone() {
+                Tok::Ident(name) if !is_reserved(&name) => name,
+                _ => return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                    "parenthesized Record fields require identifier=expression; use {...} for quoted labels")),
+            };
+            self.advance();
+            self.expect(Tok::Assign, "'=' after named Record field")?;
+            if fields.iter().any(|(existing, _)| existing == &name) {
+                return Err(Diagnostic::new(at, "E_DUPLICATE",
+                    format!("duplicate Record field '{name}'")));
+            }
+            let value = self.parse_expr()?;
+            fields.push((name, value));
+            if self.eat(&Tok::Comma) {
+                if self.eat(&Tok::RParen) {
+                    break;
+                }
+                if !matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
+                    || *self.peek_at(1) != Tok::Assign
+                {
+                    return Err(Diagnostic::new(self.pos(), "E_LITERAL_KIND",
+                        "cannot mix named Record fields and positional Tuple items; expected field=value"));
+                }
+                continue;
+            }
+            self.expect(Tok::RParen, "')' after parenthesized Record")?;
+            break;
+        }
+        Ok(Expr { kind: ExprKind::Record(fields), pos })
+    }
+
     fn parse_primary(&mut self) -> R<Expr> {
         let pos = self.pos();
         let t = self.peek().clone();
@@ -3246,6 +3292,14 @@ impl Parser {
                 self.advance();
                 if self.eat(&Tok::RParen) {
                     return Ok(Expr { kind: ExprKind::Tuple(Vec::new()), pos });
+                }
+                // Only identifier '=' selects named-Record grammar.
+                // EqEq never selects this branch; parentheses otherwise
+                // preserve the Tuple/grouping grammar unchanged.
+                if matches!(self.peek(), Tok::Ident(name) if !is_reserved(name))
+                    && *self.peek_at(1) == Tok::Assign
+                {
+                    return self.parse_named_record_parens(pos);
                 }
                 let first = if self.cond > 0 { self.parse_cond()? } else { self.parse_expr()? };
                 if self.eat(&Tok::Comma) {
