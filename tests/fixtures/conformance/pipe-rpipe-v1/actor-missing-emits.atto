@@ -1,0 +1,14 @@
+// TARGET FIXTURE — source contract only, not a verified guest run.
+define actor Producer receives int as
+  susp receive(ActorMail<int> mail): void {
+  }
+end
+define actor Consumer receives int as
+  susp receive(ActorMail<int> mail): void { }
+end
+pub susp fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val connection = producer pipe consumer;
+  return 0;
+}
