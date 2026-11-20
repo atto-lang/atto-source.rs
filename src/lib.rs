@@ -15,6 +15,8 @@ pub mod record_struct_layout;
 pub mod closed_record_guest;
 /// Executable bounded scalar Tuple.of/Array.of with checked constant indexes.
 pub mod fixed_sequence_guest;
+/// Bounded immutable scalar Map.of allocation and statically proven key projection.
+pub mod scalar_map_guest;
 pub mod check;
 pub mod diag;
 pub mod generator_cfg;
@@ -144,6 +146,7 @@ pub fn compile(source: &str) -> Result<Vec<u8>, Diagnostic> {
     let collection_ir = collection_types::analyze(&program)?;
     closed_record_guest::lower(&mut program, &collection_ir)?;
     fixed_sequence_guest::lower(&mut program, &collection_ir)?;
+    scalar_map_guest::lower(&mut program, &collection_ir)?;
     let typed = check::check(&program)?;
     let mut bytes = wasm::emit(&typed);
     visibility_lower::metadata(&mut bytes, &visibility.exports);
