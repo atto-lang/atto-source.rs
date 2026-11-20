@@ -174,6 +174,19 @@ try{
     /E_UNSUPPORTED/);
   console.log('PASS browser: removed ^^ rejects in async source');
 
+  // Real compiler -> Wasm guest: a second same-direction actor connection
+  // must trap before publishing any cycle (not hang the actor-link walk).
+  // The v2 actor-only runtime remains experimental and lacks checked handles.
+  const duplicatePipeGuest = await readFile(new URL(
+    './fixtures/panic/207-v2-duplicate-actor-pipe.atto', import.meta.url), 'utf8');
+  assert.match(await run(duplicatePipeGuest, 'E_PANIC'), /^E_PANIC:/);
+  assert.equal(await evaluate('window.__attoLastPanicCode'), 10,
+    'duplicate actor pipe must use bounded graph-admission trap code 10');
+  console.log('PASS browser: actual guest traps duplicate actor pipe before cycle');
+  assert.match(await run('pub fnc main(): int { return 42; }', 'main() -> 42'),
+    /^main\\(\\) -> 42$/);
+  console.log('PASS browser: fresh guest remains runnable after rejected actor pipe');
+
   assert.ok(requests.some(x=>x.path==='/atto_compiler.wasm'));
   assert.ok(requests.every(x=>x.method==='GET'));
   console.log('PASS browser: no source POST or server-side compilation');
