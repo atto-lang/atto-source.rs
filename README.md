@@ -39,7 +39,13 @@ source commit and the distinct carrier commit; it never presents carrier commit
 identity as a source commit proof. `ATTO_EXPECT_TREE` may also be set in
 normal mode for defense-in-depth. Verify that the externally supplied tree SHA
 really belongs to the declared original source commit; the isolated carrier
-cannot independently authenticate a private upstream repository.
+cannot independently authenticate a private upstream repository. **Do not copy
+the upstream GitHub Actions workflow unchanged and let it check its own carrier
+`github.sha`**: that source-mode workflow intentionally rejects runs outside
+`atto-lang/atto-source.rs`. Create a separate restricted carrier workflow that
+checks out the exact mirrored tree and invokes the script in mirror mode with
+the previously trusted original source HEAD/tree SHA values. No tokens or
+cross-repository checkout are needed.
 
 `node --test tests/verify-list-pattern-proof.test.mjs` executes only negative
 provenance guards in disposable repositories and deliberately makes Cargo
