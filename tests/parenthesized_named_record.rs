@@ -126,6 +126,28 @@ fn named_call_arguments_and_record_expansion_stay_distinct_fail_closed() {
 }
 
 #[test]
+fn adjacent_generic_close_and_assignment_preserve_type_and_comparison_tokens() {
+    // Lexer emits Ge for adjacent '>='; only type parsing is allowed
+    // to split it into '>' plus '='.
+    let p = binding(
+        "let m:Map<string,int>={}; let n:Map<string,List<int>>={}; \
+         let a:Array<int>=[]; let comparison=3>=2;"
+    );
+    let typed = collection_types::analyze(&p).unwrap();
+    assert_eq!(typed.len(), 3);
+    assert_eq!(typed[0].value.ty, LiteralType::Map(
+        Box::new(LiteralType::String), Box::new(LiteralType::Int)));
+    assert_eq!(typed[1].value.ty, LiteralType::Map(
+        Box::new(LiteralType::String),
+        Box::new(LiteralType::List(Box::new(LiteralType::Int)))));
+    assert_eq!(typed[2].value.ty,
+        LiteralType::Array(Box::new(LiteralType::Int)));
+    assert!(matches!(&p.funcs[0].body[3], Stmt::Bind {init,..}
+        if matches!(&init.kind, ExprKind::Binary(..))));
+    guest("pub fnc main():int {return 3>=2 ? 42 : 0;}");
+}
+
+#[test]
 fn parenthesized_record_compiles_via_existing_owned_scalar_guest_abi() {
     for src in [
         "pub fnc main():int {let y=(foo=\"star\",abc=5);return y.abc;}",
