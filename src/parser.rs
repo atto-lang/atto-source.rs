@@ -249,6 +249,9 @@ pub struct Parser {
     erlang_body: bool,
     state_method: bool,
     state_binder: Option<String>,
+    /// Scoped to the right operand of an Entry arrow. A following
+    /// (as Entry<K,V>) annotates the whole Entry, never only the RHS.
+    entry_rhs_depth: u32,
 }
 
 struct TypeFirstField {
@@ -302,6 +305,7 @@ impl Parser {
             erlang_body: false,
             state_method: false,
             state_binder: None,
+            entry_rhs_depth: 0,
         }
     }
 
@@ -466,7 +470,8 @@ impl Parser {
                 let correct_arity = match builtin {
                     "Record" => !generic,
                     "Array" | "List" => !generic || args.len() == 1,
-                    "Map" | "Entry" => !generic || args.len() == 2,
+                    "Map" => !generic || args.len() == 2,
+                    "Entry" => generic && args.len() == 2,
                     "Tuple" => !generic || !args.is_empty(),
                     _ => unreachable!(),
                 };
@@ -2588,27 +2593,67 @@ impl Parser {
         self.parse_expr_allow_entry(false)
     }
 
+    /// Canonicalize both whole-Entry ascriptions to one typed AST node
+    /// represented by a compiler-private call. This is NOT a general cast,
+    /// and cannot turn a Record, Tuple, Map or arbitrary value into an Entry.
+    fn ascribe_entry(&mut self, entry: Expr) -> R<Expr> {
+        if !matches!(&entry.kind, ExprKind::Call(name, _) if name == "@builtin/Entry.of") {
+            return Err(Diagnostic::new(entry.pos, "E_TYPE",
+                "Entry type ascription requires a whole (key => value) expression"));
+        }
+        let at = self.pos();
+        let ty = self.parse_type()?;
+        let name = match ty {
+            Type::Named(i) => self.type_names[i as usize].0.clone(),
+            _ => return Err(Diagnostic::new(at, "E_TYPE",
+                "Entry ascription requires Entry<K,V>, not another type")),
+        };
+        if !name.starts_with("@builtin/Entry<") || !name.ends_with('>') {
+            return Err(Diagnostic::new(at, "E_TYPE",
+                "Entry ascription requires the nominal Entry<K,V> type"));
+        }
+        Ok(Expr {
+            pos: entry.pos,
+            kind: ExprKind::Call(format!("@builtin/Entry.ascribe<{name}>"), vec![entry]),
+        })
+    }
+
     fn parse_expr_allow_entry(&mut self, allow_entry: bool) -> R<Expr> {
         self.enter()?;
         let saved = self.cond;
         self.cond = 0;
         let r = (|| {
             let lhs = self.parse_ternary()?;
-            if !allow_entry || !self.eat(&Tok::FatArrow) {
-                return Ok(lhs);
+            let mut expr = if allow_entry && self.eat(&Tok::FatArrow) {
+                let pos = lhs.pos;
+                self.entry_rhs_depth += 1;
+                let right = self.parse_ternary();
+                self.entry_rhs_depth -= 1;
+                let rhs = right?;
+                if *self.peek() == Tok::FatArrow {
+                    return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
+                        "Entry => is non-associative; use parentheses to group"));
+                }
+                Expr {
+                    kind: ExprKind::Call("@builtin/Entry.of".into(), vec![lhs, rhs]),
+                    pos,
+                }
+            } else {
+                lhs
+            };
+            // The suffix '(as Entry<K,V>)' is only recognized after a
+            // complete Entry expression and annotates the whole pair.
+            if allow_entry && *self.peek() == Tok::LParen && self.word_at(1) == Some("as") {
+                self.advance();
+                self.advance();
+                expr = self.ascribe_entry(expr)?;
+                self.expect(Tok::RParen, "')' after Entry type ascription")?;
+            } else if allow_entry && self.eat_word("as") {
+                // Parenthesized Entry, then 'as Entry<K,V>'. Do not approve
+                // arbitrary x as T casts through this narrowly typed rule.
+                expr = self.ascribe_entry(expr)?;
             }
-            let pos = lhs.pos;
-            // Synthetic unspellable callee: no guest Entry is emitted without
-            // explicit nominal-type, ownership and lowering implementation.
-            let rhs = self.parse_ternary()?;
-            if *self.peek() == Tok::FatArrow {
-                return Err(Diagnostic::new(self.pos(), "E_SYNTAX",
-                    "Entry => is non-associative; use parentheses to group"));
-            }
-            Ok(Expr {
-                kind: ExprKind::Call("@builtin/Entry.of".into(), vec![lhs, rhs]),
-                pos,
-            })
+            Ok(expr)
         })();
         self.cond = saved;
         self.leave();
@@ -2759,7 +2804,10 @@ impl Parser {
                 Tok::Le => BinOp::Le,
                 Tok::Gt => BinOp::Gt,
                 Tok::Ge => BinOp::Ge,
-                Tok::Ident(s) if s == "as" || s == "matches" => return Err(unsupported(pos, &format!("'{s}'"))),
+                Tok::Ident(s) if s == "as"
+                    && matches!(&left.kind, ExprKind::Call(name, _) if name == "@builtin/Entry.of") =>
+                    break,
+                Tok::Ident(s) if s == "as" || s == "matches" => return Err(unsupported(pos, &format!("'{s}"))),
                 _ => break,
             };
             self.advance();
@@ -2939,6 +2987,8 @@ impl Parser {
         let mut e = self.parse_primary()?;
         loop {
             match self.peek() {
+                Tok::LParen if self.entry_rhs_depth > 0
+                    && self.word_at(1) == Some("as") => break,
                 Tok::LParen => {
                     let name = match &e.kind {
                         ExprKind::Var(n) => n.clone(),
