@@ -165,7 +165,7 @@ impl Context {
                 self.returns.push((ty, *p));
                 Ok(true)
             }
-            Stmt::Bind { kind, name, ty, init, pos } => {
+            Stmt::Bind { kind, name, ty, init, pos, .. } => {
                 if *kind == BindKind::Const && !matches!(init.kind,
                     ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Float(_) | ExprKind::Str(_)) {
                     return Err(err(*pos, "E_CONST", "const lambda local needs literal initializer"));
