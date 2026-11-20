@@ -101,3 +101,18 @@ fn unrelated_ownership_generics_remain_fail_closed() {
     let err=compile(other).expect_err("unsupported generic has no guest allocation");
     assert!(matches!(err.code,"E_UNSUPPORTED"|"E_UNSUPPORTED_TYPE"|"E_LOCK_UNSUPPORTED"));
 }
+
+#[test]
+fn repeated_sequential_awaits_are_lowered_with_cleanup_between_calls() {
+    let main=r#"
+pub susp fnc main(): int {
+    val counter = Mutex<int>(0);
+    val first = await increment(counter);
+    return await increment(counter);
+}
+"#;
+    let wasm=compile(&source(main)).expect("two sequential ready acquisitions");
+    assert!(wasm.starts_with(b"\0asm"));
+    let overflow=source(main).replace("Mutex<int>(0)", "Mutex<int>(9223372036854775806)");
+    assert_eq!(compile(&overflow).unwrap_err().code,"E_OVERFLOW");
+}
