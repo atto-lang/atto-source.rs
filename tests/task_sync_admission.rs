@@ -28,6 +28,7 @@ fn typed_task_and_sync_aliases_never_fall_into_wrong_lowering() {
 
 #[test]
 fn reserved_sync_cannot_be_local_variable() {
-    let result = compile("pub fnc main(): int { val sync = 42; return sync; }");
-    assert!(result.is_err(), "reserved sync must not become a user variable");
+    let d = compile("pub fnc main(): int { val sync = 42; return sync; }")
+        .expect_err("reserved sync must not become a user variable");
+    assert_eq!(d.code, "E_RESERVED", "{d}");
 }
