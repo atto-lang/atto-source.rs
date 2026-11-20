@@ -32,3 +32,20 @@ fn reserved_sync_cannot_be_local_variable() {
         .expect_err("reserved sync must not become a user variable");
     assert_eq!(d.code, "E_RESERVED", "{d}");
 }
+
+#[test]
+fn cancellable_typed_task_must_not_emit_guest_until_scope_and_retirement_are_real() {
+    // Future.cancel() cannot be treated as a normal method call while the
+    // typed task itself lacks cancellation-safe continuation lowering.
+    rejected_source(
+        "pub susp fnc main(): int {          val Future<int> pending = task<int> { return 42; };          pending.cancel(); return 42; }",
+    );
+    // Discarded tasks must not detach and evade lexical scope cancellation.
+    rejected_source(
+        "pub susp fnc main(): int {          do task<void> { return; }; return 42; }",
+    );
+    // Nested cancellation must not be implemented as a normal direct call.
+    rejected_source(
+        "pub susp fnc main(): int {          val Future<void> pending = task<void> {            do task<void> { return; }; return;          }; pending.cancel(); return 42; }",
+    );
+}
