@@ -19,7 +19,7 @@ const KEYWORDS: &[&str] = &[
     "define", "fnc", "routine", "suspends", "return", "self", "pub", "const", "val", "let", "mut", "if", "then", "else",
     "elif", "elseif", "fi", "do", "done", "end", "while", "for", "loop", "block", "break", "continue", "match", "over",
     "on", "default", "when", "spawn", "await", "nb", "try", "readch", "writech", "eq", "neq", "is", "new", "true",
-    "false", "task", "using", "with", "use", "yield", "pipe", "as", "in",
+    "false", "task", "using", "with", "use", "yield", "pipe", "rpipe", "as", "in",
 ];
 
 fn unsupported(pos: Pos, what: &str) -> Diagnostic {
@@ -852,19 +852,35 @@ impl Parser {
         Ok(c)
     }
 
-    /// `a | b` and `a pipe b` link actor references. Inside a condition `|`
-    /// is the eager boolean OR instead.
+    /// Continuous actor-only legacy pipeline: preserve written evaluation
+    /// order. 'rpipe' reverses the DATA edge, never the constructors.
+    /// Mixing directions without parentheses is an error, not inferred duplex.
     fn parse_actor_pipe(&mut self) -> R<Expr> {
         let mut left = self.parse_or()?;
+        let mut direction: Option<BinOp> = None;
+        let mut links = 0usize;
         loop {
             let pos = self.pos();
-            if (self.cond == 0 && *self.peek() == Tok::Pipe) || self.is_word("pipe") {
-                self.advance();
-                let right = self.parse_or()?;
-                left = Expr { kind: Ex::Binary(BinOp::Pipe, Box::new(left), Box::new(right)), pos };
+            let op = if self.is_word("rpipe") {
+                BinOp::Rpipe
+            } else if (self.cond == 0 && *self.peek() == Tok::Pipe) || self.is_word("pipe") {
+                BinOp::Pipe
             } else {
                 return Ok(left);
+            };
+            if direction.is_some_and(|previous| previous != op) {
+                return Err(Diagnostic::new(pos, "E_PIPE_DIRECTION",
+                    "mixed pipe/rpipe directions require an explicit parenthesized graph"));
             }
+            direction = Some(op);
+            links += 1;
+            if links > 15 {
+                return Err(Diagnostic::new(pos, "E_SOURCE_LIMIT",
+                    "continuous actor pipeline exceeds 16 stages"));
+            }
+            self.advance();
+            let right = self.parse_or()?;
+            left = Expr { kind: Ex::Binary(op, Box::new(left), Box::new(right)), pos };
         }
     }
 
