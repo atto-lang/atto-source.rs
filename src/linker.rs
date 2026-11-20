@@ -81,7 +81,7 @@ fn byte_at(source: &str, pos: Pos) -> R<usize> {
     Err(err(pos, "E_SYNTAX", "invalid source token boundary"))
 }
 fn erase(mut source: String, mut spans: Vec<(usize, usize)>) -> String {
-    spans.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    spans.sort_unstable_by_key(|a| std::cmp::Reverse(a.0));
     for (start, end) in spans {
         source.replace_range(start..end, "");
     }
