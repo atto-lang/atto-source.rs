@@ -40,6 +40,7 @@ struct Escrow<T> {
     actor: ActorIdentity,
     epoch: u64,
 }
+#[derive(Debug)]
 pub(crate) struct Recovered<T> {
     pub sender_tenant: u64,
     pub payload: T,
@@ -162,6 +163,7 @@ impl<T> Admission<T> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum CommitError<T> {
     InvalidTicket(AdmissionError),
     Recovered(AdmissionError, Recovered<T>),
@@ -219,11 +221,11 @@ mod tests {
         let a = m.stage(7, actor(), 1, true, 1).unwrap();
         let b = m.stage(7, actor(), 1, true, 2).unwrap();
         assert_eq!(m.stage(7, actor(), 1, true, 3).unwrap_err().0, AdmissionError::Full);
-        assert_eq!(m.commit(a, true), Ok(1));
+        assert_eq!(m.commit(a, true).unwrap(), 1);
         assert_eq!(m.stage(7, actor(), 1, true, 4).unwrap_err().0, AdmissionError::Full);
         assert_eq!(m.abort(b).unwrap().payload, 2);
         let c = m.stage(7, actor(), 1, true, 3).unwrap();
-        assert_eq!(m.commit(c, true), Ok(3));
+        assert_eq!(m.commit(c, true).unwrap(), 3);
     }
     #[test] fn close_returns_escrow_and_abandons_only_admitted() {
         let mut m = Admission::new(actor(), 1, 3);
@@ -236,7 +238,7 @@ mod tests {
         assert_eq!(outcome.abandoned.len(), 1);
         assert_eq!(outcome.abandoned[0].payload, 17);
         assert_eq!(m.abandoned, 1);
-        assert_eq!(m.abort(b), Err(AdmissionError::InvalidTicket));
+        assert!(matches!(m.abort(b), Err(AdmissionError::InvalidTicket)));
         let second = m.stop();
         assert_eq!(second.recovered.len(), 0);
         assert_eq!(second.abandoned.len(), 0);
