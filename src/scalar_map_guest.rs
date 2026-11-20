@@ -174,7 +174,20 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 body.push(ordinary);
                 continue;
             };
-            let ExprKind::Map(entries) = init.kind else {
+            let parsed_map = match init.kind {
+                ExprKind::Map(entries) => Some(entries),
+                ExprKind::EmptyBraces => {
+                    // {} can become a Map only when the checked type
+                    // inventory supplies a concrete Map<K,V> context.
+                    let key = (init.pos.line, init.pos.col, name.clone());
+                    if inventory.get(&key).is_some_and(|b|
+                        matches!(&b.value.ty, LiteralType::Map(_, _))) {
+                        Some(Vec::new())
+                    } else { None }
+                }
+                _ => None,
+            };
+            let Some(entries) = parsed_map else {
                 let mut ordinary = Stmt::Bind {kind, name: name.clone(), ty, init, pos};
                 rewrite_statement(&mut ordinary, &locals)?;
                 locals.remove(&name);
@@ -185,9 +198,9 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 return Err(error(pos, "E_UNSUPPORTED",
                     "const Map.of allocation requires a static constant-value ABI"));
             }
-            if entries.is_empty() || entries.len() > MAX_ENTRIES || ordinal >= MAX_BINDINGS {
+            if entries.len() > MAX_ENTRIES || ordinal >= MAX_BINDINGS {
                 return Err(error(pos, "E_UNSUPPORTED",
-                    "bounded Map.of guest allocation permits 1..=4 scalar pairs and <=32 maps"));
+                    "bounded Map.of guest allocation permits 0..=4 typed scalar pairs and <=32 maps"));
             }
             let at = (init.pos.line, init.pos.col, name.clone());
             let binding = inventory.get(&at).ok_or_else(|| error(init.pos, "E_SHAPE",
@@ -198,6 +211,12 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             if !matches!(key_type.as_ref(), LiteralType::Int | LiteralType::Bool | LiteralType::String) {
                 return Err(error(init.pos, "E_MAP_KEY",
                     "executable Map.of requires homogeneous int/bool/string literal keys"));
+            }
+            // Untyped Map.of() is not a concrete Map<K,V>. Reject instead
+            // of creating a type-erased or host-backed dictionary.
+            if entries.is_empty() && matches!(key_type.as_ref(), LiteralType::Bottom) {
+                return Err(error(init.pos, "E_TYPE_INFERENCE",
+                    "empty Map needs an explicit concrete Map<K,V> type"));
             }
             let key_type_scalar = scalar_type(key_type, init.pos)?;
             let value_type_scalar = scalar_type(value_type, init.pos)?;
@@ -228,7 +247,16 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
             let class_name = format!("{PRIVATE_PREFIX}map_shape_{ordinal}");
             let class_type = program.type_names.len() as u32;
             program.type_names.push((class_name.clone(), init.pos));
-            classes.push(generated_class(class_name.clone(), &types, init.pos)?);
+            // One compiler-private int(0) sentinel occupies guest
+            // allocation for an empty Map; there is no runtime key slot.
+            // In particular, never call the zero-size bump allocator.
+            let cls = if types.is_empty() {
+                args.push(Expr {kind: ExprKind::Int(Some(0)), pos: init.pos});
+                generated_class(class_name.clone(), &[LiteralType::Int], init.pos)?
+            } else {
+                generated_class(class_name.clone(), &types, init.pos)?
+            };
+            classes.push(cls);
             ordinal += 1;
             locals.insert(name.clone(), lookup);
             body.push(Stmt::Bind {
