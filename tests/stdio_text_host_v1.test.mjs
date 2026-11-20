@@ -6,14 +6,14 @@ const encode = text => new TextEncoder().encode(text);
 async function* chunks(...items) {for (const item of items) yield item instanceof Uint8Array?item:encode(item)}
 const mk = (stdin,opts={}) => {
   const out=[],error=[];
-  const host=new StdioTextHostV1({generation:1,stdin,stdout:async b=>out.push(new TextDecoder().decode(b)),
+  const host=new StdioTextHostV1({tenantId:'test-tenant',generation:1,stdin,stdout:async b=>out.push(new TextDecoder().decode(b)),
     stderr:async b=>error.push(new TextDecoder().decode(b)),...opts});
   return {host,out,error};
 };
 
 test('explicit injection, identity aliases, typed directions, exact echoed bytes',async()=>{
   assert.throws(()=>new StdioTextHostV1(), /generation/);
-  assert.throws(()=>new StdioTextHostV1({generation:1}), /stdin source/);
+  assert.throws(()=>new StdioTextHostV1({generation:1,tenantId:'test-tenant'}), /stdin source/);
   const {host,out,error}=mk(chunks('hello\n'));
   assert.equal(host.stdio.in,host.process.stdin);
   assert.equal(host.stdio.out,host.process.stdout);
@@ -126,6 +126,8 @@ test('sink failure is checked, not a silent success, and terminal',async()=>{
 });
 
 test('generation and quota configuration fail closed before acquiring input',()=>{
+  assert.throws(()=>mk(chunks(),{tenantId:''}),/tenant identity/);
+  assert.throws(()=>mk(chunks(),{tenantId:'   '}),/tenant identity/);
   assert.throws(()=>mk(chunks(),{generation:0}),/generation/);
   assert.throws(()=>mk(chunks(),{generation:-1}),/generation/);
   assert.throws(()=>mk(chunks(),{generation:1.25}),/generation/);
