@@ -133,6 +133,19 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 s.push(chars[i]);
                 bump!();
             }
+            // Exception-control bangs are contiguous contextual spellings.
+            // Keep !eq and != intact; do not consume whitespace or alter
+            // unrelated ownership-bang / boolean-not syntax.
+            if matches!(s.as_str(), "trap" | "throw" | "raise" | "panic")
+                && chars.get(i) == Some(&'!')
+                && chars.get(i + 1) != Some(&'=')
+                && !(chars.get(i + 1) == Some(&'e')
+                    && chars.get(i + 2) == Some(&'q')
+                    && chars.get(i + 3).map_or(true, |c| !c.is_alphanumeric() && *c != '_'))
+            {
+                s.push('!');
+                bump!();
+            }
             // Generator delegation is a single contiguous lexical spelling.
             // Do not consume a separated star: `yield *value` is not `yield*`.
             let tok = if s == "yield" && chars.get(i) == Some(&'*') {
@@ -396,4 +409,26 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
         pos: Pos { line, col },
     });
     Ok(out)
+}
+
+#[cfg(test)]
+mod bang_exception_keyword_tests {
+    use super::*;
+
+    #[test]
+    fn contiguous_keywords_are_single_tokens_without_comparison_collisions() {
+        let tokens = lex("trap! f(); throw! err; raise! err; panic! err").unwrap();
+        let names: Vec<&str> = tokens.iter().filter_map(|t| match &t.tok {
+            Tok::Ident(s) => Some(s.as_str()), _ => None,
+        }).collect();
+        assert_eq!(names, vec!["trap!", "f", "throw!", "err", "raise!", "err", "panic!", "err"]);
+
+        let separate = lex("trap !f; trap!eq throw!= other_trap!").unwrap();
+        assert!(matches!(&separate[0].tok, Tok::Ident(s) if s == "trap"));
+        assert_eq!(separate[1].tok, Tok::Bang);
+        assert!(matches!(&separate[3].tok, Tok::Ident(s) if s == "trap"));
+        assert!(matches!(&separate[5].tok, Tok::Ident(s) if s == "throw"));
+        assert!(matches!(&separate[7].tok, Tok::Ident(s) if s == "other_trap"));
+        assert_eq!(separate[8].tok, Tok::Bang);
+    }
 }
