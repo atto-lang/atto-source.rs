@@ -90,3 +90,17 @@ fn attached_state_source_initializer_is_semantically_authoritative() {
     assert_ne!(a,b,"the generated guest state must be initialized from the attached source field");
     audit_cleanup_wasm_witness(&b).unwrap();
 }
+
+#[test]
+fn exact_portable_counter_requires_real_actor_startup_and_mailbox_not_method_preview() {
+    const FULL_INLINE:&str=include_str!("fixtures/stateful/portable_inline_counter.atto");
+    const FULL_ATTACHED:&str=include_str!("fixtures/stateful/portable_attached_counter.atto");
+    // These two files are exact Git blobs from canonical atto-platform-conformance
+    // PR #113, not alternate source written to fit this limited preview.
+    for source in [FULL_INLINE,FULL_ATTACHED] {
+        assert!(atto_compiler::compile(source).is_err(),
+            "production compile must not erase unverified guarded actor lifecycle");
+        assert!(compile_stateful_method_preview(source).is_err(),
+            "the opt-in single-method preview cannot claim support for receive/on_start");
+    }
+}
