@@ -213,3 +213,38 @@ This branch now reserves `Sendable`, `Shareable` and `Serializable` as compiler-
 The new negative source cases `actor-isolation-pointer-mail-v1.atto`, `actor-isolation-arc-mail-v1.atto`, `actor-isolation-mutex-mail-v1.atto`, `actor-isolation-nominal-mail-v1.atto` and three `*-spoof-v1.atto` cases target a compile-error/no-emitted-artifact gate. The independent frontend still has a bounded int/bool actor-mail type subset. This change does **not** implement `Sendable<T>` MIR derivation, frozen `Arc<T>` runtime ownership, brokered cross-TenantVM transport or any new executable carrier. The general behavior is specified as a **proposal** in [atto-spec #27](https://github.com/atto-lang/atto-spec/pull/27) and staged as 36 unexecuted policy cases in [atto-platform-conformance #33](https://github.com/atto-lang/atto-platform-conformance/pull/33).
 
 The conformance contract's separate **12/12 Rust source-only oracle** pass on the [private exact two-blob carrier](https://github.com/usa-acc/atto-ci/actions/runs/44662076919) is **not** evidence that this compiler branch, its seven new negative fixtures or Atto guest isolation passed. This branch requires its own exact-tree compiler build and checked negative diagnostics before Ready/merge.
+
+## 2026-11-20 compiled Rust/Wasm actor isolation verification
+
+**Executed, limited guest result:** [private GitHub Actions run #44770032043](https://github.com/ores-rate-limit-test/atto-ci/actions/runs/44770032043)
+(job `136404901130`) built the production `attoc` native Rust compiler from
+a private, token-free **68-file source subset** and compiled both
+`actor-explicit-shared-domain-v1.atto` and `actor-bool-never-parity-v1.atto`
+to valid Wasm. A minimal trusted Node host instantiated the compiler-produced
+modules: `ActorRef.send(42)` executed the compiled receiving handler and
+printed `42`, and a host-injected bool DATA event executed the compiled bool
+handler and printed `true`. Test code:
+`tests/actor_isolation_compiled_guest.mjs`.
+
+The same exact-blob run passed **11/11 actual compiler integration tests**,
+**5/5 compiler-owned scalar isolation witness tests**, **12/12 Rust affine
+admission/dequeue tests**, and **9/9 negative `.atto` source compiler
+rejections** with stable diagnostics and no emitted Wasm file. Rust toolchain:
+`rustc 1.100.0`. All **68/68** source and fixture Git blobs were verified
+against the *single source commit*
+`9305b24573bbe0183dbbd6a59c8166c9f1635627` (tree
+`e18e72ba95dd8ce7128a554527df2d67bdb4472e`). The private carrier
+commit is `d2e6a0d44074abfc722a9e4589a65ae6bec5345e`.
+Conformance evidence is recorded in `atto-platform-conformance` PR #33 at
+`evidence/actor-isolation-compiled-rust-guest-20261120.json`.
+
+**Do not misinterpret this proof.** The selected files include the complete
+compiler `src/` tree, Cargo manifests and tested fixtures but are *not* the
+complete 963-file Git repository. The synthetic host performs synchronous
+trusted per-actor Wasm instantiation and DATA dispatch; it is **not** the
+production actor scheduler, transactional runtime admission, an untrusted
+TenantVM security boundary, capability broker, or cross-backend parity.
+The guest `actor_send` ABI still returns `void`, and `take!` remains
+compiler-rejected. No right to claim secure same-process multi-tenancy is
+derived from this run. The PR stays Draft until independent review and
+required exact-head gates are satisfied.
