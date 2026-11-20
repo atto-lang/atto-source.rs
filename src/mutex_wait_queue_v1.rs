@@ -46,6 +46,7 @@ pub(crate) enum Error {
     CleanupFailed,
     AdmissionBusy,
     UnclaimedGrant,
+    GuardOrder,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cancellation {
@@ -270,6 +271,20 @@ impl TaskLeaseStack {
             }
         }
         self.cancellation_requested = true;
+        Ok(())
+    }
+    /// Trusted lexical using-scope exit, NOT a task cancellation or terminal
+    /// operation. Only the most recently entered guard can be released; a
+    /// scheduler must prove the protected guest region has stopped executing.
+    /// On success the guard is removed from this task's ledger, so a later
+    /// task cancellation cannot release the same permit twice.
+    pub(crate) fn release_top_guard(
+        &mut self, lock_id: u64, locks: &mut BTreeMap<u64, WaitQueue>,
+    ) -> Result<(), Error> {
+        let &(top_id, token) = self.held.last().ok_or(Error::StaleTicket)?;
+        if lock_id != top_id { return Err(Error::GuardOrder); }
+        locks.get_mut(&lock_id).ok_or(Error::StaleTicket)?.release(token)?;
+        self.held.pop();
         Ok(())
     }
     /// Local cleanup of ALL successfully entered guards, in reverse
@@ -582,6 +597,24 @@ impl TaskScopeLockCoordinator {
         if failure.is_some() { task.cleanup_failed = true; }
         match failure { None => Ok(released), Some(err) => Err(err) }
     }
+    /// Validate a compiler-authored lexical guard end on a trusted host
+    /// scheduler. This may happen before task exit, including while the task
+    /// continues with other work. An untrusted guest may not call this method
+    /// or self-assert that it has stopped touching guarded memory.
+    fn guard_scope_exit(&mut self, who: Continuation, lock_id: u64) -> Result<(), Error> {
+        self.registered(who)?;
+        let (tasks, locks) = (&mut self.tasks, &mut self.locks);
+        let task = tasks.get_mut(&who.logical_task).ok_or(Error::UnknownTask)?;
+        if task.guest_exited { return Err(Error::AlreadyClaimed); }
+        match task.guards.release_top_guard(lock_id, locks) {
+            Ok(()) => Ok(()),
+            Err(Error::GuardOrder) => Err(Error::GuardOrder),
+            Err(err) => {
+                task.cleanup_failed = true;
+                Err(err)
+            }
+        }
+    }
     fn exit_kind(&self, who: Continuation) -> Result<Option<TaskExitKind>, Error> {
         Ok(self.registered(who)?.exit_kind)
     }
@@ -695,6 +728,11 @@ impl HostTaskLockKernel {
     fn claim(&self, who: Continuation, lock_id: u64, ticket: Ticket)
         -> Result<(), Error> {
         self.try_with_core(|core| core.enter(who, lock_id, ticket))
+    }
+    /// Called exclusively after trusted compiler/runtime guard-scope end.
+    /// This is deliberately not an import available to untrusted guest code.
+    fn trusted_guard_scope_exit(&self, who: Continuation, lock_id: u64) -> Result<(), Error> {
+        self.try_with_core(|core| core.guard_scope_exit(who, lock_id))
     }
     fn cancel(&self, who: Continuation) -> Result<(), Error> {
         self.try_with_core(|core| core.cancel_tree(who))
