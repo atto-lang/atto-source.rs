@@ -1368,6 +1368,7 @@ fn check_lowered(p: &Program) -> R<TProgram> {
     let concat = funcs.iter().any(|f| any_in_stmts(&f.body, &uses_concat));
     let adt_alloc = funcs.iter().any(|f| any_in_stmts(&f.body,
         &|e| matches!(e.e, TExpr::AdtNew { .. } | TExpr::Trap { .. } | TExpr::ChannelRead { .. } |
+            TExpr::StdioRead { .. } | TExpr::StdioWrite { .. } |
             TExpr::ChannelOpen { .. } | TExpr::ChannelTrySend { .. } |
             TExpr::ChannelStatus { .. })));
     let guest_eh = funcs.iter().any(|f| guest_eh_in_stmts(&f.body)
@@ -1884,7 +1885,7 @@ impl<'a> FnCx<'a> {
                 // rejected send. The caller must bind, match or explicitly
                 // propagate the entire checked outcome.
                 if matches!(v.ty,
-                    Type::ResultOptionIntIoError |
+                    Type::ResultOptionIntIoError | Type::ResultOptionStrIoError |
                     Type::ResultChannelIntIoError |
                     Type::ResultVoidIoError)
                 {
@@ -2056,8 +2057,10 @@ impl<'a> FnCx<'a> {
     fn match_stmt(&mut self, subject: &Expr, arms: &[MatchArm], pos: Pos) -> R<TStmt> {
         let subj = self.value(subject)?;
         let sty = subj.ty;
-        if matches!(sty, Type::OptionInt | Type::ResultIntStr | Type::OptionResultIntStr |
-            Type::ResultOptionIntIoError | Type::ResultChannelIntIoError | Type::ResultVoidIoError) {
+        if matches!(sty, Type::OptionInt | Type::OptionStr |
+            Type::ResultIntStr | Type::OptionResultIntStr |
+            Type::ResultOptionIntIoError | Type::ResultOptionStrIoError |
+            Type::ResultChannelIntIoError | Type::ResultVoidIoError) {
             return self.match_adt(subj, arms, pos);
         }
         if !matches!(sty, Type::Int | Type::Bool | Type::Enum(_) | Type::Float | Type::Str) {
@@ -2277,10 +2280,14 @@ impl<'a> FnCx<'a> {
                         (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
                         (Type::OptionInt, "None") => (0, None),
                         (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+                        (Type::OptionStr, "None") => (0, None),
+                        (Type::OptionStr, "Some") => (1, Some(Type::Str)),
                         (Type::OptionResultIntStr, "None") => (0, None),
                         (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
                         (Type::ResultOptionIntIoError, "Ok") => (0, Some(Type::OptionInt)),
                         (Type::ResultOptionIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultOptionStrIoError, "Ok") => (0, Some(Type::OptionStr)),
+                        (Type::ResultOptionStrIoError, "Err") => (1, Some(Type::IoError)),
                         (Type::ResultChannelIntIoError, "Ok") => (0, Some(Type::ChannelInt)),
                         (Type::ResultChannelIntIoError, "Err") => (1, Some(Type::IoError)),
                         (Type::ResultVoidIoError, "Ok") => (0, None),
@@ -2520,10 +2527,14 @@ impl<'a> FnCx<'a> {
             (Type::ResultIntStr, "Err") => (1, Some(Type::Str)),
             (Type::OptionInt, "None") => (0, None),
             (Type::OptionInt, "Some") => (1, Some(Type::Int)),
+            (Type::OptionStr, "None") => (0, None),
+            (Type::OptionStr, "Some") => (1, Some(Type::Str)),
             (Type::OptionResultIntStr, "None") => (0, None),
             (Type::OptionResultIntStr, "Some") => (1, Some(Type::ResultIntStr)),
                         (Type::ResultOptionIntIoError, "Ok") => (0, Some(Type::OptionInt)),
                         (Type::ResultOptionIntIoError, "Err") => (1, Some(Type::IoError)),
+                        (Type::ResultOptionStrIoError, "Ok") => (0, Some(Type::OptionStr)),
+                        (Type::ResultOptionStrIoError, "Err") => (1, Some(Type::IoError)),
                         (Type::ResultChannelIntIoError, "Ok") => (0, Some(Type::ChannelInt)),
                         (Type::ResultChannelIntIoError, "Err") => (1, Some(Type::IoError)),
                         (Type::ResultVoidIoError, "Err") => (1, Some(Type::IoError)),
