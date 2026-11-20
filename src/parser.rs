@@ -2805,7 +2805,9 @@ impl Parser {
                 Tok::Gt => BinOp::Gt,
                 Tok::Ge => BinOp::Ge,
                 Tok::Ident(s) if s == "as"
-                    && matches!(&left.kind, ExprKind::Call(name, _) if name == "@builtin/Entry.of") =>
+                    && (self.word_at(1) == Some("Entry")
+                        || matches!(&left.kind, ExprKind::Call(name, _)
+                            if name == "@builtin/Entry.of")) =>
                     break,
                 Tok::Ident(s) if s == "as" || s == "matches" => return Err(unsupported(pos, &format!("'{s}"))),
                 _ => break,
