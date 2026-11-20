@@ -64,10 +64,13 @@ pub enum Import {
     ChannelSend,
     ChannelClose,
     ChannelRelease,
+    /// Authenticated Worker-only UTF-8 process stdio, version 1.
+    StdioRead,
+    StdioWrite,
 }
 
 impl Import {
-    pub const ALL: [Import; 21] = [
+    pub const ALL: [Import; 23] = [
         Import::PrintI64,
         Import::PrintBool,
         Import::PrintStr,
@@ -89,6 +92,8 @@ impl Import {
         Import::ChannelSend,
         Import::ChannelClose,
         Import::ChannelRelease,
+        Import::StdioRead,
+        Import::StdioWrite,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -113,6 +118,8 @@ impl Import {
             Import::ChannelSend => "channel_int_send_v1",
             Import::ChannelClose => "channel_int_close_v1",
             Import::ChannelRelease => "channel_int_release_v1",
+            Import::StdioRead => "stdio_text_read_v1",
+            Import::StdioWrite => "stdio_text_write_v1",
         }
     }
 }
@@ -233,6 +240,17 @@ pub enum TExpr {
     ChannelRead {
         channel: Box<TE>, ticket: u32, outcome: u32,
         result: u32, option: u32, status: u32,
+    },
+    /// Checked, cooperative read of one UTF-8 stdin record. Input writes
+    /// into bounded guest-owned memory; no host pointer or naked string leaks.
+    StdioRead {
+        channel: Box<TE>, bytes: u32, outcome: u32,
+        result: u32, option: u32, status: u32,
+    },
+    /// Checked suspending write, distinctly NOT legacy non-fallible print_str.
+    StdioWrite {
+        endpoint: Box<TE>, value: Box<TE>, text: u32,
+        result: u32, status: u32,
     },
     /// Bounded Worker-owned handle admission, always Result<Channel<int>,IoError>.
     ChannelOpen {
