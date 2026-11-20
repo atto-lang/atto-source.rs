@@ -737,12 +737,15 @@ impl<'a> Checker<'a> {
         let ty = if actor { Ty::Actor(i) } else { Ty::Object(i) };
         self.cx.push(FnCx::new(ty.clone(), false, false));
         let this = self.declare("self", ty, false, o.pos)?;
-        let base = if actor { 24 } else { 0 };
+        let base = if actor { 48 } else { 0 };
         let size = base + 8 * o.fields.len() as u32;
         self.objs[i].size = size;
         let mut body = vec![IrStmt::Set(this, Ir::Helper(Helper::Alloc, vec![Ir::Const(size.max(8) as i64)]))];
         if actor {
-            let mailbox = self.rt("__chan_new", vec![Ir::Const(-1)]);
+            // The provisional guest actor DATA mailbox has a hard capacity.
+            // Legacy synchronous .send() traps when full; bridge forwarding
+            // suspends cooperatively instead of silently appending nodes.
+            let mailbox = self.rt("__chan_new", vec![Ir::Const(16)]);
             body.push(IrStmt::Store(Ir::Local(this), mailbox));
         }
         for (k, f) in o.fields.iter().enumerate() {
@@ -814,7 +817,10 @@ impl<'a> Checker<'a> {
         let mut body = vec![IrStmt::Set(1, load(Ir::Local(0), 8)), IrStmt::Set(2, load(Ir::Local(1), 0))];
         let mut turn = vec![
             IrStmt::SCall(Some(3), recv, vec![Ir::Local(2)]),
-            IrStmt::If(eq(Ir::Local(3), Ir::Const(0)), vec![IrStmt::Return(Ir::Const(0))], Vec::new()),
+            IrStmt::If(eq(Ir::Local(3), Ir::Const(0)), vec![
+                IrStmt::Expr(self.rt("__actor_exit", vec![Ir::Local(1)])),
+                IrStmt::Return(Ir::Const(0)),
+            ], Vec::new()),
             IrStmt::Set(4, load(Ir::Local(3), 0)),
             IrStmt::Set(5, load(Ir::Local(1), 16)),
             IrStmt::Store(add(Ir::Local(1), 16), add(Ir::Local(5), 1)),
@@ -1866,9 +1872,11 @@ impl<'a> Checker<'a> {
                     Some(_) => {}
                     None => self.objs[i].emit = Some(ty),
                 }
-                let call = self.rt("__actor_emit", vec![Ir::Local(this.slot), ir]);
-                self.c().pre.push(IrStmt::Expr(call));
-                return Ok((Ir::Const(0), Ty::Void, false));
+                // An actor emission is a cooperative DATA send: when a bounded
+                // channel or actor mailbox fills, the actor continuation
+                // suspends rather than parking an OS carrier or dropping DATA.
+                self.rt_scall("__actor_emit", vec![Ir::Local(this.slot), ir]);
+                return Ok((Ir::Const(0), Ty::Void, true));
             }
             "timeout" => return Err(type_err(pos, "timeout(ms) is a scope: write 'with timeout(ms) { ... }'")),
             _ => {}
