@@ -290,10 +290,12 @@ fnc __chan_offer(int c, int v): int {
 }
 
 suspends fnc __chan_send(int c, int v): void {
-  // Public channel API is forbidden after exclusive DATA graph admission.
-  if __load(c, 56) != 0 then __panic(10); fi
-  if __load(c, 64) != 0 then __panic(10); fi
-  while __chan_offer(c, v) == 0 do
+  // Recheck on EVERY retry. A caller may have suspended on backpressure
+  // while a different task atomically admitted the channel to a graph.
+  loop do
+    if __load(c, 56) != 0 then __panic(10); fi
+    if __load(c, 64) != 0 then __panic(10); fi
+    if __chan_offer(c, v) != 0 then return; fi
     __suspend();
   done
 }
@@ -301,10 +303,11 @@ suspends fnc __chan_send(int c, int v): void {
 // Compiler-runtime-only DATA producer path; never exposed to guest source.
 // Validate the owning actor, not merely the channel pointer.
 suspends fnc __chan_send_pipe(int actor, int c, int v): void {
-  if __load(c, 56) != actor then __panic(10); fi
-  if __load(actor, 8) != c then __panic(10); fi
-  if __load(actor, 24) != 1 then __panic(10); fi
-  while __chan_offer(c, v) == 0 do
+  loop do
+    if __load(c, 56) != actor then __panic(10); fi
+    if __load(actor, 8) != c then __panic(10); fi
+    if __load(actor, 24) != 1 then __panic(10); fi
+    if __chan_offer(c, v) != 0 then return; fi
     __suspend();
   done
 }
@@ -316,9 +319,11 @@ fnc __chan_take(int c): int {
 }
 
 suspends fnc __chan_recv(int c): int {
-  if __load(c, 56) != 0 then __panic(10); fi
-  if __load(c, 64) != 0 then __panic(10); fi
   loop do
+    // A blocked public reader must not consume DATA after pipeline
+    // admission merely because it started before the ownership change.
+    if __load(c, 56) != 0 then __panic(10); fi
+    if __load(c, 64) != 0 then __panic(10); fi
     if __load(c, 8) > 0 then
       return __chan_take(c);
     fi
