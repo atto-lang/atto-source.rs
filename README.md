@@ -12,19 +12,44 @@ This deliberately restricted Rust/Wasm backend profile compiles one immutable, l
 
 This is a **separate List<int> guest ABI** from draft immutable Array<int> work in Rust #111/#178. They must be reconciled before promoting general collections. No dynamic List, arbitrary iterator, mutation, actor transfer, borrow-view lifetime, pattern.of<T> compiler intrinsic, counted repetition, multiple internal rest wildcards, custom extractor, runtime interpreter, or library integration is implied. The standalone typed template parser remains **host reference only**; imported std.pattern templates still fail closed. This profile permits only a single source-local main with literal data and no user-defined List declarations/imports.
 
-Exact-head material verification from a clean checkout of this PR source commit,
-on a machine with a working Rust toolchain and Node.js (also used in scoped CI):
+**Normal source checkout**: pin the 40-character original PR head before
+running the proof. This mode requires the actual Git commit SHA to match:
 
 ```sh
 ATTO_EXPECT_HEAD=<40-character-PR-head-SHA> bash scripts/verify-list-pattern-guest.sh
 ```
 
-This one command requires a clean Git tree, records both the source commit and Git
-tree hashes, runs all four relevant Rust test binaries, Clippy, the release
-`attoc` build, and the ten compiled guest Wasm cases plus overflow and fail-closed
-negative tests. A missing toolchain or source-SHA mismatch fails before claiming
-a guest pass. Earlier local validation covered only the script's shell syntax
-and failure-closed guards; it did not execute the Rust compiler or guest.
+**Token-free private whole-tree carrier**: GitHub creates a *different commit
+SHA* when source blobs are recreated in another repository. Record the original
+source commit and its tree SHA **from the trusted source repository**, before
+mirroring. Compare the carrier's entire Git tree (including paths, modes and
+blobs) against that independently recorded original tree, not against a SHA
+read back from the carrier itself:
+
+```sh
+ATTO_VERIFY_MODE=mirror \
+ATTO_EXPECT_HEAD=<40-character-original-source-commit-SHA> \
+ATTO_EXPECT_TREE=<40-character-original-source-Git-tree-SHA> \
+  bash scripts/verify-list-pattern-guest.sh
+```
+
+Missing/malformed source provenance, a mismatched complete tree, or a dirty
+checkout fails **before** any compiler run. Mirror mode prints both the pinned
+source commit and the distinct carrier commit; it never presents carrier commit
+identity as a source commit proof. `ATTO_EXPECT_TREE` may also be set in
+normal mode for defense-in-depth. Verify that the externally supplied tree SHA
+really belongs to the declared original source commit; the isolated carrier
+cannot independently authenticate a private upstream repository.
+
+`node --test tests/verify-list-pattern-proof.test.mjs` executes only negative
+provenance guards in disposable repositories and deliberately makes Cargo
+unavailable. It cannot establish compiler or guest success. The real proof
+requires the clean exact commit or tree, executes all four Rust test binaries,
+strict Clippy, the release `attoc` build, and compiled guest Wasm including
+overflow/negative tests. If toolchain or test execution fails, there is no
+PASS. See [List ABI reconciliation #434](https://github.com/atto-lang/atto-source.rs/issues/434)
+before combining this matcher with the incompatible `List.of` factory/typed
+empty storage in #425/#429.
 
 Ten guest fixtures require actual Wasm execution with exit values 60, 0, 30, 7, 1, 3, 32, 11 (full-length standalone rest), 9 (empty exact List), and 13 (empty standalone rest); one additional guest must trap on checked i64 overflow (panic_code=1). Ten rejected sources must create no **new** artifact at absent output paths, including reserved captures and malformed adjacent rests. The CLI preserves an existing caller-owned output file unchanged on failed compilation, and the harness separately verifies that preservation. The Rust test suite covers empty Lists, standalone rests, the 16-atom budget, ill-scoped captures and max-sized collection matching. The Node suite also verifies imports=0 and an actual contiguous list header/cell payload in guest memory for nonempty Lists; an empty List has only a zero-length header and cannot be uniquely identified by scanning otherwise zeroed linear memory. **Tests are authored, but were NOT EXECUTED or verified on the exact current branch head at documentation time.** Source Actions and checked alternate carriers previously had zero-step runner failures; no PASS can be inferred. Only source-compiled, independently executed guests justify enabling the profile in release builds.
 
