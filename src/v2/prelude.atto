@@ -290,6 +290,20 @@ fnc __chan_offer(int c, int v): int {
 }
 
 suspends fnc __chan_send(int c, int v): void {
+  // Public channel API is forbidden after exclusive DATA graph admission.
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  while __chan_offer(c, v) == 0 do
+    __suspend();
+  done
+}
+
+// Compiler-runtime-only DATA producer path; never exposed to guest source.
+// Validate the owning actor, not merely the channel pointer.
+suspends fnc __chan_send_pipe(int actor, int c, int v): void {
+  if __load(c, 56) != actor then __panic(10); fi
+  if __load(actor, 8) != c then __panic(10); fi
+  if __load(actor, 24) != 1 then __panic(10); fi
   while __chan_offer(c, v) == 0 do
     __suspend();
   done
@@ -302,6 +316,8 @@ fnc __chan_take(int c): int {
 }
 
 suspends fnc __chan_recv(int c): int {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
   loop do
     if __load(c, 8) > 0 then
       return __chan_take(c);
@@ -327,6 +343,8 @@ suspends fnc __chan_recv_opt(int c): int {
 }
 
 fnc __chan_try(int c): int {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
   if __load(c, 8) > 0 then
     return __some(__chan_take(c));
   fi
@@ -334,6 +352,8 @@ fnc __chan_try(int c): int {
 }
 
 fnc __chan_nb(int c): int {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
   val f = __fut_new();
   if __load(c, 8) > 0 then
     __fut_done(f, __some(__chan_take(c)));
@@ -347,7 +367,8 @@ fnc __chan_nb(int c): int {
   return f;
 }
 
-fnc __chan_close(int c): void {
+// Internal EOF propagation is allowed for the current graph owner only.
+fnc __chan_close_internal(int c): void {
   if __load(c, 32) != 0 then
     return;
   fi
@@ -356,6 +377,12 @@ fnc __chan_close(int c): void {
     __fut_done(__q_pop(c + 40), 0);
   done
   __set_rt(4, 1);
+}
+
+fnc __chan_close(int c): void {
+  if __load(c, 56) != 0 then __panic(10); fi
+  if __load(c, 64) != 0 then __panic(10); fi
+  __chan_close_internal(c);
 }
 
 // ------------------------------------------------------------------ actors
@@ -552,14 +579,14 @@ suspends fnc __actor_emit(int a, int v): void {
   val n = __load(a, 8);
   if n == 0 then __panic(10); fi
   if __load(a, 24) == 1 then
-    await __chan_send(n, v);
+    await __chan_send_pipe(a, n, v);
   else
     await __mail_send_wait(n, v);
   fi
 }
 
 fnc __actor_stop(int a): void {
-  __chan_close(__load(a, 0));
+  __chan_close_internal(__load(a, 0));
 }
 
 fnc __actor_done(int a): int {
@@ -572,7 +599,7 @@ fnc __actor_exit(int a): void {
   val n = __load(a, 8);
   if n != 0 then
     if __load(a, 24) == 1 then
-      __chan_close(n);
+      __chan_close_internal(n);
     else
       __actor_stop(n);
     fi
