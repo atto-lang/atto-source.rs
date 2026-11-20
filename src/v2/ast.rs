@@ -230,12 +230,16 @@ pub enum ObjKind {
     Supervisor,
 }
 
-/// `define actor|supervisor Name as ... end`
+/// `define actor Name [receives T] [emits U] as ... end`
+/// The effect header is source-visible typed actor-port metadata, not a host
+/// capability token. Actual DATA admission still needs a checked runtime.
 #[derive(Clone, Debug)]
 pub struct Object {
     pub kind: ObjKind,
     pub name: String,
     pub pos: Pos,
+    pub declared_receives: Option<TyEx>,
+    pub declared_emits: Option<TyEx>,
     pub fields: Vec<Field>,
     pub receive: Option<Receive>,
     pub methods: Vec<Func>,
