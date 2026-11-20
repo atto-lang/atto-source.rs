@@ -181,6 +181,61 @@ pub fnc main(): int { return 1; }"#;
     }
 
     #[test]
+    fn canonical_scalar_syntax_uses_the_ordinary_checker_and_wasm_emitter() {
+        // These are NON-buffer scalar programs: they prove normal lexer/parser
+        // admission without substituting an arbitrary byte-buffer host adapter.
+        let programs = [
+            r#"pub fnc main(): int throws Error {
+  val mut answer = 0x12345678;
+  return answer eq 0x12345678 ? 1 : 0;
+}"#,
+            r#"pub fnc main(): int throws(Error) {
+  val answer = 0x7FFF_FFFF;
+  return answer eq 2147483647 ? 1 : 0;
+}"#,
+            r#"pub fnc main(): int {
+  return 0xFFFF_FFFF eq 4294967295 ? 1 : 0;
+}"#,
+        ];
+        for src in programs {
+            let bytes = crate::compile(src)
+                .expect("ordinary scalar syntax must reach typed Wasm emitter");
+            assert!(bytes.starts_with(b"\0asm"));
+            assert!(bytes.len() > 12);
+        }
+    }
+
+    #[test]
+    fn hexadecimal_lexer_rejects_malformed_or_non_i64_source_without_fallback() {
+        for text in ["0x", "0x_1", "0x1_", "0xGG", "0x1G", "0x1__0"] {
+            assert_eq!(crate::lexer::lex(text).unwrap_err().code,
+                "E_INTEGER_LITERAL", "{text}");
+        }
+        assert_eq!(crate::lexer::lex("0x8000000000000001").unwrap_err().code,
+            "E_INTEGER_RANGE");
+        assert_eq!(crate::lexer::lex("0xFFFFFFFFFFFFFFFF").unwrap_err().code,
+            "E_INTEGER_RANGE");
+        let tokens = crate::lexer::lex("0x12345678 0XFF 0x7FFF_FFFF").unwrap();
+        assert_eq!(tokens[0].tok, Tok::Int(Some(0x12345678)));
+        assert_eq!(tokens[1].tok, Tok::Int(Some(255)));
+        assert_eq!(tokens[2].tok, Tok::Int(Some(2147483647)));
+    }
+
+    #[test]
+    fn effect_spelling_is_typed_and_duplicate_effects_fail_closed() {
+        const BODY: &str = "{ return 7; }";
+        for spelling in ["throws Error", "throws(Error)"] {
+            let src = format!("pub fnc main(): int {spelling} {BODY}");
+            assert!(crate::compile(&src).unwrap().starts_with(b"\0asm"));
+        }
+        let malformed = format!("pub fnc main(): int throws Wrong {BODY}");
+        assert_eq!(crate::compile(&malformed).unwrap_err().code, "E_TYPE");
+        let duplicate = format!(
+            "pub fnc main(): int throws Error throws(Error) {BODY}");
+        assert_eq!(crate::compile(&duplicate).unwrap_err().code, "E_DUPLICATE");
+    }
+
+    #[test]
     fn source_manifest_is_complete_exactly_four_unique_byte_pins() {
         assert_eq!(CANDIDATE_SOURCES.len(), 4);
         let mut unique = BTreeSet::new();
