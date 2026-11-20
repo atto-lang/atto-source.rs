@@ -39,6 +39,7 @@ fn type_tests_are_explicit_and_not_implicit_wildcard_casts() {
     rejected("true",T::Int,"E_PATTERN_TYPE");
     assert_eq!(parse("true",T::Any).atoms,vec![Atom::Bool(true)]);
     assert_eq!(parse("\"a,b\"",T::String).atoms, vec![Atom::String("a,b".into())]);
+    assert_eq!(parse("\"a as b\"",T::String).atoms,vec![Atom::String("a as b".into())]);
 }
 
 #[test]
