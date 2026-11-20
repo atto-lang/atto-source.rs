@@ -56,3 +56,63 @@ cargo test --lib
 
 These tests are genuine Rust unit/integration checks when they run, not
 `atto` guest execution or an actor-supervisor integration proof.
+
+## 2026-11-20: checked structural *member* witness plan (non-emitting)
+
+[atto-spec #36](https://github.com/atto-lang/atto-spec/pull/36) and
+[atto-platform-conformance #119](https://github.com/atto-lang/atto-platform-conformance/pull/119)
+now describe seven structural kinds (interface, trait, class, struct, Record,
+Tuple, Map). The companion `src/structural_member_witness.rs` is a pure,
+non-emitting compiler witness planner, exposed as
+`atto_compiler::structural_member_witness`.
+
+The planner accepts **checked compiler declaration metadata only** and
+requires every exported field and instance method in a requested contract.
+It checks method arity and parameter contravariance, result covariance,
+receiver mode, argument/result ownership, async, effects, permission subsets,
+generic bounds, public instance visibility and unique overload resolution.
+Successful method planning records the real concrete source nominal ID,
+concrete dispatch slot, full required callable signature, layout generation,
+borrow/loan identity and **nonzero, equal TenantVM IDs**.
+
+Field proofs reuse `shape_witness`'s actual-source offsets. Tuples require
+exact positional arity/types, while Maps require exact key/value types and
+an independently checked stable key-presence/snapshot witness for any named
+field shape. Merely having `Map<string,int>` cannot prove the key `"foo"`
+exists. No private/sealed actor state can be projected.
+
+**Important nonclaims:** This stage does not connect a production
+interface/trait AST to the witness builder, does not verify a concrete method
+slot against the actual AOT/Wasm function table at invocation, does not
+invoke guest methods, does not implement writable projections, and does not
+provide a Map runtime snapshot adapter. Therefore it does **not** make
+`fnc use(~Reader r) { r.read(); }` guest-executable. Existing unsupported
+source must continue to fail closed. A source-only contract or standalone
+Rust witness test is not backend parity.
+
+### Additional verification
+
+```sh
+cargo test --test structural_member_witness_contract -- --nocapture
+cargo test --test shape_witness_contract -- --nocapture
+cargo test --lib
+```
+
+The integration suite includes public/all-member compliance, effect and
+permission negatives, borrow/async receiver safety, overload ambiguity,
+cross-nominal field offsets, tuple exact arity, Map key-snapshot planning,
+stale loan rejection, and TenantVM mismatch. All results must be associated
+with the **exact tested source SHA**. GitHub workflows failing with no job
+steps are **NOT_EXECUTED**, not compiler test failures or PASS.
+
+### Next codegen gate: checked method thunk specialization
+
+Build a compiler-owned `StructuralMethodThunk` plan with the actual source
+receiver type, selected method symbol/slot, exact lifetime/effects/ownership
+proof and an AOT/Wasm-verifiable ABI signature. Lower only a bounded static
+class implementation through a concrete receiver thunk (or checked static
+specialization), never a pointer cast to the requested nominal interface.
+Evaluate each receiver exactly once, prove its loan remains live, and reject
+temporary/escaping/mutable/actor/dynamic calls until independently supported.
+Then add **real executable Atto guest** positive/negative tests and align
+all other backends independently.
