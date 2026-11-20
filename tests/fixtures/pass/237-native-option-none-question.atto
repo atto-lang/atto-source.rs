@@ -1,0 +1,12 @@
+// expect-exit: 42
+fnc absent(): Option<int> { return None; }
+fnc checked(): Option<int> {
+  val answer = absent()?;
+  return Some(answer);
+}
+pub fnc main(): int {
+  return match checked() over
+    on Some(n) -> 0,
+    on None -> 42
+  end;
+}
