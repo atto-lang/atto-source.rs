@@ -1,0 +1,11 @@
+// COMPILE-NEGATIVE: E_NEW_REQUIRED. Mutex<T> is a nominal resource class.
+susp fnc increment(Mutex<int> counter): int {
+  using await counter.lock_async() as lease {
+    lease.value += 1;
+    return lease.value;
+  }
+}
+pub susp fnc main(): int {
+  val counter = Mutex<int>(0); // legacy struct/factory spelling is invalid
+  return await increment(counter);
+}

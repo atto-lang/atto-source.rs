@@ -13,7 +13,7 @@ susp fnc increment(Mutex<int> counter): int {
 "#;
 const MAIN: &str = r#"
 pub susp fnc main(): int {
-    val counter = Mutex<int>(0);
+    val counter = new Mutex<int>(0);
     return await increment(counter);
 }
 "#;
@@ -33,7 +33,7 @@ fn compiles_checked_scalar_fast_path_into_deterministic_wasm() {
 fn scalar_update_is_compiled_not_replaced_by_fixed_result() {
     for (initial,delta) in [(0,1), (17,23),(-1,1),(-20,3),(20,-3)] {
         let source = source(MAIN)
-            .replace("Mutex<int>(0)", &format!("Mutex<int>({initial})"))
+            .replace("new Mutex<int>(0)", &format!("new Mutex<int>({initial})"))
             .replace("lease.value += 1;", &format!("lease.value += {delta};"));
         let wasm=compile(&source).expect("checked runtime scalar expression");
         assert!(wasm.starts_with(b"\0asm"), "{initial}+{delta}");
@@ -53,7 +53,7 @@ fn compiler_accepts_implicit_suspension_alias_without_changing_wasm() {
 fn lazy_unawaited_task_has_no_execution_path_to_increment() {
     let lazy=r#"
 pub fnc main(): int {
-    val counter = Mutex<int>(0);
+    val counter = new Mutex<int>(0);
     val pending = increment(counter);
     return 0;
 }
@@ -69,7 +69,7 @@ fn unsupported_concurrency_and_unknown_body_shapes_fail_closed() {
         s.replace("return await increment(counter);", "spawn Worker(); return await increment(counter);"),
         s.replace("return lease.value;", "return unknown.value;"),
         s.replace("lease.value += 1;", "lease.value *= 2;"),
-        s.replace("Mutex<int>(0)", "Mutex<int>(get_dynamic());"),
+        s.replace("new Mutex<int>(0)", "new Mutex<int>(get_dynamic());"),
         s.replace("using await counter.lock_async()", "using await counter.other_async()"),
         format!("{s} pub fnc external(): int {{ return 9; }}"),
     ] {
@@ -91,13 +91,13 @@ fn exceptional_and_suspending_lease_bodies_are_diagnostics() {
 
 #[test]
 fn static_overflow_is_prohibited_before_guest_artifact() {
-    let s=source(MAIN).replace("Mutex<int>(0)", "Mutex<int>(9223372036854775807)");
+    let s=source(MAIN).replace("new Mutex<int>(0)", "new Mutex<int>(9223372036854775807)");
     assert_eq!(compile(&s).unwrap_err().code,"E_OVERFLOW");
 }
 
 #[test]
 fn unrelated_ownership_generics_remain_fail_closed() {
-    let other="pub fnc main(): int { val counter = Mutex<float>(1); return 0; }";
+    let other="pub fnc main(): int { val counter = new Mutex<float>(1); return 0; }";
     let err=compile(other).expect_err("unsupported generic has no guest allocation");
     assert!(matches!(err.code,"E_UNSUPPORTED"|"E_UNSUPPORTED_TYPE"|"E_LOCK_UNSUPPORTED"));
 }
@@ -106,13 +106,13 @@ fn unrelated_ownership_generics_remain_fail_closed() {
 fn repeated_sequential_awaits_are_lowered_with_cleanup_between_calls() {
     let main=r#"
 pub susp fnc main(): int {
-    val counter = Mutex<int>(0);
+    val counter = new Mutex<int>(0);
     val first = await increment(counter);
     return await increment(counter);
 }
 "#;
     let wasm=compile(&source(main)).expect("two sequential ready acquisitions");
     assert!(wasm.starts_with(b"\0asm"));
-    let overflow=source(main).replace("Mutex<int>(0)", "Mutex<int>(9223372036854775806)");
+    let overflow=source(main).replace("new Mutex<int>(0)", "new Mutex<int>(9223372036854775806)");
     assert_eq!(compile(&overflow).unwrap_err().code,"E_OVERFLOW");
 }

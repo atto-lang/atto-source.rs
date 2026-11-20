@@ -11,7 +11,7 @@ suspends fnc increment(Mutex<int> counter): int {
   }
 }
 pub suspends fnc main(): int {
-  val counter = Mutex<int>(0);
+  val counter = new Mutex<int>(0);
   stdio.println(await increment(counter));
   return 0;
 }
@@ -25,7 +25,7 @@ susp fnc increment(Mutex<int> counter): int {
   }
 }
 pub susp fnc main(): int {
-  val counter = Mutex<int>(0);
+  val counter = new Mutex<int>(0);
   stdio.println(await increment(counter));
   return 0;
 }
@@ -43,7 +43,7 @@ fn both_proven_single_task_await_spellings_emit_real_guest() {
 fn ready_await_cannot_hide_inside_unlowered_mutex_scope() {
     let source = r#"
 pub susp fnc main(): int {
-  val counter = Mutex<int>(0);
+  val counter = new Mutex<int>(0);
   using await counter.lock_async() as lease {
     lease.value += await 42;
   }
@@ -64,7 +64,7 @@ fn constructor_named_mutex_without_scoped_lock_remains_under_existing_type_gate(
 #[test]
 fn fake_lock_calls_inside_comments_and_strings_do_not_trigger_scope_gate() {
     let text = r#"
-// val fake = Mutex<int>(0); using fake.lock_async() as lease {}
+// val fake = new Mutex<int>(0); using fake.lock_async() as lease {}
 pub fnc main(): int {
   val message = "using mutex.lock_async() Mutex<int>";
   return 17;
@@ -93,7 +93,7 @@ fn user_method_name_alone_is_not_a_lock_capability() {
 fn shared_mutex_has_exactly_same_unsupported_scoped_emission_gate() {
     let source = r#"
 pub susp fnc main(): int {
-  val counter = SharedMutex<int>(0);
+  val counter = Sharednew Mutex<int>(0);
   using await counter.lock_async() as lease { lease.value += 1; }
   return 0;
 }

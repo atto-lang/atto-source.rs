@@ -5,6 +5,6 @@ susp fnc increment(Mutex<int> counter): int {
   }
 }
 pub susp fnc main(): int {
-  val counter = Mutex<int>(0);
+  val counter = new Mutex<int>(0);
   return await increment(counter);
 }
