@@ -8,6 +8,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pos};
 use crate::lexer::{Tok, Token};
+use std::collections::BTreeSet;
 
 pub const MAX_DEPTH: u32 = 128;
 pub const MAX_FUNCS: usize = 1024;
@@ -3176,6 +3177,10 @@ impl Parser {
         }
         let mut record = Vec::new();
         let mut map = Vec::new();
+        // Bound duplicate detection by O(n log n) rather than repeatedly
+        // scanning all prior fields/keys for untrusted guest source.
+        let mut seen_record_names = BTreeSet::<String>::new();
+        let mut seen_constant_map_keys = BTreeSet::<String>::new();
         let mut record_mode = None::<bool>;
         loop {
             if record.len() + map.len() >= 1024 {
@@ -3196,7 +3201,7 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.expect(Tok::Colon, "':' after record field")?;
-                if record.iter().any(|(existing, _): &(String, Expr)| existing == &name) {
+                if !seen_record_names.insert(name.clone()) {
                     return Err(Diagnostic::new(at, "E_DUPLICATE",
                         format!("duplicate record field '{name}'")));
                 }
@@ -3217,8 +3222,7 @@ impl Parser {
                 // Constant duplicate keys are definite mistakes. Dynamically
                 // computed keys need checked equality/hash rules at runtime.
                 if let Some(fingerprint) = constant_map_key(&key) {
-                    if map.iter().any(|(prior, _)| constant_map_key(prior).as_deref() ==
-                        Some(fingerprint.as_str())) {
+                    if !seen_constant_map_keys.insert(fingerprint) {
                         return Err(Diagnostic::new(key.pos, "E_DUPLICATE",
                             "duplicate constant map key"));
                     }
@@ -3251,6 +3255,7 @@ impl Parser {
     /// The source-order field inventory and static shape checks are shared.
     fn parse_named_record_parens(&mut self, pos: Pos) -> R<Expr> {
         let mut fields: Vec<(String, Expr)> = Vec::new();
+        let mut seen = BTreeSet::<String>::new();
         loop {
             if fields.len() >= 1024 {
                 return Err(Diagnostic::new(self.pos(), "E_SOURCE_LIMIT",
@@ -3264,7 +3269,7 @@ impl Parser {
             };
             self.advance();
             self.expect(Tok::Assign, "'=' after named Record field")?;
-            if fields.iter().any(|(existing, _)| existing == &name) {
+            if !seen.insert(name.clone()) {
                 return Err(Diagnostic::new(at, "E_DUPLICATE",
                     format!("duplicate Record field '{name}'")));
             }
