@@ -90,9 +90,18 @@ pub fn lower(input: &Program) -> R<Program> {
                             "mutable callable values require verified indirect dispatch")),
                         Some(_) => return Err(error(*pos, "E_TYPE",
                             "lambda initializer does not match its scalar binding type")),
+                        // A local `const v = |int a, ...| -> { ... }` is a
+                        // closed, statically bound callable even without a
+                        // separately written callable type. Infer its exact
+                        // scalar signature from the explicitly typed lambda,
+                        // then run the same no-capture and return-path checks
+                        // as an annotated `const F v`. This never creates a
+                        // first-class callable value or an indirect table.
+                        None if *kind == BindKind::Const =>
+                            Some(CallableSignature::from_noncapturing(init, None, None)?),
                         None if *kind == BindKind::Val => None,
                         None => return Err(error(*pos, "E_UNSUPPORTED",
-                            "unannotated direct lambdas require an immutable val binding")),
+                            "direct lambdas require an immutable const or val binding")),
                     };
                     if bindings_before_lambda.contains(name) {
                         return Err(error(*pos, "E_DUPLICATE",
