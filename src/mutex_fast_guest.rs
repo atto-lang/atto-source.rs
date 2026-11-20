@@ -226,12 +226,19 @@ fn call_increment() -> TE { TE { ty: Type::Int, e: TExpr::Call(0, vec![]) } }
 
 fn lower(inc: Increment, main: Main) -> R<TProgram> {
     if matches!(main.kind, MainKind::LazyAndZero) {
+        // Preserve construction of the actor/task-local protected value:
+        // the lazy call is not evaluated, but Mutex<int>(initial) still
+        // initializes a real per-instance payload and lease flag.
         return Ok(TProgram {
             funcs: vec![TFunc { name:"main".into(),params:vec![],ret:Type::Int,
-                locals:vec![],body:vec![TStmt::Return(Some(lit(0)))] }],
+                locals:vec![],body:vec![
+                    TStmt::GlobalSet(0,lit(main.initial)),
+                    TStmt::GlobalSet(1,lit(0)),
+                    TStmt::Return(Some(lit(0))),
+                ] }],
             generators:vec![],main:0,imports:vec![],data:vec![],heap:false,
-            globals:vec![],actors:vec![],strings:false,guest_eh:false,
-            raise_tag:false,catch_depth:false,
+            globals:vec![Type::Int,Type::Int],actors:vec![],strings:false,
+            guest_eh:false,raise_tag:false,catch_depth:false,
         });
     }
 
