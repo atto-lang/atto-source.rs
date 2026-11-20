@@ -723,15 +723,31 @@ impl HostTaskLockKernel {
     /// a hint does NOT claim the lease. The scheduler must pass the exact
     /// ticket back through claim() to revalidate generation, owner and cancel
     /// state before any guest code accesses protected memory.
-    fn take_grant_wake_hints(&self) -> Result<Vec<(u64, Ticket)>, Error> {
+    /// Level-triggered grant hints. Merely inspecting a wake hint must NOT
+    /// consume it: failed scheduler enqueue or a busy carrier may retry.
+    /// A trusted scheduler acknowledges only AFTER admission to its ready
+    /// queue; guest code can never acknowledge a raw lock ticket.
+    fn pending_grant_wake_hints(&self) -> Result<Vec<(u64, Ticket)>, Error> {
         self.try_with_core(|core| {
             let mut out = Vec::with_capacity(core.locks.len());
-            for (&lock_id, lock) in &mut core.locks {
-                if let Some(ticket) = lock.take_wakeup() {
+            for (&lock_id, lock) in &core.locks {
+                if let Some(ticket) = lock.wakeup {
                     out.push((lock_id, ticket));
                 }
             }
             Ok(out)
+        })
+    }
+    /// Acknowledgment is independent from actually claiming the guard. A
+    /// cancel/regrant race can invalidate the ticket between hint and ack;
+    /// stale acks must not erase a successor's still-pending wakeup.
+    fn acknowledge_grant_wake_hint(&self, lock_id: u64, ticket: Ticket)
+        -> Result<(), Error> {
+        self.try_with_core(|core| {
+            let lock = core.locks.get_mut(&lock_id).ok_or(Error::StaleTicket)?;
+            if lock.wakeup != Some(ticket) { return Err(Error::StaleTicket); }
+            lock.wakeup = None;
+            Ok(())
         })
     }
 }
@@ -1467,7 +1483,7 @@ mod tests {
         // TaskCancelled, without the cancellation unlocking another holder.
         assert_eq!(kernel.cancelled_continuation_wake_hints().unwrap(), vec![waiter]);
         assert_eq!(kernel.cancelled_continuation_wake_hints().unwrap(), vec![waiter]);
-        assert!(kernel.take_grant_wake_hints().unwrap().is_empty());
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
         assert_eq!(kernel.claim(waiter, mutex, queued), Err(Error::CancellationPending));
 
         assert_eq!(kernel.trusted_exit(waiter).unwrap(), Vec::<u64>::new());
@@ -1475,7 +1491,7 @@ mod tests {
         kernel.trusted_notifications_drained(waiter).unwrap();
         kernel.try_retire(waiter).unwrap();
         assert_eq!(kernel.trusted_exit(owner).unwrap(), vec![mutex]);
-        assert!(kernel.take_grant_wake_hints().unwrap().is_empty());
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
         kernel.trusted_notifications_drained(owner).unwrap();
         kernel.try_retire(owner).unwrap();
     }
@@ -1494,11 +1510,14 @@ mod tests {
 
         assert_eq!(kernel.trusted_exit(owner).unwrap(), vec![mutex]);
         // Delivery is only a wake *hint*, not a grant claim or permission.
-        assert_eq!(kernel.take_grant_wake_hints().unwrap(), vec![(mutex, stale)]);
-        assert!(kernel.take_grant_wake_hints().unwrap().is_empty());
+        assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, stale)]);
+        assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, stale)]);
         kernel.cancel(cancelled).unwrap();
+        assert_eq!(kernel.acknowledge_grant_wake_hint(mutex, stale), Err(Error::StaleTicket));
         assert_eq!(kernel.claim(cancelled, mutex, stale), Err(Error::CancellationPending));
-        assert_eq!(kernel.take_grant_wake_hints().unwrap(), vec![(mutex, next)]);
+        assert_eq!(kernel.pending_grant_wake_hints().unwrap(), vec![(mutex, next)]);
+        kernel.acknowledge_grant_wake_hint(mutex, next).unwrap();
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
         kernel.claim(successor, mutex, next).unwrap();
         assert_eq!(kernel.trusted_exit(cancelled).unwrap(), Vec::<u64>::new());
         assert_eq!(kernel.trusted_exit(successor).unwrap(), vec![mutex]);
@@ -1513,10 +1532,10 @@ mod tests {
         let kernel = HostTaskLockKernel::new(d()).unwrap();
         let guard = kernel.core.lock().unwrap(); // inject host arbiter contention
         assert_eq!(kernel.cancelled_continuation_wake_hints(), Err(Error::AdmissionBusy));
-        assert_eq!(kernel.take_grant_wake_hints(), Err(Error::AdmissionBusy));
+        assert_eq!(kernel.pending_grant_wake_hints(), Err(Error::AdmissionBusy));
         drop(guard);
         assert!(kernel.cancelled_continuation_wake_hints().unwrap().is_empty());
-        assert!(kernel.take_grant_wake_hints().unwrap().is_empty());
+        assert!(kernel.pending_grant_wake_hints().unwrap().is_empty());
     }
 
 
