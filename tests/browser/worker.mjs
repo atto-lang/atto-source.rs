@@ -12,7 +12,9 @@ function javaDouble(x){
 }
 self.onmessage=async ({data})=>{
   try{
-    const bytes=await (await fetch('/atto_compiler.wasm')).arrayBuffer();
+    const compilerResponse=await fetch('/atto_compiler.wasm');
+    if(!compilerResponse.ok)throw new Error('compiler Wasm HTTP '+compilerResponse.status);
+    const bytes=await compilerResponse.arrayBuffer();
     if(!WebAssembly.validate(bytes))throw new Error('invalid compiler wasm');
     const compiler=new WebAssembly.Module(bytes);
     if(WebAssembly.Module.imports(compiler).length)throw new Error('unexpected compiler imports');
