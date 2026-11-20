@@ -26,11 +26,15 @@ async function until(fn,label){
     try{const value=await fn();if(value)return value;last=value}catch(e){last=e.message}
     await sleep(100);
   }
-  throw new Error(label+' timed out: '+last);
+  throw new Error((typeof label==='function'?label():label)+' timed out: '+last);
 }
 let chrome,ws;
 try{
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  // A missing Rust-to-Wasm compiler artifact is a harness error, not a
+  // forty-second guest-runtime timeout. Verify it before launching Chrome.
+  const browserCompiler=await readFile(new URL('../target/wasm32-unknown-unknown/release/atto_compiler.wasm',import.meta.url));
+  assert.ok(WebAssembly.validate(browserCompiler),'browser compiler Wasm missing or invalid');
   const browser=process.env.CHROME_BIN||'/usr/bin/google-chrome';
   chrome=spawn(browser,['--headless=new','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--no-first-run','--no-proxy-server','--disable-background-networking','--remote-debugging-port=0','--user-data-dir='+tmp,'about:blank'],{stdio:['ignore','ignore','pipe']});
   let stderr='';chrome.stderr.on('data',x=>stderr=(stderr+x.toString()).slice(-2000));
@@ -72,7 +76,7 @@ try{
       const value=await evaluate("document.querySelector('#result').textContent");
       lastOutput=value;
       return value?.includes(expected)?value:null;
-    },expected+' (last browser output: '+lastOutput+')');
+    },()=>expected+' (last browser output: '+lastOutput+')');
     return state;
   };
   assert.match(await run('pub fnc main(): int { return 6 * 7; }','main() -> 42'),/42/);
@@ -214,6 +218,7 @@ try{
     '222-v2-checked-setup-output-occupied.atto',
     '222-v2-checked-output-occupied-rollback.atto',
     '223-v2-checked-input-occupied-rollback.atto',
+    '224-v2-checked-channel-occupied-rollback.atto',
   ]) {
     const guest = await readFile(new URL('./fixtures/pass/' + filename, import.meta.url), 'utf8');
     const observed = await run(guest, 'main() -> 42');
