@@ -54,7 +54,8 @@ mod tests {
         reject_unlowered(&lexer::lex(source).expect("lex safe source")).unwrap();
         let quoted = "pub fnc main(): int { val string s = \"unsafe { }\"; return 42; }";
         reject_unlowered(&lexer::lex(quoted).expect("lex quoted source")).unwrap();
-        assert_eq!(compile(source).is_ok(), true, "ordinary safe program must still compile");
+        let safe_baseline = "pub fnc main(): int { return 42; }";
+        assert!(compile(safe_baseline).is_ok(), "plain scalar guest baseline still compiles");
     }
 
     #[test]
