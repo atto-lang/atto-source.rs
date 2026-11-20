@@ -1,0 +1,8 @@
+// expect-exit: 42
+pub fnc main() -> int {
+    const v = |int foo, string x| -> {
+        return;
+    };
+    v(5, "ok");
+    return 42;
+}
