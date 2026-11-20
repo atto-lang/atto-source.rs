@@ -104,3 +104,61 @@ fn unsupported_file_const_forms_fail_without_runtime_storage() {
     rejects("type F=(int)=>int; pub fnc main():int { const F f=|x:int| :int -> x; return f(1,2); }", "E_ARITY");
     rejects("type F=(int)=>int; pub fnc main():int { const F f=|x:int| :int -> x; return f(true); }", "E_TYPE");
 }
+
+#[test]
+fn four_local_const_void_lambda_spellings_compile_to_checked_wasm() {
+    // atto-platform-conformance#240: all four declarations must have the
+    // same static ABI and must invoke the guest callback before returning 42.
+    for declaration in [
+        "const v = |int foo, string x| -> { return; };",
+        "const v = |foo: int, x: string| -> { return; }",
+        "const v = |foo: int, x: string| -> void { return; }",
+        "const v = |foo: int, x: string| : void -> { return; }",
+    ] {
+        let source = format!(
+            "pub fnc main(): int {{\\n{declaration}\\nv(5, \\"ok\\");\\nreturn 42;\\n}}"
+        );
+        let guest = atto_compiler::compile(&source)
+            .unwrap_or_else(|error| panic!("{declaration}: {error}"));
+        assert!(guest.starts_with(b"\\0asm"), "{declaration}: not a Wasm guest");
+        assert_eq!(guest, atto_compiler::compile(&source).unwrap(),
+            "{declaration}: nondeterministic emitted guest");
+    }
+}
+
+#[test]
+fn local_const_lambda_rejections_match_four_style_conformance() {
+    for (declaration, diagnostic) in [
+        ("const v = |int foo, foo: string| -> { return; };", "E_DUPLICATE"),
+        ("const v = |foo: int, x: string| : void -> { return 7; };", "E_TYPE"),
+        ("const v = |void foo, string x| : void -> { return; };", "E_TYPE"),
+        ("const v = |foo: int, x: string| -> void return;", "E_SYNTAX"),
+    ] {
+        let source = format!(
+            "pub fnc main(): int {{ {declaration} v(5, \\"ok\\"); return 42; }}"
+        );
+        rejects(&source, diagnostic);
+    }
+    // Explicitly typed parameters are required for an unannotated local
+    // const callable; there is no runtime closure object or inferred ABI.
+    rejects(
+        "pub fnc main(): int { const v = |foo, x| -> { return; }; v(5, \\"ok\\"); return 42; }",
+        "E_INFER",
+    );
+    rejects(
+        "pub fnc main(): int { const int secret = 7; const v = |foo: int| : int -> { return secret; }; v(5); return 42; }",
+        "E_CAPTURE",
+    );
+    rejects(
+        "pub fnc main(): int { const v = |foo: int| : void -> { return; }; val escaped = v; return 42; }",
+        "E_UNSUPPORTED",
+    );
+    rejects(
+        "pub fnc main(): int { const v = |foo: int| : void -> { return; }; v(\\\"wrong\\\"); return 42; }",
+        "E_TYPE",
+    );
+    rejects(
+        "pub fnc main(): int { const v = |foo: int| : void -> { return; }; v(5, 6); return 42; }",
+        "E_ARITY",
+    );
+}
