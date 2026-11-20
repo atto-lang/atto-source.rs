@@ -7,6 +7,7 @@ const FORWARD: &str = include_str!("fixtures/pass/208-v2-actor-channel-actor-pip
 const REVERSE: &str = include_str!("fixtures/pass/209-v2-actor-channel-actor-rpipe.atto");
 const DOUBLE: &str = include_str!("fixtures/panic/210-v2-pipe-double-attach.atto");
 const RENDEZVOUS: &str = include_str!("fixtures/panic/211-v2-pipe-rendezvous-denial.atto");
+const INPUT_OCCUPIED: &str = include_str!("fixtures/panic/212-v2-pipe-duplicate-consumer.atto");
 
 #[test]
 fn real_compiler_emits_independent_wasm_guests_for_both_directional_graphs() {
@@ -22,7 +23,7 @@ fn real_compiler_emits_independent_wasm_guests_for_both_directional_graphs() {
 fn executable_negative_fixtures_also_compile_to_guests_that_must_trap() {
     // Runtime graph-admission failure cannot be inferred from compiler
     // rejection. Chromium must execute these guests and observe panic 10.
-    for (name, source) in [("double", DOUBLE), ("rendezvous", RENDEZVOUS)] {
+    for (name, source) in [("double", DOUBLE), ("rendezvous", RENDEZVOUS), ("input_occupied", INPUT_OCCUPIED)] {
         let guest = atto_compiler::compile(source)
             .unwrap_or_else(|e| panic!("{name} must reach runtime: {e}"));
         assert!(guest.starts_with(b"\0asm\x01\0\0\0"), "{name} is not Wasm");
