@@ -1,0 +1,11 @@
+// expect-error: E_UNSUPPORTED
+// java: rejects
+define class Point as pub int x=0; end
+pub fnc read(~Point p): int {
+    p.x = 99;
+    return p.x;
+}
+pub fnc main(): int {
+    val a = new Point();
+    return read(a);
+}
