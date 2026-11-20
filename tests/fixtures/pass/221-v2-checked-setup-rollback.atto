@@ -1,0 +1,43 @@
+// EXPERIMENTAL single-guest-memory checked admission: no task cancellation,
+// cross-TenantVM bridge or production PipeHandle lifetime yet.
+// expect-exit: 42
+// expect-stdout: 40\n2\n
+define actor Producer receives int emits int as
+  receive(ActorMail<int> mail): void {
+    emit(mail.value);
+  }
+end
+define actor Consumer receives int as
+  receive(ActorMail<int> mail): void {
+    stdio.println(mail.value);
+  }
+end
+
+pub suspends fnc main(): int {
+  val producer = spawn Producer();
+  val consumer = spawn Consumer();
+  val channel = Channel<int>.bounded(1);
+  // A stopped sink must reject without claiming the producer or channel.
+  consumer.stop();
+  val Result<PipeHandle, PipeSetupError> rejected =
+      producer pipe channel pipe consumer;
+  val int failed = match rejected over
+    on Err(_) -> 1,
+    on Ok(_) -> 0,
+  end;
+  if failed != 1 then return 91; fi
+  val live = spawn Consumer();
+  val Result<PipeHandle, PipeSetupError> connection =
+      producer pipe channel pipe live;
+  val int valid = match connection over
+    on Ok(_) -> 1,
+    on Err(_) -> 0,
+  end;
+  if valid != 1 then return 92; fi
+  producer.send(40);
+  producer.send(2);
+  producer.stop();
+  await producer.get_done();
+  await live.get_done();
+  return 42;
+}
