@@ -1,0 +1,11 @@
+// String typed actor messages require a real cross-worker string wire ABI.
+// Do not accept syntax and pretend the browser Wasm runtime is complete.
+// expect-error: E_UNSUPPORTED_TYPE
+define actor Router receives string sends int as
+    susp receive(ActorMail<string> mail): void { return; }
+end
+pub susp fnc main(): int {
+    val router = spawn Router();
+    router.send("hello");
+    return 0;
+}
