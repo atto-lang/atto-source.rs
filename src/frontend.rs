@@ -515,7 +515,6 @@ pub fn parse(source: &str) -> Result<Program, ParseError> {
         tokens,
         cursor: 0,
         source_len: source.len(),
-        source: prepared,
         primary_depth: 0,
     };
     let mut functions = Vec::new();
@@ -602,7 +601,6 @@ struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     source_len: usize,
-    source: String,
     primary_depth: usize,
 }
 impl Parser {
@@ -725,28 +723,22 @@ impl Parser {
                 }
             }
         }
-        let header_end = self.expect(Kind::RParen)?;
+        self.expect(Kind::RParen)?;
+        // Each return-first spelling has the same body families as a named
+        // callable: braces, explicit begin/end, or bare statements/end.
+        // Requiring begin on a separate line was a provisional parser limit,
+        // not a semantic property of U+2022 BULLET or contiguous '<-'.
         let uses_end = if return_first {
-            let begin = self.expect(Kind::Begin)?;
-            let gap = &self.source[header_end.start + header_end.text.len()..begin.start];
-            if !gap.chars().any(|ch| matches!(ch, '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')) {
-                return Err(ParseError {
-                    offset: begin.start,
+            match self.peek() {
+                Some(Kind::LBrace) => { self.expect(Kind::LBrace)?; false }
+                Some(Kind::Begin) => { self.expect(Kind::Begin)?; true }
+                Some(Kind::Return | Kind::Const | Kind::Val | Kind::Int) => true,
+                _ => return Err(ParseError {
+                    offset: self.pos(),
                     class: "syntax_error",
-                    message: "begin must be on the next line after a return-first header".into(),
-                });
+                    message: "expected return-first callable body".into(),
+                }),
             }
-            if let Some(next) = self.tokens.get(self.cursor) {
-                let after = &self.source[begin.start + begin.text.len()..next.start];
-                if !after.chars().any(|ch| matches!(ch, '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')) {
-                    return Err(ParseError {
-                        offset: next.start,
-                        class: "syntax_error",
-                        message: "begin must be alone on its line".into(),
-                    });
-                }
-            }
-            true
         } else {
             match self.peek() {
             Some(Kind::Arrow) | Some(Kind::Colon) => {
