@@ -71,7 +71,7 @@ fn unlowered_dynamic_map_and_computed_record_writes_produce_no_guest_wasm() {
     let compiled_record = compile(
         r#"pub fnc main(): int { let mut Record r = {foo:1}; r["foo"] = 3; return r.foo; }"#
     ).expect("owned closed Record static field writes have checked guest lowering");
-    assert!(compiled_record.starts_with(b"\\0asm\\x01\\0\\0\\0"));
+    assert!(compiled_record.starts_with(b"\0asm\x01\0\0\0"));
 
     for src in [
         r#"pub fnc main(): int { let mut Map<string,int> m = {"foo" => 1}; m["foo"] = 3; return 0; }"#,
