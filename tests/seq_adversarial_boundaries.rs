@@ -3,9 +3,9 @@
 //! Layered on atto-source.rs #330's v1/v2 integration candidate.
 use atto_compiler::{
     ast::{ExprKind, Stmt},
-    compile,
+    compile, compile_with_version,
     lexer::lex,
-    parser::Parser,
+    parser::{LanguageVersion, Parser},
 };
 
 fn compiles(source: &str) {
@@ -95,4 +95,34 @@ fn seq_does_not_bypass_types_scopes_mutability_ownership_or_effects() {
     ] {
         rejects(source);
     }
+}
+
+#[test]
+fn delimited_seq_outer_commas_require_explicit_v2_callable_mode() {
+    // seq(...) is an expression; its own commas stop at the matching ')'.
+    // The comma *after* ')' belongs to the enclosing unmarked callable body.
+    // In v1 this is legacy implicit-tail syntax; in v2 it requires '::'.
+    for source in [
+        "fnc f() -> int seq(1, 2), 42 end pub fnc main(): int { return f(); }",
+        "fnc f() -> int const int n = seq(1, 2), n + 40 end pub fnc main(): int { return f(); }",
+    ] {
+        let legacy = compile_with_version(source, LanguageVersion::Legacy)
+            .unwrap_or_else(|err| panic!("v1 compatibility regressed: {err}"));
+        assert!(legacy.starts_with(b"\0asm\x01\0\0\0"));
+        let diagnostic = compile_with_version(source, LanguageVersion::Explicit)
+            .expect_err("v2 must reject unmarked outer comma");
+        assert_eq!(diagnostic.code, "E_BODY_VERSION", "{source}: {diagnostic}");
+    }
+
+    // A bare seq *statement* still owns its own commas through ';'.
+    // Neither edition may mistake them for the callable's implicit return.
+    let statement = "fnc f() -> int seq 1, 2; return 42; end pub fnc main(): int { return f(); }";
+    for version in [LanguageVersion::Legacy, LanguageVersion::Explicit] {
+        assert!(compile_with_version(statement, version).is_ok(),
+            "bare seq statement must not create an edition diagnostic: {version:?}");
+    }
+
+    let explicit = "fnc f() -> int :: seq(1, 2), 42 end pub fnc main(): int { return f(); }";
+    assert!(compile_with_version(explicit, LanguageVersion::Explicit).is_ok(),
+        "explicit v2 comma-tail mode must remain accepted");
 }
