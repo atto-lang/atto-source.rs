@@ -174,8 +174,8 @@ pub fn lower(program: &mut Program, checked: &[TypedBinding]) -> Result<(), Diag
                 body.push(ordinary);
                 continue;
             };
-            let parsed_map = match init.kind {
-                ExprKind::Map(entries) => Some(entries),
+            let parsed_map = match &init.kind {
+                ExprKind::Map(entries) => Some(entries.clone()),
                 ExprKind::EmptyBraces => {
                     // {} can become a Map only when the checked type
                     // inventory supplies a concrete Map<K,V> context.
