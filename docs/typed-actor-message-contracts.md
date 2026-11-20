@@ -133,6 +133,26 @@ require a nonzero-step, trusted run. Rust codec tests, compiled positive
 ActorMail<string> guest execution, main-to-actor sends, actor-originated fanout
 and authenticated supervisor CONTROL remain independently unverified.
 
+
+### Checked scratch-page layout plan (not yet emitted)
+
+The pure Rust module `src/actor_string_memory_plan.rs` plans the
+host-receiver scratch page without silently widening existing guest heaps.
+For the current Wasm frontend, scalar actor modules would use **2 fixed
+pages** (ordinary 64 KiB + 64 KiB mailbox) and bounded heap actor modules
+would use **17 fixed pages** (existing 16-page ordinary heap + 1 mailbox
+page). The scratch starts at byte **65,536** or **1,048,576** respectively.
+The plan rejects unsupported memory profiles, overlapping data/heap ranges,
+mismatched Wasm memory limits and forged maximum page counts without
+arithmetic wraparound.
+
+This layout module is not yet invoked by the production Wasm emitter; its
+presence must not change guest memory sections, mark string actors supported,
+or grant a host permission. The next compiler integration must generate
+independently attestable payload-type and memory-reservation metadata while
+preserving byte-identical output for actors that do not receive strings.
+
+
 ### Required compiler/runtime integration before enabling strings
 
 1. Change the compiler only after allocating an actor-owned string mailbox
